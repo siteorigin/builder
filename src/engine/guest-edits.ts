@@ -5,60 +5,8 @@
  * (FORM_DESTINATIONS) are also refused by name before a guest's batch runs (shared/live/capabilities.ts).
  */
 import type { ComponentDefinition, GraphNode, OwnerKind, ProjectState } from '@shared/types';
-import { FORM_DESTINATIONS, FORM_SERVICES } from '@catalogue/foundation/form';
-import { sendsFormMessages } from './component-package';
-import { codeImports } from './definitions';
-import { allTrees, enclosingRepeatProp } from './tree';
-
-const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-
-/** A form's settings that decide where its messages go: the service it uses, and that service's own setting. */
-const ROUTING = ['provider', ...new Set(Object.values(FORM_SERVICES).map((s) => s.prop))];
-
-/**
- * The properties of each component that decide where a contact form sends its messages: a form's service and its
- * settings, and every property of a design that passes a value on to one of those, however deep. A form is the theme's
- * (or a copy whose code still reads its settings), or anything with a form destination's name, as the name check
- * refuses it. A whole property or one field of it passed on protects that property; an item's field passed on inside
- * a repeat protects the list it repeats. Code decides in its source what it passes on, so code that places a form
- * (and is not one) has all its properties protected.
- */
-export function formDestinationProps(state: ProjectState): Map<string, Set<string>> {
-  const out = new Map<string, Set<string>>();
-  const defs = Object.values(state.components);
-  for (const d of defs) {
-    if (!sendsFormMessages(d) && !FORM_DESTINATIONS.some((k) => Object.hasOwn(d.properties, k))) continue;
-    out.set(d.id, new Set(ROUTING.filter((k) => Object.hasOwn(d.properties, k))));
-  }
-  const protect = (d: ComponentDefinition, prop: string | undefined): boolean => {
-    if (!prop || !Object.hasOwn(d.properties, prop)) return false;
-    const set = out.get(d.id) ?? new Set<string>();
-    if (set.has(prop)) return false;
-    out.set(d.id, set.add(prop));
-    return true;
-  };
-  for (let changed = true; changed; ) {
-    changed = false;
-    for (const d of defs) {
-      if (d.kind === 'code') {
-        // A form's own code reads its settings; any other code that places one (even one with a setting's name) may
-        // pass it any of its properties.
-        if (!sendsFormMessages(d) && [...out.keys()].some((id) => id !== d.id && codeImports(state, d, id))) for (const prop of Object.keys(d.properties)) changed = protect(d, prop) || changed;
-        continue;
-      }
-      for (const n of Object.values(d.tree?.nodes ?? {})) {
-        if (n.kind !== 'instance') continue;
-        for (const k of out.get(n.definitionId) ?? []) {
-          const v = n.props?.[k];
-          if (!isRecord(v)) continue;
-          if (typeof v.$prop === 'string') changed = protect(d, v.$prop) || changed;
-          else if (typeof v.$item === 'string') changed = protect(d, enclosingRepeatProp(d, n.id)) || changed;
-        }
-      }
-    }
-  }
-  return out;
-}
+import { formDestinationProps } from './form-destinations';
+import { allTrees } from './tree';
 
 type Instance = Extract<GraphNode, { kind: 'instance' }>;
 

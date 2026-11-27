@@ -18,9 +18,10 @@ import { slugify } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { CUSTOM_DIR, defFile, defKey, effectiveTokens } from '@generator/index';
 import { getTheme } from '@catalogue/index';
-import { codeImports, directDependencies } from './definitions';
+import { directDependencies } from './definitions';
+import { codeImports } from './code-imports';
 import { childLists, fail } from './tree';
-import { FORM_DESTINATIONS, readsFormServices } from '@catalogue/foundation/form';
+import { FORM_DESTINATIONS, sendsFormMessages } from '@catalogue/foundation/form';
 import { clone, installComponent } from './install';
 import { definitionRequiredProblems } from './required';
 
@@ -522,12 +523,6 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
     seen.forEach((x) => clear.add(x));
   }
 }
-
-/**
- * Whether a definition is the theme's contact form, or a copy of it, going by the code it runs rather than the name it
- * gives itself: whatever a package calls it, form code that reads the service settings sends visitors' messages.
- */
-export const sendsFormMessages = (def: ComponentDefinition | undefined): boolean => !!def && def.kind === 'code' && readsFormServices({ ...def, componentId: 'contact.form' });
 
 /** The packaged components a packaged definition renders: placed by its design, declared, or imported by its code. */
 function needsOf(def: ComponentDefinition, byFile: ReadonlyMap<string, string>): string[] {

@@ -12,7 +12,7 @@ import { FORM_SERVICES } from '@catalogue/foundation/form';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { formNameDiagnostics, validateState, websiteFormNotes, websiteFormProblems } from '@engine/validate';
-import { generateProject, siteEntries } from '@generator/index';
+import { generateProject } from '@generator/index';
 import { headingOutline } from '@generator/checks';
 import { publicUrlNote, publicUrlWarning } from '../../src/main/export';
 import { destinationForDiagnostic, destinationLabel, formDestinationField, noteState } from '../../src/renderer/src/lib/destinations';
@@ -38,7 +38,6 @@ function place(s: ProjectState, tree: NodeTree, props: Record<string, unknown> =
   return node;
 }
 
-const siteEntryIds = (s: ProjectState) => siteEntries(s).map((e) => e.entry.id);
 const healthForms = (s: ProjectState) => validateState(s).filter((d) => d.code === 'FORM_UNCONNECTED');
 const at = (d: Pick<Diagnostic, 'owner' | 'nodeId'>) => `${d.owner?.kind}:${d.owner?.id}:${d.nodeId}`;
 
@@ -96,50 +95,55 @@ describe('the website’s contact forms visitors cannot send', () => {
     expect(websiteFormProblems(published).filter((d) => d.owner?.kind === 'template').map(at)).toEqual([`template:posts:${node.id}`]);
   });
 
-  it('judges a layout’s form that takes its endpoint from each entry as each entry’s page is built', () => {
-    // Entry content › Form endpoint URL › each entry's excerpt: the generator reads it from the entry, so the layout's
-    // default decides nothing, and an entry with a usable address can send.
+  it('refuses a layout’s form taking its endpoint from each entry, which would let an entry decide where it sends', () => {
+    // Entry content › Form endpoint URL › each entry's excerpt: editing an entry, or syncing it from a CMS, would send
+    // visitors' messages wherever its excerpt says (#1127).
     const s = apply(fresh(), [
       { type: 'collection.create', collectionId: 'posts' },
       { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open studio', draft: false, excerpt: 'https://formspree.io/f/abcd1234' }
     ]);
-    const node = place(s, s.collections.posts.settings.template!, { endpoint: { $entry: 'excerpt' } });
-    expect(healthForms(s).map(at)).not.toContain(`template:posts:${node.id}`);
-    expect(websiteFormProblems(s)).toEqual([]);
-    // A published entry whose excerpt is no address: its page's form cannot send, and the finding names it.
-    const blank = apply(s, [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_blank', title: 'Coming soon', draft: false }]);
-    const message = `Posts layout: the contact form is not connected to a form service on the “Coming soon” entry, so visitors cannot send it there. ${FORM_SERVICES.endpoint.missing}`;
-    expect(websiteFormProblems(blank).map((d) => [at(d), d.message])).toEqual([[`template:posts:${node.id}`, message]]);
-    expect(healthForms(blank).filter((d) => d.owner?.kind === 'template').map((d) => d.message)).toEqual([message]);
-    // Kept as a draft, it is not on the website; Project health still says so.
-    const drafted = apply(blank, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_blank', draft: true }]);
-    expect(websiteFormProblems(drafted)).toEqual([]);
-    expect(healthForms(drafted).filter((d) => d.owner?.kind === 'template').map((d) => d.message)).toEqual([message]);
-    // Go to form shows the layout on that entry, at the entry content its endpoint reads.
+    const node = place(s, s.collections.posts.settings.template!);
+    expect(() => apply(s, [{ type: 'node.setBinding', owner: { kind: 'template', id: 'posts' }, nodeId: node.id, field: 'prop', prop: 'endpoint', binding: { $entry: 'excerpt' } }])).toThrow(/a form's destination is set on the form, never read from an entry/);
+    // Written by hand, it is an error, and the form is judged by its own settings: it has none, so it cannot send.
+    node.props.endpoint = { $entry: 'excerpt' };
+    expect(validateState(s).filter((d) => d.nodeId === node.id).map((d) => [d.severity, d.code])).toEqual(
+      expect.arrayContaining([
+        ['error', 'COLLECTION_SOURCE'],
+        ['warning', 'FORM_UNCONNECTED']
+      ])
+    );
+    expect(websiteFormProblems(s).map((d) => [at(d), d.message])).toEqual([[`template:posts:${node.id}`, `Posts layout: the contact form is not connected to a form service, so visitors cannot send it. ${FORM_SERVICES.endpoint.missing}`]]);
+    // Go to form opens the layout at the setting, typed in Content.
     const dest = { kind: 'form' as const, owner: { kind: 'template' as const, id: 'posts' }, nodeId: node.id, setting: 'connection' as const };
-    expect(formDestinationField(blank, dest)).toEqual({ prop: 'endpoint', label: 'Form endpoint URL', entryId: 'en_blank', entryBound: true, entryField: 'excerpt' });
-    // A draft that cannot send either, listed first: the published entry is still the one shown, as the export named it.
-    const withDraft = apply(blank, [
-      { type: 'entry.create', collectionId: 'posts', entryId: 'en_later', title: 'Later' },
-      { type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_later', 'en_open', 'en_blank'] }
+    expect(formDestinationField(s, dest)).toEqual({ prop: 'endpoint', label: 'Form endpoint URL' });
+  });
+
+  it('lets a layout’s connected form show each entry’s own words, and judges it by the layout’s settings', () => {
+    // Each entry's Invitation, which nothing else on its page shows, is its form's heading.
+    const s = apply(fresh(), [
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'collection.update', collectionId: 'posts', fields: { invite: { type: 'string', label: 'Invitation' } } },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open studio', draft: false, values: { invite: 'Book a studio visit' } },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_blank', title: 'Coming soon', draft: false, values: { invite: 'Ask about the launch' } }
     ]);
-    expect(siteEntryIds(withDraft)[0]).toBe('en_later');
-    expect(formDestinationField(withDraft, dest)?.entryId).toBe('en_blank');
-    // With only the draft failing, Project health's finding leads to the draft.
-    const onlyDraft = apply(withDraft, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_blank', excerpt: 'https://formspree.io/f/abcd1234' }]);
-    expect(formDestinationField(onlyDraft, dest)?.entryId).toBe('en_later');
-    // A page's form has no entry to read from: the binding is exported empty, and the default decides.
-    const { s: page, node: pageForm } = lookbook({ endpoint: { $entry: 'excerpt' } });
-    expect(healthForms(page).map(at)).toContain(`page:pg_lookbook:${pageForm.id}`);
+    const node = place(s, s.collections.posts.settings.template!, { provider: 'endpoint', endpoint: 'https://formspree.io/f/abcd1234' });
+    const bound = apply(s, [{ type: 'node.setBinding', owner: { kind: 'template', id: 'posts' }, nodeId: node.id, field: 'prop', prop: 'heading', binding: { $entry: 'field.invite' } }]);
+    expect(validateState(bound).filter((d) => d.nodeId === node.id && (d.severity === 'error' || d.code === 'FORM_UNCONNECTED'))).toEqual([]);
+    expect(websiteFormProblems(bound)).toEqual([]);
+    const page = (slug: string) => String([...generateProject(bound).entries()].find(([path]) => path.includes(slug) && path.endsWith('.svelte'))?.[1]);
+    for (const [slug, invite] of [['open-studio', 'Book a studio visit'], ['coming-soon', 'Ask about the launch']]) {
+      expect(page(slug)).toContain(invite);
+      expect(page(slug)).toContain('https://formspree.io/f/abcd1234');
+    }
   });
 
   it('never stops Project health over a setting written by hand that cannot be read', () => {
     const unreadable = { toString: null };
     const { s, node } = lookbook({ provider: 'web3forms', accessKey: unreadable });
     expect(() => validateState(s)).not.toThrow();
-    // A layout's form reading its service from each entry, with a key of its own no one can read.
-    const posts = apply(fresh(), [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_soon', title: 'Coming soon', draft: false, excerpt: 'web3forms' }]);
-    place(posts, posts.collections.posts.settings.template!, { provider: { $entry: 'excerpt' }, accessKey: unreadable });
+    // A layout's form, with a key of its own no one can read.
+    const posts = apply(fresh(), [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_soon', title: 'Coming soon', draft: false }]);
+    place(posts, posts.collections.posts.settings.template!, { provider: 'web3forms', accessKey: unreadable });
     expect(() => validateState(posts)).not.toThrow();
     expect(() => websiteFormProblems(posts)).not.toThrow();
     expect(node.id).toBeTruthy();

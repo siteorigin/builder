@@ -67,6 +67,8 @@ import { MAX_MESSAGE_LENGTH } from '@shared/live/limits';
 import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/live/messages';
 import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
 import { guestEditProblem } from '@engine/guest-edits';
+import { formDestinationProblems } from '@engine/collection-sources';
+import { displayName } from '@engine/tree';
 import { LiveHostManager, type LiveGuestEdit } from './live/host';
 import { LiveGuestManager } from './live/guest';
 import { loopbackPreview } from './live/preview-proxy';
@@ -3375,6 +3377,10 @@ export class Controller {
     if (s.saveUnfinished) return { ok: false, message: 'A save did not finish, so the project’s files may be out of date. Close and reopen the project, then export again.', warnings: [] };
     // A change that failed to save (#753), perhaps just as the Export button was pressed, would be left out without a word.
     if (s.saveFailure) return { ok: false, message: 'A change could not be saved, so the export would leave it out. Make the change again (Project health says what went wrong), then export.', warnings: [] };
+    // An entry's text never decides where a contact form sends (#1127). Edits refuse it; a project written by hand that
+    // does is not published until it is undone.
+    const routed = formDestinationProblems(s.state)[0];
+    if (routed) return { ok: false, message: `${routed.label}: ${displayName(s.state, routed.node)} ${routed.message} Change that before exporting: Project health lists it.`, warnings: [] };
     return null;
   }
 

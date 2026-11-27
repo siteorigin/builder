@@ -9,6 +9,7 @@ import { isArticleDate } from '@shared/articles';
 import { repeatProp, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isEntryBinding, isStateRef, slotChildren } from '@shared/types';
 import { rowFieldSchema } from '@shared/collection-rows';
 import { loopCollection, loopMembers } from './collection-sources';
+import { formDestinationLookup } from './form-destinations';
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
@@ -80,19 +81,6 @@ export function codeNeeds(state: ProjectState, d: ComponentDefinition, defId: st
   const legacyClass = `so-${defKey(defId)}__`;
   const file = target ? `/${defFile(target).split('/').pop()}` : null;
   return (d.dependencies ?? []).includes(defId) || (d.provenance?.forkedFrom === defId && !!d.source?.includes(legacyClass)) || (!!file && !!d.source?.includes(file));
-}
-
-/**
- * Whether a code component imports `defId`'s file (an import of it, not a comment or string that mentions it) or declares
- * it as a dependency: it then renders it, which `codeNeeds` (a looser reading, for what removal must not break) cannot say.
- */
-export function codeImports(state: ProjectState, d: ComponentDefinition, defId: string): boolean {
-  if (d.id === defId || d.kind !== 'code') return false;
-  if ((d.dependencies ?? []).includes(defId)) return true;
-  const target = own(state.components, defId);
-  if (!target || !d.source) return false;
-  const file = defFile(target).split('/').pop()!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:\\bfrom\\s*|\\bimport\\s*\\(?\\s*)['"][^'"\\n]*/${file}['"]`).test(d.source);
 }
 
 /** Overrides of a part that no longer exists style nothing; drop them, shared and per item, from every placement. */
@@ -882,6 +870,10 @@ function entrySetBinding(state: ProjectState, op: Op<'node.setBinding'>, at: { t
   if (at.read === '$item' && !('$item' in b && Object.keys(b).length === 1)) fail('An element of a collection loop shows a field of each entry: bind to { "$item": field }.');
   const read = readField(b);
   const schema = schemaOf(read) ?? fail(`Entries of ${collection.settings.name} have no field "${read.slice(0, 60)}".`);
+  // Where a form sends what visitors write is the site's own, never an entry's: its service, its setting, or a design's
+  // property that passes one of them on. Said before whether the field would fit, since no field ever may.
+  if (field === 'prop' && formDestinationLookup(state)((node as InstanceNode).definitionId, op.prop!))
+    fail(`${describeNode(node)} cannot take where it sends what visitors write (“${own(state.components[(node as InstanceNode).definitionId]?.properties, op.prop!)?.label ?? op.prop}”) from “${schema.label}”: a form's destination is set on the form, never read from an entry.`);
   if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) fail(`"${schema.label}" is damaged: it has no choices. Set its choices in the collection's settings first.`);
   if (field === 'datetime' && !isEntryDateField(collection, read)) fail(`"${schema.label}" is not a date: a text can state the publication date (publishedAt), the last update (updatedAt) or a date field.`);
   const ok = acceptedTypes(node, field, nested);
