@@ -168,8 +168,10 @@ export interface ApplyContext {
    * The parts and slots each code source of the batch shows, as the code check reads them from its syntax tree (the
    * session reads them before it applies the batch): createCode and updateSource declare them at once, so later
    * operations of the same batch can fill a slot or style a part the code just gained. Without it, none are declared.
+   * A theme switch reads it for the code components of both themes too (`shown`: the slot props the code renders or
+   * hands on), to report content a placement holds in a slot the new code would not show; without it, code is not judged.
    */
-  codeNames?: (source: string) => { parts: readonly string[]; slots: readonly string[] } | null | undefined;
+  codeNames?: (source: string) => { parts: readonly string[]; slots: readonly string[]; shown: readonly string[] } | null | undefined;
   /**
    * The addresses visitors reached each collection entry at when the batch began, lowercased, with that entry's ID
    * (see entryAddressesInUse): an entry keeps an old address working only when it was one of these. An entry removed
@@ -435,7 +437,7 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
     case 'component.removeState':
       return removeState(state, op);
     case 'theme.apply':
-      return themeApply(state, op.themeId);
+      return themeApply(state, op.themeId, ctx);
     case 'theme.refresh':
       return themeRefresh(state, op);
     case 'asset.add': {
@@ -4080,7 +4082,7 @@ function inheritedValues(state: ProjectState, node: InstanceNode, was: Component
  * same public contract and every use is rebound. Project-owned components, content, list IDs, overrides and
  * token overrides are preserved. Incompatible contracts block the switch with a conflict report.
  */
-function themeApply(state: ProjectState, themeId: string): OpResult {
+function themeApply(state: ProjectState, themeId: string, ctx: ApplyContext): OpResult {
   const theme = listThemes().find((t) => t.id === themeId) ?? fail(`Unknown theme "${themeId}".`);
   if (state.site.themeId === themeId) return {};
   const conflicts: string[] = [];
@@ -4106,8 +4108,9 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
       const next = mapping.get(n.definitionId)!;
       const values = inheritedValues(state, n, state.components[n.definitionId], next, t.label);
       conflicts.push(...values.conflicts);
-      // Content in a slot the new version shows only inside a list this placement leaves empty would disappear.
-      conflicts.push(...hiddenSlotContent(state.components[n.definitionId], next, { ...n, props: { ...n.props, ...values.props } }, t.label));
+      // Content in a slot the new version shows only inside a list this placement leaves empty, or whose code never
+      // renders it, would disappear.
+      conflicts.push(...hiddenSlotContent(state.components[n.definitionId], next, { ...n, props: { ...n.props, ...values.props } }, t.label, ctx.codeNames));
       kept.set(n, values);
     }
   }

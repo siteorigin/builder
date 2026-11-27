@@ -13,6 +13,7 @@
 import type { ComponentDefinition, InstanceNode, NodeTree, ProjectState } from '@shared/types';
 import { repeatProp, isBinding, slotChildren, slotFallback } from '@shared/types';
 import type { Op } from '@shared/ops';
+import type { ApplyContext } from './apply';
 import { getTheme, themeLockEntry } from '@catalogue/index';
 import { definitionHash, matchesLock } from '@shared/migrations';
 import { variantOptions } from '@shared/variants';
@@ -22,6 +23,7 @@ import { slotFill } from './slots';
 import { codeNeeds, directDependencies } from './definitions';
 import { normalizeProp } from './values';
 import { cardKey, cardLinkProblems, type CardProblem } from '@generator/card-links';
+import { slotIdent } from '@generator/index';
 import { liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 
 function own<T>(rec: Record<string, T>, key: string): T | undefined {
@@ -182,13 +184,40 @@ export function shownSlots(next: ComponentDefinition, node: InstanceNode, tree?:
   return out;
 }
 
-/** The filled slots of a placement that `was` shows and `next` would no longer show. */
-export function hiddenSlotContent(was: ComponentDefinition, next: ComponentDefinition, node: InstanceNode, label: string): string[] {
-  if (next.kind !== 'managed' || !next.tree) return [];
-  const shown = shownSlots(next, node);
-  // Content the installed version already leaves out is not lost to this one.
-  const before = was.kind === 'managed' && was.tree ? shownSlots(was, node) : null;
-  return Object.entries(node.slots ?? {}).flatMap(([slot, ids]) => (ids.length && !shown.has(slot) && (!before || before.has(slot)) ? [`${label}: ${was.name} would no longer show the content in its "${slot}" slot.`] : []));
+/**
+ * The slots a definition shows for one placement: a managed tree's as shownSlots walks it, and a code component's
+ * the slots it declares that its code renders or hands on, as the code check reads them (`codeNames`). Null when its
+ * code cannot be read; undefined when there is nothing to tell by (code, without the code check's reading).
+ */
+function slotsShownBy(def: ComponentDefinition, node: InstanceNode, codeNames: ApplyContext['codeNames']): Set<string> | null | undefined {
+  if (def.kind === 'managed') return def.tree ? shownSlots(def, node) : undefined;
+  if (!codeNames) return undefined;
+  const declared = Object.keys(def.slots ?? {});
+  // A slot the code does not declare shows nothing, whatever the code does with it.
+  if (!declared.length) return new Set();
+  const names = typeof def.source === 'string' ? codeNames(def.source) : null;
+  if (!names) return null;
+  const shown = new Set(names.shown);
+  return new Set(declared.filter((slot) => shown.has(slotIdent(slot))));
+}
+
+/**
+ * The filled slots of a placement that `was` shows and `next` would no longer show. A code version is judged only
+ * with the code check's reading of it (`codeNames`, which the session gives a theme switch); one whose code cannot be
+ * read holds back content it might hide.
+ */
+export function hiddenSlotContent(was: ComponentDefinition, next: ComponentDefinition, node: InstanceNode, label: string, codeNames?: ApplyContext['codeNames']): string[] {
+  const filled = Object.entries(node.slots ?? {}).flatMap(([slot, ids]) => (Array.isArray(ids) && ids.length ? [slot] : []));
+  if (!filled.length) return [];
+  const shown = slotsShownBy(next, node, codeNames);
+  if (shown === undefined) return [];
+  // Content the installed version already leaves out is not lost to this one; content it may show counts.
+  const before = slotsShownBy(was, node, codeNames);
+  return filled.flatMap((slot) =>
+    shown?.has(slot) || (before && !before.has(slot))
+      ? []
+      : [shown ? `${label}: ${was.name} would no longer show the content in its "${slot}" slot.` : `${label}: the new ${was.name}'s code could not be read, so it may not show the content in its "${slot}" slot.`]
+  );
 }
 
 /** What placements on pages and in the shell hold that `next` would no longer show or accept. */
