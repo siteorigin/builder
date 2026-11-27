@@ -5,27 +5,26 @@
  * Writing objects moves nothing: a blob, tree or commit is only ever added, under the name of its content, and the
  * objects of one write are named together once all are on the disk (fs.ts), so a write that is refused or cancelled
  * leaves nothing, and one stopped by the worker being killed at most some whole objects nothing points at.
- * A branch moves only in `advanceRef`, under Git's own lock for it (`<ref>.lock`, made exclusively, written, flushed and
- * renamed into place, as `git update-ref` does), and only from the commit the caller expected, so two writers can never
- * silently overwrite each other and a stock Git honours the same lock.
+ * A branch moves only in `advanceRef`, under Git's own lock for it (`<ref>.lock`, made exclusively, renamed into place,
+ * as `git update-ref` does), and only from the commit the caller expected, so two writers can never silently overwrite
+ * each other and a stock Git honours the same lock.
  *
- * Every write of the app's also holds the app's own lock on the repository (`siteorigin-writer.lock`), which names the
- * process holding it. A process that died holding it (the app quit or crashed mid-save, the computer lost power) is
- * seen to be gone by the next writer, which then finishes what it may have left half done: the branch lock it took,
- * known by the commit it holds, is cleared, the folders its objects were named in are flushed, and its temporary
- * objects removed. A lock of Git's that no dead writer of the app's took is never cleared, however old: it is another
- * Git's, which may still be running.
+ * The app makes its branch lock as a second name (a hard link) for a file of its own beside the repository's, whose
+ * name says which computer, process and branch it is for (`siteorigin-lock.<computer>.<process>.<branch>.<random>`),
+ * so the lock is whole from its first moment and known for the app's own by being that very file. A lock left by a
+ * process of the app's that has exited (the app quit or crashed mid-save) is cleared by the next save of the branch; a
+ * lock that is not one of those files is another Git's, which may still be running, and is never cleared. Where the
+ * disk has no hard links (a FAT drive), the lock is made the plain way, and one left behind stays until removed.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { promises as fs, type BigIntStats, type Stats } from 'node:fs';
-import { hostname, uptime } from 'node:os';
-import { dirname, join } from 'node:path';
+import { promises as fs, type BigIntStats } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { constants as zlibConstants, createDeflate, deflateSync } from 'node:zlib';
 import git from 'isomorphic-git';
 import { eachAtMost, ensureDir, renameReplacing, safeJoinLooking, syncDir } from '../project/fsutil';
 import { openRegularFile, readAtMost } from '../regular-file';
-import { repoFs, TMP_PREFIX, type Fault } from './fs';
+import { HOST, repoFs, TMP_PREFIX, type Fault } from './fs';
 import { BRANCH_RE, GIT_LIMITS, GitError, OID_RE, VERSIONS_BRANCH, VERSIONS_GITDIR, type BlobInput, type CommitInfo, type CommitInput, type FileInput, type GitLimits, type Identity, type Oid, type TreeEntry } from './protocol';
 
 /** Set when the caller no longer wants the result: checked between files and before a branch moves. */
@@ -45,16 +44,10 @@ export interface RepoOptions {
 }
 
 const LOCK_WAIT_MS = 5000;
-/** A writer's lock with nothing readable in it (its writer stopped as it took it) is taken as abandoned this long after. */
-const UNREADABLE_LOCK_MS = 2000;
-/** The app's own lock on the repository, beside Git's files, which Git leaves alone. */
-const WRITER_LOCK = 'siteorigin-writer.lock';
-/** Left when a write failed after naming some objects whose folders may not be on the disk: the next write flushes them. */
-const UNFLUSHED = 'siteorigin-unflushed';
-/** Another Git's temporary objects are its own until they are this old: the age `git gc` clears them at. */
-const ABANDONED_TMP_MS = 14 * 86_400_000;
-/** A writer still running whose lock is older than the computer's start by more than this has another's process ID. */
-const BOOT_MARGIN_MS = 60_000;
+/** The file each of the app's branch locks is a second name for, beside Git's files, which Git leaves alone. */
+const LOCK_FILE = /^siteorigin-lock\.([0-9a-f]{8})\.(\d+)\.([a-z0-9-]+)\.[0-9a-f]+$/;
+/** Errors of a disk that has no hard links, where a lock is made the plain way. */
+const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EINVAL', 'EISDIR', 'UNKNOWN']);
 /** How much of a file is compressed to see whether compressing it is worth it. */
 const SAMPLE_BYTES = 64 * 1024;
 /** The longest name a folder can hold on macOS, Windows and Linux alike. */
@@ -84,7 +77,7 @@ const isAlive = (pid: number) => {
 };
 
 /** Characters macOS's file system ignores in names, which Git therefore ignores too when it looks for `.git`. */
-const HFS_IGNORED = /[‌-‏‪-‮⁪-⁯﻿]/g;
+const HFS_IGNORED = /[\u200C-\u200F\u202A-\u202E\u206A-\u206F\uFEFF]/g;
 /** A UTF-16 half with no other half: no UTF-8 spelling, so two such names could become one. */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 /**
@@ -144,15 +137,6 @@ function asGitError(e: unknown): GitError {
   return new GitError('failed', `The versions repository could not be used: ${e instanceof Error ? e.message : String(e)}`);
 }
 
-/** What the app's lock on a repository says: who holds it, since when, and for a branch move, which and to what. */
-interface Writer {
-  pid: number;
-  host: string;
-  at: number;
-  ref?: string;
-  next?: Oid;
-}
-
 export interface Repo {
   readonly gitdir: string;
   init(): Promise<void>;
@@ -176,8 +160,8 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
   const gfs = repoFs(gitdir, opts.fault);
   const lockWait = opts.lockWaitMs ?? LOCK_WAIT_MS;
   const alive = opts.processAlive ?? isAlive;
-  /** Set when a write failed after naming some of its objects: the next write flushes their folders first. */
-  let unflushed = false;
+  /** Whether this worker has cleared its exited predecessors' temporary objects yet. */
+  let swept = false;
   // Writes one at a time in this worker: what one stages is flushed or discarded before the next begins.
   let queue: Promise<unknown> = Promise.resolve();
   const serial = <T>(f: () => Promise<T>): Promise<T> => {
@@ -220,176 +204,52 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
   };
 
   /**
-   * Finish what a writer of the app's that stopped part way may have left: flush the folders its objects were named in
-   * (an object can be seen before its folder is on the disk, and must not be relied on until it is), and the branches'
-   * folder, and remove its temporary objects, and anyone's long abandoned.
+   * Remove what this computer's processes of the app that have exited (a save stopped part way, a worker killed) left,
+   * once per worker: their branch locks and lock files (clearAbandoned), and their temporary objects. They are the
+   * app's own, and nothing writes them any more. Another's are left to `git gc`. Only folders of the repository's own
+   * are looked in.
    */
-  const recover = async (dead?: number) => {
+  const sweep = async () => {
+    if (swept) return;
+    swept = true;
+    const branches = new Set<string>();
+    for (const name of await fs.readdir(gitdir).catch(() => [] as string[])) {
+      const m = LOCK_FILE.exec(name);
+      if (m && m[1] === HOST && !alive(Number(m[2]))) branches.add(m[3]);
+    }
+    for (const branch of branches) {
+      const ref = `refs/heads/${branch}`;
+      if (BRANCH_RE.test(ref) && ref.length <= MAX_REF_LENGTH) await clearAbandoned(ref, `${join(gitdir, ...ref.split('/'))}.lock`, '');
+    }
     const objects = join(gitdir, 'objects');
-    if (dead !== undefined)
-      for (const name of await fs.readdir(gitdir).catch(() => [] as string[])) if (name.startsWith(`siteorigin-${dead}-`) && name.endsWith('.tmp')) await fs.rm(join(gitdir, name), { force: true });
     const fans = (await fs.readdir(objects).catch(() => [] as string[])).filter((d) => /^[0-9a-f]{2}$/.test(d));
     await eachAtMost(4, fans, async (fan) => {
       const dir = join(objects, fan);
-      // A folder linked elsewhere is not the repository's: nothing in it is touched (and reading through it is refused).
       if (!(await fs.lstat(dir).catch(() => null))?.isDirectory()) return;
       for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
-        if (!name.startsWith(TMP_PREFIX)) continue;
-        const own = dead !== undefined && name.startsWith(`${TMP_PREFIX}${dead}_`);
-        const st = own ? null : await fs.lstat(join(dir, name)).catch(() => null);
-        if (own || (st && Date.now() - st.mtimeMs > ABANDONED_TMP_MS)) await fs.rm(join(dir, name), { force: true }).catch(() => undefined);
+        const m = name.startsWith(`${TMP_PREFIX}${HOST}_`) ? /^(\d+)_/.exec(name.slice(TMP_PREFIX.length + HOST.length + 1)) : null;
+        if (m && !alive(Number(m[1]))) await fs.rm(join(dir, name), { force: true }).catch(() => undefined);
       }
-      await syncDir(dir);
     });
-    await syncDir(objects);
-    await syncDir(join(gitdir, 'refs', 'heads'));
-    unflushed = false;
   };
 
   /**
-   * Make `path` exclusively, holding `content` from its first moment: written whole to a temporary file and linked into
-   * place, which fails if anything is there, so a lock is never seen empty or half written, even by a writer that stops
-   * as it takes it. Where the disk has no hard links (a FAT drive), it is made exclusively and then written. False when
-   * something is there already.
-   */
-  const createWhole = async (path: string, content: string): Promise<boolean> => {
-    const tmp = join(gitdir, `siteorigin-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
-    try {
-      const t = await fs.open(tmp, 'wx');
-      try {
-        await t.writeFile(content);
-        await t.sync();
-      } finally {
-        await t.close();
-      }
-      try {
-        await fs.link(tmp, path);
-        return true;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
-      }
-      let handle: Awaited<ReturnType<typeof fs.open>>;
-      try {
-        handle = await fs.open(path, 'wx');
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
-        throw e;
-      }
-      try {
-        await handle.writeFile(content);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      return true;
-    } finally {
-      await fs.rm(tmp, { force: true }).catch(() => undefined);
-    }
-  };
-
-  /** The app's lock as it is now, or null when it is not there. A read that fails is thrown: it says nothing either way. */
-  const readWriter = async (file: string): Promise<{ writer: Writer | null; st: Stats } | null> => {
-    const st = await fs.lstat(file).catch((e) => (isMissing(e) ? null : Promise.reject(e)));
-    if (!st) return null;
-    if (!st.isFile()) throw new GitError('corrupt', `The versions repository is damaged: ${WRITER_LOCK} is not a file.`);
-    let text: string;
-    try {
-      text = await fs.readFile(file, 'utf8');
-    } catch (e) {
-      if (isMissing(e)) return null;
-      throw e;
-    }
-    try {
-      const w = JSON.parse(text) as Writer;
-      return { writer: Number.isSafeInteger(w?.pid) && typeof w.host === 'string' && Number.isFinite(w.at) ? w : null, st };
-    } catch {
-      return { writer: null, st };
-    }
-  };
-  /**
-   * Whether the writer that holds the app's lock has stopped: its process has exited, or still runs but only under a
-   * number reused since the computer last started. Another computer's (a project on a shared folder) cannot be told, so
-   * it is waited for. A lock with nothing readable in it (made where there are no hard links, by a writer that stopped
-   * as it took it) is taken as abandoned a moment after it was made.
-   */
-  const stopped = (held: { writer: Writer | null; st: Stats }) => {
-    const w = held.writer;
-    if (!w) return Date.now() - held.st.mtimeMs >= UNREADABLE_LOCK_MS;
-    if (w.host !== hostname()) return false;
-    if (!alive(w.pid)) return true;
-    return w.at < Date.now() - uptime() * 1000 - BOOT_MARGIN_MS;
-  };
-
-  /**
-   * Hold the app's own lock on the repository while `f` writes, clearing one a stopped writer left and finishing its
-   * work (recover). `move` is the branch move about to be made, recorded first, and made durable, so a stopped move's
-   * branch lock can be told from another Git's.
-   */
-  const asWriter = async <T>(f: () => Promise<T>, move?: { ref: string; next: Oid }): Promise<T> => {
-    const file = join(gitdir, WRITER_LOCK);
-    const unflushedMark = join(gitdir, UNFLUSHED);
-    const deadline = performance.now() + lockWait;
-    for (let wait = 10; ; wait = Math.min(wait * 2, 100)) {
-      const mine: Writer = { pid: process.pid, host: hostname(), at: Date.now(), ...move };
-      if (await createWhole(file, JSON.stringify(mine))) {
-        try {
-          // The lock is in place before a branch lock is taken, so a stopped move's branch lock is known by it.
-          if (move) await syncDir(gitdir);
-          if (unflushed || (await fs.lstat(unflushedMark).catch(() => null))) {
-            await recover();
-            await fs.rm(unflushedMark, { force: true });
-          }
-          return await f();
-        } finally {
-          // Removed only if it is still this writer's.
-          const now = await readWriter(file).catch(() => null);
-          if (now?.writer?.pid === mine.pid && now.writer.at === mine.at && now.writer.host === mine.host) await fs.unlink(file).catch(() => undefined);
-        }
-      }
-      const held = await readWriter(file);
-      if (held && stopped(held)) {
-        // Its branch lock first, while its own lock still keeps every other writer of the app's out; then its objects. A
-        // branch lock is its only if it holds the very commit it was moving the branch to: another Git's never does.
-        const w = held.writer;
-        if (w?.ref && w.next && BRANCH_RE.test(w.ref) && w.ref.length <= MAX_REF_LENGTH) {
-          const lock = `${join(gitdir, ...w.ref.split('/'))}.lock`;
-          const text = await fs.readFile(lock, 'utf8').catch((e) => (isMissing(e) ? null : Promise.reject(e)));
-          if (text === `${w.next}\n`) await fs.unlink(lock).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
-        }
-        await recover(w && w.host === hostname() ? w.pid : undefined);
-        // Removed only if it is still the one found stopped; a removal refused is thrown, never retried for ever.
-        const again = await readWriter(file);
-        if (again && again.st.ino === held.st.ino && again.st.mtimeMs === held.st.mtimeMs) await fs.unlink(file).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
-      }
-      if (performance.now() >= deadline) throw new GitError('locked', 'Another save is writing to the versions repository; nothing was written.');
-      if (!held || !stopped(held)) await sleep(wait);
-    }
-  };
-
-  /**
-   * A write of objects, one at a time and as the app's writer: what it staged is made durable and named before it
-   * answers, and removed if it fails, so its objects are all there or none is.
+   * A write of objects, one at a time in this worker: what it staged is made durable and named, and what it relies on
+   * made durable, before it answers, and what it staged removed if it fails, so its objects are all there or none is.
    */
   const writing = <T>(f: () => Promise<T>): Promise<T> =>
     io(() =>
-      serial(() =>
-        asWriter(async () => {
-          try {
-            const result = await f();
-            await gfs.flush();
-            return result;
-          } catch (e) {
-            // Some may have been named before the failure, their folders not yet flushed: the next write, whichever worker
-            // makes it, flushes them before relying on any.
-            if (gfs.named()) {
-              unflushed = true;
-              await fs.writeFile(join(gitdir, UNFLUSHED), String(Date.now())).catch(() => undefined);
-            }
-            await gfs.discard();
-            throw e;
-          }
-        })
-      )
+      serial(async () => {
+        await sweep();
+        try {
+          const result = await f();
+          await gfs.flush();
+          return result;
+        } catch (e) {
+          await gfs.discard();
+          throw e;
+        }
+      })
     );
 
   /** The object's type, or null when it is not there. Reads the whole object: for trees and commits, which are small. */
@@ -407,10 +267,10 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
    * folder linked elsewhere, is damage, never taken for it.
    */
   const looseExists = async (oid: Oid) => {
-    if (!(await realDir(dirname(objectPath(oid)), `objects/${oid.slice(0, 2)}`))) return false;
+    if (!(await realDir(dirname(objectPath(oid)), `objects/${oid.slice(0, 2)}`))) return null;
     const st = await fs.lstat(objectPath(oid)).catch(() => null);
     if (st && !st.isFile()) throw new GitError('corrupt', `The versions repository is damaged: object ${oid} is not a file.`);
-    return !!st;
+    return st;
   };
 
   /**
@@ -464,10 +324,9 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     const oid = createHash('sha1').update(header).update(bytes).digest('hex');
     const path = objectPath(oid);
     if (gfs.staged(path)) return oid;
-    if (await looseExists(oid)) {
-      // Used again, as Git does: given the time now, so a `git gc` meanwhile takes it for new, not long unused.
-      const now = new Date();
-      await fs.utimes(path, now, now).catch(() => undefined);
+    const there = await looseExists(oid);
+    if (there) {
+      gfs.reuse(path, there.mtimeMs);
       return oid;
     }
     const deflate = createDeflate({ level: incompressible(bytes) ? 0 : zlibConstants.Z_DEFAULT_COMPRESSION });
@@ -506,11 +365,95 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     return oid;
   };
 
-  /** Take `<ref>.lock` holding `content`, waiting a while for another Git that holds it; throws `locked` when it keeps it. */
-  const takeLock = async (lock: string, content: string) => {
-    const deadline = performance.now() + lockWait;
+  /**
+   * Clear the branch locks of this computer's processes of the app that have exited: each file the app makes its lock
+   * a second name for, named for this branch and an exited process, goes, and the lock with it only when the lock is
+   * that very file. Whether anything was cleared.
+   */
+  const clearAbandoned = async (ref: string, lock: string, own: string): Promise<boolean> => {
+    const branch = ref.slice('refs/heads/'.length);
+    let cleared = false;
+    for (const name of await fs.readdir(gitdir)) {
+      const m = LOCK_FILE.exec(name);
+      if (!m || name === own || m[1] !== HOST || m[3] !== branch || alive(Number(m[2]))) continue;
+      const file = join(gitdir, name);
+      const [mine, held] = await Promise.all([fs.lstat(file).catch(() => null), fs.lstat(lock).catch(() => null)]);
+      // The lock first, while the file still says whose it is.
+      if (mine && held && mine.dev === held.dev && mine.ino === held.ino) await fs.unlink(lock).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
+      await fs.unlink(file).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
+      cleared = true;
+    }
+    return cleared;
+  };
+
+  /**
+   * Take `<ref>.lock`, holding `content` from its first moment: a file of the app's (LOCK_FILE) written, flushed and
+   * recorded in the repository's folder, then linked as the lock, which fails if any lock is there. Waits a while for
+   * another Git that holds it, clearing one an exited process of the app's left; throws `locked` when it stays. Gives
+   * back what releases it: the lock removed unless it was renamed onto the branch, then the file.
+   */
+  const takeLock = async (ref: string, lock: string, content: string): Promise<(renamed: boolean) => Promise<void>> => {
+    const file = join(gitdir, `siteorigin-lock.${HOST}.${process.pid}.${ref.slice('refs/heads/'.length)}.${randomBytes(6).toString('hex')}`);
+    const handle = await fs.open(file, 'wx');
+    try {
+      await handle.writeFile(content);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const removeFile = () => fs.rm(file, { force: true }).catch(() => undefined);
+    try {
+      await syncDir(gitdir);
+      const deadline = performance.now() + lockWait;
+      for (let wait = 10; ; wait = Math.min(wait * 2, 100)) {
+        try {
+          await fs.link(file, lock);
+          return async (renamed) => {
+            // The lock before its file: a lock whose file is gone could never again be known for the app's.
+            if (!renamed) await fs.unlink(lock).catch(() => undefined);
+            await removeFile();
+          };
+        } catch (e) {
+          const code = (e as NodeJS.ErrnoException).code ?? '';
+          if (code !== 'EEXIST') {
+            if (!NO_LINKS.has(code)) throw e;
+            await removeFile();
+            return plainLock(lock, content, deadline);
+          }
+        }
+        if (await clearAbandoned(ref, lock, basename(file))) continue;
+        if (performance.now() >= deadline) throw new GitError('locked', 'Another Git is moving this branch of the versions repository; it was not moved.');
+        await sleep(wait);
+      }
+    } catch (e) {
+      await removeFile();
+      throw e;
+    }
+  };
+
+  /** A lock made the plain way, on a disk with no hard links: made exclusively, then written. */
+  const plainLock = async (lock: string, content: string, deadline: number): Promise<(renamed: boolean) => Promise<void>> => {
     for (let wait = 10; ; wait = Math.min(wait * 2, 100)) {
-      if (await createWhole(lock, content)) return;
+      let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+      try {
+        handle = await fs.open(lock, 'wx');
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      }
+      if (handle) {
+        try {
+          await handle.writeFile(content);
+          await handle.sync();
+        } catch (e) {
+          await handle.close().catch(() => undefined);
+          await fs.unlink(lock).catch(() => undefined);
+          throw e;
+        }
+        await handle.close();
+        return async (renamed) => {
+          if (!renamed) await fs.unlink(lock).catch(() => undefined);
+        };
+      }
       if (performance.now() >= deadline) throw new GitError('locked', 'Another Git is moving this branch of the versions repository; it was not moved.');
       await sleep(wait);
     }
@@ -679,37 +622,33 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         checkRef(ref);
         checkOid(next);
         if (expected !== null) checkOid(expected);
-        return serial(() =>
-          asWriter(
-            async () => {
-              if ((await typeOf(next)) !== 'commit') throw new GitError('not-found', 'The commit to publish is not in the versions repository.');
-              check(token);
-              const path = join(gitdir, ...ref.split('/'));
-              const dir = dirname(path);
-              if (!(await realDir(join(gitdir, 'refs'), 'refs')) || !(await realDir(dir, dirname(ref)))) throw new GitError('corrupt', 'The versions repository is damaged: it has no refs/heads folder.');
-              const lock = `${path}.lock`;
-              await takeLock(lock, `${next}\n`);
-              let owned = true;
-              try {
-                if (opts.fault) await opts.fault('lock-written', lock);
-                const actual = await readRef(ref);
-                if (actual !== expected) throw new GitError('conflict', 'The branch moved since it was read; it was not moved again.', actual);
-                check(token);
-                await renameReplacing(lock, path);
-                owned = false;
-                if (opts.fault) await opts.fault('ref-renamed', path);
-                try {
-                  await syncDir(dir);
-                } catch {
-                  throw new GitError('outcome-unknown', 'The branch was moved, but the disk did not confirm it: read it again.');
-                }
-              } finally {
-                if (owned) await fs.unlink(lock).catch(() => undefined);
-              }
-            },
-            { ref, next }
-          )
-        );
+        return serial(async () => {
+          await sweep();
+          if ((await typeOf(next)) !== 'commit') throw new GitError('not-found', 'The commit to publish is not in the versions repository.');
+          check(token);
+          const path = join(gitdir, ...ref.split('/'));
+          const dir = dirname(path);
+          if (!(await realDir(join(gitdir, 'refs'), 'refs')) || !(await realDir(dir, dirname(ref)))) throw new GitError('corrupt', 'The versions repository is damaged: it has no refs/heads folder.');
+          const lock = `${path}.lock`;
+          const release = await takeLock(ref, lock, `${next}\n`);
+          let renamed = false;
+          try {
+            if (opts.fault) await opts.fault('lock-written', lock);
+            const actual = await readRef(ref);
+            if (actual !== expected) throw new GitError('conflict', 'The branch moved since it was read; it was not moved again.', actual);
+            check(token);
+            await renameReplacing(lock, path);
+            renamed = true;
+            if (opts.fault) await opts.fault('ref-renamed', path);
+            try {
+              await syncDir(dir);
+            } catch {
+              throw new GitError('outcome-unknown', 'The branch was moved, but the disk did not confirm it: read it again.');
+            }
+          } finally {
+            await release(renamed);
+          }
+        });
       })
   };
 }

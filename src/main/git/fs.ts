@@ -2,11 +2,14 @@
  * The file system the bundled Git is given (#1152). Its own writes go straight to the final name, so a worker that
  * stopped part way through would leave a truncated object under the name of a whole one, which it then never
  * rewrites because the name exists. Here an object is written whole to a temporary name beside its place (TMP_PREFIX)
- * and flushed to the disk, and only
- * `flush` gives it its name: every object staged since the last flush is renamed into place, and the folders they
- * landed in flushed once each, so an object either is complete and on disk or is not there. Flushing the folders
- * together is what keeps a version of a few hundred pictures quick: a folder flush after every object costs far more
- * than writing the objects.
+ * and flushed to the disk, and only `flush` gives it its name.
+ *
+ * A write may rely only on objects that are on the disk, folder entry and all. So `flush`, before the write it ends
+ * answers, renames every object it staged into place, and then flushes the folder of every object the write named or
+ * found already there (an object named by a write that failed, or by a worker that was killed, can be seen before its
+ * folder is on the disk), and `objects/` itself, once each, unless this worker flushed the folder since anything was
+ * last named in it. Objects found already there are also given the time now, as Git does, once a day old, so a
+ * `git gc` meanwhile takes them for new rather than long unused.
  *
  * Windows cannot flush a folder (fsutil.ts syncDir): there an object's own flush and NTFS's journal of its rename are
  * what there is, as for every durable write of the app's.
@@ -14,10 +17,11 @@
  * Nothing is read or written outside the repository's folder, and nothing through a link: a folder of the repository
  * that turns out to be a link (to the project's own `.git/`, say) is refused rather than followed.
  */
-import { randomBytes } from 'node:crypto';
-import type { PromiseFsClient } from 'isomorphic-git';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import { hostname } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
+import type { PromiseFsClient } from 'isomorphic-git';
 import { eachAtMost, renameReplacing, syncDir } from '../project/fsutil';
 import { GitError } from './protocol';
 
@@ -27,11 +31,16 @@ export type Fault = (point: FaultPoint, path: string) => void | Promise<void>;
 
 /** Folder flushes run side by side: the disk takes several at once faster than one after another. */
 const FLUSHES_AT_ONCE = 4;
+/** An object used again is given the time now once it is older than this: well inside the two weeks `git gc` keeps one. */
+const FRESHEN_AFTER_MS = 86_400_000;
+/** This computer, as the names of temporary objects and locks carry it: a shared folder can be written from several. */
+export const HOST = createHash('sha1').update(hostname()).digest('hex').slice(0, 8);
 /**
  * The start of a temporary object's name: Git's own (`tmp_obj_`, which `git fsck` passes over and `git gc` clears), then
- * the process writing it, so the temporary objects of a writer found stopped can be told from another's (repo.ts).
+ * the computer and process writing it, so those of a process that has exited can be cleared (repo.ts).
  */
 export const TMP_PREFIX = 'tmp_obj_';
+const OBJECT_PATH = /^objects[\\/][0-9a-f]{2}[\\/][0-9a-f]{38}$/;
 
 const isMissing = (e: unknown) => ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException)?.code ?? '');
 
@@ -42,12 +51,12 @@ export interface RepoFs {
   stage(path: string, chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
   /** Whether an object is staged for `path`. */
   staged(path: string): boolean;
-  /** Make every staged object durable and give it its name. */
+  /** An object already there, last changed at `mtimeMs`, that the write relies on: made durable at the next flush. */
+  reuse(path: string, mtimeMs: number): void;
+  /** Make every staged object durable and named, and every object relied on durable, before the write answers. */
   flush(): Promise<void>;
   /** Remove every staged object (the write they belong to was refused or cancelled). */
   discard(): Promise<void>;
-  /** Whether the last flush failed after naming some objects, whose folders may not be on the disk yet; asking clears it. */
-  named(): boolean;
   /** Forget which folders were seen to be real folders: each operation looks again. */
   reset(): void;
 }
@@ -71,34 +80,41 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
       checked.add(d);
     }
   };
-  /** Folders made for objects since the last flush, recorded in their parent by it. */
-  const madeDirs = new Set<string>();
-  /** A folder for an object, made if it is not there. */
-  const objectDir = async (dir: string) => {
-    if (checked.has(dir)) return;
-    await realDir(dir);
-    if (!checked.has(dir) && (await fs.mkdir(dir, { recursive: true }))) madeDirs.add(dir);
-    await realDir(dir);
-  };
 
   /** Objects staged since the last flush: the final name of each, and its temporary one. */
   const pending = new Map<string, string>();
+  /** Objects already there that the write relies on, with the time each was last changed. */
+  const reused = new Map<string, number>();
   /**
-   * Their flushes, still going: an object's bytes are flushed while the next is read and compressed, a few at a time,
-   * since each takes a few milliseconds of the disk's time and very little of the worker's.
+   * Folders this worker flushed, with their modification time as it was just before: one unchanged since (nothing
+   * named in it since, by anyone, since a rename into a folder changes its time) need not be flushed again.
    */
-  let syncing = new Set<Promise<void>>();
-  /** The first flush that failed since the last flush or discard: no more is staged once one has. */
+  const flushed = new Map<string, bigint>();
+  /** Flush a folder unless it is unchanged since this worker last flushed it (`always`: it has just been written to). */
+  const flushDir = async (dir: string, always: boolean) => {
+    const before = (await fs.lstat(dir, { bigint: true })).mtimeNs;
+    if (!always && flushed.get(dir) === before) return false;
+    await syncDir(dir);
+    flushed.set(dir, before);
+    return true;
+  };
+  /**
+   * Staged objects' flushes, still going: an object's bytes are flushed while the next is read and compressed, a few at
+   * a time, since each takes a few milliseconds of the disk's time and very little of the worker's.
+   */
+  const syncing = new Set<Promise<void>>();
+  /** The first such flush that failed since the last flush or discard: nothing more is staged once one has. */
   let syncFailed: { error: unknown } | null = null;
-  /** Whether the last flush failed after naming some of its objects. */
-  let partly = false;
 
   async function stage(path: string, chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>) {
     inside(path);
     if (syncFailed) throw syncFailed.error;
     if (pending.has(path)) return;
-    await objectDir(dirname(path));
-    const tmp = join(dirname(path), `${TMP_PREFIX}${process.pid}_${randomBytes(6).toString('hex')}`);
+    const dir = dirname(path);
+    await realDir(dir);
+    await fs.mkdir(dir, { recursive: true });
+    await realDir(dir);
+    const tmp = join(dir, `${TMP_PREFIX}${HOST}_${process.pid}_${randomBytes(6).toString('hex')}`);
     const handle = await fs.open(tmp, 'wx');
     try {
       for await (const chunk of chunks) {
@@ -130,7 +146,7 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
     while (syncing.size >= FLUSHES_AT_ONCE) await Promise.race(syncing);
   }
 
-  /** Wait for every object's flush to settle; the first that failed is thrown. */
+  /** Wait for every staged object's flush to settle; the first that failed is thrown. */
   const synced = async () => {
     await Promise.all(syncing);
     const failed = syncFailed;
@@ -141,11 +157,12 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
   async function flush() {
     const batch = [...pending];
     pending.clear();
-    const dirs = [...madeDirs];
+    const reliedOn = [...reused];
+    reused.clear();
     let named = 0;
-    partly = false;
     try {
       await synced();
+      const relied = [...reliedOn];
       for (const [path, tmp] of batch) {
         if (fault) await fault('object-written', path);
         try {
@@ -158,11 +175,22 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
         }
         named++;
       }
-      // The folders the objects were named in, and those the new folders were made in: then every one is on the disk.
-      await eachAtMost(FLUSHES_AT_ONCE, [...new Set([...batch.map(([path]) => dirname(path)), ...dirs.map((d) => dirname(d))])], syncDir);
-      for (const d of dirs) madeDirs.delete(d);
+      const now = new Date();
+      // Each is still there (a `git gc` meanwhile may have taken it for unused, and then this write cannot rely on it),
+      // and one a day old is given the time now.
+      await eachAtMost(FLUSHES_AT_ONCE * 4, relied, ([path, mtimeMs]) =>
+        (now.getTime() - mtimeMs < FRESHEN_AFTER_MS ? fs.lstat(path) : fs.utimes(path, now, now)).catch((e) => {
+          if (isMissing(e)) throw new GitError('changed', 'An object of the versions repository was removed while the version was being saved; save it again.');
+          throw e;
+        })
+      );
+      const written = new Set(batch.map(([path]) => dirname(path)));
+      const dirs = new Set([...written, ...relied.map(([path]) => dirname(path))]);
+      if (dirs.size) {
+        await eachAtMost(FLUSHES_AT_ONCE, [...dirs], (dir) => flushDir(dir, written.has(dir)));
+        await flushDir(join(gitdir, 'objects'), false);
+      }
     } catch (e) {
-      partly = named > 0;
       await Promise.all(batch.slice(named).map(([, tmp]) => fs.rm(tmp, { force: true }).catch(() => undefined)));
       throw e;
     }
@@ -171,13 +199,9 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
   async function discard() {
     const batch = [...pending.values()];
     pending.clear();
+    reused.clear();
     await synced().catch(() => undefined);
     await Promise.all(batch.map((tmp) => fs.rm(tmp, { force: true }).catch(() => undefined)));
-    // Folders made for them are kept, and recorded in their parent now: a later write, perhaps another worker's, may
-    // name an object in one without making it.
-    const dirs = [...madeDirs];
-    madeDirs.clear();
-    await eachAtMost(FLUSHES_AT_ONCE, [...new Set(dirs.map((d) => dirname(d)))], syncDir).catch(() => undefined);
   }
 
   /** isomorphic-git's writes: objects are staged; anything else (a new repository's config) is written durably at once. */
@@ -224,13 +248,9 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
   return {
     stage,
     staged: (path) => pending.has(path),
+    reuse: (path, mtimeMs) => void reused.set(path, mtimeMs),
     flush,
     discard,
-    named: () => {
-      const was = partly;
-      partly = false;
-      return was;
-    },
     reset: () => checked.clear(),
     promises: {
       // isomorphic-git calls readFile() with nothing to learn whether this is a promise fs: that must reject, not throw.
@@ -243,7 +263,20 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
       mkdir,
       rmdir: guarded((p: string) => fs.rmdir(p)),
       unlink: guarded((p: string) => fs.unlink(p)),
-      stat: guarded((p: string, o?: unknown) => fs.stat(p, o as Parameters<typeof fs.stat>[1])),
+      // isomorphic-git asks whether an object is there before writing it, and writes nothing when it is: the write
+      // then relies on it, so it is made durable and given the time now at the flush (reuse), and must be a plain file
+      // in a folder of the repository's own.
+      stat: guarded(async (p: string, o?: unknown) => {
+        const objectPath = OBJECT_PATH.test(relative(gitdir, p));
+        if (objectPath) await realDir(dirname(p));
+        const st = await fs.stat(p, o as Parameters<typeof fs.stat>[1]);
+        if (objectPath) {
+          const own = await fs.lstat(p);
+          if (!own.isFile()) throw new GitError('corrupt', `The versions repository is damaged: ${relative(gitdir, p)} is not a file.`);
+          reused.set(p, own.mtimeMs);
+        }
+        return st;
+      }),
       lstat: guarded((p: string, o?: unknown) => fs.lstat(p, o as Parameters<typeof fs.lstat>[1])),
       readdir: guarded(async (p: string, o?: unknown) => {
         await realDir(p);

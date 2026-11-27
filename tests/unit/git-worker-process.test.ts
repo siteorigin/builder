@@ -6,12 +6,13 @@
  */
 import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGitClient, type GitClient, type GitWorkerHandle } from '../../src/main/git/client';
+import { HOST } from '../../src/main/git/fs';
 import { VERSIONS_BRANCH, type GitReply, type Identity } from '../../src/main/git/protocol';
 
 const BUNDLED = (JSON.parse(readFileSync('package.json', 'utf8')) as { dependencies: Record<string, string> }).dependencies['isomorphic-git'];
@@ -128,10 +129,13 @@ describe('the Git worker in a process of its own', { timeout: 60_000 }, () => {
     if (point === 'object-written') {
       expect(victim.path).toBe(join(gitdir, 'objects', blobOid(unsaved).slice(0, 2), blobOid(unsaved).slice(2)));
       expect(existsSync(victim.path)).toBe(false);
-      expect(readdirSync(dirname(victim.path)).some((f) => f.startsWith(`tmp_obj_${victim.child.pid}_`))).toBe(true);
+      expect(readdirSync(dirname(victim.path)).some((f) => f.startsWith(`tmp_obj_${HOST}_${victim.child.pid}_`))).toBe(true);
     } else if (point === 'lock-written') {
       expect(readFileSync(lock, 'utf8')).toBe(`${b}\n`);
       expect(readFileSync(join(gitdir, 'refs', 'heads', 'siteorigin-versions'), 'utf8')).toBe(`${a}\n`);
+      // The lock is a second name for the killed process's own lock file.
+      const file = readdirSync(gitdir).find((n) => n.startsWith(`siteorigin-lock.${HOST}.${victim.child.pid}.siteorigin-versions.`));
+      expect(file && statSync(join(gitdir, file)).ino).toBe(statSync(lock).ino);
     } else {
       expect(existsSync(lock)).toBe(false);
       expect(readFileSync(join(gitdir, 'refs', 'heads', 'siteorigin-versions'), 'utf8')).toBe(`${b}\n`);
@@ -151,9 +155,9 @@ describe('the Git worker in a process of its own', { timeout: 60_000 }, () => {
     await dying.advanceRef(VERSIONS_BRANCH, c, tip);
     expect(await dying.resolveRef(VERSIONS_BRANCH)).toBe(c);
     expect(readdirSync(join(gitdir, 'refs', 'heads'))).toEqual(['siteorigin-versions']);
-    // The killed worker's locks and temporary objects are gone.
-    expect(existsSync(join(gitdir, 'siteorigin-writer.lock'))).toBe(false);
-    expect(readdirSync(join(gitdir, 'objects'), { recursive: true }).map(String).filter((f) => f.includes(`tmp_obj_${victim.child.pid}_`))).toEqual([]);
+    // The killed worker's lock files and temporary objects are gone.
+    expect(readdirSync(gitdir).filter((n) => n.startsWith('siteorigin-lock.'))).toEqual([]);
+    expect(readdirSync(join(gitdir, 'objects'), { recursive: true }).map(String).filter((f) => f.includes(`tmp_obj_${HOST}_${victim.child.pid}_`))).toEqual([]);
     checkObjects(gitdir);
   });
 });

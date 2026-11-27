@@ -10,12 +10,12 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepo, type RepoOptions } from '../../src/main/git/repo';
 import { GitError, VERSIONS_BRANCH, type FileInput, type Identity } from '../../src/main/git/protocol';
-import type { FaultPoint } from '../../src/main/git/fs';
+import { HOST, type FaultPoint } from '../../src/main/git/fs';
 
 const APP: Identity = { name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: 1_790_000_000, timezoneOffset: 0 };
 const PUBLISH = 'refs/heads/siteorigin-publish';
@@ -35,7 +35,15 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 const gitdir = () => join(root, '.siteorigin', 'versions.git');
 const refLock = () => join(gitdir(), 'refs', 'heads', 'siteorigin-versions.lock');
-const writerLock = () => join(gitdir(), 'siteorigin-writer.lock');
+/** The files the app's branch locks are second names for, in the repository's folder. */
+const lockFiles = () => readdirSync(gitdir()).filter((n) => n.startsWith('siteorigin-lock.'));
+/** A lock file as an exited (or live) process of the app's on this computer leaves it, and its branch lock with it. */
+const appLock = (pid: number, content: string, host = HOST) => {
+  const file = join(gitdir(), `siteorigin-lock.${host}.${pid}.siteorigin-versions.0123456789ab`);
+  writeFileSync(file, content);
+  linkSync(file, refLock());
+  return file;
+};
 const text = (s: string) => new TextEncoder().encode(s);
 const decode = (b: Uint8Array) => new TextDecoder().decode(b);
 /** Every file under the project's own .git, with its bytes: it must be the same after everything. */
@@ -210,7 +218,7 @@ describe('writing and reading versions', () => {
     expect(readFileSync(join(gitdir(), 'refs', 'heads', 'siteorigin-versions'), 'utf8')).toBe(`${commits[0]}\n`);
   });
 
-  it('writes nothing again for a file it already holds, giving it the time now as Git does, and the same names for the same content', async () => {
+  it('writes nothing again for a file it already holds, giving one a day old the time now as Git does, and the same names for the same content', async () => {
     const repo = openRepo(root);
     await repo.init();
     const bytes = text('{}\n');
@@ -219,7 +227,7 @@ describe('writing and reading versions', () => {
     const held = objects();
     const at = (o: string) => join(gitdir(), 'objects', o.slice(0, 2), o.slice(2));
     const inodes = held.map((o) => statSync(at(o)).ino);
-    const old = Date.now() / 1000 - 3600;
+    const old = Date.now() / 1000 - 2 * 86_400;
     for (const o of held) utimesSync(at(o), old, old);
     const started = Date.now();
     expect(await repo.writeFiles(files)).toBe(a);
@@ -418,7 +426,7 @@ describe('moving a branch', () => {
     await repo.advanceRef(VERSIONS_BRANCH, b, a);
     expect(await repo.resolveRef(VERSIONS_BRANCH)).toBe(b);
     expect(readdirSync(join(gitdir(), 'refs', 'heads'))).toEqual(['siteorigin-versions']);
-    expect(existsSync(writerLock())).toBe(false);
+    expect(lockFiles()).toEqual([]);
   });
 
   it('lets exactly one of two writers from the same commit win, in one repository object or two', async () => {
@@ -438,7 +446,7 @@ describe('moving a branch', () => {
     }
   });
 
-  it('keeps a second writer out while the first holds the branch', async () => {
+  it('keeps a second writer out while the first holds the branch, its lock a second name for a file saying whose it is', async () => {
     const setup = openRepo(root);
     await setup.init();
     const a = await snapshot(setup);
@@ -448,14 +456,19 @@ describe('moving a branch', () => {
     const first = openRepo(root, { fault: (p) => (p === 'lock-written' ? (held(), new Promise<void>((r) => (release = r))) : undefined) });
     const moving = first.advanceRef(VERSIONS_BRANCH, a, null);
     await holding;
-    // While it holds them: its own lock names this process, still running, and the branch's holds its commit.
-    expect(JSON.parse(readFileSync(writerLock(), 'utf8'))).toMatchObject({ pid: process.pid, host: hostname(), ref: VERSIONS_BRANCH, next: a });
+    // While it holds it: the lock holds its commit, whole, and is the very file named for this computer, process and branch.
     expect(readFileSync(refLock(), 'utf8')).toBe(`${a}\n`);
+    const files = lockFiles();
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(new RegExp(`^siteorigin-lock\\.${HOST}\\.${process.pid}\\.siteorigin-versions\\.[0-9a-f]+$`));
+    expect(statSync(join(gitdir(), files[0])).ino).toBe(statSync(refLock()).ino);
+    // Its process is running: another writer waits for it rather than clear it.
     await expect(openRepo(root, { lockWaitMs: 100 }).advanceRef(VERSIONS_BRANCH, a, null)).rejects.toMatchObject({ code: 'locked' });
-    await expect(openRepo(root, { lockWaitMs: 100 }).writeFiles([{ path: 'x', bytes: text('x') }])).rejects.toMatchObject({ code: 'locked' });
     release();
     await moving;
     expect(await setup.resolveRef(VERSIONS_BRANCH)).toBe(a);
+    expect(lockFiles()).toEqual([]);
+    expect(existsSync(refLock())).toBe(false);
   });
 
   it('waits for another Git’s lock and moves the branch once it is let go, or gives up and leaves it', async () => {
@@ -470,72 +483,49 @@ describe('moving a branch', () => {
     writeFileSync(refLock(), `${'b'.repeat(40)}\n`);
     await expect(openRepo(root, { lockWaitMs: 100 }).advanceRef(VERSIONS_BRANCH, b, a)).rejects.toMatchObject({ code: 'locked' });
     expect(readFileSync(refLock(), 'utf8')).toBe(`${'b'.repeat(40)}\n`);
+    expect(lockFiles()).toEqual([]);
   });
 
-  it('never clears another Git’s branch lock, however old, even after a writer of the app’s died', async () => {
+  it('never clears another Git’s branch lock, however old, empty, or holding the same commit, even beside a dead process’s lock file', async () => {
     const repo = openRepo(root, { ...RESTARTED, lockWaitMs: 100 });
     await repo.init();
     const a = await snapshot(repo);
-    writeFileSync(refLock(), `${'b'.repeat(40)}\n`);
-    const old = Date.now() / 1000 - 86_400;
-    utimesSync(refLock(), old, old);
-    // A writer of the app's died meanwhile, moving the branch to another commit than the one this lock holds.
-    writeFileSync(writerLock(), JSON.stringify({ pid: 999_999, host: hostname(), at: Date.now() - 1000, ref: VERSIONS_BRANCH, next: a }));
-    await expect(repo.advanceRef(VERSIONS_BRANCH, a, null)).rejects.toMatchObject({ code: 'locked' });
-    expect(readFileSync(refLock(), 'utf8')).toBe(`${'b'.repeat(40)}\n`);
-    // Its own lock is cleared, being a dead writer's.
-    expect(existsSync(writerLock())).toBe(false);
+    for (const content of [`${'b'.repeat(40)}\n`, '', `${a}\n`]) {
+      // A process of the app's died holding a lock file for this branch, but the lock there now is another file.
+      const dead = join(gitdir(), `siteorigin-lock.${HOST}.999999.siteorigin-versions.0123456789ab`);
+      writeFileSync(dead, `${a}\n`);
+      writeFileSync(refLock(), content);
+      const old = Date.now() / 1000 - 86_400;
+      utimesSync(refLock(), old, old);
+      await expect(repo.advanceRef(VERSIONS_BRANCH, a, null), JSON.stringify(content)).rejects.toMatchObject({ code: 'locked' });
+      expect(readFileSync(refLock(), 'utf8')).toBe(content);
+      // The dead process's file is cleared, being its; the lock is not.
+      expect(existsSync(dead)).toBe(false);
+      rmSync(refLock());
+    }
   });
 
-  it('never takes an empty branch lock for a dead writer’s: it is another Git’s, just taken', async () => {
-    const repo = openRepo(root, { ...RESTARTED, lockWaitMs: 100 });
-    await repo.init();
-    const a = await snapshot(repo);
-    writeFileSync(refLock(), '');
-    writeFileSync(writerLock(), JSON.stringify({ pid: 999_999, host: hostname(), at: Date.now() - 1000, ref: VERSIONS_BRANCH, next: a }));
-    await expect(repo.advanceRef(VERSIONS_BRANCH, a, null)).rejects.toMatchObject({ code: 'locked' });
-    expect(existsSync(refLock())).toBe(true);
-  });
-
-  it('refuses a writer’s lock that is not a file, at once', async () => {
-    const repo = openRepo(root, { lockWaitMs: 60_000 });
-    await repo.init();
-    symlinkSync(join(root, 'nowhere'), writerLock());
-    const started = Date.now();
-    await expect(repo.writeFiles([{ path: 'x', bytes: text('x') }])).rejects.toMatchObject({ code: 'corrupt' });
-    expect(Date.now() - started).toBeLessThan(5000);
-  });
-
-  it('clears the app’s own lock when its writer is gone: exited, from before the computer started, or never written', async () => {
+  it('clears a branch lock an exited process of the app’s on this computer left, and only such a one', async () => {
     const repo = openRepo(root, { lockWaitMs: 100 });
     await repo.init();
     const a = await snapshot(repo);
-    const cases: Array<[string, () => void, RepoOptions]> = [
-      ['exited', () => writeFileSync(writerLock(), JSON.stringify({ pid: 999_999, host: hostname(), at: Date.now() })), RESTARTED],
-      ['before this boot', () => writeFileSync(writerLock(), JSON.stringify({ pid: process.pid, host: hostname(), at: 1000 })), {}],
-      [
-        'never written',
-        () => {
-          writeFileSync(writerLock(), '');
-          const t = Date.now() / 1000 - 10;
-          utimesSync(writerLock(), t, t);
-        },
-        {}
-      ]
-    ];
-    for (const [what, leave, options] of cases) {
-      leave();
-      await openRepo(root, { ...options, lockWaitMs: 100 }).writeFiles([{ path: `${what}.txt`, bytes: text(what) }]);
-      expect(existsSync(writerLock()), what).toBe(false);
-    }
-    // One whose writer still runs, or is on another computer, is waited for.
-    for (const [live, options] of [
-      [{ pid: process.pid, host: hostname(), at: Date.now() }, {}],
-      [{ pid: 999_999, host: 'another-computer', at: Date.now() }, RESTARTED]
+    // Exited: cleared, lock and file, and the branch moves.
+    const file = appLock(999_999, `${'c'.repeat(40)}\n`);
+    await openRepo(root, { ...RESTARTED, lockWaitMs: 100 }).advanceRef(VERSIONS_BRANCH, a, null);
+    expect(existsSync(file)).toBe(false);
+    expect(await repo.resolveRef(VERSIONS_BRANCH)).toBe(a);
+    const b = await snapshot(repo, [{ path: 'b', bytes: text('b') }], [a]);
+    // Still running (this test's own process), or another computer's: waited for, never cleared.
+    for (const [pid, host, options] of [
+      [process.pid, HOST, {}],
+      [999_999, 'ffffffff', RESTARTED]
     ] as const) {
-      writeFileSync(writerLock(), JSON.stringify(live));
-      await expect(openRepo(root, { ...options, lockWaitMs: 100 }).advanceRef(VERSIONS_BRANCH, a, null)).rejects.toMatchObject({ code: 'locked' });
-      expect(existsSync(writerLock())).toBe(true);
+      const held = appLock(pid, `${'c'.repeat(40)}\n`, host);
+      await expect(openRepo(root, { ...options, lockWaitMs: 100 }).advanceRef(VERSIONS_BRANCH, b, a)).rejects.toMatchObject({ code: 'locked' });
+      expect(existsSync(held)).toBe(true);
+      expect(existsSync(refLock())).toBe(true);
+      rmSync(refLock());
+      rmSync(held);
     }
   });
 
@@ -587,7 +577,7 @@ describe('a write stopped part way', () => {
     expect(lockHeld).toBe(`${a}\n`);
     await expect(repo.resolveRef(VERSIONS_BRANCH)).resolves.toBeNull();
     expect(readdirSync(join(gitdir(), 'refs', 'heads'))).toEqual([]);
-    expect(existsSync(writerLock())).toBe(false);
+    expect(lockFiles()).toEqual([]);
   });
 
   it('killed while naming its objects: none named, and the next worker clears its temporary ones and writes them whole', async () => {
@@ -600,7 +590,7 @@ describe('a write stopped part way', () => {
     const fan = join(gitdir(), 'objects', blobOid(bytes).slice(0, 2));
     const tmp = readdirSync(fan);
     expect(tmp).toHaveLength(1);
-    expect(tmp[0]).toMatch(new RegExp(`^tmp_obj_${process.pid}_`));
+    expect(tmp[0]).toMatch(new RegExp(`^tmp_obj_${HOST}_${process.pid}_`));
     expect(statSync(join(fan, tmp[0])).size).toBeGreaterThan(0);
     expect(objects()).toEqual([]);
     // Another's recent temporary object is left alone.
@@ -609,7 +599,6 @@ describe('a write stopped part way', () => {
     expect(await next.writeBlob({ bytes })).toBe(blobOid(bytes));
     expect(decode(await next.readBlob(blobOid(bytes)))).toBe('a picture, half written');
     expect(readdirSync(fan).sort()).toEqual([blobOid(bytes).slice(2), 'tmp_obj_another']);
-    expect(existsSync(writerLock())).toBe(false);
   });
 
   it('killed holding the branch’s lock: the branch is where it was, and the next worker clears both locks and moves it', async () => {
@@ -647,10 +636,12 @@ describe('a write stopped part way', () => {
     const next = openRepo(root, RESTARTED);
     expect(await next.resolveRef(VERSIONS_BRANCH)).toBe(b);
     await expect(next.advanceRef(VERSIONS_BRANCH, c, a)).rejects.toMatchObject({ code: 'conflict', actual: b });
-    expect(existsSync(writerLock())).toBe(false);
+    // Its lock file (a second name for the branch now) is cleared; the branch is left as it is.
+    expect(lockFiles()).toEqual([]);
+    expect(readFileSync(join(gitdir(), 'refs', 'heads', 'siteorigin-versions'), 'utf8')).toBe(`${b}\n`);
   });
 
-  it('a write that failed after naming some objects has their folders flushed by the next, in any worker', async () => {
+  it('a write that relies on objects a failed write named makes them its own: on the disk, and given the time now', async () => {
     await openRepo(root).init();
     let named = 0;
     const failing = openRepo(root, {
@@ -659,22 +650,36 @@ describe('a write stopped part way', () => {
       }
     });
     await expect(failing.writeFiles([{ path: 'a', bytes: text('a') }, { path: 'b', bytes: text('b') }])).rejects.toMatchObject({ code: 'failed' });
-    // One was named before the failure; that is recorded on the disk, for whichever worker writes next.
-    expect(objects()).toHaveLength(1);
-    expect(existsSync(join(gitdir(), 'siteorigin-unflushed'))).toBe(true);
-    await openRepo(root).writeFiles([{ path: 'c', bytes: text('c') }]);
-    expect(existsSync(join(gitdir(), 'siteorigin-unflushed'))).toBe(false);
+    const left = objects();
+    expect(left).toHaveLength(1);
+    const path = join(gitdir(), 'objects', left[0].slice(0, 2), left[0].slice(2));
+    const old = Date.now() / 1000 - 2 * 86_400;
+    utimesSync(path, old, old);
+    const started = Date.now();
+    await openRepo(root).writeFiles([{ path: 'a', bytes: text('a') }, { path: 'b', bytes: text('b') }]);
+    expect(statSync(path).mtimeMs).toBeGreaterThanOrEqual(started - 1000);
     expect(temporaries()).toEqual([]);
   });
 
-  it('finishing a dead writer’s work touches nothing through a folder linked elsewhere', async () => {
+  it('cannot rely on an object removed while it saves (a git gc meanwhile): the save fails, to be made again', async () => {
+    const repo = openRepo(root);
+    await repo.init();
+    const bytes = text('reused');
+    await repo.writeBlob({ bytes });
+    const path = join(gitdir(), 'objects', blobOid(bytes).slice(0, 2), blobOid(bytes).slice(2));
+    const gc = openRepo(root, { fault: (p) => (p === 'file-written' ? rmSync(path) : undefined) });
+    await expect(gc.writeFiles([{ path: 'x', bytes }])).rejects.toMatchObject({ code: 'changed' });
+    expect(await repo.writeBlob({ bytes })).toBe(blobOid(bytes));
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('clearing an exited process’s temporary objects touches nothing through a folder linked elsewhere', async () => {
     await openRepo(root).init();
     const outside = mkdtempSync(join(tmpdir(), 'so-git-outside-'));
-    writeFileSync(join(outside, 'tmp_obj_999999_x'), 'someone else’s');
+    writeFileSync(join(outside, `tmp_obj_${HOST}_999999_x`), 'someone else’s');
     symlinkSync(outside, join(gitdir(), 'objects', 'ab'), 'dir');
-    writeFileSync(writerLock(), JSON.stringify({ pid: 999_999, host: hostname(), at: Date.now() - 1000 }));
     await openRepo(root, RESTARTED).writeFiles([]);
-    expect(readdirSync(outside)).toEqual(['tmp_obj_999999_x']);
+    expect(readdirSync(outside)).toEqual([`tmp_obj_${HOST}_999999_x`]);
     rmSync(outside, { recursive: true, force: true });
   });
 
