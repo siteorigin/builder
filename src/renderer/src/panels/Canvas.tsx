@@ -3007,7 +3007,9 @@ export function Canvas() {
     const hit = slotRects.find((r) => measuredFor(r.desc, d));
     return hit ? toBox(hit.box) : null;
   };
-  const addButtons: Array<{ p: AddPoint; box: AddBox }> = adding
+  // The selection's own writing direction, from the page's report for it: its inside + goes in the trailing corner.
+  const selRtl = spaceFor && !!spacing?.rtl;
+  const addButtons: Array<{ p: AddPoint; box: AddBox; rtl?: boolean }> = adding
     ? [{ p: adding.point, box: adding.box }]
     : !addReady
     ? []
@@ -3015,25 +3017,47 @@ export function Canvas() {
         ...(rects.selected.length === 1 && measuredFor(rectsFor.current.selected, spaceDesc)
           ? addPoints(state!, addOwner!, selection).flatMap((p) => {
               const box = selectedBox(p);
-              return box ? [{ p, box }] : [];
+              return box ? [{ p, box, rtl: selRtl }] : [];
             })
           : []),
         ...(hovering && rects.hovered.length === 1 && measuredFor(rectsFor.current.hovered, descFor(hover)) ? addPoints(state!, addOwner!, hover, true).map((p) => ({ p, box: toBox(rects.hovered[0]) })) : [])
       ].filter((b, i, all) => all.findIndex((o) => o.p.key === b.p.key) === i);
   /** Where an Add button sits, in the overlay: on its section's edge three quarters across (clear of the chip at the
    *  start and the spacing handles at the middle), or inset in its container's lower trailing corner; kept on the page,
-   *  and not drawn for an edge scrolled out of view. Drawn before the spacing handles and the chip, which stay on top
-   *  where a small page brings them together. */
-  const addAt = (p: AddPoint, b: AddBox): { left: number; top: number } | null => {
+   *  and not drawn for an edge scrolled out of view. A container too short or too narrow to hold it without hiding what it
+   *  holds (a Row of one line, a badge) has it hung just outside its trailing lower corner, its rim touching the
+   *  outline. Trailing is the left in a right-to-left box. Drawn before the spacing handles and the chip, which stay on
+   *  top where a small page brings them together. */
+  const addAt = (p: AddPoint, b: AddBox, rtl = false): { left: number; top: number } | null => {
     const h = frameH * z;
     if (b.top > h || b.top + b.height < 0 || b.left > frameW || b.left + b.width < 0) return null;
-    const inside = p.side === 'inside';
-    // A short or narrow container (a Row of one line) has it centred on that side instead, so it stays on the box.
-    const y = inside ? (b.height < 40 ? b.top + b.height / 2 : b.top + b.height - 16) : p.side === 'before' ? b.top : b.top + b.height;
-    if (!inside && (y < -2 || y > h + 2)) return null;
+    if (p.side === 'inside') {
+      // Inset far enough that its focus ring (18.5px out) clears the selection's 4px outline.
+      const inset = 24;
+      // Outside, its keylined rim (11px + 2.5px) meets the box's edge, so it hangs from the box like a tab.
+      const out = 13.5;
+      // Too small to hold it, on either axis: off the box's trailing lower corner, clear of the spacing handles at the
+      // middle of each side and of a neighbour stacked above or below (which most often shares the box's width). Where
+      // the page's edge leaves no room there it flips to the other side; where neither side has room, it hangs below
+      // the trailing end of a short box, or beside the foot of a narrow one.
+      const small = 2 * inset + 8;
+      if (b.width >= small && b.height >= small) {
+        const x = rtl ? b.left + inset : b.left + b.width - inset;
+        return { left: Math.max(14, Math.min(x, frameW - 14)), top: Math.max(14, Math.min(b.top + b.height - inset, h - 14)) };
+      }
+      const start = b.left - out >= 14 ? b.left - out : null;
+      const end = b.left + b.width + out <= frameW - 14 ? b.left + b.width + out : null;
+      const xOut = rtl ? (start ?? end) : (end ?? start);
+      const yOut = b.top + b.height + out <= h - 14 ? b.top + b.height + out : b.top - out >= 14 ? b.top - out : null;
+      const x = xOut ?? (rtl ? b.left + inset : b.left + b.width - inset);
+      const y = yOut ?? b.top + b.height - inset;
+      return { left: Math.max(14, Math.min(x, frameW - 14)), top: Math.max(14, Math.min(y, h - 14)) };
+    }
+    const y = p.side === 'before' ? b.top : b.top + b.height;
+    if (y < -2 || y > h + 2) return null;
     // On a narrow section, kept past the margin handle, which sits just after the middle (see SpacingHandles).
     const edgeX = b.left + Math.max(b.width * 0.75, b.width / 2 + Math.min(28, b.width / 4) + 30);
-    const x = inside ? (b.width < 40 ? b.left + b.width / 2 : b.left + b.width - 16) : Math.min(edgeX, b.left + b.width - 14);
+    const x = Math.min(edgeX, b.left + b.width - 14);
     return { left: Math.max(14, Math.min(x, frameW - 14)), top: Math.max(14, Math.min(y, h - 14)) };
   };
   const device = viewport < 768 ? 'Phone' : viewport < 1024 ? 'Tablet' : 'Desktop';
@@ -3377,8 +3401,17 @@ export function Canvas() {
                     style={b}
                   />
                 ))}
-                {addButtons.map(({ p, box }) => {
-                  const at = adding ? adding.at : addAt(p, box);
+                {addButtons
+                  .map(({ p, box, rtl }) => ({ p, box, at: adding ? adding.at : addAt(p, box, rtl) }))
+                  // Two left on top of each other (above and below a shallow section, the selection's and the hovered
+                  // one's) have the later stepped back a button's width along its edge, so each stays its own target.
+                  .map((b, i, all) => {
+                    if (!b.at || b.p.side === 'inside') return b;
+                    const at = { ...b.at };
+                    for (const o of all.slice(0, i)) if (o.at && o.p.side !== 'inside' && Math.abs(o.at.left - at.left) < 34 && Math.abs(o.at.top - at.top) < 34) at.left = at.left - 34 >= 14 ? at.left - 34 : at.left + 34;
+                    return { ...b, at };
+                  })
+                  .map(({ p, box, at }) => {
                   if (!at) return null;
                   const label = pointLabel(p);
                   return (
@@ -3411,8 +3444,12 @@ export function Canvas() {
                       >
                         <Plus aria-hidden="true" />
                       </button>
-                      {/* The edge it adds at, shown while the button is pointed at, focused or open. */}
-                      {p.side !== 'inside' && <span className="ov-add-line" style={{ left: box.left, top: p.side === 'before' ? box.top : box.top + box.height, width: box.width }} aria-hidden="true" />}
+                      {/* Where it lands, shown while the button is pointed at, focused or open: the edge it adds at, or the box it adds into. */}
+                      {p.side === 'inside' ? (
+                        <span className="ov-add-mark zone" style={box} aria-hidden="true" />
+                      ) : (
+                        <span className="ov-add-mark line" style={{ left: box.left, top: p.side === 'before' ? box.top : box.top + box.height, width: box.width }} aria-hidden="true" />
+                      )}
                     </span>
                   );
                 })}

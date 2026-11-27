@@ -125,21 +125,34 @@
   /* A bridge over the gap to its element, so the pointer reaches the name without crossing other parts of the page. */
   .ov-label.outside::after { content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 8px; }
   .ov-label.outside.below::after { top: auto; bottom: 100%; }
-  /* The canvas's Add buttons (#387): a small round + on a section's top or bottom edge, or inset in a container's lower
-     trailing corner, opening a short list of what fits there. The edge it adds at shows while it is pointed at. */
-  .ov-add { position: absolute; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0; border: 0; border-radius: 50%; background: var(--select); color: #fff; box-shadow: 0 0 0 1.5px #fff, 0 2px 6px rgb(16 24 40 / 0.32); pointer-events: auto; cursor: pointer; opacity: 0.9; transition: transform 90ms ease-out, opacity 90ms ease-out; }
-  .ov-add::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; }
-  .ov-add svg { width: 14px; height: 14px; stroke-width: 2.6; }
-  .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) { opacity: 1; transform: scale(1.14); }
-  /* Open, the + owns the list beside it: a second ring of its colour round the white rim, and its glyph turned to a
-     close mark, since a second press puts the list away. */
-  .ov-add[aria-expanded='true'] { box-shadow: 0 0 0 1.5px #fff, 0 0 0 3.5px var(--select), 0 2px 6px rgb(16 24 40 / 0.32); }
-  .ov-add svg { transition: rotate 120ms ease-out; }
+  /* The canvas's Add buttons (#387): a small + on a section's top or bottom edge, or inset in a container's lower
+     trailing corner (outside it, off that corner, where the box is too small to hold one without hiding it), opening
+     a short list of what fits there. The kind is told by shape before it is pressed: an edge + is a round dot on the
+     line it adds at, an inside + a rounded square like the box it fills. Opaque, between the overlay's white and ink
+     keylines so it holds on any page; drawn, never faded. Pointed at, focused or open, it marks where it lands: a
+     heavy keylined line on its edge, or a tint over the box it fills. Open, it takes the raised face (white, its glyph
+     turned to a close mark); keyboard focus is the house 2px ring, 2px clear of the rim, wrapped white then ink.
+     Pointed at, it also grows a little, except under keyboard focus (the ring stays put) or reduced motion.
+     It is drawn before the spacing handles and the chip (each z-index 1 in the overlay), which stay on top where a
+     small page brings them together. */
+  .ov-add-at { display: contents; }
+  .ov-add { --focus: var(--select); --add-rim: 0 0 0 1.5px #fff, 0 0 0 2.5px #101828; --add-lift: 0 2px 6px rgb(16 24 40 / 0.3); position: absolute; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0; border: 0; border-radius: 50%; background: var(--select); color: #fff; box-shadow: var(--add-rim), var(--add-lift); pointer-events: auto; cursor: pointer; outline: none; transition: transform 90ms ease-out, background-color 90ms ease-out; }
+  .ov-add.inside { border-radius: var(--r-sm); }
+  /* A 32px target round a 22px face (WCAG 2.5.8), square so it holds a full 24px square. */
+  .ov-add::after { content: ''; position: absolute; inset: -5px; border-radius: var(--r-sm); }
+  .ov-add svg { width: 14px; height: 14px; stroke-width: 2.6; transition: rotate 120ms ease-out; }
+  .ov-add:hover { background: color-mix(in srgb, var(--select) 78%, #101828); }
+  @media (prefers-reduced-motion: no-preference) { .ov-add:hover:not(:focus-visible, [aria-expanded='true']) { transform: scale(1.1); } }
+  .ov-add:focus-visible { outline: 2px solid var(--focus); outline-offset: 4.5px; box-shadow: var(--add-rim), 0 0 0 4.5px #fff, 0 0 0 7.5px #101828, var(--add-lift); }
+  .ov-add[aria-expanded='true'] { background: #fff; color: var(--select); transform: none; box-shadow: 0 0 0 2px var(--select), 0 0 0 3px #fff, 0 0 0 4px #101828, var(--add-lift); }
   .ov-add[aria-expanded='true'] svg { rotate: 45deg; }
-  @media (prefers-reduced-motion: reduce) { .ov-add, .ov-add svg { transition: none; } }
-  .ov-add:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; }
-  .ov-add-line { position: absolute; height: 2px; margin-top: -1px; background: var(--select); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85); pointer-events: none; opacity: 0; transition: opacity 90ms ease-out; }
-  .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) + .ov-add-line { opacity: 1; }
+  /* Where it lands. An edge's line is twice the selection's blue and keylined, so it reads apart from the outline it
+     lies on; an inside +'s box takes a band's tint, edged as the spacing bands are. */
+  .ov-add-mark { position: absolute; pointer-events: none; opacity: 0; transition: opacity 90ms ease-out; }
+  .ov-add-mark.line { height: 4px; margin-top: -2px; background: var(--select); box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; }
+  .ov-add-mark.zone { background: color-mix(in srgb, var(--select) 14%, transparent); box-shadow: inset 0 0 0 1px #101828; outline: 1px solid #fff; outline-offset: -2px; }
+  .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) + .ov-add-mark { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { .ov-add, .ov-add svg, .ov-add-mark { transition: none; } }
   /* The quick insert list an Add button opens (the canvas's, or a slot's in the Inspector). A popover at the menus'
      level (z-index as .menu), built from the house pieces: the .input field, .menu-item rows with the command menu's
      highlight (the accent tint and the 2px inset focus outline on the row Enter adds), .menu-label headings that stay
