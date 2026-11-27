@@ -21,6 +21,11 @@ export const documentName = (a: AssetRecord) => (typeof a.name === 'string' && a
 /** The file a document came from, as a visitor's download is named: "Exhibitor guide.pdf". */
 export const documentFileName = (a: AssetRecord) => (typeof a.originalName === 'string' && a.originalName.trim()) || (typeof a.file === 'string' ? a.file.split('/').pop() : '') || 'No file';
 
+/** "PDF · 2.4 MB": what kind of file it is and how big, for a list where the name already says which. */
+export function documentFacts(a: AssetRecord): string {
+  return [documentTypeLabel(typeof a.mime === 'string' ? a.mime : '', typeof a.file === 'string' ? a.file : ''), typeof a.bytes === 'number' ? formatBytes(a.bytes) : ''].filter(Boolean).join(' · ');
+}
+
 /** "Exhibitor guide.pdf · PDF · 2.4 MB": what the file is, for telling documents apart. */
 export function documentDetails(a: AssetRecord): string {
   return [documentFileName(a), documentTypeLabel(typeof a.mime === 'string' ? a.mime : '', typeof a.file === 'string' ? a.file : ''), typeof a.bytes === 'number' ? formatBytes(a.bytes) : ''].filter(Boolean).join(' · ');
