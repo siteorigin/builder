@@ -23,11 +23,12 @@ function slotted(def: ComponentDefinition): Set<string> {
 
 /**
  * The list property whose items a definition's part can be styled one at a time: a part of a managed definition
- * that sits inside exactly one repeat, iterating a list property that keeps its own items (not a computed one).
- * Nested repeats render the same item once per outer item, so an item ID there names several elements; such parts,
- * and parts outside every list, have none.
+ * that sits inside exactly one repeat, iterating a list property that keeps its own items (not a computed one), or a
+ * part a code component declares repeats over such a list (see codeRepeatedList). Nested repeats render the same item
+ * once per outer item, so an item ID there names several elements; such parts, and parts outside every list, have none.
  */
 export function repeatedPartList(def: ComponentDefinition, partId: string): string | undefined {
+  if (def.kind === 'code') return codeRepeatedList(def, partId);
   if (def.kind !== 'managed' || !def.tree) return undefined;
   const part = own(def.parts, partId);
   const node: GraphNode | undefined = part ? own(def.tree.nodes, part.nodeId) : undefined;
@@ -52,6 +53,18 @@ export function repeatedPartList(def: ComponentDefinition, partId: string): stri
   const schema = own(def.properties, list);
   // A computed list (a News list's articles) keeps no items of its own: its rows are worked out from the site's
   // pages wherever it is placed, so its parts are styled for every row together.
+  return schema?.type === 'list' && !schema.feed ? list : undefined;
+}
+
+/**
+ * A code component has no tree to read: a part it renders once per item of a list says so itself (`PartDef.list`),
+ * and takes each item's class from `so_oi` by the item's ID. The list must be one of its own list properties that
+ * keeps its own items; its root is the whole component, never one item.
+ */
+function codeRepeatedList(def: ComponentDefinition, partId: string): string | undefined {
+  const list = partId === 'root' ? undefined : own(def.parts, partId)?.list;
+  if (typeof list !== 'string') return undefined;
+  const schema = own(def.properties, list);
   return schema?.type === 'list' && !schema.feed ? list : undefined;
 }
 

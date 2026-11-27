@@ -1121,7 +1121,7 @@ export function Canvas() {
           const bound = bindDescOf(p.bind);
           const code = bound && ref && !s.definitionMode ? codeTextTarget(st, bound) : null;
           if (ref && bound && canInlineEditCode(code)) {
-            setState({ selection: ref });
+            selectOnPage(ref);
             const hit = typeof p.hit === 'string' && p.hit.length <= 20 ? p.hit : undefined;
             beginTextEdit(ref, bound, hit, code);
             break;

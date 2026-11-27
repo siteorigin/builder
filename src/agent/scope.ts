@@ -244,7 +244,9 @@ function outsidePart(op: EditOperation, sel: NonNullable<ReturnType<typeof selec
       const own = Object.hasOwn(def.parts, partId) ? def.parts[partId] : undefined;
       if (partId !== part.partId && !(own && reach.nodes.has(own.nodeId))) return `${op.type} styles a part of ${label} other than the selected one.`;
       // With one item selected, a part shown for every item is styled for that item alone: its shared style is every item's.
-      const shownPerItem = !!own && !!def.tree && !!enclosingRepeatProp(def, own.nodeId);
+      // A code component's part picked in one item stays that item's: if its code no longer repeats it, styling it
+      // would reach every item, which needs the user's approval.
+      const shownPerItem = !!own && (def.tree ? !!enclosingRepeatProp(def, own.nodeId) : true);
       if (part.itemId !== undefined && shownPerItem) {
         if (!repeatedPartList(def, partId)) return `${op.type} would style every item of ${label}: this part cannot be styled for one item alone, so ask the user first.`;
         if (op.itemId !== part.itemId) return `${op.type} styles ${op.itemId === undefined ? 'every item' : 'another item'} of ${label}, not only the selected one: pass itemId "${part.itemId}", or ask the user before styling more.`;

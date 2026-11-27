@@ -14,6 +14,8 @@ import { declaredTokens } from './tokens';
 import { ICONS } from '@shared/icons';
 
 const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'token', 'list', 'table', 'object'] as const;
+/** The property types a live session's Copy Editor may be allowed to change (see engine/copy-editor.ts). */
+const COPY_EDITABLE_TYPES: readonly string[] = ['string', 'richtext', 'image'];
 /** Token groups a token property can choose from. A text style is several values at once, so no style can bind one. */
 const TOKEN_PROP_GROUPS: readonly TokenGroup[] = ['color', 'font', 'space', 'container', 'radius', 'shadow', 'border'];
 
@@ -120,6 +122,12 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
   const label = `Property "${name}"`;
   if (r.required !== undefined && typeof r.required !== 'boolean') fail(`${label}: required must be true or false.`);
   if (r.required) out.required = true;
+  if (r.copyEditable !== undefined && r.copyEditable !== false) {
+    // Copy a live session's Copy Editor may change: a component's own text or picture, never a field of a list or object.
+    if (r.copyEditable !== true) fail(`${label}: copyEditable must be true or false.`);
+    if (inList || !COPY_EDITABLE_TYPES.includes(type)) fail(`${label}: only a component's own text, rich text or image property can be copyEditable.`);
+    out.copyEditable = true;
+  }
   switch (type) {
     case 'string': {
       if (r.multiline !== undefined) out.multiline = !!r.multiline;

@@ -614,6 +614,9 @@ describe('SEO and performance', () => {
     // Spanning two of them: the widest run of two.
     wrap.styles = { base: { columnSpan: '2' } };
     expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 900px, (min-width: 768px) 75vw, 100vw');
+    // Starting on the last of them, the same span runs past it: the whole width.
+    wrap.styles = { base: { columnStart: '3', columnSpan: '2' } };
+    expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');
     // A span saved with spaces around it is the full width CSS gives it.
     wrap.styles = { base: { columnSpan: ' full ' } };
     expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');

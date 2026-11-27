@@ -134,14 +134,39 @@ describe('publishing only what an edit changes (#183)', () => {
     rmSync(join(dir, gone.path));
     expect(await packOpens(() => s.apply({ operations: [headingEdit(s.state, about, 'Font back')] }, { label: 'Edit heading' }))).toEqual([source(gone)]);
     expect(readFileSync(join(dir, gone.path)).equals(await readPackFile(gone.pack, gone.file))).toBe(true);
-    // Written just now, it is read once more by the next publication before its stat stands for its bytes.
-    await s.apply({ operations: [headingEdit(s.state, about, 'Font settled')] }, { label: 'Edit heading' });
+    // Written just now, it is read once more by the next publication before its stat stands for its bytes, but not from its pack.
+    expect(await packOpens(() => s.apply({ operations: [headingEdit(s.state, about, 'Font settled')] }, { label: 'Edit heading' }))).toEqual([]);
     // A copy edited outside the app is never mistaken for the pack's: the pack is read, and the copy kept as theirs.
     const edited = copies[1];
     writeFileSync(join(dir, edited.path), Buffer.from('wOF2 my own'));
     expect(await packOpens(() => s.apply({ operations: [headingEdit(s.state, about, 'Font edited')] }, { label: 'Edit heading' }))).toEqual([source(edited)]);
     expect(readFileSync(join(dir, edited.path)).toString()).toBe('wOF2 my own');
     expect(s.conflicts).toContainEqual(expect.objectContaining({ path: edited.path, kind: 'generated' }));
+    expectFullOutput(dir, s);
+  });
+
+  it('reads a font from its pack once, as it is copied in, not again in the save after', async () => {
+    const { dir, s, about } = await make();
+    for (const v of ['Warm one', 'Warm two']) await s.apply({ operations: [headingEdit(s.state, about, v)] }, { label: v });
+    const before = new Set(packFileCopies(s.state).map((c) => c.path));
+    const opened: string[] = [];
+    const open = fsp.open.bind(fsp) as (...a: unknown[]) => Promise<unknown>;
+    vi.spyOn(fsp, 'open').mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      opened.push(String(p));
+      return open(p, ...rest);
+    }) as typeof fsp.open);
+    // A theme font the site did not use: its faces are read from the pack, checked, and copied in.
+    expect((await s.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: "'Lora Variable', 'Lora', Georgia, serif" }] }, { label: 'Choose font' })).ok).toBe(true);
+    const lora = packFileCopies(s.state).filter((c) => !before.has(c.path));
+    expect(lora.length).toBeGreaterThan(0);
+    const sources = new Set(lora.map((c) => packFileInfo(c.pack, c.file)!.abs));
+    expect(opened.filter((p) => sources.has(p)).sort()).toEqual([...sources].sort());
+    // The save right after reads none of them from the pack again; each copy is the pack's file, byte for byte.
+    opened.length = 0;
+    expect((await s.apply({ operations: [headingEdit(s.state, about, 'After the font')] }, { label: 'Edit heading' })).ok).toBe(true);
+    vi.restoreAllMocks();
+    expect(opened.filter((p) => sources.has(p))).toEqual([]);
+    for (const c of lora) expect(readFileSync(join(dir, c.path)).equals(await readPackFile(c.pack, c.file)), c.path).toBe(true);
     expectFullOutput(dir, s);
   });
 

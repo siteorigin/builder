@@ -120,7 +120,7 @@ function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
 function sameDesc(a, b) {
-  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && (a.partItem || '') === (b.partItem || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
 }
 /**
  * The slot an empty slot's placeholder stands for, as the editor names it: its placement's descriptor and the slot's
@@ -196,12 +196,54 @@ function marksText(el, desc) {
   const owner = partOwner(el);
   return !!owner && sameDesc(descOf(owner), { ctx: desc.ctx, node: desc.node, items: desc.items });
 }
-/** A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. */
+/** The class prefix an item's own styles take, which the preview gives every item of a code placement's repeated parts. */
+const ITEM_CLASS = 'so-oi-';
+const partItemMaps = new WeakMap();
+/**
+ * Which item of which repeated part each item class names, in a code placement (`data-so-part-items`, written by the
+ * generator): read once per value of the attribute, since the pointer reads it on every move.
+ */
+function partItemsOf(owner) {
+  const raw = owner.getAttribute('data-so-part-items') || '';
+  const cached = partItemMaps.get(owner);
+  if (cached && cached.raw === raw) return cached.map;
+  let map = null;
+  try {
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) map = parsed;
+  } catch {
+    map = null;
+  }
+  partItemMaps.set(owner, { raw, map });
+  return map;
+}
+/** An item ID as the editor's item paths write it: "%" and "," escaped, so one ID stays one item. */
+function encodeItem(id) {
+  return String(id).replaceAll('%', '%25').replaceAll(',', '%2C');
+}
+/** The item (encoded) a code placement's repeated part is shown for, by the item class it carries; '' for none. */
+function partItemOf(el, owner, part) {
+  const map = partItemsOf(owner);
+  if (!map) return '';
+  for (const c of el.classList || []) {
+    if (!c.startsWith(ITEM_CLASS) || !Object.hasOwn(map, c)) continue;
+    const entry = map[c];
+    if (Array.isArray(entry) && entry[0] === part && typeof entry[1] === 'string') return encodeItem(entry[1]);
+  }
+  return '';
+}
+/**
+ * A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. A part
+ * shown once per item of a list names its item (`partItem`, apart from the items the placement itself is shown for),
+ * so one card is picked rather than all of them.
+ */
 function partDesc(el) {
   if (el.hasAttribute('data-so-node')) return null;
   const part = partIdOf(el);
   const owner = part ? partOwner(el) : null;
-  return owner ? { ...descOf(owner), part } : null;
+  if (!owner) return null;
+  const item = partItemOf(el, owner, part);
+  return { ...descOf(owner), part, ...(item ? { partItem: item } : {}) };
 }
 /**
  * What the pointer is on, as the editor names it: the innermost marked part of a code placement or editor element
@@ -250,13 +292,18 @@ function findAll(desc) {
   }
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   const els = [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
+  const part = typeof desc.part === 'string' && desc.part ? desc.part : '';
   // Text a code placement's author marked: every element of its own markup carrying that marker.
   if (typeof desc.bind === 'string' && desc.bind) return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(`[${TEXT_ATTR}="${cssEscape(desc.bind)}"]`)].filter((t) => partOwner(t) === el));
-  if (typeof desc.part !== 'string' || !desc.part) return els;
+  if (!part) return els;
+  const item = typeof desc.partItem === 'string' ? desc.partItem : '';
   // A marked part of a code placement: every element of that placement's own markup carrying the marker (the
-  // author's code can show one more than once), never one in another placement or in content placed in a slot.
-  const marked = `[data-so-part="${cssEscape(desc.part)}"], .${cssEscape(PART_CLASS + desc.part)}`;
-  return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === desc.part && partOwner(p) === el));
+  // author's code can show one more than once), never one in another placement or in content placed in a slot. One
+  // item's part is the elements of it shown for that item.
+  const marked = `[data-so-part="${cssEscape(part)}"], .${cssEscape(PART_CLASS + part)}`;
+  return els
+    .filter((el) => el.hasAttribute('data-so-code'))
+    .flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === part && partOwner(p) === el && (!item || partItemOf(p, el, part) === item)));
 }
 /** The box an element is laid out as (with display: contents, its first child that shows), and whether its container
  *  lays its items out by CSS order: only a flex or grid container does. */
