@@ -23,8 +23,9 @@ import { ProjectSession } from '../../src/main/project/session';
 
 class FakeAdapter implements AgentModelAdapter {
   requests: CanonicalModelRequest[] = [];
+  constructor(private toolCalling: 'native' | 'constrained-json' = 'native') {}
   capabilities() {
-    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 } as ReturnType<AgentModelAdapter['capabilities']>;
+    return { toolCalling: this.toolCalling, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 } as ReturnType<AgentModelAdapter['capabilities']>;
   }
   async *streamTurn(req: CanonicalModelRequest): AsyncIterable<ModelEvent> {
     this.requests.push(structuredClone(req));
@@ -36,11 +37,11 @@ const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 /** The first request a run sends the model, for a chat context. */
-async function firstRequest(text: string, extra: (state: ProjectState) => Partial<ChatContext> = () => ({})): Promise<CanonicalModelRequest> {
+async function firstRequest(text: string, extra: (state: ProjectState) => Partial<ChatContext> = () => ({}), codeEnabled = true, toolCalling?: 'constrained-json'): Promise<CanonicalModelRequest> {
   const dir = mkdtempSync(join(tmpdir(), 'so-instr-'));
   dirs.push(dir);
   const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
-  const adapter = new FakeAdapter();
+  const adapter = new FakeAdapter(toolCalling);
   let busy = false;
   const orch = new Orchestrator({
     session: () => session,
@@ -48,7 +49,8 @@ async function firstRequest(text: string, extra: (state: ProjectState) => Partia
     emit: () => {},
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [] }),
-    onBusyChange: (b) => (busy = b)
+    onBusyChange: (b) => (busy = b),
+    codeEnabled: async () => codeEnabled
   });
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, ...extra(session.state) };
   const r = await orch.send(text, ctx);
@@ -159,5 +161,29 @@ describe('agent instructions match the tool definitions (#815)', () => {
     });
     expect(runs[0].system).toContain('Making a new reusable component');
     expect(runs[2].system).toContain('Checking a component');
+  });
+
+  it('states the Svelte 5 runes contract before the first draft, to every run offered component.createCode (#1113)', async () => {
+    const page = (s: ProjectState): Partial<ChatContext> => ({ pageId: s.site.homePageId, scope: 'page' });
+    const selected = (s: ProjectState): Partial<ChatContext> => ({ selection: { owner: { kind: 'page', id: s.site.homePageId }, instancePath: [], nodeId: s.pages[s.site.homePageId].rootIds[0] }, selectionLabel: 'Hero' });
+    const runs = await Promise.all([
+      firstRequest('Write a code component that counts down to our sale'),
+      firstRequest('Write a code component that counts down to our sale', () => ({ task: 'component' })),
+      firstRequest('Turn this into a code component with a counter', selected),
+      // A small model, which reads no schema descriptions and gets the component run's own short instructions.
+      firstRequest('Write a code component that counts down to our sale', () => ({ task: 'component' }), true, 'constrained-json'),
+      firstRequest('Rewrite this page', page),
+      firstRequest('Write a code component that counts down to our sale', () => ({}), false),
+      firstRequest('Write a code component that counts down to our sale', () => ({ task: 'component' }), false)
+    ]);
+    // The quoted name is the operation itself; descriptions only mention it in passing.
+    const offered = runs.map((req) => JSON.stringify(req.tools).includes('"component.createCode"'));
+    expect(offered).toEqual([true, true, true, true, false, false, false]);
+    // The small model's run really is the short one.
+    expect(runs[3].system).toContain('You make reusable components');
+    runs.forEach((req, i) => {
+      for (const words of ['Svelte 5 runes mode', '$props()', '$state()', '$derived()', '$effect()', 'onclick', 'export let']) expect(req.system.includes(words), `${i} ${words}`).toBe(offered[i]);
+      expect(req.system.split('Svelte 5 runes mode').length - 1, `${i} said once`).toBe(offered[i] ? 1 : 0);
+    });
   });
 });
