@@ -458,7 +458,7 @@ async function settledBatches<T, R>(items: T[], fn: (item: T) => Promise<R>): Pr
  * the project as it was throughout (see the top of this file). Throws a SnapshotCaptureError when it was not. `settleMs`
  * is how long a file must have been left alone for its stat to stand for its bytes (statTrusted); `paused` is called
  * once the files are listed and once they are hashed, before the check that nothing changed (for tests). `stop` is
- * asked before each file is hashed: true ends the capture with an error.
+ * asked before each file is hashed (or hashed again): true ends the capture with an error.
  */
 export async function captureSnapshotInventory(root: string, opts: { settleMs?: number; paused?: (at: 'listed' | 'hashed') => Promise<void> | void; stop?: () => boolean } = {}): Promise<SnapshotInventory> {
   const settleMs = opts.settleMs ?? 3000;
@@ -474,6 +474,7 @@ export async function captureSnapshotInventory(root: string, opts: { settleMs?: 
   await settledBatches(
     files.map((l, i) => ({ l, i })).filter(({ l }) => !l.trusted),
     async ({ l, i }) => {
+      if (opts.stop?.()) throw new Error('The snapshot was stopped.');
       if ((await hashListed(l)).sha256 !== hashed[i].sha256) throw changed(l.rel);
     }
   );
