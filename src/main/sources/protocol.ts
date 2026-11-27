@@ -46,13 +46,21 @@ export interface NormalizedRecord {
   body?: RichText;
 }
 
-/** A picture the worker fetched for the records that changed: its identity (see imageKey), and its bytes. */
+/**
+ * A picture the worker fetched for the records that changed: its identity (see imageKey), its type and size, and its
+ * bytes. A sync that names a spool gets no bytes in the reply: the worker wrote each picture to the spool as it came,
+ * as the file named by its place in the reply's list (spoolFile), so neither process ever holds the whole batch.
+ */
 export interface SyncImage {
   key: string;
   mime: string;
   ext: string;
-  bytes: Uint8Array;
+  size: number;
+  bytes?: Uint8Array;
 }
+
+/** The file in a sync's spool that holds the picture at `index` of its reply's list: named by the main process, never by the worker. */
+export const spoolFile = (index: number) => `${index}.picture`;
 
 /**
  * Why a sync failed, as the worker reports it: fixed reasons, chosen by the main process's words (see client.ts), and
@@ -85,6 +93,11 @@ export interface SyncRequest {
   offline?: boolean;
   /** The content hash each record had when it was last synced, by external ID: their pictures are not fetched again. */
   known: Record<string, string>;
+  /**
+   * A folder of the main process's own, empty, for a sync's pictures: each is written there as it is fetched instead of
+   * sent in the reply (SyncImage). Left out, the reply carries their bytes.
+   */
+  spool?: string;
 }
 
 /** How many records a sample shows as the source sent them. */

@@ -6,7 +6,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import sharp from 'sharp';
@@ -41,8 +42,8 @@ const { syncSource } = await import('../../src/main/sources/sync');
 const { syncedEntryId } = await import('../../src/main/sources/reconcile');
 const { copyProjectSource, exportedSourcesProblem, inProjectSource, writeExportedSources } = await import('../../src/main/export');
 const { isPrivateFileName } = await import('../../src/main/project/private-files');
-import type { SyncHandle } from '../../src/main/sources/client';
-import type { NormalizedRecord, SyncReply, SyncRequest } from '../../src/main/sources/protocol';
+import type { SyncHandle, SyncResult, SyncRunner } from '../../src/main/sources/client';
+import { spoolFile, type NormalizedRecord, type SyncReply, type SyncRequest } from '../../src/main/sources/protocol';
 import type { EditOperation } from '@shared/ops';
 
 const SECRET = 'tok-0a1b2c3d4e5f6a7b';
@@ -87,7 +88,7 @@ async function setup() {
   pictures = { 'https://cdn.example/ana.png': await png(10), 'https://cdn.example/ben.png': await png(200) };
   // Another address for Ana's very picture.
   pictures['https://cdn.example/cy.png'] = pictures['https://cdn.example/ana.png'];
-  const world = { records: [] as NormalizedRecord[], reads: 0, fetched: [] as string[], gate: null as Promise<void> | null, importGate: null as Promise<void> | null, imports: 0, signedWith: [] as string[] };
+  const world = { records: [] as NormalizedRecord[], reads: 0, fetched: [] as string[], broken: [] as string[], gate: null as Promise<void> | null, importGate: null as Promise<void> | null, imports: 0, signedWith: [] as string[] };
   // The sync worker, run in this process by the code the real worker runs, with a reader of fixture records.
   const spawn = (): SyncHandle => {
     const e = new EventEmitter();
@@ -104,7 +105,11 @@ async function setup() {
               }
             }
           },
-          fetchImage: async (url) => (world.fetched.push(url), { bytes: new Uint8Array(pictures[url]), mime: 'image/png' })
+          fetchImage: async (url) => {
+            world.fetched.push(url);
+            if (world.broken.includes(url)) throw new Error('404');
+            return { bytes: new Uint8Array(pictures[url]), mime: 'image/png' };
+          }
         }).then((reply: SyncReply) => e.emit('message', reply)),
       on: (ev: string, l: (x: never) => void) => (e.on(ev, l as (x: unknown) => void), undefined),
       kill: () => true
@@ -117,6 +122,7 @@ async function setup() {
     // Its settings saved here (see source-connect.test.ts for settings changed outside the app).
     approvals: { approved: async () => true },
     current: () => true,
+    spoolRoot: join(env.userData, 'source-sync'),
     importImage: async (img: { name: string; mime: string; ext: string; bytes: Uint8Array }, known: Parameters<typeof importPackageImage>[2], createdAt: string) => {
       world.imports++;
       if (world.importGate) await world.importGate;
@@ -244,6 +250,81 @@ describe('syncing a source into a project', () => {
     expect(s.state.site.description).toBe('Changed again');
     expect(Object.keys(s.state.collections.team.entries)).toEqual([]);
     expect(s.state.collections.team.settings.sourceId).toBeUndefined();
+  });
+
+  it('keeps its pictures in a spool, not its reply, reads each as it imports it, and leaves no spool behind (#1045)', async () => {
+    const { s, world, deps } = await setup();
+    const spools = () => (existsSync(deps.spoolRoot) ? readdirSync(deps.spoolRoot) : []);
+    // A folder a sync left when the app stopped is taken away by the next one.
+    mkdirSync(join(deps.spoolRoot, 'sync-left'), { recursive: true });
+    writeFileSync(join(deps.spoolRoot, 'sync-left', spoolFile(0)), 'old');
+    const replies: SyncResult[] = [];
+    const runner: SyncRunner = { run: async (...a) => { const r = await deps.runner.run(...a); replies.push(r); return r; }, stop: () => deps.runner.stop() };
+    const imported: string[] = [];
+    const importImage: typeof deps.importImage = async (img, known, at) => (imported.push(img.name), deps.importImage(img, known, at));
+    // Listed in another order than the one the sync imports them in (by external ID).
+    world.records = [person('2', 'Ben'), person('1', 'Ana')];
+    expect(await syncSource({ ...deps, runner, importImage }, 'people')).toMatchObject({ ok: true, created: 2, images: 2 });
+    // The reply said each picture's size and carried none of its bytes.
+    expect(replies[0].images).toEqual([
+      { key: 'url:https://cdn.example/ben.png', mime: 'image/png', ext: '.png', size: pictures['https://cdn.example/ben.png'].length },
+      { key: 'url:https://cdn.example/ana.png', mime: 'image/png', ext: '.png', size: pictures['https://cdn.example/ana.png'].length }
+    ]);
+    // Fetched in the source's order, imported in the sync's, and each entry shows its own picture.
+    expect(world.fetched).toEqual(['https://cdn.example/ben.png', 'https://cdn.example/ana.png']);
+    expect(imported).toEqual(['Ana', 'Ben']);
+    const entries = s.state.collections.team.entries;
+    for (const [id, name] of [['1', 'ana'], ['2', 'ben']])
+      expect(s.state.assets.assets[entries[syncedEntryId('people', id, () => false)].featuredImage!].hash).toBe(createHash('sha256').update(pictures[`https://cdn.example/${name}.png`]).digest('hex'));
+    expect(spools()).toEqual([]);
+  });
+
+  it('imports nothing when a picture will not load, however many came first, nor when its spooled file is not what was fetched (#1045)', async () => {
+    const { dir, s, world, deps } = await setup();
+    const spools = () => (existsSync(deps.spoolRoot) ? readdirSync(deps.spoolRoot) : []);
+    const assets = () => (existsSync(join(dir, 'static/assets')) ? readdirSync(join(dir, 'static/assets')).sort() : []);
+    const before = assets();
+    const library = Object.keys(s.state.assets.assets).length;
+    world.records = [person('1', 'Ana'), person('2', 'Ben'), person('3', 'Cy')];
+    world.broken = ['https://cdn.example/cy.png'];
+    expect(await syncSource(deps, 'people')).toMatchObject({ ok: false, code: 'image' });
+    // Two pictures fetched and kept before the third failed: none of them reached the library or the project's folder.
+    expect(world.fetched).toEqual(['https://cdn.example/ana.png', 'https://cdn.example/ben.png', 'https://cdn.example/cy.png']);
+    expect([world.imports, assets(), Object.keys(s.state.assets.assets).length, Object.keys(s.state.collections.team.entries)]).toEqual([0, before, library, []]);
+    expect(spools()).toEqual([]);
+    world.broken = [];
+    // A picture's file cut short, or put in place as a link to the very bytes, or missing, after the worker said what
+    // it fetched: found before the first picture is imported, so none is.
+    const outside = join(temp('so-outside-'), 'ben.png');
+    writeFileSync(outside, pictures['https://cdn.example/ben.png']);
+    const spoils = [(f: string) => truncateSync(f, 3), (f: string) => (rmSync(f), symlinkSync(outside, f)), (f: string) => rmSync(f)];
+    for (const spoil of spoils) {
+      const runner: SyncRunner = {
+        run: async (name, req, opts) => {
+          const r = await deps.runner.run(name, req, opts);
+          spoil(join(req.spool!, spoolFile(1)));
+          return r;
+        },
+        stop: () => deps.runner.stop()
+      };
+      const r = await syncSource({ ...deps, runner }, 'people');
+      expect(r).toMatchObject({ ok: false });
+      expect(r.ok === false && r.message).toBe('“People API” was not synced: a picture could not be fetched.');
+      expect([world.imports, assets(), Object.keys(s.state.assets.assets).length, Object.keys(s.state.collections.team.entries)]).toEqual([0, before, library, []]);
+      expect(spools()).toEqual([]);
+    }
+    // Closed, or changed under it, while its pictures were being brought in: no spool is left either.
+    await expect(syncSource({ ...deps, current: () => false }, 'people')).resolves.toMatchObject({ ok: false, code: 'closed' });
+    expect(spools()).toEqual([]);
+    let let_go!: () => void;
+    world.importGate = new Promise((r) => (let_go = r));
+    const late = syncSource(deps, 'people');
+    await vi.waitFor(() => expect(world.imports).toBeGreaterThan(0));
+    await s.apply({ operations: [{ type: 'site.update', description: 'Changed meanwhile' }] }, { label: 'Describe' });
+    let_go();
+    world.importGate = null;
+    await expect(late).resolves.toMatchObject({ ok: false, code: 'stale' });
+    expect(spools()).toEqual([]);
   });
 
   it('lands nothing, no library record and no entry, when its records cannot be written', async () => {

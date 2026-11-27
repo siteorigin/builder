@@ -130,6 +130,7 @@ async function setup(endpoints: { contentful?: string } = {}) {
     secrets,
     approvals,
     current: () => true,
+    spoolRoot: join(env.userData, 'source-sync'),
     importImage: async (img: { name: string; mime: string; ext: string; bytes: Uint8Array }, known: Parameters<typeof importPackageImage>[2], createdAt: string) =>
       importPackageImage(dir, { name: img.name, mime: img.mime, ext: img.ext, bytes: Buffer.from(img.bytes) }, known, undefined, createdAt)
   };

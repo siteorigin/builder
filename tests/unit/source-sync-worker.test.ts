@@ -3,12 +3,15 @@
  * stopped, so a source can never hold the editor up; and what it says reaches the author in the app's own words,
  * never with a secret in them.
  */
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSyncRunner, SyncError, type SyncHandle } from '../../src/main/sources/client';
 import { runSync, type ImageFetcher } from '../../src/main/sources/run';
 import { AdapterError, type SourceAdapter } from '../../src/main/sources/registry';
 import { recordHash } from '../../src/main/sources/hash';
-import type { NormalizedRecord, SyncReply, SyncRequest } from '../../src/main/sources/protocol';
+import { MAX_IMAGE_BYTES, MAX_IMAGES_BYTES, spoolFile, type NormalizedRecord, type SyncImage, type SyncReply, type SyncRequest } from '../../src/main/sources/protocol';
 
 const SECRET = 'tok-9f8e7d6c5b4a';
 const request: Omit<SyncRequest, 'id'> = { adapter: 'fixture', config: { credentials: { token: { $secret: 'team' } } }, secrets: { team: SECRET }, known: {} };
@@ -168,8 +171,8 @@ describe('a sync as the worker runs it', () => {
       ok: true,
       records,
       images: [
-        { key: 'url:https://cdn.example/a.png', mime: 'image/png', ext: '.png', bytes: png },
-        { key: 'id:asset-7', mime: 'image/png', ext: '.png', bytes: png }
+        { key: 'url:https://cdn.example/a.png', mime: 'image/png', ext: '.png', size: 4, bytes: png },
+        { key: 'id:asset-7', mime: 'image/png', ext: '.png', size: 4, bytes: png }
       ]
     });
     expect(asked).toEqual(['https://cdn.example/a.png', 'https://cdn.example/x.png?sig=1']);
@@ -253,5 +256,153 @@ describe('a sync as the worker runs it', () => {
     expect(await run(two, second)).toEqual({ id: 1, ok: false, code: 'image' });
     expect(await runSync({ ...request, adapter: 'contentful', id: 1 }, { adapters: adapter(withPicture), fetchImage })).toEqual({ id: 1, ok: false, code: 'adapter-unavailable' });
     expect(await runSync({ ...request, adapter: 'constructor', id: 1 }, { adapters: adapter(withPicture), fetchImage })).toEqual({ id: 1, ok: false, code: 'adapter-unavailable' });
+  });
+});
+
+describe('a sync with a spool (#1045)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const spoolDir = () => {
+    const d = mkdtempSync(join(tmpdir(), 'so-spool-'));
+    dirs.push(d);
+    return d;
+  };
+  const pictures: Record<string, Uint8Array> = { 'https://cdn.example/a.png': new Uint8Array([137, 80, 78, 71, 1, 2, 3]), 'https://cdn.example/b.png': new Uint8Array([137, 80, 78, 71, 9]) };
+  const records = [record('2', { featuredImage: { $image: { url: 'https://cdn.example/b.png' } } }), record('1', { featuredImage: { $image: { url: 'https://cdn.example/a.png' } } })];
+  const adapters: Record<string, SourceAdapter> = { fixture: { read: async () => records } };
+
+  it('writes each picture to its file as it arrives, in pieces, and sends only its size', async () => {
+    const spool = spoolDir();
+    const sinks: boolean[] = [];
+    // A fetcher that streams: each picture handed over a byte or two at a time, none kept.
+    const fetchImage: ImageFetcher = async (url, _max, _signal, _check, sink) => {
+      sinks.push(!!sink);
+      const bytes = pictures[url];
+      for (let at = 0; at < bytes.length; at += 2) await sink!(bytes.subarray(at, at + 2));
+      return { size: bytes.length, mime: 'image/png' };
+    };
+    const reply = await runSync({ ...request, id: 1, spool }, { adapters, fetchImage });
+    // In the order the source listed them, each the file of its place in the list.
+    expect(reply).toEqual({ id: 1, ok: true, records, images: [{ key: 'url:https://cdn.example/b.png', mime: 'image/png', ext: '.png', size: 5 }, { key: 'url:https://cdn.example/a.png', mime: 'image/png', ext: '.png', size: 7 }] });
+    expect(sinks).toEqual([true, true]);
+    expect(readdirSync(spool).sort()).toEqual([spoolFile(0), spoolFile(1)]);
+    expect(new Uint8Array(readFileSync(join(spool, spoolFile(0))))).toEqual(pictures['https://cdn.example/b.png']);
+    expect(new Uint8Array(readFileSync(join(spool, spoolFile(1))))).toEqual(pictures['https://cdn.example/a.png']);
+    // A fetcher that answers with the bytes at once has them written too.
+    const whole = spoolDir();
+    const atOnce = await runSync({ ...request, id: 2, spool: whole }, { adapters, fetchImage: async (url) => ({ bytes: pictures[url], mime: 'image/png' }) });
+    expect(atOnce.ok && atOnce.images.map((i) => [i.size, i.bytes])).toEqual([[5, undefined], [7, undefined]]);
+    expect(new Uint8Array(readFileSync(join(whole, spoolFile(1))))).toEqual(pictures['https://cdn.example/a.png']);
+  });
+
+  it('keeps the limits of a picture and of a sync on what it writes, and never writes through what is already there', async () => {
+    const limits: number[] = [];
+    // More than the fetcher was told it may bring, as a server that sends past its length would.
+    const flood: ImageFetcher = async (_url, max, _signal, _check, sink) => {
+      limits.push(max);
+      await sink!(new Uint8Array(max + 1).subarray(0, max + 1));
+      return { size: max + 1, mime: 'image/png' };
+    };
+    const flooded = spoolDir();
+    expect(await runSync({ ...request, id: 3, spool: flooded }, { adapters, fetchImage: flood })).toMatchObject({ ok: false, code: 'too-large' });
+    expect(limits).toEqual([MAX_IMAGE_BYTES]);
+    // Refused before any of it is written, as is a picture a fetcher hands over whole.
+    expect(readFileSync(join(flooded, spoolFile(0))).length).toBe(0);
+    const whole = spoolDir();
+    expect(await runSync({ ...request, id: 7, spool: whole }, { adapters, fetchImage: async () => ({ bytes: new Uint8Array(MAX_IMAGE_BYTES + 1), mime: 'image/png' }) })).toMatchObject({ ok: false, code: 'too-large' });
+    expect(readFileSync(join(whole, spoolFile(0))).length).toBe(0);
+    // The second picture may bring only what the first left of the sync's limit.
+    const block = new Uint8Array(MAX_IMAGE_BYTES);
+    const big: ImageFetcher = async (_url, max, _signal, _check, sink) => {
+      limits.push(max);
+      await sink!(block);
+      return { size: block.length, mime: 'image/png' };
+    };
+    limits.length = 0;
+    const many = Array.from({ length: 6 }, (_, i) => record(String(i), { featuredImage: { $image: { url: `https://cdn.example/${i}/b.png` } } }));
+    expect(await runSync({ ...request, id: 4, spool: spoolDir() }, { adapters: { fixture: { read: async () => many } }, fetchImage: big })).toMatchObject({ ok: false, code: 'too-large' });
+    expect(limits).toEqual([MAX_IMAGE_BYTES, MAX_IMAGE_BYTES, MAX_IMAGE_BYTES, MAX_IMAGE_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES_BYTES - 5 * MAX_IMAGE_BYTES]);
+    // A link where a picture's file would go is never written through.
+    const spool = spoolDir();
+    const outside = join(spoolDir(), 'elsewhere');
+    writeFileSync(outside, 'theirs');
+    symlinkSync(outside, join(spool, spoolFile(0)));
+    const linked = await runSync({ ...request, id: 5, spool }, { adapters, fetchImage: async (url) => ({ bytes: pictures[url], mime: 'image/png' }) });
+    expect(linked).toMatchObject({ ok: false, code: 'failed', detail: 'a picture could not be kept while it was fetched' });
+    expect(readFileSync(outside, 'utf8')).toBe('theirs');
+    // Nor into a spool that is not there.
+    const gone = join(spoolDir(), 'missing');
+    expect(await runSync({ ...request, id: 6, spool: gone }, { adapters, fetchImage: async (url) => ({ bytes: pictures[url], mime: 'image/png' }) })).toMatchObject({ ok: false, code: 'failed' });
+    expect(existsSync(gone)).toBe(false);
+  });
+
+  it('streams a picture into the spool with the real fetcher, each piece as it arrives, and fails a sync whose file will not close', async () => {
+    const { createFetchImage } = await import('../../src/main/sources/fetch-image');
+    let second!: () => void;
+    const released = new Promise<void>((r) => (second = r));
+    const seen: number[] = [];
+    const platform = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async start(c) {
+            c.enqueue(new Uint8Array([137, 80, 78]));
+            await released;
+            c.enqueue(new Uint8Array([71, 1]));
+            c.close();
+          }
+        }),
+        { headers: { 'content-type': 'image/png' } }
+      )) as unknown as typeof fetch;
+    const real = createFetchImage(async () => [{ address: '93.184.215.14' }], platform);
+    const got = await real('https://cdn.example/a.png', 100, new AbortController().signal, () => null, async (chunk) => {
+      seen.push(chunk.byteLength);
+      // The first piece is handed over before the second has even arrived.
+      if (seen.length === 1) second();
+    });
+    expect([seen, got]).toEqual([[3, 2], { size: 5, mime: 'image/png' }]);
+    // A file the system refuses to close (a write it reports late) is no picture kept.
+    const spool = spoolDir();
+    const nodeFs = (await import('node:fs')).promises;
+    const open = nodeFs.open.bind(nodeFs);
+    const spy = vi.spyOn(nodeFs, 'open').mockImplementation(async (...a: Parameters<typeof nodeFs.open>) => {
+      const h = await open(...a);
+      return new Proxy(h, {
+        get(t, k) {
+          if (k === 'close') return async () => (await t.close(), Promise.reject(new Error('EIO')));
+          const v = Reflect.get(t, k) as unknown;
+          return typeof v === 'function' ? (v as (...x: unknown[]) => unknown).bind(t) : v;
+        }
+      });
+    });
+    try {
+      expect(await runSync({ ...request, id: 8, spool }, { adapters, fetchImage: async (url) => ({ bytes: pictures[url], mime: 'image/png' }) })).toMatchObject({ ok: false, code: 'failed', detail: 'a picture could not be kept while it was fetched' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('is answered, by the client, only with pictures as a spooled sync gives them', async () => {
+    const image = (extra: Partial<SyncImage> = {}): SyncImage => ({ key: 'url:https://cdn.example/a.png', mime: 'image/png', ext: '.png', size: 3, ...extra });
+    const answer = (images: SyncImage[]) => fakeWorker((m, w) => w.reply({ id: m.id, ok: true, records: [record('1')], images })).spawn;
+    const spooled = { ...request, spool: '/spool' };
+    await expect(createSyncRunner(answer([image()])).run('Team', spooled)).resolves.toEqual({ records: [record('1')], images: [image()] });
+    // Bytes in the reply of a sync that named a spool, none in one that did not, a size the bytes are not, or past a limit.
+    await expect(createSyncRunner(answer([image({ bytes: new Uint8Array(3) })])).run('Team', spooled)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(createSyncRunner(answer([image()])).run('Team', request)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(createSyncRunner(answer([image({ bytes: new Uint8Array(4) })])).run('Team', request)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(createSyncRunner(answer([image({ bytes: new Uint8Array(3) })])).run('Team', request)).resolves.toMatchObject({ images: [{ size: 3 }] });
+    await expect(createSyncRunner(answer([image({ size: MAX_IMAGE_BYTES + 1 })])).run('Team', spooled)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(createSyncRunner(answer([image({ size: -1 })])).run('Team', spooled)).rejects.toMatchObject({ code: 'invalid' });
+    // Up to the sync's limit in all, each within a picture's: one byte more is refused.
+    const full = [...Array.from({ length: 5 }, (_, i) => image({ key: `k${i}`, size: MAX_IMAGE_BYTES })), image({ key: 'k5', size: MAX_IMAGES_BYTES - 5 * MAX_IMAGE_BYTES })];
+    await expect(createSyncRunner(answer(full)).run('Team', spooled)).resolves.toMatchObject({ images: full });
+    await expect(createSyncRunner(answer([...full.slice(0, 5), image({ key: 'k5', size: MAX_IMAGES_BYTES - 5 * MAX_IMAGE_BYTES + 1 })])).run('Team', spooled)).rejects.toMatchObject({ code: 'invalid' });
+    // The same picture twice would name two files for one identity; a hole in the list names none.
+    await expect(createSyncRunner(answer([image(), image()])).run('Team', spooled)).rejects.toMatchObject({ code: 'invalid' });
+    const holed = [image()] as SyncImage[];
+    holed[2] = image({ key: 'other' });
+    await expect(createSyncRunner(answer(holed)).run('Team', spooled)).rejects.toMatchObject({ code: 'invalid' });
   });
 });

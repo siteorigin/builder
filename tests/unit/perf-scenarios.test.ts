@@ -8,6 +8,9 @@ import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 import { PROJECT_DEFINITION_ID } from '../../src/shared/component-ids';
 import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, ASSET_PICKERS, grownImages, GALLERY_PAGE, galleryComponent, galleryDefinitionId, galleryPlacements, galleryRecord, PREVIEW_IMAGE_READINGS, previewImages, windowPictures, memoryBrowse, BROWSE_PAGES, BROWSE_PREVIEWS, fixturePages } from '../../scripts/perf/scenarios';
+import { SOURCE_SYNC_READINGS, sourceSync, SYNC_PICTURE_HOST, syncPictureName } from '../../scripts/perf/scenarios';
+import { SYNC_PHOTO_COUNT, syncPhotoName } from '../../scripts/perf/photos';
+import { pictureName } from '../../src/main/sources/sync';
 
 let seq = 0;
 const m = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
@@ -2070,6 +2073,43 @@ describe('memory', () => {
     expect(aiMemoryReply(2).startsWith(BATCH_REPLY)).toBe(true);
     // The answer before a request's never reads as that request's.
     for (let n = 2; n <= AI_MEMORY_RUNS; n++) expect(aiMemoryReply(n - 1).includes(aiMemoryReply(n))).toBe(false);
+  });
+
+  it('sourceSync: report its three readings, what the sync added at its peak and left, its time and what the source sent', () => {
+    const readings = [reading('ready', 200, 'rest', { editor: 100 }), reading('sync', 520, 'peak', { editor: 110, sourceSync: 300, media: 90 }), reading('synced', 230, 'rest', { editor: 105 })];
+    const span = m('source.sync', 5000, { kind: 'span', ms: 4200, attrs: { ok: true, images: 39 } });
+    const served = m('sourceSync.served', 6000, { attrs: { scenario: 'sourceSync', pictures: 41, pictureBytes: 120 * MiB, records: 2, photos: 0xabcdef12 } });
+    const got = sourceSync.measure(new Trace([span, served]), facts, readings);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.ready.mem.main'), v('memory.sync.peak.mem.main'), v('memory.sync.peak.mem.sourceSync'), v('memory.sync.peak.processes.sourceSync'), v('memory.synced.mem.main')]).toEqual([200, 520, 300, 1, 230]);
+    // The peak over the rest before it (a role the rest had none of counts from none), and what the sync left.
+    expect([v('memory.sync.growth.mem.main'), v('memory.sync.growth.mem.sourceSync'), v('memory.sync.growth.mem.media'), v('memory.synced.growth.mem.main'), v('memory.synced.growth.mem.editor')]).toEqual([320, 300, 90, 30, 5]);
+    expect(['sourceSync.ms', 'sourceSync.images', 'sourceSync.picturesServed', 'sourceSync.pictureBytesServed', 'sourceSync.recordRequests', 'sourceSync.photosDigest'].map((k) => got.metrics[k])).toEqual([
+      { unit: 'ms', value: 4200 },
+      { unit: 'count', value: 39 },
+      { unit: 'count', value: 41 },
+      { unit: 'bytes', value: 120 * MiB },
+      { unit: 'count', value: 2 },
+      { unit: 'count', value: 0xabcdef12 }
+    ]);
+    const lacking = sourceSync.measure(new Trace([]), facts, readings.slice(0, 2));
+    expect(lacking.missing).toEqual(['memory reading synced', 'source.sync', 'sourceSync.served']);
+    // A mark or span without the numbers it should carry fails the iteration rather than reporting a made-up one.
+    const bare = sourceSync.measure(new Trace([m('source.sync', 5000, { kind: 'span', ms: 1, attrs: {} }), m('sourceSync.served', 6000, { attrs: { scenario: 'sourceSync', pictures: 40 } })]), facts, readings);
+    expect(bare.missing).toEqual(['source.sync images', 'sourceSync.served pictureBytes', 'sourceSync.served records', 'sourceSync.served photos']);
+    expect(bare.metrics['sourceSync.images']).toBeUndefined();
+    expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.synced'))).toBe(false);
+  });
+
+  it('sourceSync: syncs 40 photos from a source in the editor, on its own, and names each as the app names a picture', () => {
+    expect([sourceSync.memory, sourceSync.after, SYNC_PHOTO_COUNT]).toEqual([true, 'open', 40]);
+    expect(chainFor(['sourceSync']).map((s) => s.name)).toEqual(['launch', 'open', 'sourceSync']);
+    expect(() => chainFor(['sourceSync', 'memory'])).toThrow('are run one at a time');
+    expect(SOURCE_SYNC_READINGS.map(([label, kind]) => `${label}:${kind}`)).toEqual(['ready:rest', 'sync:peak', 'synced:rest']);
+    // The name the scenario expects each library image to have is the one a sync gives a picture its source names none for.
+    for (const i of [1, 9, 40]) expect(syncPictureName(i)).toBe(pictureName(undefined, `http://${SYNC_PICTURE_HOST}/photos/${syncPhotoName(i)}`));
+    expect(syncPictureName(7)).toBe('sync photo 07');
   });
 
   it('make 50 edits and give itself longer than a timing scenario, as a memory scenario', () => {

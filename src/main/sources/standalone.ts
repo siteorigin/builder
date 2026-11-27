@@ -222,12 +222,18 @@ export function secretsFromEnv(sources: readonly SourceDoc[], env: Readonly<Reco
   return out;
 }
 
+/** A fetched picture's bytes, as the reply carries them (this script's syncs name no spool): a view, never a copy. */
+function bytesOf(img: SyncImage): Buffer {
+  if (!img.bytes) throw new SyncCliError('A picture came back without its bytes.');
+  return Buffer.from(img.bytes.buffer, img.bytes.byteOffset, img.bytes.byteLength);
+}
+
 /**
  * A fetched picture as a library image: the one the library has with the same bytes (on disk, or brought in by this
  * sync), or a new record and its file.
  */
 async function libraryImage(dir: string, img: SyncImage, name: string, known: readonly AssetRecord[], staged: Map<string, { record: AssetRecord; hash: string }>, createdAt: string): Promise<{ record: AssetRecord; file?: PlannedWrite }> {
-  const buf = Buffer.from(img.bytes);
+  const buf = bytesOf(img);
   const problem = imageProblem(buf, img.mime);
   if (problem) throw new SyncCliError(`${name}${img.ext} cannot be a library image (${problem}).`);
   const hash = sha(buf);
@@ -320,7 +326,7 @@ async function syncSources(dir: string, start: ProjectState, sources: readonly S
       if (!img) throw say('a picture could not be fetched.');
       const name = pictureName(wanted.name, wanted.url);
       // Nor in its bytes, a text chunk's included, in any form a secret can be written.
-      if (holdsSecret(name, values) || pictureHoldsSecret(Buffer.from(img.bytes), values)) throw say(`${SECRET_IN_RECORDS}.`);
+      if (holdsSecret(name, values) || pictureHoldsSecret(bytesOf(img), values)) throw say(`${SECRET_IN_RECORDS}.`);
       const got = await libraryImage(dir, img, name, [...known, ...added], staged, now);
       if (holdsSecret(got.record.file, values)) throw say(`${SECRET_IN_RECORDS}.`);
       // Already in the library (or brought in for an earlier source of this sync, and so in it now): never added twice.

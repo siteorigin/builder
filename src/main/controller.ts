@@ -37,7 +37,7 @@ import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSessi
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
-import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { sourceApprovals, sourceSecrets, sourceSpoolRoot, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { gitClient, remoteGitClient } from './git/process';
 import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, PUBLISH_BRANCH, type GitRepository, type Oid } from './git/protocol';
 import { opaqueOk, readRemoteState, receiptOk, RemoteStateError, writeRemoteState, type DeploymentStatus, type PushPublicationResult, type RemoteFailure, type RemoteResult, type RemoteState } from './remote/binding';
@@ -3628,8 +3628,10 @@ export class Controller {
     const abort = new AbortController();
     this.sourceSyncs.add(abort);
     const current = () => !abort.signal.aborted && this.session === s && opening === this.workspaceKey && !this.closing;
+    const timing = perf.span('source.sync');
+    let result: SourceSyncResult = closed;
     try {
-      return await this.serialImport(async () => {
+      return (result = await this.serialImport(async () => {
         if (!current()) return closed;
         return syncSource(
           {
@@ -3639,13 +3641,15 @@ export class Controller {
             approvals: sourceApprovals,
             current,
             signal: abort.signal,
-            importImage: (img, known, createdAt) => importPackageImage(s.dir, { name: img.name, mime: img.mime, ext: img.ext, bytes: Buffer.from(img.bytes) }, known, this.writeFence(s), createdAt)
+            importImage: (img, known, createdAt) => importPackageImage(s.dir, img, known, this.writeFence(s), createdAt),
+            spoolRoot: sourceSpoolRoot()
           },
           sourceId
         );
-      });
+      }));
     } finally {
       this.sourceSyncs.delete(abort);
+      timing({ ok: result.ok, images: result.ok ? result.images : 0 });
     }
   }
 

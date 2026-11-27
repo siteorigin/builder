@@ -38,7 +38,7 @@ import { setToolsCheck } from './runtime/manager';
 import { stopToolsChecks, toolsChecker } from './runtime/tools-process';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
-import { stopSourceSyncs } from './sources/process';
+import { sourceSpoolRoot, stopSourceSyncs } from './sources/process';
 import { gitClient, gitRuntime, stopGitWorker } from './git/process';
 import { useVersionsGit } from './project/versions-git';
 import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navigationAllowed, sameOrigin } from './player-frames';
@@ -46,6 +46,8 @@ import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
 import { createReviewShooter } from './review-capture';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
+import { installSourceTestHosts } from './sources/test-hosts';
+import { sweepSpools } from './sources/spool';
 import { installAiJournal } from './ai-journal';
 import { aboutIcon, windowIcon } from './window-icon';
 import { createEditorCodeCache, type V8CachePolicy } from './code-cache';
@@ -135,6 +137,8 @@ const { headless, automated } = launchMode(process.env, globalThis);
 const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
 // And they keep every assistant event in order, for a test to follow each run by its own IDs (ai-journal.ts).
 const aiJournal = automated ? installAiJournal(globalThis) : null;
+// And may serve a source's pictures on this computer, which a sync never fetches from otherwise (sources/test-hosts.ts).
+if (automated) installSourceTestHosts(globalThis);
 const AI_TURNS_SPENT = 'This test session allows no more AI requests (its limit or its time is used up), so nothing was sent.';
 /** In a test with a deadline, a provider call that would start after it is refused, wherever in a request it comes. */
 const deadlineFetch: typeof fetch | undefined = aiJournal ? (input, init) => (aiJournal.turns().spent ? Promise.reject(new Error(AI_TURNS_SPENT)) : fetch(input, init)) : undefined;
@@ -1449,6 +1453,8 @@ app.whenReady().then(async () => {
   buildMenu();
   markStarted();
   startedUp = true;
+  // Pictures a sync was fetching when the app last stopped, never checked or imported (sources/spool.ts).
+  void sweepSpools(sourceSpoolRoot());
   // Registered once, not per window: macOS brings up a new window after the last one closes.
   // With Appearance on System, the window's backing color follows this computer's setting (the editor follows it itself).
   nativeTheme.on('updated', () => {

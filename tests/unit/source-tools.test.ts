@@ -121,7 +121,7 @@ async function setup(people: () => unknown = () => ({ data: PEOPLE }), draft: Pa
   expect(saved.error?.message).toBeUndefined();
   await approvals.approve(s.state.manifest.projectId, s.state.sources!.crew);
   const host = createAgentSources({ project: () => s, runner, secrets, approvals })(new AbortController().signal);
-  const deps = { session: s, runner, secrets, approvals, current: () => true, importImage: async () => { throw new Error('no pictures here'); } };
+  const deps = { session: s, runner, secrets, approvals, current: () => true, importImage: async () => { throw new Error('no pictures here'); }, spoolRoot: join(env.userData, 'source-sync') };
   return { api, dir, s, host, runner, secrets, approvals, deps, source };
 }
 

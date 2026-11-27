@@ -9,15 +9,16 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
 /** What a host name resolves to, as the system says: every address. */
 export type Lookup = (host: string) => Promise<Array<{ address: string }>>;
-const systemLookup: Lookup = (host) => lookup(host, { all: true });
+export const systemLookup: Lookup = (host) => lookup(host, { all: true });
 
 /**
  * A picture from the web, read no further than `maxBytes`. It is fetched without the source's credentials, so none
  * goes to another server; each address on the way, redirects included, is checked by `check` before it is asked, and
  * by what its name resolves to: a name that leads to this computer or the local network, or that cannot be found, is
- * refused. (A name that resolves differently by the time it is asked is not caught.)
+ * refused. (A name that resolves differently by the time it is asked is not caught.) With a `sink`, each piece is
+ * handed to it as it arrives, in order, and none is kept: the result has its size and no bytes.
  */
-export const createFetchImage = (resolve: Lookup = systemLookup): ImageFetcher => async (url, maxBytes, signal, check) => {
+export const createFetchImage = (resolve: Lookup = systemLookup, platformFetch: typeof fetch = (input, init) => fetch(input, init)): ImageFetcher => async (url, maxBytes, signal, check, sink) => {
   const resolvesLocally = async (address: string) => {
     const host = new URL(address).hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '');
     const found = await resolve(host).catch(() => null);
@@ -30,7 +31,7 @@ export const createFetchImage = (resolve: Lookup = systemLookup): ImageFetcher =
     const problem = check(address);
     if (problem) throw new AdapterError('image', problem);
     if (await resolvesLocally(address)) throw new AdapterError('image', 'a picture is on this computer or the local network, which a sync never reads');
-    res = await fetch(address, { signal, redirect: 'manual', credentials: 'omit' }).catch(() => {
+    res = await platformFetch(address, { signal, redirect: 'manual', credentials: 'omit' }).catch(() => {
       throw new AdapterError('network');
     });
     const next = REDIRECTS.has(res.status) ? res.headers.get('location') : null;
@@ -58,15 +59,22 @@ export const createFetchImage = (resolve: Lookup = systemLookup): ImageFetcher =
       await reader.cancel().catch(() => undefined);
       throw new AdapterError('too-large', 'its pictures are too large to sync');
     }
-    chunks.push(value);
+    if (!sink) chunks.push(value);
+    else
+      await sink(value).catch(async (e: unknown) => {
+        await reader.cancel().catch(() => undefined);
+        throw e;
+      });
   }
+  const mime = res.headers.get('content-type') ?? '';
+  if (sink) return { size: read, mime };
   const bytes = new Uint8Array(read);
   let at = 0;
   for (const c of chunks) {
     bytes.set(c, at);
     at += c.byteLength;
   }
-  return { bytes, mime: res.headers.get('content-type') ?? '' };
+  return { bytes, size: read, mime };
 };
 
 /**

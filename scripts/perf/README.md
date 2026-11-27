@@ -577,6 +577,33 @@ reading (`memory.aiIdle.*`, `memory.aiRun.peak.*`, `memory.aiDone.*`, `memory.ai
 `memory.aiRun.growth.*` (`aiDone` − `aiIdle`: what one request left behind) and `memory.aiRuns.growth.*` (`aiDone10` −
 `aiDone`: what the 9 after it left).
 
+**`sourceSync`** (after `open`, a memory scenario, on its own; `--fixture small` is enough: what it measures is the
+source's, not the project's): the memory of the app's processes while an external source is synced (#1045). Before the
+readings (untimed): 40 camera-sized JPEGs drawn (4032 × 3024, about 3 MB each; `photos.ts` `syncPhotos`, made once per
+machine under `.tmp/perf/photos/`), served with 40 records naming them by a server the scenario starts on loopback: the
+records as JSON at `/records`, only to a request bearing the source's token, and each picture at
+`http://pictures.benchmark.example/photos/…`, sent in 256 KB pieces 16 ms apart (about 16 MB/s, so the fetch takes some 8 s
+and the sync worker is seen even when a busy machine spaces the peak's samples seconds apart). A sync never fetches a
+picture from this computer, so the app is told to reach that host's port on loopback, from the main process
+(`src/main/sources/test-hosts.ts`, automated runs only): every check of a picture's address is still made on the
+address as written. Then an empty data-only collection made, the token kept as the source's secret, and a REST source
+whose header names it, reading each record's `image.url` as its featured image, tested and saved as Connect source saves
+it. Readings: at rest (`ready`); the peak through the sync, from Sync now's call to its answer (`sync`); at rest after it
+(`synced`). Checks: the test asked for the records once, signed in, and fetched no picture; the sync made 40 entries and
+40 library images; the sync worker was seen in the peak; the records were asked for twice in all, signed in each time,
+and each picture exactly once, never with a credential; the project one revision on; each record's entry shows the
+library image named after its picture's file, holding the bytes served, on disk; the sync added those 40 images and no
+other, each with every responsive copy an import of a 4032-pixel picture makes (`copiesProblem`), on disk; and the
+library lists them in the records' order. Metrics: each reading's
+(`memory.<reading>…`, as `memory`'s; the main process's and the worker's peaks are `memory.sync.peak.mem.main` and
+`.mem.sourceSync`), what the sync added at its peak over `ready` (`memory.sync.growth.*`) and what it left
+(`memory.synced.growth.*`); `sourceSync.ms` (the main process's `source.sync` span, from the call to its answer, timed
+while memory is sampled) and `sourceSync.images` (the images it said it added); and what the server sent:
+`sourceSync.picturesServed`, `.pictureBytesServed` (pictures sent whole) and `.recordRequests`, and
+`sourceSync.photosDigest` (a number standing for the photos drawn: a set drawn otherwise shows as changed). The worker's
+figure is a sampled peak: it lives only while it reads and fetches, and a spike shorter than the gap between two samples
+(the base build's reply, sent at once, reached 415 MiB in one launch) can be missed, so read it with its spread.
+
 **`canvas`** (after `open`): with the home hero selected by a click on it, scroll the home page with the wheel, 30 notches
 of 60 px down and as many back up, each 16 ms after the one before was taken (about 30 a second on an M4 Max, so the
 outlines move every other frame); then sweep the pointer across the page, corner to corner along both diagonals in 60

@@ -9,7 +9,8 @@
  * gets faster by doing less. `memory` (after `launch`) reads the memory of every process of the app at named points
  * (memory.ts), and is never reported beside a timing scenario.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { _electron as electron } from 'playwright';
@@ -29,7 +30,7 @@ import { projectFolderName } from '../../src/shared/project-name';
 import { fixturePng, ROOT, type FixtureSpec } from './fixtures';
 import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
 import { electronSource, growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
-import { GALLERY_COUNT, galleryPhotos, type GalleryPhoto, PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos } from './photos';
+import { GALLERY_COUNT, galleryPhotos, type GalleryPhoto, PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos, SYNC_PHOTO_COUNT, syncPhotoName, syncPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
 import { displayName } from '../../src/engine/tree';
 
@@ -6738,10 +6739,249 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
+// ---------------------------------------------------------------------------
+// sourceSync
+// ---------------------------------------------------------------------------
+
+/** The readings `sourceSync` takes, in order, and their kinds. */
+export const SOURCE_SYNC_READINGS = [
+  ['ready', 'rest'],
+  ['sync', 'peak'],
+  ['synced', 'rest']
+] as const;
+/** The web host the source's pictures are at, which the app is told to reach on loopback (src/main/sources/test-hosts.ts). */
+export const SYNC_PICTURE_HOST = 'pictures.benchmark.example';
+/** The collection the source syncs into, the source, and the secret it signs in with. */
+const SYNC_COLLECTION = 'benchmark-photos';
+const SYNC_SOURCE = 'benchmark-photos';
+const SYNC_SECRET = 'benchmark-token';
+/**
+ * How the server sends a picture: in pieces this large, one every 16 ms (about 16 MB/s, a 128 Mbit/s connection), so the
+ * 40 take some 8 s: the sync worker lives through several of the peak's samples even when a busy machine spaces them
+ * seconds apart.
+ */
+const SYNC_CHUNK = 256 * 1024;
+const SYNC_CHUNK_MS = 16;
+
+/** Record `i` (from 1) as the source's server sends it. */
+const syncRecord = (i: number) => {
+  const n = String(i).padStart(2, '0');
+  return { id: `photo-${n}`, title: `Benchmark photo ${n}`, slug: `benchmark-photo-${n}`, image: { url: `http://${SYNC_PICTURE_HOST}/photos/${syncPhotoName(i)}`, alt: `Benchmark photo ${n}` } };
+};
+/** What the library calls picture `i`: its file's name, as a sync names a picture the source gives no name (sync.ts pictureName). */
+export const syncPictureName = (i: number) => syncPhotoName(i).replace(/\.jpg$/, '').replace(/-/g, ' ');
+
+/** What the source's server was asked. */
+interface SourceServed {
+  /** Asks for the records, and how many came with the source's credential. */
+  records: number;
+  signed: number;
+  /** Asks for each picture, by its file name, and how many carried any credential (none should). */
+  pictures: Map<string, number>;
+  pictureBytes: number;
+  credentialed: number;
+}
+
+/**
+ * The source's server, on loopback: its records at /records to a request bearing `token`, and its pictures at
+ * /photos/<name>, paced as a fast connection sends them. Records only ever name pictures at SYNC_PICTURE_HOST.
+ */
+async function sourceServer(token: string, pictures: ReadonlyMap<string, Buffer>): Promise<{ port: number; url: string; served: SourceServed; close(): Promise<void> }> {
+  const served: SourceServed = { records: 0, signed: 0, pictures: new Map(), pictureBytes: 0, credentialed: 0 };
+  const records = JSON.stringify(Array.from({ length: SYNC_PHOTO_COUNT }, (_, n) => syncRecord(n + 1)));
+  const handle = async (req: IncomingMessage, res: ServerResponse) => {
+    const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+    if (req.method === 'GET' && path === '/records') {
+      served.records++;
+      if (req.headers.authorization !== `Bearer ${token}`) return void res.writeHead(401).end();
+      served.signed++;
+      return void res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(records) }).end(records);
+    }
+    const name = /^\/photos\/([a-z0-9-]+\.jpg)$/.exec(path)?.[1];
+    const bytes = req.method === 'GET' && name ? pictures.get(name) : undefined;
+    if (!name || !bytes) return void res.writeHead(404).end();
+    served.pictures.set(name, (served.pictures.get(name) ?? 0) + 1);
+    if (req.headers.authorization || req.headers.cookie) served.credentialed++;
+    // Counted once the whole picture has gone: a response cut short sent less than its bytes.
+    res.once('finish', () => (served.pictureBytes += bytes.length));
+    res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': bytes.length });
+    for (let at = 0; at < bytes.length && !res.destroyed; at += SYNC_CHUNK) {
+      if (at > 0) await sleep(SYNC_CHUNK_MS);
+      const piece = bytes.subarray(at, at + SYNC_CHUNK);
+      // Ended with its last piece: the response is done before the client can have read all of it (and gone).
+      if (at + SYNC_CHUNK >= bytes.length) res.end(piece);
+      else if (!res.write(piece))
+        await new Promise<void>((r) => {
+          // Whichever comes first, and the other listener taken off with it.
+          const go = () => {
+            res.off('drain', go);
+            res.off('close', go);
+            r();
+          };
+          res.once('drain', go);
+          res.once('close', go);
+        });
+    }
+  };
+  const server = createServer((req, res) => void handle(req, res).catch(() => res.destroy()));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const port = (server.address() as { port: number }).port;
+  return {
+    port,
+    url: `http://127.0.0.1:${port}/records`,
+    served,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      })
+  };
+}
+
+export const sourceSync: Scenario = {
+  name: 'sourceSync',
+  after: 'open',
+  memory: true,
+  deadlineMs: 20 * 60_000,
+  description: `The memory of the app's processes, the main process's and the sync worker's above all, while an external source whose ${SYNC_PHOTO_COUNT} records each show a camera-sized photo (about 3 MB) is synced into an empty collection from a server on this computer: at rest with the source saved, at its peak through the sync, and at rest after it.`,
+  async run(ctx) {
+    const { win } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('sourceSync was run without a memory probe');
+    const before = await snapshotOf(win);
+    expect(before, 'no project is open');
+    // Not measured: the photos, the source's server, the app told to reach its picture host there, an empty collection,
+    // the source's secret, and its settings tested and saved as Connect source saves them.
+    const photos = await syncPhotos();
+    const bytes = new Map(photos.files.map((f) => [basename(f), readFileSync(f)]));
+    const token = randomBytes(24).toString('base64url');
+    const server = await sourceServer(token, bytes);
+    try {
+      await ctx.app.evaluate(
+        (_electron, a) => {
+          const hosts = (globalThis as unknown as Record<symbol, { set(host: string, port: number | null): void } | undefined>)[Symbol.for('siteorigin.sourceTestHosts')];
+          if (!hosts) throw new Error('this build has no test picture hosts (src/main/sources/test-hosts.ts)');
+          hosts.set(a.host, a.port);
+        },
+        { host: SYNC_PICTURE_HOST, port: server.port }
+      );
+      const opening = before.workspaceKey;
+      const made = await win.evaluate(
+        (a) => (globalThis as unknown as EditorPage).builder.project.apply({ operations: [{ type: 'collection.create', collectionId: a.collection, name: 'Benchmark photos', kind: 'structured', pages: { detail: false, archive: false } }] } as never, { label: 'Benchmark collection' }),
+        { collection: SYNC_COLLECTION }
+      );
+      expect(made.ok, `the collection was not made: ${made.error?.message ?? ''}`);
+      const secret = await win.evaluate((a) => (globalThis as unknown as EditorPage).builder.project.setSourceSecret(a.name, a.value, a.opening), { name: SYNC_SECRET, value: token, opening });
+      expect(secret.ok, `the source's secret was not kept: ${secret.message ?? ''}`);
+      const draft = {
+        sourceId: SYNC_SOURCE,
+        name: 'Benchmark photos',
+        adapter: 'rest',
+        collectionId: SYNC_COLLECTION,
+        config: { url: server.url, headers: { Authorization: `Bearer \${secret:${SYNC_SECRET}}` } },
+        mapping: { featuredImageUrl: 'image.url', featuredImageAlt: 'image.alt' }
+      };
+      const saved = await win.evaluate((a) => (globalThis as unknown as EditorPage).builder.project.saveSource(a.draft as never, a.opening, null), { draft, opening });
+      expect(saved.ok, `the source was not saved: ${'message' in saved ? saved.message : ''}`);
+      await ctx.waitTrace((t) => !!t.first('renderer.commit', atRevision(saved.revision)), 30_000);
+      const fetched = () => server.served.pictures.size;
+      const asked = () => [server.served.records, server.served.signed];
+      expect(fetched() === 0, 'testing the source fetched a picture');
+      expect(asked().join() === '1,1', `testing the source asked for its records ${server.served.records} times (${server.served.signed} signed in), not once, signed in`);
+      const had = new Set(Object.keys(before.state.assets.assets));
+      await probe.rest('ready');
+      const result = await probe.peak('sync', () => win.evaluate((a) => (globalThis as unknown as EditorPage).builder.project.syncSource(a.source, a.opening), { source: SYNC_SOURCE, opening }));
+      const peak = probe.readings.at(-1);
+      await probe.rest('synced');
+      // The sync brought in every record and every picture, once each, and the worker that fetched them was seen.
+      expect(result.ok, `the sync failed: ${'message' in result ? result.message : ''}`);
+      expect(result.created === SYNC_PHOTO_COUNT && result.updated === 0 && result.removed === 0 && result.images === SYNC_PHOTO_COUNT, `the sync made ${result.created} entries and ${result.images} images, not ${SYNC_PHOTO_COUNT} of each`);
+      expect(peak?.label === 'sync' && (peak.roles.sourceSync?.processes ?? 0) >= 1, 'the sync worker was never seen while the sync ran');
+      expect(server.served.signed === 2 && server.served.records === 2, `the records were asked for ${server.served.records} times (${server.served.signed} signed in), not twice (the test and the sync), signed in`);
+      expect(fetched() === SYNC_PHOTO_COUNT && [...server.served.pictures.values()].every((n) => n === 1), 'not every picture was fetched exactly once');
+      expect(server.served.credentialed === 0, 'a picture was asked for with the source’s credential');
+      const after = await snapshotOf(win);
+      expect(after && after.revision === saved.revision + 1, `the sync left the project at revision ${after?.revision}, not one past ${saved.revision}`);
+      const entries = Object.values(after.state.collections[SYNC_COLLECTION]?.entries ?? {});
+      expect(entries.length === SYNC_PHOTO_COUNT, `the collection holds ${entries.length} entries, not ${SYNC_PHOTO_COUNT}`);
+      // Each entry shows its own photo: the library image named after its file, holding the very bytes served, on disk.
+      const library = JSON.parse(readFileSync(join(ctx.projectDir, 'siteorigin', 'assets.json'), 'utf8')) as { assets: Record<string, { id: string; name: string; file: string; hash: string; bytes: number }> | Array<{ id: string; name: string; file: string; hash: string; bytes: number }> };
+      const onDisk = Array.isArray(library.assets) ? library.assets : Object.values(library.assets);
+      for (let i = 1; i <= SYNC_PHOTO_COUNT; i++) {
+        const record = syncRecord(i);
+        const entry = entries.find((e) => e.source?.externalId === record.id);
+        expect(entry, `no entry came from record ${record.id}`);
+        const asset = entry.featuredImage ? after.state.assets.assets[entry.featuredImage] : undefined;
+        const served = bytes.get(syncPhotoName(i))!;
+        expect(asset && asset.name === syncPictureName(i), `${record.id}'s entry does not show the library image “${syncPictureName(i)}”`);
+        expect(asset.hash === createHash('sha256').update(served).digest('hex') && asset.bytes === served.length, `${record.id}'s library image is not the picture served`);
+        const file = join(ctx.projectDir, asset.file);
+        expect(existsSync(file) && createHash('sha256').update(readFileSync(file)).digest('hex') === asset.hash, `${record.id}'s picture is not on disk as served`);
+        expect(onDisk.some((a) => a.id === asset.id), `${record.id}'s library image is not in assets.json`);
+      }
+      // The sync added these images and no other, each with every responsive copy an import of its size makes, on disk.
+      const added = onDisk.filter((a) => !had.has(a.id));
+      const shown = new Set(entries.map((e) => e.featuredImage));
+      expect(added.length === SYNC_PHOTO_COUNT && added.every((a) => shown.has(a.id)), `the sync added ${added.length} library images, not the ${SYNC_PHOTO_COUNT} its entries show`);
+      for (const a of added) {
+        const record = after.state.assets.assets[a.id];
+        const wrong = record.width === PHOTO_WIDTH ? copiesProblem(record) : `it is ${record.width} pixels wide, not ${PHOTO_WIDTH}`;
+        expect(!wrong, `“${record.name}” was not given its responsive copies: ${wrong}`);
+        expect((record.variants ?? []).every((v) => existsSync(join(ctx.projectDir, v.file))), `a responsive copy of “${record.name}” is not on disk`);
+      }
+      // In the order the records are: the library lists the new images as the sync added them.
+      expect(added.map((a) => a.name).join('\n') === Array.from({ length: SYNC_PHOTO_COUNT }, (_, n) => syncPictureName(n + 1)).join('\n'), 'the library does not list the synced images in the records’ order');
+      await ctx.mark('sourceSync.served', {
+        scenario: 'sourceSync',
+        pictures: [...server.served.pictures.values()].reduce((a, b) => a + b, 0),
+        pictureBytes: server.served.pictureBytes,
+        records: server.served.records,
+        // Which photos were served, so a set drawn otherwise is never compared as the same work.
+        photos: parseInt(photos.hash.slice(0, 8), 16)
+      });
+      await ctx.waitTrace((t) => !!t.first('sourceSync.served', inProc('main')), 15_000);
+    } finally {
+      await ctx.app
+        .evaluate((_electron, host) => (globalThis as unknown as Record<symbol, { set(host: string, port: number | null): void } | undefined>)[Symbol.for('siteorigin.sourceTestHosts')]?.set(host, null), SYNC_PICTURE_HOST)
+        .catch(() => undefined);
+      await server.close();
+    }
+  },
+  measure(trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string, kind: 'rest' | 'peak' = 'rest') => readings.find((r) => r.label === label && r.kind === kind);
+    for (const [label, kind] of SOURCE_SYNC_READINGS) readingMetrics(m, label, reading(label, kind));
+    // What the sync added at its peak over the app at rest before it, and what it left once done.
+    growthMetrics(m, 'sync', reading('ready'), reading('sync', 'peak'));
+    growthMetrics(m, 'synced', reading('ready'), reading('synced'));
+    const span = m.need('source.sync', trace.first('source.sync', (r) => r.kind === 'span' && r.proc === 'main'));
+    m.span('sourceSync.ms', span);
+    const number = (r: PerfRecord | undefined, key: string): number | undefined => {
+      const v = r?.attrs?.[key];
+      if (r && typeof v !== 'number') m.need(`${r.name} ${key}`, undefined);
+      return typeof v === 'number' ? v : undefined;
+    };
+    const counted = (name: string, r: PerfRecord | undefined, key: string, unit: 'count' | 'bytes' = 'count') => {
+      const v = number(r, key);
+      if (v !== undefined) m.count(name, v, unit);
+    };
+    counted('sourceSync.images', span, 'images');
+    const served = m.need('sourceSync.served', trace.first('sourceSync.served', inProc('main')));
+    counted('sourceSync.picturesServed', served, 'pictures');
+    counted('sourceSync.pictureBytesServed', served, 'pictureBytes', 'bytes');
+    counted('sourceSync.recordRequests', served, 'records');
+    counted('sourceSync.photosDigest', served, 'photos');
+    return m;
+  }
+};
+
 /** The scenarios that show every panel, Insert among them, before `thumbs` could run in the same launch. */
 const PANEL_TOURS = ['firstShow', 'panels', 'panelsInUse'] as const;
 
-export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory];
+export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
