@@ -125,6 +125,8 @@ async function open(dir: string) {
   controllers.push(c);
   expect((await c.trustAndOpen(dir)).ok).toBe(true);
   await vi.waitFor(() => expect(c.snapshot()).not.toBeNull());
+  // The opening's own write, the project's starting version (#1156), is in before the records are read.
+  await c.startingVersion;
   return c;
 }
 

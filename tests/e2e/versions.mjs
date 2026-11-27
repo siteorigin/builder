@@ -41,6 +41,10 @@ async function run(mode) {
       await win.locator('[role="menu"] [role^="menuitem"]', { hasText: item }).click();
     };
 
+    step(`[${mode}] a new project starts with its starting version (#1156)`);
+    await eventually(async () => assert.deepEqual(await versionNames(), [['Starting version', true]]));
+    assert.equal(await versionsGit(), inGit, inGit ? 'the starting version is in the project’s Git repository' : 'no Git repository is made with the setting off');
+
     step(`[${mode}] save a version from the project menu`);
     const started = Date.now();
     await projectMenu('Save version…');
@@ -49,7 +53,12 @@ async function run(mode) {
     await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Version name', 'the name field has focus'));
     await win.keyboard.type('Approved by client');
     await win.keyboard.press('Enter');
-    await eventually(async () => assert.deepEqual(await versionNames(), [['Approved by client', false]]));
+    await eventually(async () =>
+      assert.deepEqual(await versionNames(), [
+        ['Approved by client', false],
+        ['Starting version', true]
+      ])
+    );
     const savedAt = Date.parse((await snapshot()).versions.list[0].time);
     assert.ok(savedAt >= started - 1000 && savedAt <= Date.now(), 'it records when it was saved');
     const row = history.locator('.versions-list li', { hasText: 'Approved by client' });
@@ -83,7 +92,8 @@ async function run(mode) {
     assert.deepEqual(await versionNames(), [
       ...(inGit ? [['Restored “Approved by client”', true]] : []),
       ['Before restoring “Approved by client”', true],
-      ['Approved by client', false]
+      ['Approved by client', false],
+      ['Starting version', true]
     ]);
     const notice = win.locator('.toast', { hasText: 'Restored “Approved by client”' });
     await notice.waitFor();
@@ -115,10 +125,16 @@ async function run(mode) {
     else assert.doesNotMatch(await confirm.innerText(), /version history/, 'deleting a plain version says nothing of history');
     await confirm.getByRole('button', { name: 'Cancel' }).click();
     await confirm.waitFor({ state: 'detached' });
-    assert.equal((await versionNames()).length, inGit ? 3 : 2, 'cancelling keeps it');
+    assert.equal((await versionNames()).length, inGit ? 4 : 3, 'cancelling keeps it');
     await history.getByRole('button', { name: 'Delete “Approved by client”' }).click();
     await confirm.getByRole('button', { name: 'Delete version' }).click();
-    await eventually(async () => assert.deepEqual(await versionNames(), [...(inGit ? [['Restored “Approved by client”', true]] : []), ['Before restoring “Approved by client”', true]]));
+    await eventually(async () =>
+      assert.deepEqual(await versionNames(), [
+        ...(inGit ? [['Restored “Approved by client”', true]] : []),
+        ['Before restoring “Approved by client”', true],
+        ['Starting version', true]
+      ])
+    );
     await history.locator('.versions-list li', { hasText: 'Approved by client' }).filter({ hasNotText: 'Before restoring' }).filter({ hasNotText: 'Restored' }).waitFor({ state: 'detached' });
     assert.ok(await history.isVisible(), 'History stays open after deleting');
     assert.match(await win.locator('.toast', { hasText: 'Deleted “Approved by client”' }).innerText(), /Deleted/);
