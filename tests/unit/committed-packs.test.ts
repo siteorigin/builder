@@ -96,7 +96,7 @@ describe('the committed theme releases', () => {
     const root = committedCopy();
     repin(root, 'foundation', (m) => {
       const grid = m.components.find((c) => c.componentId === 'features.grid')!;
-      grid.properties.eyebrow = { ...grid.properties.eyebrow, default: 'Something else' };
+      Object.assign(grid.properties.eyebrow, { default: 'Something else' });
     });
     const problems = await committedReleaseProblems(root);
     expect(problems).toHaveLength(1);

@@ -14,7 +14,7 @@
  *   npm run build:packs -- --committed    never refresh: check the committed releases (dev, build, packaging)
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AuthoredPack, ThemePack } from '@catalogue/pack';
@@ -68,7 +68,9 @@ const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encod
 async function refresh(checkout: string): Promise<void> {
   let commit: string;
   try {
-    // The lock names the commit the releases came from, so they must come from exactly that commit.
+    // The lock names the commit the releases came from, so they must come from exactly that commit, of that checkout
+    // (not of a repository it happens to sit inside).
+    if (realpathSync(git(checkout, 'rev-parse', '--show-toplevel')) !== realpathSync(checkout)) throw new Error(`${checkout} is not the top of a git checkout: ${LOCK_FILE} records the commit the releases are built from.`);
     if (git(checkout, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none')) throw new Error(`${checkout} has uncommitted changes. Commit them first: ${LOCK_FILE} records the commit the releases are built from.`);
     commit = git(checkout, 'rev-parse', 'HEAD');
   } catch (e) {
@@ -118,10 +120,11 @@ else {
 
 // A release of a pack the app no longer ships (a removed theme) must not ship with it: both folders are packaged
 // whole, and the app loads whatever valid pack it finds in them.
-const shipped = new Set<string>(LOCKED_RELEASES.map((r) => r.id));
-for (const folder of ['packs', 'packs-dev']) {
-  const dir = join(root, 'resources', folder);
+// A locked release is kept only in its own folder, where it is checked: a copy in the other would ship unchecked.
+for (const folder of ['resources/packs', 'resources/packs-dev']) {
+  const dir = join(root, folder);
   if (!existsSync(dir)) continue;
+  const shipped = new Set<string>(LOCKED_RELEASES.filter((r) => r.dir === folder).map((r) => r.id));
   for (const name of readdirSync(dir)) if (!name.startsWith('.') && !shipped.has(name)) rmSync(join(dir, name), { recursive: true, force: true });
 }
 console.log(`Theme packs ready in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
