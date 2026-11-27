@@ -238,7 +238,9 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
                   <FileDown aria-hidden="true" />
                   <span className="doc-title">
                     <b>{labels.get(a.id)}</b>
-                    <span className="doc-meta">{documentDetails(a)}</span>
+                    <span className="doc-meta">
+                      {documentDetails(a).split(' · ').map((part, i) => <span key={i}>{part}</span>)}
+                    </span>
                     <span className={`doc-state${gone ? ' gone' : ''}`}>{gone ? 'File missing' : used ? `Linked ${plural(used, 'time', 'times')}` : 'Not linked'}</span>
                   </span>
                   {gone && <TriangleAlert className="doc-warn" aria-label="File missing" />}

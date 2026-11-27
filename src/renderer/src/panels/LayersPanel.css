@@ -5,7 +5,9 @@
      --layers-indent-deep step, so the deepest names keep their room; rows, guides, labels and drop lines all take their
      inset from the same --inset.
      The selected row is the heaviest thing in the tree, its ancestors one step lighter. A drop between rows is a line
-     with a leading dot at the depth it lands; a drop into a row is a dashed ring with a fill and words. */
+     with a leading dot at the depth it lands; a drop into a row is a dashed ring with a fill and words.
+     Type: text is 12px or larger, row text on whole-pixel lines (secondary lines 12/16, names 13px); the one exception is a
+     chip (a short semibold word or number in a filled chip), at the badge's 11px (primitives.css). */
   .layers-tree { --layers-drop: var(--accent); --layers-pad: 8px; --layers-indent: 12px; --layers-indent-deep: 7px; --layers-cap: 3; }
   .layers-tree :is(.layer-row, .layers-children, .layers-sublabel) { --inset: calc(var(--layers-pad) + min(var(--depth, 0), var(--layers-cap)) * var(--layers-indent) + max(0, var(--depth, 0) - var(--layers-cap)) * var(--layers-indent-deep)); }
   .layers-tree .layer-row { --drop-inset: calc(var(--layers-pad) + min(var(--drop-depth, 0), var(--layers-cap)) * var(--layers-indent) + max(0, var(--drop-depth, 0) - var(--layers-cap)) * var(--layers-indent-deep)); gap: 6px; padding-left: var(--inset); }
@@ -33,20 +35,20 @@
   .layers-tree .layer-flag { display: inline-flex; flex: none; color: var(--text-3); }
   /* An unnamed text or button reads as its words; a heading's level leads them, small and quiet. An empty one, or one
      that shows a component setting, keeps its type with the words after it. */
-  .layers-tree .layer-level { margin-right: 5px; font-size: 11px; font-weight: 600; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .layers-tree .layer-level { margin-right: 5px; font-size: 12px; font-weight: 600; color: var(--text-3); font-variant-numeric: tabular-nums; }
   .layers-tree .layer-words { color: var(--text-2); }
   .layers-tree .layer-words.empty { font-style: italic; color: var(--text-3); }
   .layers-tree .layer-row.selected :is(.layer-words, .layer-level) { color: inherit; font-weight: 500; }
   /* The sizes a layer hides itself at, when not every size, with the closed eye that says what the sizes mean;
      stronger when the preview shows one of them. */
   /* A tag is a note, not a control: no fill, so it never looks like the pressed eye beside it. */
-  .layers-tree .layer-sizes { flex: none; height: 18px; display: inline-flex; align-items: center; gap: 3px; padding: 0 3px; border-radius: var(--r-sm); font-size: 11px; font-weight: 500; color: var(--text-3); }
+  .layers-tree .layer-sizes { flex: none; height: 18px; display: inline-flex; align-items: center; gap: 3px; padding: 0 3px; border-radius: var(--r-sm); font-size: 12px; font-weight: 500; color: var(--text-3); }
   .layers-tree :is(.layer-sizes, .with-sizes) svg { width: 11px; height: 11px; }
   /* In a wide sidebar the sizes are words; a narrow one swaps them for the sizes' own icons. */
   .layers-tree .layer-sizes-icons { display: none; gap: 2px; }
   /* The pressed eye of a layer hidden at only some sizes, the preview showing one of them: the sizes are its face. */
   /* (The eye's own rules make it a grid; its face runs in one row.) */
-  .layers-tree .layer-eye.with-sizes { width: auto; padding: 0 6px 0 5px; grid-auto-flow: column; align-items: center; gap: 3px; font-size: 11px; font-weight: 500; }
+  .layers-tree .layer-eye.with-sizes { width: auto; padding: 0 6px 0 5px; grid-auto-flow: column; align-items: center; gap: 3px; font-size: 12px; font-weight: 500; }
   .layers-tree .layer-sizes.here { color: var(--text-2); }
   .layers-tree .layer-row.selected .layer-sizes { color: inherit; }
   .layers-tree .layer-flag svg { width: 14px; height: 14px; }
@@ -61,7 +63,7 @@
   .layers-tree .layer-row.selected .layer-eye { color: inherit; }
   .layers-tree .layer-row.selected .layer-eye[aria-pressed='true'] { background: var(--raised); box-shadow: inset 0 0 0 1px currentColor; }
   .layers-tree .layer-row.drop-inside .layer-eye { display: none; }
-  .layers-tree .layer-badge { flex: none; height: 18px; padding: 0 6px; border-radius: var(--r-sm); font-weight: 500; }
+  .layers-tree .layer-badge { flex: none; height: 18px; padding: 0 6px; border-radius: var(--r-sm); }
   /* On a selected row the Custom badge gives its room to the name and becomes a dot on the glyph (the inspector,
      tooltip and label say what it is). */
   .layers-tree .layer-row.selected .layer-badge { display: none; }
@@ -73,19 +75,19 @@
   .layers-children::before { content: ''; position: absolute; left: calc(var(--inset) + 4px); top: 0; bottom: 6px; width: 1px; background: var(--border-strong); pointer-events: none; }
   .layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 70%, transparent); }
   :where(:root[data-appearance='dark']) { .layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 50%, transparent); } }
-  .layers-sublabel { padding: 6px 8px 2px calc(var(--inset) + 16px); font-size: 11px; font-weight: 600; color: var(--text-3); }
+  .layers-sublabel { padding: 6px 8px 2px calc(var(--inset) + 16px); font-size: 12px; line-height: 16px; font-weight: 600; color: var(--text-3); }
   /* A branch hidden by the layer that holds it says so once, at its top. */
   .layers-sublabel.with-icon { display: flex; align-items: center; gap: 4px; min-width: 0; font-weight: 500; }
   .layers-sublabel.with-icon svg { flex: none; width: 11px; height: 11px; }
   /* A slot of a placed component heads its content as a row of its own: quiet like the labels (small, muted), with a
      quieter "Empty" while it holds nothing. Picked for Insert, it takes the selection's fill and colour. */
   .layers-tree .layer-slot :is(.layer-name, .layer-kind) { color: var(--text-3); }
-  .layers-tree .layer-slot .layer-name { font-size: 11px; font-weight: 600; }
-  .layers-tree .layer-slot-empty { flex: none; padding-right: 6px; font-size: 11px; font-style: italic; color: var(--text-3); }
+  .layers-tree .layer-slot .layer-name { font-size: 12px; font-weight: 600; }
+  .layers-tree .layer-slot-empty { flex: none; padding-right: 6px; font-size: 12px; font-style: italic; color: var(--text-3); }
   .layers-tree .layer-slot.selected :is(.layer-name, .layer-kind, .layer-slot-empty) { color: inherit; }
   /* A truncated row reached by keys shows its full name and place just below it. */
   .layers-peek { position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-md), inset 0 0 0 1px var(--border-strong); font-size: 12px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; pointer-events: none; }
-  .layers-peek-path { font-size: 11px; font-weight: 400; color: var(--text-2); }
+  .layers-peek-path { font-size: 12px; line-height: 16px; font-weight: 400; color: var(--text-2); }
   .layers-peek.above { transform: translateY(-100%); }
   /* The rows being dragged keep readable text; a quiet dashed ring marks them as the ones moving, and their own
      buttons step back. Several dragged together travel as one badge under the pointer. */
@@ -106,7 +108,7 @@
   .layers-tree .layer-row.drop-inside, .editor.defining .layers-tree .layer-row.selected.drop-inside { padding-right: 5px; background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel); outline: 2px dashed var(--layers-drop); outline-offset: -2px; box-shadow: none; }
   .editor.defining .layers-tree .layer-row.drop-inside, .editor.defining .layers-tree .layer-row.selected.drop-inside { background: linear-gradient(var(--plum-soft), var(--plum-soft)), var(--panel); }
   .layers-tree .layer-row.drop-inside .actions, .layers-tree .layer-row.drop-inside .layer-badge, .layers-tree .layer-row.drop-inside .layer-flag, .layers-tree .layer-row.drop-inside .layer-sizes { display: none; }
-  .layers-tree .layer-drop-tag { flex: none; height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--layers-drop); color: var(--on-accent); }
+  .layers-tree .layer-drop-tag { flex: none; min-height: 20px; max-inline-size: 55%; display: inline-flex; align-items: center; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; font-weight: 600; background: var(--layers-drop); color: var(--on-accent); }
   /* A narrow sidebar gives the names the room: a tighter indent with a smaller deep step, tighter gaps, the options
      button only on the row being pointed at, focused or the selection, the unpressed eye and the hider's button only
      on the row being pointed at, the Custom badge as a dot, and size tags as a closed eye with the sizes' own icons;
@@ -136,7 +138,7 @@
     .layers-tree .layer-row.is-custom:not(.selected) .layer-kind::after { content: ''; position: absolute; right: -1px; top: -1px; width: 6px; height: 6px; border-radius: 50%; background: var(--text-2); box-shadow: 0 0 0 1.5px var(--panel); }
   }
   .layers-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 4px 14px 12px 33px; }
-  .layers-empty p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .layers-empty p { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
   .layers-empty .btn svg { width: 14px; height: 14px; }
   .layers-tree[hidden] { display: none; }
   /* Layers or the page's heading outline. */
@@ -170,7 +172,7 @@
   .outline-summary .scope-note .grow { text-wrap: pretty; }
   /* An empty page: the same quiet words and Add sections as an empty page in Layers. */
   .outline-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 2px 4px 12px; }
-  .outline-empty p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+  .outline-empty p { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); text-wrap: pretty; }
   .outline-empty strong { font-weight: 600; color: var(--text); }
   /* Indented by level, 12px a step to Heading 4, then 6px, so Headings 5 and 6 keep their words; tighter again in a
      narrow sidebar. As in the Layers tree the indent is inside the row, so hover, selection and focus span the list.
@@ -192,7 +194,7 @@
      rather than a second box inside it; Tab on to its fix leaves the item its 1px selection ring. */
   .outline-item:has(> .outline-row[aria-current='true']:focus-visible) { outline: 2px solid var(--focus); outline-offset: -2px; box-shadow: inset 0 0 0 3px var(--panel); }
   .outline-row[aria-current='true']:focus-visible { outline: none; }
-  .outline-level { flex: none; min-width: 26px; height: 20px; padding: 0 5px; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+  .outline-level { flex: none; min-width: 26px; height: 20px; padding: 0 5px; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
   /* On the selected heading the chip and the amber badge sit on an opaque ground, so their text keeps 4.5:1. */
   .outline-row[aria-current='true'] .outline-level { background: linear-gradient(var(--active), var(--active)), var(--panel); }
   .outline-row[aria-current='true'] .badge { background: linear-gradient(var(--active), var(--active)), var(--raised); }
@@ -206,8 +208,10 @@
   .outline-words.empty { color: var(--text-3); font-style: italic; }
   .outline-row[aria-current='true'] .outline-words.empty { color: var(--text-2); }
   /* A badge wraps its words rather than squeezing out its icon in a narrow sidebar. */
-  .outline-row .badge { flex: none; max-width: 100%; height: auto; min-height: 20px; padding-block: 2px; white-space: normal; line-height: 16px; }
+  .outline-row .badge { flex: none; max-width: 100%; height: auto; min-height: 20px; padding-block: 2px; white-space: normal; font-size: 12px; font-weight: 500; line-height: 16px; }
   .outline-row .badge svg { flex: none; }
+  /* The amber sits on an opaque ground, so a hovered row's tint cannot thin it. */
+  .outline-row .badge.amber { background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--panel); }
   /* Lines up under the heading's words: the row's padding, its level chip and their gap; under the chip when narrow. */
   .outline-next { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 2px 6px 8px calc(40px + var(--indent)); }
   /* Narrow: the flag drops to its own line under the chip, beside its fix's left edge, and stays one line. */
@@ -218,7 +222,7 @@
     .outline-words { flex: 1 1 calc(100% - 40px); width: auto; min-width: 0; }
   }
   .outline-next .btn { max-width: 100%; height: auto; min-height: 26px; padding-block: 4px; white-space: normal; text-align: start; }
-  .outline-hint { font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .outline-hint { font-size: 12px; line-height: 18px; color: var(--text-2); }
   .outline-view:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
   .outline-note { margin: 10px 6px 0; font-size: 12px; }
   @media (forced-colors: active) { .outline-item:has(> .outline-row[aria-current='true']) { border: 1px solid Highlight; } }

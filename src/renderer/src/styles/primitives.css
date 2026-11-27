@@ -173,6 +173,8 @@
     .switch:disabled::after, .switch[aria-checked='true']:disabled::after { background: GrayText; }
   }
 
+  /* 11px is the badge size: a short semibold word or number in a filled chip. It is the one exception to the 12px
+     floor; any other text, a sentence in a chip included, is 12px or larger. */
   .badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--active); color: var(--text-2); white-space: nowrap; }
   .badge.accent { background: var(--accent-soft); color: var(--accent-text); }
   .badge.plum { background: var(--plum-soft); color: var(--plum); }

@@ -1,5 +1,8 @@
 @layer components {
-  /* Posts: the list in the sidebar, and the writer in the canvas's place. */
+  /* Posts: the list in the sidebar, and the writer in the canvas's place.
+     Type: text is 12px or larger, row text on whole-pixel lines (secondary lines 12/16, names 13px); the one exception is a
+     chip (a short semibold word or number in a filled chip), at the badge's 11px (primitives.css). The .source-*
+     rules at the end of this file style no current markup (the source dialog has its own SourceDialog.css). */
   .canvas-holder { display: contents; }
   .post-writer-holder { position: absolute; top: 0; bottom: 0; z-index: 3; display: flex; min-width: 0; background: var(--bg); }
   .post-writer-holder[hidden] { display: none; }
@@ -163,10 +166,10 @@
   .posts-empty > svg { width: 20px; height: 20px; color: var(--text-3); }
   .posts-none { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 14px 12px; }
   .posts-none p { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
-  .posts-count { margin: 8px 14px 0; font-size: 11.5px; line-height: 15px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .posts-count { margin: 8px 14px 0; font-size: 12px; line-height: 16px; color: var(--text-3); font-variant-numeric: tabular-nums; }
   .posts-list.list { gap: 2px; }
   .posts-list.list[hidden] { display: none; }
-  .posts-list .post-row { align-items: flex-start; gap: 8px; min-height: 41px; padding: 3px 4px 3px 8px; cursor: default; }
+  .posts-list .post-row { align-items: flex-start; gap: 8px; min-height: 42px; padding: 3px 4px 3px 8px; cursor: default; }
   .posts-list .post-row.selected { font-weight: 400; }
   .posts-list .post-row .actions { align-self: center; }
   /* The glyph says what the entry is (a draft, an article, a record); on the open entry it sits in a filled tile. */
@@ -175,17 +178,18 @@
   .posts-list .post-row.selected .post-glyph { background: var(--accent-fill); color: var(--on-accent); }
   .posts-list .post-row.selected .post-glyph svg { width: 14px; height: 14px; }
   /* A one-line row (a record with no date) centres its glyph on the title. */
-  .post-text { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; min-height: 35px; }
+  .post-text { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; min-height: 36px; }
   .post-title { line-height: 20px; }
   .posts-list .post-row.selected .post-title { font-weight: 600; }
-  .post-meta { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 11.5px; line-height: 15px; color: var(--text-3); white-space: nowrap; }
+  .post-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; min-width: 0; font-size: 12px; line-height: 16px; color: var(--text-3); white-space: nowrap; }
   .post-meta time { font-variant-numeric: tabular-nums; }
-  .post-status.badge { flex: none; height: 15px; padding: 0 5px; border-radius: var(--r-sm); font-size: 10.5px; }
+  /* The badge size (11px, 600) on the meta line's 16px, on an opaque ground so a hovered row's tint cannot thin it. */
+  .post-status.badge { flex: none; height: auto; min-height: 16px; padding: 0 5px; border-radius: var(--r-sm); background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--panel); }
   /* On the open entry's tint the badge keeps a solid fill, so its small text stays readable. */
   .posts-list .post-row.selected .post-status { background: var(--panel); box-shadow: inset 0 0 0 1px currentColor; }
   .posts-list .post-row.selected :is(.post-meta, .post-found) { color: var(--text-2); }
   /* While finding, what matched when it is not in the title: the byline, the address or the excerpt around it. */
-  .post-found { font-size: 11.5px; line-height: 15px; color: var(--text-3); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .post-found { font-size: 12px; line-height: 16px; color: var(--text-3); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .posts-list.finding .post-title { white-space: normal; overflow-wrap: anywhere; }
   .posts-list mark { background: none; color: inherit; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
   .posts-list .post-row.selected .actions .icon-btn.hover-only,
@@ -196,7 +200,7 @@
   /* Keyboard focus on a row cut short shows its whole title and address in a card under it (Escape hides it). */
   .posts-peek { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); pointer-events: none; }
   .posts-peek-title { font-weight: 500; overflow-wrap: anywhere; }
-  .posts-peek-route { font-size: 11.5px; line-height: 15px; color: var(--text-2); overflow-wrap: anywhere; }
+  .posts-peek-route { font-size: 12px; line-height: 16px; color: var(--text-2); overflow-wrap: anywhere; }
   /* With a collection switcher the head's name comes first: below 280px New <entry> is its icon (as Pages' Edit menu). */
   @container posts (max-width: 280px) {
     .panel-head:has(.posts-switch) .posts-head-label { display: none; }
