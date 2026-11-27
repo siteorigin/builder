@@ -291,6 +291,8 @@ export const P = {
     Object.fromEntries(Object.entries(props).map(([k, p]) => [k, { ...p, group: title }])) as T,
   /** The same property, required: the component cannot render without a value (see shared/required.ts). */
   required: <T extends PropSchema>(schema: T): T => ({ ...schema, required: true }),
+  /** The same text or image property, which a live session's Copy Editor may change on a page (engine/copy-editor.ts). */
+  copy: <T extends PropSchema>(schema: T): T => ({ ...schema, copyEditable: true }),
   str:(label: string, def: string, extra: Partial<ScalarPropSchema> = {}): ScalarPropSchema =>
     ({ type: 'string', label, default: def, ...extra }) as ScalarPropSchema,
   text: (label: string, def: string): ScalarPropSchema => ({ type: 'string', label, default: def, multiline: true }),

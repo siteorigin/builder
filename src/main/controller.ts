@@ -11,7 +11,7 @@ import { validateOperation, type ApplyResult, type EditBatch, type EditOperation
 import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
-import { createStarterState, starterProblem } from '@catalogue/starters';
+import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
 import { applyOperations, sourceHash } from '@engine/apply';
@@ -810,7 +810,7 @@ export class Controller {
       };
       const notice = starterNotice();
       const assetsDir = join(resourcesDir(), 'resources', 'starter-assets');
-      const withImages = opts.starter === 'business' && opts.sampleImages && existsSync(assetsDir);
+      const withImages = starterTakesSamples(opts.starter) && opts.sampleImages && existsSync(assetsDir);
       const state = createStarterState(opts.starter, name, withImages, opts.themeId);
       // Its website's icons are drawn while the rest of it is made.
       const draft = ProjectSession.starting(dir, state);
@@ -823,7 +823,7 @@ export class Controller {
           // A bundled sample is no file of the author's.
           delete record.originalName;
           record.altSuggestion = a.alt;
-          record.description = 'Sample image bundled with the Business starter. Replace it with your own.';
+          record.description = `Sample image bundled with the ${STARTERS.find((s) => s.id === opts.starter)?.name ?? 'starter'}. Replace it with your own.`;
           state.assets.assets[a.id] = record;
         }
         if (existsSync(notice)) {

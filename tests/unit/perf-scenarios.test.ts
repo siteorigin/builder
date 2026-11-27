@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -45,6 +45,9 @@ describe('the scenario chain', () => {
     expect(chainFor(['switch', 'assets']).map((s) => s.name)).toEqual(['launch', 'open', 'assets', 'switch']);
     // Before import, which adds to the library assets measures at the fixture's own size.
     expect(chainFor(['import', 'assets']).map((s) => s.name)).toEqual(['launch', 'open', 'assets', 'import']);
+    // After every other scenario that edits the fixture's own copy, since it leaves the site a favicon and a new font.
+    expect(chainFor(['editBranded', 'edit', 'import']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'import', 'editBranded']);
+    expect(chainFor(['switch', 'editBranded']).map((s) => s.name)).toEqual(['launch', 'open', 'editBranded', 'switch']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -559,6 +562,45 @@ describe('edit metrics', () => {
     expect(Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k.replace(/^editFullHistory\./, 'edit.'), v]))).toEqual(plain.metrics);
     // Another scenario's boundaries are not its own.
     expect(editFullHistory.measure(trace(), facts).missing).toContain('edit.requested');
+  });
+
+  it('time the save after one that copied a font in by its own boundary marks, with the favicon’s reads', () => {
+    // The favicon's new file read by the saves before the edit, as the main process counted at the scenario's start.
+    const renamed = (favicon: Record<string, number>, readBefore = 2) =>
+      new Trace(
+        trace().records.map((x) => {
+          if (x.name === 'scenario.start' && x.proc === 'main') return { ...x, attrs: { scenario: 'editBranded' }, c: { ...x.c, 'favicon.read': readBefore } };
+          if (x.name.startsWith('scenario.')) return { ...x, attrs: { scenario: 'editBranded' } };
+          if (x.name === 'session.publish') return { ...x, dc: { ...x.dc, ...favicon } };
+          return x;
+        })
+      );
+    const got = editBranded.measure(renamed({ 'favicon.read': 1, 'favicon.hashedBytes': 196_000 }), facts);
+    expect(got.missing).toEqual([]);
+    expect(got.metrics['editBranded.publishFaviconReads']).toEqual({ unit: 'count', value: 1 });
+    expect(got.metrics['editBranded.publishFaviconBytesHashed']).toEqual({ unit: 'bytes', value: 196_000 });
+    // A publication that read no favicon counts none, never missing.
+    const none = editBranded.measure(renamed({}), facts);
+    expect(none.missing).toEqual([]);
+    expect(none.metrics['editBranded.publishFaviconReads']).toEqual({ unit: 'count', value: 0 });
+    const plain = edit.measure(trace(), facts);
+    const own = Object.fromEntries(Object.entries(got.metrics).filter(([k]) => !k.includes('Favicon')).map(([k, v]) => [k.replace(/^editBranded\./, 'edit.'), v]));
+    expect(own).toEqual(plain.metrics);
+    // Another scenario's boundaries are not its own, and a publication outside the edit is not the edit's.
+    expect(editBranded.measure(trace(), facts).missing).toContain('edit.requested');
+    const outside = new Trace(renamed({ 'favicon.read': 1 }).records.map((x) => (x.name === 'session.publish' ? { ...x, t: 9_800 } : x)));
+    expect(editBranded.measure(outside, facts).missing).toContain('session.publish');
+    expect(editBranded.measure(outside, facts).metrics['editBranded.publishFaviconReads']).toBeUndefined();
+    // A build that never counted the favicon's reads cannot pass as one that did not need to read it.
+    expect(editBranded.measure(renamed({}, 0), facts).missing).toEqual(['favicon.read (counted before the edit)']);
+    const unmarked = new Trace(renamed({}).records.filter((x) => !(x.name === 'scenario.start' && x.proc === 'main')));
+    expect(editBranded.measure(unmarked, facts).missing).toEqual(['scenario.start (main)', 'favicon.read (counted before the edit)']);
+  });
+
+  it('find the faces of a font the website’s styles name', () => {
+    const css = "@font-face {\n\tsrc: url('../fonts/lora-latin-wght-normal.woff2') format('woff2');\n}\n@font-face {\n\tsrc: url('../fonts/inter-latin-wght-normal.woff2') format('woff2');\n}\n@font-face { src: url('../fonts/lora-cyrillic-wght-normal.woff2') format('woff2'); }";
+    expect(namedFaces(css, /^lora-/)).toEqual(['lora-latin-wght-normal.woff2', 'lora-cyrillic-wght-normal.woff2']);
+    expect(namedFaces('', /^lora-/)).toEqual([]);
   });
 
   it('count no sweep the edit waited on when every one ran after it was acknowledged', () => {

@@ -3,7 +3,7 @@
  * Each field behaves as a component property of its type would (a text, a date written as text, a picture, a link,
  * rich text), so a template's elements and the sections placed in it take them where they would take such a property.
  *
- * - `title`, `author`, `excerpt`: the entry's own text.
+ * - `title`, `slug`, `author`, `excerpt`: the entry's own text (`slug` is its address segment, read-only).
  * - `publishedAt`, `updatedAt`: the dates, written as readers of the site's language write them; a text's `datetime`
  *   reads the date itself (YYYY-MM-DD).
  * - `featuredImage`: the entry's library picture, with the library's suggested alt text.
@@ -33,6 +33,7 @@ import { visitorTextFor } from './visitor-text';
 /** The fields every entry has, in the order they are offered. */
 export const ENTRY_FIELD_NAMES = [
   'title',
+  'slug',
   'publishedAt',
   'updatedAt',
   'author',
@@ -71,6 +72,8 @@ const text = (label: string, description?: string): PropSchema => ({ type: 'stri
 const BUILT_IN: Record<(typeof ENTRY_FIELD_NAMES)[number], PropSchema> = {
   // Every entry has a title: a layout can pass it on to a property that requires one.
   title: { ...text('Title'), required: true },
+  // Every entry has a slug: a layout can pass it on to a property that requires one.
+  slug: { ...text('Slug', 'The last segment of the entry\'s address.'), required: true },
   publishedAt: text('Publication date'),
   updatedAt: text('Last updated'),
   author: text('Author'),
@@ -242,6 +245,8 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
   switch (field) {
     case 'title':
       return str(entry.title);
+    case 'slug':
+      return str(entry.slug);
     case 'publishedAt':
       return date(entry.publishedAt);
     case 'updatedAt':

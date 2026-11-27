@@ -58,7 +58,9 @@ export function styleUnder({ prop, scope, styles, inherited, designSizesWin, wid
   if (allSizes !== undefined) return { value: allSizes, from: 'all-sizes' };
   // A resolved size is complete: a property it leaves out is one the design gives nothing there (another property
   // writing the same CSS won, or the design's All sizes value skips that size). Only raw design scopes fall back.
-  const fromDesign = scope === 'base' || designSizesWin ? (designHere ?? inherited?.base?.[prop]) : designHere;
+  // The design's own value for All sizes skips phones where its stylesheet does.
+  const designAll = scope === 'base' || allSizesReach(prop, inherited?.base?.[prop], scope) ? inherited?.base?.[prop] : undefined;
+  const fromDesign = scope === 'base' || designSizesWin ? (designHere ?? designAll) : designHere;
   return { value: fromDesign, from: fromDesign !== undefined ? 'design' : undefined };
 }
 

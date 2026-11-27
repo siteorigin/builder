@@ -278,12 +278,29 @@ export function blockAtCaret(root: HTMLElement): HTMLElement | null {
 }
 
 /**
- * Put a picture in the text where the caret is: after the block it is in, or in place of an empty paragraph, with a
- * paragraph after it to go on typing in when it ends the text. Returns the figure.
+ * The block of the writer's root a drop at height `y` on screen lands in (a direct child of `root`), without moving
+ * the caret: the one beside the point, or in a gap or the margin below, the one above it. Null above the first block,
+ * or in empty text.
  */
-export function insertFigure(root: HTMLElement, at: HTMLElement | null, fig: HTMLElement): HTMLElement {
+export function blockAtPoint(root: HTMLElement, y: number): HTMLElement | null {
+  let at: HTMLElement | null = null;
+  for (const b of root.children) {
+    if (!(b instanceof HTMLElement)) continue;
+    if (b.getBoundingClientRect().top > y) break;
+    at = b;
+  }
+  return at;
+}
+
+/**
+ * Put a picture in the text where the caret is: after the block it is in (`before` it, for a picture dropped above the
+ * first), or in place of an empty paragraph, with a paragraph after it to go on typing in when it ends the text.
+ * Returns the figure.
+ */
+export function insertFigure(root: HTMLElement, at: HTMLElement | null, fig: HTMLElement, before = false): HTMLElement {
   const empty = at && at.tagName === 'P' && !at.textContent?.trim() && !at.querySelector('img');
   if (at && empty) at.replaceWith(fig);
+  else if (at && before) at.before(fig);
   else if (at) at.after(fig);
   else root.appendChild(fig);
   if (!fig.nextSibling) {

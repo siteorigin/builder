@@ -635,6 +635,126 @@ function hookedPart(n: Node): string | null {
   return p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
 }
 
+/**
+ * The part an item hook names, the expression it reads the item's ID from, and whether it is read so that a missing
+ * class reads as none (so_oi?.[plan.id]?.card): the website is given item classes only for the items styled on their
+ * own, and none at all while none is.
+ */
+function itemHookOf(n: Node): { part: string; key: Node; guarded: boolean } | null {
+  if (n.type !== 'MemberExpression') return null;
+  const inner = n.object as Node;
+  if (inner?.type !== 'MemberExpression' || !inner.computed || (inner.object as Node)?.type !== 'Identifier' || (inner.object as Node).name !== 'so_oi') return null;
+  const p = n.property as Node;
+  const part = !n.computed ? (p?.type === 'Identifier' ? String(p.name) : null) : p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
+  return part === null ? null : { part, key: inner.property as Node, guarded: !!inner.optional && !!n.optional };
+}
+
+/** The variable `expr` reads the `id` of (`plan.id`, `plan["id"]`), or null. */
+function idOf(expr: Node | undefined): string | null {
+  if (expr?.type !== 'MemberExpression' || (expr.object as Node)?.type !== 'Identifier') return null;
+  const p = expr.property as Node;
+  const named = !expr.computed ? p?.type === 'Identifier' && p.name === 'id' : p?.type === 'Literal' && p.value === 'id';
+  return named ? String((expr.object as Node).name) : null;
+}
+
+/** The names a binding pattern binds: `a`, `{ key: a, b = 1 }`, `[a, ...rest]` (never a key, or a default's value). */
+function boundNames(pattern: Node | undefined, out = new Set<string>()): Set<string> {
+  if (!pattern) return out;
+  if (pattern.type === 'Identifier') out.add(String(pattern.name));
+  else if (pattern.type === 'AssignmentPattern') boundNames(pattern.left as Node, out);
+  else if (pattern.type === 'RestElement') boundNames(pattern.argument as Node, out);
+  else if (pattern.type === 'ArrayPattern') for (const e of (pattern.elements as Node[]) ?? []) boundNames(e ?? undefined, out);
+  else if (pattern.type === 'ObjectPattern') for (const p of (pattern.properties as Node[]) ?? []) boundNames(p.type === 'Property' ? (p.value as Node) : p, out);
+  return out;
+}
+
+/** The names a markup fragment's own {@const} tags declare. */
+function constNames(fragment: Node): Set<string> {
+  const out = new Set<string>();
+  for (const c of ((fragment.nodes as Node[]) ?? []).filter((x) => x.type === 'ConstTag')) for (const d of (((c.declaration as Node)?.declarations as Node[]) ?? [])) boundNames(d.id as Node, out);
+  return out;
+}
+
+/** Markup that renders its content elsewhere, or as often as it is called: a snippet, or content given to a component. */
+const ELSEWHERE = new Set(['SnippetBlock', 'Component', 'SvelteComponent', 'SvelteSelf']);
+
+type ItemHook = { part: string; list: string | null; node: Node; host?: Node; problem?: 'unguarded' | 'unplaced' };
+
+/**
+ * Every item hook in the class of an element of a code component's markup (so_oi?.[plan.id]?.card), with the list
+ * property it repeats the part over, or null when it says none the editor can rely on. It names one when the element
+ * is inside `{#each plans as plan (plan.id)}` (or `plans ?? []`), where `plans` is a property the code takes from
+ * $props() and `plan` is the row whose ID it reads, keyed by that ID; inside no other list, no snippet and no content
+ * given to a component, between the list and the hook or around them, and with neither name declared again on the way
+ * ({@const}): each item of that list then shows the part once, so one item's class lands on one element and moves
+ * with it when the list is reordered. A hook anywhere but a class gives no element its class, and says nothing.
+ */
+function itemHooks(ast: Node): ItemHook[] {
+  const locals = propsLocals(ast);
+  const propOf = new Map([...locals].map(([prop, { local }]) => [local, prop]));
+  const taken = locals.get('so_oi')?.local === 'so_oi';
+  const out: ItemHook[] = [];
+  walkAst(ast.fragment, (n, around) => {
+    const hook = itemHookOf(n);
+    if (!hook) return;
+    const attr = around.findLastIndex((a) => a.type === 'Attribute');
+    if (attr < 0 || around[attr].name !== 'class') return;
+    const host = around[attr - 1];
+    // A plain read fails the website's build for the items not styled on their own (see unguardedItemReads).
+    if (!hook.guarded) return void out.push({ part: hook.part, list: null, node: n, host, problem: 'unguarded' });
+    const row = idOf(hook.key);
+    // The nearest list around the hook that names its row, the hook inside its body (not its key or its fallback).
+    const at = row === null ? -1 : around.findLastIndex((a, i) => a.type === 'EachBlock' && (a.context as Node)?.type === 'Identifier' && (a.context as Node).name === row && around[i + 1] === a.body);
+    const each = at >= 0 ? around[at] : undefined;
+    let source = each?.expression as Node | undefined;
+    if (source?.type === 'LogicalExpression' && (source.operator === '??' || source.operator === '||')) source = source.left as Node;
+    const local = source?.type === 'Identifier' ? String(source.name) : undefined;
+    const prop = local !== undefined ? propOf.get(local) : undefined;
+    const keyed = !!each && idOf(each.key as Node) === row;
+    const once = at >= 0 && around.every((a, i) => i === at || (a.type !== 'EachBlock' && !ELSEWHERE.has(String(a.type))));
+    // A name declared again on the way reads something else: the list around the loop, the row or the item classes
+    // inside it, and the item classes anywhere.
+    const shadowed = around.some((a, i) => a.type === 'Fragment' && [...constNames(a)].some((name) => name === 'so_oi' || (i < at ? name === local : name === row)));
+    const list = taken && prop && keyed && once && !shadowed && !/^(so|slot)_/.test(prop) ? prop : null;
+    out.push({ part: hook.part, list, node: n, host, ...(list ? {} : { problem: 'unplaced' as const }) });
+  });
+  return out;
+}
+
+/**
+ * Reads of the placement's item classes (so_oi, taken from $props(), under any name) that fail when a class is
+ * missing: the website is given item classes only for the items styled on their own, and none at all while none is,
+ * so every step of a read must be optional (so_oi?.[plan.id]?.card, and anything read from that), wherever in the
+ * markup it is. Only a list's row or a snippet's parameter of the same name stands for something else there; any other
+ * read is held to it, a guarded one too (write it with ?. instead).
+ */
+function unguardedItemReads(ast: Node): Node[] {
+  const map = propsLocals(ast).get('so_oi')?.local;
+  if (!map) return [];
+  const unwrap = (n: Node | undefined) => (n?.type === 'ChainExpression' ? (n.expression as Node) : n);
+  /** The variable a chain of reads starts from. */
+  const rootOf = (n: Node | undefined): Node | undefined => {
+    for (let at = unwrap(n); at; at = unwrap(at.object as Node)) if (at.type !== 'MemberExpression') return at;
+    return undefined;
+  };
+  const rebinds = (a: Node) =>
+    (a.type === 'EachBlock' && (boundNames(a.context as Node).has(map) || a.index === map)) || (a.type === 'SnippetBlock' && ((a.parameters as Node[]) ?? []).some((p) => boundNames(p).has(map)));
+  const out: Node[] = [];
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'MemberExpression' || n.optional) return;
+    const r = rootOf(n.object as Node);
+    if (r?.type === 'Identifier' && r.name === map && !around.some(rebinds)) out.push(n);
+  });
+  return out;
+}
+
+/** The list each part is repeated over, by its item hooks: none for a part whose hooks disagree or name none. */
+function hookLists(hooks: ItemHook[]): Record<string, string> {
+  const seen = new Map<string, string | null>();
+  for (const h of hooks) seen.set(h.part, seen.has(h.part) && seen.get(h.part) !== h.list ? null : h.list);
+  return Object.fromEntries([...seen].filter((e): e is [string, string] => e[1] !== null));
+}
+
 /** A part marker's name when it is written out (data-so-part="total"), or null for one an expression gives. */
 function markerName(attr: Node): string | null {
   const values = attr.value === true ? [] : Array.isArray(attr.value) ? (attr.value as Node[]) : [attr.value as Node];
@@ -644,13 +764,15 @@ function markerName(attr: Node): string | null {
 
 /**
  * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
- * written-out data-so-part or gives its class through so_o, and each slot_<name> its script takes from $props().
+/**
+ * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
+ * written-out data-so-part or gives its class through so_o (or one item's class through so_oi), and each slot_<name>
+ * its script takes from $props(); and the list each part repeated once per item is shown over (see itemHooks).
  * `shown` is the slot props (slot_content, as the generator names each slot's snippet) it takes and its markup renders
  * or hands on, so content placed there can reach the page: a slot only taken, or only tested ({#if slot_content}),
- * shows nothing. Comments, strings and a script's own logic declare
- * nothing. Null when the code cannot be parsed.
+ * shows nothing. Comments, strings and a script's own logic declare nothing. Null when the code cannot be parsed.
  */
-export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[] } | null> {
+export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[]; lists: Record<string, string> } | null> {
   const { parse } = await import('svelte/compiler');
   let ast: Node;
   try {
@@ -667,13 +789,16 @@ export async function codeContractNames(source: string): Promise<{ parts: string
     const id = hookedPart(n);
     if (id !== null) parts.add(id);
   });
+  // A part given one item's class is one of the parts the code shows, repeated over the list that item is in.
+  const hooks = itemHooks(ast);
+  for (const h of hooks) parts.add(h.part);
   const locals = propsLocals(ast);
   const slots = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
   const rendered = new Set(snippetRenders(ast).map((r) => r.name));
   const handed = handedNames(ast);
   // Any slot prop counts here, not only the camelCase names saving declares: a theme's slot may be named related_links.
   const shown = [...locals].flatMap(([prop, { local }]) => (prop.startsWith('slot_') && (rendered.has(local) || handed.has(local)) ? [prop] : []));
-  return { parts: [...parts], slots, shown };
+  return { parts: [...parts], slots, shown, lists: hookLists(hooks) };
 }
 
 /**
@@ -780,6 +905,29 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
   const parts = contract.parts ?? {};
   const marked = new Set<string>();
   walkAst(ast.fragment, (n) => void (hookedPart(n) !== null && marked.add(hookedPart(n)!)));
+  // One item's class reaches the part only for the list it is shown once per item of, read where the code repeats it.
+  const hooks = itemHooks(ast);
+  const lists = hookLists(hooks);
+  for (const n of unguardedItemReads(ast))
+    out.push({ severity: 'error', message: 'Read item classes as so_oi?.[plan.id]?.card, optional at every step: the website is given item classes only for the items styled on their own, so a plain read fails for the rest.', node: n });
+  for (const h of hooks) {
+    marked.add(h.part);
+    if (h.problem === 'unguarded') continue;
+    if (h.list === null)
+      out.push({
+        severity: 'warning',
+        message: `Give the “${h.part}” part one item's class inside the list it repeats over, keyed by the item's ID ({#each plans as plan (plan.id)} … class={so_oi?.[plan.id]?.${h.part}}), with the list taken from $props() and inside no other list, snippet or component: otherwise its items are styled together.`,
+        node: h.node
+      });
+    else if (!Object.hasOwn(lists, h.part)) out.push({ severity: 'warning', message: `The “${h.part}” part takes item classes from more than one list, so its items are styled together. Give each list's element a part of its own.`, node: h.node });
+    else {
+      // The part's shared class names it on the page, so a card can be picked, and carries what every card shares.
+      const cls = ((h.host?.attributes as Node[]) ?? []).find((a) => a.type === 'Attribute' && a.name === 'class');
+      const shared = new Set<string>();
+      if (cls && cls.value !== true) walkAst(cls.value, (v) => void (hookedPart(v) !== null && shared.add(hookedPart(v)!)));
+      if (!shared.has(h.part)) out.push({ severity: 'warning', message: `Give the element with the “${h.part}” item class the part's shared class too (class={[so_o?.${h.part}, so_oi?.[…]?.${h.part}]}), so a single item can be picked on the page and every item can be styled together.`, node: h.node });
+    }
+  }
   // A marker in a spread is set by the code as it runs, where the website's build cannot take it out.
   walkAst(ast.fragment, (n) => {
     const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' ? (((n.expression as Node).properties as Node[]) ?? []) : [];

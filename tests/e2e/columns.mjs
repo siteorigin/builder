@@ -362,8 +362,8 @@ try {
     assert.deepEqual(css, ['dense', 'minmax(192px, auto)']);
   }, 30000);
 
-  step('a grid item shows Column span and Row span in Layout with every group closed; an item outside a grid does not');
-  const spanRows = inspector.locator('.style-group[data-group="layout"] .style-row:is([data-prop="columnSpan"], [data-prop="rowSpan"])');
+  step('a grid item shows Column start, Column span and Row span in Layout with every group closed; an item outside a grid does not');
+  const spanRows = inspector.locator('.style-group[data-group="layout"] .style-row:is([data-prop="columnStart"], [data-prop="columnSpan"], [data-prop="rowSpan"])');
   /** Selects a paragraph inside the Section already selected, or inside another one. */
   const pick = async (section, id) => {
     const branch = layer(section);
@@ -374,10 +374,18 @@ try {
     assert.equal(await inspector.locator('.style-group-toggle[aria-expanded="true"]').count(), 0, 'no group is open');
   };
   await pick(made.one, made.first);
-  await eventually(async () => assert.equal(await spanRows.count(), 2, 'both spans show for a grid item'), 10000);
+  await eventually(async () => assert.equal(await spanRows.count(), 3, 'the start and both spans show for a grid item'), 10000);
   await inspector.locator('.style-group[data-group="layout"]').screenshot({ path: join(OUT, 'grid-item-spans.png') });
+  // A start line and a span compose, and the item stays where it was in the document.
+  const lines = () => at(made.first).evaluate((el) => [getComputedStyle(el).gridColumnStart, getComputedStyle(el).gridColumnEnd]);
+  const siblings = () => at(made.first).evaluate((el) => [...el.parentElement.children].indexOf(el));
+  const place = await siblings();
+  await inspector.locator('.style-row[data-prop="columnStart"] select').selectOption('2');
+  await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('1');
+  await eventually(async () => assert.deepEqual(await lines(), ['2', 'span 1']), 30000);
+  assert.equal(await siblings(), place, 'a start line moves nothing in the document');
   await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('full');
-  await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridColumnEnd), '-1'), 30000);
+  await eventually(async () => assert.deepEqual(await lines(), ['1', '-1']), 30000);
   await inspector.locator('.style-row[data-prop="rowSpan"] select').selectOption('2');
   await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridRowEnd), 'span 2'), 30000);
   await pick(made.two, made.other);

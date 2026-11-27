@@ -129,6 +129,9 @@
 
   /* An entry's custom fields, in the writer: a form for records, beside the text for articles. */
   .post-fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+  /* Where a picture dragged in from the desktop would go: a line between the blocks of the text, never part of it. */
+  .post-fieldset:has(> .post-drop-line) { position: relative; }
+  .post-drop-line { position: absolute; height: 3px; margin-top: -1px; border-radius: 2px; background: var(--accent); pointer-events: none; }
   .entry-values { display: flex; flex-direction: column; gap: 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
   .entry-refs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
   .entry-refs label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; padding-block: max(0px, calc((24px - 1lh) / 2)); }

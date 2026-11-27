@@ -294,6 +294,26 @@ function definitionDiagnostics(state: ProjectState): Diagnostic[] {
         }
       }
     }
+    // A part rendered once per list item names a list of the code component's own (see PartDef.list).
+    for (const [pid, part] of Object.entries(def.parts ?? {})) {
+      const list = part && typeof part === 'object' ? (part as { list?: unknown }).list : undefined;
+      if (list === undefined) continue;
+      const schema = typeof list === 'string' && Object.hasOwn(def.properties ?? {}, list) ? def.properties[list] : undefined;
+      const problem =
+        def.kind !== 'code'
+          ? 'only a code component declares the list a part repeats over; a design shows it with a repeat'
+          : pid === 'root'
+            ? 'the root part is the whole component, so it repeats over no list'
+            : typeof list !== 'string'
+              ? 'the list it repeats over is not named by a property name'
+              : !schema
+              ? `it repeats over "${list}", which is not one of its properties`
+              : schema.type !== 'list' || schema.feed
+                ? `it repeats over "${list}", which is not a list that keeps its own items`
+                : null;
+      // Harmless while it stands (the part is styled for every item together), so it never blocks an edit.
+      if (problem) out.push({ severity: 'warning', code: 'PART_LIST', message: `${def.name}: part "${pid}": ${problem}.`, owner, site: `part-list:${pid}` });
+    }
     if (def.kind !== 'managed') continue;
     if (!def.tree) {
       out.push({ severity: 'error', code: 'COMPONENT_ROOT', message: `${def.name}: the component has no design to show.`, owner, site: 'root:unrendered' });
