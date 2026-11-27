@@ -372,8 +372,10 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
     }
     case 'component.fork': {
       if (op.placements) return forkPlacements(state, op);
+      // How many placements the copy took, of how many the original had, as the fork found them.
+      const of = instancesOf(state, op.definitionId).length;
       const id = ensureProjectOwned(state, op.definitionId);
-      return { definitionId: id };
+      return id === op.definitionId ? { definitionId: id } : { definitionId: id, moved: instancesOf(state, id).length, of };
     }
     case 'component.convertToCode':
       return convertToCode(state, op);
@@ -3430,9 +3432,10 @@ function forkPlacements(state: ProjectState, op: Op<'component.fork'>): OpResult
     if (node.definitionId !== def.id) fail(`"${nodeId}" is not a placement of “${def.name}”.`);
     return { node, tree };
   });
+  const of = instancesOf(state, def.id).length;
   const copy = copyDefinition(state, def, uniqueCopyName(state, def.name));
   for (const { node, tree } of uses) rebindTo(state, tree, node, def, copy);
-  return { definitionId: copy.id, moved: uses.length };
+  return { definitionId: copy.id, moved: uses.length, of };
 }
 
 /** Move one placement to a copy of its definition. The slot it sits in must take the copy too: one that names the

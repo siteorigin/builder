@@ -20,7 +20,7 @@ import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, ty
 import { frozen } from '@engine/draft';
 import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
-import { anchorsInUse, displayName, EngineError } from '@engine/tree';
+import { anchorsInUse, displayName, EngineError, instancesOf } from '@engine/tree';
 import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
@@ -3186,6 +3186,11 @@ export class ProjectSession extends EventEmitter {
       if (granted) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: granted, recoverable: true } };
       if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection and upsert_collection_entry write and a layout edited from a request sent while it is open.', recoverable: true } };
+      // A fork of every placement moves a collection layout's too, which is the editor's in the same way: the placements
+      // the request covers are listed instead.
+      const inLayouts = ai && !opts.collectionWrite ? ops.find((o) => o.type === 'component.fork' && !o.placements && instancesOf(this.state, o.definitionId).some((u) => u.owner.kind === 'template' || u.owner.kind === 'archive')) : undefined;
+      if (inLayouts?.type === 'component.fork')
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `“${this.state.components[inLayouts.definitionId]?.name ?? inLayouts.definitionId}” is also placed in a collection layout, which only the editor changes. List the placements the copy is for in placements.`, recoverable: true } };
       // A library image's file is only ever one the importer checked and wrote.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };

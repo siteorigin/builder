@@ -1000,7 +1000,7 @@ function markerName(attr: Node): string | null {
  * or hands on, so content placed there can reach the page: a slot only taken, or only tested ({#if slot_content}),
  * shows nothing. Comments, strings and a script's own logic declare nothing. Null when the code cannot be parsed.
  */
-export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[]; lists: Record<string, string> } | null> {
+export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[]; lists: Record<string, string>; props: string[] } | null> {
   const { parse } = await import('svelte/compiler');
   let ast: Node;
   try {
@@ -1026,7 +1026,8 @@ export async function codeContractNames(source: string): Promise<{ parts: string
   const handed = handedNames(ast);
   // Any slot prop counts here, not only the camelCase names saving declares: a theme's slot may be named related_links.
   const shown = [...locals].flatMap(([prop, { local }]) => (prop.startsWith('slot_') && (rendered.has(local) || handed.has(local)) ? [prop] : []));
-  return { parts: [...parts], slots, shown, lists: hookLists(hooks) };
+  // Every name the code takes from $props(), so a property the component no longer has but the code still reads is found.
+  return { parts: [...parts], slots, shown, lists: hookLists(hooks), props: [...locals.keys()] };
 }
 
 /**

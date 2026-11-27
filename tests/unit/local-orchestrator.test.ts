@@ -493,10 +493,10 @@ describe('the loaded context window', () => {
     expect(body.max_tokens).toBeLessThan(DEFAULT_LOCAL_PROFILE.maxOutput);
     expect(body.max_tokens).toBeGreaterThanOrEqual(1024);
     expect(estimateOf(body) + body.max_tokens).toBeLessThanOrEqual(window);
-    // The request itself stays small: 12,084 tokens measured with the source patch's revision and scope (#740),
+    // The request itself stays small: 12,113 tokens measured with the source patch's revision and scope (#740),
     // inspect_layout's refs (#743), and a theme's code patched on a project copy with its properties (#1078).
     expect(body.tools.map((t: { function: { name: string } }) => t.function.name)).toContain('apply_source_patch');
-    expect(estimateOf(body)).toBeLessThanOrEqual(12_100);
+    expect(estimateOf(body)).toBeLessThanOrEqual(12_150);
   });
 
   it('keeps the full reply budget in a normal larger window', async () => {
@@ -813,10 +813,10 @@ describe('what a constrained local run sends first (#364)', () => {
   const START_BYTES = 70;
   /**
    * A theme's code changed on a project copy (#1078) is another: a code run's read_source and apply_source_patch say
-   * how a theme's code is copied, and the patch takes the component's properties with its code, in its grammar and its
-   * signature, 583 bytes measured on the site (code) run. Made room for the same way.
+   * how a theme's code is copied, and the patch takes the component's properties (bound to the hash they were read at)
+   * with its code, in its grammar and its signature, 649 bytes measured on the site (code) run. Made room for the same way.
    */
-  const THEME_CODE_BYTES = 590;
+  const THEME_CODE_BYTES = 650;
   const BUDGETS = {
     // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
     // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.

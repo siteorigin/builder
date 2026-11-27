@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AssetRecord, ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation, InspectLayoutOptions } from '@shared/api';
 import type { EditOperation, ToolError } from '@shared/ops';
-import { EditOperationSchema, LAYOUT_BINDING, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
+import { EditOperationSchema, LAYOUT_BINDING, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, propertiesHash, type OperationType } from '@shared/ops';
 import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { addressSlug, normalizeRoute } from '@shared/routes';
 import { FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
@@ -14,7 +14,7 @@ import type { ModelCapabilities, ToolDefinition } from './types';
 import { colorSchemeMode } from '@shared/color-scheme';
 import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, layoutDetail, layoutTree, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
-import { getTree, findParent, displayName, instancesOf } from '@engine/tree';
+import { getTree, findParent, displayName, instancesOf, subtreeIds } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { PAGE_SEO_ARGS, PAGE_SEO_BRIEF, PAGE_SEO_DESCRIPTION, pageSeoToolSchema, runPageSeo, runSiteSeo, SITE_SEO_ARGS, SITE_SEO_BRIEF, SITE_SEO_DESCRIPTION, siteSeoToolSchema } from './seo-tools';
@@ -84,6 +84,7 @@ export const TOOL_ARGS = {
     edits: z.array(z.object({ find: z.string(), replace: z.string() })).optional().describe('Exact text replacements applied in order. Each find must match exactly once.'),
     source: z.string().optional().describe('Full replacement source, instead of edits.'),
     properties: z.record(z.string(), z.unknown()).optional().describe('The whole new property schema, when the code takes other properties.'),
+    expectedPropertiesHash: z.string().optional().describe('With properties: the propertiesHash read_source returned.'),
     renames: z
       .array(z.object({ from: z.string(), to: z.string() }))
       .max(60)
@@ -966,21 +967,36 @@ export type { ToolOutcome } from './result';
 /**
  * How a theme's code is changed (§8.4): on a project copy for the placements the request covers, which then reads and
  * patches like any project code, while the theme's own stays for every other placement, for inserting and for theme
- * switches. Says which copy this run may make, with where the component is placed.
+ * switches. Says which copy this run may make, and lists the placements it may move to one.
  */
-function themeCodeCopy(state: ProjectState, def: ComponentDefinition, host: ToolHost): { note: string; placements: Array<{ owner: OwnerRef; nodeId: string; where: string }> } {
-  const placements = instancesOf(state, def.id)
-    .slice(0, 40)
-    .map((p) => ({ owner: p.owner, nodeId: p.node.id, where: p.label }));
+function themeCodeCopy(state: ProjectState, def: ComponentDefinition, host: ToolHost): { note: string; placements?: Array<{ owner: OwnerRef; nodeId: string; where: string }>; morePlacements?: number } {
   const shared = `“${def.name}” is the theme's code, shared by every placement of it: it is never patched.`;
   const then = 'Then read_source the definitionId it returns, and patch that.';
+  // A copy adds a component to the site: more than a page, a selected part or a selection inside a design can change.
+  const widen = (label: string) => ({ note: `${shared} Changing it needs a project copy, which adds a component to the site: more than ${label}. Ask the user to allow a wider change first.` });
   const page = host.pageLimit?.();
-  if (page) return { note: `${shared} Changing it needs a project copy, which adds a component to the site: more than ${page.label}. Ask the user to allow a wider change first.`, placements };
-  if (host.selectionLimited?.())
-    return { note: `${shared} Patch a project copy instead: component.makeUnique { owner, nodeId } copies it for the selected placement, or component.fork { definitionId, placements: [{ owner, nodeId }] } for several placements inside the selection, which share the copy. ${then}`, placements };
+  if (page) return widen(page.label);
+  if (host.definitionTarget?.()) return widen('this component’s design');
+  const selected = host.selectionLimited?.() ? host.selection?.() : null;
+  if (selected && (selected.partId || selected.nested || selected.owner.kind === 'component')) return widen('the selection');
+  let inside: Set<string> | null = null;
+  if (selected) {
+    try {
+      inside = new Set(subtreeIds(getTree(state, selected.owner), selected.nodeId));
+    } catch {
+      inside = new Set();
+    }
+  }
+  const all = instancesOf(state, def.id)
+    .filter((p) => !selected || (p.owner.kind === selected.owner.kind && p.owner.id === selected.owner.id && inside!.has(p.node.id)))
+    .map((p) => ({ owner: p.owner, nodeId: p.node.id, where: p.label }));
+  const placements = all.slice(0, 40);
+  const listed = { placements, ...(all.length > placements.length ? { morePlacements: all.length - placements.length } : {}) };
+  if (selected)
+    return { note: `${shared} Patch a project copy instead: component.makeUnique { owner, nodeId } copies it for the selected placement, or component.fork { definitionId, placements: [{ owner, nodeId }] } for several of the placements inside the selection (listed here), which share the copy. ${then}`, ...listed };
   return {
-    note: `${shared} Patch a project copy instead: component.fork { definitionId, placements: [{ owner, nodeId }] } copies it for the placements the request covers, which share the copy while every other keeps the theme's; without placements, every one moves to it. ${then}`,
-    placements
+    note: `${shared} Patch a project copy instead: component.fork { definitionId, placements: [{ owner, nodeId }] } copies it for the placements the request covers (listed here), which share the copy while every other keeps the theme's; without placements, every placement the project can change moves to it. ${then}`,
+    ...listed
   };
 }
 
@@ -1180,7 +1196,7 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       const editable = def.owner === 'project';
       // A patch replaces the whole property schema with the code, so the code that can be patched is read with it; a
       // theme's code says how to get a copy that can.
-      const manifest = editable ? { properties: def.properties } : themeCodeCopy(state, def, host);
+      const manifest = editable ? (start === 0 ? { properties: def.properties, propertiesHash: propertiesHash(def.properties) } : {}) : themeCodeCopy(state, def, host);
       return { ok: true, content: { definitionId: def.id, revision: host.revision(), editable, hash: sourceHash(def.source ?? ''), totalLines: lines.length, startLine: start + 1, endLine: end, source: lines.slice(start, end).join('\n'), ...manifest } };
     }
     case 'apply_source_patch': {
@@ -1194,6 +1210,9 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       if (a.expectedRevision !== host.revision())
         return toolError('STALE_REVISION', `This patch was written against revision ${a.expectedRevision}, but the project is at ${host.revision()}. Call read_source again and write the patch against what it returns.`, { revision: host.revision() });
       if (sourceHash(src) !== a.expectedHash) return toolError('STALE_REVISION', 'The source changed. Call read_source again.', { revision: host.revision() });
+      // New properties replace the whole schema, so they are bound to the one they were written from, as the code is.
+      if (a.properties && a.expectedPropertiesHash === undefined) return toolError('INVALID_ARGUMENT', 'properties needs expectedPropertiesHash: the propertiesHash read_source returned.');
+      if (a.properties && a.expectedPropertiesHash !== propertiesHash(def.properties)) return toolError('STALE_REVISION', 'The properties changed. Call read_source again.', { revision: host.revision() });
       if (a.source !== undefined) src = a.source;
       else for (const e of a.edits ?? []) {
         const count = src.split(e.find).length - 1;
@@ -1201,7 +1220,7 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
         src = src.replace(e.find, e.replace);
       }
       // The properties travel in the same operation, so the code is checked against the contract it lands with.
-      const ops: EditOperation[] = [{ type: 'component.updateSource', definitionId: def.id, source: src, expectedHash: a.expectedHash, ...(a.properties ? { properties: a.properties } : {}), ...(a.renames?.length ? { renames: a.renames } : {}) }];
+      const ops: EditOperation[] = [{ type: 'component.updateSource', definitionId: def.id, source: src, expectedHash: a.expectedHash, ...(a.properties ? { properties: a.properties, expectedPropertiesHash: a.expectedPropertiesHash } : {}), ...(a.renames?.length ? { renames: a.renames } : {}) }];
       const res = await host.apply(ops, a.expectedRevision, `Edit ${def.name} source`, callId, undefined, a.scope);
       if (!res.ok) return applyFailure(res);
       const compile = (await host.compileAll()).filter((d) => d.severity === 'error');

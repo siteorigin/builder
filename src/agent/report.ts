@@ -368,12 +368,13 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const original = quoted(before.components[op.definitionId]?.name ?? componentName(op.definitionId));
         // A project's own component is already its own: forking all of it copies nothing.
         if (copy === op.definitionId) return plain(op, `Kept the ${original} component as it was: it is already the project's own`);
-        // The copy is named, and linked, with how many of the original's placements it took.
-        const moved = (results[i] as { moved?: unknown } | undefined)?.moved;
-        const took = typeof moved === 'number' ? moved : instancesOf(after, copy).length;
-        const had = instancesOf(before, op.definitionId).length;
+        // The copy is named, and linked while it is still in the site, with how many of the original's placements it took
+        // when it was made.
+        const counts = (results[i] ?? {}) as { moved?: unknown; of?: unknown };
+        const took = typeof counts.moved === 'number' ? counts.moved : instancesOf(after, copy).length;
+        const had = typeof counts.of === 'number' ? counts.of : instancesOf(before, op.definitionId).length;
         const share = took >= had ? (took === 1 ? 'its one placement' : `all ${took} of its placements`) : `${took === 1 ? 'one' : took} of its ${had} placements`;
-        return plain(op, `Copied the ${original} component into the project as ${quoted(componentName(copy))}, for ${share}`, { owner: { kind: 'component', id: copy }, definitionId: copy });
+        return plain(op, `Copied the ${original} component into the project as ${quoted(componentName(copy))}, for ${share}`, after.components[copy] ? { owner: { kind: 'component', id: copy }, definitionId: copy } : {});
       }
       case 'component.convertToCode':
         return plain(op, `Converted ${name(op.owner, op.nodeId)} on ${where(op.owner)} to a code component`, linkTo(op.owner, res.nodeId ?? op.nodeId));

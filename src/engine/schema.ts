@@ -49,6 +49,13 @@ const count = (v: unknown, label: string): number | undefined => {
   if (n !== undefined && (!Number.isInteger(n) || n < 0 || n > 1000)) fail(`${label} must be a whole number from 0 to 1000.`);
   return n;
 };
+/** The most characters a text property may be limited to: a web address takes up to 2,048, a long text far more. */
+const MAX_TEXT_LENGTH = 20_000;
+const length = (v: unknown, label: string): number | undefined => {
+  const n = num(v, label);
+  if (n !== undefined && (!Number.isInteger(n) || n < 0 || n > MAX_TEXT_LENGTH)) fail(`${label} must be a whole number from 0 to ${MAX_TEXT_LENGTH.toLocaleString('en')}.`);
+  return n;
+};
 
 /**
  * A page list's mapping: a link field, and distinct fields of the right type for the page's title, description and
@@ -131,7 +138,7 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
   switch (type) {
     case 'string': {
       if (r.multiline !== undefined) out.multiline = !!r.multiline;
-      const maxLength = count(r.maxLength, `${label} maxLength`);
+      const maxLength = length(r.maxLength, `${label} maxLength`);
       if (maxLength) out.maxLength = maxLength;
       out.default = '';
       break;
