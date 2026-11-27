@@ -624,7 +624,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     setNameError(null);
     setAllPlaces(false);
     setChoosing(null);
-    setAltReview((r) => (r?.assetId === selected ? r : null));
+    // An alt text check outlives a trip back to the grid: it ends with Done, or once another image is opened.
+    setAltReview((r) => (r?.assetId === selected || !selected ? r : null));
   }, [selected]);
   // A pending "Import a replacement" never applies after the panel has gone.
   useEffect(() => () => void replaceSession.current++, []);
@@ -1414,7 +1415,18 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               No file left to show.
             </span>
           ) : devUrl ? (
-            <Picture key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={sel} devUrl={devUrl} maxHeight={176} />
+            <Picture
+              key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'}
+              a={sel}
+              devUrl={devUrl}
+              maxHeight={176}
+              fallback={
+                <span className="asset-preview-off">
+                  <ImageOff aria-hidden="true" />
+                  This preview couldn’t load.
+                </span>
+              }
+            />
           ) : (
             <span className="asset-preview-off">
               <ImageIcon aria-hidden="true" />
@@ -1435,65 +1447,37 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               Another image has this name. This one: {apart}.
             </p>
           )}
+          {/* Where it is used answers on the first screen; the list itself follows the details, so this goes to it. */}
+          <p className="asset-meta asset-used-line">
+            {used ? (
+              <button
+                className="link-btn asset-used-jump"
+                onClick={() => {
+                  // The heading takes focus, so the next Tab is the first place.
+                  const head = document.getElementById('asset-uses-title');
+                  head?.setAttribute('tabindex', '-1');
+                  head?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+                  head?.focus({ preventScroll: true });
+                }}
+              >
+                Used in {plural(places.length || used, 'place', 'places')}
+              </button>
+            ) : (
+              'Not used anywhere yet'
+            )}
+          </p>
         </div>
-        {altToCheck.length > 0 && (
-          <div className="asset-note asset-alt-review" role="note" aria-labelledby="asset-alt-review-title" data-testid="asset-alt-review">
-            <TriangleAlert aria-hidden="true" />
-            <div>
-              <span>
-                <b id="asset-alt-review-title">Check the alt text in {altToCheck.length === 1 ? 'one place' : `${altToCheck.length} places`}.</b> {nameOf(snap.state.assets.assets[altReview!.withId] ?? sel)} shows there now, but the alt text there was written for this image, or is empty.
-              </span>
-              <ul>
-                {altToCheck.map((c) => {
-                  const Icon = PLACE_ICON[c.icon];
-                  const go = goToPlace(snap.state, c);
-                  const inner = (
-                    <>
-                      <Icon aria-hidden="true" />
-                      <span className="where">{c.where}</span>
-                      <span className="what">{c.what}</span>
-                      {go && <ChevronRight className="go" aria-hidden="true" />}
-                    </>
-                  );
-                  return (
-                    <li key={c.key}>
-                      {go ? (
-                        <button className="asset-use" onClick={go} title={showLabel(snap.state, c)}>
-                          {inner}
-                        </button>
-                      ) : (
-                        <span className="asset-use static">{inner}</span>
-                      )}
-                      <span className="asset-alt-text">{c.reason === 'custom' ? `Kept its own: “${c.alt}”` : 'No alt text'}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-              <div className="asset-note-actions">
-                <button
-                  className="btn btn-sm btn-ghost"
-                  onClick={() => {
-                    setAltReview(null);
-                    requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
-                  }}
-                >
-                  Done
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
         {gone && (
           <div className="asset-note asset-missing" role="note">
             <TriangleAlert aria-hidden="true" />
             <div>
               {hurt === 'all' ? (
                 <span>
-                  <b>File missing.</b> This picture{sel.variants?.length ? ' and its smaller copies are' : ' is'} no longer in the project folder, so {!used ? 'it can’t be shown' : onePlace ? 'the place below shows nothing' : 'the places below show nothing'}. {!used ? '' : onePlace ? 'Its use and alt text are kept. ' : 'Every use and its alt text are kept. '}Locate the file to bring it back{used ? ', or replace it everywhere' : ''}.
+                  <b>File missing.</b> This picture{sel.variants?.length ? ' and its smaller copies are' : ' is'} no longer in the project folder, so {!used ? 'it can’t be shown' : onePlace ? 'the place below shows nothing' : 'the places below show nothing'}. {!used ? '' : onePlace ? 'Its use and alt text are kept. ' : 'Every use and its alt text are kept. '}Locate the file to bring it back, or {used ? 'replace it everywhere' : 'remove the image below'}.
                 </span>
               ) : hurt === 'original' ? (
                 <span>
-                  <b>Original missing.</b> {used ? `${onePlace ? 'The place below still shows' : 'The places below still show'} its smaller copies, but you can’t export the site while it uses this image.` : 'Its smaller copies are still here, but the original is the file the website is built from.'} Locate the file to bring it back{used ? ', or replace it everywhere' : ''}.
+                  <b>{copies ? 'Original and some smaller copies missing.' : 'Original missing.'}</b> {used ? `${onePlace ? 'The place below still shows' : 'The places below still show'} ${copies ? 'its other smaller copies, though some screen sizes may show nothing,' : 'its smaller copies,'} but you can’t export the site while it uses this image.` : `${copies ? 'Some smaller copies' : 'Its smaller copies'} are still here, but the original is the file the website is built from.`} Locate the file to bring it back, or {used ? 'replace it everywhere' : 'remove the image below'}.
                 </span>
               ) : (
                 <span>
@@ -1521,6 +1505,59 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             </div>
           </div>
         )}
+        {altToCheck.length > 0 && (
+          <div className="asset-note asset-alt-review" role="note" aria-labelledby="asset-alt-review-title" data-testid="asset-alt-review">
+            <TriangleAlert aria-hidden="true" />
+            <div>
+              <span>
+                <b id="asset-alt-review-title">Check the alt text in {altToCheck.length === 1 ? 'one place' : `${altToCheck.length} places`}.</b> {altToCheck.length === 1 ? 'It now shows' : 'They now show'} <b>{nameOf(snap.state.assets.assets[altReview!.withId] ?? sel)}</b>, but {altToCheck.length === 1 ? 'its' : 'their'} alt text was written for this image, or is empty.
+              </span>
+              <ul>
+                {altToCheck.map((c, i) => {
+                  const Icon = PLACE_ICON[c.icon];
+                  // Why the place is listed, read with the row it belongs to.
+                  const why = `asset-alt-why-${i}`;
+                  const go = goToPlace(snap.state, c);
+                  const inner = (
+                    <>
+                      <Icon aria-hidden="true" />
+                      <span className="where">{c.where}</span>
+                      <span className="what">{c.what}</span>
+                      {go && <ChevronRight className="go" aria-hidden="true" />}
+                    </>
+                  );
+                  return (
+                    <li key={c.key}>
+                      {go ? (
+                        <button className="asset-use" onClick={go} title={showLabel(snap.state, c)} aria-describedby={why}>
+                          {inner}
+                        </button>
+                      ) : (
+                        <span className="asset-use static">
+                          {inner}
+                          {/* A theme component's starting image can't be opened, so neither can its alt text. */}
+                          {c.definitionId && <span className="asset-use-hint">Part of the theme: its alt text can’t be changed here</span>}
+                        </span>
+                      )}
+                      <span className="asset-alt-text" id={why}>{c.reason === 'custom' ? `Kept its own: “${c.alt}”` : 'No alt text'}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="asset-note-actions">
+                <button
+                  className="btn btn-sm"
+                  onClick={() => {
+                    setAltReview(null);
+                    requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
+                  }}
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {/* Advice about the original's size means nothing while the original is gone. */}
         {sel.bytes > LARGE && !gone?.original && (
           <div className="asset-note" role="note" data-testid="asset-large-note">
@@ -1532,7 +1569,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 {webPlan === undefined
                   ? ''
                   : offer
-                    ? `${sameSize ? `A ${offer.format} copy at the same ${offer.width} × ${offer.height} is far lighter.` : `A web-sized copy (${offer.format} · ${offer.width} × ${offer.height}) keeps it light.`} ${used ? `It shows in ${onePlace ? 'its place' : 'its places'} instead, and the original stays in Assets.` : 'It’s added to Assets beside the original, which you can then remove.'}`
+                    ? `${sameSize ? `A ${offer.format} copy at the same ${offer.width} × ${offer.height} is far lighter.` : `A web-sized copy (${offer.format} · ${offer.width} × ${offer.height}) keeps it light.`} ${used ? `It takes this one’s ${onePlace ? 'place' : 'places'}; the original stays in Assets.` : 'It’s added beside this one, which you can then remove.'}`
                     : webPlan
                       ? 'A web-sized copy would be less than a third lighter, so none is offered.'
                       : used
@@ -1550,18 +1587,27 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           </div>
         )}
         {recordsLocation && (
-          <p className="asset-note" data-testid="asset-location-note">
+          // A fact about the file, not a task: flat, under the notes that ask for something.
+          <p className="asset-note asset-fact" role="note" data-testid="asset-location-note">
             <MapPin aria-hidden="true" />
             <span>
-              <b>Records where it was taken.</b> Exported website files leave the location out, along with any camera details. This original keeps them, and so does an editable project export.
+              <b>Records where it was taken.</b> Website files leave the location and camera details out; the original and an editable project export keep them.
             </span>
           </p>
         )}
         <div className="asset-place">
-          {/* Placed only once its files are whole, as Replace everywhere and the gallery picker require. */}
-          <button className={`btn btn-sm${gone ? '' : ' btn-primary'}`} disabled={!placement.at || !!gone} aria-describedby="asset-place-where" onClick={() => void place()}>
-            <ImageDown /> {placing ? 'Placing…' : 'Place on page'}
-          </button>
+          {/* The two ways to use the picture, sharing the one line under them. It is placed only once its files are whole,
+              as Replace everywhere and the gallery picker require; while a missing file or an alt text check asks for
+              something, placing it again is not the next step, so it gives up the primary. */}
+          <div className="asset-place-actions">
+            <button className={`btn btn-sm${gone || altToCheck.length ? '' : ' btn-primary'}`} disabled={!placement.at || !!gone} aria-describedby="asset-place-where" onClick={() => void place()}>
+              <ImageDown /> {placing ? 'Placing…' : 'Place on page'}
+            </button>
+            {/* Only the image's ID and name go to the AI; the picture stays on this computer. */}
+            <button className="btn btn-sm btn-ghost asset-to-chat" disabled={!!gone?.original} aria-describedby={gone?.original ? 'asset-place-where' : undefined} title={gone?.original ? 'Locate the file to use this image in AI chat' : 'Attach this image to your next AI message'} onClick={() => attachToChat(snap.workspaceKey, sel.id)}>
+              <Sparkles /> Use in AI chat
+            </button>
+          </div>
           <p className="asset-why" id="asset-place-where" data-testid="asset-place-where">
             {gone?.original ? (
               'Locate the file to place this image or use it in AI chat.'
@@ -1583,6 +1629,30 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             )}
           </p>
         </div>
+        <section className="asset-fields" aria-labelledby="asset-fields-title">
+          <h5 id="asset-fields-title">Details</h5>
+          <Field label="Name" error={nameError}>
+            <DraftInput
+              value={sel.name}
+              onLive={() => nameError && setNameError(null)}
+              onCommit={(v) => {
+                if (!v.trim()) {
+                  setNameError('An image needs a name, so the old one was kept.');
+                  return false;
+                }
+                setNameError(null);
+                if (v.trim() === sel.name) return;
+                void applyOps([{ type: 'asset.update', assetId: sel.id, name: v.trim() }], 'Rename image');
+              }}
+            />
+          </Field>
+          <Field label="Description" hint="What’s in it and where it fits. It helps you and the AI pick images; the AI never sees the picture.">
+            <DraftInput multiline rows={2} limit={TEXT_LIMITS.assetDescription} keep={`asset:${sel.id}:description`} keepWhile={assetAlive(sel.id)} placeholder="For example: team photo outside the studio, summer" value={sel.description ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, description: v }], 'Describe image')} />
+          </Field>
+          <Field label="Suggested alt text" hint="Filled in when you place it, for people who can’t see it. Say what matters, without “image of”; mark a purely decorative image where you place it.">
+            <DraftInput multiline rows={2} limit={TEXT_LIMITS.altSuggestion} keep={`asset:${sel.id}:altSuggestion`} keepWhile={assetAlive(sel.id)} value={sel.altSuggestion ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, altSuggestion: v }], 'Edit alt suggestion')} />
+          </Field>
+        </section>
         <section className="asset-uses" aria-labelledby="asset-uses-title">
           <h5 id="asset-uses-title">{used ? `Used in ${plural(places.length || used, 'place', 'places')}` : 'Not used anywhere yet'}</h5>
           {places.length > 0 && (
@@ -1639,35 +1709,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 <Trash2 /> Remove image
               </button>
             )}
-            {/* Only the image's ID and name go to the AI; the picture stays on this computer. */}
-            <button className="btn btn-sm btn-ghost asset-to-chat" disabled={!!gone?.original} aria-describedby={gone?.original ? 'asset-place-where' : undefined} title={gone?.original ? 'Locate the file to use this image in AI chat' : 'Attach this image to your next AI message'} onClick={() => attachToChat(snap.workspaceKey, sel.id)}>
-              <Sparkles /> Use in AI chat
-            </button>
           </div>
         </section>
-        <div className="asset-fields">
-          <Field label="Name" error={nameError}>
-            <DraftInput
-              value={sel.name}
-              onLive={() => nameError && setNameError(null)}
-              onCommit={(v) => {
-                if (!v.trim()) {
-                  setNameError('An image needs a name, so the old one was kept.');
-                  return false;
-                }
-                setNameError(null);
-                if (v.trim() === sel.name) return;
-                void applyOps([{ type: 'asset.update', assetId: sel.id, name: v.trim() }], 'Rename image');
-              }}
-            />
-          </Field>
-          <Field label="Description" hint="Note what’s in it and where it fits. It helps you and the AI pick images; the AI never sees the picture.">
-            <DraftInput multiline rows={2} limit={TEXT_LIMITS.assetDescription} keep={`asset:${sel.id}:description`} keepWhile={assetAlive(sel.id)} placeholder="For example: team photo outside the studio, summer" value={sel.description ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, description: v }], 'Describe image')} />
-          </Field>
-          <Field label="Suggested alt text" hint="Filled in when you place the image, for people who can’t see it. Describe what matters, without “image of”. If it’s only decoration, mark it decorative where you place it.">
-            <DraftInput multiline rows={2} limit={TEXT_LIMITS.altSuggestion} keep={`asset:${sel.id}:altSuggestion`} keepWhile={assetAlive(sel.id)} value={sel.altSuggestion ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, altSuggestion: v }], 'Edit alt suggestion')} />
-          </Field>
-        </div>
       </div>
     );
   } else if (assets.length === 0) {
