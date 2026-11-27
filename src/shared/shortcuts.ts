@@ -170,7 +170,7 @@ const PLATFORM_TEXT_KEYS: Record<string, Record<string, string>> = {
 };
 
 /** The shortcuts macOS keeps that never reach the app, to show beside the recorder (they cannot be refused on press). */
-export const MAC_SYSTEM_HINT = '⇧⌘3, ⇧⌘4, ⇧⌘5 and ⇧⌘6 are macOS’s screenshot shortcuts, and ⇧⌘Q logs out.';
+export const MAC_SYSTEM_HINT = 'macOS keeps ⇧⌘3 to ⇧⌘6 and ⇧⌘Q for itself.';
 
 /**
  * Why a binding cannot be Ask AI's, naming what already has it, or null when it is free. `platform` as Node names it

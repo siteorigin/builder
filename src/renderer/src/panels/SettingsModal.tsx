@@ -24,6 +24,16 @@ const hostOf = (url: string) => {
   }
 };
 const focusById = (id: string) => requestAnimationFrame(() => document.getElementById(id)?.focus());
+/** Focuses a select and opens its list, where the platform allows it. */
+const openPicker = (id: string) => {
+  const select = document.getElementById(id) as HTMLSelectElement | null;
+  select?.focus();
+  try {
+    select?.showPicker();
+  } catch {
+    // Opening needs a user gesture some platforms do not see through a frame; focus alone still lands there.
+  }
+};
 
 export function SettingsModal() {
   const settings = useStore((s) => s.settings);
@@ -39,6 +49,8 @@ export function SettingsModal() {
   const [testingWith, setTestingWith] = useState('');
   // Whether the local server is unreachable or empty, which a typed server key cannot fix.
   const [localBlocked, setLocalBlocked] = useState(false);
+  // The local server's state as its card last showed it, for what the rest of the page says about it.
+  const [localServer, setLocalServer] = useState<LocalServerStatus | null>(null);
   const [test, setTest] = useState<TestResult | null>(null);
   const [keyRevision, setKeyRevision] = useState(0);
   // Counts edits to each provider's typed key, so a test result never outlives the text it tested (the key itself
@@ -331,15 +343,19 @@ export function SettingsModal() {
 
     // A long custom ID is in its own field below; the status names it in words.
     const testedName = status?.models.some((m) => m.id === testedModel) ? modelLabelFor(testedModel) : 'Your custom model';
-    if (testingNow) return busy('Testing the connection…', isLocal ? `Listing the models at ${server?.url}, then sending ${model || 'the first one'} a short chat request.` : testedName);
-    if (notice?.kind === 'failed') return problem('Could not update the key', notice.message);
-    if (server?.phase === 'invalid') return neutral(server.url ? 'Still using the saved server' : 'No server in use yet', server.url || 'Enter a valid address to connect.');
+    // An address waiting to be completed or confirmed is the question on screen, ahead of a test or a key: the
+    // status's answers are the address's (see the action below), so its title must be too.
+    if (server?.phase === 'invalid' && server.remoteHost)
+      return neutral('This server is on another machine', `To use ${server.remoteHost}, turn on ‘Allow a server on another machine’ below.${keySaved ? ' Your saved server key goes to it too.' : ''}${server.url ? ` Until then the saved server is ${hostOf(server.url)}.` : ''}`, <TriangleAlert />);
+    if (server?.phase === 'invalid') return neutral(server.url ? 'Still using the saved server' : 'No server in use yet', server.url ? `The saved server, ${hostOf(server.url)}, stays in use until the address below is complete.` : 'Enter a valid address to connect.');
     if (server?.phase === 'pending')
       return neutral(
         server.proposedHost ? `Switch to ${server.proposedHost}?` : 'New address not applied yet',
-        server.proposedHost ? `Current server: ${server.url ? hostOf(server.url) : 'none'}. Using the new server sends your requests and page content there.` : server.url ? `Still using ${server.url}.` : 'Apply it to connect.',
+        server.proposedHost ? `If you switch, ${provider === activeProvider ? 'the assistant sends' : 'Local model will send'} your requests and page content${keySaved ? ', and your saved server key,' : ''} to ${server.proposedHost}. Current server: ${server.url ? hostOf(server.url) : 'none'}.` : server.url ? `Still using ${server.url}.` : 'Apply it to connect.',
         server.proposedHost ? <TriangleAlert /> : undefined
       );
+    if (testingNow) return busy('Testing the connection…', isLocal ? `Listing the models at ${server?.url}, then sending ${model || 'the first one'} a short chat request.` : testedName);
+    if (notice?.kind === 'failed') return problem('Could not update the key', notice.message);
     if (server?.phase === 'checking') return busy('Checking the server…', server.url);
     if (replacing[provider] && !unsavedKey && !server) return neutral(`Replacing your ${label} key`, `Chat keeps using ${currentKey} until you save a new one.`, <KeyRound />);
     // What happened, in the provider's words; what to do about the key is said at the key. A model the server lists
@@ -363,8 +379,8 @@ export function SettingsModal() {
     }
     if (server?.phase === 'empty') return problem('No models loaded', 'Load a model in your server app, then refresh.');
     if (server?.phase === 'ready') {
-      if (server.missing) return problem(`${model} is not on this server`, 'Choose one of its models.');
-      return neutral('Server reachable, not tested yet', `${hostOf(server.url)} lists ${server.models} ${server.models === 1 ? 'model' : 'models'}. A listed model may still fail to chat: Test connection sends it a short request.`, <Server />);
+      if (server.missing) return problem('Your saved model isn’t on this server', `${hostOf(server.url)} doesn’t list ${model}. Choose one of its models.`);
+      return neutral('Server reachable, not tested yet', `${hostOf(server.url)} lists ${server.models} ${server.models === 1 ? 'model' : 'models'}. Test the connection to check the model replies.`, <Server />);
     }
     if (notice?.kind === 'removed' && !status?.configured) return neutral(`${label} key removed`, 'Add a key to use the assistant.', <KeyRound />);
     if (status?.configured) return untested(`${known ? modelLabel : 'Your custom model'}, using ${currentKey}.`);
@@ -396,17 +412,18 @@ export function SettingsModal() {
           : refused
             ? pasteNew
             : testAction
-      : refused && !keyProblem
-        ? pasteNew
-        : // A typed key can only answer a server that is there, or one that asked for a key.
-        unsavedKey && (server.phase === 'ready' || (server.phase === 'unreachable' && server.reason === 'auth') || !!keyProblem)
-        ? testAction
-        : server.phase === 'invalid'
-          ? server.url
-            ? { label: 'Use saved address', run: server.revert }
-            : null
-          : server.phase === 'pending'
-            ? { label: 'Use this address', run: server.apply }
+      : // An address waiting to be completed or confirmed is answered first: its question is the status's title.
+        server.phase === 'invalid'
+        ? server.url
+          ? { label: 'Use saved address', run: server.revert }
+          : null
+        : server.phase === 'pending'
+          ? { label: 'Use this address', run: server.apply }
+          : refused && !keyProblem
+            ? pasteNew
+            : // A typed key can only answer a server that is there, or one that asked for a key.
+            unsavedKey && (server.phase === 'ready' || (server.phase === 'unreachable' && server.reason === 'auth') || !!keyProblem)
+            ? testAction
             : server.phase === 'checking'
               ? { label: 'Checking…' }
               : server.phase === 'unreachable'
@@ -416,16 +433,19 @@ export function SettingsModal() {
                 : server.phase === 'empty'
                   ? { label: 'Refresh models', run: () => void server.refresh() }
                   : server.phase === 'ready' && server.missing
-                    ? { label: 'Choose a model', run: () => focusById('settings-local-model') }
+                    ? { label: 'Choose a model', run: () => requestAnimationFrame(() => openPicker('settings-local-model')) }
                     : testAction;
     // Stays mounted and focusable while busy, so a keyboard user keeps their place through a retry.
-    const busy = testingNow || !action?.run;
+    const busy = (testingNow && action === testAction) || !action?.run;
     // The status action is the one primary on the page when it is the next step: not after a pass (a retest is
     // optional), and not while a typed key waits to be saved (Save key is), unless the server itself is the blocker.
     const blocked = !!server && (server.phase === 'empty' || (server.phase === 'unreachable' && server.reason !== 'auth'));
-    const primary = !busy && view.tone !== 'ready' && (!unsavedKey || blocked);
+    // Going back to the saved server is offered, never urged: the next step while an address is unapplied is in the field.
+    const primary = !busy && view.tone !== 'ready' && (!unsavedKey || blocked) && server?.phase !== 'invalid';
+    // A switch to another machine is a question with two answers, kept together.
+    const keep = server?.phase === 'pending' && server.proposedHost ? { label: 'Keep current server', run: () => (server.revert(), focusById('settings-local-url')) } : null;
     return (
-      <div className={`settings-status ${view.tone}`}>
+      <div className={`settings-status ${view.tone}${keep ? ' choice' : ''}`}>
         <span className="settings-status-icon" aria-hidden="true">
           {view.icon}
         </span>
@@ -433,11 +453,30 @@ export function SettingsModal() {
           <div className="settings-status-title">{view.title}</div>
           {view.detail && <div className="settings-status-detail">{view.detail}</div>}
         </div>
+        {/* One container in every state, so the first button stays the same element when a switch is accepted and
+            the second answer goes: the keyboard keeps its place on the status's next step. */}
         {action && (
-          <button className={`btn${primary ? ' btn-primary' : ''}`} aria-disabled={busy || undefined} title={action.external ? 'Opens in your browser' : unsavedKey ? 'Tests the key you typed. Press Save key to keep it.' : undefined} onClick={busy ? undefined : action.run}>
-            {testingNow ? 'Testing…' : action.label}
-            {action.external && <ExternalLink aria-hidden="true" />}
-          </button>
+          <div className="settings-status-actions">
+            <button
+              id="settings-status-action"
+              className={`btn${primary ? ' btn-primary' : ''}`}
+              aria-disabled={busy || undefined}
+              title={action.external ? 'Opens in your browser' : action === testAction && unsavedKey ? 'Tests the key you typed. Press Save key to keep it.' : undefined}
+              // A two-answer question: each answer is read with the question it answers.
+              aria-describedby={keep ? 'settings-connection' : undefined}
+              // An Enter still held from the address field must not answer the question it just moved to.
+              onKeyDown={(e) => e.key === 'Enter' && e.repeat && e.preventDefault()}
+              onClick={busy ? undefined : action.run}
+            >
+              {testingNow && action === testAction ? 'Testing…' : action.label}
+              {action.external && <ExternalLink aria-hidden="true" />}
+            </button>
+            {keep && (
+              <button className="btn" aria-describedby="settings-connection" onClick={keep.run}>
+                {keep.label}
+              </button>
+            )}
+          </div>
         )}
       </div>
     );
@@ -495,7 +534,7 @@ export function SettingsModal() {
             }}
             onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && !keyProblem && void saveKey()}
           />
-          <button type="button" className="btn btn-icon" aria-pressed={showKey} aria-label={showKey ? 'Hide key' : 'Show key'} title={showKey ? 'Hide key' : 'Show key'} onClick={() => setShowKey((v) => !v)}>
+          <button type="button" className="btn settings-key-reveal" aria-pressed={showKey} aria-label={showKey ? 'Hide key' : 'Show key'} title={showKey ? 'Hide key' : 'Show key'} onClick={() => setShowKey((v) => !v)}>
             {showKey ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
           </button>
           {replacing[provider] && (
@@ -510,7 +549,7 @@ export function SettingsModal() {
               Cancel
             </button>
           )}
-          <button className={`btn${unsavedKey && !draftFailed && !keyProblem && !keyBusy && !(isLocal && localBlocked) ? ' btn-primary' : ''}`} disabled={!unsavedKey || !!keyProblem} aria-disabled={keyBusy || undefined} onClick={() => void saveKey()}>
+          <button className={`btn${unsavedKey && !draftFailed && !keyProblem && !keyBusy && !(isLocal && (localBlocked || localServer?.phase === 'pending')) ? ' btn-primary' : ''}`} disabled={!unsavedKey || !!keyProblem} aria-disabled={keyBusy || undefined} onClick={() => void saveKey()}>
             {keyBusy ? 'Saving key…' : 'Save key'}
           </button>
         </div>
@@ -554,10 +593,10 @@ export function SettingsModal() {
           `${provider === activeProvider ? 'Your request' : `With ${label} in use, your request`} and the relevant page text go to ${label}, which bills your account for usage. Images and screenshots are never sent.`
         ) : localRemoteHost ? (
           <>
-            When you use the assistant{provider === activeProvider ? '' : ' with this server'}, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
+            {provider === activeProvider ? 'When you use the assistant' : 'With Local model in use'}, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
           </>
         ) : (
-          provider === activeProvider ? 'Your requests and page content stay on this computer.' : 'With this server in use, your requests and page content stay on this computer.'
+          provider === activeProvider ? 'Your requests and page content stay on this computer.' : 'With Local model in use, your requests and page content stay on this computer.'
         )}
       </span>
     </div>
@@ -615,6 +654,10 @@ export function SettingsModal() {
     </StackedRow>
   );
 
+  // Using the provider on screen is the next step only once its setup has passed a test; before that the card's own
+  // next step is the page's one primary, so a server that isn't answering is never urged on chat.
+  // A test that passed for a typed key is not the setup chat would use until that key is saved.
+  const useReady = !unsavedKey && (isLocal ? !!localServer && connectionView(localServer).tone === 'ready' : connectionView().tone === 'ready');
   return (
     <Modal
       title="Settings"
@@ -700,14 +743,14 @@ export function SettingsModal() {
                     {provider !== activeProvider && (
                       <div className="row">
                         <span className="grow">The assistant is using {providers.find((x) => x.id === activeProvider)?.label ?? activeProvider}.</span>
-                        <button className="btn btn-primary" onClick={() => void update({ ai: { provider } })}>
+                        <button className={`btn${useReady ? ' btn-primary' : ''}`} onClick={() => void update({ ai: { provider } })}>
                           Use {label}
                         </button>
                       </div>
                     )}
                   </div>
                   {isLocal ? (
-                    <LocalModelSettings settings={settings} update={update} keyRevision={keyRevision} keySaved={keySaved} revealKey={(keyNotice?.provider === 'local' && keyNotice.kind === 'failed') || !!keys.local.trim()} status={connection} keyField={keyField} onBlocked={setLocalBlocked} />
+                    <LocalModelSettings settings={settings} update={update} keyRevision={keyRevision} keySaved={keySaved} revealKey={(keyNotice?.provider === 'local' && keyNotice.kind === 'failed') || !!keys.local.trim()} status={connection} keyField={keyField} onBlocked={setLocalBlocked} onStatus={setLocalServer} />
                   ) : (
                     <section className="settings-card" aria-label={`${label} connection`}>
                       {connection()}

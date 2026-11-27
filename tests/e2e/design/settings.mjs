@@ -159,6 +159,25 @@ for (let i = 0; i < 12; i++) {
 await shot('general-focus', '.modal [role="tab"]:focus-visible', LIGHT, { keepFocus: true });
 await shot('context', '.modal', LIGHT, { full: true, keepFocus: true });
 
+// ---- Keyboard shortcuts: Ask AI's recorder ----
+const shortcutRow = '.modal .settings-shortcut';
+await win.locator(shortcutRow).getByRole('button', { name: /^Change/ }).focus();
+await win.keyboard.press('Enter');
+await win.locator('.modal .settings-shortcut .recording').first().waitFor();
+await pause(200);
+await shot('shortcut-recording', shortcutRow, BOTH, { keepFocus: true });
+// A press another shortcut has is refused, naming what has it; recording goes on.
+await win.keyboard.press('Meta+K');
+await win.locator('.modal #settings-ask-ai-key-note.field-error, .modal .field-error').first().waitFor();
+await pause(200);
+await shot('shortcut-refused', '.modal .field-error', BOTH, { keepFocus: true });
+await win.keyboard.press('Meta+Shift+L');
+await pause(500);
+await win.locator(shortcutRow, { hasText: /Reset/ }).first().waitFor();
+await shot('shortcut-custom', shortcutRow, BOTH);
+await win.locator(shortcutRow).getByRole('button', { name: /Reset/ }).click();
+await pause(400);
+
 // ---- AI assistant, hosted providers ----
 await tab('AI assistant').click();
 await keyInput.waitFor();
@@ -188,7 +207,10 @@ await pause(250);
 // Saved, after pasting the key again (the failed test above stays with the key it tested, even once saved).
 await keyInput.fill('');
 await keyInput.fill(PLACEHOLDER_KEY);
-await keyInput.press('Enter');
+await win.locator('.modal button', { hasText: /^\s*Save key\s*$/ }).click();
+// The placeholder does not look like an OpenAI key, so saving it asks first.
+const anyway = win.getByRole('button', { name: 'Save anyway' });
+if (await anyway.waitFor({ timeout: 3000 }).then(() => true, () => false)) await anyway.click();
 await win.locator('.modal button', { hasText: 'Remove' }).first().waitFor();
 await statusSays('key saved');
 await shot('openai-saved', '.settings-key-saved');
@@ -237,7 +259,7 @@ await chooseProvider('Local model');
 await urlInput.waitFor();
 await win.locator('.settings-status:not(:has-text("Checking"))').first().waitFor({ timeout: 20000 });
 await pause(300);
-await shot('local-first-run', '.settings-presets [aria-current="true"]', LIGHT);
+await shot('local-first-run', '.settings-presets [aria-pressed="true"]', LIGHT);
 await typeServer('http://127.0.0.1:9/v1');
 await statusSays('Can’t reach the server');
 await pause(300);
@@ -260,8 +282,30 @@ await shot('local-test-ok', STATUS, LIGHT, { full: true });
 await win.locator('.settings-advanced > summary').click();
 await pause(200);
 await shot('local-advanced', '.settings-advanced[open] select', LIGHT);
+// A customized option, with the options closed again.
+await win.locator('#settings-local-tools-select').selectOption('constrained-json');
+await pause(250);
+await win.locator('.settings-advanced > summary').click();
+await pause(250);
+await shot('local-customized', '.settings-advanced:not([open])', LIGHT);
 await win.locator('.settings-advanced > summary').click();
 await pause(200);
+await win.locator('#settings-local-tools-select').selectOption('auto');
+await pause(250);
+await win.locator('.settings-advanced > summary').click();
+await pause(200);
+
+// The chosen model is no longer on the server.
+serverModels = LOCAL_MODELS.slice(1);
+await win.locator('.modal button', { hasText: /^\s*Refresh\s*$/ }).click();
+await statusSays('isn’t on this server');
+await pause(300);
+await shot('local-model-missing', '#settings-local-model', LIGHT);
+serverModels = LOCAL_MODELS;
+await win.locator('.modal button', { hasText: /^\s*Refresh\s*$/ }).click();
+await pause(800);
+await win.locator('#settings-local-model').selectOption(LOCAL_MODELS[0]);
+await pause(300);
 
 // The same dialog in a small window.
 await win.setViewportSize({ width: 860, height: 600 });

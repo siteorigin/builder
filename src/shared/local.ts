@@ -79,7 +79,7 @@ export function checkLocalBaseURL(raw: string, allowRemote = false): LocalURLChe
   // checks that every address it resolves to is this computer (see the local adapter).
   const remote = u.hostname !== 'localhost' && !isLoopbackHost(u.hostname);
   // Strictly true: a hand-edited settings file holding "false" must not count as permission.
-  if (remote && allowRemote !== true) return { ok: false, message: `${u.hostname} is not on this computer. Turn on "Allow a server on another machine" to send project content there.` };
+  if (remote && allowRemote !== true) return { ok: false, message: `${u.hostname} is not on this computer. Turn on “Allow a server on another machine” to send project content there.` };
   const path = u.pathname.replace(/\/+$/, '') || '/v1';
   return { ok: true, url: `${u.protocol}//${u.host}${path}`, remote };
 }

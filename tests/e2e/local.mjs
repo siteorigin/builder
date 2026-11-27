@@ -55,7 +55,7 @@ try {
   app = launched.app;
   const { win, errors } = launched;
   // The saved address starts on this server, written another way, so Settings never asks anything else for its
-  // models (a real llama.cpp on the default port, say) and the preset still has to be picked to match.
+  // models (a real llama.cpp on the default port, say); picking the preset saves it the one way.
   await win.evaluate((baseURL) => window.builder.app.setSettings({ ai: { local: { baseURL } } }), `${preset.baseURL}/`);
   await win.reload();
   await win.waitForSelector('.welcome');
@@ -81,10 +81,11 @@ try {
   await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
 
   step(`the ${preset.label} preset`);
-  const presetButton = dialog.getByRole('group', { name: 'Common server apps' }).getByRole('button', { name: preset.label, exact: true });
-  assert.equal(await presetButton.getAttribute('aria-current'), null, 'the preset is not chosen yet');
+  const presetButton = dialog.getByRole('group', { name: 'Usual address for' }).getByRole('button', { name: preset.label, exact: true });
+  // The field holds the preset's address written another way: the preset reads as chosen, as the same server.
+  assert.equal(await presetButton.getAttribute('aria-pressed'), 'true', 'the preset matches the address in the field');
   await presetButton.click();
-  await eventually(async () => assert.equal(await presetButton.getAttribute('aria-current'), 'true'));
+  await eventually(async () => assert.equal(await presetButton.getAttribute('aria-pressed'), 'true'));
   assert.equal(await dialog.locator('#settings-local-url').inputValue(), preset.baseURL);
   await eventually(async () => assert.equal((await settings()).ai.local.baseURL, preset.baseURL));
 
@@ -96,7 +97,7 @@ try {
   const beforeRefresh = gets().length;
   await refreshButton.click();
   await eventually(async () => assert.ok(gets().length > beforeRefresh, 'Refresh asks the server for its models'));
-  await eventually(async () => assert.deepEqual(await modelSelect.locator('option').allInnerTexts(), ["Use the server's model", 'first-model', 'second-model']));
+  await eventually(async () => assert.deepEqual(await modelSelect.locator('option').allInnerTexts(), ['Automatic (first-model)', 'first-model', 'second-model']));
   await modelSelect.selectOption('second-model');
   await eventually(async () => assert.equal((await settings()).ai.models.local, 'second-model'));
 
@@ -105,7 +106,7 @@ try {
   const asked = gets().length;
   const connection = dialog.locator('#settings-connection');
   // Being listed is not enough: the test only passes once the model answers a chat request.
-  await connection.filter({ hasText: 'A listed model may still fail to chat' }).waitFor();
+  await connection.filter({ hasText: 'Test the connection to check the model replies' }).waitFor();
   server.script(textReply('OK'));
   await dialog.locator('.settings-status').getByRole('button', { name: 'Test connection' }).click();
   await connection.filter({ hasText: 'Connection test passed' }).filter({ hasText: 'second-model answered a test chat request.' }).waitFor({ timeout: 15000 });
@@ -314,7 +315,7 @@ try {
   await openAi();
   await dialog.getByRole('radio', { name: 'Local model' }).click();
   await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
-  await eventually(async () => assert.deepEqual(await modelOptions(), ["Use the server's model", 'first-model', 'second-model']), 15000);
+  await eventually(async () => assert.deepEqual(await modelOptions(), ['Automatic (first-model)', 'first-model', 'second-model']), 15000);
   await modelSelect.selectOption('second-model');
   await eventually(async () => assert.equal((await settings()).ai.models.local, 'second-model'));
   await closeSettings();
@@ -322,7 +323,7 @@ try {
   step('a second server: the model menu and the requests follow it');
   await openAi();
   await useAddress(secondURL);
-  await eventually(async () => assert.deepEqual(await modelOptions(), ["Use the server's model", 'studio-b']), 15000);
+  await eventually(async () => assert.deepEqual(await modelOptions(), ['Automatic (studio-b)', 'studio-b']), 15000);
   assert.equal(await modelSelect.inputValue(), '', "the first server's model is not carried over");
   assert.equal((await settings()).ai.models.local, '');
   await modelSelect.selectOption('studio-b');
@@ -350,7 +351,7 @@ try {
   await eventually(async () => assert.equal(await modelSelect.inputValue(), 'second-model'), 15000);
   assert.equal((await settings()).ai.models.local, 'second-model');
   await useAddress(secondURL);
-  await eventually(async () => assert.deepEqual(await modelOptions(), ["Use the server's model", 'studio-b']), 15000);
+  await eventually(async () => assert.deepEqual(await modelOptions(), ['Automatic (studio-b)', 'studio-b']), 15000);
   assert.equal(await modelSelect.inputValue(), 'studio-b', "the second server's own choice is restored too");
   // Back to the server's own model, so the next request has to ask the server what it has.
   await modelSelect.selectOption('');
