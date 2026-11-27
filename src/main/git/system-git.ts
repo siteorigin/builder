@@ -46,7 +46,8 @@ export interface DetectOptions {
 const TIMEOUT_MS = 5000;
 /** `git --version` prints one short line; anything longer is not Git. */
 const MAX_OUTPUT = 4096;
-const VERSION_RE = /^git version (\d+\.\d+(?:\.\d+)*)/;
+/** `git version 2.39.5 (Apple Git-154)`, `git version 2.47.1.windows.1`: the whole of one line. */
+const VERSION_RE = /^git version (\d+\.\d+(?:\.\d+)*)(?:[ (-][^\n]*|\.[^\d\n][^\n]*)?$/;
 
 /** The folders Git's installers put it in, for each platform, looked in after PATH. */
 function usualDirs(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
@@ -110,13 +111,22 @@ function quietEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): NodeJS.Pro
   return out;
 }
 
-/** The Git behind macOS's /usr/bin/git stand-in, when Apple's tools (or Xcode) are installed; null when they are not. */
-async function behindMacShim(run: Runner, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<string | null> {
+/** Whether a file is the macOS stand-in itself, by any name: a link or a second name for it is the same file. */
+async function isShim(file: string, shim: string): Promise<boolean> {
+  const [a, b] = await Promise.all([fs.stat(file).catch(() => null), fs.stat(shim).catch(() => null)]);
+  return !!a && !!b && a.dev === b.dev && a.ino === b.ino;
+}
+
+/**
+ * The Git behind macOS's /usr/bin/git stand-in, when Apple's tools (or Xcode) are installed; null when they are not,
+ * or when the folder they name leads back to the stand-in.
+ */
+async function behindMacShim(run: Runner, env: NodeJS.ProcessEnv, timeoutMs: number, shim: string): Promise<string | null> {
   const r = await run('/usr/bin/xcode-select', ['-p'], { timeoutMs, env });
   const dir = r.code === 0 ? r.stdout.trim().split('\n')[0]?.trim() : '';
   if (!dir || !posix.isAbsolute(dir)) return null;
   const git = posix.join(dir, 'usr', 'bin', 'git');
-  return (await runnable(git, 'darwin')) ? git : null;
+  return (await runnable(git, 'darwin')) && !(await isShim(git, shim)) ? git : null;
 }
 
 /** The computer's own Git, if it has one, and its version. Never rejects. */
@@ -131,9 +141,8 @@ export async function detectSystemGit(opts: DetectOptions = {}): Promise<SystemG
   for (const candidate of gitCandidates(platform, env, opts.extraDirs)) {
     if (!(await runnable(candidate, platform))) continue;
     let file = candidate;
-    // Also when it is reached through a link of another name.
-    if (platform === 'darwin' && (candidate === macShim || (await fs.realpath(candidate).catch(() => candidate)) === (await fs.realpath(macShim).catch(() => macShim)))) {
-      const real = await behindMacShim(run, quiet, timeoutMs).catch(() => null);
+    if (platform === 'darwin' && (candidate === macShim || (await isShim(candidate, macShim)))) {
+      const real = await behindMacShim(run, quiet, timeoutMs, macShim).catch(() => null);
       // The stand-in with nothing behind it is no Git: another may still be installed further on.
       if (!real) continue;
       file = real;

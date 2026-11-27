@@ -56,6 +56,10 @@ export interface CommitInput {
   parents: Oid[];
   author: Identity;
   committer: Identity;
+  /**
+   * Stored as Git stores a message: carriage returns dropped, blank lines at its start and end trimmed, and ending in
+   * one line break, so `Saved` reads back as `Saved\n`.
+   */
   message: string;
 }
 

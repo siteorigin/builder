@@ -111,13 +111,18 @@ function trialInChild(dir: string, files: FileInput[]): Promise<Trial> {
       child.send({ files });
       child.once('message', (r: { trial?: Trial; error?: string }) => (r.trial ? done(r.trial) : fail(new Error(r.error))));
     });
-    child.once('exit', (code) => code && fail(new Error(`the trial exited with ${code}`)));
+    // Settled at most once: an exit after the result is the trial ending as it should.
+    child.once('exit', (code, signal) => fail(new Error(`the trial ended (${code ?? signal}) before it answered`)));
+    child.once('error', fail);
   });
 }
 
 const fmtMs = (ms: number) => `${ms.toFixed(0)} ms`;
 const fmtMiB = (b: number) => `${(b / 1024 / 1024).toFixed(1)} MiB`;
-const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+const median = (xs: number[]) => {
+  const s = [...xs].sort((a, b) => a - b);
+  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+};
 
 async function main() {
   const { values } = parseArgs({ options: { child: { type: 'string' }, fixture: { type: 'string' }, trials: { type: 'string' }, out: { type: 'string' } } });
@@ -134,7 +139,9 @@ async function main() {
     return;
   }
   const fixtures: Fixture[] = values.fixture ? [values.fixture as Fixture] : ['starter', 'media'];
+  if (!fixtures.every((f) => f === 'starter' || f === 'media')) throw new Error(`--fixture is starter or media, not ${values.fixture}`);
   const trials = Number(values.trials ?? 3);
+  if (!Number.isInteger(trials) || trials < 1) throw new Error(`--trials is a whole number of 1 or more, not ${values.trials}`);
   const results: Record<string, unknown> = { platform: `${process.platform}-${process.arch}`, node: process.version, at: new Date().toISOString(), fixtures: {} };
   const rows: string[] = ['| Fixture | Files | Input | First snapshot | Unchanged snapshot | Peak RSS (at start) | Repository after first | Growth, unchanged |', '|---|---|---|---|---|---|---|---|'];
   for (const fixture of fixtures) {

@@ -10,8 +10,7 @@ import { createGitService } from '../../../src/main/git/service';
 const stopAt = process.env.GIT_TEST_STOP_AT as FaultPoint | undefined;
 const send = (m: unknown) => process.send!(m);
 const service = createGitService(send, {
-  lockMinAgeMs: Number(process.env.GIT_TEST_LOCK_MIN_AGE_MS ?? 2000),
-  fault: stopAt ? (point) => (point === stopAt ? (send({ stoppedAt: point }), new Promise<never>(() => undefined)) : undefined) : undefined
+  fault: stopAt ? (point, path) => (point === stopAt ? (send({ stoppedAt: point, path }), new Promise<never>(() => undefined)) : undefined) : undefined
 });
 process.on('message', (m) => void service.handle(m as GitRequest));
 send({ ready: true });

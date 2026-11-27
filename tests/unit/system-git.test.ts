@@ -3,7 +3,7 @@
  * missing, and one that fails, hangs or prints something else as unusable. Looking runs nothing but `--version`, never
  * the macOS stand-in that would ask to install Apple's tools, and writes nothing.
  */
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -54,7 +54,8 @@ describe.skipIf(process.platform === 'win32')('detectSystemGit', () => {
   it('reports a git that fails, prints something else or hangs as unusable, and a working one later on PATH as present', async () => {
     const failing = fakeGit('failing', 'echo "error: no such thing" >&2; exit 3');
     const other = fakeGit('other', 'echo "this is not git"');
-    const hanging = fakeGit('hanging', 'sleep 5');
+    // Absolute: the detector gives the program an empty PATH.
+    const hanging = fakeGit('hanging', 'exec /bin/sleep 5');
     const working = fakeGit('working', 'echo "git version 2.43.0"');
     await expect(detectSystemGit({ env: env(failing), extraDirs: [], platform: 'linux' })).resolves.toEqual({ status: 'unusable', path: join(failing, 'git'), reason: 'failed' });
     await expect(detectSystemGit({ env: env(other), extraDirs: [], platform: 'linux' })).resolves.toEqual({ status: 'unusable', path: join(other, 'git'), reason: 'unrecognised' });
@@ -62,6 +63,22 @@ describe.skipIf(process.platform === 'win32')('detectSystemGit', () => {
     await expect(detectSystemGit({ env: env(hanging), extraDirs: [], platform: 'linux', timeoutMs: 200 })).resolves.toEqual({ status: 'unusable', path: join(hanging, 'git'), reason: 'timeout' });
     expect(Date.now() - started).toBeLessThan(3000);
     await expect(detectSystemGit({ env: env(failing, working), extraDirs: [], platform: 'linux' })).resolves.toEqual({ status: 'present', path: join(working, 'git'), version: '2.43.0' });
+    // With nothing working, the first that failed is the one reported.
+    await expect(detectSystemGit({ env: env(other, failing), extraDirs: [], platform: 'linux' })).resolves.toEqual({ status: 'unusable', path: join(other, 'git'), reason: 'unrecognised' });
+  });
+
+  it('takes only a whole version line as Git’s', async () => {
+    for (const [out, version] of [
+      ['git version 2.39.5 (Apple Git-154)', '2.39.5'],
+      ['git version 2.47.1.windows.1', '2.47.1'],
+      ['git version 2.47.1garbage', null],
+      ['git version 2.47.1\nand more', null],
+      ['git version two', null]
+    ] as const) {
+      const dir = fakeGit(`v-${Math.random().toString(36).slice(2)}`, `printf '${out}\\n'`);
+      const found = await detectSystemGit({ env: env(dir), extraDirs: [], platform: 'linux' });
+      expect(found, out).toEqual(version ? { status: 'present', path: join(dir, 'git'), version } : { status: 'unusable', path: join(dir, 'git'), reason: 'unrecognised' });
+    }
   });
 
   it('looks in the usual install folders after PATH, for an app opened with a short PATH', async () => {
@@ -70,7 +87,8 @@ describe.skipIf(process.platform === 'win32')('detectSystemGit', () => {
   });
 
   it('never runs the macOS stand-in: with Apple’s tools missing it is no Git, and with them it asks the real one', async () => {
-    const shim = fakeGit('shim', `touch "${join(root, 'install-prompt')}"; echo "git version 9.9.9"`);
+    // A shell builtin, since the detector gives the program an empty PATH.
+    const shim = fakeGit('shim', `: > "${join(root, 'install-prompt')}"; echo "git version 9.9.9"`);
     const devDir = join(root, 'CommandLineTools');
     const real = fakeGit(join('CommandLineTools', 'usr', 'bin'), 'echo "git version 2.39.5 (Apple Git-154)"');
     const calls: string[] = [];
@@ -90,15 +108,31 @@ describe.skipIf(process.platform === 'win32')('detectSystemGit', () => {
     expect(readdirSync(root)).not.toContain('install-prompt');
   });
 
+  it('knows the macOS stand-in by any name: a link or second name on PATH, or a tools folder that leads back to it', async () => {
+    const shim = fakeGit('shim', `: > "${join(root, 'install-prompt')}"; echo "git version 9.9.9"`);
+    mkdirSync(join(root, 'aliases'));
+    linkSync(join(shim, 'git'), join(root, 'aliases', 'git'));
+    mkdirSync(join(root, 'linked'));
+    symlinkSync(join(shim, 'git'), join(root, 'linked', 'git'));
+    // Apple's tools "installed" in a folder whose git is the stand-in again.
+    const devDir = join(root, 'Loop');
+    mkdirSync(join(devDir, 'usr', 'bin'), { recursive: true });
+    symlinkSync(join(shim, 'git'), join(devDir, 'usr', 'bin', 'git'));
+    const run: Runner = async (file, args) => {
+      if (file === '/usr/bin/xcode-select') return { code: 0, stdout: `${devDir}\n`, timedOut: false };
+      throw new Error(`ran ${file} ${args.join(' ')}`);
+    };
+    for (const dir of [join(root, 'aliases'), join(root, 'linked'), shim])
+      await expect(detectSystemGit({ env: env(dir), extraDirs: [], platform: 'darwin', macShim: join(shim, 'git'), run }), dir).resolves.toEqual({ status: 'missing' });
+    expect(readdirSync(root)).not.toContain('install-prompt');
+  });
+
   it('gives Git no settings of the user’s and tells it never to prompt', async () => {
     const dir = fakeGit('env', 'echo "git version 2.47.1"');
     let seen: NodeJS.ProcessEnv = {};
     const run: Runner = async (_file, _args, opts) => ((seen = opts.env), { code: 0, stdout: 'git version 2.47.1\n', timedOut: false });
     await detectSystemGit({ env: { PATH: dir, HOME: '/home/someone', GIT_DIR: '/somewhere/.git', OPENAI_API_KEY: 'sk-secret' }, extraDirs: [], platform: 'linux', run });
-    expect(seen).toMatchObject({ GIT_TERMINAL_PROMPT: '0' });
-    expect(seen).not.toHaveProperty('HOME');
-    expect(seen).not.toHaveProperty('GIT_DIR');
-    expect(seen).not.toHaveProperty('OPENAI_API_KEY');
+    expect(seen).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C', LANG: 'C', PATH: '' });
   });
 });
 

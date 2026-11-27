@@ -7,14 +7,17 @@
  */
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepo } from '../../src/main/git/repo';
+import { detectSystemGit } from '../../src/main/git/system-git';
 import { VERSIONS_BRANCH, type FileInput, type Identity } from '../../src/main/git/protocol';
 
-const hasGit = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
+// Found the way the app finds one, so on a Mac without Apple's tools the stand-in that offers to install them never runs.
+const found = await detectSystemGit();
+const GIT = found.status === 'present' ? found.path : null;
 const APP: Identity = { name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: 1_790_000_000, timezoneOffset: -60 };
 
 let root: string;
@@ -29,10 +32,12 @@ afterEach(() => {
 });
 
 /** Stock Git with none of this computer's settings, and an identity of its own for what it commits. */
-function git(args: string[], opts: { cwd?: string; allowFail?: boolean } = {}) {
-  const r = spawnSync('git', args, {
+function git(args: string[], opts: { cwd?: string; allowFail?: boolean; input?: string } = {}) {
+  if (!GIT) throw new Error('No stock Git to check the repository with: CI must have one.');
+  const r = spawnSync(GIT, args, {
     cwd: opts.cwd ?? root,
     encoding: 'utf8',
+    input: opts.input,
     env: {
       PATH: process.env.PATH,
       HOME: home,
@@ -88,7 +93,7 @@ const files = (dir: string, skip = '.git') =>
     .sort()
     .map((p) => [p, readFileSync(join(dir, p)).toString('base64')]);
 
-describe.skipIf(!hasGit && !process.env.CI)('the versions repository read by stock Git', () => {
+describe.skipIf(!GIT && !process.env.CI)('the versions repository read by stock Git', () => {
   it('passes git fsck --strict, and checks out every file byte for byte', async () => {
     const { repo, first } = await save();
     const tree2 = await repo.writeFiles([...FILES.filter((f) => f.path !== 'static/empty.txt'), { path: 'static/new.txt', bytes: text('new') }]);
@@ -128,17 +133,21 @@ describe.skipIf(!hasGit && !process.env.CI)('the versions repository read by sto
   it('reads a commit stock Git made, and its objects once stock Git has packed them and its branches', async () => {
     const { repo, first } = await save();
     // Stock Git adds a commit on top of the bundled one's.
-    const blob = git(['--git-dir', gitdir(), 'hash-object', '-w', '--stdin'], {}).stdout.trim();
+    const blob = git(['--git-dir', gitdir(), 'hash-object', '-w', '--stdin'], { input: 'written by stock Git\n' }).stdout.trim();
     expect(blob).toMatch(/^[0-9a-f]{40}$/);
-    const tree = spawnSync('git', ['--git-dir', gitdir(), 'mktree'], { input: `100644 blob ${blob}\tstock.txt\n`, encoding: 'utf8' }).stdout.trim();
+    const tree = git(['--git-dir', gitdir(), 'mktree'], { input: `100644 blob ${blob}\tstock.txt\n` }).stdout.trim();
     const stock = git(['--git-dir', gitdir(), 'commit-tree', tree, '-p', first, '-m', 'By stock Git']).stdout.trim();
     git(['--git-dir', gitdir(), 'update-ref', 'refs/heads/siteorigin-versions', stock, first]);
     git(['--git-dir', gitdir(), 'gc', '--quiet', '--prune=now']);
     git(['--git-dir', gitdir(), 'pack-refs', '--all', '--prune']);
     expect(readdirSync(join(gitdir(), 'refs', 'heads'))).toEqual([]);
+    // Every object is in a pack now, none loose.
+    expect(readdirSync(join(gitdir(), 'objects', 'pack')).filter((f) => f.endsWith('.pack'))).toHaveLength(1);
+    expect(existsSync(join(gitdir(), 'objects', first.slice(0, 2), first.slice(2)))).toBe(false);
     const fresh = openRepo(root);
     expect(await fresh.resolveRef(VERSIONS_BRANCH)).toBe(stock);
     expect(await fresh.readCommit(stock)).toMatchObject({ parents: [first], message: 'By stock Git\n', author: { name: 'Stock Git', email: 'stock@example.invalid', timestamp: 1790000500 } });
+    expect(new TextDecoder().decode(await fresh.readBlob(stock, 'stock.txt'))).toBe('written by stock Git\n');
     expect(Buffer.from(await fresh.readBlob(first, 'static/assets/photo.jpg')).equals(photo)).toBe(true);
     expect(Buffer.from(await fresh.readBlob(first, 'static/assets/video.mp4')).equals(video)).toBe(true);
     expect((await fresh.listCommits(VERSIONS_BRANCH, 10)).map((c) => c.oid)).toEqual([stock, first]);
@@ -167,8 +176,15 @@ describe.skipIf(!hasGit && !process.env.CI)('the versions repository read by sto
     release();
     await moving;
     expect(git(['--git-dir', gitdir(), 'rev-parse', 'refs/heads/siteorigin-versions']).stdout.trim()).toBe(second);
-    // And the other way round: a lock stock Git holds (left here as it leaves one mid-update) is honoured.
-    writeFileSync(join(gitdir(), 'refs', 'heads', 'siteorigin-versions.lock'), `${first}\n`);
-    await expect(openRepo(root, { lockWaitMs: 50 }).advanceRef(VERSIONS_BRANCH, first, second)).rejects.toMatchObject({ code: 'locked' });
+    // And the other way round: a lock stock Git holds (left here as it leaves one mid-update) is honoured, and once
+    // it is let go the branch moves.
+    const third = await repo.writeCommit({ tree: tree2, parents: [second], author: APP, committer: APP, message: 'C\n' });
+    const lock = join(gitdir(), 'refs', 'heads', 'siteorigin-versions.lock');
+    writeFileSync(lock, `${first}\n`);
+    await expect(openRepo(root, { lockWaitMs: 50 }).advanceRef(VERSIONS_BRANCH, third, second)).rejects.toMatchObject({ code: 'locked' });
+    expect(git(['--git-dir', gitdir(), 'rev-parse', 'refs/heads/siteorigin-versions']).stdout.trim()).toBe(second);
+    rmSync(lock);
+    await openRepo(root).advanceRef(VERSIONS_BRANCH, third, second);
+    expect(git(['--git-dir', gitdir(), 'rev-parse', 'refs/heads/siteorigin-versions']).stdout.trim()).toBe(third);
   });
 });

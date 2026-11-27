@@ -9,19 +9,23 @@
  * renamed into place, as `git update-ref` does), and only from the commit the caller expected, so two writers can never
  * silently overwrite each other and a stock Git honours the same lock.
  *
- * A lock is held for milliseconds. One left by a worker that stopped while holding it is cleared by a later worker,
- * once it is older than that worker and a moment old: the app runs one Git worker at a time, starts the next only
- * after the last has exited, and runs as a single instance, so such a lock belongs to no writer still running.
+ * Every write of the app's also holds the app's own lock on the repository (`siteorigin-writer.lock`), which names the
+ * process holding it. A process that died holding it (the app quit or crashed mid-save, the computer lost power) is
+ * seen to be gone by the next writer, which then finishes what it may have left half done: the branch lock it took,
+ * known by the commit it holds, is cleared, the folders its objects were named in are flushed, and its temporary
+ * objects removed. A lock of Git's that no dead writer of the app's took is never cleared, however old: it is another
+ * Git's, which may still be running.
  */
 import { createHash } from 'node:crypto';
 import { promises as fs, type Stats } from 'node:fs';
+import { hostname, uptime } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { constants as zlibConstants, createDeflate, deflateSync } from 'node:zlib';
 import git from 'isomorphic-git';
-import { ensureDir, renameReplacing, safeJoin, syncDir } from '../project/fsutil';
+import { eachAtMost, ensureDir, renameReplacing, safeJoinLooking, syncDir } from '../project/fsutil';
 import { openRegularFile, readAtMost } from '../regular-file';
-import { repoFs, type Fault } from './fs';
+import { repoFs, TMP_PREFIX, type Fault } from './fs';
 import { BRANCH_RE, GIT_LIMITS, GitError, OID_RE, VERSIONS_BRANCH, VERSIONS_GITDIR, type BlobInput, type CommitInfo, type CommitInput, type FileInput, type GitLimits, type Identity, type Oid, type TreeEntry } from './protocol';
 
 /** Set when the caller no longer wants the result: checked between files and before a branch moves. */
@@ -32,20 +36,27 @@ const NEVER: CancelToken = { cancelled: false };
 
 export interface RepoOptions {
   limits?: Partial<GitLimits>;
-  /** When this worker started (ms since 1970): a lock older than this was left by a worker that has exited. */
-  startedAt?: number;
-  /** How old an abandoned lock must be before it is cleared, for file systems that keep coarse times. */
-  lockMinAgeMs?: number;
   /** How long to wait for another writer's lock before giving up. */
   lockWaitMs?: number;
+  /** Whether a process is still running; for tests, which stop a write without ending their own process. */
+  processAlive?: (pid: number) => boolean;
   /** For tests: a point in a write to stop at. */
   fault?: Fault;
 }
 
-const LOCK_MIN_AGE_MS = 2000;
 const LOCK_WAIT_MS = 5000;
+/** A writer's lock with nothing readable in it (its writer stopped as it took it) is taken as abandoned this long after. */
+const UNREADABLE_LOCK_MS = 2000;
+/** The app's own lock on the repository, beside Git's files, which Git leaves alone. */
+const WRITER_LOCK = 'siteorigin-writer.lock';
+/** Another Git's temporary objects are its own until they are this old. */
+const ABANDONED_TMP_MS = 60 * 60_000;
 /** How much of a file is compressed to see whether compressing it is worth it. */
 const SAMPLE_BYTES = 64 * 1024;
+/** The longest name a folder can hold on macOS, Windows and Linux alike. */
+const MAX_NAME_BYTES = 255;
+/** A branch's name with room for its `.lock` within that. */
+const MAX_REF_LENGTH = 200;
 /**
  * Already compressed (a photo, a video, a font): stored as it is, since compressing it again saves nothing and costs
  * most of the time a version of pictures takes. Git reads an object stored either way.
@@ -58,31 +69,64 @@ const utf8Bytes = (s: string) => Buffer.byteLength(s, 'utf8');
 const check = (token: CancelToken) => {
   if (token.cancelled) throw new GitError('cancelled', 'The versions repository write was stopped.');
 };
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // Running, as another user's.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
 
-/** A part of a path a repository could not hold, or that Git and its checkouts treat as special (`.git` in any spelling). */
-function badSegment(s: string): boolean {
-  return s === '' || s === '.' || s === '..' || /[\\\0]/.test(s) || /^\.git[. ]*$/i.test(s) || /^git~\d+$/i.test(s);
+/** Characters macOS's file system ignores in names, which Git therefore ignores too when it looks for `.git`. */
+const HFS_IGNORED = /[‌-‏‪-‮⁪-⁯﻿]/g;
+/** A UTF-16 half with no other half: no UTF-8 spelling, so two such names could become one. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+/**
+ * A name as Git compares it with `.git` (its is_hfs_dotgit and is_ntfs_dotgit, which the bundled Git's tree reader
+ * follows too): ignored characters dropped, a Windows stream name cut off, case and trailing dots and spaces ignored.
+ */
+const gitName = (s: string) => s.replace(HFS_IGNORED, '').split(':')[0].toLowerCase().replace(/[. ]+$/, '');
+
+/**
+ * Whether a part of a path is one a version cannot hold: empty, `.` or `..`, a backslash, a NUL, a broken character,
+ * `.git` in any spelling Git or a checkout would take as it, `.gitmodules` (which Git reads as settings and checks), or
+ * a folder named as one of Git's own files. Each would make a tree that stock Git refuses or the bundled Git cannot read.
+ */
+function badSegment(s: string, folder: boolean): boolean {
+  if (s === '' || /[\\/\0]/.test(s) || LONE_SURROGATE.test(s)) return true;
+  const visible = s.replace(HFS_IGNORED, '');
+  if (visible === '.' || visible === '..') return true;
+  const name = gitName(s);
+  if (name === '.git' || /^\.?git~[1-9]$/.test(name) || name === '.gitmodules' || /^gi7eba~[1-9]$/.test(name)) return true;
+  return folder && ['.gitattributes', '.gitignore', '.mailmap'].includes(name);
 }
 
-/** A path as a tree holds it, or throws: relative, forward slashes, and no part that is empty, `.`, `..` or `.git`. */
+/** A path as a tree holds it, or throws: relative, forward slashes, and no part a version cannot hold (badSegment). */
 export function checkTreePath(path: unknown, limits: GitLimits): string[] {
   if (typeof path !== 'string' || !path) throw new GitError('invalid', 'A file in a version has no path.');
   if (utf8Bytes(path) > limits.maxPathBytes) throw new GitError('too-large', `The path of ${path.slice(0, 80)}… is too long for a version.`);
   const parts = path.split('/');
-  if (parts.some(badSegment)) throw new GitError('invalid', `${path} is not a path a version can hold.`);
+  if (parts.some((p, i) => badSegment(p, i < parts.length - 1))) throw new GitError('invalid', `${path} is not a path a version can hold.`);
   if (parts.length > limits.maxDepth) throw new GitError('too-large', `${path} is in too many folders for a version.`);
+  if (parts.some((p) => utf8Bytes(p) > MAX_NAME_BYTES)) throw new GitError('too-large', `A name in ${path.slice(0, 80)} is too long for a file.`);
   return parts;
 }
 
-/** The name two spellings share when a Mac or Windows checkout would put them in one file (`Logo.png`, `logo.png`). */
-const folded = (name: string) => name.normalize('NFC').toLowerCase();
+/**
+ * The name two spellings share when a Mac or Windows checkout would put them in one file: `Logo.png` and `logo.png`,
+ * composed and decomposed accents, `σ` and `ς`, `logo` and `logo.`.
+ */
+const folded = (name: string) => name.replace(HFS_IGNORED, '').normalize('NFC').toUpperCase().toLowerCase().replace(/[. ]+$/, '');
 
-type Node = { kind: 'file'; index: number } | { kind: 'dir'; name: string; children: Map<string, Node & { name: string }> };
-type Named = Node & { name: string };
+type Dir = { kind: 'dir'; name: string; children: Map<string, Dir | File> };
+type File = { kind: 'file'; name: string; index: number };
 
 function identityOk(i: unknown): i is Identity {
   const o = i as Identity;
-  const text = (s: unknown, max: number) => typeof s === 'string' && s.length <= max && !/[<>\n\0]/.test(s);
+  // Git's header lines end at a line break, and the bundled Git's reader at any of Unicode's.
+  const text = (s: unknown, max: number) => typeof s === 'string' && s.length <= max && !/[\0-\x1f\x7f<>\u2028\u2029]/.test(s);
   return !!o && text(o.name, 256) && o.name.trim() !== '' && text(o.email, 256) && Number.isSafeInteger(o.timestamp) && o.timestamp >= 0 && Number.isInteger(o.timezoneOffset) && Math.abs(o.timezoneOffset) <= 24 * 60;
 }
 
@@ -92,8 +136,17 @@ function asGitError(e: unknown): GitError {
   const code = (e as { code?: string })?.code;
   if (code === 'NotFoundError') return new GitError('not-found', 'That is not in the versions repository.');
   if (code === 'ObjectTypeError' || code === 'InvalidOidError' || code === 'InvalidFilepathError') return new GitError('invalid', 'That is not the kind of object asked for.');
-  if (code === 'InternalError' || code === 'ParseError' || code === 'UnknownTransportError') return new GitError('corrupt', 'Part of the versions repository is damaged.');
+  if (['InternalError', 'ParseError', 'DecompressionError', 'UnsafeFilepathError', 'UnknownTransportError'].includes(code ?? '')) return new GitError('corrupt', 'Part of the versions repository is damaged.');
   return new GitError('failed', `The versions repository could not be used: ${e instanceof Error ? e.message : String(e)}`);
+}
+
+/** What the app's lock on a repository says: who holds it, since when, and for a branch move, which and to what. */
+interface Writer {
+  pid: number;
+  host: string;
+  at: number;
+  ref?: string;
+  next?: Oid;
 }
 
 export interface Repo {
@@ -117,11 +170,11 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
   const siteorigin = join(root, '.siteorigin');
   const gitdir = join(root, ...VERSIONS_GITDIR.split('/'));
   const gfs = repoFs(gitdir, opts.fault);
-  const startedAt = opts.startedAt ?? performance.timeOrigin;
-  const lockMinAge = opts.lockMinAgeMs ?? LOCK_MIN_AGE_MS;
   const lockWait = opts.lockWaitMs ?? LOCK_WAIT_MS;
-  let known = false;
-  // Writes that move something (making the repository, moving a branch) one at a time in this worker.
+  const alive = opts.processAlive ?? isAlive;
+  /** Set when a write failed after naming some of its objects: the next write flushes their folders first. */
+  let unflushed = false;
+  // Writes one at a time in this worker: what one stages is flushed or discarded before the next begins.
   let queue: Promise<unknown> = Promise.resolve();
   const serial = <T>(f: () => Promise<T>): Promise<T> => {
     const run = queue.then(f, f);
@@ -135,9 +188,12 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     if (st.isSymbolicLink() || !st.isDirectory()) throw new GitError('corrupt', `The versions repository is damaged: ${what} is not a folder of its own.`);
     return true;
   };
-  /** Whether the repository is there; throws when something is there that is not one the app made. */
+  /**
+   * Whether the repository is there; throws when something is there that is not one the app made. Looked at afresh for
+   * every operation, as are the folders below it (fs.ts), so one removed or replaced by a link meanwhile is seen.
+   */
   const present = async (): Promise<boolean> => {
-    if (known) return true;
+    gfs.reset();
     if (!(await realDir(siteorigin, '.siteorigin'))) return false;
     // A file here could point Git at another repository (the project's own); only a folder of its own will do.
     if (!(await realDir(gitdir, VERSIONS_GITDIR))) return false;
@@ -145,36 +201,134 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     const head = await fs.readFile(join(gitdir, 'HEAD'), 'utf8').catch(() => '');
     if (!/^\s*bare\s*=\s*true\s*$/m.test(config) || !/^ref: refs\/heads\/\S+\n?$/.test(head)) throw new GitError('corrupt', 'The versions repository is damaged: it is not a repository the app made.');
     for (const d of ['objects', 'refs', 'refs/heads']) if (!(await realDir(join(gitdir, ...d.split('/')), d))) throw new GitError('corrupt', `The versions repository is damaged: it has no ${d} folder.`);
-    known = true;
     return true;
   };
   const need = async () => {
     if (!(await present())) throw new GitError('not-found', 'This project has no versions repository yet.');
   };
   const io = async <T>(f: () => Promise<T>): Promise<T> => {
-    await need();
     try {
+      await need();
       return await f();
     } catch (e) {
       throw asGitError(e);
     }
   };
+
   /**
-   * A write of objects, one at a time in this worker: what it staged is made durable and named before it answers, and
-   * removed if it fails, so its objects are all there or none is.
+   * Finish what a writer of the app's that stopped part way may have left: flush the folders its objects were named in
+   * (an object can be seen before its folder is on the disk, and must not be relied on until it is), and the branches'
+   * folder, and remove its temporary objects, and anyone's long abandoned.
+   */
+  const recover = async (dead?: number) => {
+    const objects = join(gitdir, 'objects');
+    const fans = (await fs.readdir(objects).catch(() => [] as string[])).filter((d) => /^[0-9a-f]{2}$/.test(d));
+    await eachAtMost(4, fans, async (fan) => {
+      const dir = join(objects, fan);
+      for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+        if (!name.startsWith(TMP_PREFIX)) continue;
+        const own = dead !== undefined && name.startsWith(`${TMP_PREFIX}${dead}_`);
+        const st = own ? null : await fs.lstat(join(dir, name)).catch(() => null);
+        if (own || (st && Date.now() - st.mtimeMs > ABANDONED_TMP_MS)) await fs.rm(join(dir, name), { force: true }).catch(() => undefined);
+      }
+      await syncDir(dir);
+    });
+    await syncDir(objects);
+    await syncDir(join(gitdir, 'refs', 'heads'));
+    unflushed = false;
+  };
+
+  const readWriter = async (file: string): Promise<{ writer: Writer | null; st: Stats } | null> => {
+    const st = await fs.lstat(file).catch((e) => (isMissing(e) ? null : Promise.reject(e)));
+    if (!st) return null;
+    try {
+      const w = JSON.parse(await fs.readFile(file, 'utf8')) as Writer;
+      return { writer: Number.isSafeInteger(w?.pid) && typeof w.host === 'string' && Number.isFinite(w.at) ? w : null, st };
+    } catch (e) {
+      if (isMissing(e)) return null;
+      return { writer: null, st };
+    }
+  };
+  /** Whether the writer that holds the app's lock has stopped: it ran before this computer last started, or has exited. */
+  const stopped = (held: { writer: Writer | null; st: Stats }) => {
+    const w = held.writer;
+    if (!w) return Date.now() - held.st.mtimeMs >= UNREADABLE_LOCK_MS;
+    if (w.at < Date.now() - uptime() * 1000 - 1000) return true;
+    // Another computer's (a project on a shared folder): there is no telling, so it is waited for.
+    return w.host === hostname() && !alive(w.pid);
+  };
+
+  /**
+   * Hold the app's own lock on the repository while `f` writes, clearing one a stopped writer left and finishing its
+   * work (recover). `move` is the branch move about to be made, recorded first, and made durable, so a stopped move's
+   * branch lock can be told from another Git's.
+   */
+  const asWriter = async <T>(f: () => Promise<T>, move?: { ref: string; next: Oid }): Promise<T> => {
+    const file = join(gitdir, WRITER_LOCK);
+    const deadline = performance.now() + lockWait;
+    for (let wait = 10; ; wait = Math.min(wait * 2, 100)) {
+      let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+      try {
+        handle = await fs.open(file, 'wx');
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      }
+      if (handle) {
+        try {
+          try {
+            await handle.writeFile(JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), ...move } satisfies Writer));
+            if (move) await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          if (move) await syncDir(gitdir);
+          if (unflushed) await recover();
+          return await f();
+        } finally {
+          await fs.unlink(file).catch(() => undefined);
+        }
+      }
+      const held = await readWriter(file);
+      if (!held) continue;
+      if (stopped(held)) {
+        // Its branch lock first, while its own lock still keeps every other writer of the app's out; then its objects.
+        const w = held.writer;
+        if (w?.ref && w.next && BRANCH_RE.test(w.ref)) {
+          const lock = `${join(gitdir, ...w.ref.split('/'))}.lock`;
+          const text = await fs.readFile(lock, 'utf8').catch(() => null);
+          if (text === `${w.next}\n` || text === '') await fs.unlink(lock).catch(() => undefined);
+        }
+        await recover(w && w.host === hostname() ? w.pid : undefined);
+        // Removed only if it is still the one found stopped.
+        const again = await readWriter(file);
+        if (again && again.st.ino === held.st.ino && again.st.mtimeMs === held.st.mtimeMs) await fs.unlink(file).catch(() => undefined);
+        continue;
+      }
+      if (performance.now() >= deadline) throw new GitError('locked', 'Another save is writing to the versions repository; nothing was written.');
+      await sleep(wait);
+    }
+  };
+
+  /**
+   * A write of objects, one at a time and as the app's writer: what it staged is made durable and named before it
+   * answers, and removed if it fails, so its objects are all there or none is.
    */
   const writing = <T>(f: () => Promise<T>): Promise<T> =>
     io(() =>
-      serial(async () => {
-        try {
-          const result = await f();
-          await gfs.flush();
-          return result;
-        } catch (e) {
-          await gfs.discard();
-          throw e;
-        }
-      })
+      serial(() =>
+        asWriter(async () => {
+          try {
+            const result = await f();
+            await gfs.flush();
+            return result;
+          } catch (e) {
+            // Some may have been named before the failure, their folder not yet flushed.
+            if (gfs.named()) unflushed = true;
+            await gfs.discard();
+            throw e;
+          }
+        })
+      )
     );
 
   /** The object's type, or null when it is not there. Reads the whole object: for trees and commits, which are small. */
@@ -187,31 +341,52 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     }
   };
   const objectPath = (oid: Oid) => join(gitdir, 'objects', oid.slice(0, 2), oid.slice(2));
-  const looseExists = async (oid: Oid) => !!(await fs.lstat(objectPath(oid)).catch(() => null));
+  /**
+   * Whether a loose object is there, as a file in a folder of the repository's own: anything else under its name, or a
+   * folder linked elsewhere, is damage, never taken for it.
+   */
+  const looseExists = async (oid: Oid) => {
+    if (!(await realDir(dirname(objectPath(oid)), `objects/${oid.slice(0, 2)}`))) return false;
+    const st = await fs.lstat(objectPath(oid)).catch(() => null);
+    if (st && !st.isFile()) throw new GitError('corrupt', `The versions repository is damaged: object ${oid} is not a file.`);
+    return !!st;
+  };
+
+  /**
+   * A project file to read, and its stat: a plain file reached with no link on the way, so nothing outside the project,
+   * and nothing of its own `.git` through a folder linked to it, can be taken into a version.
+   */
+  const sourceFile = async (source: unknown): Promise<{ abs: string; st: Stats }> => {
+    checkTreePath(source, limits);
+    let found: ReturnType<typeof safeJoinLooking>;
+    try {
+      found = safeJoinLooking(root, source as string);
+    } catch {
+      throw new GitError('invalid', `${String(source)} is not a file of this project.`);
+    }
+    const st = found.st === null ? null : await fs.lstat(found.abs).catch((e) => (isMissing(e) ? null : Promise.reject(e)));
+    if (!st) throw new GitError('not-found', `${String(source)} is not there.`);
+    if (found.st === undefined || !st.isFile()) throw new GitError('invalid', `${String(source)} is not a plain file of this project: it is a link, a folder, or reached through a link.`);
+    return { abs: found.abs, st };
+  };
+  const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 
   /** A file's bytes, read only as far as the size it had when it was checked, and refused if it changed meanwhile. */
-  const readSource = async (source: string, seen?: Stats): Promise<Uint8Array> => {
-    checkTreePath(source, limits);
-    let abs: string;
-    try {
-      abs = safeJoin(root, source);
-    } catch {
-      throw new GitError('invalid', `${source} is not a file of this project.`);
-    }
+  const readSource = async (source: string, seen?: { abs: string; st: Stats }): Promise<Uint8Array> => {
+    const { abs, st: checked } = seen ?? (await sourceFile(source));
+    if (checked.size > limits.maxBlobBytes) throw new GitError('too-large', `${source} is too large for a version.`);
     let opened: Awaited<ReturnType<typeof openRegularFile>>;
     try {
       opened = await openRegularFile(abs);
     } catch (e) {
-      if (isMissing(e)) throw new GitError('not-found', `${source} is not there.`);
+      if (isMissing(e)) throw new GitError('changed', `${source} was removed while the version was being saved.`);
       throw new GitError('invalid', `${source} could not be read: ${e instanceof Error ? e.message : String(e)}`);
     }
     const { handle, stat } = opened;
     try {
-      if (stat.size > limits.maxBlobBytes) throw new GitError('too-large', `${source} is too large for a version.`);
-      if (seen && (stat.size !== seen.size || stat.ino !== seen.ino || stat.mtimeMs !== seen.mtimeMs)) throw new GitError('changed', `${source} changed while the version was being saved.`);
+      if (!same(stat, checked)) throw new GitError('changed', `${source} changed while the version was being saved.`);
       const data = await readAtMost(handle, stat.size, stat.size);
-      const after = await handle.stat();
-      if (!data || data.byteLength !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) throw new GitError('changed', `${source} changed while the version was being saved.`);
+      if (!data || data.byteLength !== stat.size || !same(await handle.stat(), checked)) throw new GitError('changed', `${source} changed while the version was being saved.`);
       return data;
     } finally {
       await handle.close().catch(() => undefined);
@@ -255,7 +430,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     return null;
   };
   const checkRef = (ref: unknown): string => {
-    if (typeof ref !== 'string' || !BRANCH_RE.test(ref)) throw new GitError('invalid', `${String(ref)} is not a branch the app writes.`);
+    if (typeof ref !== 'string' || ref.length > MAX_REF_LENGTH || !BRANCH_RE.test(ref)) throw new GitError('invalid', `${String(ref).slice(0, 80)} is not a branch the app writes.`);
     return ref;
   };
   const checkOid = (oid: unknown): Oid => {
@@ -263,7 +438,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     return oid;
   };
 
-  /** Take `<ref>.lock`, clearing one left by a worker that has exited; throws `locked` when a live writer keeps it. */
+  /** Take `<ref>.lock`, waiting a while for another Git that holds it; throws `locked` when it keeps it. */
   const takeLock = async (lock: string) => {
     const deadline = performance.now() + lockWait;
     for (let wait = 10; ; wait = Math.min(wait * 2, 100)) {
@@ -272,12 +447,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
       }
-      const st = await fs.lstat(lock).catch(() => null);
-      if (st && st.mtimeMs < startedAt && Date.now() - st.mtimeMs >= lockMinAge) {
-        await fs.unlink(lock).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
-        continue;
-      }
-      if (performance.now() >= deadline) throw new GitError('locked', 'Another save is moving this branch of the versions repository; it was not moved.');
+      if (performance.now() >= deadline) throw new GitError('locked', 'Another Git is moving this branch of the versions repository; it was not moved.');
       await sleep(wait);
     }
   };
@@ -293,7 +463,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
 
   return {
     gitdir,
-    exists: () => present(),
+    exists: () => present().catch((e) => Promise.reject(asGitError(e))),
 
     init: () =>
       serial(async () => {
@@ -316,19 +486,18 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         } finally {
           await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
         }
-        known = false;
         if (!(await present())) throw new GitError('failed', 'The versions repository could not be made.');
       }).catch((e) => Promise.reject(asGitError(e))),
 
     writeBlob: (input, token = NEVER) =>
       writing(async () => {
         check(token);
-        if ('bytes' in input) {
+        if (input && 'bytes' in input) {
           if (!(input.bytes instanceof Uint8Array)) throw new GitError('invalid', 'A file in a version has no bytes.');
           if (input.bytes.byteLength > limits.maxBlobBytes) throw new GitError('too-large', 'The file is too large for a version.');
           return blob(input.bytes);
         }
-        return blob(await readSource(input.source));
+        return blob(await readSource(String(input?.source)));
       }),
 
     writeFiles: (files, token = NEVER) =>
@@ -336,8 +505,8 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         if (!Array.isArray(files)) throw new GitError('invalid', 'A version needs a list of files.');
         if (files.length > limits.maxEntries) throw new GitError('too-large', `A version can hold ${limits.maxEntries} files at most.`);
         // Everything is checked before anything is written: a refused version leaves nothing behind.
-        const top: Named = { kind: 'dir', name: '', children: new Map() };
-        const seen: Array<Stats | undefined> = [];
+        const top: Dir = { kind: 'dir', name: '', children: new Map() };
+        const seen: Array<{ abs: string; st: Stats } | undefined> = [];
         let total = 0;
         let inline = 0;
         for (const [index, f] of files.entries()) {
@@ -349,21 +518,13 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
             total += f.bytes.byteLength;
             seen.push(undefined);
           } else if (typeof f?.source === 'string') {
-            checkTreePath(f.source, limits);
-            let st: Stats;
-            try {
-              st = await fs.lstat(safeJoin(root, f.source));
-            } catch (e) {
-              if (isMissing(e)) throw new GitError('not-found', `${f.source} is not there.`);
-              throw new GitError('invalid', `${f.source} is not a file of this project.`);
-            }
-            if (!st.isFile()) throw new GitError('invalid', `${f.source} is not a file.`);
-            if (st.size > limits.maxBlobBytes) throw new GitError('too-large', `${f.source} is too large for a version.`);
-            total += st.size;
-            seen.push(st);
+            const file = await sourceFile(f.source);
+            if (file.st.size > limits.maxBlobBytes) throw new GitError('too-large', `${f.source} is too large for a version.`);
+            total += file.st.size;
+            seen.push(file);
           } else throw new GitError('invalid', `${String(f?.path)} has no content.`);
           if (inline > limits.maxInlineBytes || total > limits.maxTotalBytes) throw new GitError('too-large', 'The files are too large together for one version.');
-          let dir = top as Extract<Named, { kind: 'dir' }>;
+          let dir = top;
           for (const [i, name] of parts.entries()) {
             const leaf = i === parts.length - 1;
             const key = folded(name);
@@ -372,7 +533,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
             if (leaf) dir.children.set(key, { kind: 'file', index, name });
             else {
               if (!there) dir.children.set(key, { kind: 'dir', name, children: new Map() });
-              dir = dir.children.get(key) as Extract<Named, { kind: 'dir' }>;
+              dir = dir.children.get(key) as Dir;
             }
           }
         }
@@ -384,16 +545,16 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
           oids[index] = await blob('bytes' in f ? f.bytes : await readSource(f.source, seen[index]));
           if (opts.fault) await opts.fault('file-written', f.path);
         }
-        const writeDir = async (dir: Extract<Named, { kind: 'dir' }>): Promise<Oid> => {
+        const writeDir = async (dir: Dir): Promise<Oid> => {
           const entries: TreeEntry[] = [];
           for (const child of dir.children.values()) {
             check(token);
             if (child.kind === 'file') entries.push({ mode: '100644', path: child.name, oid: oids[child.index], type: 'blob' });
-            else entries.push({ mode: '040000', path: child.name, oid: await writeDir(child as Extract<Named, { kind: 'dir' }>), type: 'tree' });
+            else entries.push({ mode: '040000', path: child.name, oid: await writeDir(child), type: 'tree' });
           }
           return git.writeTree({ fs: gfs, gitdir, tree: entries });
         };
-        return writeDir(top as Extract<Named, { kind: 'dir' }>);
+        return writeDir(top);
       }),
 
     writeCommit: (commit, token = NEVER) =>
@@ -450,41 +611,47 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       }),
 
     advanceRef: (ref, next, expected, token = NEVER) =>
-      io(() =>
-        serial(async () => {
-          checkRef(ref);
-          checkOid(next);
-          if (expected !== null) checkOid(expected);
-          if ((await typeOf(next)) !== 'commit') throw new GitError('not-found', 'The commit to publish is not in the versions repository.');
-          check(token);
-          const path = join(gitdir, ...ref.split('/'));
-          const dir = dirname(path);
-          const lock = `${path}.lock`;
-          const handle = await takeLock(lock);
-          let owned = true;
-          try {
-            try {
-              await handle.writeFile(`${next}\n`);
-              await handle.sync();
-            } finally {
-              await handle.close();
-            }
-            if (opts.fault) await opts.fault('lock-written', lock);
-            const actual = await readRef(ref);
-            if (actual !== expected) throw new GitError('conflict', 'The branch moved since it was read; it was not moved again.', actual);
-            check(token);
-            await renameReplacing(lock, path);
-            owned = false;
-            if (opts.fault) await opts.fault('ref-renamed', path);
-            try {
-              await syncDir(dir);
-            } catch {
-              throw new GitError('outcome-unknown', 'The branch was moved, but the disk did not confirm it: read it again.');
-            }
-          } finally {
-            if (owned) await fs.unlink(lock).catch(() => undefined);
-          }
-        })
-      )
+      io(() => {
+        checkRef(ref);
+        checkOid(next);
+        if (expected !== null) checkOid(expected);
+        return serial(() =>
+          asWriter(
+            async () => {
+              if ((await typeOf(next)) !== 'commit') throw new GitError('not-found', 'The commit to publish is not in the versions repository.');
+              check(token);
+              const path = join(gitdir, ...ref.split('/'));
+              const dir = dirname(path);
+              await realDir(dir, dirname(ref));
+              const lock = `${path}.lock`;
+              const handle = await takeLock(lock);
+              let owned = true;
+              try {
+                try {
+                  await handle.writeFile(`${next}\n`);
+                  await handle.sync();
+                } finally {
+                  await handle.close();
+                }
+                if (opts.fault) await opts.fault('lock-written', lock);
+                const actual = await readRef(ref);
+                if (actual !== expected) throw new GitError('conflict', 'The branch moved since it was read; it was not moved again.', actual);
+                check(token);
+                await renameReplacing(lock, path);
+                owned = false;
+                if (opts.fault) await opts.fault('ref-renamed', path);
+                try {
+                  await syncDir(dir);
+                } catch {
+                  throw new GitError('outcome-unknown', 'The branch was moved, but the disk did not confirm it: read it again.');
+                }
+              } finally {
+                if (owned) await fs.unlink(lock).catch(() => undefined);
+              }
+            },
+            { ref, next }
+          )
+        );
+      })
   };
 }

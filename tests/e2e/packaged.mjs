@@ -37,7 +37,10 @@ if (process.platform === 'darwin') {
  * folder of links to everything in /usr/bin and /bin but git (macOS's /usr/bin/git stand-in included).
  */
 function minimalPath() {
-  if (process.platform === 'win32') return 'C:\\Windows\\System32;C:\\Windows';
+  if (process.platform === 'win32') {
+    for (const dir of ['C:\\Windows\\System32', 'C:\\Windows']) assert.ok(!existsSync(join(dir, 'git.exe')), `no git in ${dir}`);
+    return 'C:\\Windows\\System32;C:\\Windows';
+  }
   const dir = join(WORK, 'path');
   mkdirSync(dir, { recursive: true });
   for (const from of ['/usr/bin', '/bin'])
@@ -134,27 +137,36 @@ try {
   mkdirSync(emptyPath, { recursive: true });
   const bundledGit = await app.evaluate(
     async ({ app: electronApp, utilityProcess }, { project, path }) => {
-      const worker = utilityProcess.fork(`${electronApp.getAppPath()}/out/main/git-worker.js`, [], { serviceName: 'SiteOrigin versions (test)', env: { PATH: path }, stdio: 'ignore' });
+      const worker = utilityProcess.fork(`${electronApp.getAppPath()}/out/main/git-worker.js`, [], { serviceName: 'SiteOrigin versions (test)', env: { PATH: path }, stdio: 'pipe' });
+      let stderr = '';
+      worker.stderr?.on('data', (d) => (stderr += d));
       const waiting = new Map();
       worker.on('message', (m) => waiting.get(m.id)?.(m));
+      // A worker that cannot start says why at once, rather than at the first answer's deadline.
+      const ended = new Promise((_, reject) => worker.once('exit', (code) => reject(new Error(`the Git worker exited (${code}): ${stderr.slice(0, 2000)}`))));
+      ended.catch(() => undefined);
       let ids = 0;
       const ask = (op) =>
-        new Promise((resolve, reject) => {
-          const id = ++ids;
-          const timer = setTimeout(() => reject(new Error(`the Git worker did not answer ${op.op} within 30s`)), 30000);
-          waiting.set(id, (m) => (clearTimeout(timer), m.ok ? resolve(m.value) : reject(new Error(`${op.op}: ${m.code}: ${m.message}`))));
-          worker.postMessage({ id, ...op });
-        });
+        Promise.race([
+          ended,
+          new Promise((resolve, reject) => {
+            const id = ++ids;
+            const timer = setTimeout(() => reject(new Error(`the Git worker did not answer ${op.op} within 30s: ${stderr.slice(0, 2000)}`)), 30000);
+            waiting.set(id, (m) => (clearTimeout(timer), m.ok ? resolve(m.value) : reject(new Error(`${op.op}: ${m.code}: ${m.message}`))));
+            worker.postMessage({ id, ...op });
+          })
+        ]);
       try {
         const version = await ask({ op: 'version' });
         await ask({ op: 'init', root: project });
+        const unborn = await ask({ op: 'resolveRef', root: project, ref: 'refs/heads/siteorigin-versions' });
         const tree = await ask({ op: 'writeFiles', root: project, files: [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Packaged"}\n') }] });
         const who = { name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: 1790000000, timezoneOffset: 0 };
         const commit = await ask({ op: 'writeCommit', root: project, commit: { tree, parents: [], author: who, committer: who, message: 'Packaged\n' } });
         await ask({ op: 'advanceRef', root: project, ref: 'refs/heads/siteorigin-versions', next: commit, expected: null });
         const tip = await ask({ op: 'resolveRef', root: project, ref: 'refs/heads/siteorigin-versions' });
         const text = new TextDecoder().decode(await ask({ op: 'readBlob', root: project, oid: commit, filepath: 'siteorigin/site.json' }));
-        return { version, commit, tip, text };
+        return { version, unborn, commit, tip, text };
       } finally {
         worker.kill();
       }
@@ -162,7 +174,9 @@ try {
     { project: gitProject, path: emptyPath }
   );
   console.log('bundled git', bundledGit.version, bundledGit.commit);
-  assert.match(bundledGit.version, /^\d+\.\d+\.\d+$/, 'the bundled Git says its version');
+  assert.equal(bundledGit.version, JSON.parse(readFileSync('package.json', 'utf8')).dependencies['isomorphic-git'], 'the bundled Git is the version the app pins');
+  assert.equal(bundledGit.unborn, null, 'a new repository’s branch does not exist yet');
+  assert.match(bundledGit.commit, /^[0-9a-f]{40}$/, 'the commit has a Git name');
   assert.equal(bundledGit.tip, bundledGit.commit, 'the branch points at the commit saved');
   assert.equal(bundledGit.text, '{"name":"Packaged"}\n', 'the file reads back as saved');
   assert.equal(readFileSync(join(gitProject, '.siteorigin', 'versions.git', 'refs', 'heads', 'siteorigin-versions'), 'utf8'), `${bundledGit.commit}\n`, 'the branch is on the disk');

@@ -1,12 +1,15 @@
 /**
  * The file system the bundled Git is given (#1152). Its own writes go straight to the final name, so a worker that
  * stopped part way through would leave a truncated object under the name of a whole one, which it then never
- * rewrites because the name exists. Here an object is written whole to a temporary name beside its place (named as
- * Git names its own, `tmp_obj_`, which `git fsck` passes over and `git gc` clears) and flushed to the disk, and only
+ * rewrites because the name exists. Here an object is written whole to a temporary name beside its place (TMP_PREFIX)
+ * and flushed to the disk, and only
  * `flush` gives it its name: every object staged since the last flush is renamed into place, and the folders they
  * landed in flushed once each, so an object either is complete and on disk or is not there. Flushing the folders
  * together is what keeps a version of a few hundred pictures quick: a folder flush after every object costs far more
  * than writing the objects.
+ *
+ * Windows cannot flush a folder (fsutil.ts syncDir): there an object's own flush and NTFS's journal of its rename are
+ * what there is, as for every durable write of the app's.
  *
  * Nothing is read or written outside the repository's folder, and nothing through a link: a folder of the repository
  * that turns out to be a link (to the project's own `.git/`, say) is refused rather than followed.
@@ -24,6 +27,11 @@ export type Fault = (point: FaultPoint, path: string) => void | Promise<void>;
 
 /** Folder flushes run side by side: the disk takes several at once faster than one after another. */
 const FLUSHES_AT_ONCE = 4;
+/**
+ * The start of a temporary object's name: Git's own (`tmp_obj_`, which `git fsck` passes over and `git gc` clears), then
+ * the process writing it, so the temporary objects of a writer found stopped can be told from another's (repo.ts).
+ */
+export const TMP_PREFIX = 'tmp_obj_';
 
 const isMissing = (e: unknown) => ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException)?.code ?? '');
 
@@ -38,6 +46,10 @@ export interface RepoFs {
   flush(): Promise<void>;
   /** Remove every staged object (the write they belong to was refused or cancelled). */
   discard(): Promise<void>;
+  /** Whether the last flush failed after naming some objects, whose folders may not be on the disk yet; asking clears it. */
+  named(): boolean;
+  /** Forget which folders were seen to be real folders: each operation looks again. */
+  reset(): void;
 }
 
 /** The repository's files, confined to `gitdir`. `fault` is for tests only. */
@@ -75,44 +87,63 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
    * Their flushes, still going: an object's bytes are flushed while the next is read and compressed, a few at a time,
    * since each takes a few milliseconds of the disk's time and very little of the worker's.
    */
-  let syncing: Array<Promise<void>> = [];
+  let syncing = new Set<Promise<void>>();
+  /** The first flush that failed since the last flush or discard: no more is staged once one has. */
+  let syncFailed: { error: unknown } | null = null;
+  /** Whether the last flush failed after naming some of its objects. */
+  let partly = false;
 
   async function stage(path: string, chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>) {
     inside(path);
+    if (syncFailed) throw syncFailed.error;
     if (pending.has(path)) return;
     await objectDir(dirname(path));
-    const tmp = join(dirname(path), `tmp_obj_${randomBytes(6).toString('hex')}`);
+    const tmp = join(dirname(path), `${TMP_PREFIX}${process.pid}_${randomBytes(6).toString('hex')}`);
     const handle = await fs.open(tmp, 'wx');
     try {
-      for await (const chunk of chunks) await handle.write(chunk);
+      for await (const chunk of chunks) {
+        const bytes = chunk instanceof Uint8Array ? chunk : Buffer.from(chunk as string);
+        // A write may take only part of what it is given: the rest is written until all is, or the disk refuses.
+        for (let at = 0; at < bytes.byteLength; ) {
+          const { bytesWritten } = await handle.write(bytes, at, bytes.byteLength - at);
+          if (bytesWritten <= 0) throw new GitError('failed', 'The disk took none of an object being written.');
+          at += bytesWritten;
+        }
+      }
     } catch (e) {
       await handle.close().catch(() => undefined);
       await fs.rm(tmp, { force: true }).catch(() => undefined);
       throw e;
     }
     pending.set(path, tmp);
-    const done = handle.sync().finally(() => handle.close());
-    // Settled flushes leave the list; a failed one is kept, for the flush to report.
-    const entry: Promise<void> = done.then(() => void (syncing = syncing.filter((p) => p !== entry)));
-    entry.catch(() => undefined);
-    syncing.push(entry);
-    if (syncing.length >= FLUSHES_AT_ONCE) await Promise.race(syncing).catch(() => undefined);
+    const entry: Promise<void> = handle
+      .sync()
+      .finally(() => handle.close())
+      .then(
+        () => void syncing.delete(entry),
+        (error) => {
+          syncing.delete(entry);
+          syncFailed ??= { error };
+        }
+      );
+    syncing.add(entry);
+    while (syncing.size >= FLUSHES_AT_ONCE) await Promise.race(syncing);
   }
 
-  /** Wait for every object's flush; the first that failed is thrown once all have settled. */
+  /** Wait for every object's flush to settle; the first that failed is thrown. */
   const synced = async () => {
-    const all = syncing;
-    syncing = [];
-    const failed = (await Promise.allSettled(all)).find((r) => r.status === 'rejected');
-    if (failed) throw (failed as PromiseRejectedResult).reason;
+    await Promise.all(syncing);
+    const failed = syncFailed;
+    syncFailed = null;
+    if (failed) throw failed.error;
   };
 
   async function flush() {
     const batch = [...pending];
     pending.clear();
     const dirs = [...madeDirs];
-    madeDirs.clear();
     let named = 0;
+    partly = false;
     try {
       await synced();
       for (const [path, tmp] of batch) {
@@ -120,15 +151,18 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
         try {
           await renameReplacing(tmp, path);
         } catch (e) {
-          // An object is named by its content: one already there (a reader holding it open on Windows) is this one.
-          if (!(await fs.stat(path).catch(() => null))) throw e;
+          // An object is named by its content: one already there as a file (a reader holding it open on Windows) is
+          // this one. Anything else under its name is not.
+          if (!(await fs.lstat(path).catch(() => null))?.isFile()) throw e;
           await fs.rm(tmp, { force: true });
         }
         named++;
       }
       // The folders the objects were named in, and those the new folders were made in: then every one is on the disk.
       await eachAtMost(FLUSHES_AT_ONCE, [...new Set([...batch.map(([path]) => dirname(path)), ...dirs.map((d) => dirname(d))])], syncDir);
+      for (const d of dirs) madeDirs.delete(d);
     } catch (e) {
+      partly = named > 0;
       await Promise.all(batch.slice(named).map(([, tmp]) => fs.rm(tmp, { force: true }).catch(() => undefined)));
       throw e;
     }
@@ -137,7 +171,7 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
   async function discard() {
     const batch = [...pending.values()];
     pending.clear();
-    madeDirs.clear();
+    // Folders made for them stay to be recorded by the next flush: a later object may land in one.
     await synced().catch(() => undefined);
     await Promise.all(batch.map((tmp) => fs.rm(tmp, { force: true }).catch(() => undefined)));
   }
@@ -188,6 +222,12 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
     staged: (path) => pending.has(path),
     flush,
     discard,
+    named: () => {
+      const was = partly;
+      partly = false;
+      return was;
+    },
+    reset: () => checked.clear(),
     promises: {
       // isomorphic-git calls readFile() with nothing to learn whether this is a promise fs: that must reject, not throw.
       readFile: async (path: string, options?: unknown) => {

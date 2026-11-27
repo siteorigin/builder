@@ -6,10 +6,10 @@
  *
  * A request can be cancelled (its signal) or time out: one still waiting is dropped; the one in the worker is told to
  * stop, and if it does not answer soon the worker is ended. A worker that ends is always seen to have exited before the
- * next one starts, which is what lets the next clear a branch lock the last one left (repo.ts). A request lost with a
- * worker while it was moving a branch is `outcome-unknown`, never retried: the branch may have moved.
+ * next one starts, so two never write at once. A request lost with a worker while it was moving a branch is
+ * `outcome-unknown`, never retried: the branch may have moved.
  */
-import { GitError, inlineBytes, type CallOptions, type GitErrorCode, type GitOp, type GitReply, type GitRepository, type GitRequest } from './protocol';
+import { GIT_LIMITS, GitError, inlineBytes, type CallOptions, type GitErrorCode, type GitOp, type GitReply, type GitRepository, type GitRequest } from './protocol';
 
 /** The worker process as the client uses it: Electron's UtilityProcess, or a stand-in in tests. */
 export interface GitWorkerHandle {
@@ -94,9 +94,11 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
   let queuedBytes = 0;
   let active: Job | null = null;
   let worker: GitWorkerHandle | null = null;
-  /** A worker that was ended and has not exited yet: no other starts until it has. */
+  /**
+   * A worker that was ended and has not exited yet: no other starts until it has, however long that takes, since a
+   * worker still running could still be moving a branch. Requests wait meanwhile, and time out as ever.
+   */
   let exiting: GitWorkerHandle | null = null;
-  let exitFallback: ReturnType<typeof setTimeout> | null = null;
   let idle: ReturnType<typeof setTimeout> | null = null;
   let ids = 0;
   let stopped = false;
@@ -124,13 +126,6 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
   const end = (w: GitWorkerHandle) => {
     if (worker === w) worker = null;
     exiting = w;
-    // An exit that never comes must not hold every later request: the worker is taken as gone after a while.
-    exitFallback = setTimeout(() => {
-      if (exiting === w) exiting = null;
-      exitFallback = null;
-      pump();
-    }, 10_000);
-    exitFallback.unref?.();
     try {
       // A process that has not started yet cannot be ended; end it as soon as it starts.
       if (!w.kill()) w.on('spawn', () => w.kill());
@@ -152,11 +147,7 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
       else settle(job, { error: fail(m.code, typeof m.message === 'string' ? m.message : MESSAGES[m.code], m.actual) });
     });
     const gone = () => {
-      if (exiting === w) {
-        exiting = null;
-        if (exitFallback) clearTimeout(exitFallback);
-        exitFallback = null;
-      }
+      if (exiting === w) exiting = null;
       if (worker !== w) return queueMicrotask(pump);
       worker = null;
       if (active) settle(active, { error: lost(active, active.stopping ?? 'crashed') });
@@ -193,8 +184,9 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
     try {
       ensure().postMessage({ id: job.id, ...job.op } as GitRequest);
     } catch {
+      // Never sent (the worker did not start, or was already gone): nothing was moved.
       const w = worker;
-      settle(job, { error: lost(job, 'crashed') });
+      settle(job, { error: fail('crashed') });
       if (w) end(w);
     }
   }
@@ -223,7 +215,11 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
       if (stopped) return reject(fail('stopped'));
       if (call.signal?.aborted) return reject(fail('cancelled'));
       const bytes = inlineBytes(op);
-      if (queue.length >= maxQueued || (queue.length && queuedBytes + bytes > maxQueuedBytes)) return reject(fail('busy'));
+      // More than the worker takes is refused here, before it is copied or sent.
+      if (bytes > GIT_LIMITS.maxInlineBytes) return reject(fail('too-large'));
+      // A request that has to wait counts against the queue's bounds; one the worker takes at once does not.
+      const waits = !!(active || exiting || queue.length);
+      if (waits && (queue.length >= maxQueued || queuedBytes + bytes > maxQueuedBytes)) return reject(fail('busy'));
       const job: Job = { op: ownBytes(op), bytes, resolve, reject, id: ++ids, done: false, timer: undefined as unknown as ReturnType<typeof setTimeout> };
       job.timer = setTimeout(() => stop(job, 'timeout'), call.timeoutMs ?? timeoutMs);
       if (call.signal) {
@@ -262,7 +258,6 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
       for (const job of [...queue]) settle(job, { error: fail('stopped') });
       if (active) settle(active, { error: lost(active, 'stopped') });
       if (worker) end(worker);
-      if (exitFallback) clearTimeout(exitFallback);
     }
   };
 }

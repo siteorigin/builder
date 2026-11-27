@@ -3,17 +3,18 @@
  * cancellation and timeouts that end a worker that will not stop, and a worker that goes down replaced only once it
  * has exited. A request lost while it was moving a branch says so (`outcome-unknown`) rather than claiming either way.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGitClient, type GitWorkerHandle } from '../../src/main/git/client';
 import { createGitService } from '../../src/main/git/service';
 import { gitRuntimeStatus } from '../../src/main/git/runtime';
-import { VERSIONS_BRANCH, type GitReply, type GitRequest, type Identity } from '../../src/main/git/protocol';
+import { GIT_LIMITS, VERSIONS_BRANCH, type GitReply, type GitRequest, type Identity } from '../../src/main/git/protocol';
 
 const APP: Identity = { name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: 1_790_000_000, timezoneOffset: 0 };
 const ROOT = '/project';
+const BUNDLED = (JSON.parse(readFileSync('package.json', 'utf8')) as { dependencies: Record<string, string> }).dependencies['isomorphic-git'];
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 interface Fake {
@@ -81,7 +82,7 @@ describe('the Git worker client', () => {
       }, 5);
     });
     const repo = createGitClient(spawn).repository(ROOT);
-    await Promise.all([repo.init(), repo.resolveRef(VERSIONS_BRANCH), repo.listCommits(VERSIONS_BRANCH, 5)]);
+    expect(await Promise.all([repo.init(), repo.resolveRef(VERSIONS_BRANCH), repo.listCommits(VERSIONS_BRANCH, 5)])).toEqual([undefined, null, 'v']);
     expect(most).toBe(1);
     expect(order).toEqual(['init', 'resolveRef', 'listCommits']);
     expect(spawned).toHaveLength(1);
@@ -96,7 +97,7 @@ describe('the Git worker client', () => {
     await expect(repo.writeBlob({ bytes: new Uint8Array(20) })).rejects.toMatchObject({ code: 'busy' });
     await tick(5);
     expect(spawned[0].sent.map((m) => m.op)).toEqual(['init']);
-    const big = new Uint8Array(4096);
+    const big = Uint8Array.from({ length: 4096 }, (_, i) => i % 251);
     const sent: GitRequest[] = [];
     const watching = createGitClient(() => {
       const h = fakeWorkers((m, w) => w.reply(ok(m, 'oid'))).spawn();
@@ -106,8 +107,19 @@ describe('the Git worker client', () => {
     });
     await watching.repository(ROOT).writeFiles([{ path: 'a.txt', bytes: big.subarray(10, 20) }]);
     const bytes = (sent[0] as Extract<GitRequest, { op: 'writeFiles' }>).files[0] as { bytes: Uint8Array };
-    expect(bytes.bytes.byteLength).toBe(10);
+    expect([...bytes.bytes]).toEqual([...big.subarray(10, 20)]);
     expect(bytes.bytes.buffer.byteLength).toBe(10);
+  });
+
+  it('counts a request against the byte bound whenever it has to wait, and refuses one larger than the worker takes', async () => {
+    const { spawn, spawned } = fakeWorkers(() => undefined);
+    const repo = createGitClient(spawn, { maxQueuedBytes: 100, timeoutMs: 60_000 }).repository(ROOT);
+    repo.init().catch(() => undefined);
+    // Nothing else waits, but the worker is busy: this one would wait, with more bytes than may.
+    await expect(repo.writeBlob({ bytes: new Uint8Array(101) })).rejects.toMatchObject({ code: 'busy' });
+    await expect(repo.writeFiles([{ path: 'a', bytes: new Uint8Array(GIT_LIMITS.maxInlineBytes + 1) }])).rejects.toMatchObject({ code: 'too-large' });
+    await tick(5);
+    expect(spawned[0].sent.map((m) => m.op)).toEqual(['init']);
   });
 
   it('drops a cancelled request that is still waiting, without the worker ever seeing it', async () => {
@@ -188,6 +200,16 @@ describe('the Git worker client', () => {
     await expect(next).resolves.toBe('c'.repeat(40));
   });
 
+  it('a worker that crashes while moving a branch leaves the move unknown, and one that never started moved nothing', async () => {
+    const { spawn } = fakeWorkers((m, w) => m.op === 'advanceRef' && w.exit());
+    const repo = createGitClient(spawn).repository(ROOT);
+    await expect(repo.advanceRef(VERSIONS_BRANCH, 'a'.repeat(40), null)).rejects.toMatchObject({ code: 'outcome-unknown' });
+    const never = createGitClient(() => {
+      throw new Error('no process');
+    }).repository(ROOT);
+    await expect(never.advanceRef(VERSIONS_BRANCH, 'a'.repeat(40), null)).rejects.toMatchObject({ code: 'crashed' });
+  });
+
   it('a worker that crashes fails the request it had, and the next request gets a new worker', async () => {
     let n = 0;
     const { spawn, spawned } = fakeWorkers((m, w) => (n++ === 0 ? w.exit() : w.reply(ok(m, true))));
@@ -197,10 +219,15 @@ describe('the Git worker client', () => {
     expect(spawned).toHaveLength(2);
   });
 
-  it('ends an idle worker, and starts one again when asked', async () => {
-    const { spawn, spawned } = fakeWorkers((m, w) => w.reply(ok(m, true)));
+  it('ends an idle worker, never one still working, and starts one again when asked', async () => {
+    const { spawn, spawned } = fakeWorkers((m, w) => setTimeout(() => w.reply(ok(m, true)), m.op === 'writeFiles' ? 60 : 0));
     const repo = createGitClient(spawn, { idleMs: 10 }).repository(ROOT);
     await repo.exists();
+    // A request that takes longer than the idle time keeps its worker.
+    await tick(5);
+    await repo.writeFiles([]);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].killed).toBe(false);
     await tick(40);
     expect(spawned[0].killed).toBe(true);
     await repo.exists();
@@ -253,9 +280,21 @@ describe('the client and the worker’s service together', () => {
     expect(new TextDecoder().decode(await repo.readBlob(commit, 'siteorigin/site.json'))).toBe('{}\n');
     expect(spawned).toHaveLength(2);
     await expect(client.version()).resolves.toMatch(/^\d+\.\d+\.\d+$/);
-    const status = await gitRuntimeStatus(client, async () => ({ status: 'missing' }));
-    expect(status).toEqual({ bundled: { engine: 'isomorphic-git', ready: true, version: expect.stringMatching(/^\d+\./) }, system: { status: 'missing' } });
+    const system = { status: 'present', path: '/opt/git/bin/git', version: '2.47.1' } as const;
+    const status = await gitRuntimeStatus(client, async () => system);
+    expect(status).toEqual({ bundled: { engine: 'isomorphic-git', ready: true, version: BUNDLED }, system });
     client.stop();
-    expect(await gitRuntimeStatus(client, async () => ({ status: 'missing' }))).toMatchObject({ bundled: { ready: false } });
+    expect(await gitRuntimeStatus(client, async () => system)).toEqual({ bundled: { engine: 'isomorphic-git', ready: false, reason: 'The versions repository was stopped as the app quit.' }, system });
+    // A detection that fails is no Git, never a failed status.
+    expect((await gitRuntimeStatus(client, () => Promise.reject(new Error('boom')))).system).toEqual({ status: 'missing' });
+  });
+});
+
+describe('the worker the app starts', () => {
+  it('is the one the main build makes', () => {
+    // electron.vite.config.ts names the entry; process.ts forks the file it becomes.
+    expect(readFileSync('electron.vite.config.ts', 'utf8')).toMatch(/'git-worker': resolve\('src\/main\/git\/worker\.ts'\)/);
+    expect(readFileSync('src/main/git/process.ts', 'utf8')).toMatch(/'git-worker\.js'/);
+    expect(readFileSync('src/main/index.ts', 'utf8')).toMatch(/stopGitWorker\(\);/);
   });
 });

@@ -8,11 +8,13 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGitClient, type GitClient, type GitWorkerHandle } from '../../src/main/git/client';
 import { VERSIONS_BRANCH, type GitReply, type Identity } from '../../src/main/git/protocol';
+
+const BUNDLED = (JSON.parse(readFileSync('package.json', 'utf8')) as { dependencies: Record<string, string> }).dependencies['isomorphic-git'];
 
 const FIXTURE = resolve('tests/unit/fixtures/git-node-worker.ts');
 const APP: Identity = { name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: 1_790_000_000, timezoneOffset: 0 };
@@ -36,7 +38,7 @@ afterEach(() => {
  */
 function nodeWorkers() {
   const next: { env: Record<string, string> } = { env: {} };
-  let reached: (c: ChildProcess) => void = () => undefined;
+  let reached: (r: { child: ChildProcess; path: string }) => void = () => undefined;
   const spawn = (): GitWorkerHandle => {
     const child = fork(FIXTURE, [], {
       execArgv: ['--import', 'tsx'],
@@ -49,8 +51,8 @@ function nodeWorkers() {
       postMessage: (m) => void child.send(m),
       on: (event: string, listener: (x?: unknown) => void) => {
         if (event === 'message')
-          child.on('message', (m: GitReply | { stoppedAt: string } | { ready: true }) => {
-            if ('stoppedAt' in m) reached(child);
+          child.on('message', (m: GitReply | { stoppedAt: string; path: string } | { ready: true }) => {
+            if ('stoppedAt' in m) reached({ child, path: m.path });
             else if (!('ready' in m)) listener(m);
           });
         else if (event === 'exit') child.on('exit', (code) => listener(code ?? 1));
@@ -60,9 +62,15 @@ function nodeWorkers() {
       kill: () => child.kill('SIGKILL')
     } as GitWorkerHandle;
   };
-  const stopped = () => new Promise<ChildProcess>((r) => (reached = r));
+  const stopped = () => new Promise<{ child: ChildProcess; path: string }>((r) => (reached = r));
   return { spawn, next, stopped };
 }
+
+const listObjects = (gitdir: string) =>
+  readdirSync(join(gitdir, 'objects'))
+    .filter((d) => /^[0-9a-f]{2}$/.test(d))
+    .flatMap((d) => readdirSync(join(gitdir, 'objects', d)).filter((f) => /^[0-9a-f]{38}$/.test(f)).map((f) => d + f));
+const blobOid = (bytes: Uint8Array) => createHash('sha1').update(`blob ${bytes.byteLength}\0`).update(bytes).digest('hex');
 
 /** Every loose object, inflated and hashed again: its name must be the SHA-1 of what it holds. */
 function checkObjects(gitdir: string): number {
@@ -91,7 +99,7 @@ describe('the Git worker in a process of its own', { timeout: 60_000 }, () => {
     expect(await repo.resolveRef(VERSIONS_BRANCH)).toBe(commit);
     expect(new TextDecoder().decode(await repo.readBlob(commit, 'siteorigin/site.json'))).toBe('{"name":"Site"}\n');
     expect(children).toHaveLength(2);
-    await expect(client.version()).resolves.toMatch(/^1\.\d+\.\d+$/);
+    await expect(client.version()).resolves.toBe(BUNDLED);
   });
 
   it.each(['object-written', 'lock-written', 'ref-renamed'] as const)('killed at %s: every object whole, the branch moved or not, and the next worker goes on', async (point) => {
@@ -108,18 +116,33 @@ describe('the Git worker in a process of its own', { timeout: 60_000 }, () => {
     client.stop();
     client = createGitClient(spawn);
     const dying = client.repository(root);
-    next.env = { GIT_TEST_STOP_AT: point, GIT_TEST_LOCK_MIN_AGE_MS: '0' };
-    const write = point === 'object-written' ? dying.writeFiles([{ path: 'c.txt', bytes: text('c') }]) : dying.advanceRef(VERSIONS_BRANCH, b, a);
+    const gitdir = join(root, '.siteorigin', 'versions.git');
+    const before = new Set(listObjects(gitdir));
+    next.env = { GIT_TEST_STOP_AT: point };
+    const unsaved = text('c, never committed');
+    const write = point === 'object-written' ? dying.writeFiles([{ path: 'c.txt', bytes: unsaved }]) : dying.advanceRef(VERSIONS_BRANCH, b, a);
     write.catch(() => undefined);
     const victim = await stopped();
-    next.env = { GIT_TEST_LOCK_MIN_AGE_MS: '0' };
-    victim.kill('SIGKILL');
+    // What is on the disk at the moment it is killed.
+    const lock = join(gitdir, 'refs', 'heads', 'siteorigin-versions.lock');
+    if (point === 'object-written') {
+      expect(victim.path).toBe(join(gitdir, 'objects', blobOid(unsaved).slice(0, 2), blobOid(unsaved).slice(2)));
+      expect(existsSync(victim.path)).toBe(false);
+      expect(readdirSync(dirname(victim.path)).some((f) => f.startsWith(`tmp_obj_${victim.child.pid}_`))).toBe(true);
+    } else if (point === 'lock-written') {
+      expect(readFileSync(lock, 'utf8')).toBe(`${b}\n`);
+      expect(readFileSync(join(gitdir, 'refs', 'heads', 'siteorigin-versions'), 'utf8')).toBe(`${a}\n`);
+    } else {
+      expect(existsSync(lock)).toBe(false);
+      expect(readFileSync(join(gitdir, 'refs', 'heads', 'siteorigin-versions'), 'utf8')).toBe(`${b}\n`);
+    }
+    next.env = {};
+    victim.child.kill('SIGKILL');
     await expect(write).rejects.toMatchObject({ code: point === 'object-written' ? 'crashed' : 'outcome-unknown' });
-    const gitdir = join(root, '.siteorigin', 'versions.git');
-    expect(checkObjects(gitdir)).toBeGreaterThan(0);
+    checkObjects(gitdir);
+    expect(new Set(listObjects(gitdir))).toEqual(before);
     const tip = await dying.resolveRef(VERSIONS_BRANCH);
     expect(tip).toBe(point === 'ref-renamed' ? b : a);
-    if (point === 'lock-written') expect(existsSync(join(gitdir, 'refs', 'heads', 'siteorigin-versions.lock'))).toBe(true);
     // The next worker never moves the branch from where the killed one was taking it, only from where it is.
     const other = tip === a ? b : a;
     await expect(dying.advanceRef(VERSIONS_BRANCH, other, other)).rejects.toMatchObject({ code: 'conflict', actual: tip });
@@ -128,6 +151,9 @@ describe('the Git worker in a process of its own', { timeout: 60_000 }, () => {
     await dying.advanceRef(VERSIONS_BRANCH, c, tip);
     expect(await dying.resolveRef(VERSIONS_BRANCH)).toBe(c);
     expect(readdirSync(join(gitdir, 'refs', 'heads'))).toEqual(['siteorigin-versions']);
+    // The killed worker's locks and temporary objects are gone.
+    expect(existsSync(join(gitdir, 'siteorigin-writer.lock'))).toBe(false);
+    expect(readdirSync(join(gitdir, 'objects'), { recursive: true }).map(String).filter((f) => f.includes(`tmp_obj_${victim.child.pid}_`))).toEqual([]);
     checkObjects(gitdir);
   });
 });
