@@ -357,6 +357,14 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     const after = await publish({ 'static/notes.txt': 'gone' }, keyed);
     await expect(git.push(root, target(h), after, ['sk-test-0123456789abcdef'])).rejects.toMatchObject({ code: 'invalid' });
     expect(pushes(h)).toEqual([]);
+    // A commit's message too, made by the publication's identity outside the app.
+    rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
+    const repo3 = openRepo(root);
+    await repo3.init();
+    const noted = await repo3.writeCommit({ tree: await repo3.writeFiles([{ path: 'index.html', bytes: text('ok') }]), parents: [], author: APP, committer: APP, message: `Publish with ${TOKEN}\n` });
+    await repo3.advanceRef(PUBLISH_BRANCH, noted, null);
+    await expect(git.push(root, target(h), noted)).rejects.toMatchObject({ code: 'invalid' });
+    expect(pushes(h)).toEqual([]);
     // A binary file is not searched (a photo's bytes can hold anything), and a clean publication goes.
     rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
     const photo = await publish({ 'static/photo.bin': `\0${TOKEN}`, 'index.html': 'ok' }, null);

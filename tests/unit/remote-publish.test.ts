@@ -247,7 +247,7 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
       expect(snapshotPlace(`static/${name}`), name).toMatchObject({ kind: 'excluded', reason: 'private' });
     }
     for (const name of ['remote-credentials (Bob (laptop) conflicted copy).json', 'remote-credentials (from old.json backup).json']) expect(isPrivateFileName(name), name).toBe(true);
-    expect(isPrivateFileName('remote-credentials-guide.json')).toBe(false);
+    for (const name of ['remote-credentials-guide.json', 'api-keys.json(1).png']) expect(isPrivateFileName(name), name).toBe(false);
     // A token in the address or the site's name would be kept in the project: refused.
     for (const opts of [{ url: `${h.url}/${TOKEN}` }, { url: h.url, site: TOKEN }])
       expect(await c.bindRemote({ username: USER, token: TOKEN, ...opts })).toMatchObject({ ok: false, code: 'invalid' });

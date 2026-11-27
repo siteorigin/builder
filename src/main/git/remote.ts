@@ -25,7 +25,7 @@ import type { ClientRequest, IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import git, { type GitHttpRequest, type GitHttpResponse, type HttpClient, type PromiseFsClient } from 'isomorphic-git';
-import { approveEndpoint, GitError, OID_RE, PUBLISH_BRANCH, PUBLISH_EMAIL, remoteAuthOk, type GitErrorCode, type Oid, type PushReply, type RemoteAuth, type RemoteTarget } from './protocol';
+import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, OID_RE, PUBLISH_BRANCH, PUBLISH_EMAIL, remoteAuthOk, type GitErrorCode, type Oid, type PushReply, type RemoteAuth, type RemoteTarget } from './protocol';
 import { holdsSecretValue } from '@shared/sources';
 import type { Repo } from './repo';
 import type { RepoFs } from './fs';
@@ -250,13 +250,9 @@ function textOf(bytes: Uint8Array): string | null {
   return b.subarray(0, TEXT_SAMPLE).includes(0) ? null : b.toString('utf8');
 }
 
-/** The most secrets a push is given to look for, and the longest. */
-const MAX_SECRETS = 2000;
-const MAX_SECRET_CHARS = 16_384;
-
-/** `secrets` as a push may look for them, or throws `invalid`. */
+/** `secrets` as a push may look for them (strings, however many the user has saved), or throws `invalid`. */
 function checkSecrets(secrets: unknown): string[] {
-  if (!Array.isArray(secrets) || secrets.length > MAX_SECRETS || !secrets.every((v) => typeof v === 'string' && v.length <= MAX_SECRET_CHARS)) throw new GitError('invalid', 'A push needs the secrets to look for.');
+  if (!Array.isArray(secrets) || !secrets.every((v) => typeof v === 'string')) throw new GitError('invalid', 'A push needs the secrets to look for.');
   return secrets;
 }
 
@@ -293,8 +289,12 @@ async function carriesSecret(fs: PromiseFsClient, gitdir: string, commits: reado
       // Not here (another's commit): everything is looked at.
     }
   }
-  // A commit's message is the app's own (commitPublication), so only its files are looked at.
-  for (const oid of commits) if (await walk((await git.readCommit({ fs, gitdir, oid, cache })).commit.tree, false)) return true;
+  // A commit's message is the app's own (commitPublication), looked at for secrets too long to be a word of it.
+  const long = values.filter((v) => v.length >= MIN_REMOTE_TOKEN);
+  for (const oid of commits) {
+    const { commit } = await git.readCommit({ fs, gitdir, oid, cache });
+    if (holdsSecretValue(commit.message, long) || (await walk(commit.tree, false))) return true;
+  }
   return false;
 }
 
