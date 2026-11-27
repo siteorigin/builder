@@ -30,3 +30,16 @@ Definition of done for a change: typecheck green, unit tests covering the change
 - Live AI provider calls are expensive. Default model is OpenAI `gpt-6.2-sol`; prefer the fake-adapter tests in `tests/unit/agent.test.ts` and keep live runs to a handful.
 - Exported sites must stay free of Builder lock-in: editor instrumentation lives only in `.siteorigin/cache/dev`, never in `src/`.
 - Temporary output goes in `.tmp/` (gitignored), never the repo root.
+
+## Audit and issue screenshots (R2)
+
+GitHub CLI cannot upload local images into issue bodies directly, so visual evidence for GitHub issues and usability audits goes into the public Cloudflare R2 bucket `siteorigin-builder-audit`. The repository is public, so all objects in this bucket are served publicly by default at `https://pub-423baa1e74ff457f9b976d8f9d801dc4.r2.dev`.
+
+Organize uploads in date-stamped folders (`YYYY-MM-DD/<category>/<filename>.png`, for example `2026-11-27/annotated/01-issue.png` or `2026-11-27/deep-dives/example.png`):
+
+```bash
+wrangler r2 object put "siteorigin-builder-audit/$(date +%F)/annotated/example.png" \
+  --file path/to/example.png --content-type "image/png" --remote
+```
+
+Embed the resulting URL directly in GitHub issue markdown (`![Short description](https://pub-423baa1e74ff457f9b976d8f9d801dc4.r2.dev/YYYY-MM-DD/annotated/example.png)`).
