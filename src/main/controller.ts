@@ -3492,6 +3492,21 @@ export class Controller {
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published));
   }
 
+  /**
+   * Build the website a client review is captured from (#1132) into the new folder `dest`: the same isolated snapshot,
+   * asset preparation and checks as the website export, with none of what an export records. A review delivers no
+   * address to visitors, so the project's record of published addresses, its redirects, revision, saved versions and
+   * History stay exactly as they were, and the folder is neither listed among the exports nor previewed.
+   */
+  async stageReviewBuild(dest: string): Promise<ExportResult> {
+    const blocked = this.exportBlocked();
+    if (blocked) return blocked;
+    const s = this.session!;
+    const bad = this.badExportTarget(s, dest, 'folder');
+    if (bad) return { ok: false, message: bad, warnings: [] };
+    return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, 'folder', undefined, { review: true }));
+  }
+
   /** Each open project's file hashes from its last export's fingerprints, by the stamps they stand for (projectInventory). */
   private exportHashes = new WeakMap<ProjectSession, ExportHashes>();
 
@@ -3623,7 +3638,7 @@ export class Controller {
     };
   }
 
-  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[]): Promise<ExportResult> {
+  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[], opts: { review?: boolean } = {}): Promise<ExportResult> {
     const project = join(staging, 'project');
     const snap = await this.snapshotSource(s, project, { forBuild: true });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
@@ -3778,6 +3793,8 @@ export class Controller {
     const exported = exportedCounts(pages, siteEntries(live));
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();
     if (problem) return { ok: false, message: problem, warnings: warnings() };
+    // A review build is put in place and nothing more: no address it holds was delivered to visitors.
+    if (opts.review) return { ok: true, path: dest, message: `Built ${exported} for review.`, warnings: warnings(), notes, revision };
     // How the host shows the not-found page is guidance, not a warning: it goes beside the notes, never among them.
     const hosting = notFoundHostNote(basePath(state), redirectHost(live.site));
     const exportedAt = new Date().toISOString();
