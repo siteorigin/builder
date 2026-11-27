@@ -23,8 +23,12 @@ const ORDER: ProviderId[] = ['openai', 'anthropic', 'local'];
  * provider with no key, or a local server that is not set up or not answering, keeps its place as one row that opens
  * its setup.
  */
-export function modelPickerRows(providers: readonly ProviderStatus[], ai: Pick<AppSettings['ai'], 'provider' | 'models'>, local: LocalListing): ModelPickerRow[] {
+export function modelPickerRows(providers: readonly ProviderStatus[], ai: Pick<AppSettings['ai'], 'provider' | 'models'> & { local?: Pick<AppSettings['ai']['local'], 'baseURL'> }, listing: LocalListing): ModelPickerRow[] {
   const rows: ModelPickerRow[] = [];
+  // A list from a server other than the saved one (the address changed since it was asked) is not offered: a model
+  // chosen from it would be kept for that other server, and the next message would not go to it.
+  const saved = ai.local ? localServerKey(ai.local.baseURL) : null;
+  const local: LocalListing = listing.state === 'listed' && listing.server && saved && localServerKey(listing.server) !== saved ? { state: 'loading' } : listing;
   for (const id of ORDER) {
     const status = providers.find((p) => p.id === id);
     if (!status) continue;

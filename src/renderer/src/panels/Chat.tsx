@@ -5,7 +5,7 @@ import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, ty
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
-import { api, getState, refreshProviders, saveLocal, sendPicksAhead, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
+import { api, getState, refreshProviders, saveLocal, saveSettings, sendPicksAhead, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { importIntoChat, isFileDrag, retargetDrops } from '../lib/chat-drop';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
@@ -406,8 +406,7 @@ export function Chat() {
   const [sending, setSending] = useState(false);
   // A model chosen in the composer is saved before the next message can go: sent sooner, it would still name the model
   // before, and the main process would refuse it as moved (#954).
-  const [switching, setSwitching] = useState(0);
-  const switchingRef = useRef(0);
+  const switching = useStore((s) => s.settingsSaving > 0);
   const [localListing, setLocalListing] = useState<LocalListing>({ state: 'loading' });
   const listingSeq = useRef(0);
   const [announce, setAnnounce] = useState('');
@@ -893,17 +892,14 @@ export function Chat() {
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   /** Settings at one provider's setup: its key, or the local server. */
   const openProviderSettings = (p: ProviderId) => setState({ modal: { kind: 'settings', tab: 'ai', provider: p } });
-  const chooseModel = async (row: Extract<ModelPickerRow, { kind: 'model' }>) => {
-    switchingRef.current++;
-    setSwitching((n) => n + 1);
+  /** `first`: for Automatic, the model the server listed first just now, which the next message goes to. */
+  const chooseModel = async (row: Extract<ModelPickerRow, { kind: 'model' }>, first?: string) => {
     try {
-      setState({ settings: await api.app.setSettings(row.patch) });
-      void refreshProviders();
+      const saved = await saveSettings(row.patch);
+      // The composer's own answer from the server may be older than the list just shown: the next message names this one.
+      if (first && row.provider === 'local' && row.id === null) setServerModel({ baseURL: saved.ai.local.baseURL, id: first });
     } catch (e) {
       toast(`The model could not be changed: ${e instanceof Error ? e.message : 'try again'}.`, 'error');
-    } finally {
-      switchingRef.current--;
-      setSwitching((n) => n - 1);
     }
   };
   // What the open model menu reads each time Chat renders, so its rows follow the local server's answer and a send.
@@ -926,7 +922,7 @@ export function Chat() {
         // The message being sent names the model it was written for; a choice waits until it has gone.
         disabled: busy || undefined,
         onSelect: () => {
-          void chooseModel(row);
+          void chooseModel(row, local.state === 'listed' ? local.models[0] : undefined);
           focusComposer();
         }
       };
@@ -942,12 +938,19 @@ export function Chat() {
       () => seq === listingSeq.current && setLocalListing({ state: 'listed', ok: false, models: [] })
     );
   };
+  // The local server's models are asked while the menu is up: when it opens, when Local model becomes set up (the
+  // statuses asked as it opened can say so), and when the saved server changes. An answer after it closes is dropped.
+  const modelMenuOpen = modelMenu.isOpen;
+  const localSetUp = providers.some((p) => p.id === 'local' && p.configured);
+  useEffect(() => {
+    if (!modelMenuOpen || !localSetUp) return;
+    listLocalModels();
+    return () => void listingSeq.current++;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelMenuOpen, localSetUp, localBaseURL]);
   const openModelMenu = (el: HTMLElement, focusLast = false) => {
-    if (!modelMenu.isOpen) {
-      // A key saved or a server set up since the panel last asked shows in the menu once the statuses answer.
-      void refreshProviders();
-      if (providers.some((p) => p.id === 'local' && p.configured)) listLocalModels();
-    }
+    // A key saved or a server set up since the panel last asked shows in the menu once the statuses answer.
+    if (!modelMenu.isOpen) void refreshProviders();
     modelMenu.openAt(el, modelItems, 'Model for your next message', { focusLast, above: true });
   };
   // The model for the next message, which may differ from the one a running turn went to. The model is the part that
@@ -1051,7 +1054,7 @@ export function Chat() {
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
-    if (switchingRef.current) return false;
+    if (getState().settingsSaving) return false;
     // A post open in the Posts workspace, the page its preview went on to, or a collection layout open on the canvas
     // (#679) is a target of its own.
     const ownTarget = context ? !!context.post || !!context.template : !!scope.post || !!scope.template || shownPost?.kind === 'page' || !!seoPage;
@@ -1329,7 +1332,7 @@ export function Chat() {
                   <KeyRound /> Connect an AI provider
                 </button>
                 {/* Another provider may be set up already: the menu switches to it without Settings. */}
-                {modelButton}
+                {!draftFirst && modelButton}
               </div>
             ) : notReady ? (
               <div className="chat-not-ready" role="status">
@@ -1777,7 +1780,7 @@ export function Chat() {
                 <ArrowUp />
               </button>
             ) : (
-              <button className="send-btn" disabled={running || !draft.trim() || sending || switching > 0} title={running ? 'You can send once this request finishes' : 'Send'} aria-label={running ? 'Send (available when the current request finishes)' : 'Send'} onClick={(e) => e.detail <= 1 && void send()}>
+              <button className="send-btn" disabled={running || !draft.trim() || sending || switching} title={running ? 'You can send once this request finishes' : 'Send'} aria-label={running ? 'Send (available when the current request finishes)' : 'Send'} onClick={(e) => e.detail <= 1 && void send()}>
                 <ArrowUp />
               </button>
             )}
@@ -1790,7 +1793,7 @@ export function Chat() {
         msgs.length > 0 && (
           <div className="chat-connect">
             <span>Connect an AI provider to continue this conversation.</span>
-            {modelButton}
+            {!draftFirst && modelButton}
             <button className="btn btn-sm btn-primary" onClick={openSettings}>
               <KeyRound /> Connect
             </button>

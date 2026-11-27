@@ -43,7 +43,7 @@ const ENTRY = [
   '  }));',
   "  flushSync(() => createRoot(document.getElementById('root')).render(h(Chat)));",
   '};',
-  'window.so = { modal: () => useStore.getState().modal, provider: () => useStore.getState().settings.ai.provider };'
+  'window.so = { modal: () => useStore.getState().modal, provider: () => useStore.getState().settings.ai.provider, toasts: () => useStore.getState().toasts.map((t) => t.text) };'
 ].join('\n');
 
 /**
@@ -55,11 +55,14 @@ const BRIDGE = `
   const b = window.bridge;
   b.release = () => b.waiting.splice(0).forEach((go) => go());
   const answers = {
-    'app.setSettings': (patch) => new Promise((done) => b.waiting.push(() => {
+    // Main takes the change in memory before writing it, so one whose write fails (b.fail) is still held there.
+    'app.setSettings': (patch) => new Promise((done, refuse) => b.waiting.push(() => {
       const ai = b.settings.ai;
       b.settings = { ...b.settings, ai: { ...ai, ...patch.ai, models: { ...ai.models, ...(patch.ai.models ?? {}) }, local: ai.local } };
-      done(b.settings);
+      if (b.fail) refuse(new Error('The settings file could not be written'));
+      else done(b.settings);
     })),
+    'app.getSettings': () => b.settings,
     'ai.providers': () => b.providers,
     'ai.localModels': () => b.localModels,
     'ai.send': () => ({ ok: true, runId: 'run_1' })
@@ -154,6 +157,7 @@ describe.skipIf(!browserInstalled)('the composer’s model menu (#954)', { timeo
 
     // Sent before the choice is saved, the message would still name OpenAI: it waits, and the draft stays.
     const box = page.getByRole('textbox', { name: 'Message', exact: true });
+    expect(await page.getByRole('button', { name: 'Send', exact: true }).isDisabled()).toBe(true);
     await box.press('Enter');
     expect(await calls('ai.send')).toEqual([]);
     expect(await box.inputValue()).toBe('Which pages need images?');
@@ -165,12 +169,24 @@ describe.skipIf(!browserInstalled)('the composer’s model menu (#954)', { timeo
     expect((await calls('ai.send'))[0][3]).toEqual({ provider: 'anthropic', model: 'claude-a' });
   });
 
+  it('goes by what main holds when a model change could not be saved', async () => {
+    await mount([hosted('openai', true), hosted('anthropic', true), local(true)], 'openai');
+    await page.evaluate('bridge.fail = true');
+    await modelButton('GPT A, OpenAI').click();
+    await page.getByRole('menuitemradio', { name: 'Claude A, Anthropic', exact: true }).click();
+    await page.evaluate('bridge.release()');
+    await expect.poll(() => page.evaluate('so.toasts()')).toEqual(['The model could not be changed: The settings file could not be written.']);
+    // The next message names what main would send it to, so it is not refused as moved.
+    await modelButton('Claude A, Anthropic').waitFor();
+    expect(await page.evaluate('so.provider()')).toBe('anthropic');
+  });
+
   it('opens from the keyboard like the composer’s other menus', async () => {
     await mount([hosted('openai', true), hosted('anthropic', true), local(true)], 'openai');
     await modelButton('GPT A, OpenAI').focus();
     await page.keyboard.press('ArrowDown');
     await menu().waitFor();
-    expect(await page.evaluate(() => document.activeElement?.getAttribute('role'))).toMatch(/^menuitem/);
+    expect(await page.evaluate<string | null>("document.activeElement?.getAttribute('role')")).toMatch(/^menuitem/);
     await page.keyboard.press('Escape');
     expect(await menu().count()).toBe(0);
   });

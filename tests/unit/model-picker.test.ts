@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ProviderStatus } from '@shared/api';
-import { modelPickerRows, type ModelPickerRow } from '../../src/renderer/src/lib/modelPicker';
+import { modelPickerRows, type LocalListing, type ModelPickerRow } from '../../src/renderer/src/lib/modelPicker';
 
 const status = (id: ProviderStatus['id'], configured: boolean, models: ProviderStatus['models'] = []): ProviderStatus => ({ id, label: { openai: 'OpenAI', anthropic: 'Anthropic', local: 'Local model' }[id], configured, source: configured ? 'stored' : null, storage: 'local-file', models });
 const OPENAI = [
@@ -32,6 +32,7 @@ describe('the composer’s model menu (#954)', () => {
   it('switches the provider and its model in one change', () => {
     const rows = modelPickerRows([status('openai', true, OPENAI), status('anthropic', true, ANTHROPIC)], ai('anthropic'), { state: 'loading' });
     expect(rows.find((r) => r.kind === 'model' && r.id === 'gpt-b')).toMatchObject({ patch: { ai: { provider: 'openai', models: { openai: 'gpt-b' } } } });
+    expect(modelPickerRows([status('anthropic', true, ANTHROPIC)], ai('openai'), { state: 'loading' }).find((r) => r.kind === 'model')).toMatchObject({ checked: false, patch: { ai: { provider: 'anthropic', models: { anthropic: 'claude-a' } } } });
   });
 
   it('keeps a provider with no key in the menu as one row that opens its setup', () => {
@@ -50,18 +51,29 @@ describe('the composer’s model menu (#954)', () => {
     expect(shape(modelPickerRows(providers, ai('local'), { state: 'loading' }))).toEqual(['# Local model', 'local (Asking your local server for its models…)']);
     expect(shape(modelPickerRows(providers, ai('local'), { state: 'listed', ok: false, models: [] }))).toEqual(['# Local model', 'local [Set up]']);
     expect(shape(modelPickerRows(providers, ai('local'), { state: 'listed', ok: true, models: [] }))).toEqual(['# Local model', 'local [Set up]']);
+    // A server that answered with an error is not offered, whatever models came with it.
+    expect(shape(modelPickerRows(providers, ai('local'), { state: 'listed', ok: false, models: ['first-model'] }))).toEqual(['# Local model', 'local [Set up]']);
   });
 
   it('ticks Automatic only when no local model is chosen, even when the server’s first model is the one named', () => {
-    const listed = { state: 'listed', ok: true, models: ['first-model'], server: 'http://127.0.0.1:1234/v1/' } as const;
+    const listed: LocalListing = { state: 'listed', ok: true, models: ['first-model'], server: 'http://127.0.0.1:1234/v1/' };
     expect(shape(modelPickerRows([status('local', true)], ai('local'), listed))).toEqual(['# Local model', '✓ local:auto Automatic', '  local:first-model first-model']);
     expect(shape(modelPickerRows([status('local', true)], ai('local', { local: 'first-model' }), listed))).toEqual(['# Local model', '  local:auto Automatic', '✓ local:first-model first-model']);
+    // Nothing local is ticked while another provider takes the next message.
+    expect(shape(modelPickerRows([status('local', true)], ai('openai'), listed))).toEqual(['# Local model', '  local:auto Automatic', '  local:first-model first-model']);
   });
 
   it('saves a local choice for the server that listed it, and Automatic as no choice', () => {
     const rows = modelPickerRows([status('local', true)], ai('openai'), { state: 'listed', ok: true, models: ['first-model'], server: 'http://127.0.0.1:1234/v1/' });
     expect(rows.find((r) => r.kind === 'model' && r.id === 'first-model')).toMatchObject({ patch: { ai: { provider: 'local', local: { modelsByServer: { 'http://127.0.0.1:1234/v1': 'first-model' } } } } });
     expect(rows.find((r) => r.kind === 'model' && r.id === null)).toMatchObject({ patch: { ai: { provider: 'local', local: { modelsByServer: { 'http://127.0.0.1:1234/v1': '' } } } } });
+  });
+
+  it('offers no model from a list another server gave, once the saved server has changed', () => {
+    const rows = modelPickerRows([status('local', true)], { ...ai('openai'), local: { baseURL: 'http://127.0.0.1:5678/v1' } }, { state: 'listed', ok: true, models: ['first-model'], server: 'http://127.0.0.1:1234/v1' });
+    expect(shape(rows)).toEqual(['# Local model', 'local (Asking your local server for its models…)']);
+    const same = modelPickerRows([status('local', true)], { ...ai('openai'), local: { baseURL: 'http://127.0.0.1:1234/v1/' } }, { state: 'listed', ok: true, models: ['first-model'], server: 'http://127.0.0.1:1234/v1' });
+    expect(shape(same)).toEqual(['# Local model', '  local:auto Automatic', '  local:first-model first-model']);
   });
 
   it('keeps a chosen local model the server no longer lists, so the tick is not lost', () => {

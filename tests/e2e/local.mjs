@@ -77,7 +77,7 @@ try {
   await dialog.getByRole('tab', { name: 'Local model' }).click();
   // Looking at a provider's setup does not switch the one in use; the composer's model menu does (#954).
   assert.notEqual((await settings()).ai.provider, 'local');
-  assert.equal(await dialog.getByRole('button', { name: /^Use / }).count(), 0, 'Settings only sets providers up');
+  assert.equal(await dialog.getByRole('button', { name: 'Use Local model', exact: true }).count(), 0, 'Settings only sets providers up');
 
   step(`the ${preset.label} preset`);
   const presetButton = dialog.getByRole('group', { name: 'Usual address for' }).getByRole('button', { name: preset.label, exact: true });

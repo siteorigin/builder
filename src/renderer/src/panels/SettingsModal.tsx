@@ -2,7 +2,7 @@ import './SettingsModal.css';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
-import { api, setState, useStore, confirmDialog, refreshProviders, setProviders } from '../store';
+import { api, setState, useStore, confirmDialog, refreshProviders, saveSettings, setProviders } from '../store';
 import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } from './LocalModelSettings';
 import { checkLocalBaseURL, keyDoubt, localKeyProblem } from '@shared/local';
@@ -81,10 +81,7 @@ export function SettingsModal() {
   const [modelDrafts, setModelDrafts] = useState<Partial<Record<ProviderId, string>>>({});
   useEffect(() => void refreshProviders(), []);
   // Each change can change what Chat shows (the provider, the local server, its model or its last check).
-  const updateSettings = useCallback(async (patch: SettingsPatch) => {
-    setState({ settings: await api.app.setSettings(patch) });
-    void refreshProviders();
-  }, []);
+  const updateSettings = useCallback(async (patch: SettingsPatch) => void (await saveSettings(patch)), []);
   // Opened straight to a section (from chat, say), focus starts on that section's tab rather than the first one.
   const loaded = !!settings;
   useEffect(() => {

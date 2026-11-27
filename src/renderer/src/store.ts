@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
@@ -159,6 +159,8 @@ export interface State {
   snapshot: ProjectSnapshot | null;
   runtime: RuntimeState;
   settings: AppSettings | null;
+  /** Settings changes still being saved. A message sent meanwhile would name the model from before (#954). */
+  settingsSaving: number;
   providers: ProviderStatus[];
   pageId: string | null;
   /** The post open in the Posts workspace (shown while the Posts panel is), kept while other panels are. */
@@ -381,6 +383,7 @@ const live = create<State>((set) => ({
   snapshot: null,
   runtime: { state: 'idle' },
   settings: null,
+  settingsSaving: 0,
   providers: [],
   pageId: null,
   post: null,
@@ -1454,6 +1457,28 @@ let providersRequest = 0;
  * Read the providers' status again (what is set up, and what the local server last showed). Only the latest
  * request's answer is kept, whichever part of the app asked; a failure leaves the status as it was.
  */
+/**
+ * Save a settings change and show what main kept. While it is being saved the composer sends nothing, since the message
+ * would name the provider and model from before it and main would refuse it as moved (#954). Main can take a change in
+ * memory and then fail to write it to disk, so after a failure the settings are read back from main.
+ */
+export async function saveSettings(patch: SettingsPatch): Promise<AppSettings> {
+  setState({ settingsSaving: getState().settingsSaving + 1 });
+  try {
+    const settings = await api.app.setSettings(patch);
+    setState({ settings });
+    return settings;
+  } catch (e) {
+    const held = await api.app.getSettings().catch(() => null);
+    if (held) setState({ settings: held });
+    throw e;
+  } finally {
+    setState({ settingsSaving: getState().settingsSaving - 1 });
+    // Each change can change what Chat shows (the provider, the local server, its model or its last check).
+    void refreshProviders();
+  }
+}
+
 /** Providers' status as an answer just gave it: kept, and any older read still under way is dropped. */
 export function setProviders(providers: ProviderStatus[]) {
   providersRequest++;
