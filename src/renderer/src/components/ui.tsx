@@ -1445,13 +1445,14 @@ function DraftField({
   const box = multiline && !wrap;
   const room = { '--count-ch': `${limit} / ${limit}`.length, '--field-rows': limit! >= 300 ? 4 : 3 } as CSSProperties;
   // The box's footer is inside its border but outside the textarea: pressing there keeps the caret in the text, as
-  // pressing anywhere else in a field does, rather than leaving the field (which saves it). The grip, at the corner,
-  // still resizes.
+  // pressing anywhere else in a field does, rather than leaving the field (which saves it). The grip, in the corner
+  // right of the count, still resizes a box that can be resized.
   const holdFocus = (e: React.MouseEvent<HTMLElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
-    if (e.target !== e.currentTarget || (e.clientX > r.right - 16 && e.clientY > r.bottom - 16)) return;
+    const grip = getComputedStyle(e.currentTarget).resize !== 'none' && e.clientX > r.right - 22 && e.clientY > r.bottom - 22;
+    if (e.target !== e.currentTarget || grip || !input.current || input.current.disabled) return;
     e.preventDefault();
-    input.current?.focus();
+    input.current.focus();
   };
   return (
     <span className={`field-counted${box ? ' box' : ''}`} style={room}>

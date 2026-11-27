@@ -190,6 +190,11 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     await page.mouse.click(c.left - 40, (c.top + c.bottom) / 2);
     expect(await focused(box)).toBe(true);
     expect(await box.inputValue()).toBe(`${DESCRIPTION} Book direct.`);
+    // Where the box cannot be resized, its corner holds the caret too.
+    await on(box, "(el) => { el.closest('.field-frame').style.resize = 'none'; }");
+    const f = (await geometry(box)).box;
+    await page.mouse.click(f.right - 6, f.bottom - 6);
+    expect(await focused(box)).toBe(true);
   });
 
   it('opens a box four lines tall from a limit of 300, and three below it, before any typing', async () => {
@@ -321,5 +326,11 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     expect(await focused(box)).toBe(true);
     // The same textarea throughout: never remounted as the count moved out and back.
     expect(await on(box, '(el) => el === window.excerptNode')).toBe(true);
+
+    // Over the limit, a line that wraps scrolls in the usual height rather than growing with all of the paste.
+    const message = field('Message');
+    await message.fill('Ｗ '.repeat(1000).trim());
+    await expect.poll(() => countOf(message).then((c) => c.getAttribute('class'))).toContain('field-error');
+    expect((await geometry(message)).box.bottom - (await geometry(message)).box.top).toBeLessThanOrEqual(260);
   });
 });
