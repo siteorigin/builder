@@ -629,6 +629,18 @@ export interface ChatCheck {
   text: string;
 }
 
+/**
+ * Tokens a model request took, as the provider reported them. `inputTokens` is the whole prompt, whatever part of it
+ * the provider read from its prompt cache (`cachedInputTokens`) or wrote to it (`cacheWriteTokens`, Anthropic's); each is
+ * absent when the provider did not say.
+ */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens?: number;
+  cacheWriteTokens?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -652,7 +664,8 @@ export interface ChatMessage {
     checks?: ChatCheck[];
     canUndo: boolean;
     error?: string;
-    usage?: { inputTokens: number; outputTokens: number };
+    /** The run's tokens in all, and each answered model turn's in order: null where the provider did not report them. */
+    usage?: TokenUsage & { turns?: Array<TokenUsage | null> };
     /**
      * The request is not finished: the run stopped at a budget, or ended with requested work still missing. Set on
      * every `partial` result, whose valid work is kept as one undoable step, and on a `no-changes` one that made

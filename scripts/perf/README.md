@@ -12,6 +12,7 @@ npm run perf:run -- --scenario memory           # memory of every process at nam
 npm run perf:compare -- before.json after.json  # before, after, change and verdict per metric
 npm run perf:compare -- before.json after.json --markdown   # the tables a pull request carries
 npm run perf:static                             # built output sizes and the main entry's packages, beside the baseline
+npm run perf:prompt                             # what each turn of an AI run sends, and what a provider's cache serves
 ```
 
 `perf:run` takes `--scenario` (comma-separated; default `launch,open,edit`), `--fixture` (`small`, `large` or both;
@@ -306,6 +307,35 @@ read and hashed, sample images imported, npm runs, the npm dependency trees work
 dialog's check `dialogIdealTrees`) and checks of the tools; the longest main-process stall. Run them on `small` alone:
 the project made is the same whatever the fixture.
 
+**`drag`** (after `open`): with the home hero selected by a click on it and the page at its top, press its chip's grip and
+drag it: 10 moves down the canvas, 15 into the band along its bottom edge (28 px inside it, about 440 px a second),
+120 held there a pixel either way while the page scrolls under the pointer, and 15 back up to the middle of the
+canvas, one move every 16 ms; 400 ms later, let it go. Checks: the page scrolled at least 300 px while the pointer was
+held in the band, a drop line showed inside the part of the page the canvas shows, the drag said "Split hero after …"
+as it was let go, and the release moved the hero, as one revision, at least two sections down, after the section the
+drag named, with the page's other sections in the order they were. Done again when the preview loaded a page or the
+project was read from disk before the release (an undo puts back a drop that landed first), as `canvas`'s windows
+are; an attempt that fails holding the grip lets it go with Escape. Over the
+window from the press to the release: `drag.ms`, `canvasRenders`, `dropShows` (the drag worked out where a drop would
+go: a pointer move, a scroll step, a measure landing), `measures` and `listsMeasured` (the page asked where its lists
+are, and how many), `scrollSteps` (steps of the edge scroll), `measureMs` (median time for the page to answer a
+measure), `rendererCommits`, `renders`, and from the frame watch `frames`, `droppedFrames`, `frameMs` (the window's
+length over its frames), `longestFrameMs`, `longTasks` and `longTaskMs`; the frame period at rest,
+`drag.framePeriodMs`.
+
+**`colour`** (after `open`): in Site styles, the Brand color's native picker (the first row of Basics) dragged around the
+hue circle: 60 steps 5° apart, an `input` event every 16 ms as the native picker sends them, then `change` as it is let
+go; until the project, the picker and the preview's primary button show the last color picked, every save has landed
+and the revision has stopped moving. Checks: the project, the picker and `tokens.json` on disk hold the last color
+picked, the drag made one step in History, and one undo puts the color back, in the project and the preview; the main
+process began at least one of the edits before the picker was let go (the page follows a drag). Run once: a reload
+the drag's own saves set off is the drag's. From the drag's first step to settled: `colour.dragMs` (first step to release), `applies` (edits
+the main process took in, `controller.apply`), `appliesPerSecond` (those begun during the drag, over its length),
+`queueDeepest` (the most edits in the main process at once, waiting or running), `durableWrites`, `fsyncs` and
+`fileWrites` (in those edits), `lastSaveMs` (release to the last edit's answer), `settleMs` (release to the preview
+showing the settled revision), `previewUpdates`, `snapshotsSent` and `snapshotBytes`, `rendererCommits`, and the
+longest main-process stall.
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -428,6 +458,46 @@ Each row and package is shown beside `baseline/static.json`, with what changed. 
 purpose, rebuild and refresh it with `npm run perf:static -- --update-baseline`, in the same pull request.
 `--json <file>` writes the full report.
 
+## Prompts
+
+`perf:prompt` measures what each model turn of an AI run sends to the provider, and how much of it the provider can
+serve from its prompt cache (#977). That is visible only in what the provider receives, and the built app sends a
+cloud provider's requests to that provider's own address and nowhere else, so this one is not a scenario of the built
+app: it runs the orchestrator, the project session and the Anthropic and OpenAI adapters (with their SDKs, which put
+each request together exactly as in the app) in-process, from source, on the fixture's project, against scripted
+servers answered through the adapters' `fetch`. No network and no live provider (`prompt.ts`). It takes `--fixture`
+(default both), `--iterations` (default 3, after one untimed run per case), `--out` and `--app <checkout>`, which runs
+that checkout's own copy of the script in that checkout, so its source is what is measured. The result is a benchmark
+result like `perf:run`'s, with the checkout's commit as its build, and `perf:compare` reads it.
+
+The run is a site request of ten model turns, scripted the same for both providers: read the project, read the home
+page, change the hero's heading, read the home page again, change the brand color, add a page of three sections, build
+a new component (the one step that changes a tool on offer: the page tool can place the component from then on), read
+the project's components, validate, and finish. Checks, every iteration: every scripted turn was asked for, the run
+ended completed with the scripted summary, every tool call succeeded, and the project holds each change, four revisions
+on. Cases: `prompt.anthropic` and `prompt.openai`, per fixture.
+
+A request is read as the provider reads it, as blocks (`prompt-cache.ts`): the Messages API's tools, system blocks and
+each message's content blocks, or the Responses API's tools, instructions and input items, each sized by its JSON as
+sent without its `cache_control` marker. The Messages server applies Anthropic's documented caching rule over the run:
+a prefix is kept only at a breakpoint (a marked block, or the last block when the request has a top-level
+`cache_control`) of at least 2,048 bytes (the 512 tokens the bench's models need, at about four bytes a token: bytes
+stand in for tokens, which only the provider counts); each breakpoint reads the longest kept prefix among the 20
+positions that end at it, its own included (a run of tool_use, or of tool_result, blocks in one message being one
+position); what follows the read up to the last breakpoint is written; the rest is processed afresh; entries do not expire within a run. Each server
+reports usage at about four bytes a token, which is what the app records; the metrics are the bytes themselves.
+
+Metrics, per run: `turns`; `promptBytes` (every request's prompt, added up), `firstPrompt`, `lastPrompt`;
+`reusableBytes` (each request's leading blocks identical to the request before it: what any prefix cache could reuse);
+`toolsChanged`, `systemChanged` and `historyRewritten` (requests whose tools, system or instructions, or a message the
+request before already had, differ from the one before); `markers` (the most `cache_control` markers in one request);
+`recordedCachedTokens` (the cached input tokens the run's record says it was given); `prepMs`, `prepMsMax` and
+`prepMsTotal` (from the end of a turn's last tool call to the next request reaching the server: the run putting it
+together). Anthropic's also: `cacheRead`, `cacheWrite`, `uncached` and `freshBytes` (written or uncached: what the
+provider processed rather than read), and per turn `turnNN.cacheRead` and `turnNN.fresh`. A live provider's time to
+first token, and whether its cache does what the rule says, are not measured here: a handful of live runs outside the
+harness settle that.
+
 ## The trace format
 
 With `SITEORIGIN_PERF_FILE` set, the main process appends one JSON record per line, its own and the editor's (which sends
@@ -457,7 +527,8 @@ dependency trees worked out to check what they need, `src/main/runtime/manager.t
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes
 React renders before and after the panel), `chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model
 text read into blocks), `canvas.renders`, `canvas.rectReports`, `canvas.rectReportsSame` and `canvas.hoverReports` (the
-`canvas` scenario's) (renderer). The main process also
+`canvas` scenario's), `canvas.dropShows`, `canvas.dropMeasures`, `canvas.dropMeasured` and `canvas.dropScrolls` (a drag
+onto the page, `drag`'s) (renderer). The main process also
 watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
 lateness (a block shorter than about 70 ms can go unseen).
 

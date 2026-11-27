@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, coveredMs, create, createAgain, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, toolCallsReply } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, toolCallsReply } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -38,6 +38,8 @@ describe('the scenario chain', () => {
     // Made from Welcome after launch, and the second project after the first.
     expect(chainFor(['create']).map((s) => s.name)).toEqual(['launch', 'create']);
     expect(chainFor(['createAgain']).map((s) => s.name)).toEqual(['launch', 'create', 'createAgain']);
+    expect(chainFor(['drag']).map((s) => s.name)).toEqual(['launch', 'open', 'drag']);
+    expect(chainFor(['colour', 'drag']).map((s) => s.name)).toEqual(['launch', 'open', 'drag', 'colour']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -1390,5 +1392,118 @@ describe('memory', () => {
     expect((await runChain([slow], ctx, async () => new Trace([]), 60_000))[0].error?.message).toBe('m did not finish within 0s');
     const patient = { ...scenario('m', () => new Promise((r) => setTimeout(r, 30)), []), deadlineMs: 60_000 };
     expect((await runChain([patient], ctx, async () => new Trace([]), 10))[0].ok).toBe(true);
+  });
+});
+
+describe('drag metrics', () => {
+  const start = r('scenario.start', 900, { attrs: { scenario: 'drag', periodMs: 16.7 } });
+  const c = (n: number) => ({ c: { 'canvas.renders': n * 2, 'canvas.dropShows': n, 'canvas.dropMeasures': Math.floor(n / 10), 'canvas.dropMeasured': n * 3, 'canvas.dropScrolls': Math.floor(n / 4), 'react.commits': n, 'react.renders': n * 20 } });
+  /** One attempt of the drag: its edges with the editor's counters, its list measures (a decoy after it), and the frame
+   *  watch's findings on its end mark. */
+  function attempt(at: number, n: number, o: { counts?: [number, number]; measures?: number[]; frames?: Record<string, number> } = {}): PerfRecord[] {
+    const [c0, c1] = o.counts ?? [0, 100];
+    const frames = o.frames ?? { frames: 150, droppedFrames: 6, longTasks: 1, longTaskMs: 70, longestFrameMs: 80 };
+    return [
+      r('drag.window', at, { attrs: { scenario: 'drag', edge: 'start', attempt: n }, ...c(c0) }),
+      ...(o.measures ?? [12, 20, 16]).map((ms, i) => r('canvas.dropMeasure', at + 10 + i, { attrs: { ms, lists: 9 } })),
+      r('drag.window', at + 3000, { attrs: { scenario: 'drag', edge: 'end', attempt: n, ...frames }, ...c(c1) }),
+      r('canvas.dropMeasure', at + 3001, { attrs: { ms: 900, lists: 9 } })
+    ];
+  }
+
+  it('count the drag’s renders, shows, measures and scroll steps, and time its frames and measures', () => {
+    const got = drag.measure(new Trace([start, ...attempt(1000, 1)]), facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    expect([v('drag.framePeriodMs'), v('drag.ms'), v('drag.canvasRenders'), v('drag.dropShows'), v('drag.measures'), v('drag.listsMeasured'), v('drag.scrollSteps')]).toEqual([16.7, 3000, 200, 100, 10, 300, 25]);
+    expect([v('drag.rendererCommits'), v('drag.renders'), v('drag.measureMs')]).toEqual([100, 2000, 16]);
+    expect([v('drag.frames'), v('drag.droppedFrames'), v('drag.longTasks'), v('drag.longTaskMs'), v('drag.longestFrameMs'), v('drag.frameMs')]).toEqual([150, 6, 1, 70, 80, 20]);
+  });
+
+  it('measure the last attempt, and name what is missing instead of reporting a drag that did less', () => {
+    const again = drag.measure(new Trace([start, ...attempt(1000, 1, { counts: [0, 999] }), ...attempt(5000, 2, { counts: [999, 1099], measures: [4] })]), facts);
+    expect(again.missing).toEqual([]);
+    expect([again.metrics['drag.dropShows'].value, again.metrics['drag.measureMs'].value]).toEqual([100, 4]);
+    const bare = drag.measure(new Trace([...attempt(1000, 1, { measures: [], frames: { frames: 40 } })]), facts);
+    expect(bare.missing).toEqual([
+      'scenario.start (renderer)',
+      'scenario.start (renderer, with the frame period)',
+      'canvas.dropMeasure (no list measured in the drag)',
+      'drag.droppedFrames (the frame watch)',
+      'drag.longTasks (the frame watch)',
+      'drag.longTaskMs (the frame watch)',
+      'drag.longestFrameMs (the frame watch)'
+    ]);
+    const stalled = drag.measure(new Trace([start, ...attempt(1000, 1, { frames: { frames: 60, droppedFrames: 0, longTasks: 0, longTaskMs: 0, longestFrameMs: 16.7 } })]), facts);
+    expect(stalled.missing).toEqual(['drag.frames (the frame watch saw 60 frames in 3000 ms)']);
+    const cut = drag.measure(new Trace([start, ...attempt(1000, 1).filter((x) => x.attrs?.edge !== 'end')]), facts);
+    expect(cut.missing).toEqual(['drag.window end']);
+  });
+});
+
+describe('colour metrics', () => {
+  const point = (p: string, t: number, extra: Record<string, number> = {}, n = 1) => [
+    r('colour.window', t, { attrs: { scenario: 'colour', point: p, attempt: n, ...extra }, c: { 'react.commits': t / 100 } }),
+    m('colour.window', t, { attrs: { scenario: 'colour', point: p, attempt: n, ...extra }, c: { 'fs.durableWrites': t / 250, 'fs.fsyncs': t / 200, 'fs.writes': t / 100 } })
+  ];
+  const apply = (end: number, ms: number, revision: number, dc: Record<string, number> = { 'fs.durableWrites': 3, 'fs.fsyncs': 4, 'fs.writes': 5 }) => span('controller.apply', end, ms, { attrs: { revision }, dc });
+  const shown = (t: number, revision: number) => r('canvas.revisionApplied', t, { attrs: { revision } });
+  const sent = (t: number, revision: number) => m('controller.snapshotSent', t, { attrs: { revision, bytes: 1000 } });
+
+  it('count the edits the drag made, how many ran at once, and time the preview settling after the release', () => {
+    // A drag from 1000 to 2000: four edits, the second and third queued behind the first, the last after the release.
+    const trace = new Trace([
+      apply(990, 10, 9),
+      ...point('start', 1000),
+      apply(1300, 200, 11),
+      apply(1500, 350, 12),
+      apply(1700, 500, 13),
+      sent(1310, 11),
+      shown(1400, 11),
+      ...point('release', 2000),
+      apply(2400, 300, 14),
+      sent(2410, 14),
+      shown(2500, 13),
+      shown(2700, 14),
+      ...point('settled', 3000, { revision: 14 }),
+      apply(3500, 100, 15)
+    ]);
+    const got = colour.measure(trace, facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    expect([v('colour.dragMs'), v('colour.applies'), v('colour.appliesPerSecond'), v('colour.queueDeepest')]).toEqual([1000, 4, 3, 3]);
+    // From the main process's marks, not the overlapping edits' own counts.
+    expect([v('colour.durableWrites'), v('colour.fsyncs'), v('colour.fileWrites')]).toEqual([8, 10, 20]);
+    expect([v('colour.lastSaveMs'), v('colour.settleMs'), v('colour.previewUpdates'), v('colour.snapshotsSent'), v('colour.snapshotBytes'), v('colour.rendererCommits')]).toEqual([400, 700, 3, 2, 2000, 20]);
+  });
+
+  it('name what is missing instead of reporting a drag that did less', () => {
+    expect(colour.measure(new Trace([...point('start', 1000), ...point('release', 2000)]), facts).missing).toEqual(['colour.window settled']);
+    // No edit at all, and a settled revision the preview never showed.
+    expect(colour.measure(new Trace([...point('start', 1000), ...point('release', 2000), ...point('settled', 3000, { revision: 14 })]), facts).missing).toEqual(['controller.apply (no edit in the colour drag)', 'canvas.revisionApplied (the settled revision)']);
+    // A drag whose edits all began after the picker was let go showed nothing as it was dragged.
+    const late = colour.measure(new Trace([...point('start', 1000), ...point('release', 2000), apply(2400, 300, 11), shown(2500, 11), ...point('settled', 3000, { revision: 11 })]), facts);
+    expect(late.missing).toEqual(['controller.apply begun before the picker was let go (the drag was saved only once it ended)']);
+    // Without the main process's own marks, its writes are missing, never summed from the overlapping edits.
+    const rendererOnly = new Trace([...point('start', 1000), apply(1300, 200, 11), ...point('release', 2000), shown(2100, 11), ...point('settled', 3000, { revision: 11 })].filter((x) => x.proc === 'renderer' || x.name !== 'colour.window'));
+    const got = colour.measure(rendererOnly, facts);
+    expect(got.missing).toEqual(['colour.window start (main)', 'colour.window settled (main)']);
+    expect(got.metrics['colour.durableWrites']).toBeUndefined();
+    // A settled mark of an earlier attempt is not this attempt's.
+    expect(colour.measure(new Trace([...point('start', 500, {}, 1), ...point('release', 600, {}, 1), ...point('settled', 700, { revision: 3 }, 1), ...point('start', 1000, {}, 2), ...point('release', 2000, {}, 2)]), facts).missing).toEqual(['colour.window settled']);
+  });
+
+  it('count the most edits running at once, one ending as the next starts not beside it', () => {
+    expect(deepest([])).toBe(0);
+    expect(deepest([apply(100, 100, 1), apply(200, 100, 2), apply(300, 100, 3)])).toBe(1);
+    expect(deepest([apply(100, 100, 1), apply(150, 100, 2), apply(400, 300, 3), apply(450, 400, 4)])).toBe(3);
+  });
+
+  it('pick a different colour at every step of the drag', () => {
+    const path = colourPath();
+    expect(path).toHaveLength(COLOUR_STEPS);
+    for (const hex of path) expect(hex).toMatch(/^#[0-9a-f]{6}$/);
+    expect(new Set(path).size).toBe(COLOUR_STEPS);
+    expect(path[0]).toBe('#bd2828');
   });
 });

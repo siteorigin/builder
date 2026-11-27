@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { colorFromPicker, paintableColor, retirePicks, toHex6, type SentPick } from '@shared/color';
 import { resolveCssColor } from '../lib/color';
+import { pickGate, type PickGate } from '../lib/pick-gate';
+import { getState } from '../store';
 
 const LANDED_MS = 500; // how long a pick stays in flight after its save succeeds: the saved value arrives meanwhile (a save that changes nothing never sends one)
 /** A backstop for a pick whose save never reports back (the owner's `onPick` returns nothing to wait on): the swatch then goes back to the saved color. */
@@ -15,10 +17,12 @@ const SAVE_WAIT_MS = 30000;
  *
  * The native picker reports every step of a drag, and a save takes a moment to come back. So the input
  * shows what was last picked while saves are in flight, and each step is worked out from the last one
- * sent: dragging from red to blue and back to red before the first save lands ends on red. A save that
- * lands mid-drag only retires the picks up to it. A pick the owner reports as not saved (its `onPick`
- * returns a promise that resolves to null or false, or rejects) is dropped, and with nothing left in
- * flight the swatch goes back to the saved color.
+ * taken: dragging from red to blue and back to red before the first save lands ends on red. Only one of
+ * the swatch's saves is on its way at a time (lib/pick-gate): steps picked meanwhile wait, and only the
+ * newest is saved once that save has been answered, even if the picker has closed by then. A save that
+ * lands mid-drag only retires the picks up to it, and a step that never needed saving retires at once. A
+ * pick the owner reports as not saved (its `onPick` returns a promise that resolves to null or false, or
+ * rejects) is dropped, and with nothing left in flight the swatch goes back to the saved color.
  */
 export function ColorPick({
   value,
@@ -43,8 +47,9 @@ export function ColorPick({
   const unreadable = !rgba && !empty;
   const paints = paintableColor(value);
   const [draft, setDraft] = useState<string | null>(null);
-  /** What this swatch has sent that has not come back as the saved value yet, oldest first. */
+  /** What this swatch has taken that has not come back as the saved value yet, oldest first. */
   const inflight = useRef<SentPick[]>([]);
+  const gate = useRef<PickGate | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const settle = () => {
     clearTimeout(timer.current);
@@ -83,7 +88,15 @@ export function ColorPick({
               inflight.current = inflight.current.filter((p) => p !== mine);
               if (!inflight.current.length) settle();
             };
-            Promise.resolve(onPick(next)).then((saved) => (saved === null || saved === false ? retire() : void setTimeout(retire, LANDED_MS)), retire);
+            // Saved where it was picked for (this render's `onPick`), when the swatch's save before it has been answered: in
+            // the opening of the project it was picked in, or nowhere.
+            const opening = getState().snapshot?.workspaceKey;
+            (gate.current ??= pickGate()).pick(() => {
+              if (getState().snapshot?.workspaceKey !== opening) return void retire();
+              const saved = Promise.resolve(onPick(next));
+              saved.then((r) => (r === null || r === false ? retire() : void setTimeout(retire, LANDED_MS)), retire);
+              return saved;
+            }, retire);
           }}
         />
       )}

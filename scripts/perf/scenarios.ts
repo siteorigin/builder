@@ -25,6 +25,7 @@ import type { FixtureSpec } from './fixtures';
 import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
 import { PHOTO_COUNT, photoSpec, scenarioPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
+import { displayName } from '../../src/engine/tree';
 
 /** The feature did not do its job: the iteration fails, whatever its timings. */
 export class PredicateError extends Error {}
@@ -2351,6 +2352,374 @@ export const create = createScenario('create', 'launch');
 export const createAgain = createScenario('createAgain', 'create');
 
 // ---------------------------------------------------------------------------
+// drag
+// ---------------------------------------------------------------------------
+
+/** `drag`'s pointer path, one move every STEP_MS: from the grip down the canvas, into the band along its bottom edge,
+ *  held there (a hand never holds still: a pixel either way each move) while the page scrolls under it, then back up
+ *  to the middle of the canvas, where it is let go. */
+export const DRAG_MOVES = { down: 10, toEdge: 15, hold: 120, back: 15 } as const;
+/** How far inside the bottom edge the pointer is held: halfway into the 56 px band, about 440 px a second. */
+const DRAG_EDGE_INSET = 28;
+/** How far the page must have scrolled under the held pointer, in the page's pixels. */
+const DRAG_MIN_SCROLL = 300;
+
+/** The editor's mark for one edge of `drag`'s window, in one attempt (any attempt without one). */
+const atDrag =
+  (edge: 'start' | 'end', attempt?: number) =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.scenario === 'drag' && r.attrs?.edge === edge && (attempt === undefined || r.attrs?.attempt === attempt);
+
+/** The page's sections, by ID, from the project the editor holds. */
+const homeRoots = async (win: Page, pageId: string): Promise<{ revision: number; roots: string[]; names: string[] }> => {
+  const s = await snapshotOf(win);
+  expect(s, 'no project is open');
+  const page = s.state.pages[pageId];
+  return { revision: s.revision, roots: page.rootIds, names: page.rootIds.map((id) => displayName(s.state, page.nodes[id])) };
+};
+
+export const drag: Scenario = {
+  name: 'drag',
+  after: 'open',
+  description: 'Pick up the home hero by its grip, hold it in the band along the canvas’s bottom edge while the page scrolls, then let it go in the middle of the canvas, and check it moved where the drop line said.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const before = await snapshotOf(win);
+    expect(before, 'no project is open');
+    const shownHeading = findHeading(before.state.pages[fixture.homePageId], fixture.heroId)?.heading ?? fixture.heading;
+    const frame = preview(win);
+    const selectHero = () =>
+      undisturbed(ctx, 'selecting the hero', async () => {
+        for (let i = 0; i < 4 && (await heroChip(win).count()); i++) await win.keyboard.press('Escape');
+        await frame.locator('html').evaluate(() => (globalThis as unknown as { scrollTo(o: object): void }).scrollTo({ top: 0, behavior: 'instant' }));
+        await frame.getByRole('heading', { name: shownHeading, exact: true, level: 1 }).first().click({ timeout: 15_000 });
+        await heroChip(win).waitFor({ timeout: 15_000 });
+      });
+    await settledAgain(ctx);
+    await selectHero();
+    const periodMs = await framePeriod(win);
+    expect(Number.isFinite(periodMs) && periodMs > 0, 'the editor drew no frames at rest');
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await settledAgain(ctx);
+    await ctx.mark('scenario.start', { scenario: 'drag', periodMs });
+    const initial = await homeRoots(win, fixture.homePageId);
+    /** One attempt at the drag, checked; it returns when it let go. */
+    const once = async (attempt: number, released: { at: number }) => {
+      const was = await homeRoots(win, fixture.homePageId);
+      const from = was.roots.indexOf(fixture.heroId);
+      expect(from >= 0, 'the home hero is not one of the home page’s sections');
+      expect(await heroChip(win).count(), `the ${HERO_NAME} is not selected before the drag`);
+      await frame.locator('html').evaluate(() => (globalThis as unknown as { scrollTo(o: object): void }).scrollTo({ top: 0, behavior: 'instant' }));
+      expect((await settledScroll(frame)) === 0, 'the page would not go back to its top before the drag');
+      await sleep(500);
+      const grip = await win.locator('.ov-chip [aria-label="Drag to move"]').boundingBox();
+      expect(grip, 'the selection’s chip shows no grip to drag it by');
+      const v = await win.locator('.canvas-scroll').boundingBox();
+      const w = await win.locator('.frame-wrap').boundingBox();
+      expect(v && w, 'the canvas has no box');
+      const x = w.x + w.width / 2;
+      const top = Math.max(v.y, w.y);
+      const bottom = Math.min(v.y + v.height, w.y + w.height);
+      const path = (x0: number, y0: number, x1: number, y1: number, n: number) => Array.from({ length: n }, (_, i) => ({ x: x0 + ((x1 - x0) * (i + 1)) / n, y: y0 + ((y1 - y0) * (i + 1)) / n }));
+      const edgeY = bottom - DRAG_EDGE_INSET;
+      const scrollY = () => frame.locator('html').evaluate(() => (globalThis as unknown as { scrollY: number }).scrollY);
+      const moves = async (list: Array<{ x: number; y: number }>) => {
+        for (const p of list) {
+          await input(win.mouse.move(p.x, p.y), 'a pointer move');
+          await sleep(STEP_MS);
+        }
+      };
+      await win.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+      await watchFrames(win);
+      await ctx.mark('drag.window', { scenario: 'drag', edge: 'start', attempt });
+      let shown: { label: string; line: Box | null; scrolled: number };
+      let pressed = false;
+      try {
+        await input(win.mouse.down(), 'the press on the grip');
+        pressed = true;
+        await moves([...path(grip.x + grip.width / 2, grip.y + grip.height / 2, x, top + 200, DRAG_MOVES.down), ...path(x, top + 200, x, edgeY, DRAG_MOVES.toEdge)]);
+        // Scrolled while held in the band, not only on the way into it.
+        const atEdge = await scrollY();
+        await moves(Array.from({ length: DRAG_MOVES.hold }, (_, i) => ({ x: x + (i % 2 ? 1 : -1), y: edgeY })));
+        const held = (await scrollY()) - atEdge;
+        expect(held >= DRAG_MIN_SCROLL, `held in the band along the bottom edge, the page scrolled ${held}px, short of ${DRAG_MIN_SCROLL}px`);
+        await moves(path(x, edgeY, x, (top + bottom) / 2, DRAG_MOVES.back));
+        // Long enough for the lists measured where the page now shows to land: the release then drops by them.
+        await sleep(400);
+        const label = (await win.locator('[data-testid="insert-drop-label"] .what').first().textContent({ timeout: 5_000 })) ?? '';
+        const line = await win.locator('[data-testid="insert-drop-line"]').first().boundingBox({ timeout: 5_000 }).catch(() => null);
+        const scrolled = await scrollY();
+        shown = { label: label.trim(), line, scrolled };
+        released.at = Date.now();
+        pressed = false;
+        await input(win.mouse.up(), 'the release');
+      } finally {
+        await ctx.mark('drag.window', { scenario: 'drag', edge: 'end', attempt, ...(await framesSeen(win, periodMs)) });
+        // An attempt that failed holding the grip lets it go without a drop, so the next starts with nothing held.
+        if (pressed) {
+          await win.keyboard.press('Escape').catch(() => undefined);
+          await win.mouse.up().catch(() => undefined);
+        }
+      }
+      // The page scrolled under the held pointer, the line showed where the drop goes, inside what the canvas shows, and
+      // the release moved the hero there, as one change.
+      expect(shown.scrolled >= DRAG_MIN_SCROLL, `held at the bottom edge, the page scrolled ${shown.scrolled}px, short of ${DRAG_MIN_SCROLL}px`);
+      expect(shown.line, 'no drop line showed where the drag was let go');
+      expect(shown.line.y >= top - 1 && shown.line.y + shown.line.height <= bottom + 1, `the drop line (${Math.round(shown.line.y)}) was outside the canvas (${Math.round(top)}–${Math.round(bottom)})`);
+      const lead = `${HERO_NAME} after `;
+      expect(shown.label.startsWith(lead), `the drag said “${shown.label}” as it was let go, not where the ${HERO_NAME} would go`);
+      let now = was;
+      for (let i = 0; i < 100 && now.revision === was.revision; i++) {
+        await sleep(100);
+        now = await homeRoots(win, fixture.homePageId);
+      }
+      expect(now.revision === was.revision + 1, `the drop left the project at revision ${now.revision}, not ${was.revision + 1}`);
+      const to = now.roots.indexOf(fixture.heroId);
+      expect(to >= from + 2, `the ${HERO_NAME} went from section ${from + 1} to ${to + 1}, not down the page where the scroll took it`);
+      expect(now.names[to - 1] === shown.label.slice(lead.length), `the ${HERO_NAME} landed after ${now.names[to - 1]}, not after ${shown.label.slice(lead.length)} as the drag said`);
+      const others = (roots: string[]) => roots.filter((id) => id !== fixture.heroId).join();
+      expect(others(now.roots) === others(was.roots), 'the drop moved or changed other sections of the home page');
+    };
+    // Done again when the preview loaded a page or the project was read from disk before the release (see WINDOW_TRIES),
+    // from the project as the first attempt found it. What the drop's own save sets off afterwards is the drag's.
+    for (let attempt = 1; ; attempt++) {
+      const t0 = Date.now() - 100;
+      const released = { at: Infinity };
+      let failed: unknown = null;
+      try {
+        await once(attempt, released);
+      } catch (e) {
+        failed = e;
+      }
+      await sleep(500);
+      if (!reloadedIn(await ctx.waitTrace(() => true, 0), t0, Math.min(released.at, Date.now()))) {
+        if (failed) throw failed;
+        break;
+      }
+      if (attempt >= WINDOW_TRIES) throw new Error(`the preview reloaded during the drag ${WINDOW_TRIES} times (the project’s files kept changing on disk)`);
+      await settledAgain(ctx);
+      if ((await homeRoots(win, fixture.homePageId)).roots.join() !== initial.roots.join()) {
+        await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.undo());
+        for (let i = 0; (await homeRoots(win, fixture.homePageId)).roots.join() !== initial.roots.join(); i++) {
+          expect(i < 100, 'an undo did not put the hero back before the drag was done again');
+          await sleep(100);
+        }
+        await settledAgain(ctx);
+      }
+      await selectHero();
+    }
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.end', { scenario: 'drag' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('drag', 'renderer')) && !!t.first('scenario.end', forScenario('drag', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('drag', 'renderer')));
+    const period = begin?.attrs?.periodMs;
+    if (typeof period === 'number') m.ms('drag.framePeriodMs', period);
+    else m.need('scenario.start (renderer, with the frame period)', undefined);
+    // The last attempt: any before it had a reload during it, and was done again.
+    const starts = trace.all('drag.window', atDrag('start'));
+    const lastAttempt = Math.max(...starts.map((r) => (typeof r.attrs?.attempt === 'number' ? r.attrs.attempt : 0)));
+    const start = m.need('drag.window start', starts.find((r) => (typeof r.attrs?.attempt === 'number' ? r.attrs.attempt : 0) === lastAttempt));
+    const end = m.need('drag.window end', start && trace.first('drag.window', atDrag('end', start.attrs?.attempt as number)));
+    if (!start || !end) return m;
+    const gained = (name: string) => counter(end, name) - counter(start, name);
+    m.since('drag.ms', start, end);
+    m.count('drag.canvasRenders', gained('canvas.renders'));
+    m.count('drag.dropShows', gained('canvas.dropShows'));
+    m.count('drag.measures', gained('canvas.dropMeasures'));
+    m.count('drag.listsMeasured', gained('canvas.dropMeasured'));
+    m.count('drag.scrollSteps', gained('canvas.dropScrolls'));
+    commits(m, trace, 'drag.rendererCommits', start, end);
+    if (trackless(start) || trackless(end)) m.need('drag.renders (the editor did not count component renders)', undefined);
+    else m.count('drag.renders', gained('react.renders'));
+    // Each measure of the page's lists, from asking to the last batch's answer.
+    const measured = trace.all('canvas.dropMeasure', inProc('renderer'), start.t, end.t);
+    if (!measured.length) m.need('canvas.dropMeasure (no list measured in the drag)', undefined);
+    else m.ms('drag.measureMs', median(measured.map((r) => (typeof r.attrs?.ms === 'number' ? r.attrs.ms : NaN))));
+    for (const k of ['frames', 'droppedFrames', 'longTasks'] as const) {
+      const v = end.attrs?.[k];
+      if (typeof v === 'number') m.count(`drag.${k}`, v);
+      else m.need(`drag.${k} (the frame watch)`, undefined);
+    }
+    const frames = end.attrs?.frames;
+    if (typeof frames === 'number' && typeof period === 'number' && frames < (end.t - start.t) / period / 2) m.need(`drag.frames (the frame watch saw ${frames} frames in ${Math.round(end.t - start.t)} ms)`, undefined);
+    // The editor's mean frame time over the drag: what a dropped frame or a long one adds to the period.
+    if (typeof frames === 'number' && frames > 0) m.ms('drag.frameMs', (end.t - start.t) / frames);
+    for (const k of ['longTaskMs', 'longestFrameMs'] as const) {
+      const v = end.attrs?.[k];
+      if (typeof v === 'number') m.ms(`drag.${k}`, v);
+      else m.need(`drag.${k} (the frame watch)`, undefined);
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// colour
+// ---------------------------------------------------------------------------
+
+/** `colour`'s drag in the native picker: this many steps, one every STEP_MS, around the hue circle. */
+export const COLOUR_STEPS = 60;
+/** The picker's steps: hues 5° apart at one saturation and lightness, as six-digit hex the picker reports. */
+export function colourPath(steps = COLOUR_STEPS): string[] {
+  const hex = (h: number, s: number, l: number) => {
+    const a = s * Math.min(l, 1 - l);
+    const f = (n: number) => {
+      const k = (n + h / 30) % 12;
+      return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))))
+        .toString(16)
+        .padStart(2, '0');
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+  };
+  return Array.from({ length: steps }, (_, i) => hex((i * 5) % 360, 0.65, 0.45));
+}
+/** A six-digit hex as the browser reports a computed colour. */
+const rgbOf = (hex: string) => `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`;
+
+/** The editor's mark for one point of `colour`'s window, in one attempt (any attempt without one). */
+const atColour =
+  (point: 'start' | 'release' | 'settled', attempt?: number, proc: 'main' | 'renderer' = 'renderer') =>
+  (r: PerfRecord): boolean =>
+    r.proc === proc && r.attrs?.scenario === 'colour' && r.attrs?.point === point && (attempt === undefined || r.attrs?.attempt === attempt);
+
+/** The most spans of `spans` running at once. */
+export function deepest(spans: PerfRecord[]): number {
+  const edges = spans.flatMap((r) => [
+    { t: r.t - (r.ms ?? 0), d: 1 },
+    { t: r.t, d: -1 }
+  ]);
+  // An end before a start at the same time: one that ends as another starts was not running beside it.
+  edges.sort((a, b) => a.t - b.t || a.d - b.d);
+  let now = 0;
+  let most = 0;
+  for (const e of edges) most = Math.max(most, (now += e.d));
+  return most;
+}
+
+const BRAND = 'color.brand';
+
+export const colour: Scenario = {
+  name: 'colour',
+  after: 'open',
+  description: 'In Site styles, drag the Brand color’s native picker around the hue circle and let go, until the preview shows the last color picked; check it is saved as one step that one undo takes back.',
+  async run(ctx) {
+    const { win, projectDir } = ctx;
+    const frame = preview(win);
+    const path = colourPath();
+    const last = path[path.length - 1];
+    if (!(await win.locator('#editor-dock').isVisible())) await win.getByRole('button', { name: 'Right panel', exact: true }).click();
+    await win.locator('.dock-tab', { hasText: 'Styles' }).click();
+    const section = win.locator('#dock-panel-styles .section').filter({ has: win.locator('button.section-head', { hasText: 'Basics' }) });
+    const picker = section.locator('[data-ss-row]').first().locator('input[type="color"]');
+    await picker.waitFor({ timeout: 15_000 });
+    const cta = () => frame.locator('.so-btn--primary').first().evaluate((el) => (globalThis as unknown as { getComputedStyle(e: unknown): { backgroundColor: string } }).getComputedStyle(el).backgroundColor);
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await settledAgain(ctx);
+    await ctx.mark('scenario.start', { scenario: 'colour' });
+    // Never done again on a reload: the drag's own saves can set one off, and that is the drag's cost.
+    await (async (attempt: number) => {
+      const was = await snapshotOf(win);
+      expect(was, 'no project is open');
+      const wasValue = was.state.tokens.overrides[BRAND];
+      const wasSteps = was.history.entries.length;
+      const wasPaint = await cta();
+      expect(wasPaint !== rgbOf(last), `the preview already shows ${last} before the drag`);
+      await ctx.mark('colour.window', { scenario: 'colour', point: 'start', attempt });
+      // The native picker's drag: an input event for each step, then a change event as it is let go.
+      for (const hex of path) {
+        await input(
+          picker.evaluate((el, hex) => {
+            const input = el as unknown as { dispatchEvent(e: Event): boolean };
+            // Through the element's own setter, as the picker sets it: React reads a change from it.
+            Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')!.set!.call(input, hex);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          }, hex),
+          'a step of the picker'
+        );
+        await sleep(STEP_MS);
+      }
+      await input(
+        picker.evaluate((el) => void (el as unknown as { dispatchEvent(e: Event): boolean }).dispatchEvent(new Event('change', { bubbles: true }))),
+        'the picker let go'
+      );
+      await ctx.mark('colour.window', { scenario: 'colour', point: 'release', attempt });
+      // Settled: the last colour picked saved and on the page, every save landed, the revision still.
+      const deadline = Date.now() + 120_000;
+      let at = was.revision;
+      for (;;) {
+        const s = await snapshotOf(win);
+        expect(s, 'the project closed during the colour drag');
+        const saving = (await win.locator('.toolbar .save-state').innerText().catch(() => '')) !== 'Saved';
+        if (!saving && s.revision === at && s.state.tokens.overrides[BRAND] === last && (await cta()) === rgbOf(last)) break;
+        at = s.revision;
+        expect(Date.now() < deadline, `two minutes after the picker was let go, the project holds ${String(s.state.tokens.overrides[BRAND])} at revision ${s.revision}, not ${last}`);
+        await sleep(100);
+      }
+      await ctx.mark('colour.window', { scenario: 'colour', point: 'settled', attempt, revision: at });
+      const after = await snapshotOf(win);
+      expect(after, 'the project closed during the colour drag');
+      expect(after.state.tokens.overrides[BRAND] === last, `the project holds ${String(after.state.tokens.overrides[BRAND])}, not the last color picked (${last})`);
+      expect((await picker.inputValue()) === last, `the picker shows ${await picker.inputValue()}, not the last color picked (${last})`);
+      const onDisk = JSON.parse(readFileSync(join(projectDir, 'siteorigin', 'tokens.json'), 'utf8')) as { overrides?: Record<string, unknown> };
+      expect(onDisk.overrides?.[BRAND] === last, `tokens.json on disk holds ${String(onDisk.overrides?.[BRAND])}, not ${last}`);
+      expect(after.history.entries.length === wasSteps + 1, `the drag made ${after.history.entries.length - wasSteps} steps in History, not one`);
+      // Not timed: one undo takes the whole drag back, in the project and on the page.
+      await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.undo());
+      for (let i = 0; ; i++) {
+        const s = await snapshotOf(win);
+        expect(s, 'the project closed after the colour drag');
+        if (s.state.tokens.overrides[BRAND] === wasValue && (await cta()) === wasPaint) break;
+        expect(i < 300, `one undo left ${String(s.state.tokens.overrides[BRAND])} and the preview at ${await cta()}, not the color before the drag (${String(wasValue)}, ${wasPaint})`);
+        await sleep(100);
+      }
+    })(1);
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.end', { scenario: 'colour' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('colour', 'renderer')) && !!t.first('scenario.end', forScenario('colour', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    const starts = trace.all('colour.window', atColour('start'));
+    const lastAttempt = Math.max(...starts.map((r) => (typeof r.attrs?.attempt === 'number' ? r.attrs.attempt : 0)));
+    const start = m.need('colour.window start', starts.find((r) => (typeof r.attrs?.attempt === 'number' ? r.attrs.attempt : 0) === lastAttempt));
+    const attempt = start?.attrs?.attempt as number;
+    const release = m.need('colour.window release', start && trace.first('colour.window', atColour('release', attempt)));
+    const settled = m.need('colour.window settled', start && trace.first('colour.window', atColour('settled', attempt)));
+    if (!start || !release || !settled) return m;
+    const revision = settled.attrs?.revision;
+    m.since('colour.dragMs', start, release);
+    // Every edit the main process took in, from the drag's first step until everything settled.
+    const applies = trace.all('controller.apply', inProc('main'), start.t, settled.t);
+    if (!applies.length) m.need('controller.apply (no edit in the colour drag)', undefined);
+    m.count('colour.applies', applies.length);
+    const during = applies.filter((r) => r.t - (r.ms ?? 0) <= release.t).length;
+    // The page follows the picker while it is held: a drag saved only once let go shows nothing as it is dragged.
+    if (applies.length && !during) m.need('controller.apply begun before the picker was let go (the drag was saved only once it ended)', undefined);
+    m.count('colour.appliesPerSecond', Math.round((during / ((release.t - start.t) / 1000)) * 10) / 10);
+    m.count('colour.queueDeepest', deepest(applies));
+    // The main process's own counters across the window: the edits overlap, and each span's would count the others'.
+    const mainStart = m.need('colour.window start (main)', trace.first('colour.window', atColour('start', attempt, 'main')));
+    const mainSettled = m.need('colour.window settled (main)', trace.first('colour.window', atColour('settled', attempt, 'main')));
+    for (const [name, c] of [['durableWrites', 'fs.durableWrites'], ['fsyncs', 'fs.fsyncs'], ['fileWrites', 'fs.writes']] as const) if (mainStart && mainSettled) m.count(`colour.${name}`, counter(mainSettled, c) - counter(mainStart, c));
+    const lastApply = applies[applies.length - 1];
+    if (lastApply) m.ms('colour.lastSaveMs', Math.max(0, lastApply.t - release.t));
+    // From the picker let go to the preview showing the project as it settled.
+    const shown = m.need('canvas.revisionApplied (the settled revision)', typeof revision === 'number' ? trace.first('canvas.revisionApplied', atRevision(revision), start.t) : undefined);
+    if (shown) m.ms('colour.settleMs', Math.max(0, shown.t - release.t));
+    m.count('colour.previewUpdates', trace.all('canvas.revisionApplied', inProc('renderer'), start.t, settled.t).length);
+    const sent = trace.all('controller.snapshotSent', inProc('main'), start.t, settled.t);
+    m.count('colour.snapshotsSent', sent.length);
+    bytesSent(m, 'colour.snapshotBytes', sent);
+    commits(m, trace, 'colour.rendererCommits', start, settled);
+    m.ms('colour.mainStallMax', stallMax(trace, start, settled));
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // editFullHistory
 // ---------------------------------------------------------------------------
 
@@ -2706,7 +3075,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, panels, chat, aiEdit, ai, canvas, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, panels, chat, aiEdit, ai, canvas, drag, colour, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

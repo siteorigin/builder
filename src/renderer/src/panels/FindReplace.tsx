@@ -519,7 +519,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
     setFinished({ ...finished, phase: 'undoing' });
     let ok = false;
     try {
-      ok = (await trackHistory(api.project.undoEntry(entryId, finished.result.workspaceKey))).ok;
+      ok = (await trackHistory(() => api.project.undoEntry(entryId, finished.result.workspaceKey))).ok;
     } catch {
       ok = false;
     }

@@ -1,7 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
+import type { TokenUsage } from '@shared/api';
 import type { AdapterOptions, AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolCall } from './types';
 import { classifyHttpError, withoutEnv } from './types';
 import { modelInfo } from './models';
+
+/** A prompt cache breakpoint, kept for five minutes from its last read: a run's turns are seconds apart. */
+const CACHED = { cache_control: { type: 'ephemeral' as const } };
 
 /** The API's own address, always passed: the SDK would otherwise send the key wherever `ANTHROPIC_BASE_URL` points. */
 export const ANTHROPIC_API_URL = 'https://api.anthropic.com';
@@ -67,10 +71,16 @@ export class AnthropicAdapter implements AgentModelAdapter {
           {
             model: req.model,
             max_tokens: maxTokens,
-            system: req.system,
+            // Anthropic caches only at a breakpoint (#977), where the next request can read back everything before it.
+            // Three: the tools, which every turn of a run sends unchanged (and still do when only the instructions
+            // change, the brief dropped to fit the window, say); the tools and instructions, at the end of the system
+            // prompt; and the conversation so far, at its last block, by the top-level marker, which the next turn
+            // reads back before the step it adds.
+            ...(req.system ? { system: [{ type: 'text' as const, text: req.system, ...CACHED }] } : {}),
+            ...(req.once ? {} : CACHED),
             messages: this.buildMessages(req) as never,
             // Tool options are only sent with tools (the code fixer sends none).
-            ...(req.tools.length ? { tools: req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters as never })) } : {})
+            ...(req.tools.length ? { tools: req.tools.map((t, i) => ({ name: t.name, description: t.description, input_schema: t.parameters as never, ...(i === req.tools.length - 1 ? CACHED : {}) })) } : {})
           },
           { signal }
         );
@@ -99,7 +109,7 @@ export class AnthropicAdapter implements AgentModelAdapter {
         const msg = await final;
         settled = true;
         const sr = msg.stop_reason as string;
-        const usage = { inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens };
+        const usage = usageOf(msg.usage);
         const blocks = msg.content as Array<{ type: string; id?: string; name?: string; input?: unknown; text?: string }>;
         // The finished message is the record; streamed deltas are only for live display.
         const finalText = blocks.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('');
@@ -156,6 +166,16 @@ export class AnthropicAdapter implements AgentModelAdapter {
     const next = reported.length ? Math.max(...reported) : requested > 8192 ? 8192 : requested > 4096 ? 4096 : 0;
     return next && next < requested ? next : 0;
   }
+}
+
+/**
+ * The turn's tokens. Anthropic counts what it read from its cache and wrote to it apart from `input_tokens`, which is
+ * only the rest: the prompt is all three.
+ */
+function usageOf(u: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null }): TokenUsage {
+  const read = typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : undefined;
+  const written = typeof u.cache_creation_input_tokens === 'number' ? u.cache_creation_input_tokens : undefined;
+  return { inputTokens: u.input_tokens + (read ?? 0) + (written ?? 0), outputTokens: u.output_tokens, ...(read !== undefined ? { cachedInputTokens: read } : {}), ...(written !== undefined ? { cacheWriteTokens: written } : {}) };
 }
 
 function safeParse(s: string): unknown {

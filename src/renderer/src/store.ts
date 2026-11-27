@@ -12,6 +12,7 @@ import { parseSerpView, SERP_VIEW_KEY, type SerpView } from './lib/serp-page';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, refusedDraftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
+import { sendHeldPicks } from './lib/pick-gate';
 import { checkHeld, fieldKey, placeOf, readFields, shownField, tableRowNameEdit, typedText, whereOf } from './lib/held';
 import type { RevealedItem } from './lib/reveal';
 import type { StyleCopy } from './lib/style-copy';
@@ -560,6 +561,8 @@ export function whenThemesReady(): Promise<void> {
 
 /** Send an edit to the main process; while timing marks are on, the moment it leaves is marked (src/shared/perf.ts). */
 function sendEdit(batch: Parameters<BuilderApi['project']['apply']>[0], opts: Parameters<BuilderApi['project']['apply']>[1]): ReturnType<BuilderApi['project']['apply']> {
+  // A colour picked before this edit was made reaches the project before it (lib/pick-gate).
+  sendPicksAhead();
   if (perfOn) perfMark('edit.requested', { operations: batch.operations.length, revision: getState().snapshot?.revision ?? null });
   return api.project.apply(batch, opts);
 }
@@ -626,9 +629,12 @@ export function setViewport(width: number) {
   saveLocal({ viewport: width });
 }
 
-/** Follow an Undo or Redo like an edit, so Save (and leaving) waits for it and hears if it failed. One refused
- *  before writing anything (nothing left to undo) is no failure. */
-export function trackHistory<T extends ApplyResult | null | undefined>(run: Promise<T>): Promise<T> {
+/** Send an Undo or Redo (`start`) and follow it like an edit, so Save (and leaving) waits for it and hears if it failed.
+ *  One refused before writing anything (nothing left to undo) is no failure. A colour picked before it reaches the
+ *  project first (lib/pick-gate), so an Undo right after a drag takes back the whole drag. */
+export function trackHistory<T extends ApplyResult | null | undefined>(start: () => Promise<T>): Promise<T> {
+  sendPicksAhead();
+  const run = start();
   trackApply(run.then((r) => ({ ok: !r || r.ok || r.error?.code === 'INVALID_ARGUMENT', message: r?.error?.message })));
   return run;
 }
@@ -645,7 +651,7 @@ export function setPageOpener(open: (pageId: string) => void) {
  */
 export function projectHistory(action: 'undo' | 'redo') {
   const before = getState().snapshot;
-  void trackHistory(action === 'redo' ? api.project.redo() : api.project.undo()).then(
+  void trackHistory(() => (action === 'redo' ? api.project.redo() : api.project.undo())).then(
     (r) => {
       if (r && !r.ok && r.error) toast(r.error.message, 'error');
       else if (r?.ok && before) void noticeElsewhere(action, r, before);
@@ -688,7 +694,7 @@ async function noticeElsewhere(action: 'undo' | 'redo', r: ApplyResult, before: 
  * goes only as far as History stood in `snap`: once History has moved on it is refused, for the author to choose again.
  */
 export function stepHistory(entryId: string, direction: 'undo' | 'redo', count: number, snap: ProjectSnapshot): Promise<ApplyResult> {
-  return trackHistory(api.project.stepHistory(entryId, direction, { revision: snap.revision, count }, snap.workspaceKey));
+  return trackHistory(() => api.project.stepHistory(entryId, direction, { revision: snap.revision, count }, snap.workspaceKey));
 }
 
 /**
@@ -696,7 +702,7 @@ export function stepHistory(entryId: string, direction: 'undo' | 'redo', count: 
  * moved on from the revision the review was worked out at, for the author to look again.
  */
 export function revertAiTurn(entryId: string, reviewed: { revision: number; history: string }, snap: ProjectSnapshot): Promise<ApplyResult> {
-  return trackHistory(api.project.revertAiTurn(entryId, reviewed, snap.workspaceKey));
+  return trackHistory(() => api.project.revertAiTurn(entryId, reviewed, snap.workspaceKey));
 }
 
 /** Zoom the preview and remember it for this project. */
@@ -831,6 +837,23 @@ export function claimRefusals<T>(sink: RefusalSink, commit: () => T): T {
     return commit();
   } finally {
     refusalSink = prev;
+  }
+}
+
+/**
+ * Send every colour pick held back while a save of its swatch is on its way (lib/pick-gate), ahead of an edit, an Undo
+ * or a request to the AI that is about to reach the project. Each is an edit of its own: never one of the commit being
+ * sent (its typed draft, its field's refusals, its check), even when that commit is what asked.
+ */
+export function sendPicksAhead(): void {
+  const was = { draft, refusalSink, checked };
+  draft = null;
+  refusalSink = null;
+  checked = null;
+  try {
+    sendHeldPicks();
+  } finally {
+    ({ draft, refusalSink, checked } = was);
   }
 }
 
@@ -1166,9 +1189,7 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
     if (check.kind === 'changed') return settle({ phase: 'changed', current: check.current, currentText: shownField(h.operations[0], check.current[0]) }, outcome('held'));
     patchHeld(id, { stopping: false, writing: true });
     setState({ pendingSave: getState().pendingSave + 1 });
-    const writing = api.project
-      .apply({ operations: h.operations, expectedRevision: snap.revision }, { label: h.label, opening: h.workspace })
-      .catch((e: Error) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: e.message } }));
+    const writing = sendEdit({ operations: h.operations, expectedRevision: snap.revision }, { label: h.label, opening: h.workspace }).catch((e: Error) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: e.message } }));
     // Followed like any change on its way, so saving or leaving the project waits for it.
     trackApply(writing.then((x) => ({ ok: x.ok, message: x.error?.message })));
     const r = await writing;
@@ -1277,7 +1298,7 @@ export function undoAction(r: { entryId?: string; revision: number; workspaceKey
     undoes: { entryId, workspaceKey, revision: r.revision },
     run: () => {
       const before = getState().snapshot;
-      void trackHistory(api.project.undoEntry(entryId, workspaceKey)).then(
+      void trackHistory(() => api.project.undoEntry(entryId, workspaceKey)).then(
         (res) => {
           if (!res.ok) toast(res.error?.message ?? 'That change could not be undone.', 'error', res.error?.code === 'CONFLICT' ? history : undefined);
           // Its notice has gone with the click: one on another page by now says where it was undone (#903).
@@ -1376,9 +1397,7 @@ async function checkAndApply(c: CheckedCommit, operations: EditOperation[], labe
     // Nothing is written to refuse a check made on a copy that is behind, so it is made on the project's own.
     if (!refusal && c.checkOnly && fresh) return { kind: 'unchanged', where };
     if (!refusal && !c.checkOnly) {
-      const r = await api.project
-        .apply({ operations, expectedRevision: snap.revision }, { label, coalesceKey, opening: base.workspaceKey })
-        .catch((e: unknown) => ({ ok: false as const, revision: 0, error: { code: 'FAILED' as const, message: errorText(e) } }));
+      const r = await sendEdit({ operations, expectedRevision: snap.revision }, { label, coalesceKey, opening: base.workspaceKey }).catch((e: unknown) => ({ ok: false as const, revision: 0, error: { code: 'FAILED' as const, message: errorText(e) } }));
       if (r.ok) {
         done(r);
         return { kind: 'applied', where };

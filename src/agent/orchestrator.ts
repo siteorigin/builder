@@ -1,7 +1,7 @@
 import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft } from '@shared/api';
+import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft, type TokenUsage } from '@shared/api';
 import type { EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
@@ -73,6 +73,19 @@ const CONTINUE = /^\s*(please )?(continue|carry on|keep going|go on|resume|finis
 
 /** Plain affirmative answers that grant a scope-widening question when typed instead of clicked. */
 const TYPED_YES = /^\s*(y|yes|yeah|yep|ok|okay|sure|allow( it)?|go ahead|please do)[\s.!]*$/i;
+
+type RunUsage = TokenUsage & { turns: Array<TokenUsage | null> };
+
+/**
+ * A run's tokens with one more answered model turn's: the totals, and the turn in order, null when the provider did not
+ * report it, so each keeps its place. A cache figure is counted once any turn reports one; the turns that did not say
+ * add nothing to it.
+ */
+export function addUsage(run: RunUsage, turn: TokenUsage | null | undefined): RunUsage {
+  if (!turn) return { ...run, turns: [...run.turns, null] };
+  const sum = (k: 'cachedInputTokens' | 'cacheWriteTokens') => (run[k] === undefined && turn[k] === undefined ? {} : { [k]: (run[k] ?? 0) + (turn[k] ?? 0) });
+  return { inputTokens: run.inputTokens + turn.inputTokens, outputTokens: run.outputTokens + turn.outputTokens, ...sum('cachedInputTokens'), ...sum('cacheWriteTokens'), turns: [...run.turns, { ...turn }] };
+}
 
 /** Wait, but wake as soon as the run is stopped. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -1524,7 +1537,8 @@ export class Orchestrator {
     let activeMs = 0;
     let lastResume = Date.now();
     const failures = new Map<string, number>();
-    let usage = { inputTokens: 0, outputTokens: 0 };
+    /** The run's tokens, and each model turn's as the provider reported them (#977). */
+    let usage: RunUsage = { inputTokens: 0, outputTokens: 0, turns: [] };
     let finalText = '';
     let truncations = 0;
     let nudged = false;
@@ -1765,7 +1779,7 @@ export class Orchestrator {
       }
       if (r.conflict) {
         // The AI's edits stay in place, so list them: the card is where the user goes to review them.
-        await finish('conflicted', `${summary} A file was changed outside the app, so the AI changes were kept for you to review.`, { error, changes: describeOps(executedOps, startState, session.state, opResults) });
+        await finish('conflicted', `${summary} A file was changed outside the app, so the AI changes were kept for you to review.`, { error, usage, changes: describeOps(executedOps, startState, session.state, opResults) });
         return;
       }
       // Pages the request still lacks are named, so "Edit and try again" knows what is left.
@@ -2186,7 +2200,7 @@ export class Orchestrator {
           return;
         }
         if (!done) throw new Error('Canceled');
-        if (done.usage) usage = { inputTokens: usage.inputTokens + done.usage.inputTokens, outputTokens: usage.outputTokens + done.usage.outputTokens };
+        usage = addUsage(usage, done.usage);
         if (done.stopReason === 'max_tokens' && !done.toolCalls.length) {
           // A cut-off turn is dropped from the history (an empty assistant message is invalid for some
           // providers) and the model is asked to redo it in smaller steps.

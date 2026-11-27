@@ -130,6 +130,56 @@ describe('agent orchestrator', () => {
     expect(session.state.pages[session.state.site.homePageId].title).toBe('Start here');
   });
 
+  it(`sends the same tools and instructions on every turn across edits that leave the tools on offer as they were, and records each turn's tokens (#977)`, async () => {
+    const used = (inputTokens: number, cachedInputTokens: number, cacheWriteTokens: number) => ({ inputTokens, outputTokens: 20, cachedInputTokens, cacheWriteTokens });
+    const step = (id: string, name: string, args: unknown, usage: ReturnType<typeof used>): ModelEvent => ({ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id, name, arguments: JSON.stringify(args) }], usage });
+    let session: ProjectSession;
+    const hero = () => session.state.pages[session.state.site.homePageId].rootIds[0];
+    const env = await setup([
+      () => [step('u1', 'read_page', { pageId: session.state.site.homePageId }, used(40_000, 0, 40_000))],
+      () => [step('u2', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: session.state.site.homePageId }, nodeId: hero(), prop: 'heading', value: 'Calm rooms' }] }, used(42_000, 40_000, 2_000))],
+      // A provider that does not say what a turn took leaves that turn's place empty, and the totals without it.
+      () => [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: 'u3', name: 'update_site_brand', arguments: JSON.stringify({ brandColor: '#1f4e79', headingFont: 'Georgia' }) }] }],
+      () => [step('u4', 'upsert_page_with_sections', { slug: 'visits', title: 'Visits', sections: [{ componentId: 'hero.split' }, { componentId: 'features.grid' }] }, used(42_600, 42_300, 300))],
+      () => [{ type: 'text', delta: 'Done.' }, { type: 'done', stopReason: 'end', text: 'Done.', toolCalls: [], usage: { inputTokens: 43_000, outputTokens: 5, cachedInputTokens: 42_600, cacheWriteTokens: 400 } }]
+    ]);
+    session = env.session;
+    const { result } = await env.run('Change the hero heading and the brand, and add a Visits page');
+    expect(result?.status).toBe('completed');
+    expect(session.revision).toBe(3);
+    const reqs = env.adapter.requests;
+    expect(reqs).toHaveLength(5);
+    // A provider's cache reads a prefix back only while it is byte for byte the same: tools first, then the instructions.
+    for (const r of reqs.slice(1)) {
+      expect(JSON.stringify(r.tools)).toBe(JSON.stringify(reqs[0].tools));
+      expect(r.system).toBe(reqs[0].system);
+    }
+    // Each turn's request is the last one's with this turn's step after it.
+    reqs.slice(1).forEach((r, i) => expect(JSON.stringify(r.items.slice(0, reqs[i].items.length))).toBe(JSON.stringify(reqs[i].items)));
+    expect(result?.usage).toEqual({
+      inputTokens: 167_600,
+      outputTokens: 65,
+      cachedInputTokens: 124_900,
+      cacheWriteTokens: 42_700,
+      turns: [used(40_000, 0, 40_000), used(42_000, 40_000, 2_000), null, used(42_600, 42_300, 300), { inputTokens: 43_000, outputTokens: 5, cachedInputTokens: 42_600, cacheWriteTokens: 400 }]
+    });
+  });
+
+  it('keeps the tokens a run took when its changes stay because a file changed outside the app (#977)', async () => {
+    const used = { inputTokens: 30_000, outputTokens: 20, cachedInputTokens: 0, cacheWriteTokens: 30_000 };
+    let session: ProjectSession;
+    const env = await setup([
+      () => [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: 'k1', name: 'apply_operations', arguments: JSON.stringify({ expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'site.update', name: 'Kept' }] }) }], usage: used }],
+      () => [{ type: 'error', code: 'invalid_request', message: 'Bad request' }]
+    ]);
+    session = env.session;
+    // Undoing the run finds the project changed on disk, so its changes are kept for the author to review.
+    session.abortRun = async () => ({ restored: false, conflict: 'changed outside the app' });
+    const { result } = await env.run('Rename the site');
+    expect(result?.status).toBe('conflicted');
+    expect(result?.usage).toEqual({ ...used, turns: [used] });
+  });
+
   it('completes a multi-tool run as one history group that can be undone (A02, A09)', async () => {
     const { session, run } = await setup([
       () => [call('c1', 'read_project', {})],

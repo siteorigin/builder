@@ -111,6 +111,11 @@ describe('OpenAI adapter (Responses API wire format)', () => {
     expect(input[3]).toEqual({ type: 'function_call_output', call_id: 'call_1', output: '{"revision":0}' });
   });
 
+  it('reports the input tokens OpenAI served from its cache (#977)', async () => {
+    const { fetch } = scripted([sse([{ event: 'response.completed', data: { type: 'response.completed', response: { id: 'resp_1', status: 'completed', output: [message('Done.')], usage: { input_tokens: 52_000, input_tokens_details: { cached_tokens: 49_152 }, output_tokens: 12, total_tokens: 52_012 } } } }])]);
+    expect(doneOf(await collect(new OpenAIAdapter('sk-test', 'gpt-6.2-sol', { fetch }).streamTurn(request(), new AbortController().signal)))?.usage).toEqual({ inputTokens: 52_000, outputTokens: 12, cachedInputTokens: 49_152 });
+  });
+
   it('returns every call of a parallel tool turn, in order', async () => {
     const { fetch } = scripted([openaiTurn([reasoning, fnCall('a', 'read_page', '{"pageId":"pg_1"}'), fnCall('b', 'read_page', '{"pageId":"pg_2"}'), fnCall('c', 'read_project', '{}')])]);
     const events = await collect(new OpenAIAdapter('sk-test', 'gpt-6.2-sol', { fetch }).streamTurn(request(), new AbortController().signal));
@@ -275,15 +280,24 @@ describe('OpenAI adapter (Responses API wire format)', () => {
     expect(bodies[0]).not.toHaveProperty('tools');
     expect(bodies[0]).not.toHaveProperty('parallel_tool_calls');
   });
+
+  it('asks Anthropic to keep only the instructions of the code fixer in its cache (#977)', async () => {
+    const fixed = '<script>\n  let { heading = "Hi" } = $props();\n</script>\n\n<h2>{heading}</h2>\n';
+    const { fetch, bodies } = scripted([anthropicTurn([{ type: 'text', text: `Fixed.\n\n\`\`\`svelte\n${fixed}\`\`\`` }], 'end_turn')]);
+    const check = async (src: string) => (src.includes('export let') ? [{ severity: 'error', message: 'Use $props instead of export let.' }] : []);
+    expect(await fixComponentSource(new AnthropicAdapter('sk-ant-test', 'claude-sonnet-5-5', { fetch }), 'claude-sonnet-5-5', '<script>\n  export let heading = "Hi";\n</script>\n', check, new AbortController().signal)).toMatchObject({ ok: true, attempts: 1 });
+    expect(bodies[0]).not.toHaveProperty('cache_control');
+    expect((bodies[0].system as Array<Record<string, unknown>>)[0].cache_control).toEqual({ type: 'ephemeral' });
+  });
 });
 
 // ---------------------------------------------------------------------------
 // Anthropic Messages API
 // ---------------------------------------------------------------------------
 
-function anthropicTurn(blocks: Array<{ type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; json: string }>, stopReason: string): Response {
+function anthropicTurn(blocks: Array<{ type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; json: string }>, stopReason: string, usage: Record<string, number> = { input_tokens: 90, output_tokens: 1 }): Response {
   const events: Sse[] = [
-    { event: 'message_start', data: { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 90, output_tokens: 1 } } } }
+    { event: 'message_start', data: { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content: [], stop_reason: null, stop_sequence: null, usage } } }
   ];
   blocks.forEach((b, index) => {
     if (b.type === 'text') {
@@ -326,7 +340,7 @@ describe('Anthropic adapter (Messages API wire format)', () => {
     ]);
     expect(d1.usage).toEqual({ inputTokens: 90, outputTokens: 42 });
     expect(urls[0]).toMatch(/\/v1\/messages$/);
-    expect(bodies[0]).toMatchObject({ model: 'claude-sonnet-5-5', max_tokens: 32000, system: 'You edit websites.', stream: true });
+    expect(bodies[0]).toMatchObject({ model: 'claude-sonnet-5-5', max_tokens: 32000, system: [{ type: 'text', text: 'You edit websites.', cache_control: { type: 'ephemeral' } }], stream: true });
     expect((bodies[0].tools as unknown[]).length).toBe(2);
 
     const second = await collect(
@@ -350,6 +364,57 @@ describe('Anthropic adapter (Messages API wire format)', () => {
       { type: 'tool_result', tool_use_id: 'toolu_1', content: '{"title":"Home"}' },
       { type: 'tool_result', tool_use_id: 'toolu_2', content: 'No page', is_error: true }
     ]);
+  });
+
+  it('marks the cache at the end of the instructions and of the conversation, and nowhere a later turn changes (#977)', async () => {
+    const { fetch, bodies } = scripted([
+      anthropicTurn([{ type: 'text', text: 'Reading.' }, { type: 'tool_use', id: 'toolu_1', name: 'read_page', json: '{"pageId":"pg_1"}' }], 'tool_use'),
+      anthropicTurn([{ type: 'text', text: 'Done.' }], 'end_turn')
+    ]);
+    const adapter = new AnthropicAdapter('sk-ant-test', 'claude-sonnet-5-5', { fetch });
+    const items: CanonicalModelRequest['items'] = [{ kind: 'user', text: 'Check the home page' }];
+    const d1 = doneOf(await collect(adapter.streamTurn(request({ model: 'claude-sonnet-5-5', items }), new AbortController().signal)))!;
+    items.push({ kind: 'assistant', text: d1.text, toolCalls: d1.toolCalls, providerData: d1.providerData }, { kind: 'tool_result', callId: 'toolu_1', name: 'read_page', content: '{"ok":true}' });
+    await collect(adapter.streamTurn(request({ model: 'claude-sonnet-5-5', items }), new AbortController().signal));
+    for (const body of bodies) {
+      // Three breakpoints: the last tool (the tools before it), the system prompt's one block (tools and instructions),
+      // and the request's last block (the conversation), placed by the top-level marker.
+      const tools = body.tools as Array<Record<string, unknown>>;
+      expect(tools.map((t) => t.cache_control)).toEqual([undefined, { type: 'ephemeral' }]);
+      expect(body.system).toEqual([{ type: 'text', text: 'You edit websites.', cache_control: { type: 'ephemeral' } }]);
+      expect(body.cache_control).toEqual({ type: 'ephemeral' });
+      // No marker inside the messages, which the next turn sends again: the bytes it reads back are the bytes sent.
+      expect(JSON.stringify(body.messages)).not.toContain('cache_control');
+    }
+    // The second turn sends the first one's tools, system and messages unchanged, then its own step.
+    expect(JSON.stringify(bodies[1].tools)).toBe(JSON.stringify(bodies[0].tools));
+    expect(JSON.stringify(bodies[1].system)).toBe(JSON.stringify(bodies[0].system));
+    const [first, second] = bodies.map((b) => b.messages as unknown[]);
+    expect(second.slice(0, first.length)).toEqual(first);
+    expect(second.length).toBe(first.length + 2);
+  });
+
+  it('sends no system prompt when there is none to cache, and keeps no conversation no later request sends again', async () => {
+    const { fetch, bodies } = scripted([anthropicTurn([{ type: 'text', text: 'Fixed.' }], 'end_turn'), anthropicTurn([{ type: 'text', text: 'Fixed.' }], 'end_turn')]);
+    const adapter = new AnthropicAdapter('sk-ant-test', 'claude-sonnet-5-5', { fetch });
+    await collect(adapter.streamTurn(request({ model: 'claude-sonnet-5-5', system: '', tools: [] }), new AbortController().signal));
+    expect(bodies[0]).not.toHaveProperty('system');
+    expect(bodies[0].cache_control).toEqual({ type: 'ephemeral' });
+    // The code fixer's: its instructions are kept for the next fix, its one-off source is not written to the cache.
+    await collect(adapter.streamTurn(request({ model: 'claude-sonnet-5-5', tools: [], once: true }), new AbortController().signal));
+    expect(bodies[1]).not.toHaveProperty('cache_control');
+    expect(bodies[1].system).toEqual([{ type: 'text', text: 'You edit websites.', cache_control: { type: 'ephemeral' } }]);
+  });
+
+  it('counts the whole prompt as input, with what the cache served and kept beside it (#977)', async () => {
+    const { fetch } = scripted([
+      anthropicTurn([{ type: 'text', text: 'Done.' }], 'end_turn', { input_tokens: 40, cache_creation_input_tokens: 600, cache_read_input_tokens: 51_000, output_tokens: 1 }),
+      anthropicTurn([{ type: 'text', text: 'Done.' }], 'end_turn')
+    ]);
+    const adapter = new AnthropicAdapter('sk-ant-test', 'claude-sonnet-5-5', { fetch });
+    expect(doneOf(await collect(adapter.streamTurn(request({ model: 'claude-sonnet-5-5' }), new AbortController().signal)))?.usage).toEqual({ inputTokens: 51_640, outputTokens: 42, cachedInputTokens: 51_000, cacheWriteTokens: 600 });
+    // A response that says nothing about the cache leaves its figures unknown, not zero.
+    expect(doneOf(await collect(adapter.streamTurn(request({ model: 'claude-sonnet-5-5' }), new AbortController().signal)))?.usage).toEqual({ inputTokens: 90, outputTokens: 42 });
   });
 
   it('drops a tool call cut off by the output budget', async () => {
