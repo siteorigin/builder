@@ -95,18 +95,40 @@ function npmDir(): string {
 const userCache = () => join(app.getPath('userData'), 'npm-cache');
 const bundledCache = () => (app.isPackaged ? join(process.resourcesPath, 'npm-cache') : null);
 
+type ToolsCheck = (req: { npmDir: string; dir: string; cache: string; caches: string[] }, signal?: AbortSignal) => Promise<ToolsAvailability & { packages: LockedPackage[] }>;
+
+/** The check here, in this process: what tests and tools use, and the app until it sets its own. */
+const checkHere: ToolsCheck = async ({ npmDir, dir, cache, caches }) => {
+  const packages = await lockedPackages(npmDir, dir, {}, cache);
+  return { ...cacheCoverage(packages, caches), packages };
+};
+let toolsCheck: ToolsCheck = checkHere;
+
+/**
+ * Who works out what the website tools need from now on: the app hands the check to a process of its own
+ * (tools-client.ts), so its main process never loads npm's resolver. Null puts it back here.
+ */
+export function setToolsCheck(check: ToolsCheck | null): void {
+  toolsCheck = check ?? checkHere;
+}
+
 /**
  * Whether installing the website tools into `dir` (a project, or the starter it is made from) downloads anything, and
  * which packages it installs: `null` when that cannot be told, such as without a lock. The caches are the ones npm
  * will read.
  */
-async function checkTools(dir: string, caches: string[]): Promise<(ToolsAvailability & { packages: LockedPackage[] }) | null> {
+async function checkTools(dir: string, caches: string[], signal?: AbortSignal): Promise<(ToolsAvailability & { packages: LockedPackage[] }) | null> {
   if (!existsSync(join(dir, 'package-lock.json'))) return null;
+  const checking = perf.span('tools.check');
+  let tools: (ToolsAvailability & { packages: LockedPackage[] }) | null = null;
   try {
-    const packages = await lockedPackages(npmDir(), dir, {}, userCache());
-    return { ...cacheCoverage(packages, caches), packages };
+    tools = await toolsCheck({ npmDir: npmDir(), dir, cache: userCache(), caches }, signal);
+    perf.count('tools.idealTrees');
+    return tools;
   } catch {
     return null;
+  } finally {
+    checking(tools ? { needed: tools.needed, missing: tools.missing } : { needed: null });
   }
 }
 
@@ -139,13 +161,15 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
     if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Canceled');
   };
   const npmCli = join(npmDir(), 'bin', 'npm-cli.js');
+  const seeding = perf.span('tools.seedCache');
   let cache = await seedCache();
-  let tools = await checkTools(dir, [cache]);
+  seeding();
+  let tools = await checkTools(dir, [cache], signal);
   // The shipped cache may have what the user cache lost since it was seeded (a cleared or damaged file): seed it again.
   const bundled = bundledCache();
   if (tools && !tools.offline && bundled && existsSync(bundled)) {
     cache = await seedCache(true);
-    tools = await checkTools(dir, [cache]);
+    tools = await checkTools(dir, [cache], signal);
   }
   const libc = npmLibc(npmDir());
   const base = [
@@ -202,11 +226,13 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
     onLine(tools ? 'Downloading the website tools that are not included for this computer…' : 'Setting up the website tools. Some may need to be downloaded…');
     await download();
   }
+  const marking = perf.span('tools.marker');
   const marker = JSON.stringify({ lockHash: await lockHash(dir), preparedAt: new Date().toISOString() });
   // Cancelled or taken over as the install finished: the project may belong to someone else now.
   await stillMine();
   await fs.mkdir(join(dir, '.siteorigin', 'cache'), { recursive: true });
   await fs.writeFile(join(dir, '.siteorigin', 'cache', 'deps.json'), marker);
+  marking();
 }
 
 /**
@@ -228,9 +254,15 @@ async function seedCache(refill = false): Promise<string> {
 type NpmError = Error & { code?: string };
 
 function runNpm(args: string[], dir: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
+  const running = perf.span('tools.npm', { command: args[1] ?? null, offline: args.includes('--offline') });
+  return runNpmNow(args, dir, onLine, signal).finally(() => running());
+}
+
+function runNpmNow(args: string[], dir: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     // Cancelled before it started (while the cache was being prepared): an abort event will not come again.
     if (signal?.aborted) return reject(new Error('Canceled'));
+    perf.count('tools.npmRuns');
     const child = spawn(process.execPath, args, {
       cwd: dir,
       env: projectEnv({ ELECTRON_RUN_AS_NODE: '1', npm_config_update_notifier: 'false' }),

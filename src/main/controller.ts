@@ -8,7 +8,7 @@ import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImpo
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SourceSettingsDraft } from '@shared/api';
-import { createStarterState, STARTER_ASSETS, starterProblem } from '@catalogue/starters';
+import { createStarterState, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
 import { applyOperations, sourceHash } from '@engine/apply';
@@ -45,6 +45,7 @@ import { fontCoverage } from './project/media';
 import { isValidFontAsset } from '@shared/fonts';
 import { photoMetadata } from './project/photo-metadata';
 import { watchTree, type FolderWatch } from './folder-watch';
+import { importSamples, type SampleCache } from './project/starter-samples';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools, type RuntimeStatus } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
@@ -117,6 +118,17 @@ function safeMissingDiagnostics(s: ProjectSession) {
 
 export function resourcesDir(): string {
   return app.isPackaged ? process.resourcesPath : app.getAppPath();
+}
+
+/**
+ * Where this build keeps the sample photos its first project imported, for the projects after it
+ * (project/starter-samples.ts); none for a build that cannot be told from the next (run unbundled, or from the dev
+ * server, whose code changes under one build stamp).
+ */
+function sampleCache(): SampleCache | null {
+  if (typeof __BUILD_DATE__ !== 'string' || (!app.isPackaged && process.env.ELECTRON_RENDERER_URL)) return null;
+  const commit = typeof __BUILD_COMMIT__ === 'string' ? __BUILD_COMMIT__ : '';
+  return { dir: join(app.getPath('userData'), 'starter-samples'), build: `${app.getVersion()} ${commit} ${__BUILD_DATE__}` };
 }
 
 /** Licence notice for the Business starter's sample images. */
@@ -561,7 +573,7 @@ export class Controller {
     // (the window was closed and opened again meanwhile) has its own, which this one never clears.
     const abort = new AbortController();
     this.createAbort = abort;
-    const run = this.createProject(opts, abort);
+    const run = timed('controller.create', () => this.createProject(opts, abort), (r) => ({ ok: r?.ok ?? false }))();
     this.creations.set(run, abort);
     try {
       return await run;
@@ -633,6 +645,7 @@ export class Controller {
     try {
       if (signal.aborted) throw new Error('Canceled');
       progress({ step: 'files', message: 'Preparing project files…' });
+      const filing = perf.span('create.files');
       await fs.mkdir(dirname(dir), { recursive: true });
       try {
         await fs.mkdir(dir);
@@ -669,16 +682,17 @@ export class Controller {
       await fs.writeFile(lockPath, JSON.stringify(lock, null, '\t') + '\n');
       own('README.md');
       await fs.writeFile(join(dir, 'README.md'), projectReadme(name));
+      filing();
       const notice = starterNotice();
       const assetsDir = join(resourcesDir(), 'resources', 'starter-assets');
       const withImages = opts.starter === 'business' && opts.sampleImages && existsSync(assetsDir);
       const state = createStarterState(opts.starter, name, withImages, opts.themeId);
+      // Its website's icons are drawn while the rest of it is made.
+      const draft = ProjectSession.starting(dir, state);
       if (withImages) {
+        const importing = perf.span('create.images');
         own('static');
-        for (const a of STARTER_ASSETS) {
-          const src = join(assetsDir, a.source);
-          if (!existsSync(src)) continue;
-          const { record } = await importAsset(dir, src, []);
+        for (const { asset: a, record } of await importSamples(dir, assetsDir, sampleCache())) {
           record.id = a.id;
           record.name = a.name;
           // A bundled sample is no file of the author's.
@@ -691,12 +705,15 @@ export class Controller {
           own('NOTICE.md');
           await fs.copyFile(notice, join(dir, 'NOTICE.md'));
         }
+        importing({ images: Object.keys(state.assets.assets).length });
       }
       if (signal.aborted) throw new Error('Canceled');
       own(...SESSION_ENTRIES);
       sessionStarted = true;
-      session = await ProjectSession.create(dir, state);
+      session = await draft.writeNew();
+      const locking = perf.span('create.lock');
       const lockErr = await session.acquireLock(INSTANCE_ID);
+      locking();
       if (lockErr) {
         // Another app opened the new project first: it is that app's now, so nothing here may remove it.
         wrote.clear();
@@ -711,12 +728,12 @@ export class Controller {
         abort.abort();
       };
       staged.on('lock-lost', stop);
-      await trust(dir, await configHash(dir));
+      await timed('create.trust', async () => trust(dir, await configHash(dir)))();
       progress({ step: 'dependencies', message: 'Setting up website tools…', detail: 'Installing the tools that build and preview your site.' });
       own('node_modules');
       let toolsMissing: RuntimeState | null = null;
       try {
-        await prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner());
+        await timed('create.dependencies', () => prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner()))();
       } catch (e) {
         // The tools needed a download and the registry could not be reached (offline, say). The project itself is
         // complete and this app's, so it opens for editing, its preview saying what is missing, with Try again. A
@@ -726,9 +743,11 @@ export class Controller {
       }
       if (signal.aborted) throw new Error('Canceled');
       // From the moment the open project starts closing, the new one is replacing it: there is nothing left to cancel.
-      const way = await this.makeWay(since, signal, () =>
-        progress(toolsMissing ? { step: 'preview', message: 'Opening the project…', detail: 'The website tools could not be downloaded, so the preview waits until you are back online.' } : { step: 'preview', message: 'Starting preview…' })
-      );
+      const way = await timed('create.makeWay', () =>
+        this.makeWay(since, signal, () =>
+          progress(toolsMissing ? { step: 'preview', message: 'Opening the project…', detail: 'The website tools could not be downloaded, so the preview waits until you are back online.' } : { step: 'preview', message: 'Starting preview…' })
+        )
+      )();
       if (!way.ok) {
         refused = way;
         throw new Error(way.message ?? 'The open project was kept.');
@@ -802,7 +821,7 @@ export class Controller {
 
   /** Whether creating a project downloads website tools, decided by the same check setup makes. */
   websiteTools(): Promise<WebsiteTools> {
-    return starterTools(templateFiles());
+    return timed('controller.websiteTools', () => starterTools(templateFiles()), (t) => ({ tools: t ?? null }))();
   }
 
   /**

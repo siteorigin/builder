@@ -403,9 +403,9 @@ describe('a new project made while another is open', () => {
     const { c } = controller();
     await openCurrent(c, current);
     const made: InstanceType<typeof ProjectSession>[] = [];
-    const create = ProjectSession.create.bind(ProjectSession);
-    const spy = vi.spyOn(ProjectSession, 'create').mockImplementation(async (...args) => {
-      const s = await create(...args);
+    const writeNew = ProjectSession.prototype.writeNew;
+    const spy = vi.spyOn(ProjectSession.prototype, 'writeNew').mockImplementation(async function (this: InstanceType<typeof ProjectSession>) {
+      const s = await writeNew.call(this);
       made.push(s);
       return s;
     });

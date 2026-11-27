@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { AI_EDIT_CASES, aiEdit, canvas, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, edit, edits, EDITS, expectedCopies, exportAgain, exportSite, expect as check, findHeading, importPhotos, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
+import { AI_EDIT_CASES, aiEdit, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, create, createAgain, edit, EDITS, edits, expect as check, expectedCopies, exportAgain, exportSite, findHeading, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, panels, PANELS, runChain, SHOWN_PANELS, switchProject, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -34,6 +34,9 @@ describe('the scenario chain', () => {
     expect(chainFor(['canvas']).map((s) => s.name)).toEqual(['launch', 'open', 'canvas']);
     expect(chainFor(['import']).map((s) => s.name)).toEqual(['launch', 'open', 'import']);
     expect(chainFor(['switch', 'import']).map((s) => s.name)).toEqual(['launch', 'open', 'import', 'switch']);
+    // Made from Welcome after launch, and the second project after the first.
+    expect(chainFor(['create']).map((s) => s.name)).toEqual(['launch', 'create']);
+    expect(chainFor(['createAgain']).map((s) => s.name)).toEqual(['launch', 'create', 'createAgain']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -1011,6 +1014,154 @@ describe('import metrics', () => {
     expect(specs.filter((x) => x.turned).length).toBe(5);
     expect(specs.filter((x) => x.credited).length).toBe(4);
     expect(new Set(specs.map((x) => x.name)).size).toBe(PHOTO_COUNT);
+  });
+});
+
+describe('create metrics', () => {
+  /** One creation's records from `at`, for the scenario `name`, with its preview served by `worker`. */
+  const one = (name: string, at: number, worker: number, scale = 1) => [
+    r('scenario.start', at, { attrs: { scenario: name } }),
+    m('scenario.start', at, { attrs: { scenario: name } }),
+    r('newProject.requested', at + 10, { attrs: { from: 'welcome' } }),
+    r('newProject.formShown', at + 60),
+    span('main.stall', at + 200, 120 * scale),
+    span('controller.websiteTools', at + 300, 250 * scale, { attrs: { tools: 'local' }, dc: { 'tools.idealTrees': 1 } }),
+    r('newProject.toolsKnown', at + 310, { attrs: { tools: 'local' } }),
+    r('create.requested', at + 1000, { attrs: { starter: 'business', sampleImages: true } }),
+    span('create.files', at + 1050, 40),
+    span('create.images', at + 2000, 900 * scale, { attrs: { images: 9 }, dc: { 'fs.writes': 96 } }),
+    span('session.create.writeDocs', at + 2050, 30),
+    span('session.generate', at + 2100, 50, { attrs: { variant: 'clean' } }),
+    span('session.generate', at + 2160, 50, { attrs: { variant: 'dev' } }),
+    span('session.publish.icons', at + 2300, 70),
+    span('session.publish.write', at + 2390, 80, { attrs: { files: 61 } }),
+    span('session.publish', at + 2400, 200, { dc: { 'fs.writes': 112 } }),
+    span('session.create.localState', at + 2420, 10),
+    span('session.create', at + 2430, 420),
+    span('create.lock', at + 2440, 5),
+    span('create.trust', at + 2460, 15),
+    span('tools.seedCache', at + 2471, 1),
+    span('tools.check', at + 2600, 120, { dc: { 'tools.idealTrees': 1 } }),
+    span('tools.npm', at + 6600, 4000 * scale, { attrs: { command: 'ci', offline: true } }),
+    span('tools.marker', at + 6610, 5),
+    span('create.dependencies', at + 6620, 4150),
+    span('create.makeWay', at + 6630, 5),
+    span('controller.attach', at + 6700, 60),
+    m('runtime.forked', at + 6710, { attrs: { worker } }),
+    m('runtime.started', at + 6720, { attrs: { worker } }),
+    m('runtime.viteLoaded', at + 6900, { attrs: { worker } }),
+    m('runtime.serverCreated', at + 7000, { attrs: { worker } }),
+    m('runtime.ready', at + 7100, { attrs: { worker } }),
+    span('controller.startRuntime', at + 7110, 400),
+    span('controller.create', at + 7120, 6115, { dc: { 'fs.writes': 120, 'fs.durableWrites': 60, 'fs.fsyncs': 120, 'files.read': 10, 'files.hashed': 20, 'tools.npmRuns': 1, 'tools.idealTrees': 1 } }),
+    m('runtime.firstRequest', at + 7300, { attrs: { worker } }),
+    span('main.stall', at + 7500, 80),
+    m('runtime.firstResponse', at + 7600, { attrs: { worker } }),
+    r('renderer.commit', at + 6800, { attrs: { screen: 'editor', revision: 0, opening: false } }),
+    r('canvas.ready', at + 8000, { attrs: { mode: 'edit', studio: false, path: '/', revision: 0 } }),
+    m('scenario.end', at + 10_000, { attrs: { scenario: name } })
+  ];
+  const trace = (drop: (x: PerfRecord) => boolean = () => false) => new Trace([...one('create', 10_000, 1), ...one('createAgain', 40_000, 2, 0.5)].filter((x) => !drop(x)));
+  const show = (got: ReturnType<Scenario['measure']>) => Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k, `${v.value} ${v.unit}`]));
+
+  it('time the dialog to Create being available, and the creation from Create to the home page ready to edit', () => {
+    const got = create.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    expect(show(got)).toMatchObject({
+      'create.dialogShown': '50 ms',
+      'create.dialogReady': '300 ms',
+      'create.websiteTools': '250 ms',
+      'create.dialogIdealTrees': '1 count',
+      'create.dialogStallMax': '120 ms',
+      'create.controller': '6115 ms',
+      'create.files': '40 ms',
+      'create.images': '900 ms',
+      'create.session': '420 ms',
+      'create.session.writeDocs': '30 ms',
+      'create.publish': '200 ms',
+      'create.publish.icons': '70 ms',
+      'create.publish.write': '80 ms',
+      'create.imageFileWrites': '96 count',
+      'create.publishFileWrites': '112 count',
+      'create.generate': '100 ms',
+      'create.session.localState': '10 ms',
+      'create.dependencies': '4150 ms',
+      'create.tools.check': '120 ms',
+      'create.tools.npm': '4000 ms',
+      'create.tools.marker': '5 ms',
+      'create.attach': '60 ms',
+      'create.startRuntime': '400 ms',
+      'create.editorShown': '5800 ms',
+      'create.runtimeForked': '5710 ms',
+      'create.runtimeReady': '6100 ms',
+      'create.canvasReady': '7000 ms',
+      'create.fromDialog': '7990 ms',
+      'create.imagesImported': '9 count',
+      'create.fileWrites': '120 count',
+      'create.durableWrites': '60 count',
+      'create.fsyncs': '120 count',
+      'create.npmRuns': '1 count',
+      'create.idealTrees': '1 count',
+      'create.toolChecks': '1 count',
+      // The stall in the dialog's check is not the creation's.
+      'create.mainStallMax': '80 ms'
+    });
+  });
+
+  it('take the second creation’s records for createAgain, never the first’s', () => {
+    const got = createAgain.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    expect(got.metrics['createAgain.images'].value).toBe(450);
+    expect(got.metrics['createAgain.tools.npm'].value).toBe(2000);
+    expect(got.metrics['createAgain.dialogStallMax'].value).toBe(60);
+    expect(got.metrics['createAgain.runtimeReady'].value).toBe(6100);
+  });
+
+  it('name what is missing instead of reporting a creation without it', () => {
+    for (const name of ['newProject.toolsKnown', 'controller.websiteTools', 'create.images', 'session.create', 'session.publish.write', 'create.dependencies', 'tools.npm', 'tools.check', 'controller.startRuntime', 'canvas.ready'])
+      expect(create.measure(trace((x) => x.name === name && x.t < 40_000), facts).missing).toEqual(expect.arrayContaining([name]));
+    // Without its own creation's span, the scenario never takes the next one's.
+    const without = create.measure(trace((x) => x.name === 'controller.create' && x.t < 40_000), facts);
+    expect(without.missing).toEqual(expect.arrayContaining(['controller.create', 'create.images', 'create.dependencies']));
+    expect(without.metrics['create.images']).toBeUndefined();
+    // Both of the first publication's generations, or no generation time at all.
+    const oneVariant = create.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'dev' && x.t < 40_000), facts);
+    expect(oneVariant.missing).toEqual(['session.generate (dev)']);
+    expect(oneVariant.metrics['create.generate']).toBeUndefined();
+  });
+
+  it('list the locked packages npm ci installs here: those needed, through what each needs, never another computer’s', () => {
+    const packages = {
+      '': { dependencies: { a: '1' }, devDependencies: { b: '1' }, optionalDependencies: { 'native-linux': '1', 'native-mac': '1' } },
+      'node_modules/a': { dependencies: { c: '1' }, peerDependencies: { d: '1', e: '1' }, peerDependenciesMeta: { e: { optional: true } } },
+      'node_modules/b': { dependencies: { c: '2' } },
+      // Each a's and b's own c, found as Node finds it: nested first, then hoisted.
+      'node_modules/c': {},
+      'node_modules/b/node_modules/c': {},
+      'node_modules/d': {},
+      'node_modules/e': {},
+      'node_modules/native-linux': { os: ['linux'], dependencies: { helper: '1' } },
+      'node_modules/native-mac': { os: ['darwin'], cpu: ['arm64'] },
+      // Needed only by the other computer's native package.
+      'node_modules/helper': {},
+      // Nothing needs it.
+      'node_modules/stray': {}
+    };
+    expect(installedPackages(packages, 'darwin', 'arm64')).toEqual(['node_modules/a', 'node_modules/b', 'node_modules/b/node_modules/c', 'node_modules/c', 'node_modules/d', 'node_modules/native-mac']);
+    expect(installedPackages(packages, 'linux', 'x64')).toEqual(['node_modules/a', 'node_modules/b', 'node_modules/b/node_modules/c', 'node_modules/c', 'node_modules/d', 'node_modules/helper', 'node_modules/native-linux']);
+  });
+
+  it('count a locked package as installed here only when npm installs it on this computer', () => {
+    expect(installsHere({}, 'darwin', 'arm64')).toBe(true);
+    expect(installsHere({ os: ['darwin'], cpu: ['arm64'] }, 'darwin', 'arm64')).toBe(true);
+    expect(installsHere({ os: ['linux'], cpu: ['arm64'] }, 'darwin', 'arm64')).toBe(false);
+    expect(installsHere({ os: ['darwin'], cpu: ['x64'] }, 'darwin', 'arm64')).toBe(false);
+    expect(installsHere({ os: ['!win32'] }, 'darwin', 'arm64')).toBe(true);
+    expect(installsHere({ os: ['!win32'] }, 'win32', 'x64')).toBe(false);
+    expect(installsHere({ link: true }, 'darwin', 'arm64')).toBe(false);
+    // npm alone tells a Linux computer's C library: a package bound to one is not checked.
+    expect(installsHere({ os: ['linux'], libc: ['musl'] }, 'linux', 'x64')).toBe(false);
+    expect(installsHere({ os: ['linux'] }, 'linux', 'x64')).toBe(true);
   });
 });
 

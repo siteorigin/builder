@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs, existsSync, lstatSync, realpathSync } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { perf } from '../perf';
 
 export const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
@@ -14,6 +14,45 @@ export async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R> | 
   const out: R[] = [];
   for (let i = 0; i < items.length; i += size) out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
   return out;
+}
+
+/** How many durable writes are made at once where their order does not matter: one flush need not wait for another. */
+export const WRITES_AT_ONCE = 8;
+
+/**
+ * `fn` for each item, at most `limit` at a time. On the first failure nothing more is started, and that failure is
+ * thrown once every call already started has settled, so nothing is still writing when the caller cleans up.
+ */
+export async function eachAtMost<T>(limit: number, items: readonly T[], fn: (item: T) => Promise<unknown>): Promise<void> {
+  let next = 0;
+  let failed: { error: unknown } | null = null;
+  const lane = async () => {
+    while (!failed && next < items.length) {
+      const item = items[next++];
+      try {
+        await fn(item);
+      } catch (error) {
+        failed ??= { error };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  if (failed) throw (failed as { error: unknown }).error;
+}
+
+/**
+ * Make the folders the project-relative `paths` go in, durably, one after another in the order they first appear,
+ * each checked to be inside `root` just before it is made: files then written into them at the same time each return
+ * only once the file, and every folder on its way, is on disk.
+ */
+export async function ensureParents(root: string, paths: readonly string[]): Promise<void> {
+  const made = new Set<string>();
+  for (const p of paths) {
+    const dir = posix.dirname(p.split(sep).join('/'));
+    if (dir === '.' || made.has(dir)) continue;
+    made.add(dir);
+    await ensureDir(safeJoin(root, dir));
+  }
 }
 
 /** Resolve a project-relative path, rejecting traversal and symlink escape. */

@@ -251,6 +251,31 @@ hero's selection or the outlines' check, during which the preview loaded a page 
 3 s of quiet, up to five times; the window measured is its last attempt, and five disturbed attempts fail the
 iteration. Both arms are held to the same rule.
 
+**`create`** (after `launch`): on Welcome, New project, a name, the Business starter with its sample images in the app's
+default projects folder, Create; to the canvas bridge reporting the new project's home page ready to edit.
+**`createAgain`** follows it: the project `create` made is closed (untimed) and a second one made the same way, in the
+same launch, which is what a second project made with this app costs. The runner copies the fixtures' npm cache into the
+profile when `create` is asked for, so setup installs every package offline, as a packaged app does from the cache it
+ships; what either leaves in the profile is put back with it before every iteration, so each iteration's `create` is
+the first project this profile has made. Checks: the dialog says the website tools are on this computer, the Business
+starter and sample images are chosen, the new project opened writable from its folder with the starter's pages, one
+library image per sample photo (each file in the project) and the starter's hero heading, which the preview shows; its
+`node_modules` holds every package `npm ci` installs here from its lock (followed from the project's own dependencies,
+leaving out other computers' optional ones), with npm's own lock of it, made for this package, and its tools are marked
+set up. Times from `newProject.requested` (New project pressed): `dialogShown` (the form on screen), `dialogReady` (the
+check of the website tools settled, which Create waits for), `websiteTools` (that check in the main process, span),
+`dialogStallMax` (the longest main-process stall until then); from `create.requested` (Create pressed): `controller` (the
+whole creation in the main process) and its phases `files` (the template copied), `images` (the sample photos
+imported), `session` (the documents written, `session.writeDocs`, and the first publication, `publish`, with its
+`publish.icons` and `publish.write`, and `generate`, its two generator runs; `session.localState`), `lock`, `trust`,
+`dependencies` (`tools.seedCache`, `tools.check`, every check of what the tools need, `tools.npm`, every npm run, and
+`tools.marker`), `makeWay` (the open project closing, if any), `attach` and `startRuntime` (spans); `editorShown`, the
+preview's start as in `open`, and `canvasReady` (the headline), with `fromDialog` (New project pressed to the same).
+Counts, over the whole creation: file writes (all, the images', the publication's), durable writes and fsyncs, files
+read and hashed, sample images imported, npm runs, the npm dependency trees worked out (`idealTrees`, and in the
+dialog's check `dialogIdealTrees`) and checks of the tools; the longest main-process stall. Run them on `small` alone:
+the project made is the same whatever the fixture.
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -391,7 +416,9 @@ in the main process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.pro
 IPC serializes the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's
 events, sized the same way), `compile.files` and `compile.svelte` (Svelte files a build check looked at, and the
 compiler runs it made for them: `src/main/compile.ts`), `session.reloadFromDisk`, `session.reloadUnchanged` (a reload that read the project and
-found nothing changed), `main.stalls` (main), and `react.commits`, `react.renders`
+found nothing changed), `tools.npmRuns` (npm runs that set up a project's website tools), `tools.idealTrees` (the npm
+dependency trees worked out to check what they need, `src/main/runtime/manager.ts`), `main.stalls` (main), and
+`react.commits`, `react.renders`
 (components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes
 React renders before and after the panel), `chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model

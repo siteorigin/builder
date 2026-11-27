@@ -44,7 +44,7 @@ import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placeme
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
-import { atomicWrite, ensureDir, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
+import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson, WRITES_AT_ONCE } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
@@ -622,14 +622,40 @@ export class ProjectSession extends EventEmitter {
   // Open / create
   // -------------------------------------------------------------------------
 
-  static async create(dir: string, state: ProjectState): Promise<ProjectSession> {
+  static create(dir: string, state: ProjectState): Promise<ProjectSession> {
+    return ProjectSession.starting(dir, state).writeNew();
+  }
+
+  /**
+   * The session of a project being made in `dir`, none of its files written yet (`writeNew` writes them): its website's
+   * icons start drawing at once, so the first publication finds them drawn while the caller puts the project's other
+   * files in place. The caller may still add to `state` (the sample photos' records) until then.
+   */
+  static starting(dir: string, state: ProjectState): ProjectSession {
     const s = new ProjectSession(dir);
     s.state = state;
-    await s.ensureLocalDirs();
-    await s.writeAllDocs();
-    await s.publishGenerated(true);
-    await s.saveLocalState();
+    void s.siteIcons.prepare(dir, state).catch(() => undefined);
     return s;
+  }
+
+  /** Write a project made by `starting`: its documents, its first publication and its local state. */
+  writeNew(): Promise<ProjectSession> {
+    return timed('session.create', () => this.writeNewTimed())();
+  }
+
+  private async writeNewTimed(): Promise<ProjectSession> {
+    // A drawing started early that failed (the worker stopped meanwhile) is tried once more by the publication, as it
+    // would have been had it been the first to ask.
+    this.siteIcons.retry((await this.siteIcons.input(this.dir, this.state)).key);
+    await this.ensureLocalDirs();
+    const writing = perf.span('session.create.writeDocs');
+    await this.writeAllDocs();
+    writing();
+    await this.publishGenerated(true);
+    const saving = perf.span('session.create.localState');
+    await this.saveLocalState();
+    saving();
+    return this;
   }
 
   /**
@@ -1851,7 +1877,21 @@ export class ProjectSession extends EventEmitter {
 
   private async writeAllDocs() {
     this.docs = stateToDocs(this.state);
-    for (const [path, content] of this.docs) await atomicWrite(safeJoin(this.dir, path), content);
+    // In the order they were always written, but for the pages and component definitions, which need nothing of each
+    // other: the manifest, which says the folder holds a project, then the documents every page and component is
+    // read with (the site, its tokens, its library and its theme's lock), one after another; then the pages and
+    // components a few at a time, each as durably, into folders made first; then the rest one after another (each
+    // collection's settings before its entries, a component's code after its definition).
+    const docs = [...this.docs];
+    const together = ([path]: [string, string]) => path.startsWith(`${DOC_DIR}/pages/`) || path.startsWith(`${DOC_DIR}/components/`);
+    const first = docs.findIndex(together);
+    const at = first < 0 ? docs.length : first;
+    const batch = docs.slice(at).filter(together);
+    const after = docs.slice(at).filter((d) => !together(d));
+    for (const [path, content] of docs.slice(0, at)) await atomicWrite(safeJoin(this.dir, path), content);
+    await ensureParents(this.dir, batch.map(([path]) => path));
+    await eachAtMost(WRITES_AT_ONCE, batch, ([path, content]) => atomicWrite(safeJoin(this.dir, path), content));
+    for (const [path, content] of after) await atomicWrite(safeJoin(this.dir, path), content);
   }
 
   /**
@@ -2151,7 +2191,9 @@ export class ProjectSession extends EventEmitter {
     // The website's icons are drawn from the favicon (or the monogram) beside the generated text, under the same rules.
     // A set that cannot be made now costs the icons' update, not the save: icons already claimed stay, still claimed,
     // so they are neither replaced nor removed as obsolete. A file of someone else's at an icon's path is still named.
+    const drawing = perf.span('session.publish.icons');
     const icons = await this.siteIcons.make(this.dir, this.state);
+    drawing();
     this.iconsAsked = icons.key;
     for (const path of SITE_ICON_PATHS) {
       if (authored.has(path) || clean.has(path)) continue;
@@ -2257,7 +2299,19 @@ export class ProjectSession extends EventEmitter {
     // Claimed before they are written: a publication that stops part way (a crash, an AI run being rolled back)
     // leaves files the next one recognises as its own, to replace or remove, never as someone else's.
     if (plan.length) await this.writeManifest(prev, { ...inflight, ...Object.fromEntries(plan.map((f) => [f.path, f.hash])) });
-    for (const { path, content, abs, hash: h, stamp } of plan) {
+    const writing = perf.span('session.publish.write', { files: plan.length });
+    if (initial) {
+      // A new project's first publication, into the folder it was made in: nothing of anyone's can be in the way and
+      // no preview watches it, so its files are written a few at a time, each as durably, into folders made first.
+      for (const f of plan) this.seenOnDisk.delete(f.abs);
+      await ensureParents(this.dir, plan.map((f) => f.path));
+      await eachAtMost(WRITES_AT_ONCE, plan, (f) => atomicWrite(safeJoin(this.dir, f.path), f.content));
+      for (const f of plan) {
+        changedFiles.push(f.path);
+        this.landing?.add(f.path);
+      }
+    }
+    for (const { path, content, abs, hash: h, stamp } of initial ? [] : plan) {
       this.seenOnDisk.delete(abs);
       let theirs = false;
       // Checked again once the new file is ready, just before it takes the path: a file that changed since it was
@@ -2296,6 +2350,7 @@ export class ProjectSession extends EventEmitter {
         this.seenOnDisk.delete(variant);
       }
     }
+    writing();
     // The preview does not watch the editor's cache: a project file whose variant alone changed is touched, so the
     // preview loads the new variant (as a read-only project's private copy does, see syncPreviewStage). Only a file
     // that is this app's own as it stands, and only once the preview may be running.
