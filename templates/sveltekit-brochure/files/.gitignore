@@ -33,19 +33,7 @@ vite.config.js.timestamp-*
 *.[aA][sS][cC]
 *.[gG][pP][gG]
 
-# SiteOrigin Builder's own credential files, should one be copied here, and the copies an editor or a file manager
-# makes of them
-[sS][oO][uU][rR][cC][eE]-[sS][eE][cC][rR][eE][tT][sS].[jJ][sS][oO][nN]
-[sS][oO][uU][rR][cC][eE]-[sS][eE][cC][rR][eE][tT][sS].[jJ][sS][oO][nN][~#.]*
-.[sS][oO][uU][rR][cC][eE]-[sS][eE][cC][rR][eE][tT][sS].[jJ][sS][oO][nN]*
-.#[sS][oO][uU][rR][cC][eE]-[sS][eE][cC][rR][eE][tT][sS].[jJ][sS][oO][nN]
-\#[sS][oO][uU][rR][cC][eE]-[sS][eE][cC][rR][eE][tT][sS].[jJ][sS][oO][nN]#
-[sS][oO][uU][rR][cC][eE]-[sS][eE][cC][rR][eE][tT][sS] *.[jJ][sS][oO][nN]
-[cC][oO][pP][yY] [oO][fF] [sS][oO][uU][rR][cC][eE]-[sS][eE][cC][rR][eE][tT][sS]*.[jJ][sS][oO][nN]
-[aA][pP][iI]-[kK][eE][yY][sS].[jJ][sS][oO][nN]
-[aA][pP][iI]-[kK][eE][yY][sS].[jJ][sS][oO][nN][~#.]*
-.[aA][pP][iI]-[kK][eE][yY][sS].[jJ][sS][oO][nN]*
-.#[aA][pP][iI]-[kK][eE][yY][sS].[jJ][sS][oO][nN]
-\#[aA][pP][iI]-[kK][eE][yY][sS].[jJ][sS][oO][nN]#
-[aA][pP][iI]-[kK][eE][yY][sS] *.[jJ][sS][oO][nN]
-[cC][oO][pP][yY] [oO][fF] [aA][pP][iI]-[kK][eE][yY][sS]*.[jJ][sS][oO][nN]
+# SiteOrigin Builder's own credential files, should one be copied here, with any copy an editor or a file manager
+# makes of them. Broad on purpose: a public file named after them is left out too, rather than a copy slip in.
+*[sS][oO][uU][rR][cC][eE]-[sS][eE][cC][rR][eE][tT][sS]*.[jJ][sS][oO][nN]*
+*[aA][pP][iI]-[kK][eE][yY][sS]*.[jJ][sS][oO][nN]*

@@ -175,7 +175,7 @@ describe('telling ZIP files apart', () => {
   });
 
   it('finds the project’s folder past a repository or local state beside it, and never a project inside one', async () => {
-    for (const beside of [[{ name: '.git/' }, { name: '.git/HEAD', data: 'ref: refs/heads/main' }], [{ name: '.git', data: 'gitdir: ../repo/.git/worktrees/cafe' }], [{ name: '.SiteOrigin/history/1.json', data: '{}' }]]) {
+    for (const beside of [[{ name: '.git/' }, { name: '.git/HEAD', data: 'ref: refs/heads/main' }], [{ name: '.git', data: 'gitdir: ../repo/.git/worktrees/cafe' }], [{ name: '.SiteOrigin/history/1.json', data: '{}' }], [{ name: '.siteorigin', data: '' }]]) {
       const zip = zipFile([...beside, { name: 'cafe/siteorigin.project.json', data: '{}' }, { name: 'cafe/static/.siteorigin/notes.txt', data: 'kept' }, { name: 'cafe/.git', data: 'gitdir: ../.git' }]);
       const contents = await project(zip);
       expect(contents.root).toBe('cafe/');
@@ -472,9 +472,9 @@ describe('unpacking a project into a new folder', () => {
   });
 
   it('tells another project’s state from the project’s own files by path, whatever its case', () => {
-    for (const p of ['.git', '.git/HEAD', '.GIT/config', 'src/lib/vendor/.git', 'static/a/.Git/objects/x', '.siteorigin', '.siteorigin/versions.git/HEAD', '.SiteOrigin/history/1.json', '.\u017Fiteorigin/versions.git/config', '.\uFF47it/HEAD'])
+    for (const p of ['.git', '.git/HEAD', '.GIT/config', 'src/lib/vendor/.git', 'static/a/.Git/objects/x', '.siteorigin', '.siteorigin/versions.git/HEAD', '.SiteOrigin/history/1.json', '.\u017Fiteorigin/versions.git/config', '.g\u200Cit/HEAD', 'a/b/c/d/e/.git/x'])
       expect(isLocalState(p), p).toBe(true);
-    for (const p of ['.gitignore', '.gitattributes', '.gitmodules', 'src/lib/.gitkeep', 'static/my.git', 'static/.siteorigin', 'siteorigin/site.json', 'static/.siteorigin/x.png', 'siteorigin.project.json', '.siteorigin-preview/index.html', '.gitlab/ci.yml'])
+    for (const p of ['.gitignore', '.gitattributes', '.gitmodules', 'src/lib/.gitkeep', 'static/my.git', 'static/.siteorigin', 'siteorigin/site.json', 'static/.siteorigin/x.png', 'siteorigin.project.json', '.siteorigin-preview/index.html', '.gitlab/ci.yml', 'static/photos\uff0f.git/banner.png', '.\uff47it/HEAD'])
       expect(isLocalState(p), p).toBe(false);
   });
 

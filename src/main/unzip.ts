@@ -14,6 +14,7 @@ import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createInflateRaw, crc32 } from 'node:zlib';
 import { replaceEmptyFolder } from './export';
+import { foldName } from './project/snapshot-inventory';
 
 const END_RECORD = 0x06054b50;
 const CENTRAL_HEADER = 0x02014b50;
@@ -368,10 +369,10 @@ export async function readEntryText(file: string, e: ZipEntry, limit = MAX_MANIF
  * file (`.git`) anywhere in it, which carries that repository's history and remotes, and the project's local state
  * (`.siteorigin/`: its undo history, saved versions and their repositories, locks and remote bindings). Never written:
  * a project opened from a ZIP file starts clean, with no history or remote of anyone else's. Compared as a
- * case-insensitive disk compares names: `.GIT` is the same folder, and so, to APFS, is `.ſiteorigin` with a long s.
+ * case-insensitive disk compares names (foldName): `.GIT` is the same folder, and so, to APFS, is `.ſiteorigin`.
  */
 export function isLocalState(rel: string): boolean {
-  const parts = rel.normalize('NFKC').toLowerCase().split('/');
+  const parts = rel.split('/').map(foldName);
   return parts[0] === '.siteorigin' || parts.includes('.git');
 }
 

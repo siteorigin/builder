@@ -14,7 +14,7 @@ import { createStarterState } from '@catalogue/starters';
 import { generateProject } from '@generator/index';
 import { stateToDocs } from '../../src/main/project/documents';
 import { SYNC_SCRIPT } from '../../src/main/export';
-import { captureSnapshotInventory, GENERATED_MANIFEST, nameClash, SnapshotCaptureError, snapshotPlace, SNAPSHOT_SYNC_SCRIPT, type SnapshotExclusion } from '../../src/main/project/snapshot-inventory';
+import { captureSnapshotInventory, foldName, GENERATED_MANIFEST, nameClash, SnapshotCaptureError, snapshotPlace, SNAPSHOT_SYNC_SCRIPT, windowsCanHold, type SnapshotExclusion } from '../../src/main/project/snapshot-inventory';
 
 const dirs: string[] = [];
 const temp = () => {
@@ -104,6 +104,7 @@ describe('which files a snapshot holds', () => {
     expect(snapshotPlace('siteorigin/sources/cms/source.json')).toEqual({ kind: 'attachment', sourceId: 'cms', part: 'settings' });
     expect(snapshotPlace('siteorigin/sources/cms/converter.mjs')).toEqual({ kind: 'attachment', sourceId: 'cms', part: 'converter' });
     expect(snapshotPlace('siteorigin/sources/team-api/source.json')).toEqual({ kind: 'attachment', sourceId: 'team-api', part: 'settings' });
+    expect(snapshotPlace('siteorigin/sources/team-api/converter.mjs')).toEqual({ kind: 'attachment', sourceId: 'team-api', part: 'converter' });
     for (const p of ['siteorigin/sources/cms/source.json~', 'siteorigin/sources/cms/.source.json.swp', 'siteorigin/sources/cms/notes.txt', 'siteorigin/sources/Bad_Id/source.json', 'siteorigin/Sources/cms/source.json', 'siteorigin/SOURCES/cms/converter.mjs', 'siteorigin/sources/source.json'])
       expect(snapshotPlace(p), p).toEqual({ kind: 'excluded', reason: 'source' });
   });
@@ -129,8 +130,8 @@ describe('which files a snapshot holds', () => {
         // The same name to a case-insensitive disk: `K` here is a Kelvin sign.
         'static/client.\u212Aey'
       ],
-      // `ſ` is a long s, which APFS takes for an s.
-      'local-state': ['.siteorigin/history/1.json', '.siteorigin/versions.git/HEAD', '.SiteOrigin/versions/versions.json', '.git/config', '.git', 'src/lib/vendor/.git', 'static/old/.GIT/HEAD', 'src/lib/.siteorigin/x.json', 'static/.\u017Fiteorigin/history/1.json', '.\uFF47it/config'],
+      // `ſ` is a long s, which APFS takes for an s; HFS+ ignores a zero-width non-joiner.
+      'local-state': ['.siteorigin/history/1.json', '.siteorigin/versions.git/HEAD', '.SiteOrigin/versions/versions.json', '.git/config', '.git', 'src/lib/vendor/.git', 'static/old/.GIT/HEAD', 'src/lib/.siteorigin/x.json', 'static/.\u017Fiteorigin/history/1.json', 'src/lib/.g\u200Cit/config'],
       cache: ['node_modules/svelte/package.json', 'src/node_modules/x.js', '.svelte-kit/output/x.js', 'static/.vite/deps.json', 'build/index.html', 'Build/index.html'],
       clutter: ['static/.DS_Store', 'static/assets/Thumbs.db', 'src/desktop.ini', 'static/._photo.jpg', 'siteorigin/.a1b2c3.tmp', 'static/upload.TMP'],
       'unsafe-path': [
@@ -143,18 +144,28 @@ describe('which files a snapshot holds', () => {
         'static\\photo.jpg',
         'C:/Windows/win.ini',
         'static/a\u0000b',
-        'static/',
-        // Names Windows reads as something else: a stream of photo.jpg, devices, a name it drops the end of.
-        'static/photo.jpg:preview',
-        'static/con.png',
-        'src/routes/aux/+page.svelte',
-        'static/photo.jpg.',
-        'static/photo.jpg '
+        'static/'
       ],
       source: ['siteorigin/sources/cms/secrets.json'],
       outside: ['notes.txt', 'tsconfig.json', 'Package.json', 'scripts/deploy.sh', 'scripts/sync-sources.mjs.bak', 'scripts/old/sync-sources.mjs', 'siteorigin/notes.txt', 'siteorigin/site.json~', 'siteorigin/pages/home.json.bak', 'docs/readme.md', 'SRC/app.html']
     };
     for (const [reason, list] of Object.entries(cases)) for (const p of list) expect(snapshotPlace(p), p).toEqual({ kind: 'excluded', reason });
+    // Only spellings a disk takes for the same name: fullwidth letters are other letters, and a fullwidth slash is no slash.
+    for (const p of ['static/guide.\uff54\uff4d\uff50', 'src/.\uff56\uff49\uff54\uff45/x.js', 'static/photos\uff0f.git/banner.png']) expect(snapshotPlace(p), p).toEqual({ kind: 'tree' });
+  });
+
+  it('folds a name as a case-insensitive disk compares it', () => {
+    expect(foldName('.\u017Fiteorigin')).toBe('.siteorigin');
+    expect(foldName('client.\u212Aey')).toBe('client.key');
+    expect(foldName('STRA\u1E9EE')).toBe(foldName('Stra\u00dfe'));
+    expect(foldName('.g\u200Cit')).toBe('.git');
+    expect(foldName('cafe\u0301')).toBe(foldName('CAF\u00c9'));
+    expect(foldName('\uff47')).not.toBe('g');
+  });
+
+  it('tells a restore which names Windows cannot hold as they are', () => {
+    for (const p of ['static/before:after.png', 'static/photo.jpg:preview', 'static/con.png', 'src/routes/aux/+page.svelte', 'static/photo.jpg.', 'static/photo.jpg ', 'static/banner?.svg', 'static/a|b.png', 'static/"quoted".png']) expect(windowsCanHold(p), p).toBe(false);
+    for (const p of ['static/photo.jpg', 'src/routes/about/+page.svelte', 'static/console.png', 'static/.well-known/x.json', 'siteorigin/pages/home.json']) expect(windowsCanHold(p), p).toBe(true);
   });
 });
 
@@ -257,6 +268,8 @@ describe('capturing a project', () => {
     // A file whose name such a disk takes for a folder another file is in.
     expect(nameClash(['static/Logo', 'static/logo/thumb.png'])).toEqual(['static/Logo', 'static/logo/thumb.png']);
     expect(nameClash(['static/logo/thumb.png', 'static/LOGO'])).toEqual(['static/LOGO', 'static/logo/thumb.png']);
+    expect(nameClash(['static/Logo', 'static/logo/a/b.png'])).toEqual(['static/Logo', 'static/logo/a/b.png']);
+    expect(nameClash(['static/Stra\u00dfe.png', 'static/STRA\u1E9EE.png'])).not.toBeNull();
     // Accents composed and decomposed, and a long s, are the same names to APFS.
     expect(nameClash(['static/caf\u00e9.png', 'static/cafe\u0301.png'])).not.toBeNull();
     expect(nameClash(['static/\u017Fun.png', 'static/sun.png'])).not.toBeNull();
@@ -273,12 +286,12 @@ describe('capturing a project', () => {
     expect(e).toMatchObject({ reason: 'name', path: 'static/logo.png' });
   });
 
-  it.runIf(posix)('refuses a file whose name Windows would read as another, rather than leave it out', async () => {
-    for (const name of ['static/photo.jpg:preview', 'static/aux.json', 'static/photo.jpg ']) {
-      const root = smallProject();
-      write(root, name, 'x');
-      expect(await failure(captureSnapshotInventory(root)), name).toMatchObject({ reason: 'name', path: name });
-    }
+  it.runIf(posix)('keeps a name only Windows cannot hold, as a Finder name with a slash or a page at /aux/ has', async () => {
+    const root = smallProject();
+    for (const name of ['static/before:after.png', 'src/routes/aux/+page.svelte']) write(root, name, 'x');
+    const tree = (await captureSnapshotInventory(root, { settleMs: 0 })).tree.map((f) => f.path);
+    expect(tree).toContain('static/before:after.png');
+    expect(tree).toContain('src/routes/aux/+page.svelte');
   });
 
   it.runIf(posix)('refuses a file whose name is not valid text, rather than miss it', async () => {
@@ -290,6 +303,10 @@ describe('capturing a project', () => {
       return;
     }
     expect(await failure(captureSnapshotInventory(root))).toMatchObject({ reason: 'name', path: 'static/photo-\ufffd.jpg' });
+    // A link by such a name is left out like any link, with nothing to refuse.
+    const other = smallProject();
+    symlinkSync(join(other, 'package.json'), Buffer.concat([Buffer.from(`${join(other, 'static')}/link-`), Buffer.from([0xff])]));
+    expect((await captureSnapshotInventory(other, { settleMs: 0 })).tree.map((f) => f.path)).not.toContain('static/link-\ufffd');
   });
 
   it.runIf(posix && process.getuid?.() !== 0)('never looks in a folder that can hold no file of a snapshot’s', async () => {
@@ -503,12 +520,7 @@ describe('the starter’s .gitignore', () => {
       'vite.config.js',
       'README.md',
       '.gitignore',
-      '.env.example',
-      // Public files named after the credential files are none of them.
-      'static/api-keys-guide.json',
-      'static/api-keys.json-diagram.png',
-      'static/api-keys.jsonc',
-      'static/source-secrets-explained.json'
+      '.env.example'
     ];
     const left = [
       'siteorigin/brief.json',
@@ -552,6 +564,10 @@ describe('the starter’s .gitignore', () => {
       'static/.api-keys.json.swp',
       'static/.#api-keys.json',
       'static/#api-keys.json#',
+      'static/source-secrets-2.json',
+      'static/api-keys_copy.json',
+      'static/api-keys (1).json.bak',
+      'Copy of api-keys.json',
       'Copy of source-secrets.json',
       'siteorigin/Source-Secrets.json~',
       'src/.source-secrets.json.swp',

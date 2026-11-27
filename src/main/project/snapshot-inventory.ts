@@ -20,11 +20,15 @@
  * large library is never held in memory at once. Node has no way to open a file relative to a folder already opened, so
  * a folder swapped for a link and back between two checks goes unseen; so does a hard link that gives a private file's
  * bytes a public name. Both need someone writing into the project on purpose, who could write any public file anyway.
+ *
+ * A snapshot is restored on other computers too, so two files a case-insensitive disk would take for one (or a file
+ * for a folder), and a name that is not valid text, fail the capture. A name only Windows cannot hold is kept as it is;
+ * windowsCanHold is for a restore there to check.
  */
 import { createHash } from 'node:crypto';
 import { constants as fsConstants, promises as fs, type BigIntStats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { converterPathOf, isCanonicalPath, MANIFEST_FILE, sourcePathOf } from './documents';
 import { isPrivateFileName } from './private-files';
 import { isMissing, stampOf, statTrusted } from './stable-read';
@@ -69,12 +73,17 @@ const CLUTTER = /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|.*\.tmp)$/;
 /** Names Windows gives another meaning: devices (COM¹ too), whatever their extension. */
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
 
+/** What HFS+ leaves out when it compares names (as Git's own check for `.git` does): joiners, direction marks, a BOM. */
+const IGNORED_BY_HFS = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
+
 /**
- * A name as a case-insensitive disk compares it, near enough: without case, and with compatibility spellings folded
- * (APFS takes `.ſiteorigin`, with a long s, for `.siteorigin`; `client.Key` with a Kelvin sign is `client.key`). Only
- * what keeps a file out is compared this way, so folding too much only ever leaves more out.
+ * A name as a case-insensitive disk compares it, near enough: composed, with what HFS+ ignores taken out, and folded
+ * through both cases, so that APFS's equivalents match too (`.ſiteorigin`, with a long s, is `.siteorigin`; `client.Key`
+ * with a Kelvin sign is `client.key`; `STRAẞE` is `straße`). One name at a time: never a whole path, which a character
+ * that folds into a slash would split.
  */
-const fold = (name: string) => name.normalize('NFKC').toLowerCase();
+export const foldName = (name: string) => name.normalize('NFC').replace(IGNORED_BY_HFS, '').toLowerCase().toUpperCase().toLowerCase();
+const fold = foldName;
 
 const TREE: SnapshotPlace = { kind: 'tree' };
 const excluded = (reason: SnapshotExclusion): SnapshotPlace => ({ kind: 'excluded', reason });
@@ -94,26 +103,21 @@ function partExcluded(part: string, i: number): SnapshotExclusion | null {
 }
 
 /**
- * Whether a path has a part Windows would take for something else, so that restoring it there could write somewhere
- * other than the file it names: a drive or stream separator (`photo.jpg:preview` is a stream of photo.jpg), a device
- * name, or a trailing dot or space (dropped, making it another file's name).
+ * Whether Windows can hold a file at `rel` as it is named, for a restore there to check before it writes one: none of
+ * the characters Windows refuses, no part it reads as something else (`photo.jpg:preview` is a stream of photo.jpg,
+ * `aux` a device) and none whose trailing dot or space it would drop, making it another file's name. A snapshot taken
+ * on macOS or Linux holds such names as they are (a `/` typed in the Finder is a `:` on disk, a page may be at /aux/).
  */
-function unportable(rel: string): boolean {
-  return rel.split('/').some((p) => p.includes(':') || WINDOWS_RESERVED.test(p) || /[. ]$/.test(p));
+export function windowsCanHold(rel: string): boolean {
+  return rel.split('/').every((p) => !/[<>:"|?*]/.test(p) && !WINDOWS_RESERVED.test(p) && !/[. ]$/.test(p));
 }
 
 /**
  * Where the project file at `rel` (relative, with forward slashes, as the disk spells it) goes in a snapshot. The
- * allowlist is spelled exactly; what keeps private files out is folded, as a case-insensitive disk compares names. A
- * path from a snapshot being restored is checked the same way, so a name Windows would read as another is refused.
+ * allowlist is spelled exactly; what keeps private files out is folded (foldName), as a case-insensitive disk compares
+ * names. A path from a snapshot being restored is checked the same way.
  */
 export function snapshotPlace(rel: string): SnapshotPlace {
-  const place = placeOf(rel);
-  return place.kind !== 'excluded' && unportable(rel) ? excluded('unsafe-path') : place;
-}
-
-/** snapshotPlace, before a name Windows would read as another is refused: the walk refuses the project instead. */
-function placeOf(rel: string): SnapshotPlace {
   if (unsafePath(rel)) return excluded('unsafe-path');
   const parts = rel.split('/');
   for (let i = 0; i < parts.length; i++) {
@@ -188,8 +192,7 @@ export interface SnapshotInventory {
 /**
  * Why a project could not be captured: a file `changed` while it was read (edited, replaced, added, removed, swapped for
  * a link), could not be read (`unreadable`), or has a `name` some computers cannot use: one they cannot tell from
- * another file's or folder's, one Windows reads as something else, or one that is not valid text. `path` is the file's
- * project path.
+ * another file's or folder's, or one that is not valid text. `path` is the file's project path.
  */
 export class SnapshotCaptureError extends Error {
   constructor(
@@ -264,12 +267,18 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
     const names = raw.map((b) => ({ name: b.toString('utf8'), raw: b })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const { name, raw: bytes } of names) {
       const r = rel ? `${rel}/${name}` : name;
-      const place = placeOf(r);
+      const place = snapshotPlace(r);
       const descend = folderKept(r);
       if (place.kind === 'excluded' && !descend) continue;
-      // A name that is not valid text could only be looked up by another (decoded) name, and be missed.
-      if (!Buffer.from(name, 'utf8').equals(bytes)) throw badName(r, 'has a name that is not valid text');
+      // A name that is not valid text can only be looked up by another (decoded) name: a file or folder by it would be
+      // missed, so it is refused (a link by it is left out like any link, by its type).
       const a = join(abs, name);
+      const valid = Buffer.from(name, 'utf8').equals(bytes);
+      if (!valid) {
+        const st = await fs.lstat(Buffer.concat([Buffer.from(`${abs}${sep}`), bytes])).catch(() => null);
+        if (st && (st.isFile() || st.isDirectory())) throw badName(r, 'has a name that is not valid text');
+        continue;
+      }
       let st: BigIntStats;
       try {
         st = await fs.lstat(a, { bigint: true });
@@ -282,10 +291,7 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
         if (!descend) continue;
         record(r, a, st, place);
         await walk(r, a);
-      } else if (st.isFile() && place.kind !== 'excluded') {
-        if (unportable(r)) throw badName(r, 'has a name Windows would read as something else');
-        record(r, a, st, place);
-      }
+      } else if (st.isFile() && place.kind !== 'excluded') record(r, a, st, place);
       // A link, or anything else that is not a plain file (a pipe, a socket, a device), is no file of a snapshot's.
     }
   };
@@ -374,8 +380,7 @@ function firstChange(before: Map<string, Listed>, after: Map<string, Listed>): s
  * files whose names it takes for one, or a file whose name it takes for a folder another file is in.
  */
 export function nameClash(paths: readonly string[]): [string, string] | null {
-  // A name as such a disk compares it (`ſ` is `s` to APFS, as `S` is).
-  const key = (p: string) => p.normalize('NFC').toUpperCase().toLowerCase();
+  const key = (p: string) => p.split('/').map(foldName).join('/');
   const files = new Map<string, string>();
   for (const p of paths) {
     const k = key(p);
