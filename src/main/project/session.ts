@@ -4421,11 +4421,12 @@ export class ProjectSession extends EventEmitter {
    * List `v`, a version the app captured by itself, unless one listed already holds exactly what it does (with `name`,
    * one by that name): that one stands for it. Gives back the row that does. Run in turn with every other command.
    */
-  private async listAuto(v: SavedVersion, name?: string): Promise<SavedVersion> {
+  private async listAuto(v: SavedVersion, name?: string, stop?: () => boolean): Promise<SavedVersion> {
     const kept = await this.versions.sameAs(v, name);
     // Capturing (and reading a version's commit back) takes a while: another app may have taken the project over
     // meanwhile, which a version kept as it is must not hide from what follows (a theme switch's save).
     if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? LOCK_UNCHECKED);
+    stopIf(stop);
     if (kept) return kept;
     const row = await this.versions.add(v);
     this.emit('history');
@@ -4457,7 +4458,7 @@ export class ProjectSession extends EventEmitter {
         if (this.leaving) return false;
         const late = await this.unloadedEdit(new Set());
         if (late || this.leaving) return false;
-        await this.listAuto(v);
+        await this.listAuto(v, undefined, () => this.leaving);
         return true;
       } catch (e) {
         if (this.leaving || e instanceof CaptureStopped) return false;
@@ -4480,8 +4481,8 @@ export class ProjectSession extends EventEmitter {
       const why = await this.versionsBlocked();
       if (why) throw new Error(why);
       // A document changed outside the app and not loaded yet would be exported as the folder has it, and saved as the
-      // app does: the export waits for it instead.
-      const changed = await this.unloadedEdit(new Set());
+      // app does: the export waits for it instead. The brief and the record of what was published are never a version's.
+      const changed = await this.unloadedEdit(new Set([BRIEF_FILE, PUBLISHED_FILE]));
       if (changed) return { changed };
       const files = new Map<string, string>();
       const version = await this.captureAuto(name, { hashes: files });

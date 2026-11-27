@@ -85,10 +85,10 @@ export function gitSaveProblem(e: unknown): string {
  */
 export async function writeVersionCommit(repo: GitRepository, files: FileInput[], id: string, time: string, kind: VersionKind, call: CallOptions = {}): Promise<{ commit: Oid; tree: Oid }> {
   await repo.init(call);
-  const tip = await repo.resolveRef(VERSIONS_BRANCH);
+  const tip = await repo.resolveRef(VERSIONS_BRANCH, call);
   // A tip that can't be read is damaged history: nothing is built on it.
   if (tip)
-    await repo.readCommit(tip).catch((e: unknown) => {
+    await repo.readCommit(tip, call).catch((e: unknown) => {
       throw e instanceof GitError && ['cancelled', 'timeout', 'busy', 'stopped', 'crashed'].includes(e.code) ? e : new GitError('corrupt', 'The newest version in the history is damaged or gone.');
     });
   const tree = await repo.writeFiles(files, call);
