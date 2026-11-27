@@ -214,14 +214,22 @@ describe('a live session hosted by the open project', () => {
     const dir = await makeProject('acme');
     const { c, sent } = controller();
     const { run, guest } = await hosting(c, sent, dir, 'collaborator');
+    // A change guests are sent as it is saved, and the project a guest reads.
+    const home = c.session!.state.site.homePageId;
+    expect((await c.apply({ operations: [{ type: 'page.update', pageId: home, seoTitle: 'Fresh bread daily' }] })).ok).toBe(true);
+    await changedTo(guest, c.session!.revision);
     expect((await rpc(guest, 'project.snapshot')).ok).toBe(true);
-    // The very copy the controller keeps for the next guest who asks.
+    // The very copy the controller keeps for the next guest who asks, and the session as the last one it sent.
     const copy = new WeakRef(c.guestSnapshot(run.workspaceKey)!);
     expect(c.guestSnapshot(run.workspaceKey)).toBe(copy.deref());
+    // The session itself still reachable after it has ended, as a closing connection's handlers can keep it.
+    const ended = (c.live as unknown as { run: { sentSnapshot: unknown } | null }).run;
+    expect(ended?.sentSnapshot).toBe(copy.deref());
     expect((await c.live.stop(run)).ok).toBe(true);
     await until(() => c.live.state.phase === 'idle', 'the session ended');
     expect(c.session?.dir).toBe(dir);
     expect(await collected(copy), 'the copy given to guests is still reachable').toBe(true);
+    expect(ended?.sentSnapshot).toBeNull();
   });
 
   it('ends when another project is opened in its place, which starts with none', async () => {
