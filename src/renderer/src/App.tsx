@@ -4,6 +4,7 @@ import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './
 import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
 import { UnpackingModal } from './components/ProjectDialogs';
+import { EditorSkeleton } from './components/EditorSkeleton';
 import { Toasts, openDialogs, openMenus } from './components/ui';
 import { ConfirmHost } from './components/ConfirmDialog';
 import { FormRoutingHost } from './components/FormRoutingHost';
@@ -62,7 +63,28 @@ export function App() {
       live = false;
     };
   }, [screen, loadedEditor]);
-  const shown = screen === 'editor' && ((editor && packsReady) || editorFailed) ? 'editor' : 'welcome';
+  // From the click on a recent project (or, for an open that began with a chooser, from the project's arrival) until
+  // the editor can show, the window shows the editor's outline: one loading screen, never Welcome standing in.
+  const directOpen = useStore((s) => s.openingProject);
+  const shown: Presented = screen === 'editor' && ((editor && packsReady) || editorFailed) ? 'editor' : screen === 'editor' || directOpen ? 'opening' : 'welcome';
+  const openingName = useStore((s) => s.openingProject?.name ?? (s.screen === 'editor' && s.snapshot ? projectDisplayName(s.snapshot.state) : null));
+  // Said once for each opening, when its wait shows: the project's arrival (which ends the click's outline and starts the
+  // editor's), or a card shown between (setting up the website tools), does not say it again.
+  const [openingSaid, setOpeningSaid] = useState('');
+  const openingSince = useStore((s) => s.openingSince);
+  const [saidFor, setSaidFor] = useState<number | null>(null);
+  // The opening lasts until its first page is ready (the canvas outlining it), whichever screen shows it: said here alone.
+  const openingPage = useStore((s) => s.openingPage);
+  const opening = shown === 'opening' || (shown === 'editor' && openingPage);
+  useEffect(() => {
+    // The editor's first render, before its canvas has said it is outlining the first page (a layout effect that has
+    // already run by now), is still the opening: read from the store, not this render.
+    if (!opening && !getState().openingPage) return setOpeningSaid('');
+    if (!opening) return;
+    if (openingSince === null || saidFor === openingSince) return;
+    setSaidFor(openingSince);
+    setOpeningSaid(openingName ? `Opening ${openingName}…` : 'Opening a project…');
+  }, [opening, openingName, openingSince, saidFor]);
   useLayoutEffect(() => {
     presented = shown;
     // A command held back while Welcome stood in for the editor is offered again now that the screen on show is the
@@ -116,7 +138,8 @@ export function App() {
         // Held edits and the last AI outcome belong to the project that closed.
         // Notices (an error stays until dismissed) belong to the project that closed.
         // A request still ending holds the app until it ends, but is filed in no thread of the project opened next.
-        setState({ toasts: [], screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
+        // An open from Welcome still on its way ends here too: its project closed before it could show.
+        setState({ toasts: [], screen: 'welcome', openingProject: null, openingSince: null, openingPage: false, frameReady: false, previewIssue: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -132,7 +155,12 @@ export function App() {
           }
         );
       }),
-      api.on('runtime:status', (runtime) => setState({ runtime })),
+      api.on('runtime:status', (runtime) => {
+        setState({ runtime });
+        // An open that failed once its project was attached closes it again, then says why here: Welcome, where the
+        // author is back, has no preview to say it on.
+        if (runtime.state === 'error' && getState().screen === 'welcome' && /^The project could not be opened/.test(runtime.message)) toast(runtime.message, 'error');
+      }),
       // Each assistant event timed with the render it sets off, while marks are on (scripts/perf: the chat scenario).
       api.on('ai:event', perfOn ? (e) => perfWork('chat.aiEvent', () => applyAiEvent(e), { kind: e.kind }) : applyAiEvent),
       // Asked for only while a project is open, so the editor's code is loaded or on its way (in order: a cancel follows
@@ -154,9 +182,10 @@ export function App() {
       api.on('menu:command', ({ cmd, id }) => {
         // A screen that failed cannot act on it: it waits, unconfirmed, for the screen that comes back (RenderFailure).
         if (renderFailed()) return;
-        // Nor can Welcome while it stays on screen for a project whose editor is still loading: the editor takes it up
-        // when it shows (its menuReady has the main process offer it again).
-        if (getState().screen !== presented) {
+        // Nor can the outline that shows while a project opens: the screen that follows it, the editor or Welcome come
+        // back, takes it up when it shows (its menuReady has the main process offer it again). A recent project's open
+        // holds it from the click, before the outline has been drawn.
+        if (getState().screen !== presented || getState().openingProject) {
           commandsHeld = true;
           return;
         }
@@ -236,10 +265,25 @@ export function App() {
           the listeners above stay, so the main process can still ask before leaving, and a closed project brings back
           a fresh Welcome. */}
       {booted && (
-        <RenderFailure key={shown} onCloseProject={shown === 'editor' ? () => void closeProject() : undefined}>
-          {shown === 'welcome' ? <Welcome /> : editor ? <editor.Editor /> : <Failed error={editorFailed!} />}
+        // Welcome and the outline over it are one screen to the boundary, so the outline coming and going never mounts
+        // Welcome afresh: what started an open is still there to take focus back.
+        <RenderFailure key={shown === 'editor' ? 'editor' : 'welcome'} onCloseProject={shown === 'editor' ? () => void closeProject() : undefined}>
+          {shown !== 'editor' ? (
+            <>
+              <Welcome covered={shown === 'opening'} />
+              {shown === 'opening' && <EditorSkeleton name={openingName} />}
+            </>
+          ) : editor ? (
+            <editor.Editor />
+          ) : (
+            <Failed error={editorFailed!} />
+          )}
         </RenderFailure>
       )}
+      {/* Mounted from the start, outside the screens, so the opening is announced once, whichever screen ends it. */}
+      <p className="sr-only" role="status">
+        {openingSaid}
+      </p>
       {booted && <JoinLiveDialog />}
       <UnpackingModal />
       <Toasts />
@@ -256,7 +300,7 @@ export function App() {
  * layout effect runs in the same commit as everything else the snapshot or selection changed. Rendered only while
  * timing marks are on.
  */
-function PerfProbe({ screen }: { screen: 'welcome' | 'editor' }) {
+function PerfProbe({ screen }: { screen: Presented }) {
   const revision = useStore((s) => s.snapshot?.revision ?? null);
   const opening = useStore((s) => s.snapshot?.workspaceKey ?? null);
   const selection = useStore((s) => s.selection);
@@ -275,17 +319,26 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
   takeEarlyRecents();
   const local = snap.localState ?? {};
   forgetKeptDrafts();
-  const pageId = local.pageId && Object.hasOwn(snap.state.pages, local.pageId) ? local.pageId : snap.state.site.homePageId;
+  // A saved page that is not a page's ID (a hand-edited file) opens the home page.
+  const pageId = typeof local.pageId === 'string' && Object.hasOwn(snap.state.pages, local.pageId) ? local.pageId : snap.state.site.homePageId;
   // Each page's place is this opening's own; the page opens where the author left it, brought into view (see Canvas).
   const pagePlaces = readPlaces(snap.state, local.pagePlaces);
   // Another opening's request (still ending) is in none of this one's threads. A status that arrived while this window
   // was starting is this opening's, and is kept.
   const was = getState().snapshot?.workspaceKey;
+  // An opening from a recent project's card began at the click; any other, now.
+  const since = getState().openingProject ? (getState().openingSince ?? performance.now()) : performance.now();
   setState({
     ...(was && was !== snap.workspaceKey ? detachedRun() : {}),
     // A notice from the project that was open (or from the welcome screen) is not this project's.
     toasts: [],
     screen: 'editor',
+    // The project has arrived: the outline from a click on its card is the editor's now (App).
+    openingProject: null,
+    openingSince: since,
+    // Its frame has shown nothing yet, and nothing has gone wrong on it: the last opening's page is not this one's.
+    frameReady: false,
+    previewIssue: null,
     snapshot: snap,
     runtime: snap.runtime,
     pageId,
@@ -358,8 +411,10 @@ export function abandonLeaves() {
   leaving.clear();
 }
 
+/** What the window shows: Welcome, the editor, or the editor's outline while a project opens. */
+type Presented = 'welcome' | 'opening' | 'editor';
 /** The screen on show, which follows the store's once the editor's code and the catalogue are here (App). */
-let presented: 'welcome' | 'editor' = 'welcome';
+let presented: Presented = 'welcome';
 /** Whether a menu command was left unconfirmed while the screen on show was not yet the store's. */
 let commandsHeld = false;
 

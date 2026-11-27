@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, Users, X } from 'lucide-react';
 import type { RecentProject, TrustRequest } from '@shared/api';
-import { api, errorText, setState, toast, useStore, whenThemesReady } from './store';
+import { api, errorText, getState, setState, toast, useStore, whenThemesReady } from './store';
 import { Disclosure, openDialogs, Spinner } from './components/ui';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { recentGroups, whereLabels } from './lib/recent-places';
@@ -114,7 +114,10 @@ const keys = {
 /** Past three full rows at the widest window, a filter beats scanning. */
 const FILTER_FROM = 8;
 
-export function Welcome() {
+/** Numbers the opens of a recent project straight from its card, so each knows whether the outline on show is its own. */
+let directOpens = 0;
+
+export function Welcome({ covered = false }: { covered?: boolean }) {
   // null until the first load, so returning users never see a flash of the first-run screen. The list asked for at
   // launch shows in the first render when it has come by then (taken once Welcome is on screen).
   const [recents, setRecents] = useState<RecentProject[] | null>(() => peekEarlyRecents()?.settled ?? null);
@@ -168,8 +171,11 @@ export function Welcome() {
   // list, and must leave the focus target for the list the change makes. Infinity while the change is being saved.
   const focusRead = useRef(0);
   const modal = useStore((s) => s.modal);
+  // While a project opens (from its card at once, otherwise once it has arrived) the editor's outline stands in for
+  // Welcome (App), which says so for screen readers. Welcome stays mounted under it, so a trust prompt or a failure
+  // brings it back as it was, focus included.
   const openingRecent = recents?.find((r) => r.dir === opening);
-  const openingNote = openingRecent ? `${openingRecent.missing ? 'Finding' : 'Opening'} ${openingRecent.name}…` : opening ? 'Opening a project…' : '';
+  const openingNote = covered ? '' : openingRecent ? `${openingRecent.missing ? 'Finding' : 'Opening'} ${openingRecent.name}…` : opening ? 'Opening a project…' : '';
   const refresh = (early: EarlyRecents | null = null) => {
     const read = ++reads.current;
     // Returned, so a change can say which reading shows it. The first, at launch, was asked for before Welcome mounted:
@@ -204,11 +210,11 @@ export function Welcome() {
   }, []);
 
   useEffect(() => {
-    if (opening || trust) return;
+    if (opening || trust || covered) return;
     const back = returnFocus.current;
     returnFocus.current = null;
     if (back?.isConnected && (!document.activeElement || document.activeElement === document.body)) back.focus();
-  }, [opening, trust]);
+  }, [opening, trust, covered]);
   useEffect(() => {
     const next = focusAfterRemove.current;
     if (next === null || recents === null || shownRead.current < focusRead.current) return;
@@ -236,18 +242,29 @@ export function Welcome() {
     void loadEditor().catch(() => undefined);
     returnFocus.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     setOpening(dir ?? opts?.replaces ?? (opts?.folder ? 'folder-dialog' : 'dialog'));
+    // A recent project opened from its card goes straight to the editor's outline, in this same frame. An open that
+    // starts with a chooser (Open project…, a folder, Find folder…) keeps Welcome until a project arrives.
+    const recent = dir !== undefined && !opts ? recents?.find((r) => r.dir === dir && !r.missing) : undefined;
+    const direct = recent ? { id: ++directOpens, name: recent.name } : null;
+    if (direct) setState({ openingProject: direct, openingSince: performance.now() });
+    // Opened: the outline stays until the project's snapshot takes its place (App), whichever of the two arrives first.
+    let opened = false;
     try {
       // A missing entry's Find folder…: the main process drops the entry once the same project has opened (#217),
       // after the trust prompt when there is one, so a cancel or another project keeps it.
       // Nothing is opened before the themes are in, or at all when there are none (the page then says so).
       await whenThemesReady();
       const r = await api.projects.open(dir, opts);
+      opened = r.ok && !r.needsTrust;
       if (r.needsTrust) setTrust({ ...r.needsTrust, replaces: opts?.replaces });
       else if (!r.ok && r.message) toast(r.message, 'error');
     } catch (e) {
       // Whatever went wrong, the author sees it and can choose another project straight away.
       toast(`Could not open the project: ${errorText(e)}`, 'error');
     } finally {
+      // Refused, waiting on trust, or failed: Welcome comes back in the same frame as the prompt or the notice. Only
+      // this open's own outline: one that has since been taken over by the project, or closed, is left alone.
+      if (direct && !opened && getState().openingProject?.id === direct.id) setState({ openingProject: null, openingSince: null });
       openingRef.current = false;
       setOpening(null);
       refresh();
@@ -449,7 +466,7 @@ export function Welcome() {
   };
 
   return (
-    <div className="welcome">
+    <div className="welcome" hidden={covered || undefined}>
       <aside className="welcome-side drag">
         <div className="brand">
           <BrandMark />
@@ -686,11 +703,13 @@ export function Welcome() {
           </section>
         )}
       </main>
-      {creating && <NewProjectModal onClose={() => setCreating(false)} />}
-      {trust && (
+      {/* Drawn over the window, not inside Welcome: they go with it while the outline covers it, a project having
+          arrived from them (or, from a card, before either could have been asked for). */}
+      {creating && !covered && <NewProjectModal onClose={() => setCreating(false)} />}
+      {trust && !covered && (
         <TrustProjectModal project={trust} onClose={() => setTrust(null)} />
       )}
-      {modal?.kind === 'settings' && <SettingsModal />}
+      {modal?.kind === 'settings' && !covered && <SettingsModal />}
     </div>
   );
 }

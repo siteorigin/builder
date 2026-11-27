@@ -1,0 +1,82 @@
+@layer components {
+  /* ---------- The editor's outline while a project opens (EditorSkeleton.tsx) ----------
+     The same grid and panel geometry as the editor (styles/layout.css, Toolbar.css), under classes of its own, so
+     nothing that looks for the editor's parts finds them here. Every shape is a flat, quiet bar: the one thing that
+     moves is the indicator on the canvas. */
+  .editor-skeleton { display: grid; grid-template-rows: var(--toolbar-h) 1fr 28px; grid-template-columns: minmax(0, 1fr); height: 100%; width: 100%; background: var(--bg); }
+  .editor-skeleton .sk-bar { display: block; height: 10px; border-radius: var(--r-xs); background: var(--hover); }
+
+  /* The window is still dragged by its top bar while the outline shows. */
+  /* The toolbar's own tracks (Toolbar.css), tier by tier, so its centre group sits where the real one will. */
+  .sk-toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; padding: 1px 10px 0; background: var(--panel); border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
+  .sk-toolbar.mac { grid-template-columns: minmax(min(460px, 36vw), 1fr) auto minmax(max-content, 1fr); }
+  .sk-toolbar:not([data-tier='full']) { grid-template-columns: minmax(0, 1fr) max-content max-content; }
+  .sk-toolbar.mac .sk-toolbar-start { padding-left: 70px; }
+  .sk-toolbar-start, .sk-toolbar-mid, .sk-toolbar-end { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .sk-toolbar-end { justify-content: flex-end; }
+  .sk-toolbar .sk-bar { height: 28px; border-radius: var(--r-sm); }
+  .sk-toolbar .sk-switcher { width: 28px; }
+  .sk-toolbar .sk-title { width: 180px; height: 12px; }
+  .sk-toolbar .sk-segment { width: 148px; }
+  .sk-toolbar .sk-field { width: 220px; }
+  .sk-toolbar .sk-icon { width: 28px; }
+  .sk-toolbar .sk-action { width: 84px; }
+  /* The compact toolbar drops its labels: its centre controls narrow with it. */
+  .sk-toolbar:not([data-tier='full']) .sk-segment { width: 96px; }
+  .sk-toolbar:not([data-tier='full']) .sk-field { width: 140px; }
+
+  .sk-workspace { display: flex; min-height: 0; }
+  .sk-rail { width: 48px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 5px 0 8px; background: var(--panel); border-right: 1px solid var(--border); }
+  .sk-rail .sk-rail-btn { width: 34px; height: 34px; border-radius: var(--r-sm); }
+  .sk-rail .sk-rail-btn:not(:first-child) { width: 22px; height: 22px; margin: 6px 0; }
+  .sk-side, .sk-dock { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+  .sk-side { border-right: 1px solid var(--border); }
+  .sk-dock { border-left: 1px solid var(--border); }
+  :where(:root[data-appearance='dark']) {
+    .sk-side { border-right-color: var(--border-strong); }
+    .sk-dock { border-left-color: var(--border-strong); }
+  }
+  .sk-head { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px 0 14px; flex: none; border-bottom: 1px solid var(--border); }
+  .sk-head .sk-head-title { width: 64px; height: 12px; }
+  .sk-tabs { padding: 0 8px; }
+  .sk-tabs .sk-tab { width: 64px; height: 12px; margin: 0 6px; }
+  .sk-rows { display: flex; flex-direction: column; gap: 16px; padding: 18px 14px; }
+  .sk-canvas { flex: 1; min-width: 0; position: relative; overflow: hidden; }
+  .sk-status { background: var(--panel); border-top: 1px solid var(--border); }
+
+  /* ---------- The page on its way (CanvasSkeleton) ----------
+     Where the frame will be: the canvas's 28px padding, and the 14px strip above the page (Canvas.tsx FRAME_LABEL).
+     Over the canvas while the editor shows it, under the canvas's state card and its foot. */
+  .canvas-skeleton { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: var(--z-canvas-bar); background-color: var(--canvas); background-image: radial-gradient(var(--canvas-dots) 1px, transparent 1px); background-size: 16px 16px; }
+  /* The page has arrived: the outline lifts off it (Canvas.tsx OUTLINE_FADE_MS); reduced motion swaps at once. */
+  .canvas-skeleton.leaving { animation: sk-lift 150ms ease-out forwards; }
+  @keyframes sk-lift { to { opacity: 0; } }
+  /* At Fit, the frame's own place (the 28px pasteboard all round, under the 14px strip); on the editor's canvas it is
+     given the frame's size. */
+  .sk-page { container: sk-page / inline-size; --sk-page-w: min(1280px, 100% - 56px); position: absolute; top: 42px; bottom: 28px; width: var(--sk-page-w); left: max(28px, calc(50% - var(--sk-page-w) / 2)); border-radius: var(--r-sm); background: white; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), var(--shadow-md); padding: 20px 4.5%; display: flex; flex-direction: column; gap: 22px; overflow: hidden; }
+  :where(:root[data-appearance='dark']) { .sk-page { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14), var(--shadow-md); } }
+  /* The page is the site's, white in either appearance, so its shapes are a fixed light grey. */
+  .sk-page .sk-bar { display: block; height: 10px; border-radius: var(--r-xs); background: rgb(15 23 42 / 0.07); }
+  /* Only what every site has: its header, then one quiet section where the page's own first section will be. */
+  .sk-page-nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; flex: none; }
+  .sk-page-nav .sk-logo { width: 112px; height: 14px; }
+  .sk-page-links { display: flex; align-items: center; gap: 16px; }
+  .sk-page-links .sk-bar { width: 40px; height: 8px; }
+  .sk-page-links .sk-cta { width: 72px; height: 22px; border-radius: var(--r-sm); }
+  /* A phone-width page keeps its logo and its call to action; the links fold away, as a site's own menu would. */
+  @container sk-page (max-width: 520px) { .sk-page-links .sk-bar:not(.sk-cta) { display: none; } }
+  .sk-section { display: block; flex: 0 1 52%; min-height: 120px; border-radius: var(--r-sm); background: rgb(15 23 42 / 0.04); }
+  .sk-page .sk-line { width: min(420px, 55%); }
+  .sk-page .sk-line.short { width: min(300px, 38%); margin-top: -10px; }
+
+  /* The one sign of progress: a quiet chip over the page, the spinner and what is opening. Reduced motion stops the
+     spinner (reset.css) and leaves the words. */
+  .sk-loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 10px; max-width: calc(100% - 96px); height: 36px; padding: 0 14px 0 12px; border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-sm); color: var(--text-2); font-size: 13px; white-space: nowrap; }
+  /* Shown once the wait is noticeable (EditorSkeleton.tsx CHIP_AFTER_MS), it fades in, once. */
+  .sk-loading.fresh { animation: sk-chip-in 150ms ease-out backwards; }
+  @keyframes sk-chip-in { from { opacity: 0; } }
+  /* On the light page in the dark appearance, a raised face and its own edge, no shadow to smudge the page. */
+  :where(:root[data-appearance='dark']) { .sk-loading { background: var(--raised); border-color: var(--border-control); box-shadow: none; } }
+  .sk-loading > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+  @media (forced-colors: active) { .sk-loading { border-color: CanvasText; } }
+}

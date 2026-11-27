@@ -159,6 +159,16 @@ export interface UndoTarget {
 
 export interface State {
   screen: 'welcome' | 'editor';
+  /** A recent project being opened straight from Welcome: the window shows the editor's outline from the click until the
+   *  project's snapshot arrives (or the open is refused, needs trust or fails, and Welcome comes back). `id` tells one
+   *  attempt from the next, so a late answer to one never ends another. */
+  openingProject: { id: number; name: string } | null;
+  /** When the opening on its way began (performance.now()): the click on a recent project, or the project's arrival for
+   *  any other open. The one loading sign shows only once the wait has run past a moment (EditorSkeleton). */
+  openingSince: number | null;
+  /** The canvas is outlining this opening's first page while its preview starts and the page loads (Canvas): the
+   *  opening's one loading sign, which the status bar and the announcements leave to it. */
+  openingPage: boolean;
   /** Whether the theme catalogue has arrived and is registered; theme packs found at startup but refused, and where a
    *  person installs packs. */
   packs: { ready: boolean; refused: PackRefusal[]; userDir: string };
@@ -409,6 +419,9 @@ const oneView = (p: Partial<State>): Partial<State> => {
 
 const live = create<State>((set) => ({
   screen: 'welcome',
+  openingProject: null,
+  openingSince: null,
+  openingPage: false,
   packs: { ready: false, refused: [], userDir: '' },
   snapshot: null,
   runtime: { state: 'idle' },

@@ -54,7 +54,11 @@ function useHealthAnnouncement(quietConflicts: () => boolean): string {
   const health = useStore((s) => {
     const d = s.snapshot?.diagnostics ?? [];
     const conflicts = s.snapshot?.conflicts.length ?? 0;
-    const { broken, phase } = runtimeInfo(s.runtime, s.previewIssue, s.frameReady);
+    const info = runtimeInfo(s.runtime, s.previewIssue, s.frameReady);
+    const broken = info.broken;
+    // A project's first page is outlined on the canvas, which says it is opening: to the status bar that is a start,
+    // quiet until the page is ready, never "paused" for the moment before the preview begins.
+    const phase = s.openingPage ? 'starting' : info.phase;
     return [d.filter((x) => x.severity === 'error' && x.code !== 'CONFLICT').length + conflicts + (broken ? 1 : 0) + (s.snapshot?.saveFailure ? 1 : 0), d.filter((x) => x.severity === 'warning').length, conflicts, phase].join(',');
   });
   const opened = health.split(',')[3];
@@ -117,7 +121,9 @@ export function StatusBar() {
   // The preview's button becomes text once it recovers: if it had focus, the Project health count takes it.
   const previewHadFocus = useRef(false);
   const problemsRef = useRef<HTMLButtonElement>(null);
-  const previewActionable = useStore((s) => ['broken', 'stopped', 'unavailable'].includes(runtimeInfo(s.runtime, s.previewIssue, s.frameReady).phase));
+  const previewActionable = useStore((s) => !s.openingPage && ['broken', 'stopped', 'unavailable'].includes(runtimeInfo(s.runtime, s.previewIssue, s.frameReady).phase));
+  // While the canvas outlines the project's first page, that outline is the opening's one sign: the preview's line waits.
+  const openingPage = useStore((s) => s.openingPage);
   useLayoutEffect(() => {
     if (previewActionable || !previewHadFocus.current) return;
     previewHadFocus.current = false;
@@ -127,7 +133,10 @@ export function StatusBar() {
   // Problems = document errors plus file conflicts and a failed save, so this never says "No problems" while the toolbar
   // shows either.
   // The project's diagnostics already list each conflict (code CONFLICT); count each one once.
-  const { dot, label, broken, phase } = runtimeInfo(runtime, pageIssue, frameReady);
+  // The project's first page on its way: a start, never a pause; said here only while the canvas is out of sight
+  // (the SEO view or the post writer over it), since the outline on it says so otherwise.
+  const info = runtimeInfo(runtime, pageIssue, frameReady);
+  const { dot, label, broken, phase } = openingPage ? { ...info, dot: 'busy', label: info.phase === 'opening' ? 'Opening page' : 'Starting preview', phase: 'starting' as const } : info;
   const errors = snap.diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0) + (snap.saveFailure ? 1 : 0);
   const warnings = snap.diagnostics.filter((d) => d.severity === 'warning').length;
   // While editing a component everywhere, the path starts at the component (plum), never at a page: its
@@ -164,7 +173,7 @@ export function StatusBar() {
   const actionable = phase === 'broken' || phase === 'stopped' || phase === 'unavailable';
   return (
     <footer className="status-bar">
-      {actionable ? (
+      {openingPage && !covered ? null : actionable ? (
         <button
           className={`row preview-status${broken ? ' error' : ''}`}
           title={`${label}: open Project health`}

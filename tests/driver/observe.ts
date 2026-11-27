@@ -156,7 +156,8 @@ async function readEditor(page: Page): Promise<EditorDoc> {
     return {
       // What tells this document apart from every other the window has shown (the same in every read below).
       token: `${w.performance.timeOrigin}|${w.location.pathname}${w.location.search}`,
-      screen: w.document.querySelector('.editor') ? 'editor' : w.document.querySelector('.welcome') ? 'welcome' : 'other',
+      // The editor's outline while a project opens keeps Welcome mounted, out of sight, under it: neither screen yet.
+      screen: w.document.querySelector('.editor') ? 'editor' : w.document.querySelector('.editor-skeleton') ? 'other' : w.document.querySelector('.welcome') ? 'welcome' : 'other',
       title: w.document.title,
       opening: canvas?.getAttribute('data-opening') ?? '',
       frame: frame === 'ready' || frame === 'loading' ? frame : null,

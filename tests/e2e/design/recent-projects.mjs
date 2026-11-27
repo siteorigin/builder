@@ -186,11 +186,11 @@ await win.locator('.recent-card', { hasText: 'Tide & Timber' }).hover();
 await pause(250);
 await shot('hover-laptop', LIST, LIGHT, 'Tide & Timber');
 
-// A project on its way: the card says so and everything else waits.
+// A project on its way: the editor's outline from the click, with the one sign that it is opening.
 await fresh(RECENTS, LAPTOP, 'hold');
 await win.locator('.recent-card', { hasText: 'Tide & Timber' }).click();
 await pause(200);
-await shot('opening-laptop', '.recent-card:has(.spinner)', LIGHT, 'Opening');
+await shot('opening-laptop', '.editor-skeleton .sk-loading', LIGHT, 'Opening');
 
 await app.close();
 cleanup();

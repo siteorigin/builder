@@ -93,7 +93,8 @@ the page the canvas reported ready: `runtimeStarted` (the worker given its start
 `runtimeServerCreated`, `runtimeReady` (listening), `runtimeFirstRequest` and `runtimeFirstResponse` (the first page a
 browser asked for that was answered, when it was asked for and when the answer had gone), with the stretches
 `forkToListen`, `listenToFirstResponse`, `firstResponseToCanvasReady`, and `editorToCanvasReady` (what the author
-watches as "Starting preview"). Counts: what the editor's first snapshot waited for (`generationsBeforeSnapshot`,
+watches as the page outlined on the canvas, from the editor showing to the page ready; the outline itself shows from
+`open.requested`). Counts: what the editor's first snapshot waited for (`generationsBeforeSnapshot`,
 `sweepsBeforeSnapshot`, `assetChecksBeforeSnapshot`: those that ended before it was sent); files read and hashed,
 document files read, durable writes and fsyncs (everything the main process counted from the scenario's start to its
 end, so work moved later is still counted), the publication's files read, hashed and written, its

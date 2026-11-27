@@ -48,7 +48,11 @@ import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/sav
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu, type MenuTriggerProps } from '../components/ui';
-import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement } from './PreviewStatus';
+import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement, useSlowWait } from './PreviewStatus';
+import { CanvasSkeleton } from '../components/EditorSkeleton';
+import { isRemoteOpening } from '../lib/remote-snapshot';
+import { outlinesFirstPage } from '../lib/first-page';
+import { projectDisplayName } from '@shared/project-name';
 import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
 import { useTransitionAnnouncement } from '../lib/announce';
@@ -3020,6 +3024,48 @@ export function Canvas() {
     />
   );
 
+  // A project's first page keeps the outline the window showed from the click on its card (App, EditorSkeleton) until
+  // it is ready to edit: the preview being started, then the page loading, read as one wait. Only a wait that has
+  // something to say takes its card instead: the website tools being set up, a start running long, a stop, a page
+  // that failed. Each opening has its first page once; later pages, restarts and retries show as they always have.
+  // Not for a project followed from another computer, whose preview is the host's to start or pause.
+  const slowWait = useSlowWait(runtime);
+  const [firstPageOf, setFirstPageOf] = useState<string | null>(null);
+  // Marked by this opening's own frame: a new opening starts with the frame not ready and no page problem (App's
+  // openSnapshot), so nothing the project open before reported can mark it.
+  useEffect(() => {
+    if (frameReady && runtime.state === 'ready' && workspaceKey) setFirstPageOf(workspaceKey);
+  }, [frameReady, runtime.state, workspaceKey]);
+  const outlined = outlinesFirstPage({
+    pending: !!workspaceKey && firstPageOf !== workspaceKey && !isRemoteOpening(workspaceKey) && !frameError && !retrying,
+    runtime: runtime.state,
+    slow: slowWait,
+    frameShown,
+    frameReady,
+    onPage: mode === 'edit' && !templateMode && !studioView
+  });
+  // The opening's one loading sign: the status bar and the announcements leave the first page's wait to it.
+  useLayoutEffect(() => {
+    if (getState().openingPage !== outlined) setState({ openingPage: outlined });
+  }, [outlined]);
+  useEffect(() => () => setState({ openingPage: false }), []);
+  // The page arriving takes the outline's place by a short fade, the outline lifting off the page underneath; with
+  // reduced motion, or when the wait ended any other way (a card, a problem), at once.
+  const [fadingOutline, setFadingOutline] = useState(false);
+  const wasOutlined = useRef(false);
+  // The render the page arrives in keeps the outline mounted (the same one, its sign included), before the effect
+  // below starts its fade: never a frame without it, nor a fresh copy of it.
+  const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const pageArriving = !outlined && wasOutlined.current && frameReady && !reduced;
+  useEffect(() => {
+    const was = wasOutlined.current;
+    wasOutlined.current = outlined;
+    if (outlined || !was || !frameReady || reduced) return setFadingOutline(false);
+    setFadingOutline(true);
+    const t = setTimeout(() => setFadingOutline(false), OUTLINE_FADE_MS);
+    return () => clearTimeout(t);
+  }, [outlined]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!snapshot) return <div className="canvas" />;
 
   // The frame shows a page the editor has not confirmed (one leaving, or one that never arrived): it takes no picks,
@@ -3231,12 +3277,14 @@ export function Canvas() {
     >
       {runtime.state !== 'ready' && (
         <div className="canvas-state">
-          <PreviewStatus runtime={runtime} />
+          <PreviewStatus runtime={runtime} slow={slowWait} outlined={outlined} />
         </div>
       )}
-      {/* Said in the strip above the page (see frame-status below), and here for screen readers. */}
+      {(outlined || fadingOutline || pageArriving) && <CanvasSkeleton label={`Opening ${projectDisplayName(snapshot.state)}…`} leaving={!outlined} />}
+      {/* Said in the strip above the page (see frame-status below), and here for screen readers. The project's first
+          page is part of its opening, which App announces. */}
       <p className="sr-only" role="status">
-        {opening ? `Opening ${view?.title ?? 'the page'}…` : ''}
+        {opening && !outlined ? `Opening ${view?.title ?? 'the page'}…` : ''}
       </p>
       <p className="sr-only" role="status">
         {announcement}
@@ -3438,9 +3486,10 @@ export function Canvas() {
         onMouseDown={(e) => e.target === e.currentTarget && setState({ selection: null })}
       >
         {url && initialSrc && (
-          <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: FRAME_LABEL, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
+          // Under the outline, the page loading is out of reach, to screen readers too, until it is the one shown.
+          <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} inert={outlined || undefined} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: FRAME_LABEL, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
             {/* The strip above the page: what the page is doing on the left, its screen size on the right. */}
-            {opening && !resizing && !templateMode && (
+            {opening && !outlined && !resizing && !templateMode && (
               <div className="frame-status" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
                 <Spinner decorative />
                 <span>Opening {(studioView && studioDef?.name) ?? view?.title ?? 'the page'}…</span>
@@ -3739,8 +3788,9 @@ export function Canvas() {
             <span className="sr-only" role="status">
               {marksAnnouncement(peerMarks.marks, peerMarks.away)}
             </span>
-            {frameHandle('left')}
-            {frameHandle('right')}
+            {/* Not while the page is outlined: drawn over, they would still take focus and a drag. */}
+            {!outlined && frameHandle('left')}
+            {!outlined && frameHandle('right')}
           </div>
         )}
       </div>
@@ -4164,6 +4214,8 @@ const FOOT_CLEAR = 8;
 const PASTEBOARD_PAD = 28;
 /** The frame's top margin, which holds the strip above the page (its label, the selection's chip), in screen pixels. */
 const FRAME_LABEL = 14;
+/** How long the outline of a project's first page takes to lift off the page once it has arrived (EditorSkeleton.css). */
+const OUTLINE_FADE_MS = 150;
 
 /** How far down the pasteboard starts under a collection layout's band (8px above it, 42px high), in screen pixels. */
 const TEMPLATE_BAND_ROOM = 50;
