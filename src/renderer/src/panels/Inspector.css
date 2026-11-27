@@ -263,11 +263,8 @@
   .insp-pick-many > .field { padding-top: 8px; border-top: 1px solid var(--border); }
   .insp-pick-order-num { flex: none; min-width: 16px; font-size: 12px; font-weight: 600; color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
   /* Logos and transparent pictures shown whole sit on the same neutral checker as in Assets, in every image picker and its preview. */
-  .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { object-fit: contain; background-color: #e6e9ee; background-image: conic-gradient(#d3d8df 25%, transparent 0 50%, #d3d8df 0 75%, transparent 0); background-size: 10px 10px; }
+  .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { object-fit: contain; background-image: var(--checker); background-size: 10px 10px; }
   .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { padding: 2px; background-clip: content-box; background-origin: content-box; }
-  :where(:root[data-appearance='dark']) {
-    .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { background-color: #9aa2b0; background-image: conic-gradient(#8a93a2 25%, transparent 0 50%, #8a93a2 0 75%, transparent 0); }
-  }
   .insp-pick-nomatch { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .insp-pick-result { margin: -2px 0 0; }
   .insp-pick-num { position: absolute; top: 6px; left: 6px; min-width: 20px; height: 20px; padding: 0 5px; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--accent-fill); color: var(--on-accent); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--panel); }

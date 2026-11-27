@@ -58,6 +58,13 @@
     --border: rgb(28 39 66 / 0.1);
     --border-strong: rgb(28 39 66 / 0.17);
     --border-control: #7a859a;
+    /* Behind anything that may be see-through (a colour swatch, a transparent picture): a neutral checker, mid-light
+       here and mid grey in dark so white and dark artwork both show. A colour's inner edge keeps white and
+       near-black swatches their shape. Used through ColorPick.css's swatch family, Inspector and Assets. */
+    --checker-a: #e6e9ee;
+    --checker-b: #d3d8df;
+    --checker: conic-gradient(var(--checker-b) 25%, var(--checker-a) 0 50%, var(--checker-b) 0 75%, var(--checker-a) 0);
+    --swatch-edge: rgb(0 0 0 / 0.18);
     --text: #1c2742;
     --text-2: #3f4b66;
     --text-3: #5c677d;
@@ -119,6 +126,9 @@
     --border: rgb(231 236 244 / 0.09);
     --border-strong: rgb(231 236 244 / 0.16);
     --border-control: #717d96;
+    --checker-a: #9aa2b0;
+    --checker-b: #8a93a2;
+    --swatch-edge: rgb(255 255 255 / 0.2);
     --text: #e7ecf4;
     --text-2: #aeb9ca;
     --text-3: #94a0b3;

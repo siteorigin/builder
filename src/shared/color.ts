@@ -1,8 +1,8 @@
 /**
- * CSS colours as the visual picker needs them. A site can save any colour `validateStyleValue` accepts
- * (short hex, hex with alpha, rgb(), hsl(), oklch(), ...), but a native colour input only holds #rrggbb and
- * no opacity. These helpers turn a saved value into what the picker starts from, and a picked colour back
- * into a saved value without losing the opacity the original carried.
+ * CSS colours as the editor's picker needs them. A site can save any colour `validateStyleValue` accepts
+ * (short hex, hex with alpha, rgb(), hsl(), oklch(), ...), and the picker works in hue, saturation, brightness and
+ * opacity. These helpers turn a saved value into what the picker starts from, and a picked colour back into a
+ * saved value, keeping the notation (and, unless the pick changes it, the opacity) the original carried.
  *
  * Values the parser cannot resolve on its own (`currentcolor`, `var()`, `color-mix()`, relative colours)
  * give null: callers must never mistake that for black.
@@ -216,26 +216,89 @@ export function opacityOf(value: string): number {
 const alphaText = (a: number) => String(Number(clamp(a, 0, 1).toPrecision(10)));
 
 /**
- * The value to save when `picked` (#rrggbb) is chosen in the picker on top of `current`. An opaque, unresolvable
- * or empty current value, and the `transparent` keyword (which names no colour of its own), become the plain
- * #rrggbb. A colour with alpha keeps its opacity, zero included, and where it can its notation: 8-digit hex stays
- * hex, legacy rgba() stays rgba(), anything else becomes rgb(r g b / a).
- * Picking the colour the picker already showed returns `current` untouched, so nothing is rewritten.
+ * The value to save when `picked` (#rrggbb) is chosen in the picker on top of `current`, at `alpha` (0-1) when the
+ * pick sets the opacity, else at the opacity `current` carries. An opaque result is the plain #rrggbb. A see-through
+ * one keeps the notation of a see-through original where it can: 8-digit hex stays hex (when a byte holds the
+ * opacity asked for), legacy rgba() stays rgba();
+ * anything else becomes rgb(r g b / a). The `transparent` keyword names no colour of its own, so a pick that does
+ * not set the opacity replaces it with the opaque colour, as it does an unresolvable or empty value.
+ * Picking what the picker already showed returns `current` untouched, so nothing is rewritten.
  * `resolved` is the colour a browser made of `current` when `parseColor` could not (a `color-mix()`).
  */
-export function colorFromPicker(current: string, picked: string, resolved?: Rgba | null): string {
+export function colorFromPicker(current: string, picked: string, resolved?: Rgba | null, alpha?: number): string {
   const next = parseColor(picked);
   if (!next) return current;
   const was = resolved ?? parseColor(current);
   const hex = toHex6(next);
-  if (was && toHex6(was) === hex) return current;
   const text = current.trim().toLowerCase();
-  if (!was || was.a >= 1 || text === 'transparent') return hex;
-  const alpha = Math.round(was.a * 255);
-  if (text.startsWith('#')) return `${hex}${alpha.toString(16).padStart(2, '0')}`;
+  const a = alpha === undefined ? (was && text !== 'transparent' ? was.a : 1) : clamp(alpha, 0, 1);
+  if (was && toHex6(was) === hex && Math.abs(was.a - a) < 0.0005) return current;
+  if (a >= 1) return hex;
+  // Hex keeps an opacity the pick did not set, and one a byte holds exactly; 55.5% is no byte, so it is written out.
+  const byte = Math.round(a * 255);
+  if (text.startsWith('#') && was && was.a < 1 && (alpha === undefined || Math.abs(byte / 255 - a) < 0.0005)) return `${hex}${byte.toString(16).padStart(2, '0')}`;
   const [r, g, b] = [Math.round(next.r), Math.round(next.g), Math.round(next.b)];
-  if (text.startsWith('rgba(') && text.includes(',')) return `rgba(${r}, ${g}, ${b}, ${alphaText(was.a)})`;
-  return `rgb(${r} ${g} ${b} / ${alphaText(was.a)})`;
+  if (text.startsWith('rgba(') && text.includes(',')) return `rgba(${r}, ${g}, ${b}, ${alphaText(a)})`;
+  return `rgb(${r} ${g} ${b} / ${alphaText(a)})`;
+}
+
+/**
+ * `current` at opacity `alpha` (0-1), its colour written exactly as it was: `oklch(70% 0.3 145)` at 0.5 is
+ * `oklch(70% 0.3 145 / 0.5)`, and back at 1 it is `oklch(70% 0.3 145)` again, never clipped to sRGB or rounded.
+ * `color(display-p3 1 0 0)` keeps its own space. Hex takes the alpha as a byte when one holds it exactly. Null when
+ * the text is not a colour function or hex this can rewrite (a name, `transparent`, `color-mix()`, `var()`): the picker
+ * then writes the colour out itself.
+ */
+export function colorWithAlpha(current: string, alpha: number): string | null {
+  const a = clamp(alpha, 0, 1);
+  const text = current.trim();
+  if (text.startsWith('#')) {
+    const c = parseColor(text);
+    if (!c) return null;
+    const six = toHex6(c);
+    if (a >= 1) return six;
+    const byte = Math.round(a * 255);
+    return Math.abs(byte / 255 - a) < 0.0005 ? `${six}${byte.toString(16).padStart(2, '0')}` : null;
+  }
+  // Only a colour function of plain channels: color-mix(), var() and relative colours are left to the picker.
+  const m = /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(([^()]*)\)$/i.exec(text);
+  if (!m) return null;
+  const inner = m[2].trim();
+  if (inner.includes(',')) {
+    // Legacy commas: rgb()/hsl() take a fourth value (and rgba()/hsla() keep their names).
+    const parts = inner.split(',').map((x) => x.trim());
+    if (!/^(rgba?|hsla?)$/i.test(m[1]) || parts.length < 3 || parts.length > 4) return null;
+    return a >= 1 ? `${m[1]}(${parts.slice(0, 3).join(', ')})` : `${m[1]}(${[...parts.slice(0, 3), alphaText(a)].join(', ')})`;
+  }
+  const channels = inner.split('/')[0].trim();
+  return a >= 1 ? `${m[1]}(${channels})` : `${m[1]}(${channels} / ${alphaText(a)})`;
+}
+
+/** A colour as the picker holds it: hue 0-360, saturation and brightness (HSV value) 0-1, alpha 0-1. */
+export interface Hsva {
+  h: number;
+  s: number;
+  v: number;
+  a: number;
+}
+
+/** sRGB to hue, saturation and brightness. A grey has hue 0 and a black saturation 0: the picker keeps its own. */
+export function rgbToHsv(c: Rgba): Hsva {
+  const [r, g, b] = [clamp(c.r, 0, 255) / 255, clamp(c.g, 0, 255) / 255, clamp(c.b, 0, 255) / 255];
+  const max = Math.max(r, g, b);
+  const d = max - Math.min(r, g, b);
+  let h = 0;
+  if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: (h * 60 + 360) % 360, s: max ? d / max : 0, v: max, a: c.a };
+}
+
+/** Hue, saturation and brightness back to sRGB (channels 0-255, not rounded). */
+export function hsvToRgb({ h, s, v, a }: Hsva): Rgba {
+  const f = (n: number) => {
+    const k = (n + h / 60) % 6;
+    return 255 * (v - v * s * Math.max(0, Math.min(k, 4 - k, 1)));
+  };
+  return { r: f(5), g: f(3), b: f(1), a };
 }
 
 /**

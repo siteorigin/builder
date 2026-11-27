@@ -1,5 +1,5 @@
-// The Site styles color controls against the real app: every saved CSS color shows on its swatch, starts
-// the picker from itself (never from black), keeps its opacity through an adjustment, and undoes cleanly.
+// The Site styles color controls against the real app: every saved CSS color shows on its swatch, opens the
+// editor's picker on itself (never on black), keeps its opacity through an adjustment, and undoes cleanly.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -16,7 +16,8 @@ await win.locator('#dock-panel-styles').waitFor();
 const section = (name) => win.locator('#dock-panel-styles .section').filter({ has: win.locator('button.section-head', { hasText: name }) });
 const row = () => section('Basics').locator('[data-ss-row]').first();
 const text = () => row().locator('input.ss-hex');
-const picker = () => row().locator('input[type="color"]');
+const picker = () => row().locator('button.color-pick');
+const pop = win.locator('.color-pop');
 const fill = () => row().locator('.color-pick-fill');
 const saved = () => win.evaluate(async () => (await window.builder.project.snapshot()).state.tokens.overrides['color.brand']);
 const revision = () => win.evaluate(async () => (await window.builder.project.snapshot()).revision);
@@ -43,81 +44,112 @@ const paste = async (value) => {
   await text().press('Enter');
   await eventually(async () => assert.equal(await saved(), value, `${value} is saved as typed`));
 };
-/** Choose a color in the native picker: the same input and change events the real dialog sends. */
-const pick = async (hex) => {
-  await picker().fill(hex);
+const openPicker = async (swatch = picker()) => {
+  if (await pop.isVisible().catch(() => false)) return;
+  await swatch.click();
+  await pop.waitFor();
+  // Open once it has placed itself and taken focus, as a person sees it before typing in it.
+  await win.waitForFunction(() => !!document.activeElement?.closest('.color-pop'));
+};
+const closePicker = async () => {
+  await win.keyboard.press('Escape');
+  await pop.waitFor({ state: 'detached' });
+};
+/** What the open picker holds: its value field, and whether a colour is placed in its area. */
+const pickerState = async (swatch = picker()) => {
+  await openPicker(swatch);
+  const state = { text: await pop.locator('input.color-pop-hex').inputValue(), placed: await pop.locator('.color-pop-area .color-pop-thumb').isVisible() };
+  await closePicker();
+  return state;
+};
+/** Move the hue `n` steps with the keyboard, as a person adjusts a colour: a real pick through the picker. */
+const nudge = async (n = 1, swatch = picker()) => {
+  await openPicker(swatch);
+  const hue = pop.getByRole('slider', { name: 'Hue' });
+  await hue.focus();
+  for (let i = 0; i < n; i++) await hue.press('ArrowRight');
+  await closePicker();
+};
+/** Type a colour into the picker's own value field. */
+const typeInPicker = async (value, swatch = picker()) => {
+  await openPicker(swatch);
+  await pop.locator('input.color-pop-hex').fill(value);
+  await pop.locator('input.color-pop-hex').press('Enter');
+  await closePicker();
 };
 
 const original = await saved();
 assert.equal(original, undefined, 'the theme brand color is not overridden yet');
-const themeBrand = await picker().inputValue();
-assert.match(themeBrand, /^#[0-9a-f]{6}$/, 'the picker starts from the theme color');
-assert.notEqual(themeBrand, '#000000', 'the theme color is not black');
+const themeBrand = await pickerState();
+assert.match(themeBrand.text, /^#[0-9a-f]{6}$/, 'the picker opens on the theme color');
+assert.ok(themeBrand.placed, 'with the color placed in its area, not black');
 
+// What a hue step saves for each notation: an opaque colour as #rrggbb, a see-through one in its own notation at its own opacity.
 const cases = [
-  { label: 'rgb()', value: 'rgb(209, 65, 49)', start: '#d14131', fill: 'rgb(209, 65, 49)', adjusted: '#c0392b' },
-  { label: 'short hex', value: '#d43', start: '#dd4433', fill: 'rgb(221, 68, 51)', adjusted: '#c0392b' },
-  { label: 'six-digit hex', value: '#d14131', start: '#d14131', fill: 'rgb(209, 65, 49)', adjusted: '#c0392b' },
-  { label: 'translucent rgba()', value: 'rgba(209, 65, 49, 0.5)', start: '#d14131', fill: 'rgba(209, 65, 49, 0.5)', adjusted: 'rgba(192, 57, 43, 0.5)' },
-  { label: 'translucent hex', value: '#d1413180', start: '#d14131', fill: 'rgba(209, 65, 49, 0.5)', adjusted: '#c0392b80' },
-  { label: 'modern rgb()', value: 'rgb(209 65 49 / 40%)', start: '#d14131', fill: 'rgba(209, 65, 49, 0.4)', adjusted: 'rgb(192 57 43 / 0.4)' },
-  { label: 'hsl()', value: 'hsl(5 63% 51%)', start: '#d14033', adjusted: '#c0392b' },
-  { label: 'zero opacity', value: '#d1413100', start: '#d14131', fill: 'rgba(209, 65, 49, 0)', adjusted: '#c0392b00' }
+  { label: 'rgb()', value: 'rgb(209, 65, 49)', fill: 'rgb(209, 65, 49)', adjusted: /^#[0-9a-f]{6}$/ },
+  { label: 'short hex', value: '#d43', fill: 'rgb(221, 68, 51)', adjusted: /^#[0-9a-f]{6}$/ },
+  { label: 'six-digit hex', value: '#d14131', fill: 'rgb(209, 65, 49)', adjusted: /^#[0-9a-f]{6}$/ },
+  { label: 'translucent rgba()', value: 'rgba(209, 65, 49, 0.5)', fill: 'rgba(209, 65, 49, 0.5)', adjusted: /^rgba\(\d+, \d+, \d+, 0\.5\)$/ },
+  { label: 'translucent hex', value: '#d1413180', fill: 'rgba(209, 65, 49, 0.5)', adjusted: /^#[0-9a-f]{6}80$/ },
+  { label: 'modern rgb()', value: 'rgb(209 65 49 / 40%)', fill: 'rgba(209, 65, 49, 0.4)', adjusted: /^rgb\(\d+ \d+ \d+ \/ 0\.4\)$/ },
+  { label: 'hsl()', value: 'hsl(5 63% 51%)', adjusted: /^#[0-9a-f]{6}$/ },
+  { label: 'zero opacity', value: '#d1413100', fill: 'rgba(209, 65, 49, 0)', adjusted: /^#[0-9a-f]{6}00$/ }
 ];
 
 for (const c of cases) {
   step(`${c.label}: save, adjust, undo`);
   await paste(c.value);
-  await eventually(async () => assert.equal(await picker().inputValue(), c.start, `${c.label}: the picker starts from the saved color, not black`));
+  // The editor redraws a moment after the project saves: the picker opens on the color once the editor has it.
+  await eventually(async () => {
+    const opened = await pickerState();
+    assert.equal(opened.text, c.value, `${c.label}: the picker opens on the saved color`);
+    assert.ok(opened.placed, `${c.label}: with it placed in the area, not black`);
+  });
   assert.equal(await text().inputValue(), c.value, `${c.label}: the text field keeps what was typed`);
   if (c.fill) await eventually(async () => assert.equal(await swatch(), c.fill, `${c.label}: the swatch shows the color as it renders`));
 
-  // Choosing the color the picker already shows rewrites nothing.
+  // Opening and closing the picker rewrites nothing.
   const rev = await settled();
-  await pick(c.start);
-  assert.equal(await settled(), rev, `${c.label}: an unchanged pick does not touch the project`);
-  assert.equal(await saved(), c.value, `${c.label}: an unchanged pick leaves the saved text alone`);
+  await openPicker();
+  await closePicker();
+  assert.equal(await settled(), rev, `${c.label}: opening the picker does not touch the project`);
+  assert.equal(await saved(), c.value, `${c.label}: and leaves the saved text alone`);
 
   // Adjusting straight after the paste is its own undo step, so undo comes back to the pasted text.
-  await pick('#c0392b');
-  await eventually(async () => assert.equal(await saved(), c.adjusted, `${c.label}: the adjusted color keeps its opacity`));
-  await eventually(async () => assert.equal(await picker().inputValue(), '#c0392b', `${c.label}: the picker shows the adjusted color`));
-  await eventually(async () => assert.equal(await text().inputValue(), c.adjusted, `${c.label}: the text field follows the picker`));
+  await nudge();
+  await eventually(async () => {
+    const now = await saved();
+    assert.notEqual(now, c.value, `${c.label}: the hue step changed the color`);
+    assert.match(now, c.adjusted, `${c.label}: the adjusted color keeps its notation and opacity`);
+  });
+  const adjusted = await saved();
+  await eventually(async () => assert.equal(await text().inputValue(), adjusted, `${c.label}: the text field follows the picker`));
   await undo();
   await eventually(async () => assert.equal(await saved(), c.value, `${c.label}: undo returns the typed text`));
-  await eventually(async () => assert.equal(await picker().inputValue(), c.start, `${c.label}: the picker follows the undo`));
   await eventually(async () => assert.equal(await text().inputValue(), c.value, `${c.label}: the text field follows the undo`));
 }
 
-step('a fast drag that goes out and comes back ends where it was left, as one undo step');
+step('a run of steps in the picker is one undo step');
 await paste('rgb(209, 65, 49)');
-await eventually(async () => assert.equal(await swatch(), 'rgb(209, 65, 49)', 'the editor shows the pasted color before the drag starts'));
-await picker().evaluate((el) => {
-  // Three steps of one drag in a single task, before any save can come back: out, further out, home again.
-  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-  for (const hex of ['#0000ff', '#336699', '#d14131']) {
-    set.call(el, hex);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-  el.dispatchEvent(new Event('change', { bubbles: true }));
-});
-await eventually(async () => assert.equal(await saved(), '#d14131', 'the last place the drag reached is what is saved'));
-await eventually(async () => assert.equal(await picker().inputValue(), '#d14131', 'and what the picker shows'));
+await eventually(async () => assert.equal(await swatch(), 'rgb(209, 65, 49)', 'the editor shows the pasted color before the run starts'));
+await nudge(12);
+await eventually(async () => assert.match(await saved(), /^#[0-9a-f]{6}$/, 'the last step reached is what is saved'));
+await settled();
 await undo();
-await eventually(async () => assert.equal(await saved(), 'rgb(209, 65, 49)', 'the whole drag is one undo step'));
+await eventually(async () => assert.equal(await saved(), 'rgb(209, 65, 49)', 'the whole run is one undo step'));
 
 step('each format survives closing and reopening the project');
 const named = (name) => ({
   text: section('Colors').locator(`input.ss-hex[aria-label="${name} color value"]`),
-  picker: section('Colors').locator(`input[type="color"][aria-label="${name} color"]`),
-  fill: section('Colors').locator('.color-pick').filter({ has: win.locator(`input[aria-label="${name} color"]`) }).locator('.color-pick-fill')
+  picker: section('Colors').locator(`button.color-pick[aria-label^="${name} color,"]`),
+  fill: section('Colors').locator(`button.color-pick[aria-label^="${name} color,"] .color-pick-fill`)
 });
 /** A row in Colors by its own name: a note on another row can mention a color by name, so matching text would pick that row too. */
 const colorRow = (name) => section('Colors').locator('[data-ss-row]').filter({ has: win.locator('.ss-name', { hasText: new RegExp(`^${name.replace(/[()]/g, '\\$&')}\\s*$`) }) });
 const reopenCases = [
-  { name: 'Accent', value: '#d43', start: '#dd4433', fill: 'rgb(221, 68, 51)' },
-  { name: 'Cards and panels', value: '#d14131', start: '#d14131', fill: 'rgb(209, 65, 49)' },
-  { name: 'Primary text', value: 'rgba(209, 65, 49, 0.5)', start: '#d14131', fill: 'rgba(209, 65, 49, 0.5)' }
+  { name: 'Accent', value: '#d43', fill: 'rgb(221, 68, 51)' },
+  { name: 'Cards and panels', value: '#d14131', fill: 'rgb(209, 65, 49)' },
+  { name: 'Primary text', value: 'rgba(209, 65, 49, 0.5)', fill: 'rgba(209, 65, 49, 0.5)' }
 ];
 for (const c of reopenCases) {
   await named(c.name).text.fill(c.value);
@@ -134,24 +166,23 @@ await win.waitForSelector('.editor');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 await win.locator('#dock-panel-styles').waitFor();
 await eventually(async () => assert.equal(await text().inputValue(), 'rgb(209, 65, 49)', 'the saved RGB text is still there'));
-assert.equal(await picker().inputValue(), '#d14131', 'the reopened picker starts from the saved red, not black');
+await eventually(async () => assert.equal((await pickerState()).text, 'rgb(209, 65, 49)', 'the reopened picker opens on the saved red, not black'));
 assert.equal(await swatch(), 'rgb(209, 65, 49)', 'the reopened swatch shows the saved red');
 for (const c of reopenCases) {
   const row = named(c.name);
   await eventually(async () => assert.equal(await row.text.inputValue(), c.value, `${c.name}: the saved text is still there`));
-  assert.equal(await row.picker.inputValue(), c.start, `${c.name}: the reopened picker starts from the saved color, not black`);
+  await eventually(async () => assert.equal((await pickerState(row.picker)).text, c.value, `${c.name}: the reopened picker opens on the saved color, not black`));
   assert.equal(await row.fill.evaluate((el) => getComputedStyle(el).backgroundColor), c.fill, `${c.name}: the reopened swatch shows the saved color`);
 }
-await pick('#b03a2e');
+await typeInPicker('#b03a2e');
 await eventually(async () => assert.equal(await saved(), '#b03a2e', 'an adjustment on a reopened project saves'));
 await undo();
 await eventually(async () => assert.equal(await saved(), 'rgb(209, 65, 49)', 'undo returns the typed text'));
 
 step('a color only the browser can resolve still starts the picker from itself');
 await paste('color-mix(in srgb, #ff0000 50%, #0000ff)');
-await eventually(async () => assert.equal(await picker().inputValue(), '#800080', 'the mixed color starts the picker'));
-await eventually(async () => assert.equal(await picker().isDisabled(), false, 'the picker is open for it'));
-await pick('#336699');
+await eventually(async () => assert.ok((await pickerState()).placed, 'the mixed color is placed in the picker'));
+await typeInPicker('#336699');
 await eventually(async () => assert.equal(await saved(), '#336699', 'a pick replaces the mix with a plain color'));
 await eventually(async () => assert.equal(await text().inputValue(), '#336699', 'the editor shows that pick before the next draft'));
 
@@ -159,9 +190,12 @@ step('a color the picker cannot read keeps its text, paints nothing, and a pick 
 await paste('currentcolor');
 await eventually(async () => assert.equal(await row().locator('.color-pick').getAttribute('class'), 'color-pick unpainted', 'the swatch shows it has nothing to paint'));
 assert.equal(await swatch(), 'rgba(0, 0, 0, 0)', 'nothing is painted for it');
-assert.equal(await picker().isDisabled(), false, 'the picker still opens, so the color can be replaced');
+await openPicker();
+assert.match(await pop.locator('.color-pop-note').innerText(), /can’t show currentcolor/, 'the picker still opens, and says it cannot show the color');
+assert.equal(await pop.locator('.color-pop-thumb').count(), 0, 'with no thumb claiming a color');
+await closePicker();
 assert.equal(await text().inputValue(), 'currentcolor', 'the text value is still editable');
-await pick('#336699');
+await typeInPicker('#336699');
 await eventually(async () => assert.equal(await saved(), '#336699', 'a pick replaces it with a plain color'));
 await eventually(async () => assert.equal(await text().inputValue(), '#336699', 'the editor shows the replacement before the next draft'));
 await paste('rgb(255, 0 0)');
@@ -211,9 +245,13 @@ await paste('rgba(209, 65, 49, 0.5)');
 await colorRow('Brand (strong)').locator('.ss-disclose').click();
 await colorRow('Brand (strong)').getByRole('combobox').selectOption('color.brand');
 const linked = colorRow('Brand (strong)');
-await eventually(async () => assert.equal(await linked.locator('input[type="color"]').isDisabled(), true, 'a linked color has no picker of its own'));
+await eventually(async () => assert.match(await linked.locator('.color-pick').getAttribute('class'), /\blinked\b/, 'a linked color is drawn as linked'));
+await eventually(async () => assert.match(await linked.locator('.color-pick').getAttribute('aria-label'), /same as Brand/, 'and its swatch says what it follows'));
 await eventually(async () => assert.equal(await linked.locator('.color-pick-fill').evaluate((el) => getComputedStyle(el).backgroundColor), 'rgba(209, 65, 49, 0.5)', 'it shows the color it follows, opacity included'));
-await eventually(async () => assert.equal(await linked.locator('input[type="color"]').inputValue(), '#d14131', 'and the picker value is the one it follows'));
+await openPicker(linked.locator('.color-pick'));
+assert.match(await pop.innerText(), /Same as Brand/, 'its picker says what it follows, with no controls of its own');
+assert.equal(await pop.locator('.color-pop-area').count(), 0, 'nothing to drag');
+await closePicker();
 await eventually(async () => {
   const link = await win.evaluate(async () => (await window.builder.project.snapshot()).state.tokens.overrides['color.brand-strong']);
   assert.deepEqual(link, { token: 'color.brand' }, 'the link is saved as a link');
@@ -230,23 +268,23 @@ await form.getByLabel('Value').fill('#2e8b57');
 await form.getByRole('button', { name: 'Add style' }).click();
 await eventually(async () => assert.equal(await customValue('color.custom-sea'), '#2e8b57', 'the new color is saved'));
 const sea = yours.locator('[data-token-id="color.custom-sea"]');
-await sea.locator('input[type="color"]').fill('#225544');
+await typeInPicker('#225544', sea.locator('.color-pick'));
 await eventually(async () => assert.equal(await customValue('color.custom-sea'), '#225544', 'its picker saves a color of its own'));
-await sea.getByLabel('Same as').selectOption('color.brand');
+await sea.getByLabel('Same as', { exact: true }).selectOption('color.brand');
 await eventually(async () => assert.deepEqual(await customValue('color.custom-sea'), { token: 'color.brand' }, 'it follows Brand as a link'));
-await eventually(async () => assert.equal(await sea.locator('input[type="color"]').isDisabled(), true, 'a linked color has no picker of its own'));
+await eventually(async () => assert.match(await sea.locator('.color-pick').getAttribute('class'), /\blinked\b/, 'a linked color is drawn as linked'));
 const seaSwatch = () => sea.locator('.color-pick-fill').evaluate((el) => getComputedStyle(el).backgroundColor);
 await eventually(async () => assert.equal(await seaSwatch(), 'rgba(209, 65, 49, 0.5)', 'the linked swatch paints the color it follows'));
 await paste('#336699');
 await eventually(async () => assert.equal(await seaSwatch(), 'rgb(51, 102, 153)', 'and follows it when Brand changes'));
 const brandNow = await saved();
-await sea.getByLabel('Same as').selectOption('');
+await sea.getByLabel('Same as', { exact: true }).selectOption('');
 await eventually(async () => assert.equal(await customValue('color.custom-sea'), brandNow, 'unlinking keeps the color it showed'));
 await undo();
 await eventually(async () => assert.deepEqual(await customValue('color.custom-sea'), { token: 'color.brand' }, 'one undo returns to the link'));
-await sea.getByLabel('Same as').selectOption('');
+await sea.getByLabel('Same as', { exact: true }).selectOption('');
 await eventually(async () => assert.equal(await customValue('color.custom-sea'), brandNow, 'and it can be unlinked again'));
-await eventually(async () => assert.equal(await sea.locator('input[type="color"]').isDisabled(), false, 'and its picker is back'));
+await eventually(async () => assert.doesNotMatch(await sea.locator('.color-pick').getAttribute('class'), /\blinked\b/, 'and its picker is back'));
 
 step('a text style of your own opens in the Text styles list');
 await form.getByLabel('Kind').selectOption('text');

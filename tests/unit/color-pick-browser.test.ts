@@ -1,5 +1,5 @@
 /**
- * A drag in the native colour picker saves one step at a time (#970): steps picked while a save is on its way wait,
+ * A run of picks in the colour picker saves one step at a time (#970): steps picked while a save is on its way wait,
  * and only the newest is saved once that save has been answered, even when the picker has closed by then. An Undo
  * made meanwhile reaches the project after the drag's last step, so it takes back the whole drag. The real ColorPick
  * and store run in a real browser, against a project whose saves the test answers.
@@ -61,15 +61,6 @@ const BRIDGE = `
     window.setSaved?.(s.batch.operations[0].value);
     s.resolve({ ok: true, revision: 1, results: [{}] });
   };
-  /** The native picker's drag: an input event for each step, as the picker sets the input's value. */
-  window.drag = (...steps) => {
-    const el = document.querySelector('input[type="color"]');
-    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-    for (const hex of steps) {
-      set.call(el, hex);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-  };
 `;
 
 async function bundle(): Promise<string> {
@@ -127,26 +118,38 @@ describe.skipIf(!browserInstalled)('a drag in the colour picker saves one step a
   });
 
   const calls = () => page.evaluate<Array<string>>('window.calls');
-  const picker = () => page.getByLabel('Brand color');
+  /** The picker's value field: what it shows is the last step picked. */
+  const field = () => page.locator('.color-pop input.color-pop-hex');
+  /** Steps picked one after another in the open picker, each taken as it is entered, before any save is answered. */
+  const drag = async (...steps: string[]) => {
+    if (!(await page.locator('.color-pop').count())) {
+      await page.locator('button.color-pick').click();
+      await page.locator('.color-pop').waitFor();
+    }
+    for (const hex of steps) {
+      await field().fill(hex);
+      await field().press('Enter');
+    }
+  };
 
   it('saves the first step, then only the last one taken while it was saving', async () => {
-    await page.evaluate(`window.drag('#0000ff', '#336699', '#2a9d8f', '#e76f51')`);
+    await drag('#0000ff', '#336699', '#2a9d8f', '#e76f51');
     expect(await calls()).toEqual(['#0000ff']);
-    // The input shows the last step picked, not the one being saved.
-    expect(await picker().inputValue()).toBe('#e76f51');
+    // The picker shows the last step picked, not the one being saved.
+    expect(await field().inputValue()).toBe('#e76f51');
     await page.evaluate('window.land()');
     await expect.poll(calls).toEqual(['#0000ff', '#e76f51']);
     // The first step's save has landed, and the picker still shows the last step, not the one that landed.
-    expect(await picker().inputValue()).toBe('#e76f51');
+    expect(await field().inputValue()).toBe('#e76f51');
     await page.evaluate('window.land()');
-    await expect.poll(() => picker().inputValue()).toBe('#e76f51');
+    await expect.poll(() => field().inputValue()).toBe('#e76f51');
     expect(await calls()).toEqual(['#0000ff', '#e76f51']);
   });
 
   it('saves the last step once the save before it is answered, though the picker closed mid-drag', async () => {
-    await page.evaluate(`window.drag('#0000ff', '#336699', '#2a9d8f')`);
+    await drag('#0000ff', '#336699', '#2a9d8f');
     await page.evaluate('window.closePicker()');
-    expect(await page.locator('input[type="color"]').count()).toBe(0);
+    expect(await page.locator('.color-pick').count()).toBe(0);
     // Closing sends nothing out of turn: the last step waits for the save before it.
     expect(await calls()).toEqual(['#0000ff']);
     await page.evaluate('window.land()');
@@ -154,13 +157,13 @@ describe.skipIf(!browserInstalled)('a drag in the colour picker saves one step a
   });
 
   it('sends an Undo made during the drag’s last save after its last step, so the Undo takes back the whole drag', async () => {
-    await page.evaluate(`window.drag('#0000ff', '#336699', '#2a9d8f')`);
+    await drag('#0000ff', '#336699', '#2a9d8f');
     await page.evaluate('window.undo()');
     expect(await calls()).toEqual(['#0000ff', '#2a9d8f', 'undo']);
   });
 
   it('sends an edit made elsewhere during the drag after its last step, which is an edit of its own', async () => {
-    await page.evaluate(`window.drag('#0000ff', '#336699', '#2a9d8f')`);
+    await drag('#0000ff', '#336699', '#2a9d8f');
     await page.evaluate('void window.otherEdit()');
     expect(await calls()).toEqual(['#0000ff', '#2a9d8f', '#111111']);
     // The step sent ahead of the other field's edit is not that field's: the field answers its own refusal, not the step's.

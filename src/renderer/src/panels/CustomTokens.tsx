@@ -5,11 +5,11 @@ import { effectiveTokens } from '@generator/index';
 import { tokenPropUsageCounts, tokenUsageCounts } from '@engine/tokens';
 import { followedText, linkOf, textMetrics } from '@shared/styles';
 import { applyOps } from '../store';
-import { ColorPick } from '../components/ColorPick';
+import { ColorPick, opacityWords, type ColorPreset } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
 import { colorFieldProblem } from '@shared/color';
 import { normalizeColorText } from '@shared/color-names';
-import { DraftInput, Field } from '../components/ui';
+import { DraftInput, Field, openSection } from '../components/ui';
 import { FontSelect, familyName } from './FontSelect';
 import { usePreviewStack } from '../lib/editor-fonts';
 
@@ -126,7 +126,8 @@ function NewStyle({ tokens, say }: { tokens: TokenDef[]; say: (text: string) => 
                   setValue(next);
                   setRefused(null);
                 }}
-                label="Pick a color"
+                presets={sitePresets(tokens)}
+                label="New color"
               />
             )}
             <input
@@ -155,6 +156,14 @@ function NewStyle({ tokens, say }: { tokens: TokenDef[]; say: (text: string) => 
 
 /** What a style's own value is called in its "Same as" menu. */
 const OWN: Partial<Record<TokenGroup, string>> = { color: 'Its own color', font: 'Its own font' };
+
+/** Open the row of the style a colour follows, with focus on its value (or its name, for one of your own). */
+const goToStyle = (id: string, own: boolean) =>
+  own ? openSection('tok-custom', { focus: `[data-token-id="${CSS.escape(id)}"] .ss-custom-name` }) : openSection('tok-color', { focus: `[data-token-id="${CSS.escape(id)}"] :is(input.ss-hex, .ss-disclose)` });
+
+/** The site's colours, as a picker offers them to copy: their value now, leaving out `except`. */
+const sitePresets = (tokens: TokenDef[], except?: string): ColorPreset[] =>
+  tokens.filter((x) => x.group === 'color' && x.id !== except && followedText(tokens, x.id)).map((x) => ({ id: x.id, label: x.label, value: followedText(tokens, x.id) }));
 
 /** A small sample of a non-colour style, the same size as a colour's swatch, so every row starts on one edge. */
 function Mark({ t, value, tokens }: { t: TokenDef; value: string; tokens: TokenDef[] }) {
@@ -269,7 +278,7 @@ function StyleRow({ t, uses, propUses, where, tokens, state, say, onEditText }: 
     value = (
       <>
         <div className="grid-2">
-          <Field label="Value" controlId={ref && !broken ? undefined : `${uid}-value`}>
+          <Field label="Value" controlId={ref && !broken ? undefined : `${uid}-value`} hint={t.group === 'color' ? (opacityWords(literal) ?? undefined) : undefined}>
             {ref && !broken ? (
               <span className="ss-custom-linked mono" title={literal}>
                 {t.group === 'font' ? familyName(literal) : literal}
@@ -316,7 +325,20 @@ function StyleRow({ t, uses, propUses, where, tokens, state, say, onEditText }: 
   return (
     <div className={`ss-custom-row${removing ? ' removing' : ''}`} data-ss-row data-token-id={t.id}>
       <div className="ss-custom-head">
-        {t.group === 'color' ? <ColorPick className="md" value={literal} disabled={!!ref} onPick={(next) => set(next, 'picker')} label={`${t.label} color`} /> : <Mark t={t} value={literal} tokens={tokens} />}
+        {t.group === 'color' ? (
+          <ColorPick
+            className="md"
+            value={literal}
+            follows={ref ? follows : null}
+            onOwn={ref && literal ? () => void relink(literal) : undefined}
+            onFollowed={ref && literal ? () => goToStyle(ref, state.tokens.custom.some((c) => c.id === ref)) : undefined}
+            onPick={(next) => set(next, 'picker')}
+            presets={sitePresets(tokens, t.id)}
+            label={`${t.label} color`}
+          />
+        ) : (
+          <Mark t={t} value={literal} tokens={tokens} />
+        )}
         <DraftInput className="input sm ss-custom-name" value={t.label} onCommit={(v) => (v.trim() ? void applyOps([{ type: 'token.rename', tokenId: t.id, label: v.trim() }], `Rename ${t.label}`) : false)} ariaLabel={`${t.label} name`} />
         <button
           ref={toggle}
