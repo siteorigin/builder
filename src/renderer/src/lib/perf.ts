@@ -51,6 +51,30 @@ export function perfCount(name: string, by = 1): void {
   counters[name] = (counters[name] ?? 0) + by;
 }
 
+/**
+ * The snapshots of this computer's project the transport made (`perfHanded`), and their states, held weakly from when a
+ * driver asks (`__siteoriginPerf.trackHeld`, scripts/perf: memoryPanels): how many of each are still reachable from
+ * anything in the editor is what `editor.held` says, marked by the driver just after it has collected the garbage. A
+ * state a snapshot shares with the one before is counted once. Nothing is kept until a driver asks.
+ */
+let held: { snapshots: Array<WeakRef<object>>; states: Array<WeakRef<object>>; seen: WeakSet<object>; handed: number } | null = null;
+export function perfHanded(snapshot: { state: object } | null): void {
+  if (!held || !snapshot || held.seen.has(snapshot)) return;
+  held.handed++;
+  held.seen.add(snapshot);
+  held.snapshots.push(new WeakRef(snapshot));
+  if (held.seen.has(snapshot.state)) return;
+  held.seen.add(snapshot.state);
+  held.states.push(new WeakRef(snapshot.state));
+}
+/** How many of `refs` still reach their object, the others let go of. */
+function reachable(refs: Array<WeakRef<object>>): number {
+  let kept = 0;
+  for (const ref of refs) if (ref.deref()) refs[kept++] = ref;
+  refs.length = kept;
+  return kept;
+}
+
 /** Each selector's counting copy: one selector keeps one copy, so a stable selector stays stable while it is counted. */
 const countedSelectors = new WeakMap<object, unknown>();
 /**
@@ -194,7 +218,7 @@ interface DevtoolsHook {
   checkDCE(...args: unknown[]): unknown;
 }
 
-const host = (typeof window === 'undefined' ? {} : window) as unknown as { __REACT_DEVTOOLS_GLOBAL_HOOK__?: DevtoolsHook; __siteoriginPerf?: { mark: typeof perfMark } };
+const host = (typeof window === 'undefined' ? {} : window) as unknown as { __REACT_DEVTOOLS_GLOBAL_HOOK__?: DevtoolsHook; __siteoriginPerf?: { mark: typeof perfMark; trackHeld(): void; handed(): number; held(attrs?: PerfAttrs): void } };
 if (bridge) {
   const existing = host.__REACT_DEVTOOLS_GLOBAL_HOOK__;
   if (existing) {
@@ -221,8 +245,14 @@ if (bridge) {
       checkDCE: () => {}
     };
   }
-  // A driver marks the edges of what it measures with the editor's counters (scripts/perf/README.md).
-  host.__siteoriginPerf = { mark: perfMark };
+  // A driver marks the edges of what it measures with the editor's counters (scripts/perf/README.md), and, once it has
+  // asked for them to be followed, how many of the project's snapshots the editor still holds.
+  host.__siteoriginPerf = {
+    mark: perfMark,
+    trackHeld: () => void (held ??= { snapshots: [], states: [], seen: new WeakSet(), handed: 0 }),
+    handed: () => held?.handed ?? -1,
+    held: (attrs) => perfMark('editor.held', held ? { ...attrs, handed: held.handed, snapshots: reachable(held.snapshots), states: reachable(held.states) } : { ...attrs, untracked: true })
+  };
 }
 
 // The editor's script has started to run: main.tsx imports this module first, so nothing of the script was evaluated

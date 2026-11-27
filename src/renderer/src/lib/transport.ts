@@ -1,6 +1,6 @@
 import type { BuilderApi, ProjectSnapshot } from '@shared/api';
 import { ProjectFeedReader, type ProjectChange } from '@shared/project-feed';
-import { perfMark } from './perf';
+import { perfHanded, perfMark } from './perf';
 
 /**
  * The editor's API, whichever project it shows (#766): this computer's own, over Electron IPC (`window.builder`), or
@@ -135,6 +135,7 @@ export function createTransport(local: () => BuilderApi): Transport {
     if (change.base !== null && feed.seq !== null && change.seq <= feed.seq) return;
     seen = Math.max(seen, change.seq);
     const snapshot = feed.read(change);
+    perfHanded(snapshot);
     if (change.base === null) {
       stopAsking();
       early = [];
@@ -257,6 +258,7 @@ export function createTransport(local: () => BuilderApi): Transport {
       // Changes made against it that came before it are read on it, in order.
       for (const c of early.filter((c) => c.seq > change.seq).sort((a, b) => a.seq - b.seq)) feed.read(c);
       early = [];
+      perfHanded(feed.snapshot);
       if (!behind()) return feed.snapshot;
       // Still behind a change it could not read: never the older copy, but the whole project asked for again.
       ask();

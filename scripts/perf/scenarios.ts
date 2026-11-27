@@ -2663,6 +2663,203 @@ export const noWindow: Scenario = {
 };
 
 // ---------------------------------------------------------------------------
+// memoryPanels
+// ---------------------------------------------------------------------------
+
+/** How many edits `memoryPanels` makes to the home hero's Heading, the sidebar's view and the dock's changed before each. */
+export const PANEL_EDITS = 30;
+/** The sidebar's views `memoryPanels` shows once before the edits. Two cover the canvas with a workspace of their own
+ *  (the post writer, the SEO view): each is put away again by its own button, and stays hidden from then on, since a
+ *  change of what covers the canvas draws every hidden panel afresh. */
+export const PANEL_SIDE_VIEWS = ['pages', 'posts', 'layers', 'insert', 'assets', 'seo'] as const;
+const COVERING_VIEWS: Partial<Record<(typeof PANEL_SIDE_VIEWS)[number], string>> = { posts: '.post-writer-holder', seo: '.seo-view-holder' };
+/** The sidebar's views shown in turn, one before each edit, the rest hidden at the revision each was last shown at. */
+export const PANEL_SIDE_TURNS = PANEL_SIDE_VIEWS.filter((v) => !COVERING_VIEWS[v]);
+/** The dock's views `memoryPanels` shows in turn, one before each edit, which is made in the Inspector. */
+export const PANEL_DOCK_VIEWS = ['chat', 'styles', 'project'] as const;
+const DOCK_TAB_NAMES = { chat: 'AI', inspect: 'Inspector', styles: 'Site styles', project: 'Project' } as const;
+/** The readings `memoryPanels` takes at rest: before the first edit and after the last. */
+export const PANEL_READINGS = ['edit0', `edit${PANEL_EDITS}`] as const;
+
+/** One of the sidebar's views shown (its rail button pressed, unless it is already). */
+async function showSideView(win: Page, id: (typeof PANEL_SIDE_VIEWS)[number]): Promise<void> {
+  const button = win.locator(`.rail [data-rail="${id}"]`);
+  if ((await button.getAttribute('aria-pressed')) !== 'true') await button.click();
+  await win.locator('#editor-sidebar').waitFor({ state: 'visible', timeout: 15_000 });
+  expect((await button.getAttribute('aria-pressed')) === 'true', `the sidebar does not show its ${id} view`);
+  const covering = COVERING_VIEWS[id];
+  if (covering) await win.locator(covering).waitFor({ state: 'visible', timeout: 15_000 });
+}
+
+/** One of the dock's views shown, by its tab. */
+async function showDockView(win: Page, id: keyof typeof DOCK_TAB_NAMES): Promise<void> {
+  if (!(await win.locator('#editor-dock').isVisible())) await win.getByRole('button', { name: 'Right panel', exact: true }).click();
+  await win.getByRole('tab', { name: DOCK_TAB_NAMES[id], exact: true }).first().click();
+  await win.locator(`#dock-panel-${id}`).waitFor({ state: 'visible', timeout: 15_000 });
+}
+
+/** The editor marking how many of the project snapshots it was handed it still holds (`editor.held`), and its arrival. */
+type HeldHooks = { __siteoriginPerf?: { trackHeld?(): void; handed?(): number; held?(a: PerfAttrs): void } };
+/**
+ * The editor marking how many of the project snapshots it was handed it still holds (`editor.held`), counted straight
+ * after the garbage is collected once more, so nothing let go of since the reading's own collection is counted. A
+ * snapshot that arrived meanwhile (`handed` moved) makes it count again, up to three times; the last count stands.
+ */
+async function markHeld(ctx: ScenarioContext, label: string): Promise<void> {
+  const { win } = ctx;
+  const cdp = await win.context().newCDPSession(win);
+  try {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const before = await win.evaluate(() => (globalThis as unknown as HeldHooks).__siteoriginPerf?.handed?.() ?? -1);
+      await cdp.send('HeapProfiler.collectGarbage');
+      await win.evaluate((a) => (globalThis as unknown as HeldHooks).__siteoriginPerf?.held?.({ scenario: 'memoryPanels', label: a.label, attempt: a.attempt }), { label, attempt });
+      const mark = (await ctx.waitTrace((t) => !!t.first('editor.held', heldAt(label, attempt)), 10_000)).first('editor.held', heldAt(label, attempt));
+      if (!mark || mark.attrs?.handed === before) return;
+    }
+  } finally {
+    await cdp.detach().catch(() => undefined);
+  }
+}
+const heldAt =
+  (label: string, attempt?: number) =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.scenario === 'memoryPanels' && r.attrs?.label === label && (attempt === undefined || r.attrs?.attempt === attempt);
+
+export const memoryPanels: Scenario = {
+  name: 'memoryPanels',
+  after: 'launch',
+  memory: true,
+  deadlineMs: 15 * 60_000,
+  description: `The memory of every process of the app, and how many project snapshots the editor still holds, at rest with the fixture open after every sidebar and dock view has been shown, and again after ${PANEL_EDITS} edits of the home hero's Heading in the Inspector, another sidebar view and dock view shown before each.`,
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('the memoryPanels scenario was run without a memory probe');
+    // The editor follows the project's snapshots from before the project opens.
+    await win.evaluate(() => (globalThis as unknown as HeldHooks).__siteoriginPerf?.trackHeld?.());
+    // Opened as `open` opens it, after the files have settled, to the canvas reporting the home page ready to edit.
+    const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    await openFromWelcome(ctx);
+    const ready = (t: Trace) => {
+      const asked = t.first('open.requested', inProc('renderer'));
+      return asked ? t.first('canvas.ready', homeReady(fixture), asked.t) : undefined;
+    };
+    expect(ready(await ctx.waitTrace((t) => !!ready(t), 15_000)), 'the canvas never reported the home page ready to edit');
+    await checkOpened(ctx);
+    const before = await snapshotOf(win);
+    expect(before, 'no project is open');
+    // Every view shown once, so none holds the project as it was opened (those that cover the canvas put away again);
+    // then the hero chosen in Layers and its Heading shown in the Inspector, where every edit is made.
+    for (const id of PANEL_DOCK_VIEWS) await showDockView(win, id);
+    for (const id of PANEL_SIDE_VIEWS) {
+      await showSideView(win, id);
+      if (COVERING_VIEWS[id]) {
+        await win.locator(`.rail [data-rail="${id}"]`).click();
+        await win.locator('#editor-sidebar').waitFor({ state: 'hidden', timeout: 15_000 });
+      }
+    }
+    await showSideView(win, 'layers');
+    await win.locator('#editor-sidebar').getByRole('treeitem', { name: HERO_NAME }).first().click();
+    await showDockView(win, 'inspect');
+    const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
+    /** Whether the Inspector shows the hero's Heading (within 15 s): a panel shown again that is not up to date has none. */
+    const headingShown = () => field.waitFor({ timeout: 15_000 }).then(() => true, () => false);
+    expect(await headingShown(), `the Inspector, shown with the ${HERO_NAME} chosen in Layers, has no Heading`);
+    // Hidden, not gone: every view's content stays the same elements through the edits.
+    const views = await tagPanels(win);
+    expect(views.length >= 10 && views.every(Boolean), `only ${views.filter(Boolean).length} of the sidebar's and dock's ${views.length} panels are in the page`);
+    await sleep(WORKSPACE_SAVE_WAIT_MS);
+    await probe.rest('edit0');
+    await markHeld(ctx, 'edit0');
+    const heading = (i: number) => (i === 0 ? (findHeading(before.state.pages[fixture.homePageId], fixture.heroId)?.heading ?? fixture.heading) : `Panels memory heading ${ctx.iteration}.${i}`);
+    const applied = async (n: number) => {
+      const shown = (x: Trace) => x.first('canvas.revisionApplied', atRevision(before.revision + n)) ?? x.first('canvas.ready', (r) => homeReady(fixture)(r) && r.attrs?.revision === before.revision + n);
+      expect(shown(await ctx.waitTrace((x) => !!shown(x), 30_000)), `the canvas never reported edit ${n} applied`);
+    };
+    /** A step of edit `i`, named in what it throws. */
+    const step = async <T>(i: number, what: string, work: () => Promise<T>): Promise<T> => {
+      try {
+        return await work();
+      } catch (e) {
+        if (e instanceof PredicateError) throw e;
+        throw new Error(`before edit ${i}, ${what}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    };
+    for (let i = 1; i <= PANEL_EDITS; i++) {
+      // Another dock view, then another sidebar view, each shown while the rest are hidden at the revision each was
+      // last shown at; then the Inspector, shown again, up to date at once.
+      const dock = PANEL_DOCK_VIEWS[(i - 1) % PANEL_DOCK_VIEWS.length];
+      await step(i, `showing the dock's ${dock} view`, () => showDockView(win, dock));
+      const side = PANEL_SIDE_TURNS[(i - 1) % PANEL_SIDE_TURNS.length];
+      await step(i, `showing the sidebar's ${side} view`, () => showSideView(win, side));
+      await step(i, 'showing the Inspector again', () => showDockView(win, 'inspect'));
+      expect(await headingShown(), `the Inspector, shown again before edit ${i}, has no Heading`);
+      const named = (await inspectorName(win).first().textContent())?.trim();
+      expect(named === HERO_NAME, `the Inspector, shown again before edit ${i}, names ${named ? `“${named}”` : 'nothing'}, not the ${HERO_NAME}`);
+      const was = await field.inputValue();
+      expect(was === heading(i - 1), `the Inspector, shown again before edit ${i}, shows the Heading “${was}”, not “${heading(i - 1)}”`);
+      await field.fill(heading(i));
+      await win.keyboard.press('Tab');
+      await preview(win).getByRole('heading', { name: heading(i), exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+      await applied(i);
+      await sleep(EDIT_PACE_MS);
+    }
+    const after = await snapshotOf(win);
+    expect(after && after.revision === before.revision + PANEL_EDITS, `the edits left the project at revision ${after?.revision}, not ${before.revision + PANEL_EDITS}`);
+    expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === heading(PANEL_EDITS), 'the project does not hold the last heading on the home hero');
+    const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+    const saved = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
+    expect(findHeading(saved, fixture.heroId)?.heading === heading(PANEL_EDITS), 'the home page’s document on disk does not hold the last heading on the home hero');
+    const still = await panelsKept(win);
+    expect(still.length === views.length && still.every(Boolean), `${still.filter((x) => !x).length} of the panels were replaced or left the page while hidden`);
+    await sleep(WORKSPACE_SAVE_WAIT_MS);
+    await probe.rest(`edit${PANEL_EDITS}`);
+    await markHeld(ctx, `edit${PANEL_EDITS}`);
+    // After the readings, panels shown again catch up at once with what changed while they were hidden: the Inspector
+    // with the last edit taken back, Layers with the selection cleared.
+    await showDockView(win, 'project');
+    await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.undo());
+    // What the undo put back, as the project holds it (changes of one field a few seconds apart are one step of History).
+    let back: string | undefined;
+    for (let i = 0; i < 100 && back === undefined; i++) {
+      const now = await snapshotOf(win);
+      if (now && now.revision > before.revision + PANEL_EDITS) back = findHeading(now.state.pages[fixture.homePageId], fixture.heroId)?.heading;
+      else await sleep(100);
+    }
+    expect(back !== undefined && back !== heading(PANEL_EDITS), `the undo put ${back === undefined ? 'nothing' : 'the same heading'} back on the ${HERO_NAME}`);
+    await preview(win).getByRole('heading', { name: back, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+    await showDockView(win, 'inspect');
+    const undone = (await field.isVisible()) ? await field.inputValue() : null;
+    expect(undone === back, `the Inspector, shown again after an undo while it was hidden, shows the Heading ${undone === null ? 'not at all' : `“${undone}”`}, not “${back}”`);
+    await showSideView(win, 'pages');
+    for (let i = 0; i < 4 && (await heroChip(win).count()); i++) await win.keyboard.press('Escape');
+    expect(!(await heroChip(win).count()), `the ${HERO_NAME} is still selected after Escape`);
+    await showSideView(win, 'layers');
+    const chosen = await win.locator('#editor-sidebar').getByRole('treeitem', { name: HERO_NAME, selected: true }).count();
+    expect(chosen === 0, `Layers, shown again after the selection was cleared while it was hidden, still has the ${HERO_NAME} selected`);
+  },
+  measure(trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string) => readings.find((r) => r.label === label && r.kind === 'rest');
+    for (const label of PANEL_READINGS) {
+      readingMetrics(m, label, reading(label));
+      // How many project snapshots, and distinct states of the project, the editor still held at the reading.
+      // The last count made for the reading (markHeld counts again when a snapshot arrived meanwhile); one the editor
+      // could not make (it was never asked to follow them) is missing, never a zero.
+      const held = trace.all('editor.held', heldAt(label)).at(-1);
+      const counted = held && typeof held.attrs?.snapshots === 'number' && typeof held.attrs?.states === 'number' ? held : undefined;
+      if (m.need(`editor.held ${label}`, counted)) {
+        m.count(`held.${label}.snapshots`, counted!.attrs!.snapshots as number);
+        m.count(`held.${label}.states`, counted!.attrs!.states as number);
+      }
+    }
+    growthMetrics(m, 'panelEdits', reading('edit0'), reading(`edit${PANEL_EDITS}`));
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // canvas
 // ---------------------------------------------------------------------------
 
@@ -5868,7 +6065,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, noWindow];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
@@ -5881,9 +6078,7 @@ export function chainFor(names: string[]): Scenario[] {
   const memoryAsked = names.filter((n) => byName.get(n)?.memory);
   if (memoryAsked.length && memoryAsked.length !== names.length && names.every((n) => byName.has(n)))
     throw new Error(`Memory scenarios (${memoryAsked.join(', ')}) are run on their own: their waits and garbage collections would change the numbers of ${names.filter((n) => !memoryAsked.includes(n)).join(', ')}. Run them in a separate perf:run.`);
-  // Each starts from the fixture as it is put back and a fresh Welcome: one after another would find what the first left.
-  const distinct = [...new Set(memoryAsked)];
-  if (distinct.length > 1) throw new Error(`Memory scenarios (${distinct.join(', ')}) are run one at a time: each reads the app from a fresh Welcome on the fixture as it was put back, and one run after another would start from what the one before left. Run each in its own perf:run.`);
+  if (new Set(memoryAsked).size > 1) throw new Error(`Memory scenarios (${[...new Set(memoryAsked)].join(', ')}) are run one at a time: each opens the fixture as the warm-up left it, which the one before would have changed. Run each in a perf:run of its own.`);
   for (const name of names) {
     let s = byName.get(name);
     if (!s) throw new Error(`Unknown scenario "${name}". Scenarios: ${SCENARIOS.map((x) => x.name).join(', ')}.`);
