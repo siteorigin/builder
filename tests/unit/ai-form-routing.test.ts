@@ -8,18 +8,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 
 const env = vi.hoisted(() => ({ userData: '' }));
 vi.mock('electron', () => ({ app: { getPath: () => env.userData, isPackaged: false } }));
 
 const { createStarterState } = await import('@catalogue/starters');
 const { applyOperations } = await import('@engine/apply');
+const { makeInstance } = await import('@engine/install');
+const { formRoutingChanges, formRoutingGrant, formRoutingQuestion, formRoutingReview } = await import('@engine/form-routing');
 const { ProjectSession } = await import('../../src/main/project/session');
 
 const FORM = 'foundation.contact.form';
 const SALES = 'https://forms.example.com/sales';
+const SUPPORT = 'https://forms.example.com/support';
 const EVIL = 'https://evil.example/f';
+const LAYOUT: OwnerRef = { kind: 'template', id: 'posts' };
 
 const dirs: string[] = [];
 const temp = (name: string) => {
@@ -41,6 +45,199 @@ function project() {
   return { state, owner, form: r.results[0].nodeId as string };
 }
 
+/**
+ * The same site with "Contact band" placed on it too: a design around a form that passes its own `recipient` on as
+ * the form's endpoint, placed for Support.
+ */
+function banded() {
+  const { state: start, owner, form } = project();
+  let state = start;
+  const step = (ops: EditOperation[]) => {
+    const r = applyOperations(state, ops);
+    state = r.state;
+    return r.results;
+  };
+  const section = step([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }])[0].nodeId as string;
+  step([{ type: 'node.insert', owner, parentId: section, slot: 'content', componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SUPPORT } }]);
+  const band = step([{ type: 'component.createFromNode', owner, nodeId: section, name: 'Contact band' }])[0].definitionId as string;
+  const inner = Object.values(state.components[band].tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === FORM)!.id;
+  step([
+    { type: 'component.setPropSchema', definitionId: band, prop: 'recipient', schema: { type: 'string', label: 'Recipient', default: '' } },
+    { type: 'node.setBinding', owner: { kind: 'component', id: band }, nodeId: inner, field: 'prop', prop: 'endpoint', binding: { $prop: 'recipient' } }
+  ]);
+  const support = step([{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { recipient: SUPPORT } }])[0].nodeId as string;
+  return { state, owner, form, band, inner, support };
+}
+
+/** What an AI batch, applied to `state`, changes about where a form sends: each change's kind, setting and value. */
+function changes(state: ProjectState, ops: EditOperation[]) {
+  return formRoutingChanges(state, applyOperations(state, ops).state).map((c) => [c.kind, c.prop ?? null, c.value ?? null]);
+}
+
+describe('where a form sends, as an AI batch would leave it', () => {
+  it('is a form’s service and its settings, and nothing else about the form', () => {
+    const { state, owner, form } = project();
+    const set = (prop: string, value: unknown): EditOperation => ({ type: 'instance.setProp', owner, nodeId: form, prop, value });
+    expect(changes(state, [set('endpoint', EVIL)])).toEqual([['setting', 'endpoint', EVIL]]);
+    expect(changes(state, [set('endpoint', '')])).toEqual([['setting', 'endpoint', '']]);
+    expect(changes(state, [set('provider', 'web3forms')])).toEqual([['setting', 'provider', 'web3forms']]);
+    expect(changes(state, [set('accessKey', 'key-1')])).toEqual([['setting', 'accessKey', 'key-1']]);
+    expect(changes(state, [set('formName', 'enquiries')])).toEqual([['setting', 'formName', 'enquiries']]);
+    // Its heading, copy, fields and looks are ordinary edits.
+    const fields = (state.pages[owner.id].nodes[form] as InstanceNode).props.fields as Array<Record<string, unknown>>;
+    expect(changes(state, [set('heading', 'Write to us'), set('lead', 'We reply within a day.'), set('submitLabel', 'Send')])).toEqual([]);
+    expect(changes(state, [set('fields', [...fields.slice(0, 2), { ...fields[2], label: 'Mobile' }])])).toEqual([]);
+    expect(changes(state, [{ type: 'node.setStyle', owner, nodeId: form, scope: 'base', property: 'paddingBlock', value: '2rem' } as EditOperation])).toEqual([]);
+    // Removing a form sends nothing anywhere.
+    expect(changes(state, [{ type: 'node.remove', owner, nodeId: form }])).toEqual([]);
+  });
+
+  it('lets in a fresh form from the library, and copies of one already placed', () => {
+    const blank = createStarterState('blank', 'Forms', false);
+    const home: OwnerRef = { kind: 'page', id: blank.site.homePageId };
+    // The theme's form is installed with its first placement, with the defaults the app ships.
+    expect(changes(blank, [{ type: 'node.insert', owner: home, parentId: null, componentId: 'contact.form', props: { heading: 'Say hello' } }])).toEqual([]);
+    expect(changes(blank, [{ type: 'node.insert', owner: home, parentId: null, componentId: 'contact.form', props: { endpoint: EVIL } }])).toEqual([['setting', 'endpoint', EVIL]]);
+    const { state, owner, form } = project();
+    expect(changes(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form' }])).toEqual([]);
+    expect(changes(state, [{ type: 'node.duplicate', owner, nodeId: form }])).toEqual([]);
+    expect(changes(state, [{ type: 'page.duplicate', pageId: owner.id }])).toEqual([]);
+    expect(changes(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }])).toEqual([]);
+    expect(changes(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: EVIL } }])).toEqual([['setting', 'endpoint', EVIL]]);
+  });
+
+  it('never puts together a new form from settings of different forms', () => {
+    const { state: start, owner, form } = project();
+    // Sales keeps an old Web3Forms key it no longer uses; another form uses Web3Forms with a key of its own.
+    let state = applyOperations(start, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'accessKey', value: 'old-key' }]).state;
+    state = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'web3forms', accessKey: 'new-key' } }]).state;
+    // Each setting was the host's somewhere, but not together: this form would send with the key Sales left unused.
+    expect(changes(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'web3forms', accessKey: 'old-key' } }])).toEqual([
+      ['setting', 'accessKey', 'old-key'],
+      ['setting', 'provider', 'web3forms']
+    ]);
+    expect(changes(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'web3forms', accessKey: 'new-key' } }])).toEqual([]);
+  });
+
+  it('follows a setting through a design that passes it on: its placements, its defaults and what it passes', () => {
+    const { state, owner, band, inner, support } = banded();
+    expect(changes(state, [{ type: 'instance.setProp', owner, nodeId: support, prop: 'recipient', value: EVIL }])).toEqual([['setting', 'recipient', EVIL]]);
+    // A design's default, which new placements start with: the band the design was made from has no recipient of its
+    // own, so it would send there too.
+    const evil: EditOperation = { type: 'component.setPropSchema', definitionId: band, prop: 'recipient', schema: { type: 'string', label: 'Recipient', default: EVIL } };
+    expect(changes(state, [evil])).toEqual([
+      ['setting', 'recipient', EVIL],
+      ['default', 'recipient', EVIL]
+    ]);
+    // Even once every placement has its own.
+    const own = applyOperations(state, [{ type: 'instance.setProp', owner, nodeId: state.pages[owner.id].rootIds.find((id) => id !== support && (state.pages[owner.id].nodes[id] as InstanceNode).definitionId === band)!, prop: 'recipient', value: SUPPORT }]).state;
+    expect(changes(own, [evil])).toEqual([['default', 'recipient', EVIL]]);
+    // What the design passes on to its form, inside the design itself.
+    const design: OwnerRef = { kind: 'component', id: band };
+    const unbind: EditOperation = { type: 'node.setBinding', owner: design, nodeId: inner, field: 'prop', prop: 'endpoint', binding: null };
+    expect(changes(state, [unbind, { type: 'instance.setProp', owner: design, nodeId: inner, prop: 'endpoint', value: EVIL }])).toEqual([['setting', 'endpoint', EVIL]]);
+    expect(changes(state, [{ type: 'instance.setProp', owner: design, nodeId: inner, prop: 'heading', value: 'Talk to support' }])).toEqual([]);
+    // A new placement of the design sends where one already does, or nowhere.
+    expect(changes(state, [{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { recipient: SUPPORT } }])).toEqual([]);
+    expect(changes(state, [{ type: 'node.insert', owner, parentId: null, definitionId: band }])).toEqual([]);
+    expect(changes(state, [{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { recipient: EVIL } }])).toEqual([['setting', 'recipient', EVIL]]);
+  });
+
+  it('checks a new design as it is built, and lets one built around a form keep where it sends', () => {
+    const { state, owner } = project();
+    const built = (endpoint: string) => [
+      { type: 'node.insert', owner, parentId: null, componentId: 'layout.section', newNodeId: 'n_aisect1' },
+      { type: 'node.insert', owner, parentId: 'n_aisect1', slot: 'content', componentId: 'contact.form', props: { provider: 'endpoint', endpoint } },
+      { type: 'component.createFromNode', owner, nodeId: 'n_aisect1', name: 'Enquiry band' }
+    ] as EditOperation[];
+    expect(changes(state, built(SALES))).toEqual([]);
+    expect(changes(state, built(EVIL))).toEqual([['setting', 'endpoint', EVIL]]);
+  });
+
+  it('keeps a form’s settings across a change of theme, and checks what the new theme’s form starts with', () => {
+    const { state: start, owner } = project();
+    const state = applyOperations(start, [{ type: 'theme.apply', themeId: 'foundation' } as EditOperation]).state;
+    // Each theme ships its own form: switching swaps the placement for it, with its settings as they were.
+    expect(changes(state, [{ type: 'theme.apply', themeId: 'editorial' } as EditOperation])).toEqual([]);
+    const editorial = applyOperations(state, [{ type: 'theme.apply', themeId: 'editorial' } as EditOperation]).state;
+    expect(changes(editorial, [{ type: 'theme.apply', themeId: 'signal' } as EditOperation])).toEqual([]);
+    // Swapped by hand into a design of the project's own, nothing says where that sends what carries over.
+    const placed = Object.keys(state.pages[owner.id].nodes).find((id) => (state.pages[owner.id].nodes[id] as InstanceNode).definitionId === FORM)!;
+    const copy = structuredClone(state);
+    copy.components.cmp_myform = { ...structuredClone(copy.components[FORM]), id: 'cmp_myform', owner: 'project', name: 'My form' };
+    expect(formRoutingChanges(copy, applyOperations(copy, [{ type: 'instance.swapComponent', owner, nodeId: placed, definitionId: 'cmp_myform', allowDrops: true } as EditOperation]).state).map((c) => c.kind)).toEqual(['design']);
+  });
+
+  it('checks a collection’s layout', () => {
+    let state = applyOperations(createStarterState('business', 'Studio', false), [{ type: 'collection.create', collectionId: 'posts' } as EditOperation]).state;
+    const r = applyOperations(state, [{ type: 'node.insert', owner: LAYOUT, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }]);
+    state = r.state;
+    const form = r.results[0].nodeId as string;
+    expect(changes(state, [{ type: 'instance.setProp', owner: LAYOUT, nodeId: form, prop: 'endpoint', value: EVIL }])).toEqual([['setting', 'endpoint', EVIL]]);
+    expect(changes(state, [{ type: 'instance.setProp', owner: LAYOUT, nodeId: form, prop: 'heading', value: 'Ask about this post' }])).toEqual([]);
+  });
+
+  it('reads an item’s field from the list the form repeats in', () => {
+    // "Office forms": one design, two lists of inboxes, a form repeated per Sales office reading each office's inbox.
+    const { state: start } = project();
+    const state = structuredClone(start);
+    const form = makeInstance(state.components[FORM], { provider: 'endpoint', endpoint: { $item: 'inbox' } });
+    const sales = { id: 'n_offsal1', kind: 'repeat', list: { $prop: 'sales' }, children: [form.id] };
+    const support = { id: 'n_offsup1', kind: 'repeat', list: { $prop: 'support' }, children: [] as string[] };
+    const root = { id: 'n_offroot', kind: 'element', tag: 'div', children: [sales.id, support.id] };
+    const list = { type: 'list', label: 'Offices', itemLabel: 'Office', fields: { inbox: { type: 'string', label: 'Inbox', default: '' } }, default: [] };
+    state.components['project.offices'] = {
+      schemaVersion: 1,
+      id: 'project.offices',
+      componentId: 'project.offices',
+      contractVersion: 1,
+      kind: 'managed',
+      owner: 'project',
+      name: 'Office forms',
+      description: '',
+      category: 'custom',
+      tags: [],
+      properties: { sales: list, support: list },
+      parts: { root: { nodeId: root.id, label: 'Root' } },
+      tree: { rootIds: [root.id], nodes: { [root.id]: root, [sales.id]: sales, [support.id]: support, [form.id]: form } }
+    } as unknown as ComponentDefinition;
+    // Moved to the other repeat, the same form with the same binding reads Support's inboxes.
+    const moved = structuredClone(state);
+    const nodes = moved.components['project.offices'].tree!.nodes as Record<string, { children?: string[] }>;
+    nodes[sales.id].children = [];
+    nodes[support.id].children = [form.id];
+    expect(formRoutingChanges(state, moved).map((c) => [c.kind, c.prop])).toEqual([['setting', 'endpoint']]);
+    expect(formRoutingChanges(state, structuredClone(state))).toEqual([]);
+  });
+
+  it('never lets code that places a form be written, nor a form’s own code', () => {
+    const { state } = project();
+    const code = (id: string, source: string, dependencies: string[]) =>
+      ({ id, name: 'Code band', kind: 'code', owner: 'project', source, dependencies, properties: {} }) as unknown as ComponentDefinition;
+    // Code with no properties of its own, placing a form with whatever it likes in its source.
+    const placing = structuredClone(state);
+    placing.components.cmp_codeband = code('cmp_codeband', '<script>/* a form */</script>', [FORM]);
+    expect(formRoutingChanges(state, placing).map((c) => [c.kind, c.definitionId])).toEqual([['code', 'cmp_codeband']]);
+    const rewritten = structuredClone(placing);
+    rewritten.components.cmp_codeband.source = '<script>/* another form */</script>';
+    expect(formRoutingChanges(placing, rewritten).map((c) => c.kind)).toEqual(['code']);
+    // Code that has nothing to do with a form is not this check's.
+    const plain = structuredClone(state);
+    plain.components.cmp_clock = code('cmp_clock', '<script>/* a clock */</script>', []);
+    expect(formRoutingChanges(state, plain)).toEqual([]);
+  });
+
+  it('is asked about in the app’s own words, naming each change', () => {
+    const { state, owner, form } = project();
+    const found = formRoutingChanges(state, applyOperations(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL }]).state);
+    const q = formRoutingQuestion(found);
+    expect(q.text).toContain(EVIL);
+    expect(q.text).toContain('“Home”');
+    expect(q.choices).toEqual(['Keep it as it is', 'Allow this change']);
+    expect(q.allow).toBe(q.choices[1]);
+  });
+});
+
 const endpointOf = (state: ProjectState, owner: OwnerRef, nodeId: string) => (state.pages[owner.id].nodes[nodeId] as InstanceNode).props.endpoint;
 
 describe('an AI batch at commit', () => {
@@ -51,7 +248,29 @@ describe('an AI batch at commit', () => {
     const r = await s.apply({ operations: ops }, { label: 'AI', source: 'ai' });
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('SCOPE_MISMATCH');
+    expect(r.error?.message).toMatch(/Only the user can allow a change to where a contact form sends/);
+    expect(formRoutingReview(r.error)?.changes.map((c) => c.prop)).toEqual(['endpoint']);
     expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    expect(s.revision).toBe(0);
+    await s.close();
+  });
+
+  it('commits a batch the user allowed, exactly as they allowed it, new IDs and all', async () => {
+    const { state, owner } = project();
+    const s = await ProjectSession.create(temp('session'), state);
+    // A new form, with new node and field IDs each time the batch is made.
+    const ops: EditOperation[] = [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: EVIL } }];
+    const first = await s.apply({ operations: ops }, { label: 'AI', source: 'ai' });
+    const review = formRoutingReview(first.error);
+    expect(review?.changes.map((c) => [c.kind, c.prop, c.value])).toEqual([['setting', 'endpoint', EVIL]]);
+    // A grant is for the batch it was given for: the same changes from another batch, or other changes, land nothing.
+    const other: EditOperation[] = [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: EVIL, heading: 'Hi' } }];
+    expect((await s.apply({ operations: other }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) })).ok).toBe(false);
+    expect((await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: { operations: review!.operations, changes: ['something else'] } })).ok).toBe(false);
+    expect(s.revision).toBe(0);
+    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) });
+    expect(allowed.error).toBeUndefined();
+    expect(Object.values(s.state.pages[owner.id].nodes).filter((n) => n.kind === 'instance' && n.definitionId === FORM && n.props.endpoint === EVIL)).toHaveLength(1);
     await s.close();
   });
 

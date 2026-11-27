@@ -11,6 +11,13 @@ import { enclosingRepeatProp } from './tree';
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** A setting's value as text to compare, `undefined` included. */
+export const routingText = (value: unknown) => (value === undefined ? 'undefined' : JSON.stringify(value));
+/** A design's default for one of its properties, or undefined when it has no such property. */
+export const propDefault = (def: ComponentDefinition | undefined, prop: string): unknown => (def && Object.hasOwn(def.properties, prop) ? (def.properties[prop] as { default?: unknown }).default : undefined);
+/** The values (as routingText) that send a form nowhere: a setting left empty. */
+export const EMPTY_ROUTING = new Set(['undefined', 'null', '""']);
+
 /** A form's settings that decide where its messages go: the service it uses, and that service's own setting. */
 export const FORM_ROUTING_PROPS: readonly string[] = ['provider', ...new Set(Object.values(FORM_SERVICES).map((s) => s.prop))];
 
