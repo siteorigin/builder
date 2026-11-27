@@ -72,16 +72,17 @@ for (const key of baseline.keys()) assert.match(key, / 390px small-tap-target /,
 
 step('Site styles switches the project to Signal and shows its built thumbnail');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
-const meta = win.locator('#dock-panel-styles .ss-theme-meta');
+const meta = win.locator('#dock-panel-styles .ss-theme');
 await meta.waitFor();
-const shot = meta.locator('img.ss-theme-shot');
-await eventually(async () => assert.equal(await shot.getAttribute('data-theme'), 'foundation', 'Foundation’s thumbnail shows first'), 15000);
-await meta.getByLabel('Theme').selectOption('signal');
-await eventually(async () => assert.deepEqual((await snapshot()).themeLock.theme, { id: 'signal', version: '0.1.0' }, 'the site is on Signal'));
-await shows(/Sora Variable/);
+// The chooser pictures every theme by its own thumbnail; picking Signal shows it larger before the switch.
+await meta.getByRole('button', { name: 'Change theme' }).click();
+const signalRow = meta.locator('[data-theme-option="signal"]');
+await eventually(async () => assert.equal(await signalRow.locator('img.ss-theme-shot').getAttribute('data-theme'), 'signal', 'Signal’s row shows its own thumbnail'), 15000);
+await signalRow.click();
+const shot = meta.locator('.ss-theme-preview img.ss-theme-shot');
+await eventually(async () => assert.equal(await shot.getAttribute('data-theme'), 'signal', 'the picked theme is pictured before the switch'), 15000);
 await eventually(
   async () => {
-    assert.equal(await shot.getAttribute('data-theme'), 'signal');
     const img = await shot.evaluate((i) => ({ src: i.src, ok: i.complete && i.naturalWidth === 320 }));
     assert.ok(img.ok, 'the thumbnail is a decoded image');
     assert.equal(img.src, shotUrl(manifest.previews['hero.split'].default), 'it is Signal’s own split hero, as its release drew it');
@@ -89,6 +90,10 @@ await eventually(
   15000
 );
 await meta.screenshot({ path: join(SHOTS, 'signal-site-styles.png') });
+await meta.getByRole('button', { name: 'Use Signal' }).click();
+await eventually(async () => assert.deepEqual((await snapshot()).themeLock.theme, { id: 'signal', version: '0.1.0' }, 'the site is on Signal'));
+await shows(/Sora Variable/);
+await eventually(async () => assert.match(await meta.locator('.ss-theme-receipt').innerText(), /Switched from Foundation/, 'the card says the switch happened, with its Undo'));
 
 step('the pages hold what they held, now drawn by Signal');
 const onSignal = await snapshot();

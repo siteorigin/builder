@@ -89,11 +89,13 @@ const pkgBefore = readFileSync(join(site, 'package.json'));
 const lockBefore = readFileSync(join(site, 'package-lock.json'));
 assert.ok(!JSON.parse(pkgBefore.toString()).devDependencies['@fontsource-variable/inter'], 'new projects install no font packages');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
-const styles = win.locator('#dock-panel-styles .ss-theme-meta');
+const styles = win.locator('#dock-panel-styles .ss-theme');
 await styles.waitFor();
-await styles.locator('.ss-packs-refused summary').click();
-assert.match(await styles.locator('.ss-packs-refused').innerText(), /broken[^]*not valid JSON[^]*packs/, 'Site styles lists the refused pack, why, and where packs are read from');
-await styles.getByLabel('Theme').selectOption('atelier');
+await styles.locator('.ss-packs-refused').getByRole('button', { name: 'Show why' }).click();
+assert.match(await styles.locator('.ss-packs-refused').innerText(), /couldn’t be loaded[^]*broken[^]*not valid JSON[^]*packs/, 'Site styles lists the refused pack, why, and where packs are read from');
+await styles.getByRole('button', { name: 'Change theme' }).click();
+await styles.locator('[data-theme-option="atelier"]').click();
+await styles.getByRole('button', { name: 'Use Atelier' }).click();
 await eventually(async () => assert.deepEqual((await snapshot()).themeLock.theme, { id: 'atelier', version: '1.0.0', digest }, 'the installed pack is pinned to its exact release'));
 const fonts = join(site, 'src', 'lib', 'siteorigin', 'fonts');
 await eventually(async () => {

@@ -16,35 +16,92 @@
   .ss-head .insp-jump button[aria-current='location'] { background: var(--accent-soft); font-weight: 600; }
   .ss-intro { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-bottom: 1px solid var(--border); }
   .ss-intro .scope-note { font-size: 12px; line-height: 1.4; padding: 7px 10px; }
-  /* The theme card: what the site is built on, how it looks, and how far it has moved from it. */
-  .ss-theme { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--border), var(--shadow-sm); }
+  /* The theme card: what the site is built on, a deliberate way to move to another theme, and how far it has moved. */
+  .ss-theme { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--border), var(--shadow-sm); }
   .ss-theme-id { display: flex; align-items: center; gap: 12px; min-width: 0; }
-  /* A tiny page in the site's own colours and display font: a heading, a button and the palette. */
-  .ss-look { display: flex; flex-direction: column; justify-content: center; gap: 5px; width: 64px; height: 64px; flex: none; padding: 0 9px; overflow: hidden; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.1), 0 0 0 1px var(--border); }
+  /* A tiny page in the site's own colours and display font: a heading, a button and the palette. Its edges are drawn
+     in the site's text colour, so they hold on any background the site has. */
+  .ss-look { display: flex; flex-direction: column; justify-content: center; gap: 5px; width: 64px; height: 64px; flex: none; padding: 0 9px; overflow: hidden; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 12%, transparent), 0 0 0 1px var(--border); }
   .ss-look-type { font-size: 22px; line-height: 1; }
   .ss-look-button { width: 30px; height: 7px; border-radius: 99px; }
   .ss-look-dots { display: flex; gap: 3px; }
-  .ss-look-dots i { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15); }
-  .ss-theme-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-  /* The theme's own split hero, as drawn when the pack was built: the top of it, in a wide frame. */
-  .ss-theme-shot { display: block; width: 100%; aspect-ratio: 2 / 1; object-fit: cover; object-position: top; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
+  .ss-look-dots i { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent); }
+  .ss-theme-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .ss-eyebrow { font-size: 12px; font-weight: 500; color: var(--text-3); }
-  .ss-theme-name { font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
+  /* The name, then its release, quieter, on the same line. */
+  .ss-theme-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
   .ss-theme-name strong { font-weight: 600; }
   .ss-theme-version { font-size: 12px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .ss-theme-desc { font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  .ss-theme-switch { width: 100%; height: 30px; margin: 3px 0 4px; font-size: 13px; font-weight: 600; }
-  .ss-theme-hint { font-size: 12px; line-height: 1.4; color: var(--text-3); }
-  .ss-packs-refused { font-size: 12px; color: var(--text-2); }
-  .ss-packs-refused summary { cursor: pointer; color: var(--red); }
-  .ss-packs-refused ul { margin: 4px 0; padding-left: 16px; }
-  .ss-packs-refused li { margin: 2px 0; overflow-wrap: anywhere; }
-  .ss-packs-refused p { margin: 4px 0 0; overflow-wrap: anywhere; }
+  .ss-theme-desc { margin-top: 2px; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  .ss-theme .scope-note { font-size: 12px; line-height: 1.45; }
+  /* Change theme: a disclosure in the card's own look (the same as Review), with how many themes it holds. */
+  .ss-theme-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+  .ss-theme-actions .btn svg, .ss-changes-row .btn svg { width: 13px; height: 13px; }
+  .ss-theme-count { font-size: 12px; color: var(--text-3); }
+  /* The chooser: every installed theme as its picture, name and line, the one in use marked. Picking only picks. */
+  .ss-theme-chooser { display: flex; flex-direction: column; gap: 10px; }
+  .ss-theme-chooser[hidden] { display: none; }
+  .ss-theme-options { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+  .ss-theme-legend { margin-bottom: 4px; padding: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+  .ss-theme-option { position: relative; display: grid; grid-template-columns: 16px 96px minmax(0, 1fr); align-items: center; gap: 8px; padding: 6px 6px 6px 8px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); cursor: pointer; }
+  .ss-theme-options:disabled .ss-theme-option { cursor: default; }
+  .ss-theme-option:hover { background: var(--hover); }
+  .ss-theme-option input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+  /* The picked theme takes the raised face and a full accent ring; focus is the house ring around the whole row. */
+  .ss-theme-option:has(input:checked) { background: var(--raised); box-shadow: 0 0 0 1.5px var(--accent); }
+  /* The radio itself: a 3:1 ring, filled with the accent when picked, so picking never rests on the row's ring alone. */
+  .ss-theme-radio { width: 16px; height: 16px; border-radius: 50%; background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-control); }
+  .ss-theme-option:has(input:checked) .ss-theme-radio { background: var(--raised); box-shadow: inset 0 0 0 5px var(--accent-fill); }
+  .ss-theme-option:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .ss-theme-option-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ss-theme-option-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 13px; line-height: 1.3; color: var(--text); overflow-wrap: anywhere; }
+  .ss-theme-option-name strong { font-weight: 600; }
+  .ss-theme-option-desc { font-size: 12px; line-height: 1.35; color: var(--text-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+  /* A word about the theme beside its name (Current, Not installed): neutral, never a hue. */
+  .ss-theme-chip { align-self: center; padding: 0 5px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border-strong); font-size: 11px; font-weight: 500; line-height: 16px; color: var(--text-2); white-space: nowrap; }
+  /* The theme's own split hero, as drawn when the pack was built: the top of it, in a small wide frame. */
+  .ss-theme-shot { display: block; width: 96px; aspect-ratio: 2 / 1; object-fit: cover; object-position: top left; border-radius: var(--r-xs); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
+  .ss-theme-sketch { display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 0 10px; overflow: hidden; font-size: 18px; line-height: 1; }
+  .ss-theme-sketch i { width: 24px; height: 6px; border-radius: 99px; }
+  .ss-theme-option:has(input:checked) .ss-theme-option-desc { display: block; overflow: visible; }
+  /* The picked theme, before the switch: as its pack draws it, and in the site's own colours and font. */
+  .ss-theme-preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; align-items: start; }
+  .ss-theme-preview[data-single] { grid-template-columns: minmax(0, 1fr); }
+  .ss-theme-preview[data-single] .ss-theme-sample { aspect-ratio: 3 / 1; }
+  .ss-theme-preview figure { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0; }
+  .ss-theme-preview .ss-theme-shot { width: 100%; }
+  /* The site's name in the theme's display font, its button and palette, framed like the pack's picture beside it. */
+  .ss-theme-sample { display: flex; flex-direction: column; justify-content: center; gap: 6px; aspect-ratio: 2 / 1; min-width: 0; padding: 0 10px; overflow: hidden; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 12%, transparent), 0 0 0 1px var(--border); }
+  .ss-theme-sample-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 14px; line-height: 1.15; text-wrap: balance; overflow-wrap: anywhere; }
+  .ss-theme-sample-row { display: flex; align-items: center; gap: 8px; }
+  .ss-theme-sample-button { padding: 2px 8px; border-radius: 99px; font-size: 10px; font-weight: 600; line-height: 1.4; }
+  .ss-theme-preview figcaption { font-size: 11px; line-height: 1.3; color: var(--text-3); }
+  .ss-theme-what { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+  .ss-theme-confirm { display: flex; flex-wrap: wrap; gap: 6px; scroll-margin-bottom: 14px; }
+  /* What the switch just did, with its own Undo, until the site moves to another theme. */
+  .ss-theme-receipt { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .ss-theme-receipt > svg { flex: none; width: 13px; height: 13px; margin-top: 2px; color: var(--text-2); }
+  .ss-theme-receipt > span { flex: 1; min-width: 0; }
+  /* Why the site's theme blocks editing: the reason, what to do, and where installed themes go. */
+  .ss-theme-blocked { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .ss-theme-reason { display: block; margin-top: 4px; color: var(--text-2); overflow-wrap: anywhere; }
+  .ss-theme-reason[hidden] { display: none; }
+  .ss-theme-folder { margin: 0; color: var(--text-2); }
+  .ss-theme-folder code { display: block; margin-top: 2px; font-family: var(--mono); font-size: 11px; line-height: 1.4; color: var(--text); overflow-wrap: break-word; }
+  /* Installed themes that could not be loaded: a quiet note, its reasons behind Show why. */
+  .ss-packs-refused > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .ss-packs-refused ul { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .ss-packs-refused li { display: flex; flex-direction: column; overflow-wrap: anywhere; }
+  .ss-packs-refused li strong { color: var(--text); font-weight: 600; }
+  /* The loader's own words, for whoever made the theme: set apart from the owner's instruction above them. */
+  .ss-packs-detail { font-family: var(--mono); font-size: 11px; line-height: 1.4; color: var(--text-2); }
+  .ss-packs-why { display: flex; flex-direction: column; gap: 6px; }
+  .ss-packs-why[hidden] { display: none; }
+  .ss-packs-refused .ss-packs-fix { margin: 0; color: var(--text); }
   /* Changes from the theme, at the foot of its card: a count, a review list and one undoable reset. */
-  .ss-changes { display: flex; flex-direction: column; gap: 4px; margin: 4px -12px -4px; padding: 8px 12px 0; border-top: 1px solid var(--border); }
+  .ss-changes { display: flex; flex-direction: column; gap: 4px; margin: 0 -12px -4px; padding: 8px 12px 0; border-top: 1px solid var(--border); }
   .ss-changes-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; font-size: 13px; color: var(--text-2); }
   .ss-changes-row strong { color: var(--text); font-weight: 600; }
-  .ss-changes-row .btn svg { width: 13px; height: 13px; }
   .ss-flip { transform: rotate(180deg); }
   .ss-review { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
   .ss-review li { display: grid; grid-template-columns: minmax(0, 1fr) 24px; column-gap: 6px; padding: 6px 0; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.4; }
@@ -261,7 +318,7 @@
   .ss-group-head .ss-css-toggle { font-weight: 500; }
   .ss-contrast-block { scroll-margin-top: 150px; }
   /* No word left alone on a line in the panel's running text. */
-  .ss :is(.ss-desc, .ss-contrast-note, .ss-flag > span, .ss-theme-desc, .ss-theme-hint, .ss-size-note, .ss-custom-intro, .ss-custom-where, .ss-hover-note, .field-hint) { text-wrap: pretty; }
+  .ss :is(.ss-desc, .ss-contrast-note, .ss-flag > span, .ss-theme-desc, .ss-size-note, .ss-custom-intro, .ss-custom-where, .ss-hover-note, .field-hint) { text-wrap: pretty; }
   .ss-contrast-fix .btn { text-wrap: balance; }
   .ss-contrast-block:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: var(--r-sm); }
   .ss-size > .ss-border { align-self: stretch; }
