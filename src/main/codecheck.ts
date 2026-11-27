@@ -692,6 +692,7 @@ function itemHooks(ast: Node): ItemHook[] {
     const attr = around.findLastIndex((a) => a.type === 'Attribute');
     if (attr < 0 || around[attr].name !== 'class') return;
     const host = around[attr - 1];
+    // A plain read fails the website's build for the items not styled on their own (see unguardedItemReads).
     if (!hook.guarded) return void out.push({ part: hook.part, list: null, node: n, host, problem: 'unguarded' });
     const row = idOf(hook.key);
     // The nearest list around the hook that names its row, the hook inside its body (not its key or its fallback).
@@ -703,10 +704,29 @@ function itemHooks(ast: Node): ItemHook[] {
     const prop = local !== undefined ? propOf.get(local) : undefined;
     const keyed = !!each && idOf(each.key as Node) === row;
     const once = at >= 0 && around.every((a, i) => i === at || (a.type !== 'EachBlock' && !ELSEWHERE.has(String(a.type))));
-    // A name declared again on the way reads something else than the list or its row.
-    const shadowed = around.some((a) => a.type === 'Fragment' && (constNames(a).has(row!) || constNames(a).has(local!)));
+    // A name declared again on the way reads something else: the list around the loop, the row or the item classes
+    // inside it, and the item classes anywhere.
+    const shadowed = around.some((a, i) => a.type === 'Fragment' && [...constNames(a)].some((name) => name === 'so_oi' || (i < at ? name === local : name === row)));
     const list = taken && prop && keyed && once && !shadowed && !/^(so|slot)_/.test(prop) ? prop : null;
     out.push({ part: hook.part, list, node: n, host, ...(list ? {} : { problem: 'unplaced' as const }) });
+  });
+  return out;
+}
+
+/**
+ * Reads of the placement's item classes (so_oi, taken from $props()) that fail when a class is missing: the website is
+ * given item classes only for the items styled on their own, and none at all while none is, so every step of the read
+ * must be optional (so_oi?.[plan.id]?.card), wherever in the markup it is.
+ */
+function unguardedItemReads(ast: Node): Node[] {
+  if (propsLocals(ast).get('so_oi')?.local !== 'so_oi') return [];
+  const unwrap = (n: Node | undefined) => (n?.type === 'ChainExpression' ? (n.expression as Node) : n);
+  const isMap = (n: Node | undefined) => n?.type === 'Identifier' && n.name === 'so_oi';
+  const out: Node[] = [];
+  walkAst(ast.fragment, (n) => {
+    if (n.type !== 'MemberExpression' || n.optional) return;
+    const obj = unwrap(n.object as Node);
+    if (isMap(obj) || (obj?.type === 'MemberExpression' && isMap(unwrap(obj.object as Node)))) out.push(n);
   });
   return out;
 }
@@ -871,11 +891,12 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
   // One item's class reaches the part only for the list it is shown once per item of, read where the code repeats it.
   const hooks = itemHooks(ast);
   const lists = hookLists(hooks);
+  for (const n of unguardedItemReads(ast))
+    out.push({ severity: 'error', message: 'Read item classes as so_oi?.[plan.id]?.card, optional at every step: the website is given item classes only for the items styled on their own, so a plain read fails for the rest.', node: n });
   for (const h of hooks) {
     marked.add(h.part);
-    if (h.problem === 'unguarded')
-      out.push({ severity: 'error', message: `Read the “${h.part}” item class as so_oi?.[…]?.${h.part}: the website is given item classes only for the items styled on their own, so a plain read fails for the rest.`, node: h.node });
-    else if (h.list === null)
+    if (h.problem === 'unguarded') continue;
+    if (h.list === null)
       out.push({
         severity: 'warning',
         message: `Give the “${h.part}” part one item's class inside the list it repeats over, keyed by the item's ID ({#each plans as plan (plan.id)} … class={so_oi?.[plan.id]?.${h.part}}), with the list taken from $props() and inside no other list, snippet or component: otherwise its items are styled together.`,

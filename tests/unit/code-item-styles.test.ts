@@ -99,6 +99,11 @@ describe('a code component declares the list a part repeats over', () => {
     expect(await lists(SOURCE.replace('<ul>', '{#snippet cards(plans)}<ul>').replace('</ul>', '</ul>{/snippet}{@render cards(addons)}'))).toEqual({});
     expect(await lists(SOURCE.replace(', so_oi?.[plan.id]?.card', '').replace("<h3 class={so_o?.name}>{plan.name}</h3>", "{#each [1, 2] as n}<i class={[so_o?.card, so_oi?.[plan.id]?.card]}>{n}</i>{/each}"))).toEqual({});
     expect(await lists(SOURCE.replace("<li class=", "{@const plan = plans[0]}<li class="))).toEqual({});
+    expect(await lists(SOURCE.replace("<li class=", "{@const so_oi = {}}<li class="))).toEqual({});
+    // The list's name declared again inside the loop reads nothing the loop repeats over.
+    expect(await lists(SOURCE.replace("<li class=", "{@const plans = plan.name}<li class="))).toEqual({ card: 'plans' });
+    // Content given to a component renders wherever, and as often as, that component renders it.
+    expect(await lists(SOURCE.replace('<li class=', '<Wrap><li class=').replace('</li>', '</li></Wrap>').replace('</script>', "\timport Wrap from './Wrap.svelte';\n</script>"))).toEqual({});
     // An so_oi of the code's own is not the placement's.
     expect(await lists(SOURCE.replace(', so_oi = undefined', '').replace('</script>', '\tconst so_oi = {};\n</script>'))).toEqual({});
     expect(await lists(SOURCE.replace('(plan.id)', ''))).toEqual({});
@@ -111,8 +116,13 @@ describe('a code component declares the list a part repeats over', () => {
     expect(await lists(two)).toEqual({});
     const problems = await checkSvelteSource(two, { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' } } } });
     expect(problems.map((p) => p.message).join(' ')).toMatch(/more than one list/);
-    const plainRead = await checkSvelteSource(SOURCE.replace('so_oi?.[plan.id]?.card', 'so_oi[plan.id].card'), { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } } });
-    expect(plainRead.filter((p) => p.severity === 'error').map((p) => p.message).join(' ')).toMatch(/so_oi\?\.\[…\]\?\.card/);
+    const contract = { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } };
+    const readErrors = async (src: string) => (await checkSvelteSource(src, { contract })).filter((p) => p.severity === 'error').map((p) => p.message);
+    // A read that fails for a card styled with the rest, wherever it is and however it is written, is refused.
+    for (const bad of ['so_oi[plan.id].card', '(so_oi?.[plan.id]).card', 'so_oi?.[plan.id].card']) expect(await readErrors(SOURCE.replace('so_oi?.[plan.id]?.card', bad))).toEqual([expect.stringMatching(/optional at every step/)]);
+    expect(await readErrors(SOURCE.replace('<h3 class={so_o?.name}>', '<h3 class={so_o?.name} title={so_oi[plan.id].card}>'))).toHaveLength(1);
+    // The code's own so_oi is its own to read.
+    expect(await readErrors(SOURCE.replace(', so_oi = undefined', '').replace('so_oi?.[plan.id]?.card', 'so_oi[plan.id].card').replace('</script>', "\tconst so_oi = { p_basic: { card: 'x' } };\n</script>"))).toEqual([]);
     const itemOnly = await checkSvelteSource(SOURCE.replace("so_o?.card, ", ''), { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } } });
     expect(itemOnly.map((p) => p.message).join(' ')).toMatch(/shared class too/);
     const unkeyed = await checkSvelteSource(SOURCE.replace('(plan.id)', ''), { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } } });
@@ -132,7 +142,7 @@ describe('a code component declares the list a part repeats over', () => {
     const tiers = SOURCE.replace(/plans/g, 'tiers');
     const tierNames = (await codeContractNames(tiers))!;
     const switched = applyOperations(relabelled, [{ type: 'component.updateSource', definitionId: defId, source: tiers, properties: both } as EditOperation], { codeNames: () => tierNames });
-    expect(switched.state.components[defId].parts.card.list).toBe('tiers');
+    expect(switched.state.components[defId].parts.card).toEqual({ nodeId: 'card', label: 'Plan card', list: 'tiers' });
     // A list the component has no such property for is never declared.
     const other = (await codeContractNames(SOURCE.replace(/plans/g, 'tiers')))!;
     expect(other.lists).toEqual({ card: 'tiers' });
@@ -283,10 +293,10 @@ describe('one card’s style stays with its card and its list', () => {
 
   it('names an item with a comma or a percent sign, and finds it again', async () => {
     const { s: base, owner, list } = await pricing();
-    const s = applyOperations(base, [{ type: 'instance.setProp', owner, nodeId: list, prop: 'plans', value: [{ id: 'a,b%c', name: 'Odd' }, { id: 'p_pro', name: 'Pro' }] } as EditOperation]).state;
-    const card: ElementRef = { owner, instancePath: [list], nodeId: 'card', partId: 'card', itemPath: ['a,b%c'] };
+    const s = applyOperations(base, [{ type: 'instance.setProp', owner, nodeId: list, prop: 'plans', value: [{ id: 'a,b%c,%', name: 'Odd' }, { id: 'p_pro', name: 'Pro' }] } as EditOperation]).state;
+    const card: ElementRef = { owner, instancePath: [list], nodeId: 'card', partId: 'card', itemPath: ['a,b%c,%'] };
     const desc = descOf(s, card);
-    expect(desc.partItem).toBe('a%2Cb%25c');
+    expect(desc.partItem).toBe('a%2Cb%25c%2C%25');
     const placement = descOf(s, { owner, instancePath: [], nodeId: list });
     const chain = [{ ...desc, tag: 'li' }, { ...placement, code: true }];
     const first = selectionFromChain(s, chain, null, false);
