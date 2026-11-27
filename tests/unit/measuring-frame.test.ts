@@ -103,32 +103,64 @@ describe('the frame a page is measured in', () => {
     }
   }, 30000);
 
-  it.skipIf(!browserInstalled)('waits for an entrance under way to end, its next step too, and not for one that never does', async () => {
-    const style =
-      '<style>@keyframes in { from { transform: translateX(3000px); } } @keyframes again { from { transform: translateX(3000px); } } .in { animation: in 500ms linear; } .in.again { animation: again 500ms linear; } @keyframes spin { to { transform: rotate(1turn); } } .spin { width: 10px; height: 10px; animation: spin 1s linear infinite; }</style>';
-    // The second step starts as the first ends, from the same place off to the right.
-    const steps = `<script>addEventListener('animationend', (e) => { if (e.animationName === 'in') e.target.classList.add('again'); });</script>`;
-    const { browser, page } = await previewPage(`${style}<main data-so-node="n" data-so-ctx="page:p"><div class="in">Sliding in</div><div class="spin"></div></main>${steps}`);
+  /**
+   * A page whose entrance starts when the test says (so it is under way when the check begins), in one step or two, the
+   * second set off as the first ends, beside a spinner that never stops; the page tells the test as each step ends.
+   */
+  const entrancePage = (first: number, second: number, entrance = true) =>
+    '<style>@keyframes in { from { transform: translateX(3000px); } } @keyframes again { from { transform: translateX(3000px); } }' +
+    ` .in.go { animation: in ${first}ms linear; } .in.go.again { animation: again ${second}ms linear; }` +
+    ' @keyframes spin { to { transform: rotate(1turn); } } .spin { width: 10px; height: 10px; animation: spin 1s linear infinite; }</style>' +
+    `<main data-so-node="n" data-so-ctx="page:p">${entrance ? '<div class="in">Sliding in</div>' : ''}<div class="spin"></div></main>` +
+    `<script>addEventListener('message', (e) => { if (e.data && e.data.startEntrance) document.querySelector('.in')?.classList.add('go'); });` +
+    ` addEventListener('animationend', (e) => { parent.postMessage({ ended: e.animationName }, '*'); if (e.animationName === 'in' && ${second} > 0) e.target.classList.add('again'); });</script>`;
+  /**
+   * Start the page's entrance and check it at once, asking (or not, as the Insert panel's and Inspector's previews being
+   * sized do, with no field at all) for animations under way to be let end: the steps that had ended when the answer
+   * came, in the order the page said so, and the answer.
+   */
+  async function checkWhileEntering(body: string, askToLetEnd: boolean) {
+    const { browser, page } = await previewPage(body);
     try {
-      const report = await page.evaluate<{ documentWidth: number; viewportWidth: number; settled: { frame: number } }>(`new Promise((done, fail) => {
+      return await page.evaluate<{ ended: string[]; report: { documentWidth: number; viewportWidth: number; settled: { frame: number } } }>(`new Promise((done, fail) => {
         const frame = document.createElement('iframe');
         frame.name = 'so-entrance';
         Object.assign(frame.style, ${JSON.stringify(measuringFrameStyle(1280))});
         frame.src = 'http://preview.test/page';
-        frame.onload = () => frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-entrance', type: 'inspect', payload: { requestId: 'r', timing: true } }, '*');
+        const ended = [];
         window.addEventListener('message', (e) => {
-          if (e.source === frame.contentWindow && e.data?.type === 'inspectResult') done(e.data.payload.report);
+          if (e.source !== frame.contentWindow) return;
+          if (e.data?.ended) ended.push(e.data.ended);
+          if (e.data?.type === 'inspectResult') done({ ended: [...ended], report: e.data.payload.report });
         });
+        frame.onload = () => {
+          frame.contentWindow.postMessage({ startEntrance: true }, '*');
+          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-entrance', type: 'inspect', payload: { requestId: 'r', timing: true, ...(${askToLetEnd} ? { animations: true } : {}) } }, '*');
+        };
         setTimeout(() => fail(new Error('No inspection result.')), 12000);
         document.body.appendChild(frame);
       })`);
-      // Measured where the box comes to rest after both steps, not 3,000 px to its right, and before the 4 s deadline:
-      // the spinner is not waited for.
-      expect(report.documentWidth).toBeLessThanOrEqual(report.viewportWidth);
-      expect(report.settled.frame).toBeGreaterThan(800);
-      expect(report.settled.frame).toBeLessThan(3500);
     } finally {
       await browser.close();
     }
+  }
+
+  it.skipIf(!browserInstalled)('waits, when asked, for an entrance under way and the step it sets off to end, before measuring', async () => {
+    const { ended, report } = await checkWhileEntering(entrancePage(400, 400), true);
+    // Both steps had ended when it answered, so the box was measured where it comes to rest, not 3,000 px to its right.
+    expect(ended).toEqual(['in', 'again']);
+    expect(report.documentWidth).toBeLessThanOrEqual(report.viewportWidth);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('never waits for an animation that never ends, even when asked', async () => {
+    // Only the spinner runs: the answer comes after the page's frames, well before the 4 s deadline it would otherwise use.
+    const { report } = await checkWhileEntering(entrancePage(400, 0, false), true);
+    expect(report.settled.frame).toBeLessThan(3000);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('does not hold up a preview being sized, which asks again every 600 ms and keeps only the latest answer', async () => {
+    // A 3 s entrance has not ended when the answer comes: it was not waited for.
+    const { ended } = await checkWhileEntering(entrancePage(3000, 0), false);
+    expect(ended).toEqual([]);
   }, 30000);
 });
