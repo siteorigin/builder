@@ -861,7 +861,17 @@ export const OPERATION_SCHEMAS = {
   'component.setInsertAs': z
     .object({ type: z.literal('component.setInsertAs'), definitionId: z.string(), insertAs: z.enum(['section', 'element']).nullable() })
     .describe('Where Insert puts a new placement: one of a page\'s sections, or an element inside a layout; null lets the editor tell from the design.'),
-  'component.fork': z.object({ type: z.literal('component.fork'), definitionId: z.string() }),
+  // A project copy of a component that can be changed on its own (§8.4): for every placement, or only some.
+  'component.fork': z.object({
+    type: z.literal('component.fork'),
+    definitionId: z.string(),
+    placements: z
+      .array(z.object({ owner, nodeId: z.string() }))
+      .min(1)
+      .max(60)
+      .optional()
+      .describe('Only these move to the copy, sharing it; the rest keep the original. Without it, every placement moves.')
+  }),
   'component.convertToCode': z.object({ type: z.literal('component.convertToCode'), owner, nodeId: z.string(), name: z.string().max(60).optional() }),
   'component.createCode': z.object({
     type: z.literal('component.createCode'),

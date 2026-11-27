@@ -1874,6 +1874,8 @@ export class Orchestrator {
       selection: () => selected,
       definitionTarget: () => startDefinition,
       selectionLimited: () => authority.kind === 'selection',
+      selectionNarrow: () => authority.kind === 'selection' && (!!authority.part || authority.owner.kind === 'component'),
+      componentLimited: () => authority.kind === 'component',
       pageLimit: () => (authority.kind === 'page' ? { pageId: authority.pageId, label: authority.label } : null),
       entryLimit: () => (authority.kind === 'entry' ? { collectionId: authority.collectionId, entryId: authority.entryId, label: authority.label } : null),
       layoutLimit: () => (authority.kind === 'template' ? { owner: authority.owner, label: authority.label } : null),
