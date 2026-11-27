@@ -4644,6 +4644,7 @@ export class ProjectSession extends EventEmitter {
         // Written whole though its folder could not be flushed: it stands, and is finished like any other.
         const there = await this.versions.readPending().catch(() => null);
         if (!there || typeof there === 'string' || JSON.stringify(there) !== JSON.stringify(record)) throw e;
+        await this.versions.flushPending().catch(() => Promise.reject(e));
       });
     } catch (e) {
       // Not noted, or perhaps noted only part way (its folder could not be flushed): nothing is left to finish.
@@ -4664,9 +4665,10 @@ export class ProjectSession extends EventEmitter {
   private async pendingVersionBlocks(): Promise<string | null> {
     const r = await this.versions.recordPending().catch(() => null);
     if (r?.state === 'recorded' && r.op) this.emit('history');
-    if (r?.state !== 'pending') return null;
+    if (r?.state !== 'pending' && !(r?.state === 'unreadable' && r.retry)) return null;
     const git = versionsGit();
     if (!git || !(await git.enabled())) return null;
+    if (r.state === 'unreadable') return 'The version still being saved after a restore could not be read just now. Try again in a moment.';
     return `The site as restoring “${r.version}” left it is not in Saved versions yet. ${r.reason} Try again in a moment.`;
   }
 

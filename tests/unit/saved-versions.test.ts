@@ -1542,6 +1542,29 @@ describe('restoring with Git snapshots on (#1155)', () => {
     expect(readdirSync(join(theirs, '.siteorigin/versions')).filter((f) => f.startsWith('unrecorded-'))).toEqual([]);
   });
 
+  it('lets nothing go past a version still being saved whose record could not be read just then', async () => {
+    const { dir, s, first } = await changed();
+    const crash = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        if (existsSync(join(dir, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    await ok(s.restoreVersion(first.id!, s.revision));
+    crash.mockRestore();
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    chmodSync(join(dir, RECORDING), 0o000);
+    try {
+      expect(await s.saveVersion('Next')).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read just now/) });
+      expect(await s.deleteVersion(first.id!)).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read just now/) });
+    } finally {
+      chmodSync(join(dir, RECORDING), 0o644);
+    }
+    const next = await ok(s.saveVersion('Next'));
+    const row = catalogue(dir).find((v) => v.id === next.id)!;
+    expect((await openRepo(dir).readCommit(row.git!.commit)).parents).toEqual([pending.row.git.commit]);
+  });
+
   it('keeps an edit made outside the app while the site as restored is saved, and does not save it', async () => {
     const { dir, s, first } = await changed();
     const site = JSON.parse(read(dir, 'siteorigin/site.json').toString());

@@ -117,7 +117,7 @@ export type PendingOutcome =
   | { state: 'recorded'; op?: string }
   | { state: 'pending'; op: string; version: string; backup: string; reason: string }
   | { state: 'moved'; op: string; version: string; backup: string }
-  | { state: 'unreadable' };
+  | { state: 'unreadable'; retry?: boolean };
 
 function validPending(p: unknown): p is PendingVersion {
   if (!record(p) || typeof p.op !== 'string' || !ID_RE.test(p.op)) return false;
@@ -524,8 +524,8 @@ export class VersionStore {
   async recordPending(): Promise<PendingOutcome> {
     const p = await this.readPending();
     if (p === null) return { state: 'recorded' };
-    // Left where it is, to be read again: collect() keeps everything meanwhile.
-    if (p === 'failed') return { state: 'unreadable' };
+    // Left where it is, to be read again: collect() keeps everything meanwhile, and nothing goes past it.
+    if (p === 'failed') return { state: 'unreadable', retry: true };
     // A folder of the store swapped for a link may lead to another project's record: nothing there is touched.
     try {
       await this.checkFolders(false);
@@ -550,7 +550,7 @@ export class VersionStore {
           if (tip !== p.expected) return await this.setPendingAside(p);
           // Only the commit the record names, whole and on the commit the branch is at, is put there. One that can't be
           // read just now (the worker busy or gone) is tried again; only one not there, or damaged, is set aside.
-          const c = await repo.readCommit(target).catch((e: unknown) => (e instanceof GitError && (e.code === 'not-found' || e.code === 'corrupt') ? null : Promise.reject(e)));
+          const c = await repo.readCommit(target).catch((e: unknown) => (e instanceof GitError && ['not-found', 'corrupt', 'invalid'].includes(e.code) ? null : Promise.reject(e)));
           if (!c || c.tree !== row.git!.tree || c.parents.length !== (p.expected ? 1 : 0) || (p.expected && c.parents[0] !== p.expected)) return await this.setPendingAside(p);
           try {
             await repo.advanceRef(VERSIONS_BRANCH, target, p.expected);
@@ -580,8 +580,15 @@ export class VersionStore {
    * is removed first, so it can never list the version again.
    */
   async forgetPending(id: string): Promise<void> {
+    await this.checkFolders(false);
     const p = await this.readPending();
-    if (p !== null && p !== 'unreadable' && p !== 'failed' && p.op === id) await this.clearPending();
+    if (p === 'failed') throw new Error('The version still being saved after a restore could not be read just now. Try again in a moment.');
+    if (p !== null && p !== 'unreadable' && p.op === id) await this.clearPending();
+  }
+
+  /** Flush the folder of the version being recorded again, once writing it reported that flushing failed. */
+  async flushPending(): Promise<void> {
+    await syncDir(this.root);
   }
 
   /** Keep a record that can't be finished beside the list, out of the way, and say so. */
