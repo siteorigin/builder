@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="build/icon.png" width="64" height="64" alt="SiteOrigin Builder icon">
+  <img src="build/icon-flat.png" width="64" height="64" alt="SiteOrigin Builder icon">
 </p>
 
 <h1 align="center">SiteOrigin Builder</h1>

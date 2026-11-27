@@ -4,6 +4,8 @@
 //    cache shipped with the app, so creating a project needs no network on first use.
 // 3. Writes THIRD_PARTY_NOTICES.txt beside LICENSE.txt: everything the bundles compile in, the node_modules in the
 //    archive, npm, the starter's cached packages and the theme packs' fonts (build/notices.cjs).
+// 4. macOS: adds the app icon's asset catalog (build/Assets.car), which macOS 26 draws with Liquid Glass. It is
+//    compiled by scripts/app-icon/build.mjs, so the build machines need no Xcode 26; electron-builder.yml names it.
 const { cpSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const { dirname, join, relative, sep } = require('node:path');
@@ -61,6 +63,14 @@ exports.default = async function afterPack(context) {
   }
 
   writeNotices(root, resources, starter);
+
+  // macOS 26 takes the icon from this catalog (CFBundleIconName, electron-builder.yml) and the .icns from earlier
+  // macOS. Without the catalog macOS 26 falls back to the .icns and boxes it in a grey tile at small sizes.
+  if (context.electronPlatformName === 'darwin') {
+    const catalog = join(root, 'build', 'Assets.car');
+    if (!existsSync(catalog)) throw new Error('build/Assets.car is missing: run node scripts/app-icon/build.mjs on a Mac with Xcode 26.');
+    cpSync(catalog, join(resources, 'Assets.car'));
+  }
 
   // macOS: give every build a valid (ad-hoc) signature, sealing the resources added above. When a
   // Developer ID certificate is available, electron-builder signs again afterwards with the real identity.
