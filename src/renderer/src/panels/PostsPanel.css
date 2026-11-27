@@ -29,7 +29,7 @@
   .post-title-input.input { display: block; width: calc(100% + 16px); height: auto; min-height: 0; max-height: none; margin: 0 -8px; padding: 4px 8px; border: 0; border-radius: var(--r-sm); background: transparent; box-shadow: none; font-size: 32px; line-height: 1.2; font-weight: 700; color: var(--text); field-sizing: content; resize: none; overflow: hidden; overflow-wrap: anywhere; }
   /* Its count says something only while it is being typed in, or once it is over, under the title: a heading with no
      hint keeps its words the full width rather than leaving room at its end for a count. */
-  .post-title-input + .field-count { position: static; height: auto; margin-top: 1px; }
+  .post-title-input + .field-count { position: static; display: block; height: auto; margin-top: 1px; }
   /* Off (a synced or deleted entry): quieter, not boxed, still readable and selectable as the entry's name. */
   .post-title-input.input:disabled { background: transparent; color: var(--text-2); }
   .post-title-input:not(:focus) + .field-count:not(.field-error) { visibility: hidden; }

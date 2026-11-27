@@ -1444,10 +1444,19 @@ function DraftField({
   // way, so the field is not remounted (and focus lost) when the count changes place.
   const box = multiline && !wrap;
   const room = { '--count-ch': `${limit} / ${limit}`.length, '--field-rows': limit! >= 300 ? 4 : 3 } as CSSProperties;
+  // The box's footer is inside its border but outside the textarea: pressing there keeps the caret in the text, as
+  // pressing anywhere else in a field does, rather than leaving the field (which saves it). The grip, at the corner,
+  // still resizes.
+  const holdFocus = (e: React.MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    if (e.target !== e.currentTarget || (e.clientX > r.right - 16 && e.clientY > r.bottom - 16)) return;
+    e.preventDefault();
+    input.current?.focus();
+  };
   return (
     <span className={`field-counted${box ? ' box' : ''}`} style={room}>
       {box ? (
-        <span className="field-frame">
+        <span className="field-frame" onMouseDown={holdFocus}>
           {control}
           {!note.over && count}
         </span>

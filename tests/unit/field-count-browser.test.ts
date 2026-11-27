@@ -9,6 +9,13 @@ import { dirname, resolve } from 'node:path';
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright';
 import { build, type Rolldown } from 'vite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+// Imported only so a change to the field or its styles reaches this test through the import graph (CI runs the tests
+// a pull request's changes reach). Vitest imports a stylesheet as nothing, so the page reads them from disk below, and
+// the field itself is bundled for the browser.
+import '../../src/renderer/src/styles/tokens.css';
+import '../../src/renderer/src/styles/reset.css';
+import '../../src/renderer/src/styles/primitives.css';
+import fieldSource from '../../src/renderer/src/components/ui.tsx?raw';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://field-count.test';
@@ -28,7 +35,10 @@ const ENTRY = [
   'function App() {',
   "  return h('div', { style: { width: '320px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' } },",
   `    h(Counted, { label: 'Default description', hint: 'Used by pages without their own description.', multiline: true, rows: 2, limit: 320, value: ${JSON.stringify(DESCRIPTION)} }),`,
-  "    h(Counted, { label: 'Excerpt', hint: 'Shown in lists of posts.', multiline: true, rows: 2, limit: 160 }),",
+  "    h(Counted, { label: 'Excerpt', hint: 'Shown in lists of posts.', multiline: true, rows: 2, limit: 299 }),",
+  "    h(Counted, { label: 'Image description', hint: 'Read aloud in place of the picture.', multiline: true, rows: 2, limit: 300 }),",
+  "    h(Counted, { label: 'Notes', hint: 'For you and the AI.', multiline: true, limit: 500, quietCount: true }),",
+  "    h(Counted, { label: 'Message', hint: 'Shown on the not-found page.', wrap: true, className: 'textarea', limit: 400 }),",
   "    h(Counted, { label: 'Browser title', hint: 'Shown in the browser tab.', limit: 70, value: 'Hillside Stays' }),",
   "    h(Counted, { label: 'Name', hint: 'The business name.', limit: 120, quietCount: true, value: 'Hillside' })",
   '  );',
@@ -43,6 +53,7 @@ const BRIDGE = `
 `;
 
 const css = ['tokens', 'reset', 'primitives'].map((n) => readFileSync(resolve(`src/renderer/src/styles/${n}.css`), 'utf8')).join('\n');
+if (!fieldSource.includes('field-counted')) throw new Error('DraftInput no longer wraps a counted field');
 
 async function bundle(): Promise<string> {
   const out = (await build({
@@ -94,7 +105,7 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
   }, 60_000);
 
   beforeEach(async () => {
-    context = await browser.newContext({ viewport: { width: 600, height: 900 } });
+    context = await browser.newContext({ viewport: { width: 600, height: 1600 } });
     context.setDefaultTimeout(5_000);
     page = await context.newPage();
     errors = [];
@@ -142,7 +153,8 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
         return { box: of(frame ?? el), text, lines: (el.clientHeight - px(s.paddingTop) - px(s.paddingBottom)) / px(s.lineHeight) };
       }`
     );
-  const overlaps = (a: Box, b: Box) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  // Rectangles that share an edge, up to rounding (an element's client size is whole pixels), do not overlap.
+  const overlaps = (a: Box, b: Box) => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
   const inside = (inner: Box, outer: Box) => inner.left >= outer.left && inner.right <= outer.right && inner.top >= outer.top && inner.bottom <= outer.bottom;
 
   it('puts a box’s count in its bottom-right corner, with the hint directly under the box', async () => {
@@ -161,14 +173,31 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     const hint = await rect(hintOf(box));
     expect(hint.top - g.box.bottom).toBeGreaterThanOrEqual(0);
     expect(hint.top - g.box.bottom).toBeLessThanOrEqual(6);
+    expect(await on(box, "(el) => el.closest('.field-counted').nextElementSibling.classList.contains('field-hint')")).toBe(true);
+    expect(await on(count, "(el) => el.parentElement.classList.contains('field-frame') && getComputedStyle(el).visibility === 'visible'")).toBe(true);
     expect(await on(count, '(el) => getComputedStyle(el).pointerEvents')).toBe('none');
+    // The border is the frame's; the text inside it has none of its own.
+    expect(await on(box, '(el) => getComputedStyle(el).borderTopWidth')).toBe('0px');
   });
 
-  it('opens a description four lines tall and a shorter limit’s box three, before any typing', async () => {
-    expect((await geometry(field('Default description'))).lines).toBeGreaterThanOrEqual(4);
-    const excerpt = await geometry(field('Excerpt'));
-    expect(excerpt.lines).toBeGreaterThanOrEqual(3);
-    expect(excerpt.lines).toBeLessThan(4);
+  it('keeps the caret in the box when its footer is pressed, rather than leaving (and saving) the field', async () => {
+    const box = field('Default description');
+    await box.click();
+    await on(box, '(el) => el.setSelectionRange(el.value.length, el.value.length)');
+    await page.keyboard.type(' Book direct.');
+    const c = await rect(await countOf(box));
+    // Beside the count, inside the border, below the text.
+    await page.mouse.click(c.left - 40, (c.top + c.bottom) / 2);
+    expect(await focused(box)).toBe(true);
+    expect(await box.inputValue()).toBe(`${DESCRIPTION} Book direct.`);
+  });
+
+  it('opens a box four lines tall from a limit of 300, and three below it, before any typing', async () => {
+    for (const [name, lines] of [['Default description', 4], ['Image description', 4], ['Excerpt', 3]] as const) {
+      const g = await geometry(field(name));
+      expect(g.lines, name).toBeGreaterThanOrEqual(lines - 0.05);
+      expect(g.lines, name).toBeLessThan(lines + 0.5);
+    }
   });
 
   it('never lets text run under the count, at any length', async () => {
@@ -194,7 +223,23 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     expect(overlaps(lc, lg.text)).toBe(false);
     expect(lg.box.right - lc.right).toBeLessThan(14);
     const hint = await rect(hintOf(line));
+    expect(hint.top - lg.box.bottom).toBeGreaterThanOrEqual(0);
     expect(hint.top - lg.box.bottom).toBeLessThanOrEqual(6);
+
+    // A line that wraps keeps its count at its right end, its words wrapping clear of it, and grows rather than
+    // scrolling, so no scrollbar runs under the count.
+    const message = field('Message');
+    await message.fill('Ｗ '.repeat(199).trim());
+    const mc = await countOf(message);
+    await expect.poll(() => mc.textContent()).toBe('397 / 400');
+    const mg = await geometry(message);
+    expect(mg.box.bottom - mg.box.top).toBeGreaterThan(300);
+    expect(await on(message, '(el) => el.scrollHeight <= el.clientHeight')).toBe(true);
+    const mr = await rect(mc);
+    expect(inside(mr, mg.box)).toBe(true);
+    expect(overlaps(mr, mg.text)).toBe(false);
+    expect(mg.box.bottom - mr.bottom).toBeLessThan(10);
+    expect((await rect(hintOf(message))).top - mg.box.bottom).toBeLessThanOrEqual(6);
   });
 
   it('resizes the box by the grip at its corner, the count staying inside it', async () => {
@@ -224,15 +269,33 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     const c = await rect(count);
     expect(inside(c, g.box)).toBe(true);
     expect(overlaps(c, g.text)).toBe(false);
+    await name.blur();
+    await expect.poll(() => count.isVisible()).toBe(false);
+    // Near the limit it shows whether or not the field is being typed in.
+    await name.fill('n'.repeat(96));
+    await expect.poll(() => count.isVisible()).toBe(true);
+    expect(await count.textContent()).toBe('96 / 120');
+
+    // In a box, the quiet count keeps its place in the footer, so the box never changes height as focus comes and goes.
+    const notes = field('Notes');
+    const quiet = await countOf(notes);
+    const height = (await geometry(notes)).box;
+    expect(await on(quiet, '(el) => getComputedStyle(el).visibility')).toBe('hidden');
+    await notes.focus();
+    await expect.poll(() => on(quiet, '(el) => getComputedStyle(el).visibility')).toBe('visible');
+    expect((await geometry(notes)).box).toEqual(height);
+    expect(inside(await rect(quiet), height)).toBe(true);
   });
 
   it('turns the count into the error under the field once the text is over the limit, keeping focus', async () => {
     const box = field('Excerpt');
     await box.focus();
-    await box.fill('x'.repeat(170));
+    await on(box, '(el) => { window.excerptNode = el; }');
+    await box.fill('x'.repeat(310));
     const count = await countOf(box);
     await expect.poll(() => count.getAttribute('class')).toContain('field-error');
-    expect(await count.textContent()).toContain('Shorten it by 10 characters');
+    expect(await count.textContent()).toBe('310 / 299. Shorten it by 11 characters to save it.');
+    expect(await on(count, "(el) => el.previousElementSibling.classList.contains('field-frame') && el.nextElementSibling === null")).toBe(true);
     expect(await focused(box)).toBe(true);
     const g = await geometry(box);
     const c = await rect(count);
@@ -251,9 +314,12 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     })()`);
     await expect.poll(() => edge('.field-frame:has(textarea[aria-invalid="true"])')).toBe(red);
     // Back under the limit, the count goes back inside, with focus still in the field.
-    await box.fill('x'.repeat(150));
+    await box.fill('x'.repeat(290));
     await expect.poll(() => count.getAttribute('class')).not.toContain('field-error');
+    expect(await count.textContent()).toBe('290 / 299');
     expect(inside(await rect(count), (await geometry(box)).box)).toBe(true);
     expect(await focused(box)).toBe(true);
+    // The same textarea throughout: never remounted as the count moved out and back.
+    expect(await on(box, '(el) => el === window.excerptNode')).toBe(true);
   });
 });
