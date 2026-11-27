@@ -416,6 +416,9 @@ describe('edit metrics', () => {
       'edit.snapshotSent': '105 ms',
       'edit.snapshotReceived': '108 ms',
       'edit.rendererCommit': '115 ms',
+      'edit.changedToSent': '4 ms',
+      'edit.sentToReceived': '3 ms',
+      'edit.receivedToCommit': '7 ms',
       'edit.previewPublished': '110 ms',
       'edit.previewApplied': '140 ms',
       'edit.durableWrites': '9 count',
@@ -646,6 +649,7 @@ describe('batch metrics', () => {
         m('session.generateCheck', 1140, { attrs: { variant: 'dev', ms: 2, files: 40 } }),
         span('session.changedDocs', 1142, 2),
         span('session.runMarker', 1150, 4, { attrs: { paths: 1 } }),
+        m('controller.snapshotSent', 1160, { attrs: { revision: 3, bytes: 200 } }),
         span('session.publish', 1170, 15),
         span('session.persist', 1180, 38),
         span('session.apply', 1181, 75, { attrs: { ok: true, revision: 4 }, dc: { 'apply.docsCopied': 600, 'docs.serialized': 650, 'fs.durableWrites': 9, 'fs.fsyncs': 18 } }),
@@ -653,9 +657,13 @@ describe('batch metrics', () => {
         // Another revision's report is not the batch's.
         r('canvas.revisionApplied', 1150, { attrs: { revision: 3 } }),
         r('canvas.revisionApplied', 1250, { attrs: { revision: 4 } }),
+        m('controller.snapshotSent', 1182, { attrs: { revision: 4, bytes: 5000 } }),
+        m('controller.snapshotSent', 2000, { attrs: { revision: 4, bytes: 300 } }),
         m('scenario.end', 3000, { attrs: { scenario: 'batch' }, c: { 'run.docsHashed': 1400 } }),
         r('scenario.end', 3001, { attrs: { scenario: 'batch' } }),
-        span('session.runMarker', 3100, 50)
+        span('session.runMarker', 3100, 50),
+        // After the scenario: not the run's.
+        m('controller.snapshotSent', 3200, { attrs: { revision: 4, bytes: 9000 } })
       ].filter((x) => !drop(x))
     );
   }
@@ -682,6 +690,8 @@ describe('batch metrics', () => {
       'batch.durableWrites': '9 count',
       'batch.fsyncs': '18 count',
       'batch.previewApplied': '250 ms',
+      'batch.snapshotsSent': '3 count',
+      'batch.snapshotBytes': '5500 bytes',
       'batch.mainStallMax': '60 ms'
     });
   });
