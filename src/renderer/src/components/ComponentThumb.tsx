@@ -88,7 +88,7 @@ export function ComponentThumb({ definitionId, active, fallback }: { definitionI
   const [broken, setBroken] = useState<string | null>(null);
   const shot = url && url !== broken ? url : null;
   return (
-    <span className="insert-lib-thumb component-thumb" aria-hidden="true" data-thumb={shot ? 'ready' : failed ? 'failed' : 'pending'}>
+    <span className="insert-lib-thumb component-thumb" aria-hidden="true" data-definition-id={definitionId} data-thumb={shot ? 'ready' : failed ? 'failed' : 'pending'}>
       {shot ? <img className="insert-shot" src={shot} alt="" draggable={false} onError={() => setBroken(shot)} /> : fallback}
     </span>
   );

@@ -19,6 +19,7 @@ import { getTheme } from '@catalogue/index';
 import { codeNeeds, directDependencies } from '@engine/definitions';
 import { generateTokensCss } from '@generator/index';
 import { atomicWrite } from '../project/fsutil';
+import { perf } from '../perf';
 
 /** The folder in the editor's cache (.siteorigin/cache) holding the thumbnails. */
 export const THUMBS_DIR = 'thumbs';
@@ -67,6 +68,7 @@ export function shownDefinitions(state: ProjectState, definitionId: string): Com
  * of the project's own fonts (a font replaced under the same name is a new look).
  */
 export function brandFingerprint(state: ProjectState): string {
+  perf.count('thumbs.brands');
   const theme = getTheme(state.site.themeId);
   const fonts = Object.values(state.assets.assets)
     .filter((a) => a.kind === 'font')
@@ -84,9 +86,21 @@ const readsPages = (d: ComponentDefinition) => Object.values(d.properties).some(
  * The key of a project component's thumbnail as the project is now, or null when the project has no such
  * component. `brand` is brandFingerprint(state), when already known.
  */
-export function thumbKey(state: ProjectState, definitionId: string, brand = brandFingerprint(state)): string | null {
+export function thumbKey(state: ProjectState, definitionId: string, brand?: string): string | null {
+  const started = perf.on ? performance.now() : 0;
+  const key = keyOf(state, definitionId, brand);
+  // What working keys out costs the main process (scripts/perf: the thumbs scenario).
+  if (perf.on) {
+    perf.count('thumbs.keys');
+    perf.count('thumbs.keyMs', performance.now() - started);
+  }
+  return key;
+}
+
+function keyOf(state: ProjectState, definitionId: string, known?: string): string | null {
   const defs = shownDefinitions(state, definitionId);
   if (!defs.length) return null;
+  const brand = known ?? brandFingerprint(state);
   const json = JSON.stringify(defs);
   // The images they show, by what is in their files: a replaced file under the same ID is a new picture.
   const assets = Object.values(state.assets.assets)
@@ -361,7 +375,14 @@ export class ComponentThumbs {
       // window is not opened again for it.
       if (!same()) return gone;
       this.captures++;
-      shot = await this.host.capture(server, prepared.path);
+      perf.count('thumbs.captures');
+      perf.mark('thumbs.captureStart', { definitionId });
+      const end = perf.span('thumbs.capture', { definitionId });
+      try {
+        shot = await this.host.capture(server, prepared.path);
+      } finally {
+        end();
+      }
     } finally {
       this.host.release(prepared.key);
     }

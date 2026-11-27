@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -1710,5 +1710,78 @@ describe('colour metrics', () => {
     for (const hex of path) expect(hex).toMatch(/^#[0-9a-f]{6}$/);
     expect(new Set(path).size).toBe(COLOUR_STEPS);
     expect(path[0]).toBe('#bd2828');
+  });
+});
+
+describe('thumbs metrics', () => {
+  const point = (p: string, t: number, c: Record<string, number> = {}, extra: Record<string, number> = {}) => [
+    r('thumbs.window', t, { attrs: { scenario: 'thumbs', point: p, ...extra } }),
+    m('thumbs.window', t, { attrs: { scenario: 'thumbs', point: p, ...extra }, c })
+  ];
+  const asked = (t: number, id: string) => m('thumbs.asked', t, { attrs: { definitionId: id } });
+  const answered = (t: number, ms: number, id: string, picture: boolean) => span('thumbs.answered', t, ms, { attrs: { definitionId: id, state: 'ready', picture, bytes: picture ? 5000 : 100 } });
+  const shot = (t: number, ms: number, id: string) => span('thumbs.capture', t, ms, { attrs: { definitionId: id } });
+  /** Counters as the main process's marks carry them. */
+  const c = (requests: number, bytes: number, captures: number, keys: number, keyMs: number, brands = keys) => ({ 'thumbs.requests': requests, 'thumbs.bytes': bytes, 'thumbs.captures': captures, 'thumbs.keys': keys, 'thumbs.keyMs': keyMs, 'thumbs.brands': brands });
+
+  it('count each window’s requests, bytes and captures, and time the panel filling and going quiet', () => {
+    const trace = new Trace([
+      // fill: two tiles asked for (one twice), both photographed, one in view shown at 1600; the main process stalled once.
+      ...point('fill', 1000, c(0, 0, 0, 0, 0)),
+      asked(1010, 'a'),
+      asked(1011, 'b'),
+      asked(1012, 'a'),
+      span('main.stall', 1500, 70),
+      shot(1400, 300, 'a'),
+      answered(1410, 400, 'a', true),
+      ...point('filled', 1600, {}, { inView: 1 }),
+      shot(1800, 350, 'b'),
+      answered(1810, 800, 'b', true),
+      ...point('fillQuiet', 5400, c(3, 10000, 2, 6, 3, 1)),
+      // The check after the window is not the window's.
+      asked(5500, 'a'),
+      answered(5501, 1, 'a', true),
+      // edit: both asked for again, answered without a picture.
+      ...point('edit', 6000, c(4, 15000, 2, 7, 3.5, 1)),
+      asked(6600, 'a'),
+      asked(6601, 'b'),
+      answered(6602, 2, 'a', false),
+      answered(6603, 2, 'b', false),
+      ...point('edited', 10200, c(6, 15200, 2, 9, 4.5, 2)),
+      // colour: one asked for and photographed again.
+      ...point('colour', 11000, c(6, 15200, 2, 9, 4.5, 2)),
+      asked(11600, 'a'),
+      shot(12000, 300, 'a'),
+      answered(12010, 410, 'a', true),
+      ...point('coloured', 15600, c(7, 20200, 3, 12, 6, 3)),
+      // scroll: one tile newly in view, from memory.
+      ...point('scroll', 16000, c(7, 20200, 3, 12, 6, 3)),
+      asked(16020, 'b'),
+      answered(16025, 5, 'b', true),
+      ...point('scrolled', 16100, {}, { inView: 1 }),
+      ...point('scrollQuiet', 19600, c(8, 25200, 3, 13, 6.5, 3))
+    ]);
+    const got = thumbs.measure(trace, facts);
+    expect(got.missing).toEqual([]);
+    const v = (w: string, metric: string) => got.metrics[`thumbs.${w}.${metric}`]?.value;
+    const row = (w: string) => ['requests', 'components', 'bytes', 'pictures', 'captures', 'captureMs', 'keys', 'brands', 'keyMs', 'busyMs'].map((x) => v(w, x));
+    expect([v('fill', 'ms'), v('fill', 'inView')]).toEqual([600, 1]);
+    // Requests counted as made, the components they named once each; keys and brands each from their own counter.
+    expect(row('fill')).toEqual([3, 2, 10000, 2, 2, 650, 6, 1, 3, 810]);
+    expect(row('edit')).toEqual([2, 2, 200, 0, 0, 0, 2, 1, 1, 603]);
+    expect(row('colour')).toEqual([1, 1, 5000, 1, 1, 300, 3, 1, 1.5, 1010]);
+    expect([v('scroll', 'ms'), v('scroll', 'inView')]).toEqual([100, 1]);
+    expect(row('scroll')).toEqual([1, 1, 5000, 1, 0, 0, 1, 0, 0.5, 25]);
+    // The stall in the fill is the fill's alone.
+    expect(THUMB_WINDOWS.map((w) => v(w.name, 'mainStallMax'))).toEqual([70, 0, 0, 0]);
+  });
+
+  it('name a window that never ended instead of reporting one that did less', () => {
+    const got = thumbs.measure(new Trace([...point('fill', 1000, c(0, 0, 0, 0, 0)), asked(1010, 'a'), ...point('filled', 1600)]), facts);
+    expect(got.missing).toEqual(['thumbs.window fillQuiet (main)', 'thumbs.window edit (main)', 'thumbs.window edited (main)', 'thumbs.window colour (main)', 'thumbs.window coloured (main)', 'thumbs.window scroll (main)', 'thumbs.window scrollQuiet (main)', 'thumbs.window scroll', 'thumbs.window scrolled']);
+    expect(got.metrics['thumbs.fill.requests']).toBeUndefined();
+    // Insert filled from cold with no request or photograph marked: a build without the marks, never a free fill.
+    const unmarked = thumbs.measure(new Trace([...point('fill', 1000, c(0, 0, 0, 0, 0)), ...point('filled', 1600, {}, { inView: 1 }), ...point('fillQuiet', 5400, c(0, 0, 0, 0, 0))]), facts);
+    expect(unmarked.missing[0]).toBe('thumbs.asked and thumbs.captures (none while Insert filled from cold)');
   });
 });

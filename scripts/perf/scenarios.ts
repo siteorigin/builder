@@ -3667,6 +3667,305 @@ export const ai: Scenario = {
   }
 };
 
+// ---------------------------------------------------------------------------
+// thumbs
+// ---------------------------------------------------------------------------
+
+/** `thumbs`' windows, in the order they run: each its opening mark, the mark once its tiles are shown (fill and scroll), and its end. */
+export const THUMB_WINDOWS = [
+  { name: 'fill', start: 'fill', shown: 'filled', end: 'fillQuiet' },
+  { name: 'edit', start: 'edit', shown: null, end: 'edited' },
+  { name: 'colour', start: 'colour', shown: null, end: 'coloured' },
+  { name: 'scroll', start: 'scroll', shown: 'scrolled', end: 'scrollQuiet' }
+] as const;
+/** A window ends once no thumbnail was asked for, answered or photographed for this long, and none is under way. */
+export const THUMBS_QUIET_MS = 3500;
+/** How long a window may take to go quiet. */
+const THUMBS_WINDOW_MS = 180_000;
+/** What `thumbs` sets the brand colour to (the Business starter's is another). */
+export const THUMBS_BRAND = '#1f7a5c';
+const THUMBS_HEADING = 'Thumbs heading';
+/** The component `thumbs` paints on the brand colour before it starts (the fixture's first card, in view in Insert). */
+export const THUMBS_BRAND_CARD = 'Fixture card 01';
+
+const atThumbs =
+  (point: string, proc: 'main' | 'renderer' = 'renderer') =>
+  (r: PerfRecord): boolean =>
+    r.proc === proc && r.attrs?.scenario === 'thumbs' && r.attrs?.point === point;
+
+/** A tile of Your components in Insert as the page shows it now. */
+interface ThumbTile {
+  id: string;
+  state: string;
+  /** Its picture has loaded (rather than the sketch standing in). */
+  shown: boolean;
+  /** The picture shown, when asked for (thumbTiles' `pictures`); null while the sketch stands in. */
+  src: string | null;
+  /** Some of it is inside the part of the panel that is scrolled into view. */
+  inView: boolean;
+}
+
+/**
+ * Every tile of Your components in Insert, with whether it is in view in the panel's scrolling area, and with its
+ * picture when `pictures` (only for the checks: a data URL a poll carries out of the page costs time in the window).
+ */
+function thumbTiles(win: Page, pictures = false): Promise<ThumbTile[]> {
+  return win.evaluate((pictures) => {
+    type Rect = { top: number; bottom: number; left: number; right: number; width: number; height: number };
+    type El = { getBoundingClientRect(): Rect; parentElement: El | null; getAttribute(n: string): string | null; querySelector(s: string): (El & { complete: boolean; naturalWidth: number; currentSrc: string }) | null; scrollHeight: number; clientHeight: number };
+    const g = globalThis as unknown as { document: { querySelectorAll(s: string): Iterable<El> }; getComputedStyle(e: El): { overflowY: string }; innerWidth: number; innerHeight: number };
+    // No named functions in here: the script's compiler would wrap them in a helper the page does not have.
+    return [...g.document.querySelectorAll('#editor-sidebar [data-definition-id]')].map((el) => {
+      let scroller: El | null = null;
+      for (let at = el.parentElement; at && !scroller; at = at.parentElement) if (/(auto|scroll)/.test(g.getComputedStyle(at).overflowY) && at.scrollHeight > at.clientHeight) scroller = at;
+      const r = el.getBoundingClientRect();
+      const box = scroller?.getBoundingClientRect() ?? { top: 0, bottom: g.innerHeight, left: 0, right: g.innerWidth };
+      const top = Math.max(r.top, box.top, 0);
+      const bottom = Math.min(r.bottom, box.bottom, g.innerHeight);
+      const left = Math.max(r.left, box.left, 0);
+      const right = Math.min(r.right, box.right, g.innerWidth);
+      const img = el.querySelector('img');
+      const shown = !!img && img.complete && img.naturalWidth > 0;
+      return {
+        id: el.getAttribute('data-definition-id') ?? '',
+        state: el.getAttribute('data-thumb') ?? '',
+        shown,
+        src: pictures && shown ? img!.currentSrc : null,
+        inView: r.width > 0 && r.height > 0 && bottom > top && right > left
+      };
+    });
+  }, pictures);
+}
+
+/** Wait until there are `count` tiles and every one in view shows its picture; the tiles then. */
+async function thumbsShown(win: Page, count: number, what: string): Promise<ThumbTile[]> {
+  const deadline = Date.now() + THUMBS_WINDOW_MS;
+  for (;;) {
+    const tiles = await thumbTiles(win);
+    const seen = tiles.filter((t) => t.inView);
+    const broken = seen.find((t) => t.state === 'failed');
+    expect(!broken, `${what}: the thumbnail of ${broken?.id} could not be drawn`);
+    if (tiles.length === count && seen.length && seen.every((t) => t.state === 'ready' && t.shown)) return tiles;
+    expect(Date.now() < deadline, `${what}: after ${THUMBS_WINDOW_MS / 1000} s, ${tiles.length} tiles of ${count}, ${seen.filter((t) => t.shown).length} of the ${seen.length} in view with a picture`);
+    await sleep(16);
+  }
+}
+
+/** Wait until no thumbnail is being asked for or photographed and none was for THUMBS_QUIET_MS, nor since `from` (ms, Date.now). */
+async function thumbsQuiet(ctx: ScenarioContext, what: string, from = Date.now()): Promise<void> {
+  const deadline = Date.now() + THUMBS_WINDOW_MS;
+  for (;;) {
+    const t = await ctx.waitTrace(() => true, 0);
+    const main = (name: string) => t.all(name, inProc('main'));
+    const asked = main('thumbs.asked');
+    const answered = main('thumbs.answered');
+    const started = main('thumbs.captureStart');
+    const shot = main('thumbs.capture');
+    const last = Math.max(from, ...[asked, answered, started, shot].map((rs) => rs[rs.length - 1]?.t ?? 0));
+    if (asked.length === answered.length && started.length === shot.length && Date.now() - last >= THUMBS_QUIET_MS) return;
+    expect(Date.now() < deadline, `${what}: the thumbnails were still being drawn after ${THUMBS_WINDOW_MS / 1000} s (${asked.length - answered.length} asked for, ${started.length - shot.length} being photographed)`);
+    await sleep(250);
+  }
+}
+
+/** Every tile in view (there are some) shows the picture the main process has for its component as the project is now. */
+async function thumbsCurrent(win: Page, what: string) {
+  const seen = (await thumbTiles(win, true)).filter((t) => t.inView);
+  expect(seen.length, `${what}: no tile of Your components is in view`);
+  const answers = await win.evaluate(
+    async (ids) => {
+      const b = (globalThis as unknown as EditorPage).builder;
+      const opening = (await b.project.snapshot())?.workspaceKey ?? '';
+      return Promise.all(ids.map(async (id) => ({ id, answer: await b.project.componentThumb(id, opening) })));
+    },
+    seen.map((t) => t.id)
+  );
+  for (const { id, answer } of answers) {
+    const shown = seen.find((t) => t.id === id)?.src;
+    expect(answer.state === 'ready' && answer.url, `${what}: the main process has no picture of ${id} (${answer.state})`);
+    expect(shown === answer.url, `${what}: the tile of ${id} does not show the picture of the component as it is now`);
+  }
+}
+
+export const thumbs: Scenario = {
+  name: 'thumbs',
+  after: 'open',
+  description: 'Open Insert and show all of Your components until every tile in view has its thumbnail (from cold); with it open, change the home hero’s Heading, then the brand colour, each until the thumbnails go quiet; then scroll the panel to its end until the tiles there have theirs.',
+  async run(ctx) {
+    const { win, app, fixture } = ctx;
+    const count = fixture.projectComponents;
+    expect(count > 4, `the ${fixture.spec.name} fixture has ${count} project components: thumbs needs more than Insert shows before Show all (run it on large)`);
+    const before = await snapshotOf(win);
+    expect(before, 'no project is open');
+    // A window shown or focused while thumbnails are drawn, counted from here on.
+    await app.evaluate(({ app: electron, BrowserWindow }) => {
+      const g = globalThis as unknown as { __perfThumbWindows?: { shown: number; focused: number } };
+      if (g.__perfThumbWindows) return;
+      const seen = (g.__perfThumbWindows = { shown: 0, focused: 0 });
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.on('show', () => seen.shown++);
+        w.on('focus', () => seen.focused++);
+      }
+      electron.on('browser-window-created', (_e, w) => {
+        w.on('show', () => seen.shown++);
+        w.on('focus', () => seen.focused++);
+      });
+    });
+    // Not timed: Insert hidden (another sidebar view, or none), so opening it is the first time its tiles are asked for.
+    const insert = win.locator('.rail button[data-rail="insert"]');
+    if ((await insert.getAttribute('aria-pressed')) === 'true') await insert.click();
+    // Not timed: one card painted on the brand colour, so the colour change must draw it again (the fixture's cards
+    // do not use the brand colour: drawn again, the others come out the same).
+    const card = Object.values(before.state.components).find((d) => d.owner === 'project' && d.name === THUMBS_BRAND_CARD);
+    expect(card?.tree?.rootIds[0], `the fixture has no ${THUMBS_BRAND_CARD} to paint on the brand colour`);
+    const unpainted = await win.evaluate(
+      async ([id, nodeId]) => {
+        const r = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: [{ type: 'node.setStyle', owner: { kind: 'component', id }, nodeId, scope: 'base', property: 'background', value: { token: 'color.brand' } }] }, { label: 'Benchmark brand card' });
+        return r.ok ? null : (r.error?.message ?? 'no reason given');
+      },
+      [card.id, card.tree.rootIds[0]] as const
+    );
+    expect(unpainted === null, `painting ${THUMBS_BRAND_CARD} on the brand colour was refused: ${unpainted}`);
+    const tiles0 = await thumbTiles(win);
+    expect(tiles0.every((t) => t.state !== 'ready'), 'a thumbnail was already drawn before Insert was opened');
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await thumbsQuiet(ctx, 'before Insert was opened');
+    // From cold: nothing asked for in this launch, and nothing in the project's thumbnail cache.
+    const early = await ctx.waitTrace(() => true, 0);
+    expect(!early.first('thumbs.asked'), 'a thumbnail was asked for before Insert was opened');
+    const cache = join(ctx.projectDir, '.siteorigin', 'cache', 'thumbs');
+    expect(!existsSync(cache) || !readdirSync(cache).some((n) => n.endsWith('.png')), 'the project’s thumbnail cache is not empty before Insert was opened');
+    await ctx.mark('scenario.start', { scenario: 'thumbs' });
+
+    // fill: Insert opened and every component shown, until each tile in view has its picture; then until quiet.
+    const fillAt = Date.now();
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'fill' });
+    await insert.click();
+    await win.locator('#editor-sidebar button.insert-more', { hasText: `Show all ${count} components` }).click({ timeout: 15_000 });
+    const filled = await thumbsShown(win, count, 'opening Insert');
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'filled', inView: filled.filter((t) => t.inView).length });
+    await thumbsQuiet(ctx, 'opening Insert', fillAt);
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'fillQuiet' });
+    await thumbsCurrent(win, 'opening Insert');
+    await thumbsQuiet(ctx, 'after opening Insert');
+
+    // edit: with Insert open, a change that cannot change how any component looks (the home hero's Heading).
+    const heading = `${THUMBS_HEADING} ${ctx.iteration}`;
+    const atEdit = await snapshotOf(win);
+    expect(atEdit, 'the project closed');
+    const editAt = Date.now();
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'edit' });
+    const refused = await win.evaluate(
+      async ([pageId, nodeId, value]) => {
+        const r = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId, prop: 'heading', value }] }, { label: 'Benchmark heading' });
+        return r.ok ? null : (r.error?.message ?? 'no reason given');
+      },
+      [fixture.homePageId, fixture.heroId, heading] as const
+    );
+    expect(refused === null, `the heading edit was refused: ${refused}`);
+    await preview(win).getByRole('heading', { name: heading, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(atEdit.revision + 1)), 30_000);
+    await thumbsQuiet(ctx, 'the heading edit', editAt);
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'edited' });
+    const edited = await snapshotOf(win);
+    expect(edited && edited.revision === atEdit.revision + 1, `the heading edit left the project at revision ${edited?.revision}, not ${atEdit.revision + 1}`);
+    const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+    expect(findHeading(existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null, fixture.heroId)?.heading === heading, 'the home page’s document on disk does not hold the new heading');
+    await thumbsCurrent(win, 'after the heading edit');
+    await thumbsQuiet(ctx, 'after the heading edit');
+
+    // colour: one change of the brand colour, until the thumbnails go quiet; every tile in view then shows the brand.
+    const brand = edited.state.tokens.overrides[BRAND] === THUMBS_BRAND ? '#7a1f5c' : THUMBS_BRAND;
+    const brandPicture = () => win.locator(`#editor-sidebar [data-definition-id="${card.id}"] img`).getAttribute('src', { timeout: 5_000 }).catch(() => null);
+    const brandTile = (await thumbTiles(win)).find((t) => t.id === card.id);
+    expect(brandTile?.inView && brandTile.shown, `${THUMBS_BRAND_CARD} is not in view with its picture before the colour change`);
+    const wasPainted = await brandPicture();
+    const cta = () => preview(win).locator('.so-btn--primary').first().evaluate((el) => (globalThis as unknown as { getComputedStyle(e: unknown): { backgroundColor: string } }).getComputedStyle(el).backgroundColor);
+    expect((await cta()) !== rgbOf(brand), `the preview already shows ${brand} before the colour change`);
+    const colourAt = Date.now();
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'colour' });
+    const notSet = await win.evaluate(
+      async ([tokenId, value]) => {
+        const r = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: [{ type: 'token.set', tokenId, value }] }, { label: 'Benchmark brand' });
+        return r.ok ? null : (r.error?.message ?? 'no reason given');
+      },
+      [BRAND, brand] as const
+    );
+    expect(notSet === null, `the brand colour change was refused: ${notSet}`);
+    for (let i = 0; (await cta()) !== rgbOf(brand); i++) {
+      expect(i < 600, `the preview’s primary button does not show the new brand colour ${brand}`);
+      await sleep(100);
+    }
+    // The card on the brand colour is drawn again (the window lasts until it is, then until quiet).
+    for (const until = Date.now() + THUMBS_WINDOW_MS; (await brandPicture()) === wasPainted; ) {
+      expect(Date.now() < until, `${THUMBS_BRAND_CARD}, painted on the brand colour, still shows its picture from before the colour change`);
+      await sleep(16);
+    }
+    await thumbsQuiet(ctx, 'the colour change', colourAt);
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'coloured' });
+    const coloured = await snapshotOf(win);
+    expect(coloured && coloured.revision === edited.revision + 1 && coloured.state.tokens.overrides[BRAND] === brand, `the colour change left the project at revision ${coloured?.revision} with ${String(coloured?.state.tokens.overrides[BRAND])}`);
+    await thumbsShown(win, count, 'after the colour change');
+    await thumbsCurrent(win, 'after the colour change');
+    await thumbsQuiet(ctx, 'after the colour change');
+
+    // scroll: the panel scrolled until the last component's tile is at the bottom of the view, until each tile in view
+    // there has its picture; then until quiet.
+    const scrollAt = Date.now();
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'scroll' });
+    await win.locator('#editor-sidebar [data-definition-id]').last().evaluate((el) => (el as unknown as { scrollIntoView(o: object): void }).scrollIntoView({ block: 'end', behavior: 'instant' }));
+    const atEnd = await thumbsShown(win, count, 'scrolling Insert');
+    expect(atEnd.some((t) => t.inView && !filled.find((f) => f.id === t.id)?.inView), 'scrolling Insert brought no tile into view that was not in view before');
+    expect(atEnd[atEnd.length - 1]?.inView, 'scrolled to the last component, its tile is not in view');
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'scrolled', inView: atEnd.filter((t) => t.inView).length });
+    await thumbsQuiet(ctx, 'scrolling Insert', scrollAt);
+    await ctx.mark('thumbs.window', { scenario: 'thumbs', point: 'scrollQuiet' });
+    await thumbsCurrent(win, 'after scrolling Insert');
+
+    await sleep(ctx.settleMs);
+    const windows = await app.evaluate(({ BrowserWindow }) => ({ ...(globalThis as unknown as { __perfThumbWindows: { shown: number; focused: number } }).__perfThumbWindows, visible: BrowserWindow.getAllWindows().filter((w) => w.isVisible()).length }));
+    expect(!windows.shown && !windows.focused && !windows.visible, `a window was shown (${windows.shown}) or focused (${windows.focused}) while thumbnails were drawn, or is visible (${windows.visible})`);
+    await ctx.mark('scenario.end', { scenario: 'thumbs' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('thumbs', 'renderer')) && !!t.first('scenario.end', forScenario('thumbs', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    for (const w of THUMB_WINDOWS) {
+      const name = (metric: string) => `thumbs.${w.name}.${metric}`;
+      const start = m.need(`thumbs.window ${w.start} (main)`, trace.first('thumbs.window', atThumbs(w.start, 'main')));
+      const end = m.need(`thumbs.window ${w.end} (main)`, trace.first('thumbs.window', atThumbs(w.end, 'main')));
+      if (w.shown) {
+        const from = m.need(`thumbs.window ${w.start}`, trace.first('thumbs.window', atThumbs(w.start)));
+        const shown = m.need(`thumbs.window ${w.shown}`, trace.first('thumbs.window', atThumbs(w.shown)));
+        // To every tile in view showing its picture.
+        m.since(name('ms'), from, shown);
+        if (typeof shown?.attrs?.inView === 'number') m.count(name('inView'), shown.attrs.inView);
+      }
+      if (!start || !end) continue;
+      const asked = trace.all('thumbs.asked', inProc('main'), start.t, end.t);
+      const answered = trace.all('thumbs.answered', inProc('main'), start.t, end.t);
+      const shots = trace.all('thumbs.capture', inProc('main'), start.t, end.t);
+      const gained = (c: string) => counter(end, c) - counter(start, c);
+      // Insert filled from cold asks for pictures and photographs them: a build that reports none did not mark them.
+      if (w.name === 'fill' && (!asked.length || !gained('thumbs.captures'))) m.need('thumbs.asked and thumbs.captures (none while Insert filled from cold)', undefined);
+      m.count(name('requests'), asked.length);
+      m.count(name('components'), new Set(asked.map((r) => r.attrs?.definitionId)).size);
+      m.count(name('bytes'), gained('thumbs.bytes'), 'bytes');
+      m.count(name('pictures'), answered.filter((r) => r.attrs?.picture === true).length);
+      m.count(name('captures'), gained('thumbs.captures'));
+      m.ms(name('captureMs'), shots.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      m.count(name('keys'), gained('thumbs.keys'));
+      m.count(name('brands'), gained('thumbs.brands'));
+      m.ms(name('keyMs'), gained('thumbs.keyMs'));
+      // How long the thumbnails kept the main process working after the window began: to the last of them.
+      const last = Math.max(start.t, ...[...asked, ...answered, ...shots].map((r) => r.t));
+      m.ms(name('busyMs'), last - start.t);
+      m.ms(name('mainStallMax'), stallMax(trace, start, end));
+    }
+    return m;
+  }
+};
+
 /** The composer's chip says the next edit may change the whole site. */
 async function expectChip(win: Page) {
   const chip = win.getByRole('button', { name: /^What the AI may change: Whole site/ });
@@ -3674,7 +3973,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, layers, chat, aiEdit, ai, canvas, drag, colour, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
