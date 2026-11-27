@@ -22,6 +22,8 @@ import { insertOps } from '../../src/renderer/src/lib/insert-at';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { documentMarkdown } from '@generator/llms';
 import { containerSite, mediaCard } from './container-queries';
+import { projectDesign } from './fixtures/packs';
+import { SECTION } from './fixtures/insert-at-designs';
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
@@ -337,8 +339,10 @@ describe('the stylesheet', () => {
   it('leaves image sizes to the default when a container rule changes how wide a box on the way is', () => {
     const s0 = containerSite().s;
     const owner0 = owner(s0);
+    // A Section of a managed design, whose Container the generator reads the content width from.
+    const sectionDef = projectDesign(s0, SECTION);
     const photo: AssetRecord = { id: 'a_photo', name: 'Photo', file: 'static/assets/photo-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 2400, height: 1600, hash: 'h', kind: 'image', createdAt: 'now', variants: [480, 960].map((w) => ({ width: w, file: `static/assets/photo-1a2b3c4d-${w}w.jpg` })) };
-    let r = applyOperations(s0, [{ type: 'asset.add', asset: photo }, { type: 'node.insert', owner: owner0, parentId: null, index: 0, componentId: 'layout.section' }]);
+    let r = applyOperations(s0, [{ type: 'asset.add', asset: photo }, { type: 'node.insert', owner: owner0, parentId: null, index: 0, definitionId: sectionDef.id }]);
     const section = r.results[1].nodeId as string;
     r = applyOperations(r.state, [{ type: 'node.insert', owner: owner0, parentId: section, slot: 'content', primitive: 'grid' }]);
     const grid = r.results[0].nodeId as string;

@@ -8,6 +8,8 @@ import { generateProject } from '@generator/index';
 import { IMAGE_SCHEMA } from '@agent/propschema';
 import { clearKeptDrafts, dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, pruneKeptDrafts, tooLongReport, unsavedReport } from '../../src/renderer/src/lib/kept-drafts';
 import { draftCount, refusedDraftCount, reportRefused, resetPendingForTests, setDraft, settle } from '../../src/renderer/src/lib/pending';
+import { projectDesign } from './fixtures/packs';
+import { splitHero } from './fixtures/inspector-workflows-designs';
 
 /** Issue #226: text over a field's limit is refused whole, with its length and the limit, never cut short; the
  *  editor keeps it for the author to shorten. */
@@ -96,11 +98,9 @@ describe('placed image descriptions', () => {
   });
 
   it('keeps a design’s longer saved default description while its image is marked decorative', () => {
-    const s0 = fresh();
-    const theme = Object.values(s0.components).find((d) => d.componentId === 'hero.split')!;
-    const forked = applyOperations(s0, [{ type: 'component.fork', definitionId: theme.id }]);
-    const defId = forked.results[0].definitionId as string;
-    const s = forked.state;
+    // A design built in the editor whose image element (media) shows its image property.
+    const s = fresh();
+    const defId = projectDesign(s, splitHero()).id;
     const legacy = sentence(310);
     const prop = s.components[defId].properties.image as { default: ImageValue };
     prop.default = { assetId: null, alt: legacy };

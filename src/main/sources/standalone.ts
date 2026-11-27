@@ -17,7 +17,6 @@ import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { applyOperations } from '@engine/apply';
 import { registerPacks, type ThemePack } from '@catalogue/index';
-import { BUILTIN_PACKS } from '@catalogue/builtin';
 import { MIN_SECRET_LENGTH, sourceSecretNames } from '@shared/sources';
 import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
@@ -389,13 +388,16 @@ function serveWorker() {
   });
 }
 
+/** The themes that ship with the app, written into the script when it is built (syncPacks in scripts/sync-cli.ts). */
+declare const __SYNC_PACKS__: ThemePack[];
+
 /**
  * The themes that ship with the app, as checking a sync against the project needs them: their tokens, components and
  * which fonts they have, without the font files (a check compares the project before and after the sync, so what a
  * file would add reads the same on both sides). A project on another theme is checked against the default one.
  */
 export function registerSyncPacks() {
-  registerPacks(BUILTIN_PACKS.map(({ fonts, ...pack }) => ({ ...pack, fonts: fonts.map(({ css: _css, italicCss: _italicCss, noticeFile: _notice, subsets: _subsets, ...f }) => ({ ...f, notice: '', faces: [] })), source: 'bundled' }) as ThemePack));
+  registerPacks(__SYNC_PACKS__);
 }
 
 /** `node scripts/sync-sources.mjs [project folder]`. */

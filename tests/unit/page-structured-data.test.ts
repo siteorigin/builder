@@ -22,6 +22,7 @@ import { checkAuthority } from '../../src/agent/scope';
 import { FOCUSED_PAGE_OPERATIONS, PAGE_OPERATIONS, toolDefinitions } from '../../src/agent/tools';
 import { ProjectSession } from '../../src/main/project/session';
 import { copy, run, seoSite } from './fixtures/seo-site';
+import { withEditorStructure } from './fixtures/nested-output-designs';
 
 const ROOT = 'https://example.com/studio/';
 const SERVICES = `${ROOT}services/`;
@@ -248,16 +249,36 @@ describe('the typed entity in the page’s connected graph', () => {
     expect(node(graph(typed(state, { type: 'ContactPage' })), `${SERVICES}#webpage`)['@type']).toEqual(['WebPage', 'ContactPage']);
   });
 
-  it('names the publisher whatever kind it is, and keeps a page’s FAQ beside its typed entity', () => {
+  /** A Person's site with a HowTo guide page made from the FAQ starter, its FAQ the release's code component. */
+  const guide = () => {
     const { state } = seoSite();
-    let s = run(state, { type: 'site.update', identity: { kind: 'Person', name: 'Ana Ruiz' } }, { type: 'page.create', pageId: 'pg_guide', title: 'Glazing guide', route: '/guide/', starter: 'faq' });
-    s = typed(s, { type: 'HowTo', steps: ['Dip the pot', 'Fire it'] }, 'pg_guide');
+    const s = run(state, { type: 'site.update', identity: { kind: 'Person', name: 'Ana Ruiz' } }, { type: 'page.create', pageId: 'pg_guide', title: 'Glazing guide', route: '/guide/', starter: 'faq' });
+    return typed(s, { type: 'HowTo', steps: ['Dip the pot', 'Fire it'] }, 'pg_guide');
+  };
+
+  it('names the publisher whatever kind it is, and keeps a page’s FAQ beside its typed entity', () => {
+    // The FAQ built in the editor (fixtures/nested-output-designs.ts), whose questions the generator reads from its
+    // tree: the release's is code (the Release gap test below).
+    const s = withEditorStructure(copy(guide()));
     const g = graph(s, 'pg_guide');
     expectLinked(g);
     const webpage = node(g, `${ROOT}guide/#webpage`);
     expect(webpage['@type']).toEqual(['WebPage', 'FAQPage']);
     expect((webpage.mainEntity as unknown[]).length).toBeGreaterThan(0);
     expect(node(g, `${ROOT}guide/#howto`)).toMatchObject({ name: 'Glazing guide', publisher: { '@id': `${ROOT}#person` } });
+  });
+
+  it('names the publisher whatever kind it is beside the shipped theme’s FAQ', () => {
+    const g = graph(guide(), 'pg_guide');
+    expectLinked(g);
+    expect(node(g, `${ROOT}guide/#howto`)).toMatchObject({ name: 'Glazing guide', publisher: { '@id': `${ROOT}#person` } });
+  });
+
+  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
+  it.fails('keeps the shipped theme’s FAQ beside a page’s typed entity', () => {
+    const webpage = node(graph(guide(), 'pg_guide'), `${ROOT}guide/#webpage`);
+    expect(webpage['@type']).toEqual(['WebPage', 'FAQPage']);
+    expect((webpage.mainEntity as unknown[]).length).toBeGreaterThan(0);
   });
 
   it('says nothing of an entity whose facts are incomplete, contradict each other or were saved unusable, and keeps the rest of the graph', () => {

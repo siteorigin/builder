@@ -35,7 +35,7 @@ import type { AgentModelAdapter } from '../../src/agent/types';
 import type { ProjectState } from '../../src/shared/types';
 import { FIXTURES, fixtureHash, fixtureState, ROOT, type FixtureName } from './fixtures';
 import { changedParts, commonPrefix, PromptCache, renderMessages, renderResponses, type RenderedRequest, type Served } from './prompt-cache';
-import { registerBuiltinPacks } from '../../src/main/packs/build';
+import { loadBundledPacks } from '../../src/main/packs/installed';
 import { caseTable, median, summarizeCase, type CaseResult, type Iteration, type Measured, type RunResult } from './results';
 
 const { values } = parseArgs({
@@ -318,8 +318,8 @@ async function main() {
     const r = spawnSync('npx', ['tsx', '--tsconfig', join(app, 'tsconfig.node.json'), join(app, 'scripts/perf/prompt.ts'), '--fixture', values.fixture!, '--iterations', values.iterations!, '--out', out], { cwd: app, stdio: 'inherit' });
     process.exit(r.status ?? 2);
   }
-  // The authored theme packs, registered as the app registers their built releases at startup.
-  registerBuiltinPacks();
+  // The theme releases committed in resources/, as the app loads them at startup.
+  await loadBundledPacks(ROOT);
   const fixtures = values.fixture!.split(',').map((f) => f.trim()) as FixtureName[];
   for (const f of fixtures) if (!FIXTURES[f]) throw new Error(`Unknown fixture ${f}.`);
   const iterations = Math.max(1, Number(values.iterations));

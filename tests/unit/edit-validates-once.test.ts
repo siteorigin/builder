@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { InstanceNode, ProjectState } from '@shared/types';
+import type { ProjectState } from '@shared/types';
+import { P, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 const cored: ProjectState[] = [];
 const advised: ProjectState[] = [];
@@ -39,12 +41,14 @@ vi.mock('@engine/theme-updates', async (load) => {
 });
 
 const { createStarterState } = await import('@catalogue/starters');
-const { header } = await import('@catalogue/foundation/shell');
+const { getTheme } = await import('@catalogue/index');
 const { definitionHash } = await import('@shared/migrations');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { adviceValidation, validateState } = await import('@engine/validate');
 const { applyOperations } = await import('@engine/apply');
 const { themeUpdates } = await import('@engine/theme-updates');
+
+const header = getTheme('foundation').components.find((c) => c.componentId === 'shell.header')!;
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -199,10 +203,13 @@ describe('the whole check (#966)', () => {
     s.assets.assets.a_big = { id: 'a_big', name: 'Huge photo', kind: 'image', file: 'static/assets/huge.png', mime: 'image/png', bytes: 2_000_000, hash: 'h2', createdAt: '2026-01-01T00:00:00.000Z' } as (typeof s.assets.assets)[string];
     // A section link that goes nowhere, and a second Heading 1 on the page (the rest of the advice).
     const plans = [{ id: 'i_0', name: 'Plan', price: '$1', actionLabel: 'Details', actionLink: '#missing' }];
-    const hero = (s.pages[home].nodes[s.pages[home].rootIds[0]] as InstanceNode).definitionId;
+    // The shipped hero is code whose headings the review cannot read, so the page's title is a design of its own
+    // whose Heading 1 the review sees, placed twice.
+    const title = projectDesign(s, { componentId: 'order.title', name: 'Page title', properties: { heading: P.str('Heading', 'Order') }, parts: {}, build: (b) => b.el('root', 'section', {}, [b.text('heading', 'h1', prop('heading'))]) }).id;
     const state = applyOperations(s, [
       { type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'pricing.plans', newNodeId: 'n_plans', props: { plans } },
-      { type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index: 0, definitionId: hero }
+      { type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index: 0, definitionId: title },
+      { type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index: 0, definitionId: title }
     ]).state;
     const all = validateState(state);
     const [links, rest] = adviceValidation(state);

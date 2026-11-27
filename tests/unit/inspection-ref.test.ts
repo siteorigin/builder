@@ -12,8 +12,18 @@ import type { InspectionRef } from '@shared/inspection';
 import { placementItems } from '@shared/item-styles';
 import { inspectionRef } from '../../src/renderer/src/lib/model';
 import { attributeFindings } from '../../src/renderer/src/lib/inspect-check';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
+import { ctaBanner, placeOnHome, servicesGrid } from './fixtures/inspection-ref-designs';
 
-const fresh = () => createStarterState('business', 'Test Studio', false);
+/** The business starter with a Services grid and a Call to action, designs of the project's own, placed on Home. */
+function fresh(): ProjectState {
+  const s = createStarterState('business', 'Test Studio', false);
+  placeOnHome(s, servicesGrid(s));
+  placeOnHome(s, ctaBanner(s));
+  return s;
+}
+const GRID = FOUNDATION_AUTHOR.definitionId('project.features');
+const BANNER = FOUNDATION_AUTHOR.definitionId('project.banner');
 const homeOf = (s: ProjectState) => s.pages[s.site.homePageId];
 const placementOf = (s: ProjectState, definitionId: string) => Object.values(homeOf(s).nodes).find((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === definitionId)!;
 const ctxOf = (s: ProjectState, ...path: string[]) => [`page:${s.site.homePageId}`, ...path].join('|');
@@ -28,11 +38,11 @@ function styleThrough(s: ProjectState, ref: InspectionRef): ProjectState {
 describe('inspection references', () => {
   it('names a declared part of a placement, and the one card it was measured in', () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const grid = placementOf(s, GRID);
     const card = (grid.props.items as Array<{ id: string }>)[1].id;
     const ref = inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-title', items: card });
     expect(ref).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id, partId: 'cardTitle', itemId: card });
-    const after = placementOf(styleThrough(s, ref!), 'foundation.features.grid');
+    const after = placementOf(styleThrough(s, ref!), GRID);
     // The style landed on that card's title only.
     expect(after.itemOverrides?.cardTitle?.items[card]).toEqual({ base: { color: '#123456' } });
     expect(after.overrides?.cardTitle).toBeUndefined();
@@ -40,7 +50,7 @@ describe('inspection references', () => {
 
   it('falls back to the nearest declared part around an element that is not one, keeping its item', () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const grid = placementOf(s, GRID);
     const card = (grid.props.items as Array<{ id: string }>)[0].id;
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-text', items: card })).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id, partId: 'card', itemId: card, match: 'nearest-part' });
     // Outside every list, the nearest part is the whole component's root, with no item.
@@ -49,17 +59,17 @@ describe('inspection references', () => {
 
   it('gives a part outside the list no item', () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const grid = placementOf(s, GRID);
     const page = { kind: 'page', id: s.site.homePageId };
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'grid', items: '' })).toEqual({ owner: page, nodeId: grid.id, partId: 'grid' });
     const ref = inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'heading', items: '' });
     expect(ref).toEqual({ owner: page, nodeId: grid.id, partId: 'heading' });
-    expect(placementOf(styleThrough(s, ref!), 'foundation.features.grid').overrides?.heading).toEqual({ base: { color: '#123456' } });
+    expect(placementOf(styleThrough(s, ref!), GRID).overrides?.heading).toEqual({ base: { color: '#123456' } });
   });
 
   it('names the placement for its definition root, and for a node on the page itself', () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const grid = placementOf(s, GRID);
     const page = { kind: 'page' as const, id: s.site.homePageId };
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'root', items: '' })).toEqual({ owner: page, nodeId: grid.id });
     expect(inspectionRef(s, { ctx: ctxOf(s), node: grid.id, items: '' })).toEqual({ owner: page, nodeId: grid.id });
@@ -75,12 +85,12 @@ describe('inspection references', () => {
 
   it('reads item IDs escaped as the preview writes them', () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const grid = placementOf(s, GRID);
     const items = grid.props.items as Array<{ id: string }>;
     items[0] = { ...items[0], id: 'a,b%c' };
     const ref = inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-title', items: 'a%2Cb%25c' });
     expect(ref?.itemId).toBe('a,b%c');
-    expect(placementOf(styleThrough(s, ref!), 'foundation.features.grid').itemOverrides?.cardTitle?.items['a,b%c']).toEqual({ base: { color: '#123456' } });
+    expect(placementOf(styleThrough(s, ref!), GRID).itemOverrides?.cardTitle?.items['a,b%c']).toEqual({ base: { color: '#123456' } });
     // An item the list no longer has means the measured page was out of date: nothing is named, never every card.
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'card-title', items: 'gone' })).toBeNull();
     // The card's item comes first in the path (deeper lists follow): a later ID that happens to be a card's is not it.
@@ -93,10 +103,10 @@ describe('inspection references', () => {
 
   it('names the part of the outer placement that holds a nested component', () => {
     const s = fresh();
-    const outer: ComponentDefinition = structuredClone(s.components['foundation.features.grid']);
+    const outer: ComponentDefinition = structuredClone(s.components[GRID]);
     outer.id = 'project.outer';
     outer.owner = 'project';
-    const inner = makeInstance(s.components['foundation.cta.banner'], {});
+    const inner = makeInstance(s.components[BANNER], {});
     outer.tree!.nodes[inner.id] = inner;
     const intro = outer.tree!.nodes.intro;
     if (intro.kind !== 'element') throw new Error('intro is an element');
@@ -116,7 +126,7 @@ describe('inspection references', () => {
     expect(styled.overrides?.heading).toEqual({ base: { color: '#123456' } });
     // A banner inside each card: its own elements carry its own items, never the outer card's, so even an ID both
     // lists share names no single card.
-    const inCard = makeInstance(s.components['foundation.cta.banner'], {});
+    const inCard = makeInstance(s.components[BANNER], {});
     outer.tree!.nodes[inCard.id] = inCard;
     const cardNode = outer.tree!.nodes.card;
     if (cardNode.kind !== 'element') throw new Error('card is an element');
@@ -124,7 +134,7 @@ describe('inspection references', () => {
     const cards = placementItems(outer, placed, 'items');
     expect(cards.length).toBeGreaterThan(0);
     // The banner itself, at its root, which the outer design exposes only through the card around it.
-    const bannerRoot = s.components['foundation.cta.banner'].tree!.rootIds[0];
+    const bannerRoot = s.components[BANNER].tree!.rootIds[0];
     expect(inspectionRef(s, { ctx: ctxOf(s, placed.id, inCard.id), node: bannerRoot, items: cards[0].id })).toEqual({
       owner: { kind: 'page', id: s.site.homePageId },
       nodeId: placed.id,
@@ -143,8 +153,8 @@ describe('inspection references', () => {
 
   it('names a placement by the part its root is declared as, whatever it is called', () => {
     const s = fresh();
-    const banner = placementOf(s, 'foundation.cta.banner');
-    const def = s.components['foundation.cta.banner'];
+    const banner = placementOf(s, BANNER);
+    const def = s.components[BANNER];
     const root = def.tree!.rootIds[0];
     expect(inspectionRef(s, { ctx: ctxOf(s, banner.id), node: root, items: '' })).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: banner.id });
     def.parts = Object.fromEntries(Object.entries(def.parts).map(([id, part]) => [id === 'root' ? 'frame' : id, part]));
@@ -165,8 +175,8 @@ describe('inspection references', () => {
 
   it('stops at nodes a hand-edited design left holding each other', () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
-    const def = s.components['foundation.features.grid'];
+    const grid = placementOf(s, GRID);
+    const def = s.components[GRID];
     def.tree!.nodes.loopA = { id: 'loopA', kind: 'element', tag: 'div', children: ['loopB'] } as never;
     def.tree!.nodes.loopB = { id: 'loopB', kind: 'element', tag: 'div', children: ['loopA'] } as never;
     def.parts.loopy = { nodeId: 'loopB', label: 'Loopy' } as (typeof def.parts)[string];
@@ -176,7 +186,7 @@ describe('inspection references', () => {
 
   it('names nothing for an address the project does not have', () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const grid = placementOf(s, GRID);
     expect(inspectionRef(s, {} as never)).toBeNull();
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 42, items: '' } as never)).toBeNull();
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'no-such-node', items: '' })).toBeNull();
@@ -188,7 +198,7 @@ describe('inspection references', () => {
 
   it('replaces every raw address in a report, the overlapped box included, and drops one that names nothing', () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const grid = placementOf(s, GRID);
     const report = {
       issues: [
         { kind: 'overlap', desc: { ctx: ctxOf(s, grid.id), node: 'heading', items: '' }, with: { desc: { ctx: ctxOf(s, grid.id), node: 'grid', items: '' }, text: 'Grid' }, message: 'Overlaps.' },
@@ -208,7 +218,7 @@ describe('inspection references', () => {
 
   it("names the sections and headings of the page's rhythm notes as findings are named, with or without findings (#366)", () => {
     const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const grid = placementOf(s, GRID);
     const page = { kind: 'page', id: s.site.homePageId };
     const report = {
       issues: [{ kind: 'overlap', desc: { ctx: ctxOf(s, grid.id), node: 'heading', items: '' }, message: 'Overlaps.' }],

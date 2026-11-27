@@ -7,13 +7,16 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { contactForm, FORM_PROVIDERS, FORM_SERVICES, formConnectionProblem, formServiceSetup } from '@catalogue/foundation/form';
+import { getTheme } from '@catalogue/index';
+import { FORM_PROVIDERS, FORM_SERVICES, formConnectionProblem, formServiceSetup } from '@shared/form-contract';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 
 /** The contact form as a v1 project saved it, before the form refused clashing field names. */
 const LEGACY: ComponentDefinition = JSON.parse(readFileSync(join(__dirname, 'fixtures/v1-project/siteorigin/components/foundation.contact.form/component.json'), 'utf8'));
+/** Foundation's contact form, as the app loads it. */
+const contactForm = getTheme('foundation').components.find((c) => c.componentId === 'contact.form')!;
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 

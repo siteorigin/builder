@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ComponentDefinition, PropSchema } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { BUILTIN_PACKS } from '@catalogue/builtin';
+import { getTheme, listThemes } from '@catalogue/index';
 import { checkSvelteSource, codeManifestProblems, packManifestProblems, type CodeManifest } from '../../src/main/codecheck';
 import { ProjectSession } from '../../src/main/project/session';
 
@@ -130,15 +130,15 @@ describe('checking a code component against its manifest', () => {
     expect((await checkSvelteSource(source, { strict: true })).filter((p) => /default for title|takes extra/.test(p.message))).toEqual([]);
   });
 
-  it('passes every code component of every pack this repository builds', async () => {
+  it('passes every code component of every theme release the app ships', async () => {
     let checked = 0;
-    for (const pack of BUILTIN_PACKS) {
+    for (const pack of listThemes()) {
       checked += pack.components.filter((c) => c.kind === 'code').length;
       expect(await packManifestProblems(pack.components), pack.id).toEqual([]);
     }
     expect(checked).toBeGreaterThan(0);
     // A pack whose code takes a prop its manifest lacks is named, with the problem.
-    const table = BUILTIN_PACKS[0].components.find((c) => c.componentId === 'data.table')!;
+    const table = getTheme('foundation').components.find((c) => c.componentId === 'data.table')!;
     const { caption: _caption, ...rest } = table.properties;
     expect(await packManifestProblems([{ ...table, properties: rest }])).toEqual([expect.stringMatching(/^Component data\.table: line \d+: The code takes caption from \$props\(\)/)]);
   });

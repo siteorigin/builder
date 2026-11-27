@@ -20,7 +20,9 @@ import { entryQuery, entryRows, termsNamed } from '@shared/entry-feed';
 import { withheldRoutes } from '../../src/main/export';
 import { upsertToolSchema } from '@agent/macros';
 import { retrieveExamples } from '@agent/examples';
-import { TreeBuilder } from '@catalogue/dsl';
+import { P, TreeBuilder, prop } from '@catalogue/dsl';
+import { makeInstance } from '@engine/install';
+import { projectDesign } from './fixtures/packs';
 import { publicationPlan, sharedPageIds } from '@generator/checks';
 import { thumbKey } from '../../src/main/runtime/component-thumbs';
 import { projectSummary, propSchemaSummary } from '@agent/context';
@@ -604,7 +606,12 @@ describe('after the review', () => {
   it('offers a header jump only to sections a collection’s index has too', () => {
     let s = createStarterState('business', 'Riverside Studio', false);
     const home = s.pages[s.site.homePageId];
-    s = run(s, { type: 'node.setContent', owner: page(home.id), nodeId: home.rootIds[1], field: 'anchor', value: 'intro' } as EditOperation);
+    // A section built in the editor, which places its anchor on its root (Foundation's sections are code components).
+    const intro = projectDesign(s, { componentId: 'project.intro', name: 'Intro', properties: { heading: P.str('Heading', 'Hello') }, parts: { root: { nodeId: 'root', label: 'Section' } }, build: (b) => b.el('root', 'section', { name: 'Section' }, [b.text('heading', 'h2', prop('heading'), { name: 'Heading' })]) });
+    const placed = makeInstance(intro, {});
+    home.nodes[placed.id] = placed;
+    home.rootIds.splice(1, 0, placed.id);
+    s = run(s, { type: 'node.setContent', owner: page(home.id), nodeId: placed.id, field: 'anchor', value: 'intro' } as EditOperation);
     s = structuredClone(s);
     for (const id of s.site.pageOrder) if (id !== home.id) s.pages[id].showHeader = false;
     expect(sharedPageIds(s, 'header').has('intro')).toBe(true);

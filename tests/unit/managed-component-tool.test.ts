@@ -22,6 +22,7 @@ import { findForbiddenShapes, OPEN_VALUE_KEY, toStrictSchema } from '@agent/stri
 import { envelopeInstructions, envelopeSchema } from '@agent/constrained';
 import { estimateRequestTokens, estimateTokens } from '@agent/budget';
 import { ProjectSession } from '../../src/main/project/session';
+import { projectDesign } from './fixtures/packs';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -210,6 +211,8 @@ describe('upsert_managed_component: its schema (#359)', () => {
     const names = (r: { tools: Array<{ name: string }> }) => r.tools.map((t) => t.name);
     const home = state.pages[state.site.homePageId];
     const reads = (r: { tools: Array<{ name: string; parameters: unknown }> }) => JSON.stringify(r.tools.find((t) => t.name === 'read_component')!.parameters);
+    // A design built in the editor, for a run that edits one design (Foundation's sections are code).
+    const def = projectDesign(state, { componentId: 'project.note', name: 'Note', properties: {}, parts: { root: { nodeId: 'root', label: 'Note' } }, build: (b) => b.el('root', 'section', { name: 'Note' }, [b.text('text', 'p', 'A note')]) });
     for (const capabilities of [
       { toolCalling: 'native' as const, contextWindowTokens: 200_000 },
       { toolCalling: 'native' as const, contextWindowTokens: 32_000 },
@@ -227,7 +230,6 @@ describe('upsert_managed_component: its schema (#359)', () => {
       expect(names(toolsForRun({ ...base, task: 'component' }))[0]).toBe('upsert_managed_component');
       expect(names(toolsForRun({ ...base, ask: true }))).not.toContain('upsert_managed_component');
       expect(names(toolsForRun({ ...base, page: { route: home.route } }))).not.toContain('upsert_managed_component');
-      const def = Object.values(state.components).find((d) => d.tree && d.category !== 'shell')!;
       expect(names(toolsForRun({ ...base, definition: true, definitionTarget: { definitionId: def.id } }))).not.toContain('upsert_managed_component');
     }
   });

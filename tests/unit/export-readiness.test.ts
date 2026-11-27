@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest';
 import type { InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { Diagnostic, ExportNote } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
-import { FORM_SERVICES } from '@catalogue/foundation/form';
+import { FORM_SERVICES } from '@shared/form-contract';
+import { projectDesign } from './fixtures/packs';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { formNameDiagnostics, validateState, websiteFormNotes, websiteFormProblems } from '@engine/validate';
@@ -244,12 +245,15 @@ describe('where a Project health finding leads', () => {
   it('keeps Show on page for a clash found at a placement whose design holds the form', () => {
     const s = fresh();
     const form = s.components[installComponent(s, 'contact.form')];
-    const wrapper = Object.values(s.components).find((d) => d.componentId === 'cta.banner')!;
+    // A banner design of the project's own, placed on Home, whose tree holds the form.
+    const wrapper = projectDesign(s, { componentId: 'project.banner', name: 'Banner', properties: {}, parts: {}, build: (b) => b.el('root', 'section', {}, []) });
     const inner = makeInstance(form, { provider: 'netlify' });
     wrapper.tree!.nodes[inner.id] = inner;
     (wrapper.tree!.nodes[wrapper.tree!.rootIds[0]] as { children: string[] }).children.push(inner.id);
     const home = s.pages[s.site.homePageId];
-    const placed = Object.values(home.nodes).find((n) => n.kind === 'instance' && n.definitionId === wrapper.id)!;
+    const placed = makeInstance(wrapper);
+    home.nodes[placed.id] = placed;
+    home.rootIds.push(placed.id);
     const again = { ...structuredClone(placed), id: 'n_banner_again' };
     home.nodes[again.id] = again;
     home.rootIds.push(again.id);

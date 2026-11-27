@@ -4,15 +4,15 @@
 //
 //   npx tsx --tsconfig tsconfig.node.json tests/e2e/design/export-forms-search-site.ts /abs/site
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { registerBuiltinPacks } from '../../../src/main/packs/build';
+import { dirname, join, resolve } from 'node:path';
+import { loadBundledPacks } from '../../../src/main/packs/installed';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generateProject } from '@generator/index';
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 
-registerBuiltinPacks();
+await loadBundledPacks(resolve(import.meta.dirname, '..', '..', '..'));
 const dir = process.argv[2];
 if (!dir) throw new Error('usage: export-forms-search-site.ts <site folder>');
 

@@ -10,6 +10,9 @@ import { executeTool, type ToolHost } from '@agent/tools';
 import { InspectionLog } from '@agent/report';
 import { narrowedInspection, resolveLayoutTargets } from '@agent/layout-targets';
 import { descOf, inspectionRef } from '../../src/renderer/src/lib/model';
+import { makeInstance } from '@engine/install';
+import { P } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const homeOf = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -31,12 +34,44 @@ function hostFor(s: ProjectState, answer: (targets: ElementRef[] | undefined) =>
   return { host, asked };
 }
 
+/**
+ * A fresh site with a card grid built in the editor placed on Home: a heading and cards, each card a part with its
+ * title a part and its text not one (a finding there names the card around it). Foundation's sections are code
+ * components, whose markup the preview marks only by the parts their code declares.
+ */
+function withCards(): { s: ProjectState; grid: InstanceNode } {
+  const s = fresh();
+  const def = projectDesign(s, {
+    componentId: 'project.cards',
+    name: 'Cards',
+    properties: {
+      heading: P.str('Heading', 'Services'),
+      items: P.list('Cards', 'Card', { title: P.str('Title', 'Card'), description: P.text('Text', '') }, [
+        { title: 'Planning', description: 'A budget and a schedule.' },
+        { title: 'Design', description: 'Drawings you can change.' },
+        { title: 'Delivery', description: 'Trusted specialists.' }
+      ])
+    },
+    parts: { root: { nodeId: 'root', label: 'Section' }, heading: { nodeId: 'heading', label: 'Heading' }, card: { nodeId: 'card', label: 'Card' }, cardTitle: { nodeId: 'card-title', label: 'Card title' } },
+    build: (b) =>
+      b.el('root', 'section', { name: 'Section' }, [
+        b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading' }),
+        b.el('grid', 'ul', { name: 'Card grid' }, [
+          b.repeat('cards', 'items', [b.el('card', 'li', { name: 'Card' }, [b.text('card-title', 'h3', { $item: 'title' }, { name: 'Title' }), b.text('card-text', 'p', { $item: 'description' }, { name: 'Text' })])])
+        ])
+      ])
+  });
+  const grid = makeInstance(def, {});
+  homeOf(s).nodes[grid.id] = grid;
+  homeOf(s).rootIds.push(grid.id);
+  return { s, grid };
+}
+
 const measuredBox = { box: { x: 0, y: 80, width: 390, height: 420 }, scrollWidth: 390, scrollHeight: 420, visible: true };
 
 describe('inspect_layout with refs', () => {
   it('measures only the elements its findings named, each with its box, and reports one that does not show at that width as hidden', async () => {
-    const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const { s, grid } = withCards();
     const page = { kind: 'page' as const, id: s.site.homePageId };
     const item = (grid.props.items as Array<{ id: string }>)[1].id;
     // The refs as findings give them, with what they add to explain a finding.
@@ -126,8 +161,7 @@ describe('inspect_layout with refs', () => {
   });
 
   it('turns every ref a finding names back into the element the preview measured', () => {
-    const s = fresh();
-    const grid = placementOf(s, 'foundation.features.grid');
+    const { s, grid } = withCards();
     const item = (grid.props.items as Array<{ id: string }>)[0].id;
     // Elements as the preview marks them: a part in one card, a part outside the list, the placement's root, a page node.
     const descs = [

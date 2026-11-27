@@ -5,7 +5,7 @@
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { AiEvent, ChatContext, ChatMessage, ProviderId } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
@@ -15,10 +15,11 @@ import { estimateRequestTokens, estimateTokens } from '@agent/budget';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
-import { registerBuiltinPacks } from '../../src/main/packs/build';
+import { loadBundledPacks } from '../../src/main/packs/installed';
 import { staticInspector } from './component-diagnostics';
 
-registerBuiltinPacks();
+// The theme releases committed in resources/, as the app loads them at startup.
+await loadBundledPacks(resolve(import.meta.dirname, '..', '..'));
 
 /** Bump when the report or trace shape changes. */
 export const REPORT_SCHEMA_VERSION = 2;

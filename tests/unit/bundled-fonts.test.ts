@@ -12,7 +12,6 @@ import { parseFontFaces } from '../../src/main/packs/build';
 import { buildFont, buildPack } from '../../src/main/packs/build';
 import type { AuthoredPack, PackFontSource } from '@catalogue/pack';
 import { BUILTIN_FONTS, builtinFont } from '@catalogue/builtin-fonts';
-import { SHARED_BASE_CSS } from '@catalogue/foundation/base.css';
 
 const fresh = () => createStarterState('business', 'Test', false);
 const setFont = (s: ProjectState, value: string, tokenId = 'font.body') => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
@@ -135,7 +134,7 @@ describe('font stylesheets of a pack author', () => {
 
 describe('skip link', () => {
   it('hides itself clear of the top edge of the page, so no sliver of it shows', () => {
-    const rule = SHARED_BASE_CSS.match(/\.so-skip-link \{[^}]*\}/)![0];
+    const rule = getTheme('foundation').baseCss.match(/\.so-skip-link \{[^}]*\}/)![0];
     expect(rule).toMatch(/top: 12px/);
     expect(rule).toMatch(/translateY\(calc\(-100% - (\d+)px\)\)/);
     expect(Number(rule.match(/translateY\(calc\(-100% - (\d+)px\)\)/)![1])).toBeGreaterThan(12);

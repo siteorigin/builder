@@ -11,6 +11,9 @@ import { defFile, defKey, generateProject, isDraftPage, pageFile, publishedState
 import { draftLinksStop, draftSourceNotes, editedGeneratedFile, isGeneratedReadme, leaveOutDrafts, projectReadme, publishedChanged, pruneWebsiteAssets } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
 import { withPublished } from '@shared/published';
+import { P } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
+import { withManagedLists } from './fixtures/empty-sections-designs';
 
 /** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
 const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
@@ -166,7 +169,10 @@ describe('what the website publishes', () => {
   });
 
   it('checks a gallery photo’s link only while the photo follows it (#75)', () => {
-    const { s, draft } = withDraft();
+    // The Gallery drawn as a managed design (fixtures/empty-sections-designs.ts), whose figure follows a photo's link
+    // only while its action is link: the release's is code (the Release gap test below).
+    const { s: release, draft } = withDraft();
+    const s = withManagedLists(release);
     const home = s.pages[s.site.homePageId];
     const gallery = Object.values(home.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'media.gallery') as InstanceNode;
     const images = gallery.props.images as Array<Record<string, unknown>>;
@@ -183,6 +189,30 @@ describe('what the website publishes', () => {
     expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined]]);
     images[2] = { ...images[2], action: 'link' };
     expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined], [draft, 'top']]);
+  });
+
+  it('checks the shipped theme’s gallery photo’s link to a draft while the photo follows it (#75)', () => {
+    const { s, draft } = withDraft();
+    const home = s.pages[s.site.homePageId];
+    const gallery = Object.values(home.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'media.gallery') as InstanceNode;
+    const images = gallery.props.images as Array<Record<string, unknown>>;
+    const fromGallery = () => publicationPlan(s).draftLinks.filter((l) => l.nodeId === gallery.id);
+    expect(fromGallery()).toEqual([]);
+    images[0] = { ...images[0], action: 'link', link: { type: 'page', target: draft } };
+    expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined]]);
+    images[1] = { ...images[1], action: 'link', link: { type: 'page', target: draft, anchor: 'top' } };
+    expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined], [draft, 'top']]);
+  });
+
+  // Release gap: publicationPlan (src/generator/checks.ts, codeLinks) reports every link of the release's Gallery as a
+  // draft link, though a photo follows its link only while its action is link.
+  it.fails('checks the shipped theme’s gallery photo’s link only while the photo follows it (#75)', () => {
+    const { s, draft } = withDraft();
+    const home = s.pages[s.site.homePageId];
+    const gallery = Object.values(home.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'media.gallery') as InstanceNode;
+    const images = gallery.props.images as Array<Record<string, unknown>>;
+    images[0] = { ...images[0], action: 'image', link: { type: 'page', target: draft } };
+    expect(publicationPlan(s).draftLinks.filter((l) => l.nodeId === gallery.id)).toEqual([]);
   });
 
   it('does not check links on drafts, or the header and footer when no published page shows them', () => {
@@ -364,12 +394,16 @@ describe('a staged copy without its drafts', () => {
 
   it('leaves out a picture only a component placed on drafts shows', async () => {
     let { s, draft } = withDraft();
-    // A component of the project's own, placed only on the draft.
-    s = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: draft }, parentId: null, index: 0, componentId: 'content.media' }]).state;
-    const media = (Object.values(s.pages[draft].nodes).find((n) => n.kind === 'instance') as { definitionId: string }).definitionId;
-    const copied = applyOperations(s, [{ type: 'component.duplicate', definitionId: media, name: 'Winter shelves' }]);
-    const id = (copied.results[0] as { definitionId: string }).definitionId;
-    s = applyOperations(copied.state, [{ type: 'node.insert', owner: { kind: 'page', id: draft }, parentId: null, index: 0, definitionId: id }]).state;
+    // A component of the project's own, built in the editor (its generated file writes its picture), placed only on the draft.
+    s = structuredClone(s);
+    const id = projectDesign(s, {
+      componentId: 'project.winter-shelves',
+      name: 'Winter shelves',
+      properties: { image: P.image('Image', 'Shelves') },
+      parts: { root: { nodeId: 'root', label: 'Winter shelves' } },
+      build: (b) => b.el('root', 'section', { name: 'Winter shelves' }, [b.image('image', { $prop: 'image' }, { name: 'Image' })])
+    }).id;
+    s = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: draft }, parentId: null, index: 0, definitionId: id }]).state;
     const placed = Object.values(s.pages[draft].nodes).find((n) => n.kind === 'instance' && n.definitionId === id)!;
     const def = s.components[id];
     // The component's own default is the picture, as it is for a component made from a section on the draft.

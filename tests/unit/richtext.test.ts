@@ -14,6 +14,8 @@ import { applyOperations, pageLinkReferences } from '@engine/apply';
 import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
 import { normalizeRichText } from '@engine/values';
+import { P } from '@catalogue/dsl';
+import { foundationDesign, type DesignSpec } from './fixtures/packs';
 import { RUNTIME_DIR, generateManagedComponent, generateProject, resolveRichText } from '@generator/index';
 import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS } from '@generator/runtime-files';
 import { blocksFromDom, type RichDomNode } from '../../src/renderer/src/lib/richtext';
@@ -28,6 +30,37 @@ const place = (s: ProjectState, componentId: string, props: Record<string, unkno
   home(s).rootIds.push(node.id);
   return node;
 };
+/** A text section and a pricing table built in the editor: rich text shown from a property, and from a list's field. */
+const TEXT: DesignSpec = {
+  componentId: 'content.text',
+  name: 'Text',
+  properties: { body: P.rich('Text', ['Default paragraph']) },
+  parts: { root: { nodeId: 'root', label: 'Text' }, body: { nodeId: 'body', label: 'Text' } },
+  build: (b) => b.el('root', 'section', { name: 'Text' }, [b.rich('body', { $prop: 'body' }, { name: 'Text' })])
+};
+const PRICING: DesignSpec = {
+  componentId: 'pricing.plans',
+  name: 'Pricing',
+  properties: {
+    plans: P.list('Plans', 'Plan', { name: P.str('Name', 'Plan'), features: P.rich('Features', ['A feature'], { plainAs: 'check' }) }, [{ name: 'Consultation', features: ['Two hours in your home'] }])
+  },
+  parts: { root: { nodeId: 'root', label: 'Pricing' } },
+  build: (b) =>
+    b.el('root', 'section', { name: 'Pricing' }, [
+      b.el('grid', 'ul', { name: 'Plans' }, [b.repeat('cards', 'plans', [b.el('plan', 'li', { name: 'Plan' }, [b.text('name', 'h3', { $item: 'name' }, { name: 'Name' }), b.rich('features', { $item: 'features' }, { name: 'Features' })])])])
+    ])
+};
+/**
+ * Foundation's section as a project holds it from when the theme's sections were built in the editor: the design under
+ * the theme's ID, installed with its lock entry. The release's own is a code component, with no tree to bind rich text.
+ */
+const managedAs = (s: ProjectState, spec: DesignSpec): ComponentDefinition => {
+  const id = installComponent(s, spec.componentId);
+  // A copy: the design's properties are the spec's own objects, which a test changes.
+  s.components[id] = structuredClone(foundationDesign(spec));
+  return s.components[id];
+};
+
 const p = (...spans: Array<string | Record<string, unknown>>) => ({ type: 'p', spans: spans.map((x) => (typeof x === 'string' ? { text: x } : x)) });
 
 describe('rich text input', () => {
@@ -320,15 +353,15 @@ describe('links inside rich text are real links', () => {
 
   it('flags rich text shown from a property that is not rich text when a project opens', () => {
     const s = fresh();
+    const def = managedAs(s, TEXT);
     place(s, 'content.text');
-    const def = s.components['foundation.content.text'];
     const invalid = () => validateState(s).filter((d) => d.code === 'BINDING_INVALID');
     expect(invalid()).toEqual([]);
     const [nodeId] = Object.entries(def.tree!.nodes).find(([, n]) => n.kind === 'text' && n.rich && JSON.stringify(n.text) === '{"$prop":"body"}')!;
     def.properties.body = { type: 'string', label: 'Body', default: 'Plain' };
     expect(invalid()).toEqual([expect.objectContaining({ owner: { kind: 'component', id: def.id }, nodeId, message: expect.stringMatching(/string property as its text, which needs a richtext property/) })]);
     // A list item field, too.
-    const plans = s.components[installComponent(s, 'pricing.plans')];
+    const plans = managedAs(s, PRICING);
     const [featuresId] = Object.entries(plans.tree!.nodes).find(([, n]) => n.kind === 'text' && n.rich && JSON.stringify(n.text) === '{"$item":"features"}')!;
     (plans.properties.plans as unknown as { fields: Record<string, unknown> }).fields.features = { type: 'string', label: 'Features', default: '' };
     expect(invalid()).toEqual(expect.arrayContaining([expect.objectContaining({ owner: { kind: 'component', id: plans.id }, nodeId: featuresId })]));
@@ -399,7 +432,8 @@ describe('generated rich text', () => {
 
   it('shows the pricing features as a check list from the schema alone', () => {
     const def = catalogueComponent('foundation', 'pricing.plans')!;
-    expect((def.tree!.nodes.features as { list?: string }).list).toBeUndefined();
+    // Its code shows whatever list the value holds: no node of a design marks it.
+    expect(def.tree).toBeUndefined();
     const plans = def.properties.plans as unknown as { fields: Record<string, { plainAs?: string }>; default: Array<{ features: RichText }> };
     expect(plans.fields.features.plainAs).toBe('check');
     expect(plans.default[0].features[0].type).toBe('check');
@@ -463,6 +497,8 @@ describe('migrating documents to structured rich text', () => {
   /** The starter as it was written in format 2: strings for rich text, and `list` on the pricing node. */
   const oldProject = () => {
     const s = fresh();
+    managedAs(s, PRICING);
+    managedAs(s, TEXT);
     const pricing = place(s, 'pricing.plans');
     const text = place(s, 'content.text');
     (text.props as Record<string, unknown>).body = ['Plain', 'With **bold** and *em*', '2 * 3 * 4 reads as it did'];

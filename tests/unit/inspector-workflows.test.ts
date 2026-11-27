@@ -6,8 +6,24 @@ import { EngineError, codeTakesOverrides, enclosingRepeatProp } from '@engine/tr
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, overrideClass } from '@generator/index';
 import { columnLayoutPart } from '@shared/styles';
+import { P, item, prop } from '@catalogue/dsl';
+import { foundationDesign } from './fixtures/packs';
+import { contentSection, installThemeDesigns, placeOnHome, servicesGrid, splitHero, statsRow } from './fixtures/inspector-workflows-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
+/**
+ * The business starter with designs built in the editor installed as Foundation's own and placed first on Home, in
+ * this order: a Split hero (test.hero), a Services grid (test.grid) and Statistics (test.stats); and an empty Section
+ * (test.section) installed. Foundation's own sections are code components, which take no anchor and have no design to
+ * paste into, so what copy and paste do with a design's tree is checked on these.
+ */
+const managed = () => {
+  const s = fresh();
+  const [hero, grid, stats] = installThemeDesigns(s, splitHero(), servicesGrid(), statsRow(), contentSection());
+  [hero, grid, stats].forEach((def, i) => placeOnHome(s, def, i));
+  return s;
+};
+const SECTION = 'foundation.test.section';
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
 const firstInstance = (s: ProjectState, componentId: string) => {
@@ -28,9 +44,17 @@ const rejects = (fn: () => unknown, msg: RegExp) => {
 };
 
 describe('section anchors', () => {
+  /** The managed designs on Home, with an empty Section (test.section) placed in the shared footer. */
+  const withFooterSection = () => {
+    let s = managed();
+    s = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'shell', id: 'footer' }, parentId: null, definitionId: SECTION }]).state;
+    const footer = s.site.shell.footer;
+    return { s, footer: footer.rootIds.find((id) => (footer.nodes[id] as InstanceNode).definitionId === SECTION)! };
+  };
+
   it('puts a section anchor on its component root as an id', () => {
-    let s = fresh();
-    const hero = firstInstance(s, 'hero.split');
+    let s = managed();
+    const hero = firstInstance(s, 'test.hero');
     s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: '#pricing' }]).state;
     expect(home(s).nodes[hero.id].anchor).toBe('pricing');
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
@@ -42,9 +66,9 @@ describe('section anchors', () => {
   });
 
   it('keeps anchors unique and leaves them off duplicates', () => {
-    let s = fresh();
-    const hero = firstInstance(s, 'hero.split');
-    const grid = firstInstance(s, 'features.grid');
+    let s = managed();
+    const hero = firstInstance(s, 'test.hero');
+    const grid = firstInstance(s, 'test.grid');
     s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'top' }]).state;
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: grid.id, field: 'anchor', value: 'top' }]), /already uses/);
     const r = applyOperations(s, [{ type: 'node.duplicate', owner: owner(s), nodeId: hero.id }]);
@@ -52,9 +76,8 @@ describe('section anchors', () => {
   });
 
   it('keeps anchors unique across a page, its shared header and footer, and the layout', () => {
-    let s = fresh();
-    const hero = firstInstance(s, 'hero.split');
-    const footer = s.site.shell.footer.rootIds[0];
+    let { s, footer } = withFooterSection();
+    const hero = firstInstance(s, 'test.hero');
     s = applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }]).state;
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'contact' }]), /already uses/);
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'main' }]), /used by the site/);
@@ -62,9 +85,26 @@ describe('section anchors', () => {
     expect(() => applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }])).not.toThrow();
   });
 
-  it('refuses anchors on code components', () => {
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('puts a section anchor on a section of the shipped theme, which renders it as its id', () => {
     let s = fresh();
     const hero = firstInstance(s, 'hero.split');
+    expect(s.components[hero.definitionId].source).toMatch(/id=\{so_id\}/);
+    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: '#pricing' }]).state;
+    expect(home(s).nodes[hero.id].anchor).toBe('pricing');
+    expect(generateProject(s).get('src/routes/+page.svelte')).toContain('so_id={"pricing"}');
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('puts a section anchor on the shipped theme’s footer', () => {
+    const s = fresh();
+    const footer = s.site.shell.footer.rootIds[0];
+    expect(applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }]).state.site.shell.footer.nodes[footer].anchor).toBe('contact');
+  });
+
+  it('refuses anchors on code components', () => {
+    let s = managed();
+    const hero = firstInstance(s, 'test.hero');
     s = applyOperations(s, [{ type: 'component.convertToCode', owner: owner(s), nodeId: hero.id }]).state;
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'x' }]), /code components/);
   });
@@ -108,10 +148,11 @@ describe('code component overrides', () => {
 
   it('passes declared-part override classes to code components', () => {
     let s = fresh();
+    // Foundation's Split hero is a code component that declares its heading as a part.
     const hero = firstInstance(s, 'hero.split');
-    s = applyOperations(s, [{ type: 'component.convertToCode', owner: owner(s), nodeId: hero.id }]).state;
-    const def = s.components[(home(s).nodes[hero.id] as InstanceNode).definitionId];
-    def.parts.heading = { nodeId: 'heading', label: 'Heading' };
+    const def = s.components[hero.definitionId];
+    expect(def.kind).toBe('code');
+    expect(def.parts.heading).toMatchObject({ nodeId: 'heading' });
     s = applyOperations(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: hero.id, partId: 'heading', scope: 'phone', property: 'hidden', value: true }]).state;
     const page = generateProject(s).get('src/routes/+page.svelte')!;
     expect(page).toContain(`so_o={{"heading":"${overrideClass(hero.id, 'heading')}"}}`);
@@ -120,8 +161,8 @@ describe('code component overrides', () => {
 
 describe('copy and paste', () => {
   it('copies a section to another page with new node and item IDs', () => {
-    let s = fresh();
-    const grid = firstInstance(s, 'features.grid');
+    let s = managed();
+    const grid = firstInstance(s, 'test.grid');
     s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: grid.id, field: 'anchor', value: 'services' }]).state;
     const to = otherPage(s);
     const before = s.pages[to].rootIds.length;
@@ -150,15 +191,15 @@ describe('copy and paste', () => {
   });
 
   it('refuses a copy that would make a component contain itself, even through code converted from it', () => {
-    let s = fresh();
-    const grid = firstInstance(s, 'features.grid');
+    let s = managed();
+    const grid = firstInstance(s, 'test.grid');
     const fork = applyOperations(s, [{ type: 'component.fork', definitionId: grid.definitionId }]);
     s = fork.state;
     const defId = fork.results[0].definitionId as string;
     const inner = s.components[defId].tree!.rootIds[0];
     rejects(() => applyOperations(s, [{ type: 'node.copy', owner: owner(s), nodeId: grid.id, toOwner: { kind: 'component', id: defId }, parentId: inner }]), /contain itself/);
     // The same section converted to code still renders the design it came from.
-    const hero = firstInstance(s, 'hero.split');
+    const hero = firstInstance(s, 'test.hero');
     const wrap = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: hero.id, name: 'Wrapper' }]);
     s = wrap.state;
     const wrapId = wrap.results[0].definitionId as string;
@@ -199,8 +240,8 @@ describe('paste what was copied (#62)', () => {
   };
 
   it('pastes a section on another page after the original is deleted, with new IDs and its anchor', () => {
-    let s = fresh();
-    const grid = firstInstance(s, 'features.grid');
+    let s = managed();
+    const grid = firstInstance(s, 'test.grid');
     s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: grid.id, field: 'anchor', value: 'services' }]).state;
     const clip = captureClipboard(s, s.site.homePageId, grid.id);
     s = applyOperations(s, [{ type: 'node.remove', owner: owner(s), nodeId: grid.id }]).state;
@@ -246,8 +287,8 @@ describe('paste what was copied (#62)', () => {
   });
 
   it('keeps an anchor on the same page only once the original no longer uses it', () => {
-    let s = fresh();
-    const grid = firstInstance(s, 'features.grid');
+    let s = managed();
+    const grid = firstInstance(s, 'test.grid');
     s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: grid.id, field: 'anchor', value: 'services' }]).state;
     const clip = captureClipboard(s, s.site.homePageId, grid.id);
     expect(pasted(paste(s, clip, owner(s)), s.site.homePageId).anchor).toBeUndefined();
@@ -256,10 +297,11 @@ describe('paste what was copied (#62)', () => {
   });
 
   it('pastes after the component is restyled, and refuses once what it takes has changed', () => {
-    const f = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'features.grid').definitionId }]);
+    const base = managed();
+    const f = applyOperations(base, [{ type: 'component.fork', definitionId: firstInstance(base, 'test.grid').definitionId }]);
     let s = f.state;
     const defId = f.results[0].definitionId as string;
-    const grid = firstInstance(s, 'features.grid');
+    const grid = firstInstance(s, 'test.grid');
     expect(grid.definitionId).toBe(defId);
     const clip = captureClipboard(s, s.site.homePageId, grid.id);
     const root = s.components[defId].tree!.rootIds[0];
@@ -311,7 +353,8 @@ describe('paste what was copied (#62)', () => {
   });
 
   it('pastes inside a project component edited everywhere, inside its root, and nowhere else in it (#200)', () => {
-    const f = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'hero.split').definitionId }]);
+    const base = managed();
+    const f = applyOperations(base, [{ type: 'component.fork', definitionId: firstInstance(base, 'test.hero').definitionId }]);
     const defId = f.results[0].definitionId as string;
     const s = f.state;
     const inComponent = { kind: 'component' as const, id: defId };
@@ -345,39 +388,39 @@ describe('paste what was copied (#62)', () => {
   });
 
   it('pastes a group inside a component whole, in order, or not at all (#200)', () => {
-    const base = fresh();
-    const stats = firstInstance(base, 'stats.row');
+    const base = managed();
+    const stats = firstInstance(base, 'test.stats');
     // Both are sections of Home, in the page's order: the grid first. Pasted inside the stats design, the grid is fine
     // and the stats section would contain itself, so the second of the pair is what refuses.
     const forked = applyOperations(base, [{ type: 'component.fork', definitionId: stats.definitionId }]);
     const s = forked.state;
     const inStats = { kind: 'component' as const, id: forked.results[0].definitionId as string };
     const root = s.components[inStats.id].tree!.rootIds[0];
-    const pair = captureClipboard(s, s.site.homePageId, [firstInstance(s, 'features.grid').id, firstInstance(s, 'stats.row').id]);
-    expect(pair.tree.rootIds.map((id) => (s.pages[s.site.homePageId].nodes[id] as InstanceNode).definitionId)).toEqual([firstInstance(s, 'features.grid').definitionId, firstInstance(s, 'stats.row').definitionId]);
+    const pair = captureClipboard(s, s.site.homePageId, [firstInstance(s, 'test.grid').id, firstInstance(s, 'test.stats').id]);
+    expect(pair.tree.rootIds.map((id) => (s.pages[s.site.homePageId].nodes[id] as InstanceNode).definitionId)).toEqual([firstInstance(s, 'test.grid').definitionId, firstInstance(s, 'test.stats').definitionId]);
     const before = JSON.stringify(s);
     rejects(() => paste(s, pair, inStats, { parentId: root }), /contain itself/);
     expect(JSON.stringify(s)).toBe(before);
     // Pasted inside a design that neither of them is, both go in, in the order they were copied.
-    const hero = applyOperations(s, [{ type: 'component.fork', definitionId: firstInstance(s, 'hero.split').definitionId }]);
+    const hero = applyOperations(s, [{ type: 'component.fork', definitionId: firstInstance(s, 'test.hero').definitionId }]);
     const inHero = { kind: 'component' as const, id: hero.results[0].definitionId as string };
     const heroRoot = hero.state.components[inHero.id].tree!.rootIds[0];
-    const ok = paste(hero.state, captureClipboard(hero.state, hero.state.site.homePageId, [firstInstance(hero.state, 'features.grid').id, firstInstance(hero.state, 'stats.row').id]), inHero, { parentId: heroRoot });
+    const ok = paste(hero.state, captureClipboard(hero.state, hero.state.site.homePageId, [firstInstance(hero.state, 'test.grid').id, firstInstance(hero.state, 'test.stats').id]), inHero, { parentId: heroRoot });
     const ids = ok.results[0].nodeIds as string[];
     expect(ids).toHaveLength(2);
     const kids = (ok.state.components[inHero.id].tree!.nodes[heroRoot] as { children: string[] }).children;
     expect(kids.slice(-2)).toEqual(ids);
-    expect(ids.map((id) => (ok.state.components[inHero.id].tree!.nodes[id] as InstanceNode).definitionId)).toEqual([firstInstance(hero.state, 'features.grid').definitionId, firstInstance(hero.state, 'stats.row').definitionId]);
+    expect(ids.map((id) => (ok.state.components[inHero.id].tree!.nodes[id] as InstanceNode).definitionId)).toEqual([firstInstance(hero.state, 'test.grid').definitionId, firstInstance(hero.state, 'test.stats').definitionId]);
     // From a position, they go in one after the other from there, not all at it.
-    const at = paste(hero.state, captureClipboard(hero.state, hero.state.site.homePageId, [firstInstance(hero.state, 'features.grid').id, firstInstance(hero.state, 'stats.row').id]), inHero, { parentId: heroRoot, index: 0 });
+    const at = paste(hero.state, captureClipboard(hero.state, hero.state.site.homePageId, [firstInstance(hero.state, 'test.grid').id, firstInstance(hero.state, 'test.stats').id]), inHero, { parentId: heroRoot, index: 0 });
     expect((at.state.components[inHero.id].tree!.nodes[heroRoot] as { children: string[] }).children.slice(0, 2)).toEqual(at.results[0].nodeIds);
   });
 
   it('keeps no page anchor inside a component, where every placement would repeat it (#200)', () => {
-    let s = fresh();
+    let s = managed();
     // A section with an anchor of its own, and a heading in it with another.
     const made = applyOperations(s, [
-      { type: 'node.insert', newNodeId: 'n_anchored', owner: owner(s), parentId: null, index: 0, componentId: 'layout.section' },
+      { type: 'node.insert', newNodeId: 'n_anchored', owner: owner(s), parentId: null, index: 0, definitionId: SECTION },
       { type: 'node.insert', newNodeId: 'n_title', owner: owner(s), parentId: 'n_anchored', slot: 'content', primitive: 'heading', text: 'Numbers' },
       { type: 'node.setContent', owner: owner(s), nodeId: 'n_anchored', field: 'anchor', value: 'figures' },
       { type: 'node.setContent', owner: owner(s), nodeId: 'n_title', field: 'anchor', value: 'numbers-title' }
@@ -389,7 +432,7 @@ describe('paste what was copied (#62)', () => {
     const copy = pasted(onPage, otherPage(s));
     expect(copy.anchor).toBe('figures');
     expect(onPage.state.pages[otherPage(s)].nodes[copy.slots!.content[0]].anchor).toBe('numbers-title');
-    const f = applyOperations(s, [{ type: 'component.fork', definitionId: firstInstance(s, 'hero.split').definitionId }]);
+    const f = applyOperations(s, [{ type: 'component.fork', definitionId: firstInstance(s, 'test.hero').definitionId }]);
     const inHero = { kind: 'component' as const, id: f.results[0].definitionId as string };
     const heroRoot = f.state.components[inHero.id].tree!.rootIds[0];
     // Pasted inside the component, none of the copy keeps one.
@@ -406,7 +449,8 @@ describe('paste what was copied (#62)', () => {
 
   it('refuses a paste into a component that a pasted code component imports, but not one that only names its file (#200)', () => {
     // A code component that imports the hero's file renders it, though it declares no dependency on it.
-    const f = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'hero.split').definitionId }]);
+    const base = managed();
+    const f = applyOperations(base, [{ type: 'component.fork', definitionId: firstInstance(base, 'test.hero').definitionId }]);
     let s = f.state;
     const heroDef = f.results[0].definitionId as string;
     const file = defFile(s.components[heroDef]).split('/').pop()!;
@@ -537,8 +581,20 @@ describe('which code components take style changes', () => {
 
 describe('multi-list definitions', () => {
   it('finds the list a footer contact link repeats over', () => {
-    const s = fresh();
-    const footer = s.components[(s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode).definitionId];
+    // A footer built in the editor with two link lists, each repeated in its own group, and a copyright line.
+    const link = { label: P.str('Label', 'Link'), link: P.link('Link') };
+    const footer = foundationDesign({
+      componentId: 'test.footer',
+      name: 'Footer',
+      properties: { contact: P.list('Contact', 'Contact link', link, [{ label: 'Email us' }]), links: P.list('Explore', 'Link', link, [{ label: 'About' }]), copyright: P.str('Copyright', '© Studio') },
+      parts: { root: { nodeId: 'root', label: 'Footer' } },
+      build: (b) =>
+        b.el('root', 'footer', { name: 'Footer' }, [
+          b.el('contact', 'ul', { name: 'Contact' }, [b.repeat('contact-items', 'contact', [b.link('contact-link', item('link'), item('label'), 'text', { name: 'Contact link' })])]),
+          b.el('explore', 'ul', { name: 'Explore' }, [b.repeat('explore-items', 'links', [b.link('explore-link', item('link'), item('label'), 'text', { name: 'Link' })])]),
+          b.text('copyright', 'p', prop('copyright'), { name: 'Copyright' })
+        ])
+    });
     expect(enclosingRepeatProp(footer, 'contact-link')).toBe('contact');
     expect(enclosingRepeatProp(footer, 'explore-link')).toBe('links');
     expect(enclosingRepeatProp(footer, 'copyright')).toBeUndefined();
@@ -553,15 +609,36 @@ describe('a Section’s columns, arranged from the placement (#514)', () => {
     return { s: r.state, def: r.state.components['foundation.layout.section'], id: r.results[0].nodeId as string };
   };
 
+  /**
+   * A blank site with a Section built in the editor installed as Foundation's own (its Container holding its Content
+   * slot, with the controls the release's Section offers) and placed: the release's Section is code, with no tree for
+   * columnLayoutPart to read (the Release gap test below).
+   */
+  const withManagedSection = () => {
+    const s = createStarterState('blank', 'Blank', false);
+    const def = foundationDesign(contentSection('layout.section'));
+    s.components[def.id] = def;
+    const r = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, definitionId: def.id }]);
+    return { s: r.state, def: r.state.components[def.id], id: r.results[0].nodeId as string };
+  };
+  const COLUMNS = { partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] };
+
   it('offers Column sizes and separate row and column gaps on its Container, beside its layout and columns', () => {
-    const { def } = withSection();
+    // The release's Section declares them on its Container.
+    expect(withSection().def.parts.container.styleControls).toEqual(expect.arrayContaining(['layout', 'columns', 'gridTemplate', 'rowGap', 'columnGap']));
+    const { def } = withManagedSection();
     expect(def.parts.container.styleControls).toEqual(expect.arrayContaining(['layout', 'columns', 'gridTemplate', 'rowGap', 'columnGap']));
     // The placement's inspector reaches them without Parts: the one part that holds the section's slot.
-    expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] });
+    expect(columnLayoutPart(def)).toEqual(COLUMNS);
+  });
+
+  // Release gap: columnLayoutPart (src/shared/styles.ts) needs a tree, so the release's Section gets no column controls.
+  it.fails('offers the shipped theme’s Section its column controls without Parts', () => {
+    expect(columnLayoutPart(withSection().def)).toEqual(COLUMNS);
   });
 
   it('offers what an older installed Section has, and the same on a copy made unique', () => {
-    const { s, def: installed, id } = withSection();
+    const { s, def: installed, id } = withManagedSection();
     const def = structuredClone(installed);
     def.parts.container.styleControls = ['maxWidth', 'gap', 'layout', 'columns', 'align', 'justify', 'textAlign'];
     expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gap', 'align', 'justify'] });
@@ -573,10 +650,14 @@ describe('a Section’s columns, arranged from the placement (#514)', () => {
     const copy = r.state.components[r.results[0].definitionId as string];
     expect(copy.componentId).not.toBe('layout.section');
     expect(columnLayoutPart(copy)).toEqual(columnLayoutPart(installed));
+    expect(columnLayoutPart(copy)).toEqual(COLUMNS);
   });
 
   it('offers nothing for a design whose slot is not a Section’s content', () => {
-    const { s, def: installed } = withSection();
+    const { s } = withSection();
+    // A Section built in the editor, whose Container holds its Content slot, to take apart below.
+    const installed = foundationDesign(contentSection('layout.section'));
+    expect(columnLayoutPart(installed)).toMatchObject({ partId: 'container' });
     // A section of the theme with no slot (a split hero).
     const hero = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'hero.split' }]).state.components['foundation.hero.split'];
     expect(columnLayoutPart(hero)).toBeNull();

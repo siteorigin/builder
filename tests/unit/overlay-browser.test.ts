@@ -17,7 +17,7 @@ import { createStarterState } from '@catalogue/starters';
 import { makeInstance } from '@engine/install';
 import { generateProject } from '@generator/index';
 import { P, prop, uiState } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
 import { bundle, removeRendered, serverHtml } from './generated-site';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
@@ -38,7 +38,7 @@ const NAVIGATION = 'export const beforeNavigate = (fn) => (window.leaving ??= []
 function project(notice = false): ProjectState {
   const s = createStarterState('business', 'Test Studio', false);
   const def = notice
-    ? FOUNDATION.managed({
+    ? FOUNDATION_AUTHOR.managed({
         componentId: 'test.notice',
         name: 'Studio notice',
         category: 'content',
@@ -57,7 +57,7 @@ function project(notice = false): ProjectState {
             ])
           ])
       })
-    : FOUNDATION.managed({
+    : FOUNDATION_AUTHOR.managed({
         componentId: 'test.booking',
         name: 'Booking',
         category: 'content',

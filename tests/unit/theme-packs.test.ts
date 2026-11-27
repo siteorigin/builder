@@ -9,25 +9,26 @@ import { join } from 'node:path';
 import type { ProjectState } from '@shared/types';
 import type { AuthoredPack, ThemePack } from '@catalogue/pack';
 import { P, createPack } from '@catalogue/dsl';
-import { BUILTIN_PACKS, FOUNDATION_ALT_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
+import { builtinFont } from '@catalogue/builtin-fonts';
 import { defaultTheme, findTheme, getTheme, listThemes, registerPacks, themeLockEntry, themePinProblem } from '@catalogue/index';
 import { createStarterState, starterProblem } from '@catalogue/starters';
 import { applyOperations, assetUsages } from '@engine/apply';
 import { contractConflicts } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
 import { FONTS_DIR, generateProject, packFileCopies } from '@generator/index';
-import { buildPack, fileSource, registerBuiltinPacks, writeRelease } from '../../src/main/packs/build';
+import { buildPack, fileSource, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir } from '../../src/main/packs/loader';
 import { readPackFile, registerPackFiles } from '../../src/main/packs/files';
 import { ProjectSession, ThemeUnavailableError } from '../../src/main/project/session';
 import { ProjectFormatError } from '../../src/main/project/documents';
 import { editedGeneratedFile } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
+import { ROOT, metaOf, restorePacks } from './fixtures/packs';
 
 const dirs: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
-  registerBuiltinPacks();
+  await restorePacks();
 });
 const tmp = () => {
   const d = mkdtempSync(join(tmpdir(), 'so-theme-packs-'));
@@ -47,17 +48,26 @@ const spec = {
   build: (b: Parameters<Parameters<ReturnType<typeof createPack>['managed']>[0]['build']>[0]) => b.text('root', 'p', { $prop: 'text' })
 };
 
+/**
+ * A theme the app ships, as it loads it, in the form a pack is authored in: its data and components, with its fonts
+ * named from the fonts the app's packs are built with.
+ */
+function authored(id: 'foundation' | 'foundation-alt' = 'foundation'): AuthoredPack {
+  const pack = findTheme(id)!;
+  return { ...metaOf(pack, { fonts: pack.fonts.map((f) => builtinFont(f.name)) }), components: pack.components };
+}
+
 /** A third-party pack built from Foundation's components under another identity. */
 function studio(over: Partial<AuthoredPack> = {}): AuthoredPack {
-  const { components, ...meta } = FOUNDATION_PACK;
-  const author = createPack({ ...meta, id: 'studio', name: 'Studio', version: '1.0.0', license: 'MIT', ...over });
+  const { components, ...meta } = authored();
+  const author = createPack({ ...meta, id: 'studio', name: 'Studio', version: '1.0.0', license: 'MIT', devOnly: undefined, ...over });
   return author.define(components.map((c) => author.adopt(c)));
 }
 
 describe('authoring a pack', () => {
   it('stamps every component with the pack it is created from', () => {
-    const a = createPack({ ...FOUNDATION_PACK, id: 'one', version: '1.2.3', license: 'MIT' });
-    const b = createPack({ ...FOUNDATION_PACK, id: 'two', version: '2.0.0', license: 'Apache-2.0' });
+    const a = createPack({ ...authored(), id: 'one', version: '1.2.3', license: 'MIT' });
+    const b = createPack({ ...authored(), id: 'two', version: '2.0.0', license: 'Apache-2.0' });
     const x = a.managed(spec);
     const y = b.managed(spec);
     expect([x.id, x.provenance, x.license]).toEqual(['one.promo.note', { pack: 'one', packVersion: '1.2.3', componentId: 'promo.note' }, 'MIT']);
@@ -69,39 +79,34 @@ describe('authoring a pack', () => {
   });
 
   it('refuses a component of another pack, or one listed twice', () => {
-    const a = createPack({ ...FOUNDATION_PACK, id: 'one', version: '1.0.0', license: 'MIT' });
-    const b = createPack({ ...FOUNDATION_PACK, id: 'two', version: '1.0.0', license: 'MIT' });
+    const a = createPack({ ...authored(), id: 'one', version: '1.0.0', license: 'MIT' });
+    const b = createPack({ ...authored(), id: 'two', version: '1.0.0', license: 'MIT' });
     expect(() => a.define([b.managed(spec)])).toThrow(/does not belong to pack one@1\.0\.0/);
     const x = a.managed(spec);
     expect(() => a.define([x, x])).toThrow(/lists one\.promo\.note twice/);
   });
 
-  it('builds Foundation and its development fixture from their own identities', () => {
-    expect(FOUNDATION_PACK.components.map((c) => c.componentId)).toEqual([
-      'shell.header', 'shell.footer', 'hero.centered', 'hero.split', 'intro.page', 'content.article', 'logos.strip', 'features.grid', 'content.media', 'tabs.showcase', 'content.steps-media', 'content.text', 'stats.row',
-      'testimonials.grid', 'team.grid', 'pricing.plans', 'pricing.toggle', 'data.table', 'faq.list', 'content.pages', 'content.news', 'blog.featured', 'blog.grid', 'blog.list', 'media.gallery', 'media.carousel', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section', 'layout.split',
-      'block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video'
+  it('ships Foundation and its development fixture under their own identities', () => {
+    const foundation = findTheme('foundation')!;
+    const alt = findTheme('foundation-alt')!;
+    expect(foundation.components.map((c) => c.componentId)).toEqual([
+      'shell.header', 'shell.footer', 'hero.centered', 'hero.split', 'hero.screenshot', 'intro.page', 'content.article', 'logos.strip', 'features.grid', 'features.bento', 'content.media', 'features.alternating', 'tabs.showcase', 'content.steps-media', 'content.steps', 'content.text', 'stats.row',
+      'testimonials.grid', 'team.grid', 'pricing.plans', 'pricing.toggle', 'pricing.compare', 'data.table', 'faq.list', 'content.pages', 'content.news', 'blog.featured', 'blog.grid', 'blog.list', 'media.gallery', 'media.carousel', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section', 'layout.split',
+      'block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.download', 'block.facts', 'block.signup', 'block.video'
     ]);
-    expect(FOUNDATION_ALT_PACK.components.map((c) => c.componentId)).toEqual(FOUNDATION_PACK.components.map((c) => c.componentId));
-    for (const pack of [FOUNDATION_PACK, FOUNDATION_ALT_PACK]) {
-      const { nodes } = pack.components.find((c) => c.componentId === 'media.carousel')!.tree!;
-      expect(nodes.track).toMatchObject({ tag: 'ul', carousel: true, styles: { base: { layout: 'row' } } });
-      expect((nodes.track as { children: string[] }).children.map((id) => nodes[id].kind)).toEqual(['repeat']);
-    }
-    const altHero = FOUNDATION_ALT_PACK.components.find((c) => c.componentId === 'hero.split')!;
-    expect(altHero.tree!.nodes.grid.styles?.base).toMatchObject({ layout: 'stack', textAlign: 'center' });
-    for (const c of FOUNDATION_PACK.components) expect([c.id, c.provenance?.pack, c.provenance?.packVersion, c.license]).toEqual([`foundation.${c.componentId}`, 'foundation', '0.1.0', 'MIT-0']);
-    for (const [i, c] of FOUNDATION_ALT_PACK.components.entries()) {
+    expect(alt.components.map((c) => c.componentId)).toEqual(foundation.components.map((c) => c.componentId));
+    for (const c of foundation.components) expect([c.id, c.provenance?.pack, c.provenance?.packVersion, c.license]).toEqual([`foundation.${c.componentId}`, 'foundation', '0.1.0', 'MIT-0']);
+    for (const [i, c] of alt.components.entries()) {
       expect(c.id).toBe(`foundation-alt.${c.componentId}`);
       expect(c.provenance?.pack).toBe('foundation-alt');
-      // The fixture keeps Foundation's contracts; only the split hero's layout differs.
-      if (c.componentId !== 'hero.split') expect(JSON.stringify({ ...c, id: '', provenance: {} })).toBe(JSON.stringify({ ...FOUNDATION_PACK.components[i], id: '', provenance: {} }));
+      // The fixture keeps Foundation's contracts under its own identity.
+      expect(JSON.stringify({ ...c, id: '', provenance: {} })).toBe(JSON.stringify({ ...foundation.components[i], id: '', provenance: {} }));
     }
     // The blocks (#664) insert as elements in every theme, so a theme switch keeps where Insert puts them.
-    for (const pack of BUILTIN_PACKS)
-      expect(pack.components.filter((c) => c.insertAs === 'element').map((c) => c.componentId), pack.id).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
-    expect(FOUNDATION_PACK.components.filter((c) => c.insertAs !== undefined && c.insertAs !== 'element')).toEqual([]);
-    expect(BUILTIN_PACKS.map((p) => [p.id, !!p.devOnly])).toEqual([
+    for (const pack of [foundation, alt])
+      expect(pack.components.filter((c) => c.insertAs === 'element').map((c) => c.componentId), pack.id).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.download', 'block.facts', 'block.signup', 'block.video']);
+    expect(foundation.components.filter((c) => c.insertAs !== undefined && c.insertAs !== 'element')).toEqual([]);
+    expect(listThemes().map((p) => [p.id, !!p.devOnly])).toEqual([
       ['foundation', false],
       ['foundation-alt', true]
     ]);
@@ -111,16 +116,18 @@ describe('authoring a pack', () => {
 describe('a pack release', () => {
   it('loads back with every definition and generated file unchanged', async () => {
     const root = tmp();
-    const built = BUILTIN_PACKS.map((a) => buildPack(a));
+    // The themes the app ships, built again from what their releases hold.
+    const sources = [authored('foundation'), authored('foundation-alt')];
+    const built = sources.map((a) => buildPack(a));
     for (const b of built) writeRelease(join(root, b.pack.id), b.pack, b.files);
     const loaded = await Promise.all(built.map((b) => loadPackDir(join(root, b.pack.id), { dir: root, source: 'bundled' })));
     for (const [i, l] of loaded.entries()) {
-      expect(JSON.stringify(l.pack.components)).toBe(JSON.stringify(BUILTIN_PACKS[i].components));
+      expect(JSON.stringify(l.pack.components)).toBe(JSON.stringify(sources[i].components));
       expect(l.pack.fonts).toEqual(built[i].pack.fonts);
       // Every file the release ships is its source, byte for byte.
       for (const [rel, abs] of built[i].files) expect(readFileSync(join(root, l.pack.id, rel)).equals(readFileSync(abs)), rel).toBe(true);
     }
-    // Same project, generated once with the packs from source and once with their releases.
+    // Same project, generated once with the releases the app ships and once with the ones built again.
     const state = createStarterState('business', 'Parity', false);
     const both = () => [...generateProject(state, { instrument: false }), ...generateProject(state, { instrument: true }), ...packFileCopies(state).map((c) => [c.path, c.file])];
     const fromSource = both();
@@ -169,7 +176,7 @@ describe('starting a project on a theme', () => {
     expect(starterProblem('blank')).toBeNull();
     expect(starterProblem('business', 'nope')).toMatch(/"nope" is not installed/);
     // An installed pack without the split hero can make a blank site, but not the Business starter.
-    const { components, ...meta } = FOUNDATION_PACK;
+    const { components, ...meta } = authored();
     const author = createPack({ ...meta, id: 'sparse', name: 'Sparse', version: '1.0.0', license: 'MIT' });
     registerPacks([...listThemes(), buildPack(author.define(components.filter((c) => c.componentId !== 'hero.split').map((c) => author.adopt(c)))).pack]);
     expect(starterProblem('blank', 'sparse')).toBeNull();
@@ -209,7 +216,7 @@ describe('starting a project on a theme', () => {
 /** Register the built-in packs plus an installed pack with this digest. */
 function withInstalled(digest: string, over: Partial<AuthoredPack> = {}): ThemePack {
   const pack: ThemePack = { ...buildPack(studio(over)).pack, source: 'user', digest };
-  registerPacks([...BUILTIN_PACKS.map((a) => buildPack(a).pack), pack]);
+  registerPacks([...listThemes().filter((t) => t.source === 'bundled'), pack]);
   return pack;
 }
 
@@ -230,7 +237,7 @@ describe('pinning an installed pack', () => {
     expect(themePinProblem({ site: { themeId: 'foundation-alt' }, themeLock: { theme: { id: 'foundation-alt', version: '0.1.0' } } })).toBeNull();
   });
 
-  it('notices a missing pack or another copy of the same version, but lets a new version through', () => {
+  it('notices a missing pack or another copy of the same version, but lets a new version through', async () => {
     const state = (digest?: string) => ({ site: { themeId: 'studio' }, themeLock: { theme: { id: 'studio', version: '1.0.0', ...(digest ? { digest } : {}) } } });
     withInstalled('d1');
     expect(themePinProblem(state('d1'))).toBeNull();
@@ -240,7 +247,7 @@ describe('pinning an installed pack', () => {
     expect(themePinProblem(state('d0'))).toMatch(/the installed pack with that version is a different copy/);
     withInstalled('d2', { version: '1.1.0' });
     expect(themePinProblem(state('d0'))).toBeNull();
-    registerBuiltinPacks();
+    await restorePacks();
     expect(themePinProblem(state('d1'))).toMatch(/theme "studio" 1\.0\.0, which is not installed/);
   });
 
@@ -249,7 +256,7 @@ describe('pinning an installed pack', () => {
     withInstalled('d1');
     const state = applyOperations(createStarterState('business', 'Gone', false), [{ type: 'theme.apply', themeId: 'studio' }]).state;
     await (await ProjectSession.create(d, state)).close();
-    registerBuiltinPacks();
+    await restorePacks();
     const theme = readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8');
     const err = await ProjectSession.open(d, 'test').catch((e) => e);
     expect(err).toBeInstanceOf(ThemeUnavailableError);
@@ -263,7 +270,7 @@ describe('pinning an installed pack', () => {
     const s = await ProjectSession.create(d, createStarterState('business', 'Undo', false));
     expect((await s.apply({ operations: [{ type: 'theme.apply', themeId: 'studio' }] }, { label: 'Studio' })).ok).toBe(true);
     expect((await s.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation' }] }, { label: 'Foundation' })).ok).toBe(true);
-    registerBuiltinPacks();
+    await restorePacks();
     const theme = readFileSync(join(d, 'src/lib/siteorigin/styles/theme.css'), 'utf8');
     const r = await s.undo();
     expect(r.ok).toBe(false);
@@ -289,13 +296,13 @@ describe('pinning an installed pack', () => {
   });
 });
 
-const inter = FOUNDATION_PACK.fonts.find((f) => f.name === 'Inter')!;
+const inter = builtinFont('Inter');
 // Studio ships Inter only, and sets its display font to it.
-const onlyInter = () => ({ fonts: [inter], tokens: FOUNDATION_PACK.tokens.map((t) => (t.id === 'font.display' ? { ...t, value: inter.stack } : t)) });
+const onlyInter = () => ({ fonts: [inter], tokens: authored().tokens.map((t) => (t.id === 'font.display' ? { ...t, value: inter.stack } : t)) });
 
 describe('a new project', () => {
   it('records the theme it is made with when the default is not installed', () => {
-    registerPacks([buildPack(FOUNDATION_ALT_PACK).pack]);
+    registerPacks([findTheme('foundation-alt')!]);
     const s = createStarterState('blank', 'Fallback', false);
     expect(s.site.themeId).toBe('foundation-alt');
     expect(s.themeLock.theme.id).toBe('foundation-alt');
@@ -336,8 +343,8 @@ describe('switching to a pack with other fonts', () => {
 
   it('is refused for a font chosen in a font token the theme names otherwise', () => {
     // "Serif" ships Lora and Inter, and keeps its body font in "type.body"; Studio ships Inter only.
-    const { components, ...meta } = FOUNDATION_PACK;
-    const serifAuthor = createPack({ ...meta, id: 'serif', name: 'Serif', version: '1.0.0', license: 'MIT', fonts: FOUNDATION_PACK.fonts.filter((f) => ['Inter', 'Lora'].includes(f.name)), tokens: [...FOUNDATION_PACK.tokens, { id: 'type.body', label: 'Body', group: 'font', value: inter.stack }] });
+    const { components, ...meta } = authored();
+    const serifAuthor = createPack({ ...meta, id: 'serif', name: 'Serif', version: '1.0.0', license: 'MIT', fonts: meta.fonts.filter((f) => ['Inter', 'Lora'].includes(f.name)), tokens: [...meta.tokens, { id: 'type.body', label: 'Body', group: 'font', value: inter.stack }] });
     const serif: ThemePack = { ...buildPack(serifAuthor.define(components.map((c) => serifAuthor.adopt(c)))).pack, source: 'user', digest: 's1' };
     const studioPack = withInstalled('d1', onlyInter());
     registerPacks([...listThemes(), serif]);
@@ -349,8 +356,8 @@ describe('switching to a pack with other fonts', () => {
 
   it('counts an imported font chosen in a font token the theme names otherwise, and settles it when the font goes', () => {
     // Issue 247: a use the count missed let the font go without the author seeing what changes.
-    const { components, ...meta } = FOUNDATION_PACK;
-    const serifAuthor = createPack({ ...meta, id: 'serif', name: 'Serif', version: '1.0.0', license: 'MIT', fonts: FOUNDATION_PACK.fonts, tokens: [...FOUNDATION_PACK.tokens, { id: 'type.body', label: 'Body', group: 'font', value: inter.stack }] });
+    const { components, ...meta } = authored();
+    const serifAuthor = createPack({ ...meta, id: 'serif', name: 'Serif', version: '1.0.0', license: 'MIT', tokens: [...meta.tokens, { id: 'type.body', label: 'Body', group: 'font', value: inter.stack }] });
     registerPacks([...listThemes(), { ...buildPack(serifAuthor.define(components.map((c) => serifAuthor.adopt(c)))).pack, source: 'user', digest: 's1' }]);
     const face = { id: 'f1', name: 'Brand', file: 'static/assets/brand-aaaaaaaa.woff2', mime: 'font/woff2', bytes: 1, hash: 'x', kind: 'font' as const, createdAt: '', font: { family: 'Brand Sans', weight: '400', style: 'normal' as const } };
     const s = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'theme.apply', themeId: 'serif' }, { type: 'asset.add', asset: face }, { type: 'token.set', tokenId: 'type.body', value: "'Brand Sans', Georgia, serif" }]).state;
@@ -388,7 +395,9 @@ describe('switching to a pack with other fonts', () => {
  * validation (as if the pack's file were replaced while the app ran).
  */
 function changedOnDisk(scratch: string) {
-  const { files } = buildPack(FOUNDATION_PACK);
+  const release = join(ROOT, 'resources', 'packs', 'foundation');
+  const listed = (JSON.parse(readFileSync(join(release, 'pack.json'), 'utf8')) as { files: Record<string, unknown> }).files;
+  const files = new Map(Object.keys(listed).map((rel) => [rel, join(release, rel)]));
   const changed = join(scratch, '.changed-inter.woff2');
   const bytes = readFileSync(files.get('fonts/inter-latin-wght-normal.woff2')!);
   bytes[bytes.length - 1] ^= 0xff;

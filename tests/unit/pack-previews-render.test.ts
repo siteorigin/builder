@@ -1,9 +1,7 @@
 // renderPages is what thumbnails and review captures both render generated pages through (#999).
 import { describe, expect, it } from "vitest";
-import { BUILTIN_PACKS } from "@catalogue/builtin";
-import { registerPacks } from "@catalogue/index";
+import { getTheme } from "@catalogue/index";
 import { STYLES_DIR, generateProject, pageFile } from "@generator/index";
-import { buildPack } from "../../src/main/packs/build";
 import {
   packCss,
   previewProject,
@@ -12,10 +10,8 @@ import {
 
 describe("renderPages", () => {
   it("renders generated pages to html carrying the pack css, in order", async () => {
-    const { pack } = buildPack(
-      BUILTIN_PACKS.find((p) => p.id === "foundation")!,
-    );
-    registerPacks([pack]);
+    // Foundation as the app loads it, from its committed release.
+    const pack = getTheme("foundation");
     const { state, cases } = previewProject(pack);
     const generated = generateProject(state);
     const pages = cases.slice(0, 2).map((c) => pageFile(state.pages[c.pageId]));

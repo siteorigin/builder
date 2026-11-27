@@ -10,8 +10,7 @@ import { compile } from 'svelte/compiler';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { CATEGORY_LABELS, catalogueComponent, catalogueEntries, searchCatalogue } from '@catalogue/index';
-import { FOUNDATION_EXAMPLES } from '@catalogue/foundation/ai-examples';
+import { CATEGORY_LABELS, catalogueComponent, catalogueEntries, getTheme, searchCatalogue } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
 import { headingOutline, renderedContent } from '@generator/checks';
@@ -288,7 +287,7 @@ describe('the Video section', () => {
   });
 
   it('has a worked example that asks the author for their own video rather than offering one to copy', () => {
-    const example = FOUNDATION_EXAMPLES.find((e) => e.componentId === 'media.video')!;
+    const example = getTheme('foundation').aiProfile!.examples!.find((e) => e.componentId === 'media.video')!;
     expect(example.keywords).toEqual(expect.arrayContaining(['video', 'youtube', 'vimeo', 'embed']));
     expect(example.props.url).toBe('');
     expect(JSON.stringify(example)).not.toMatch(/https?:/);

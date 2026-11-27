@@ -19,7 +19,7 @@ const { makeInstance } = await import('@engine/install');
 const { formRoutingChanges, formRoutingPrompt, formRoutingQuestion, formRoutingReview } = await import('@engine/form-routing');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { registerSecondTheme, SECOND_THEME_ID } = await import('./second-theme');
-registerSecondTheme();
+await registerSecondTheme();
 
 const FORM = 'foundation.contact.form';
 const SALES = 'https://forms.example.com/sales';

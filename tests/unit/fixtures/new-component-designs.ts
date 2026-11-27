@@ -1,0 +1,73 @@
+/**
+ * A managed services grid stamped as Foundation's, for the tests of reading a design's structure: the slice of the
+ * grid Foundation had before its sections became code that those tests read (a heading group bound to properties, a
+ * card grid with rules for tablets and desktops, a repeat over the cards whose title is a part bound to an item
+ * field, and tone and layout axes whose options style nodes by screen size).
+ */
+import type { ComponentDefinition } from '@shared/types';
+import { P, tok } from '@catalogue/dsl';
+import { foundationDesign } from './packs';
+
+export function servicesGrid(): ComponentDefinition {
+  return foundationDesign({
+    componentId: 'features.grid',
+    name: 'Services grid',
+    properties: {
+      eyebrow: P.str('Eyebrow', 'What we do'),
+      heading: P.str('Heading', 'Services shaped around your project'),
+      lead: P.text('Supporting text', 'Every engagement is different. These are the ways we most often help.'),
+      items: P.list(
+        'Cards',
+        'Card',
+        { icon: P.icon('Icon', 'sparkles'), title: P.str('Title', 'Service'), description: P.text('Description', 'Describe what this service includes.') },
+        [
+          { icon: 'compass', title: 'Planning', description: 'Clear priorities before work begins.' },
+          { icon: 'pen-tool', title: 'Design', description: 'Considered layouts developed with you.' }
+        ],
+        { titleField: 'title', max: 12 }
+      )
+    },
+    parts: {
+      root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+      heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+      grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gap'] },
+      card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border'] },
+      cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] }
+    },
+    variantAxes: {
+      tone: {
+        label: 'Tone',
+        default: 'default',
+        options: {
+          default: { label: 'Default' },
+          muted: { label: 'Soft background', styles: { root: { base: { background: tok('color.surface-alt') } } } },
+          inverse: { label: 'Dark', styles: { root: { base: { background: tok('color.inverse'), color: tok('color.on-inverse') } }, lead: { base: { color: tok('color.on-inverse') } } } }
+        }
+      },
+      layout: {
+        label: 'Layout',
+        default: 'default',
+        options: { default: { label: 'Three columns' }, 'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } } }
+      }
+    },
+    build: (b) =>
+      b.el('root', 'section', { name: 'Section', styles: { paddingBlock: tok('space.section'), background: tok('color.background'), color: tok('color.text') } }, [
+        b.el('inner', 'div', { name: 'Container', styles: { layout: 'stack', gap: tok('space.2xl'), maxWidth: tok('container.content') } }, [
+          b.el('intro', 'div', { name: 'Heading group', collapseEmpty: true, styles: { layout: 'stack', gap: tok('space.md') } }, [
+            b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: { textStyle: tok('text.eyebrow'), color: tok('color.brand') } }),
+            b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
+            b.text('lead', 'p', { $prop: 'lead' }, { name: 'Lead', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), color: tok('color.muted') } })
+          ]),
+          b.el('grid', 'ul', { name: 'Card grid', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.lg') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
+            b.repeat('cards', 'items', [
+              b.el('card', 'li', { name: 'Card', styles: { layout: 'stack', gap: tok('space.md'), background: tok('color.surface'), border: tok('border.default') } }, [
+                b.icon('card-icon', { $item: 'icon' }, { name: 'Icon' }),
+                b.text('card-title', 'h3', { $item: 'title' }, { name: 'Title', styles: { textStyle: tok('text.h3') } }),
+                b.text('card-text', 'p', { $item: 'description' }, { name: 'Description', styles: { color: tok('color.muted') } })
+              ])
+            ])
+          ])
+        ])
+      ])
+  });
+}

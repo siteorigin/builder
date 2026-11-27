@@ -9,6 +9,10 @@ import { LOCK_STALE_MS, ProjectLockedError, ProjectSession } from '../../src/mai
 import { sha, toJson } from '../../src/main/project/fsutil';
 import { instancesOf } from '@engine/tree';
 import { denyAccess } from './deny-access';
+import { makeInstance } from '@engine/install';
+import { defFile, nodeClass } from '@generator/index';
+import { P, prop, tok } from '@catalogue/dsl';
+import { foundationDesign, projectDesign, type DesignSpec } from './fixtures/packs';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -1226,16 +1230,40 @@ describe('the version an AI run attempted, when it rolled back around a conflict
 });
 
 describe('converting a design’s edited file to a code component (#737)', () => {
-  const HERO = 'foundation.hero.split';
-  const HERO_FILE = 'src/lib/siteorigin/generated/foundation-hero-split.svelte';
+  /** A hero built in the editor, with a property and a tone axis (Foundation's own sections are code components). */
+  const HERO_SPEC: DesignSpec = {
+    componentId: 'project.hero',
+    name: 'Hero',
+    properties: { heading: P.str('Heading', 'Calm, considered rooms') },
+    parts: { root: { nodeId: 'root', label: 'Hero' }, heading: { nodeId: 'heading', label: 'Heading' } },
+    variantAxes: {
+      tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, inverse: { label: 'Dark', styles: { root: { base: { background: tok('color.inverse'), color: tok('color.on-inverse') } } } } } }
+    },
+    build: (b) => b.el('root', 'section', { name: 'Hero', styles: { base: { paddingBlock: tok('space.3xl') } } }, [b.text('heading', 'h1', prop('heading'), { name: 'Heading' })])
+  };
+  const HERO = foundationDesign(HERO_SPEC).id;
+  const HERO_FILE = defFile(foundationDesign(HERO_SPEC));
   const placements = (st: ProjectSession['state'], defId: string) => instancesOf(st, defId).map((u) => `${u.owner.kind}:${u.owner.id}/${u.node.id}`).sort();
 
+  /** The business starter with the hero as the project's own design, placed first on Home. */
+  async function makeWithHero() {
+    const dir = mkdtempSync(join(tmpdir(), 'so-recovery-'));
+    dirs.push(dir);
+    const state = createStarterState('business', 'Persist', false);
+    const hero = makeInstance(projectDesign(state, HERO_SPEC), {});
+    const home = state.pages[state.site.homePageId];
+    home.nodes[hero.id] = hero;
+    home.rootIds.unshift(hero.id);
+    const s = await ProjectSession.create(dir, state);
+    return { dir, s };
+  }
+
   /**
-   * The hero placed on Home (as the starter has it), on About, inside a project design and in the footer; then its
-   * generated file edited by hand (a badge, its own count, a sibling design imported) and found so by a later save.
+   * The hero placed on Home, on About, inside a project design and in the footer; then its generated file edited by
+   * hand (a badge, its own count, a sibling design imported) and found so by a later save.
    */
   async function editedHero(edit = (text: string) => text) {
-    const { dir, s } = await make();
+    const { dir, s } = await makeWithHero();
     const [, about] = s.state.site.pageOrder;
     const ok = async (operations: unknown[], label: string) => {
       const r = await s.apply({ operations } as never, { label });
@@ -1293,10 +1321,10 @@ describe('converting a design’s edited file to a code component (#737)', () =>
     expect(s.savedCopies).toEqual([expect.objectContaining({ path: HERO_FILE, kind: 'generated', side: 'external' })]);
     expect(readFileSync(join(dir, s.savedCopies[0].file), 'utf8')).toBe(edited);
     // The design's rules, which the file's classes name, are still in the shared stylesheet; the pages use the code.
-    expect(readFileSync(join(dir, 'src/lib/siteorigin/styles/components.css'), 'utf8')).toContain('.so-foundation-hero-split__');
+    expect(readFileSync(join(dir, 'src/lib/siteorigin/styles/components.css'), 'utf8')).toContain(`.${nodeClass(s.state.components[HERO], 'root')}`);
     const home = readFileSync(join(dir, 'src/routes/+page.svelte'), 'utf8');
     expect(home).toContain(`"${code.sourcePath!.replace('src/', '../')}"`);
-    expect(home).not.toContain('foundation-hero-split.svelte');
+    expect(home).not.toContain(HERO_FILE.split('/').pop());
     // One step of history.
     expect(historySteps(s)).toBe(steps + 1);
     expect(s.historyInfo().undoLabel).toBe(`Convert “${hero.name}” to code`);
@@ -1330,7 +1358,7 @@ describe('converting a design’s edited file to a code component (#737)', () =>
   });
 
   it('never offers it for a page, a stylesheet or a file that is not text, and refuses it there', async () => {
-    const { dir, s } = await make();
+    const { dir, s } = await makeWithHero();
     const HOME = 'src/routes/+page.svelte';
     const CSS = 'src/lib/siteorigin/styles/components.css';
     writeFileSync(join(dir, HOME), '<h1>Hero edited by hand</h1>\n');

@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
+import { projectDesign } from './fixtures/packs';
 import { applyOperations } from '@engine/apply';
 import { generateProject } from '@generator/index';
 import { checkSvelteSource, codeContractNames, withoutCodeMarkers, type CodeContract } from '../../src/main/codecheck';
@@ -269,7 +270,16 @@ describe('converting a design to code keeps its parts and slots', () => {
   it('keeps every part’s class hook and the slots, writes no marker, and the preview still names each part', async () => {
     let s: ProjectState = createStarterState('business', 'Convert', false);
     const owner = { kind: 'page' as const, id: s.site.homePageId };
-    s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' }]).state;
+    // A section with a content slot inside its container, designed in the editor.
+    const design = projectDesign(s, {
+      componentId: 'project.section',
+      name: 'Section',
+      properties: {},
+      slots: { content: { label: 'Content' } },
+      parts: { root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] }, container: { nodeId: 'inner', label: 'Container', styleControls: ['maxWidth', 'gap'] } },
+      build: (b) => b.el('root', 'section', { name: 'Section' }, [b.el('inner', 'div', { name: 'Container' }, [b.slot('content-slot', 'content', { name: 'Content' })])])
+    });
+    s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, index: 0, definitionId: design.id } as EditOperation]).state;
     const section = s.pages[owner.id].rootIds[0];
     s = applyOperations(s, [{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'button', text: 'Kept' }]).state;
     const def = s.components[(s.pages[owner.id].nodes[section] as InstanceNode).definitionId];

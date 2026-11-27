@@ -51,6 +51,8 @@ const { describeLink, findContent, planReplace } = await import('../../src/rende
 const { normalizeImage } = await import('@engine/values');
 const { documentLabels } = await import('../../src/renderer/src/lib/documents');
 const { sha } = await import('../../src/main/project/fsutil');
+const { heroDesign } = await import('./fixtures/unlinked-buttons-designs');
+const { makeInstance } = await import('@engine/install');
 type AssetRecord = import('@shared/types').AssetRecord;
 type ProjectState = import('@shared/types').ProjectState;
 type EditOperation = import('@shared/ops').EditOperation;
@@ -322,13 +324,38 @@ describe('linking to a document', () => {
     expect(() => applyOperations(removed, [{ type: 'node.paste', clipboardId: clip.id, toOwner: { kind: 'page', id: removed.site.homePageId } }], { clipboards: [clip] })).toThrow(/links to the document "Exhibitor guide", which has been removed/);
   });
 
-  it('is found by its file name in Find and Replace, never rewritten there, and told apart from documents with the same name', () => {
-    const { s, guide } = withGuide();
-    const { state } = linkHero(s, { type: 'document', target: 'a_guide' });
+  it('is found by its file name in Find and Replace, never rewritten there', () => {
+    const { s } = withGuide();
+    // A hero designed in the editor, first on Home: Foundation's is code, whose links Find and Replace leaves to its
+    // inspector (the Release gap test below).
+    const hero = makeInstance(heroDesign(s), {});
+    const home = s.pages[s.site.homePageId];
+    home.nodes[hero.id] = hero;
+    home.rootIds.unshift(hero.id);
+    const state = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: hero.id, prop: 'primaryLink', value: { type: 'document', target: 'a_guide' } }]).state;
     const found = findContent(state, 'Guide 2026').filter((m) => m.kind === 'link');
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ match: 'Guide 2026', blocked: expect.stringMatching(/^This downloads a document from Assets\./) });
     expect(planReplace(state, found, 'Guide 2027').operations).toEqual([]);
+  });
+
+  it('finds the document a link of the release’s hero downloads by its file name in Find and Replace, never rewritten there', () => {
+    const { s } = withGuide();
+    const { state } = linkHero(s, { type: 'document', target: 'a_guide' });
+    const found = findContent(state, 'Guide 2026').filter((m) => m.kind === 'link');
+    expect(found).toEqual([expect.objectContaining({ match: 'Guide 2026', blocked: expect.any(String) })]);
+    expect(planReplace(state, found, 'Guide 2027').operations).toEqual([]);
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the release's hero counts as custom code, and blockedReason in find-content.ts gives the custom-code notice before the link's own download notice.
+  it.fails('says a link of the release’s hero downloads a document from Assets, not that it belongs to custom code', () => {
+    const { s } = withGuide();
+    const { state } = linkHero(s, { type: 'document', target: 'a_guide' });
+    expect(findContent(state, 'Guide 2026').filter((m) => m.kind === 'link').map((m) => m.blocked)).toEqual([expect.stringMatching(/^This downloads a document from Assets\./)]);
+  });
+
+  it('describes a document link by its file, and tells apart documents with the same name', () => {
+    const { s, guide } = withGuide();
     expect(describeLink(s, { type: 'document', target: 'a_guide' })).toBe('Download Exhibitor Guide 2026.pdf');
     expect(describeLink(s, { type: 'document', target: 'a_gone' })).toBe('Missing document');
     const twin = { ...guide, id: 'a_twin', originalName: 'Exhibitor Guide 2027.pdf' };

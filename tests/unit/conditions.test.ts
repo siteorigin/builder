@@ -10,11 +10,11 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { blocksSaving, validateState } from '@engine/validate';
 import { P, eq, item, prop, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
 import { comparisonInput, conditionSources, describeConditions, readRule, ruleOp, startValue } from '../../src/renderer/src/lib/conditions';
 import { checkHeld, fieldKey, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
 
-const { managed } = FOUNDATION;
+const managed = (spec: ComponentSpec) => FOUNDATION_AUTHOR.managed(spec);
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const owner = (def: ComponentDefinition) => ({ kind: 'component' as const, id: def.id });
 const errors = (s: ProjectState) => validateState(s).filter(blocksSaving);

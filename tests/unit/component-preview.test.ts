@@ -14,8 +14,27 @@ import { clearComponentPreviews, previewSpec, removeComponentPreview, writeCompo
 import { generateComponentPreview, PREVIEW_NODE_ID, relativeImports } from '@generator/preview';
 import { FONTS_DIR, RUNTIME_DIR, STYLES_DIR, defFile, effectiveTokens, generateLibrary, generateProject } from '@generator/index';
 import { brandParts, colourProjection } from '../../src/main/runtime/component-thumbs';
+import { item } from '@catalogue/dsl';
+import { projectDesign, type DesignSpec } from './fixtures/packs';
 
 const starter = () => createStarterState('blank', 'Preview Studio', false);
+
+/** Managed designs of the project's own, each drawing different things: text, an image, a link, icons, rich text. */
+function managedDesigns(state: ProjectState) {
+  const design = (componentId: string, name: string, build: DesignSpec['build'], properties: DesignSpec['properties'] = {}) => projectDesign(state, { componentId, name, properties, parts: {}, build });
+  design('project.note', 'Note', (b) => b.el('root', 'article', {}, [b.text('title', 'h3', 'A note')]));
+  design('project.picture', 'Picture', (b) => b.el('root', 'figure', {}, [b.image('media', { assetId: null, alt: 'A view' })]));
+  design('project.more', 'More', (b) => b.el('root', 'div', {}, [b.link('more', { type: 'url', target: 'https://example.com' }, 'Read more', 'primary')]));
+  design('project.mark', 'Mark', (b) => b.el('root', 'div', {}, [b.icon('mark', 'star'), b.text('label', 'p', 'Starred')]));
+  design('project.story', 'Story', (b) => b.el('root', 'section', {}, [b.rich('body', ['A first paragraph.', 'A second one.'])]));
+  design(
+    'project.points',
+    'Points',
+    (b) => b.el('root', 'ul', {}, [b.repeat('each', 'points', [b.el('point', 'li', {}, [b.icon('check', 'check'), b.text('text', 'span', item('text'))])])]),
+    { points: { type: 'list', label: 'Points', itemLabel: 'Point', fields: { text: { type: 'string', label: 'Point', default: 'A point' } }, default: [{ id: 'p1', text: 'One' }, { id: 'p2', text: 'Two' }] } }
+  );
+  design('project.rule', 'Rule', (b) => b.el('root', 'div', {}, [b.text('title', 'h2', 'Above'), b.divider('rule')]));
+}
 
 /** The files of a preview that is expected to work. */
 function preview(state: ProjectState, spec: Parameters<typeof generateComponentPreview>[1]) {
@@ -54,10 +73,11 @@ describe('isolated component preview files', () => {
     expect(module).toContain(`from "../generated/${defFile(source).split('/').pop()}"`);
     expect(module).toContain('variant_layout="media-end"');
     expect(module).toContain('heading={"A sample heading"}');
-    // Its styles, variants included, are in the preview's component stylesheet.
-    expect(out.files.get(PREVIEW_COMPONENT_STYLES)).toMatch(/--layout-media-end/);
-    // Identity attributes for the bridge's measurements, under a context no page uses.
-    expect(module).toContain(`__so={"preview:${source.id}|${PREVIEW_NODE_ID}"}`);
+    // Its styles, variants included, come with it: a code component keeps them in its own file.
+    expect(out.files.get(defFile(source))).toMatch(/media--layout-media-end/);
+    // Identity attributes for the bridge's measurements, under a context no page uses: a code component's, on the
+    // wrapper the preview puts around it.
+    expect(module).toContain(`data-so-ctx={"preview:${source.id}"} data-so-node="${PREVIEW_NODE_ID}"`);
     // The project's tokens, base styles and fonts are loaded from the project, never copied.
     for (const path of out.files.keys()) expect(path).not.toMatch(/styles\/(tokens|theme|site)\.css$|\/fonts\//);
   });
@@ -169,7 +189,8 @@ describe('isolated component preview files', () => {
     expect(error({ definitionId: id, props: { nope: 1 } })).toMatch(/no property "nope"/);
     expect(error({ definitionId: id, props: { heading: { $prop: 'heading' } } })).toMatch(/cannot be bound/);
     expect(error({ definitionId: id, props: { headingLevel: 'h9' } })).toMatch(/Heading level|h9/i);
-    state.components[id] = { ...state.components[id], tree: undefined };
+    // Foundation's sections are code: one without its source has nothing to show.
+    state.components[id] = { ...state.components[id], source: undefined };
     expect(error({ definitionId: id })).toMatch(/nothing to show/);
   });
 
@@ -216,6 +237,9 @@ describe('what a preview is made of', () => {
 
   it('makes only the library files the preview imports, each as the whole library has it', () => {
     const state = createStarterState('business', 'Preview Studio', false);
+    // Foundation's sections are code, which reaches the whole library, so the managed designs are the project's own:
+    // each draws something different, and so needs a different few of the library's helpers.
+    managedDesigns(state);
     const managed = Object.values(state.components).filter((d) => d.kind === 'managed' && d.tree);
     expect(managed.length).toBeGreaterThan(5);
     let fewer = 0;
@@ -246,9 +270,17 @@ describe('what a preview is made of', () => {
     // Exactly the card's own file, the component styles, the icons and the preview's own two.
     expect([...out.files.keys()].sort()).toEqual([defFile(made.state.components[id]), PREVIEW_COMPONENT_STYLES, `${RUNTIME_DIR}/icons.js`, PREVIEW_MODULE, PREVIEW_META].sort());
     expect(missingImports(out.files, wholeLibrary(made.state, id))).toEqual([]);
-    // A card that shows an image and a link takes the helpers that draw them, and the ones those import.
-    const media = preview(createStarterState('blank', 'Preview Studio', false), { componentId: 'content.media', variants: { layout: 'media-end' } });
-    expect([...media.files.keys()].filter((p) => p.startsWith(`${RUNTIME_DIR}/`)).sort()).toEqual(['Image.svelte', 'Link.svelte', 'RichText.svelte', 'icons.js', 'util.js'].map((f) => `${RUNTIME_DIR}/${f}`));
+    // A card that shows an image, rich text and a link takes the helpers that draw them, and the ones those import.
+    const blank = createStarterState('blank', 'Preview Studio', false);
+    const mediaCard = projectDesign(blank, {
+      componentId: 'project.media-card',
+      name: 'Media card',
+      properties: {},
+      parts: {},
+      build: (b) => b.el('root', 'article', {}, [b.image('media', { assetId: null, alt: 'A view' }), b.rich('body', ['Some words.']), b.link('more', { type: 'url', target: 'https://example.com' }, 'Read more', 'link')])
+    });
+    const media = preview(blank, { definitionId: mediaCard.id });
+    expect([...media.files.keys()].filter((p) => p.startsWith(`${RUNTIME_DIR}/`)).sort()).toEqual(['Image.svelte', 'Link.svelte', 'RichText.svelte', 'icons.js'].map((f) => `${RUNTIME_DIR}/${f}`));
   });
 
   it('has the whole library when it reaches a code component, which can import any of it', () => {

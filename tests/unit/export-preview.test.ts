@@ -24,6 +24,8 @@ const { StaticPreviews } = await import('../../src/main/static-preview');
 const { Controller } = await import('../../src/main/controller');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
+const { P, item } = await import('@catalogue/dsl');
+const { projectDesign } = await import('./fixtures/packs');
 
 const dirs: string[] = [];
 const cleanups: Array<() => unknown> = [];
@@ -172,9 +174,11 @@ describe('exported-site previews', () => {
 });
 
 describe('recent exports', () => {
-  async function openProject() {
+  async function openProject(prepare?: (s: ReturnType<typeof createStarterState>) => void) {
     const dir = temp('project');
-    const created = await ProjectSession.create(dir, createStarterState('blank', 'Recent Exports Site', false));
+    const state = createStarterState('blank', 'Recent Exports Site', false);
+    prepare?.(state);
+    const created = await ProjectSession.create(dir, state);
     await created.close();
     const c = new Controller(() => null);
     const sent: Array<[string, unknown]> = [];
@@ -194,9 +198,26 @@ describe('recent exports', () => {
   };
 
   it('warns that an exported source project leaves out buttons without a link', async () => {
-    const { c } = await openProject();
+    // A pricing section of the project's own whose three plans each have a button that goes nowhere yet. The check
+    // reads the buttons of a design built in the editor (Foundation's own pricing plans link to an email address).
+    let pricing = '';
+    const { c } = await openProject((s) => {
+      pricing = projectDesign(s, {
+        componentId: 'pricing.unlinked',
+        name: 'Pricing',
+        properties: {
+          plans: P.list('Plans', 'Plan', { actionLabel: P.str('Button label', 'Choose'), actionLink: P.link('Button link') }, [
+            { actionLabel: 'Book a session' },
+            { actionLabel: 'Start a project' },
+            { actionLabel: 'Talk to us' }
+          ])
+        },
+        parts: { root: { nodeId: 'root', label: 'Section', styleControls: ['background'] } },
+        build: (b) => b.el('root', 'section', {}, [b.repeat('plans', 'plans', [b.link('action', item('actionLink'), item('actionLabel'), 'primary')])])
+      }).id;
+    });
     const home = { kind: 'page' as const, id: c.snapshot()!.state.site.homePageId };
-    expect((await c.apply({ operations: [{ type: 'node.insert', owner: home, parentId: null, index: 0, componentId: 'pricing.plans' }] })).ok).toBe(true);
+    expect((await c.apply({ operations: [{ type: 'node.insert', owner: home, parentId: null, index: 0, definitionId: pricing }] })).ok).toBe(true);
     const r = await c.exportSourceTo(join(temp('out'), 'with-pricing'));
     expect(r.ok).toBe(true);
     const at = r.warnings.findIndex((w) => w.startsWith('3 buttons have no link'));

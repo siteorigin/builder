@@ -13,33 +13,93 @@ import { compile } from 'svelte/compiler';
 import { build, type Rolldown } from 'vite';
 import { chromium, webkit, type Browser, type BrowserContextOptions, type BrowserType, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { makeInstance } from '@engine/install';
+import { P, item, prop, tok } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 import { STYLES_DIR, generateProject, pageFile } from '@generator/index';
 import { appearJs } from '@generator/appear';
 
 const ENGINES = ([['chromium', chromium], ['webkit', webkit]] as Array<[string, BrowserType]>).filter(([, engine]) => existsSync(engine.executablePath()));
 const GEN = '\0gen:';
 
+const CARD = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), border: tok('border.default'), radius: tok('radius.lg') } as const;
+
 /**
  * The business starter with entrances: the hero (on screen at once) lifts, the testimonials scale and the closing
- * banner fades in; the features design lifts each card, staggered, and shifts each card 6px down.
+ * banner fades in; the features design lifts each card, staggered, and shifts each card 6px down. Entrances are set
+ * on sections built in the editor, and Foundation's are code components, so each of these is a design of the
+ * project's own placed where the starter has Foundation's, between the starter's other sections.
  */
 function site(): ProjectState {
   let s = createStarterState('business', 'Entrance Studio', false);
   const home = s.pages[s.site.homePageId];
   const o: OwnerRef = { kind: 'page', id: home.id };
   const section = (componentId: string) => home.rootIds.map((id) => s.pages[home.id].nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!;
-  const fork = applyOperations(s, [{ type: 'component.fork', definitionId: section('features.grid').definitionId }]);
-  s = fork.state;
-  const design: OwnerRef = { kind: 'component', id: fork.results[0].definitionId as string };
+  const features = projectDesign(s, {
+    componentId: 'project.features',
+    name: 'Features',
+    properties: {
+      items: P.list('Cards', 'Card', { title: P.str('Title', 'Card'), description: P.text('Description', '') }, [
+        { title: 'Planning', description: 'We help you settle the brief, the budget and the schedule before any work starts.' },
+        { title: 'Design', description: 'Drawings and finishes you can see and change before anything is built.' },
+        { title: 'Delivery', description: 'We coordinate trusted specialists and keep you informed at every stage of the build.' }
+      ])
+    },
+    parts: { root: { nodeId: 'root', label: 'Features' } },
+    build: (b) =>
+      b.el('root', 'section', { name: 'Features', styles: { base: { paddingBlock: tok('space.3xl'), paddingInline: tok('space.lg') } } }, [
+        b.el('grid', 'ul', { name: 'Card grid', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.lg') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
+          b.repeat('cards', 'items', [
+            b.el('card', 'li', { name: 'Card', styles: { base: CARD } }, [
+              b.text('card-title', 'h3', item('title'), { name: 'Title', styles: { base: { textStyle: tok('text.h3') } } }),
+              b.text('card-text', 'p', item('description'), { name: 'Description' })
+            ])
+          ])
+        ])
+      ])
+  });
+  const banner = projectDesign(s, {
+    componentId: 'project.banner',
+    name: 'Banner',
+    properties: { heading: P.str('Heading', 'Ready to start?'), lead: P.text('Text', 'Tell us about your project and we will be in touch within a day.') },
+    parts: { root: { nodeId: 'root', label: 'Banner' } },
+    build: (b) =>
+      b.el('root', 'section', { name: 'Banner', styles: { base: { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.3xl'), paddingInline: tok('space.lg') } } }, [
+        b.text('heading', 'h2', prop('heading'), { name: 'Heading' }),
+        b.text('lead', 'p', prop('lead'), { name: 'Text' })
+      ])
+  });
+  // As tall as the screen, as a hero is, so the cards after it start below the screen.
+  const heroDesign = projectDesign(s, {
+    componentId: 'project.hero',
+    name: 'Hero',
+    properties: { heading: P.str('Heading', 'Homes built around the way you live') },
+    parts: { root: { nodeId: 'root', label: 'Hero' } },
+    build: (b) => b.el('root', 'section', { name: 'Hero', styles: { base: { minHeight: '720px', paddingBlock: tok('space.3xl'), paddingInline: tok('space.lg') } } }, [b.text('heading', 'h1', prop('heading'), { name: 'Heading' })])
+  });
+  /** Put a placement of the design where the starter placed the theme's section, and return it. */
+  const replace = (componentId: string, def: ComponentDefinition): InstanceNode => {
+    const old = section(componentId);
+    const placed = makeInstance(def, {});
+    home.nodes[placed.id] = placed;
+    home.rootIds[home.rootIds.indexOf(old.id)] = placed.id;
+    delete home.nodes[old.id];
+    return placed;
+  };
+  const hero = replace('hero.split', heroDesign);
+  replace('features.grid', features);
+  const testimonials = replace('testimonials.grid', banner);
+  const closing = replace('cta.banner', banner);
+  const design: OwnerRef = { kind: 'component', id: features.id };
   const set = (owner: OwnerRef, nodeId: string, field: 'appear' | 'appearStagger', value: unknown): EditOperation => ({ type: 'node.setContent', owner, nodeId, field, value });
   return applyOperations(s, [
-    set(o, section('hero.split').id, 'appear', 'lift'),
-    set(o, section('testimonials.grid').id, 'appear', 'scale-subtle'),
-    set(o, section('cta.banner').id, 'appear', 'fade'),
+    set(o, hero.id, 'appear', 'lift'),
+    set(o, testimonials.id, 'appear', 'scale-subtle'),
+    set(o, closing.id, 'appear', 'fade'),
     set(design, 'card', 'appear', 'lift'),
     set(design, 'cards', 'appearStagger', true),
     { type: 'node.setStyle', owner: design, nodeId: 'card', scope: 'base', property: 'translateY', value: '6px' }

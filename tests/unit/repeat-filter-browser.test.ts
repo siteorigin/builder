@@ -19,7 +19,7 @@ import { createStarterState } from '@catalogue/starters';
 import { makeInstance } from '@engine/install';
 import { defFile, generateProject } from '@generator/index';
 import { P } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR as FOUNDATION } from './fixtures/packs';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());

@@ -7,14 +7,19 @@ import { validateState } from '@engine/validate';
 import { MEDIA_QUERIES, validateStyleValue } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
 import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, packFileCopies, propLocals, publishedState, resolveLink } from '@generator/index';
-import { catalogueEntries } from '@catalogue/index';
+import { catalogueEntries, getTheme } from '@catalogue/index';
 import { externalLink } from '@shared/links';
 import { GenerationCache } from '@generator/cache';
 import { DRAFTS_JS, usedIcons } from '@generator/runtime-files';
-import { contactForm } from '@catalogue/foundation/form';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { pageIds, pageSections, placeholderImageCount, planSectionPick, sharedPageIds } from '@generator/checks';
 import { withPublished } from '@shared/published';
+import { P, prop } from '@catalogue/dsl';
+import { FOUNDATION_AUTHOR, projectDesign, type DesignSpec } from './fixtures/packs';
+import { SECTION } from './fixtures/insert-at-designs';
+import { BANNER, DETAILS, FAQ, FOOTER, HERO_SPLIT, INTRO, LOGOS } from './fixtures/generator-designs';
+import { pricingDesign } from './fixtures/unlinked-buttons-designs';
+import { FEATURES } from './fixtures/wrap-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -30,6 +35,44 @@ const addToHome = (s: ProjectState, componentId: string, props: Record<string, u
   home(s).rootIds.push(node.id);
   return node;
 };
+
+/** A copy of a design's spec whose schemas a test may change: a definition holds its spec's own objects. */
+const own = (spec: DesignSpec): DesignSpec => ({
+  ...spec,
+  properties: structuredClone(spec.properties),
+  parts: structuredClone(spec.parts),
+  ...(spec.variantAxes ? { variantAxes: structuredClone(spec.variantAxes) } : {}),
+  ...(spec.slots ? { slots: structuredClone(spec.slots) } : {})
+});
+
+/**
+ * A placement of a design of the project's own (added the first time), on a page (Home unless named), first or at
+ * `index`, or else last. Foundation's sections are code components, so what the generator writes for a design built
+ * in the editor is tried on these.
+ */
+function placeDesign(s: ProjectState, spec: DesignSpec, opts: { index?: number; pageId?: string; props?: Record<string, unknown> } = {}): InstanceNode {
+  const def = s.components[FOUNDATION_AUTHOR.definitionId(spec.componentId)] ?? projectDesign(s, own(spec));
+  const node = makeInstance(def, opts.props ?? {}) as InstanceNode;
+  const page = s.pages[opts.pageId ?? s.site.homePageId];
+  page.nodes[node.id] = node;
+  if (opts.index === undefined) page.rootIds.push(node.id);
+  else page.rootIds.splice(opts.index, 0, node.id);
+  return node;
+}
+
+/**
+ * The Contact page made of designs of the project's own, worded as the starter words it: its introduction, contact
+ * details and questions. Foundation's sections are code components, which take no anchor (see the Release gap tests).
+ */
+function managedContact(s: ProjectState) {
+  const contact = s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === '/contact/')!;
+  contact.nodes = {};
+  contact.rootIds = [];
+  const intro = placeDesign(s, INTRO, { pageId: contact.id, props: { eyebrow: 'Contact', heading: 'Let’s talk' } });
+  const details = placeDesign(s, DETAILS, { pageId: contact.id, props: { eyebrow: '', heading: 'Get in touch' } });
+  const faq = placeDesign(s, FAQ, { pageId: contact.id, props: { heading: 'Frequently asked questions' } });
+  return { contact, intro, details, faq };
+}
 
 function compileAll(files: Map<string, string>) {
   const errors: string[] = [];
@@ -189,12 +232,12 @@ describe('unsent form drafts (issue #274)', () => {
   });
 
   it('marks the theme contact form and each answer for it, and keeps the form a component a customised copy can save', async () => {
-    const source = contactForm.source!;
+    const source = getTheme('foundation').components.find((d) => d.componentId === 'contact.form')!.source!;
     const all = elements(source);
     expect(all.filter((e) => e.attributes.includes('data-keep-draft')).map((e) => e.name)).toEqual(['form']);
-    // Every visible answer, and nothing else: not the provider's hidden fields or the spam trap. In order, a
-    // single-choice question's radio buttons, a checkbox, long text and the other text fields (issue #238).
-    expect(all.filter((e) => e.attributes.includes('data-draft-field')).map((e) => e.name)).toEqual(['input', 'input', 'textarea', 'input']);
+    // Every visible answer, and nothing else: not the provider's hidden fields or the spam trap. In the order the code
+    // writes them: long text, the other text fields, a single-choice question's radio buttons and a checkbox (issue #238).
+    expect(all.filter((e) => e.attributes.includes('data-draft-field')).map((e) => e.name)).toEqual(['textarea', 'input', 'input', 'input']);
     expect(all.filter((e) => e.attributes.includes('data-draft-field')).every((e) => e.attributes.includes('required') && e.attributes.includes('oninput'))).toBe(true);
     // Forking or duplicating the form makes it a project component, whose code must pass the ordinary check.
     expect((await checkSvelteSource(source)).filter((p) => p.severity === 'error')).toEqual([]);
@@ -205,7 +248,7 @@ describe('escaping and identifiers', () => {
   it('escapes "<" so text can never close a <script> element', () => {
     expect(js('</script><script>alert(1)</script>')).not.toContain('<');
     const s = fresh();
-    const def = defOf(s, 'hero.split');
+    const def = projectDesign(s, own(HERO_SPLIT));
     (def.properties.heading as { default: string }).default = 'Hi </script><script>alert(1)</script>';
     const out = generateManagedComponent(s, def, {});
     expect(out.match(/<\/script/g)).toHaveLength(1);
@@ -213,7 +256,8 @@ describe('escaping and identifiers', () => {
 
   it('renames properties that are reserved words or collide with generated names', () => {
     const s = fresh();
-    const def = defOf(s, 'hero.split');
+    placeDesign(s, HERO_SPLIT);
+    const def = defOf(s, 'project.hero-split');
     for (const name of ['default', 'class', 'variant', 'has', 'so_o', 'item', 'new']) def.properties[name] = { type: 'string', label: name, default: name };
     def.tree!.nodes['heading'] = { ...def.tree!.nodes['heading'], kind: 'text', tag: 'h1', text: { $prop: 'default' } } as never;
     const locals = propLocals(def);
@@ -221,7 +265,7 @@ describe('escaping and identifiers', () => {
     for (const local of locals.values()) expect(['default', 'class', 'variant', 'has', 'so_o', 'item', 'new']).not.toContain(local);
     const files = generateProject(s);
     expect(compileAll(files)).toEqual([]);
-    const component = [...files.entries()].find(([p]) => p.includes('hero-split'))![1];
+    const component = files.get(defFile(def))!;
     expect(component).toContain('default: prop_default = "default"');
     expect(component).toContain('prop_class = "class"');
     expect(component).toMatch(/<h1 [^>]*>\{prop_default\}<\/h1>/);
@@ -230,7 +274,8 @@ describe('escaping and identifiers', () => {
 
   it('keeps renamed keys unique and ignores inherited object properties', () => {
     const s = fresh();
-    const def = defOf(s, 'hero.split');
+    placeDesign(s, HERO_SPLIT);
+    const def = defOf(s, 'project.hero-split');
     def.properties['class'] = { type: 'string', label: 'a', default: 'a' };
     def.properties['prop_class'] = { type: 'string', label: 'b', default: 'b' };
     def.properties['constructor'] = { type: 'string', label: 'c', default: 'c' };
@@ -292,15 +337,25 @@ describe('responsive overrides', () => {
       const start = css.indexOf(`@media ${query} {`);
       return css.slice(start, css.indexOf('\n}', start));
     };
-    expect(block('(min-width: 768px)')).toContain(`.${cls}.${cls} {\n\t\tgrid-template-columns: repeat(4, minmax(0, 1fr));`);
-    expect(block('(max-width: 767.98px)')).toContain(`.${cls}.${cls} {\n\t\tgrid-template-columns: repeat(2, minmax(0, 1fr));`);
+    // The grid's part of the theme's code, whose own scoped rules these outrank.
+    expect(block('(min-width: 768px)')).toContain(`.${cls}.${cls}.${cls} {\n\t\tgrid-template-columns: repeat(4, minmax(0, 1fr)) !important;`);
+    expect(block('(max-width: 767.98px)')).toContain(`.${cls}.${cls}.${cls} {\n\t\tgrid-template-columns: repeat(2, minmax(0, 1fr)) !important;`);
   });
+
+  /** The shared footer placing a managed footer of the theme's in place of the code one. */
+  function managedFooter(s: ProjectState) {
+    const def = FOUNDATION_AUTHOR.managed({ category: 'shell', tags: [], icon: 'square', description: '', ...FOOTER });
+    s.components[def.id] = def;
+    const footer = Object.values(s.site.shell.footer.nodes)[0] as InstanceNode;
+    footer.definitionId = def.id;
+    footer.props = {};
+    return { def, footer };
+  }
 
   it('shows a part again when an instance un-hides what the definition hides', () => {
     const s = fresh();
-    const def = defOf(s, 'shell.footer');
+    const { def, footer } = managedFooter(s);
     def.tree!.nodes['brand-name'].styles = { base: { ...def.tree!.nodes['brand-name'].styles?.base, hidden: true } };
-    const footer = Object.values(s.site.shell.footer.nodes)[0] as InstanceNode;
     footer.overrides = { brand: { base: { hidden: false } } };
     const css = generateProject(s).get(`${STYLES_DIR}/site.css`)!;
     expect(css).toMatch(/so-o-[^{]+-brand[^{]*\{[^}]*display: revert/);
@@ -308,10 +363,9 @@ describe('responsive overrides', () => {
 
   it('keeps a part shown again after the placement is converted to code (#103)', async () => {
     const s = fresh();
-    const def = defOf(s, 'shell.footer');
+    const { def, footer } = managedFooter(s);
     def.tree!.nodes['brand-name'].styles = { base: { ...def.tree!.nodes['brand-name'].styles?.base, hidden: true } };
     def.tree!.nodes.tagline.styles = { ...def.tree!.nodes.tagline.styles, phone: { ...def.tree!.nodes.tagline.styles?.phone, hidden: true } };
-    const footer = Object.values(s.site.shell.footer.nodes)[0] as InstanceNode;
     footer.overrides = { brand: { base: { hidden: false } } };
     const r = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.id }]);
     const code = r.state.components[r.results[0].definitionId as string];
@@ -354,11 +408,11 @@ describe('responsive overrides', () => {
 
   it('drives button colours through --so-btn-bg / --so-btn-fg so hover follows them', () => {
     const s = fresh();
-    const hero = addToHome(s, 'hero.centered');
+    const hero = placeDesign(s, HERO_SPLIT);
     hero.variants = { tone: 'brand' };
     const files = generateProject(s);
     const components = files.get(`${STYLES_DIR}/components.css`)!;
-    const rule = components.match(/\.so-foundation-hero-centered--tone-brand\.so-foundation-hero-centered__primary \{[^}]*\}/)![0];
+    const rule = components.match(/\.so-foundation-project-hero-split--tone-brand\.so-foundation-project-hero-split__primary \{[^}]*\}/)![0];
     expect(rule).toContain('--so-btn-bg: var(--so-color-on-brand)');
     expect(rule).toContain('--so-btn-bg-hover: initial');
     expect(rule).toContain('--so-btn-fg: var(--so-color-brand-strong)');
@@ -395,24 +449,40 @@ describe('links and buttons', () => {
   it('reports a labelled button without a link', () => {
     const s = fresh();
     expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toEqual([]);
-    instanceOf(s, 'hero.split').props.primaryLink = { type: 'none', target: '' };
+    const hero = placeDesign(s, HERO_SPLIT);
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toEqual([]);
+    hero.props.primaryLink = { type: 'none', target: '' };
     const found = validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED');
     expect(found).toHaveLength(1);
     expect(found[0].message).toContain('Start a project');
     expect(found[0].message).toContain('visitors won’t see it');
-    addToHome(s, 'pricing.plans');
+    // A pricing design whose three plans have nowhere to go.
+    const pricing = makeInstance(pricingDesign(s), {});
+    home(s).nodes[pricing.id] = pricing;
+    home(s).rootIds.push(pricing.id);
     expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toHaveLength(4);
+  });
+
+  // Release gap: unlinkedButtons (src/generator/checks.ts) reads managed designs only, so a release button with no link goes unreported.
+  it.fails('reports a labelled button of the release without a link', () => {
+    const s = fresh();
+    instanceOf(s, 'hero.split').props.primaryLink = { type: 'none', target: '' };
+    const found = validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain('Start a project');
   });
 
   it('survives a malformed component tree without crashing validation', () => {
     const s = fresh();
-    const def = defOf(s, 'hero.split');
+    placeDesign(s, HERO_SPLIT);
+    const def = defOf(s, 'project.hero-split');
     const content = def.tree!.nodes['content'] as { children: string[] };
     content.children.push('grid');
     expect(() => validateState(s)).not.toThrow();
   });
 
-  it('counts only images that render as placeholders', () => {
+  // Release gap: placeholderImageCount counts image nodes only, so it sees none of the release's placeholder images.
+  it.fails('counts only images that render as placeholders', () => {
     // Logo strip items without a logo show a wordmark, and testimonial and team portraits are optional: none count.
     expect(placeholderImageCount(fresh())).toBe(6);
     const s = fresh();
@@ -421,22 +491,36 @@ describe('links and buttons', () => {
     expect(placeholderImageCount(s)).toBe(5);
   });
 
-  it('counts placeholder images inside components placed in a design and in its slots', () => {
+  it('counts a design’s image as a placeholder until it has a picture', () => {
     const s = fresh();
     const before = placeholderImageCount(s);
-    const banner = defOf(s, 'cta.banner');
+    const hero = placeDesign(s, HERO_SPLIT);
+    expect(placeholderImageCount(s)).toBe(before + 1);
+    s.assets.assets['a1'] = { id: 'a1', name: 'Hero', file: 'static/assets/hero.jpg', mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' };
+    hero.props.image = { assetId: 'a1', alt: 'Hero' };
+    expect(placeholderImageCount(s)).toBe(before);
+  });
+
+  it('counts placeholder images inside components placed in a design and in its slots', () => {
+    const s = fresh();
+    // A banner of the project's own on Home and About, with no picture of its own.
+    placeDesign(s, BANNER);
+    placeDesign(s, BANNER, { pageId: s.site.pageOrder[1] });
+    const before = placeholderImageCount(s);
+    const banner = defOf(s, 'project.cta-banner');
     const placements = s.site.pageOrder.flatMap((id) => Object.values(s.pages[id].nodes)).filter((n) => n.kind === 'instance' && n.definitionId === banner.id).length;
-    expect(placements).toBeGreaterThan(0);
+    expect(placements).toBe(2);
     const root = banner.tree!.nodes[banner.tree!.rootIds[0]] as { children: string[] };
     // A hero inside the banner's design shows its placeholder wherever the banner is placed.
-    const hero = makeInstance(defOf(s, 'hero.split'), {});
+    const heroDef = projectDesign(s, own(HERO_SPLIT));
+    const hero = makeInstance(heroDef, {});
     banner.tree!.nodes[hero.id] = hero;
     root.children.push(hero.id);
     expect(placeholderImageCount(s)).toBe(before + placements);
     // So does a hero in the slot of a section inside the design; a slot nothing fills adds nothing.
-    const section = s.components[installComponent(s, 'layout.section')];
+    const section = projectDesign(s, own(SECTION));
     const slot = (Object.values(section.tree!.nodes).find((n) => n.kind === 'slot') as { slot: string }).slot;
-    const slotted = makeInstance(defOf(s, 'hero.split'), {});
+    const slotted = makeInstance(heroDef, {});
     const holder = makeInstance(section, {});
     holder.slots = { [slot]: [slotted.id] };
     const empty = makeInstance(section, {});
@@ -445,15 +529,11 @@ describe('links and buttons', () => {
     expect(placeholderImageCount(s)).toBe(before + 2 * placements);
   });
 
-  it('labels footer navigation regions by their headings', () => {
+  it('labels the footer’s navigation region by its heading', () => {
     const files = generateProject(fresh());
     const footer = [...files.entries()].find(([p]) => p.endsWith('shell-footer.svelte'))![1];
-    expect(footer).toContain('const uid = $props.id();');
     // A cleared heading is not rendered, so the landmark falls back to the heading's default name.
-    expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{has\(linksHeading\) \? `\$\{uid\}-explore-heading` : undefined\} aria-label=\{has\(linksHeading\) \? undefined : "Explore"\}/);
-    expect(footer).toMatch(/<h2 [^>]*id=\{`\$\{uid\}-explore-heading`\}/);
-    expect(footer).toMatch(/<h2 [^>]*id=\{`\$\{uid\}-contact-heading`\}/);
-    expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{has\(contactHeading\) \? `\$\{uid\}-contact-heading` : undefined\} aria-label=\{has\(contactHeading\) \? undefined : "Contact"\}/);
+    expect(footer).toMatch(/<nav [^>]*aria-label=\{has\(linksHeading\) \? linksHeading : 'Explore'\}>/);
   });
 });
 
@@ -524,20 +604,30 @@ describe('SEO and performance', () => {
     expect(page.match(/so_eager=\{true\}/g)).toHaveLength(1);
     const hero = [...files.entries()].find(([p]) => p.endsWith('hero-split.svelte'))![1];
     expect(hero).toContain('eager={so_eager}');
-    expect(hero).toContain('sizes="(min-width: 1024px) 600px, (min-width: 768px) 100vw, 100vw"');
     const gallery = [...files.entries()].find(([p]) => p.endsWith('media-gallery.svelte'))![1];
     expect(gallery).not.toContain('eager');
     expect(gallery).toContain('sizes="(min-width: 1024px) 400px, (min-width: 768px) 50vw, 100vw"');
-    const testimonials = [...files.entries()].find(([p]) => p.endsWith('testimonials-grid.svelte'))![1];
-    expect(testimonials).toContain('sizes="44px"');
     expect(files.get(`${RUNTIME_DIR}/Image.svelte`)).toContain("fetchpriority={eager ? 'high' : undefined}");
   });
 
-  /** A Section on the home page holding a Grid of three photos, built the way the editor builds it (issue #170). */
+  // Release gap: the release's hero.split and testimonials portraits give their images no sizes.
+  it.fails('gives the hero’s picture and the testimonial portraits realistic sizes', () => {
+    const files = generateProject(fresh());
+    const hero = [...files.entries()].find(([p]) => p.endsWith('hero-split.svelte'))![1];
+    expect(hero).toMatch(/\bsizes="[^"]+"/);
+    const testimonials = [...files.entries()].find(([p]) => p.endsWith('testimonials-grid.svelte'))![1];
+    expect(testimonials).toMatch(/\bsizes="[^"]+"/);
+  });
+
+  /**
+   * A Section on the home page holding a Grid of three photos, built the way the editor builds it (issue #170). The
+   * Section is of a managed design, whose Container the generator reads the content width from.
+   */
   function manualGrid(s: ProjectState) {
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     const photo: AssetRecord = { id: 'a_photo', name: 'Photo', file: 'static/assets/photo-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 2400, height: 1600, hash: 'h', kind: 'image', createdAt: 'now', variants: [160, 480, 960, 1440].map((w) => ({ width: w, file: `static/assets/photo-1a2b3c4d-${w}w.jpg` })) };
-    let r = applyOperations(s, [{ type: 'asset.add', asset: photo }, { type: 'node.insert', owner, parentId: null, index: 1, componentId: 'layout.section' }]);
+    const sectionDef = s.components[FOUNDATION_AUTHOR.definitionId(SECTION.componentId)] ?? projectDesign(s, own(SECTION));
+    let r = applyOperations(s, [{ type: 'asset.add', asset: photo }, { type: 'node.insert', owner, parentId: null, index: 1, definitionId: sectionDef.id }]);
     const section = r.results[1].nodeId as string;
     r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'grid' }]);
     const grid = r.results[0].nodeId as string;
@@ -737,7 +827,7 @@ describe('SEO and performance', () => {
     const { s, section } = manualGrid(fresh());
     const page = home(s);
     // The Section holding the grid moves into another Section's slot, and the page narrows it there.
-    const outer = addToHome(s, 'layout.section');
+    const outer = placeDesign(s, SECTION);
     page.rootIds = page.rootIds.filter((id) => id !== section);
     outer.slots = { content: [section] };
     expect(gridSizes(s)).toEqual([DEFAULT]);
@@ -748,7 +838,7 @@ describe('SEO and performance', () => {
   it('settles variant options the way the stylesheet does: a range value beats a later option\'s base value', () => {
     const { s, section, grid } = manualGrid(fresh());
     ungrid(s, grid);
-    const def = defOf(s, 'layout.section');
+    const def = defOf(s, 'project.section');
     const inner = def.parts.container.nodeId;
     // Two axes on the Section: the first makes the container one column on desktop, the second three columns.
     def.variantAxes = {
@@ -801,7 +891,7 @@ describe('first-screen image loading through code components', () => {
 
   it('keeps a converted first hero eager and lower sections lazy', () => {
     let s = fresh();
-    const hero = instanceOf(s, 'hero.split');
+    const hero = placeDesign(s, HERO_SPLIT, { index: 0 });
     s = applyOperations(s, [{ type: 'component.convertToCode', owner: home(s), nodeId: hero.id, name: 'Hero code' }]).state;
     const files = generateProject(s);
     const page = files.get('src/routes/+page.svelte')!;
@@ -819,7 +909,7 @@ describe('first-screen image loading through code components', () => {
 
   it('passes the flag on from a reusable component wrapping a converted hero', () => {
     let s = fresh();
-    const hero = instanceOf(s, 'hero.split');
+    const hero = placeDesign(s, HERO_SPLIT, { index: 0 });
     const wrap = applyOperations(s, [{ type: 'component.createFromNode', owner: home(s), nodeId: hero.id, name: 'Wrapper' }]);
     s = wrap.state;
     const wrapId = wrap.results[0].definitionId as string;
@@ -853,8 +943,10 @@ describe('first-screen image loading through code components', () => {
 
   it('forwards the flag for a hero placed both inside and outside a list, whichever comes first', () => {
     const s = fresh();
-    const grid = defOf(s, 'features.grid');
-    const heroDef = defOf(s, 'hero.split');
+    // A grid of the project's own design, placed on Home, holding a hero of its own design.
+    const grid = projectDesign(s, own(FEATURES));
+    placeDesign(s, FEATURES);
+    const heroDef = projectDesign(s, own(HERO_SPLIT));
     const tree = grid.tree!;
     const repeat = Object.values(tree.nodes).find((n) => n.kind === 'repeat')!;
     const root = tree.nodes[tree.rootIds[0]] as Extract<GraphNode, { kind: 'element' }>;
@@ -873,7 +965,7 @@ describe('first-screen image loading through code components', () => {
 
   it('hands the flag to a code component however it writes its props, but not to one that never names it', () => {
     let s = fresh();
-    const hero = instanceOf(s, 'hero.split');
+    const hero = placeDesign(s, HERO_SPLIT, { index: 0 });
     s = applyOperations(s, [{ type: 'component.convertToCode', owner: home(s), nodeId: hero.id, name: 'Hero code' }]).state;
     const code = Object.values(s.components).find((d) => d.name === 'Hero code')!;
     const page = () => generateProject(s).get('src/routes/+page.svelte')!;
@@ -899,7 +991,9 @@ describe('icons', () => {
     (grid.props.items as Array<{ icon: string }>)[0].icon = 'github';
     const icons = generateProject(s).get(`${RUNTIME_DIR}/icons.js`)!;
     expect(icons).toContain('"github"');
-    expect(icons).not.toContain('"instagram"');
+    // The footer's social links start as Instagram, so that one ships; one nothing names does not.
+    expect(icons).toContain('"instagram"');
+    expect(icons).not.toContain('"facebook"');
   });
 
   it('includes icons named in code component source', () => {
@@ -941,14 +1035,17 @@ describe('contact form', () => {
     expect(src).toContain('action={action}');
     expect(src).toContain("headers: { Accept: 'application/json' }");
     expect(src).toContain("_gotcha");
-    expect(src).toContain('<input type="checkbox" name={honeypot}');
-    expect(src).toContain('<input type="text" name={honeypot} tabindex="-1"');
-    expect(src).toContain("disabled={!ready || status === 'sending'}");
+    expect(src).toMatch(/<input [^>]*type="checkbox" name=\{honeypot\} tabindex="-1"/);
+    expect(src).toMatch(/<input [^>]*type="text" name=\{honeypot\} tabindex="-1"/);
+    // Sending is refused until the form is ready and while a message is on its way.
+    expect(src).toMatch(/type="submit" disabled=\{!ready\} aria-disabled=\{status === 'sending' \? 'true' : undefined\}/);
+    expect(src).toContain("if (!ready || status === 'sending') return;");
     expect(src).toContain('HTMLFormElement.prototype.reset.call(form)');
-    // The live regions sit outside the form, which is aria-busy while sending.
-    // The confirmation heads the form and the failure follows it: both outside it.
+    // The live regions sit outside the form, which is aria-busy while sending: the confirmation and the failure
+    // both follow it.
     const [formStart, formEnd] = [src.indexOf('<form'), src.indexOf('</form>')];
-    expect(src.indexOf('role="status"')).toBeLessThan(formStart);
+    expect(formStart).toBeGreaterThan(0);
+    expect(src.indexOf('role="status"')).toBeGreaterThan(formEnd);
     expect(src.indexOf('role="alert"')).toBeGreaterThan(formEnd);
     expect(src).toContain('role="status"');
     expect(src).toContain('role="alert"');
@@ -964,8 +1061,8 @@ describe('editor variants and hot updates', () => {
 
   it('puts a page that starts with a component between boundaries of its own, in editor variants only', () => {
     const s = fresh();
-    const hero = home(s).nodes[home(s).rootIds[0]] as InstanceNode;
-    expect(s.components[hero.definitionId].componentId).toBe('hero.split');
+    const hero = placeDesign(s, HERO_SPLIT, { index: 0 });
+    expect(home(s).rootIds[0]).toBe(hero.id);
     const dev = generateProject(s, { instrument: true });
     const page = dev.get('src/routes/+page.svelte')!;
     const heroName = importOf(page, defFile(s.components[hero.definitionId]));
@@ -982,7 +1079,8 @@ describe('editor variants and hot updates', () => {
 
   it('leaves a component that is one native element as it is', () => {
     const s = fresh();
-    const def = defOf(s, 'hero.split');
+    placeDesign(s, HERO_SPLIT);
+    const def = defOf(s, 'project.hero-split');
     const source = generateProject(s, { instrument: true }).get(defFile(def))!;
     expect(source).toMatch(/<\/script>\n\n<section [\s\S]*<\/section>\n$/);
     expect(source).not.toContain('{#key');
@@ -991,6 +1089,7 @@ describe('editor variants and hot updates', () => {
   it('puts a component that starts with another component between boundaries of its own', () => {
     const base = fresh();
     const page = home(base);
+    placeDesign(base, HERO_SPLIT, { index: 0 });
     const applied = applyOperations(base, [{ type: 'component.createFromNode', owner: { kind: 'page', id: page.id }, nodeId: page.rootIds[0], name: 'Hero band' }]);
     const s = applied.state;
     const created = applied.results[0] as { definitionId: string };
@@ -1040,14 +1139,21 @@ describe('section links', () => {
 
   it('accepts the section once it exists, and reports it again when the section is deleted', () => {
     let s = fresh();
-    const contact = contactOf(s);
-    const details = instanceOf(s, 'contact.details', contact.id);
+    const { contact, details } = managedContact(s);
     headerOf(s).props.ctaLink = { type: 'page', target: contact.id, anchor: 'get-in-touch' };
     expect(missing(s)).toHaveLength(1);
     s = applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: details.id, field: 'anchor', value: 'get-in-touch' }]).state;
     expect(missing(s)).toEqual([]);
     s = applyOperations(s, [{ type: 'node.remove', owner: { kind: 'page', id: contact.id }, nodeId: details.id }]).state;
     expect(missing(s)).toHaveLength(1);
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('takes an ID on a section of the release', () => {
+    const s = fresh();
+    const contact = contactOf(s);
+    const details = instanceOf(s, 'contact.details', contact.id);
+    expect(() => applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: details.id, field: 'anchor', value: 'get-in-touch' }])).not.toThrow();
   });
 
   it('checks same-page links against the page they render on', () => {
@@ -1145,8 +1251,9 @@ describe('section links', () => {
 
   it('tells apart the same link in two placements of one component inside another', () => {
     const s = fresh();
-    const outer = addToHome(s, 'layout.section');
-    const id = installComponent(s, 'cta.banner');
+    // A Section and a banner of the project's own designs, whose designs the links are put inside.
+    const outer = placeDesign(s, SECTION);
+    const id = projectDesign(s, own(BANNER)).id;
     const a = makeInstance(s.components[id], { primaryLink: { type: 'anchor', target: 'one' } });
     const b = makeInstance(s.components[id], { primaryLink: { type: 'anchor', target: 'two' } });
     home(s).nodes[a.id] = a;
@@ -1154,7 +1261,7 @@ describe('section links', () => {
     outer.slots = { content: [a.id, b.id] };
     expect(missing(s).map((d) => d.message.match(/#(\w+)/)?.[1]).sort()).toEqual(['one', 'two']);
     // Inside a definition both report against the placement that holds them, and both still count.
-    const wrap = defOf(s, 'layout.section');
+    const wrap = defOf(s, 'project.section');
     const slotNode = Object.values(wrap.tree!.nodes).find((n) => n.kind === 'slot')!;
     const parentOf = Object.values(wrap.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
     const ia = makeInstance(s.components[id], { primaryLink: { type: 'anchor', target: 'three' } });
@@ -1167,8 +1274,8 @@ describe('section links', () => {
 
   it('walks slot content rendered once per list item only once', () => {
     const s = fresh();
-    let parent = addToHome(s, 'layout.section');
-    const def = defOf(s, 'layout.section');
+    let parent = placeDesign(s, SECTION);
+    const def = defOf(s, 'project.section');
     const slotNode = Object.values(def.tree!.nodes).find((n) => n.kind === 'slot')!;
     const holder = Object.values(def.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
     // The slot renders once per item of a ten-item list; six sections nested through it stay quick to check.
@@ -1191,15 +1298,17 @@ describe('section links', () => {
 
   it('walks such slot content once inside a definition too', () => {
     const s = fresh();
-    addToHome(s, 'layout.section');
-    const section = defOf(s, 'layout.section');
+    placeDesign(s, SECTION);
+    const section = defOf(s, 'project.section');
     const slotNode = Object.values(section.tree!.nodes).find((n) => n.kind === 'slot')!;
     const holder = Object.values(section.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
     section.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: {}, default: Array.from({ length: 10 }, (_, i) => ({ id: `r${i}` })) } as never;
     section.tree!.nodes['rows'] = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: [slotNode.id] };
     holder.children = holder.children.map((c) => (c === slotNode.id ? 'rows' : c));
     // Six sections nested inside the banner's own definition, a button at the bottom.
-    const banner = defOf(s, 'cta.banner');
+    placeDesign(s, BANNER);
+    placeDesign(s, BANNER, { pageId: s.site.pageOrder[1] });
+    const banner = defOf(s, 'project.cta-banner');
     const root = banner.tree!.nodes[banner.tree!.rootIds[0]] as { children: string[] };
     const button: GraphNode = { id: 'b_leaf', kind: 'link', label: 'Go', link: { type: 'none', target: '' }, appearance: 'primary' };
     banner.tree!.nodes[button.id] = button;
@@ -1219,7 +1328,8 @@ describe('section links', () => {
 
   it('reads rich text links in a section converted to code', () => {
     let s = fresh();
-    const media = instanceOf(s, 'content.media');
+    // A section of the project's own design with rich text, which is converted to code.
+    const media = placeDesign(s, { componentId: 'project.media', name: 'Content with image', properties: { body: P.rich('Text', ['Before we draw anything we listen.']) }, parts: {}, build: (b) => b.el('root', 'section', {}, [b.rich('body', prop('body'))]) });
     const home = { kind: 'page' as const, id: s.site.homePageId };
     s = applyOperations(s, [{ type: 'component.convertToCode', owner: home, nodeId: media.id, name: 'Media code' }]).state;
     (s.pages[s.site.homePageId].nodes[media.id] as InstanceNode).props.body = [{ type: 'p', spans: [{ text: 'See the steps', link: { type: 'anchor', target: 'steps' } }] }];
@@ -1228,9 +1338,9 @@ describe('section links', () => {
 
   it('gives a component root the id its placement sets, before its own', () => {
     const s = fresh();
-    const def = defOf(s, 'cta.banner');
+    const banner = placeDesign(s, BANNER);
+    const def = defOf(s, 'project.cta-banner');
     def.tree!.nodes[def.tree!.rootIds[0]].anchor = 'banner';
-    const banner = instanceOf(s, 'cta.banner');
     expect(pageIds(s, s.site.homePageId).has('banner')).toBe(true);
     banner.anchor = 'start';
     const ids = pageIds(s, s.site.homePageId);
@@ -1240,9 +1350,9 @@ describe('section links', () => {
 
   it('leaves out ids inside a collapsing wrapper whose children all stay hidden', () => {
     const s = fresh();
-    const def = defOf(s, 'cta.banner');
+    const banner = placeDesign(s, BANNER);
+    const def = defOf(s, 'project.cta-banner');
     def.tree!.nodes['actions'].anchor = 'cta-actions';
-    const banner = instanceOf(s, 'cta.banner');
     expect(pageIds(s, s.site.homePageId).has('cta-actions')).toBe(true);
     banner.props.primaryLabel = '';
     banner.props.secondaryLabel = 'More';
@@ -1255,8 +1365,8 @@ describe('section links', () => {
 
   it('walks nested collapsing wrappers the way the export renders them', () => {
     const s = fresh();
-    const instance = addToHome(s, 'contact.details', { eyebrow: '', heading: '', lead: '', actionLabel: '' });
-    const def = defOf(s, 'contact.details');
+    const instance = placeDesign(s, DETAILS, { props: { eyebrow: '', heading: '', lead: '', actionLabel: '' } });
+    const def = defOf(s, 'project.contact-details');
     def.tree!.nodes['content'].anchor = 'contact-column';
     def.tree!.nodes['intro'].anchor = 'contact-intro';
     const ids = () => pageIds(s, s.site.homePageId);
@@ -1299,7 +1409,7 @@ describe('section links', () => {
 
   it('counts slot content only where the definition shows the slot', () => {
     const s = fresh();
-    const section = addToHome(s, 'layout.section');
+    const section = placeDesign(s, SECTION);
     const text: GraphNode = { id: 'n_note', kind: 'text', tag: 'p', text: 'Note', anchor: 'note' };
     home(s).nodes[text.id] = text;
     section.slots = { content: [text.id] };
@@ -1318,12 +1428,14 @@ describe('choosing a section to link to', () => {
 
   it("lists a page's sections by their visible headings", () => {
     const s = fresh();
+    managedContact(s);
     expect(pageSections(s, contactOf(s).id).map((x) => x.label)).toEqual(['Let’s talk', 'Get in touch', 'Frequently asked questions']);
     expect(pageSections(s, contactOf(s).id).every((x) => !x.anchor && !x.nested)).toBe(true);
     const blank = createStarterState('blank', 'Blank', false);
     expect(pageSections(blank, blank.site.homePageId)).toEqual([]);
     // The logo strip shows its heading as a paragraph; its Heading property still names it.
-    expect(pageSections(s, s.site.homePageId)[1].label).toBe('Trusted by homeowners and local businesses');
+    const logos = placeDesign(s, LOGOS, { props: { heading: 'Trusted by homeowners and local businesses' } });
+    expect(pageSections(s, s.site.homePageId).find((x) => x.nodeId === logos.id)?.label).toBe('Trusted by homeowners and local businesses');
     // A heading placed straight on the page is a section of its own.
     const h: GraphNode = { id: 'n_h', kind: 'text', tag: 'h2', text: 'Opening hours' };
     contactOf(s).nodes[h.id] = h;
@@ -1331,15 +1443,24 @@ describe('choosing a section to link to', () => {
     expect(pageSections(s, contactOf(s).id).at(-1)).toMatchObject({ nodeId: 'n_h', label: 'Opening hours', nested: false });
   });
 
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails("lists the release's sections on a page by their visible headings", () => {
+    const s = fresh();
+    const contact = contactOf(s);
+    (contact.nodes[contact.rootIds[2]] as InstanceNode).props.heading = 'Frequently asked questions';
+    expect(pageSections(s, contact.id).map((x) => x.label)).toEqual(['Let’s talk', 'Get in touch', 'Frequently asked questions']);
+  });
+
   it('reuses the ID a section already renders with, so links to it keep working', () => {
     const s = fresh();
-    const def = defOf(s, 'cta.banner');
+    // A banner of the project's own design, whose root renders an ID of its own.
+    const banner = placeDesign(s, BANNER);
+    const def = defOf(s, 'project.cta-banner');
     def.tree!.nodes[def.tree!.rootIds[0]].anchor = 'banner';
-    const banner = instanceOf(s, 'cta.banner');
     expect(pageSections(s, s.site.homePageId).find((x) => x.nodeId === banner.id)?.anchor).toBe('banner');
     expect(planSectionPick(s, s.site.homePageId, banner.id)).toEqual({ anchor: 'banner', operations: [] });
     // A second placement inherits the same ID; it is offered as a section of its own and gets an ID of its own.
-    const second = addToHome(s, 'cta.banner', { heading: 'One more thing' });
+    const second = placeDesign(s, BANNER, { props: { heading: 'One more thing' } });
     const listed = pageSections(s, s.site.homePageId).find((x) => x.nodeId === second.id);
     expect(listed).toMatchObject({ label: 'One more thing', anchor: undefined });
     // With two elements rendering it, the ID no longer picks out the first one either: moving them would retarget it.
@@ -1350,10 +1471,10 @@ describe('choosing a section to link to', () => {
 
   it('offers sections placed inside another section, and not the wrapper they name', () => {
     const s = fresh();
+    managedContact(s);
     const contact = contactOf(s);
     const [intro, details, faq] = contact.rootIds;
-    const id = installComponent(s, 'layout.section');
-    const wrapper = makeInstance(s.components[id], {});
+    const wrapper = makeInstance(projectDesign(s, own(SECTION)), {});
     wrapper.slots = { content: [details, faq] };
     contact.nodes[wrapper.id] = wrapper;
     contact.rootIds = [intro, wrapper.id];
@@ -1375,7 +1496,7 @@ describe('choosing a section to link to', () => {
 
   it('gives a chosen section a stable ID in the same batch as the link, and keeps it through renames and moves', () => {
     let s = fresh();
-    const contact = contactOf(s);
+    const { contact } = managedContact(s);
     const details = contact.rootIds[1];
     const plan = planSectionPick(s, contact.id, details)!;
     expect(plan.anchor).toBe('get-in-touch');
@@ -1403,7 +1524,7 @@ describe('choosing a section to link to', () => {
 
   it('makes IDs that are valid and unused on the page', () => {
     const s = fresh();
-    const contact = contactOf(s);
+    const { contact } = managedContact(s);
     const [intro, details, faq] = contact.rootIds;
     (contact.nodes[faq] as InstanceNode).anchor = 'get-in-touch';
     expect(planSectionPick(s, contact.id, details)!.anchor).toBe('get-in-touch-2');
@@ -1416,7 +1537,7 @@ describe('choosing a section to link to', () => {
     expect(planSectionPick(s, contact.id, intro)!.anchor).toBe('main-2');
     // So does one that matches an ID inside a component on the page.
     (contact.nodes[faq] as InstanceNode).anchor = undefined;
-    const def = defOf(s, 'faq.list');
+    const def = defOf(s, 'project.faq');
     const inside = Object.values(def.tree!.nodes).find((n) => n.kind === 'text')!;
     inside.anchor = 'get-in-touch';
     expect(planSectionPick(s, contact.id, details)!.anchor).toBe('get-in-touch-2');

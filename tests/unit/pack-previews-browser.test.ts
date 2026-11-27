@@ -9,17 +9,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import sharp from 'sharp';
-import { afterAll, describe, expect, it } from 'vitest';
-import { BUILTIN_PACKS } from '@catalogue/builtin';
+import { afterEach, describe, expect, it } from 'vitest';
+import { findTheme } from '@catalogue/index';
 import { generateProject, pageFile } from '@generator/index';
-import { buildPack } from '../../src/main/packs/build';
+import { packFileInfo } from '../../src/main/packs/files';
 import { frameOf, inkBoundsSource, previewHtml, previewProject, renderPreviews } from '../../scripts/packs/previews';
+import { restorePacks } from './fixtures/packs';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const dirs: string[] = [];
-afterAll(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+// Drawing thumbnails registers the pack it draws alone, under its ID: each test starts from the committed releases
+// again, whether the one before it passed or not.
+afterEach(async () => {
+  await restorePacks();
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+});
 
-const foundation = () => buildPack(BUILTIN_PACKS.find((p) => p.id === 'foundation')!);
+/** Foundation as the app loads it, and where its font files are, as a pack build hands them to the drawing. */
+function foundation() {
+  // Foundation itself, never the default theme standing in for it.
+  const pack = findTheme('foundation');
+  if (!pack) throw new Error('Foundation is not registered.');
+  const files = new Map(pack.fonts.flatMap((f) => f.faces).map((face) => [face.file, packFileInfo(pack.id, face.file)!.abs]));
+  return { pack, files };
+}
 
 /** The share of the thumbnail's width and height that its content covers: what differs from the corner's colour. */
 async function coverage(webp: Buffer): Promise<{ width: number; height: number }> {

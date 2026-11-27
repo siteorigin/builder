@@ -13,6 +13,8 @@ import { generateProject } from '@generator/index';
 import type { ComponentDefinition, ElementNode, ElementRef, InstanceNode, OwnerRef, ProjectState, SlotPrimitive } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
+import { tok } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 import { applyOperations } from '@engine/apply';
 import { slotAccepts } from '@engine/slots';
 import { blocksSaving, validateState } from '@engine/validate';
@@ -36,11 +38,29 @@ const errors = (s: ProjectState) => validateState(s).filter(blocksSaving);
 const ref = (owner: OwnerRef, nodeId: string, instancePath: string[] = []): ElementRef => ({ owner, instancePath, nodeId });
 
 /**
+ * A Section built in the editor, as the project's own design: a section and its container around one Content slot,
+ * which it shows once. Foundation's Section is code, whose slots the editor cannot count, so it can pass no new slot on.
+ */
+function withSection(s: ProjectState): ProjectState {
+  projectDesign(s, {
+    componentId: 'test.section',
+    name: 'Section',
+    category: 'layout',
+    properties: {},
+    parts: { root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] }, container: { nodeId: 'inner', label: 'Container', styleControls: ['maxWidth', 'gap'] } },
+    slots: { content: { label: 'Content', description: 'Headings, text, images, buttons and components placed inside the section.' } },
+    build: (b) => b.el('root', 'section', { name: 'Section', styles: { paddingBlock: tok('space.section') } }, [b.el('inner', 'div', { name: 'Container', styles: { layout: 'stack', gap: tok('space.lg') } }, [b.slot('content-slot', 'content', { name: 'Content' })])])
+  });
+  return s;
+}
+const sectionOf = (s: ProjectState) => Object.values(s.components).find((d) => d.componentId === 'test.section')!.id;
+
+/**
  * A blank site with a Profile card of the project's own: a heading, an empty Body container, a paragraph container
  * holding inline text, and a figure whose caption ends it. The card is placed on Home, inside a Section.
  */
 function card() {
-  const start = createStarterState('blank', 'Slots', false);
+  const start = withSection(createStarterState('blank', 'Slots', false));
   const page: OwnerRef = { kind: 'page', id: start.site.homePageId };
   const made = run(start, [
     {
@@ -60,7 +80,7 @@ function card() {
     }
   ]);
   const id = made.results[0].definitionId as string;
-  const placed = run(made.state, [{ type: 'node.insert', owner: page, parentId: null, componentId: 'layout.section' }]);
+  const placed = run(made.state, [{ type: 'node.insert', owner: page, parentId: null, definitionId: sectionOf(made.state) }]);
   const section = placed.results[0].nodeId as string;
   const inst = run(placed.state, [{ type: 'node.insert', owner: page, parentId: section, slot: 'content', definitionId: id }]);
   const owner: OwnerRef = { kind: 'component', id };
@@ -187,7 +207,7 @@ describe('a new slot (#655)', () => {
 
   it('a component placed in the design takes it in the slot it shows once, passing the new slot’s content on', () => {
     const c = card();
-    const placed = run(c.s, [{ type: 'node.insert', owner: c.owner, parentId: 'root', componentId: 'layout.section' }]);
+    const placed = run(c.s, [{ type: 'node.insert', owner: c.owner, parentId: 'root', definitionId: sectionOf(c.s) }]);
     const section = placed.results[0].nodeId as string;
     const inner = run(placed.state, [{ type: 'node.insert', owner: c.owner, parentId: section, slot: 'content', primitive: 'stack' }]);
     const stack = inner.results[0].nodeId as string;

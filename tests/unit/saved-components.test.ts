@@ -221,9 +221,13 @@ describe('whether a saved component brings code', () => {
     const badge = ok(await s.apply({ operations: [{ type: 'component.createCode', name: 'Badge', source: '<span class="badge">New</span>\n' }] }, { label: 'Create', codeAllowed: true })).results![0].definitionId as string;
     const video = packagedDefinitions((await buildComponentPackage(s.dir, s.state, withVideo)).pkg.definitions);
     expect(video.some((d) => d.kind === 'code' && d.owner === 'theme')).toBe(true);
-    // The same theme has that video: nothing of the project's own. A theme without it gets it as code.
+    // The same theme has that video, and the Section around it (both code components): nothing of the project's own.
+    // A theme without them gets each as code.
     expect(codeBrought(blank('Same theme'), video)).toEqual([]);
-    expect(codeBrought(blank('Other theme', 'foundation-alt'), video).map((d) => d.kind)).toEqual(['code']);
+    expect(codeBrought(blank('Other theme', 'foundation-alt'), video).map((d) => [d.kind, d.id]).sort()).toEqual([
+      ['code', 'foundation.layout.section'],
+      ['code', 'foundation.media.video']
+    ]);
     // Code of the project's own is code wherever it goes.
     const own = packagedDefinitions((await buildComponentPackage(s.dir, s.state, badge)).pkg.definitions);
     expect(codeBrought(blank('Same theme'), own).map((d) => d.name)).toEqual(['Badge']);

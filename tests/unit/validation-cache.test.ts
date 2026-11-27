@@ -8,7 +8,7 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { listThemes, registerPacks } from '@catalogue/index';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
 import { makeInstance } from '@engine/install';
 import { applyOperations, assetUsages } from '@engine/apply';
 import { adviceValidation, blocksSaving, coreValidation, joinValidation, type Diagnostic } from '@engine/validate';
@@ -173,7 +173,7 @@ describe('a session’s validation keeps what an edit leaves alone (#966)', () =
     let s = createStarterState('blank', 'Loop', false);
     s = apply(s, [{ type: 'page.create', pageId: 'pg_other', title: 'Other', route: '/other/' } as EditOperation]);
     s = structuredClone(s);
-    const { managed } = FOUNDATION;
+    const { managed } = FOUNDATION_AUTHOR;
     const make = (componentId: string, name: string, slot: string) => ({ ...managed({ category: 'content', tags: [], icon: 'sparkles', description: '', componentId, name, properties: {}, parts: {}, slots: { [slot]: { label: slot } }, build: (b) => b.el('root', 'div', {}, []) }), owner: 'project' as const });
     const one = make('test.loop-one', 'Loop one', 's');
     const two = make('test.loop-two', 'Loop two', 't');
@@ -211,7 +211,7 @@ describe('a session’s validation keeps what an edit leaves alone (#966)', () =
 
   it('gives each state of a run of edits exactly what a validation of it alone gives', () => {
     const { s, home, hero } = project();
-    const { managed } = FOUNDATION;
+    const { managed } = FOUNDATION_AUTHOR;
     const card = { ...managed({ category: 'content', tags: [], icon: 'sparkles', description: '', componentId: 'test.kept-card', name: 'Kept card', properties: {}, parts: {}, slots: { body: { label: 'Body' } }, build: (b) => b.el('root', 'div', {}, [b.slot('body-slot', 'body')]) }), owner: 'project' as const };
     const steps: Array<(st: ProjectState) => ProjectState> = [
       (st) => apply(st, [heading(home, hero, 'One')]),

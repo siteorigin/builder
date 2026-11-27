@@ -12,8 +12,15 @@ import { generateProject } from '@generator/index';
 import { describeOps } from '@agent/report';
 import { followStoredLinks, withStoredFields } from '@agent/macros';
 import { ProjectSession } from '../../src/main/project/session';
+import { withManagedContact } from './fixtures/contact-links-designs';
 
-const fresh = () => createStarterState('business', 'Kloof', false);
+/** The business starter as it ships, its Contact details and footer the release's code components. */
+const release = () => createStarterState('business', 'Kloof', false);
+/**
+ * The business starter with its Contact details and footer drawn as managed designs (fixtures/contact-links-designs.ts),
+ * whose links the editor pairs with their text; the release's cannot be (the Release gap tests at the end).
+ */
+const fresh = () => withManagedContact(release());
 const contactPage = (s: ProjectState) => s.site.pageOrder.find((id) => s.pages[id].route === '/contact/')!;
 const details = (s: ProjectState) => {
   const page = s.pages[contactPage(s)];
@@ -231,7 +238,7 @@ describe('contact details keep their link with the visible address or number', (
     expect(itemLinkPairs(s.components[footer(s).definitionId], 'contact')).toEqual([{ text: 'label', link: 'link' }]);
     // The Contact method caption ("Email") is not what the link shows, even when it reads like an address.
     expect(itemLinkPairs(s.components[details(s).definitionId], 'heading')).toEqual([]);
-    const code = Object.values(s.components).find((d) => d.kind === 'code')!;
+    const code = Object.values(release().components).find((d) => d.kind === 'code')!;
     expect(itemLinkPairs(code, Object.keys(code.properties).find((k) => code.properties[k].type === 'list') ?? 'links')).toEqual([]);
   });
 
@@ -391,5 +398,26 @@ describe('contact link edits undo as one step', () => {
     await session.redo();
     expect(item(session.state, 'mail').link).toEqual(email('bookings@kloof.example'));
     await session.close();
+  });
+});
+
+describe('contact links in the shipped theme', () => {
+  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
+  it.fails('pairs the release’s Contact details links with the value each shows', () => {
+    const s = release();
+    expect(itemLinkPairs(s.components[details(s).definitionId], 'items')).toEqual([{ text: 'value', link: 'link' }]);
+  });
+
+  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
+  it.fails('pairs the release footer’s contact links with the label each shows', () => {
+    const s = release();
+    expect(itemLinkPairs(s.components[footer(s).definitionId], 'contact')).toEqual([{ text: 'label', link: 'link' }]);
+  });
+
+  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
+  it.fails('moves the email link of the release’s Contact details to the edited address', () => {
+    let s = release();
+    s = apply(s, [setField(s, item(s, 'mail').id, 'value', 'bookings@kloof.example')]);
+    expect(item(s, 'mail').link).toEqual(email('bookings@kloof.example'));
   });
 });

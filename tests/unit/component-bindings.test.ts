@@ -16,7 +16,9 @@ import { blocksSaving, validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { usedIcons } from '@generator/runtime-files';
 import { P, eq, item, ne, prop, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR as FOUNDATION, projectDesign } from './fixtures/packs';
+import { FEATURES } from './fixtures/wrap-designs';
+import { GALLERY } from './fixtures/component-bindings-designs';
 import { nodeClass } from '@generator/index';
 import { isCardLink } from '@generator/card-links';
 import { validateOperation } from '@shared/ops';
@@ -314,7 +316,8 @@ describe('rules made in the Inspector (#368)', () => {
 // ---------------------------------------------------------------------------
 
 function heroDef(s: ProjectState, opts: { levelDefault?: string; toneDefault?: number } = {}) {
-  const grid = s.components[installComponent(s, 'features.grid')];
+  // A grid of the project's own design, with tones, nested in the hero.
+  const grid = projectDesign(s, FEATURES);
   const toneAxis = axesOf(grid).find(([a]) => a === 'tone')![1];
   const tones = Object.keys(toneAxis.options);
   return {
@@ -834,10 +837,10 @@ describe('gallery items that open a full image or a link (#75)', () => {
     };
     return { assetId: id, alt: `The ${id} photo` };
   }
+  /** A Gallery of the project's own design, placed at the end of Home. */
   function gallery(s: ProjectState) {
-    const def = Object.values(s.components).find((d) => d.componentId === 'media.gallery')!;
-    const node = Object.values(home(s).nodes).find((n) => n.kind === 'instance' && n.definitionId === def.id) as InstanceNode;
-    return { def, node };
+    const def = projectDesign(s, GALLERY);
+    return { def, node: place(s, def) };
   }
   /** Each photo's markup in one gallery placement, in order. */
   const photos = (html: string) => html.split(/<li\b/).slice(1).map((li) => li.slice(0, li.indexOf('</li>')));
@@ -845,7 +848,7 @@ describe('gallery items that open a full image or a link (#75)', () => {
   /** A photo's markup is exactly one link (opening with `open`) around its one figure, and nothing else. */
   const wrapped = (li: string, open: RegExp, close = '</figure></a>') =>
     open.test(li) && li.trimEnd().endsWith(close) && count(li, /<a /) === 1 && count(li, /<\/a>/) === 1 && count(li, /<figure /) === 1;
-  const figure = '<figure class="so-foundation-media-gallery__photo-figure">';
+  const figure = '<figure class="so-foundation-project-gallery__photo-figure">';
   /** The groups of the photos that open, by placement, as the viewer reads them. */
   const groupsOf = (html: string) => [...html.matchAll(/data-viewer-group="([^"]+)"/g)].map((m) => JSON.parse(m[1].replace(/&quot;/g, '"')) as string[]);
 
@@ -878,7 +881,7 @@ describe('gallery items that open a full image or a link (#75)', () => {
     // The whole figure, image and caption, is the one link: to the full-size file, which the thumbnail never offers.
     expect(wrapped(kitchen, new RegExp(`^[^>]*><a href="/studio/images/kitchen\\.jpg" class="so-card-link so-action so-action--image" aria-haspopup="dialog" data-viewer-group="[^"]+" data-alt="The kitchen photo"[^>]*>${figure}<img `), '</figure><span class="so-visually-hidden">View full image</span></a>')).toBe(true);
     expect(kitchen).toContain('alt="The kitchen photo"');
-    expect(kitchen).toContain('<figcaption class="so-foundation-media-gallery__caption so-foundation-media-gallery--tone-default">Kitchen, Millbrook</figcaption></figure>');
+    expect(kitchen).toContain('<figcaption class="so-foundation-project-gallery__caption so-foundation-project-gallery--tone-default">Kitchen, Millbrook</figcaption></figure>');
     expect(kitchen).toContain('data-sveltekit-reload=""');
     // Offered narrowest first, whatever order the record lists them in.
     expect(kitchen).toMatch(/<img src="\/studio\/images\/kitchen-1440\.jpg" srcset="\/studio\/images\/kitchen-480\.jpg 480w, \/studio\/images\/kitchen-960\.jpg 960w, \/studio\/images\/kitchen-1440\.jpg 1440w" /);

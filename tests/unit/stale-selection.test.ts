@@ -10,14 +10,79 @@ import { keepViewValid, listPropFor, refExists } from '../../src/renderer/src/li
 import { chatContextFor, composerScope, retryView } from '../../src/renderer/src/lib/chatTarget';
 import { continueContext } from '../../src/renderer/src/lib/result';
 import type { ChatContext } from '@shared/api';
+import { P, item, prop } from '@catalogue/dsl';
+import { foundationDesign, type DesignSpec } from './fixtures/packs';
 
 const page = (id: string): OwnerRef => ({ kind: 'page', id });
 const at = (owner: OwnerRef, nodeId: string, more: Partial<ElementRef> = {}): ElementRef => ({ owner, instancePath: [], nodeId, ...more });
 const enabled = { page: true, scope: 'selection' as const };
 
-/** The Business starter: Home holds a hero, logos, features (a list of cards), media, stats, gallery, testimonials, cta. */
+/**
+ * A theme's design built in the editor: a heading, a line of text and a card per item of a list it takes from its
+ * design until a placement has its own. Foundation's sections are code, with no tree to edit everywhere, no parts to
+ * move and no nodes to add, so the tests of those edits place this one.
+ */
+const CARDS: DesignSpec = {
+  componentId: 'test.cards',
+  name: 'Cards',
+  properties: {
+    heading: P.str('Heading', 'Services'),
+    lead: P.text('Supporting text', 'What the studio does.'),
+    items: P.list('Cards', 'Card', { title: P.str('Title', 'Service') }, [{ title: 'Design' }, { title: 'Planning' }, { title: 'Building' }])
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section' },
+    heading: { nodeId: 'heading', label: 'Heading' },
+    cardTitle: { nodeId: 'card-title', label: 'Card title' }
+  },
+  build: (b) =>
+    b.el('root', 'section', { name: 'Section' }, [
+      b.text('heading', 'h2', prop('heading'), { name: 'Heading' }),
+      b.text('lead', 'p', prop('lead'), { name: 'Supporting text' }),
+      b.el('grid', 'ul', { name: 'Card grid' }, [b.repeat('cards', 'items', [b.el('card', 'li', { name: 'Card' }, [b.text('card-title', 'h3', item('title'), { name: 'Title' })])])])
+    ])
+};
+
+/** A News list built in the editor: one card per dated article of the site, newest first, filled when it is shown. */
+const NEWS: DesignSpec = {
+  componentId: 'test.news',
+  name: 'News list',
+  properties: {
+    items: P.list('Articles', 'Article', { pageLink: P.link('Article'), title: P.str('Title', ''), excerpt: P.text('Excerpt', '') }, [], { titleField: 'title', min: 0, max: 12, feed: 'articles' })
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section' },
+    cardTitle: { nodeId: 'card-title', label: 'Card title' },
+    cardText: { nodeId: 'card-text', label: 'Card excerpt' }
+  },
+  build: (b) =>
+    b.el('root', 'section', { name: 'Section' }, [
+      b.el('grid', 'ul', { name: 'Card grid' }, [
+        b.repeat('cards', 'items', [
+          b.el('card', 'li', { name: 'Card', when: { $item: 'pageLink' } }, [
+            b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title' }),
+            b.text('card-text', 'p', { $item: 'excerpt' }, { name: 'Excerpt', when: { $item: 'excerpt' } })
+          ])
+        ])
+      ])
+    ])
+};
+
+/** Install a theme's design built in the editor, as if the theme had it, and return its definition ID. */
+function install(s: ProjectState, spec: DesignSpec): string {
+  const def = foundationDesign(spec);
+  s.components[def.id] = def;
+  return def.id;
+}
+
+/**
+ * The Business starter: Home holds a hero, logos, features (a list of cards), media, stats, gallery, testimonials,
+ * cta, with the editor-built Cards section first.
+ */
 function business() {
-  const s: ProjectState = createStarterState('business', 'Studio', false);
+  const s0: ProjectState = createStarterState('business', 'Studio', false);
+  const cards = install(s0, CARDS);
+  const s = applyOperations(s0, [{ type: 'node.insert', owner: page(s0.site.homePageId), parentId: null, index: 0, definitionId: cards } as EditOperation]).state;
   const home = s.site.homePageId;
   const about = s.site.pageOrder.find((id) => s.pages[id].title === 'About')!;
   const placed = (componentId: string, st: ProjectState = s) => st.pages[home].rootIds.find((id) => st.components[(st.pages[home].nodes[id] as InstanceNode).definitionId]?.componentId === componentId)!;
@@ -88,7 +153,7 @@ describe('a selection the project no longer has is let go when the project chang
 
   it('a list that takes its items from the design keeps them until the placement has its own', () => {
     const t = business();
-    const features = t.placed('features.grid');
+    const features = t.placed('test.cards');
     const st = structuredClone(t.s);
     const inst = st.pages[t.home].nodes[features] as InstanceNode;
     const def = st.components[inst.definitionId];
@@ -112,10 +177,10 @@ describe('a selection the project no longer has is let go when the project chang
 
   it('Undo of a list item inserted while editing everywhere clears a selection of it; a placement’s own items stay', () => {
     const t = business();
-    const theme = (t.s.pages[t.home].nodes[t.placed('features.grid')] as InstanceNode).definitionId;
+    const theme = (t.s.pages[t.home].nodes[t.placed('test.cards')] as InstanceNode).definitionId;
     const forked = t.apply(t.s, [{ type: 'component.fork', definitionId: theme }]);
     const defId = forked.results[0].definitionId as string;
-    const features = t.placed('features.grid', forked.state);
+    const features = t.placed('test.cards', forked.state);
     const def = forked.state.components[defId];
     const added = t.apply(forked.state, [{ type: 'instance.listInsert', owner: t.owner, nodeId: features, prop: 'items', item: { title: 'Late openings' } }]);
     const itemId = added.results[0].itemId as string;
@@ -143,7 +208,9 @@ describe('a selection the project no longer has is let go when the project chang
       { type: 'page.create', pageId: 'pg_winter', title: 'Winter opening hours', starter: 'article', articleDate: '2026-11-14' }
     ]).state;
     const home = s.site.homePageId;
-    const r = applyOperations(s, [{ type: 'node.insert', owner: page(home), componentId: 'content.news' }]);
+    // A News list built in the editor: the release's News list is code, whose cards are not picked one by one.
+    const newsId = install(s, NEWS);
+    const r = applyOperations(s, [{ type: 'node.insert', owner: page(home), definitionId: newsId } as EditOperation]);
     const news = r.results[0].nodeId as string;
     const def = r.state.components[(r.state.pages[home].nodes[news] as InstanceNode).definitionId];
     // Each card's title, inside the list's repeat.
@@ -163,7 +230,7 @@ describe('a selection the project no longer has is let go when the project chang
     expect(refExists(one, { ...card, itemPath: ['pg_winter'] })).toBe(false);
     // In the shared footer, the list shows the same articles on every page.
     const footer: OwnerRef = { kind: 'shell', id: 'footer' };
-    const inFooter = applyOperations(r.state, [{ type: 'node.insert', owner: footer, parentId: null, componentId: 'content.news' }]);
+    const inFooter = applyOperations(r.state, [{ type: 'node.insert', owner: footer, parentId: null, definitionId: newsId } as EditOperation]);
     const footerCard: ElementRef = { ...card, owner: footer, instancePath: [inFooter.results[0].nodeId as string] };
     expect(refExists(inFooter.state, footerCard)).toBe(true);
     const hiddenThere = applyOperations(inFooter.state, [{ type: 'page.update', pageId: 'pg_spring', newsHidden: true }]).state;
@@ -173,9 +240,9 @@ describe('a selection the project no longer has is let go when the project chang
 
   it('a part the component no longer declares goes; a code component’s declared parts stay', () => {
     const t = business();
-    const forked = t.apply(t.s, [{ type: 'component.fork', definitionId: (t.s.pages[t.home].nodes[t.placed('features.grid')] as InstanceNode).definitionId }]);
+    const forked = t.apply(t.s, [{ type: 'component.fork', definitionId: (t.s.pages[t.home].nodes[t.placed('test.cards')] as InstanceNode).definitionId }]);
     const defId = forked.results[0].definitionId as string;
-    const features = t.placed('features.grid', forked.state);
+    const features = t.placed('test.cards', forked.state);
     const node = forked.state.components[defId].parts.heading.nodeId;
     const heading: ElementRef = { owner: t.owner, instancePath: [features], nodeId: node, partId: 'heading' };
     expect(refExists(forked.state, heading)).toBe(true);
@@ -194,8 +261,8 @@ describe('a selection the project no longer has is let go when the project chang
     expect(refExists(moved, { ...own, nodeId: lead })).toBe(true);
 
     // Converted to code: the parts its contract keeps are still selectable, never one item of a list.
-    const features2 = t.placed('features.grid');
-    const coded = t.apply(t.s, [{ type: 'component.convertToCode', owner: t.owner, nodeId: features2, name: 'Features code' }]).state;
+    const features2 = t.placed('test.cards');
+    const coded = t.apply(t.s, [{ type: 'component.convertToCode', owner: t.owner, nodeId: features2, name: 'Cards code' }]).state;
     const codeDef = coded.components[(coded.pages[t.home].nodes[features2] as InstanceNode).definitionId];
     expect(codeDef.kind).toBe('code');
     const themeDef = t.s.components[(t.s.pages[t.home].nodes[features2] as InstanceNode).definitionId];
@@ -224,7 +291,7 @@ describe('a selection the project no longer has is let go when the project chang
 
   it('Undo of the copy Edit everywhere made ends that mode, back on the page it was entered from, with nothing selected', () => {
     const t = business();
-    const hero = t.placed('hero.split');
+    const hero = t.placed('test.cards');
     const theme = (t.s.pages[t.home].nodes[hero] as InstanceNode).definitionId;
     const forked = t.apply(t.s, [{ type: 'component.fork', definitionId: theme }]);
     const defId = forked.results[0].definitionId as string;
@@ -253,7 +320,7 @@ describe('a selection the project no longer has is let go when the project chang
 
   it('a node of the design edited everywhere that an Undo took away goes, and the mode stays', () => {
     const t = business();
-    const forked = t.apply(t.s, [{ type: 'component.fork', definitionId: (t.s.pages[t.home].nodes[t.placed('hero.split')] as InstanceNode).definitionId }]);
+    const forked = t.apply(t.s, [{ type: 'component.fork', definitionId: (t.s.pages[t.home].nodes[t.placed('test.cards')] as InstanceNode).definitionId }]);
     const defId = forked.results[0].definitionId as string;
     const owner: OwnerRef = { kind: 'component', id: defId };
     const parent = forked.state.components[defId].tree!.rootIds[0];

@@ -13,8 +13,8 @@ import { parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { MEDIA_QUERIES, STATE_STYLE_PROPS, flattenStates } from '@shared/styles';
 import { MIGRATIONS, migrateProject } from '@shared/migrations';
 import { createStarterState } from '@catalogue/starters';
-import { FOUNDATION } from '@catalogue/foundation/pack';
-import { prop } from '@catalogue/dsl';
+import { FOUNDATION_AUTHOR, projectDesign } from './fixtures/packs';
+import { P, item, prop } from '@catalogue/dsl';
 import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
 import { tokenUsageCounts } from '@engine/tokens';
@@ -171,9 +171,10 @@ describe('state rules in the style map', () => {
     const v = apply(s, [{ type: 'node.resetStyles', owner: owner(s), nodeId: grid(s).id, state: 'hover' }]);
     expect(grid(v).overrides).toEqual({ card: { base: { background: '#ffffff' } } });
     expect(grid(v).itemOverrides).toBeUndefined();
-    // Each item's state rules get their own class, as its resting ones do.
+    // Each item's state rules get their own class, as its resting ones do; a code placement's are written important,
+    // as its resting ones are.
     const css = generateSiteCss(s);
-    expect(css).toMatch(/so-oi-[^{]*:where\(:hover\) \{\n\t\tborder: 2px solid #1f5f3a;/);
+    expect(css).toMatch(/so-oi-[^{]*:where\(:hover\) \{\n\t\tborder: 2px solid #1f5f3a !important;/);
   });
 
   it('style a variant option of a design', () => {
@@ -316,7 +317,7 @@ describe.runIf(BROWSER)('the stylesheet in a browser', () => {
 /** A project design whose "Loud" tone colours its lead, and which takes content in a slot. */
 function toned(s: ProjectState): ComponentDefinition {
   const def = {
-    ...FOUNDATION.managed({
+    ...FOUNDATION_AUTHOR.managed({
       componentId: 'project.toned',
       name: 'Toned',
       category: 'content',
@@ -340,7 +341,7 @@ describe('a design’s state rules on a placement inside it', () => {
   function host(s: ProjectState) {
     const inner = toned(s);
     const outer = {
-      ...FOUNDATION.managed({
+      ...FOUNDATION_AUTHOR.managed({
         componentId: 'project.host',
         name: 'Host',
         category: 'content',
@@ -384,6 +385,27 @@ describe('a design’s state rules on a placement inside it', () => {
   });
 });
 
+/**
+ * Home with a managed grid of three cards of the project's own placed last, `cardGrid`: Foundation's Features grid is a
+ * code component, which is never detached into elements.
+ */
+function withCardGrid(): ProjectState {
+  const s = fresh();
+  const def = projectDesign(s, {
+    componentId: 'project.card-grid',
+    name: 'Card grid',
+    properties: { items: P.list('Cards', 'Card', { title: P.str('Title', 'Card') }, [{ title: 'One' }, { title: 'Two' }, { title: 'Three' }], { titleField: 'title' }) },
+    parts: { root: { nodeId: 'root', label: 'Section' }, card: { nodeId: 'card', label: 'Card' } },
+    build: (b) => b.el('root', 'section', { name: 'Section' }, [b.el('grid', 'ul', { name: 'Grid' }, [b.repeat('cards', 'items', [b.el('card', 'li', { name: 'Card', styles: { padding: '16px' } }, [b.text('title', 'h3', item('title'), { name: 'Title' })])])])])
+  });
+  const placed = makeInstance(def, {});
+  home(s).nodes[placed.id] = placed;
+  home(s).rootIds.push(placed.id);
+  return s;
+}
+const cardGrid = (s: ProjectState) => home(s).nodes[home(s).rootIds.at(-1)!] as InstanceNode;
+const gridCards = (s: ProjectState) => cardGrid(s).props.items as ListItem[];
+
 describe('copying and detaching', () => {
   it('pastes a copied element’s state rules, for every size or for one', () => {
     let s = styledBox();
@@ -421,14 +443,14 @@ describe('copying and detaching', () => {
   });
 
   it('keeps the state rules a placement shows when it is detached, but not one a stronger resting value beats', () => {
-    let s = fresh();
-    const g = grid(s);
+    let s = withCardGrid();
+    const g = cardGrid(s);
     const def = s.components[g.definitionId];
     const card = def.parts.card.nodeId;
     // The design's own card turns grey on hover; the placement makes every card white at rest and its border green
     // on hover, which beats the design's hover border; one item's own resting border beats the placement's hover one.
     def.tree!.nodes[card].styles = { ...(def.tree!.nodes[card].styles ?? {}), 'base:hover': { background: '#eeeeee', border: '1px solid #000000' } };
-    const second = cards(s)[1].id;
+    const second = gridCards(s)[1].id;
     s = apply(s, [
       { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', scope: 'base', property: 'background', value: '#ffffff' },
       { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', scope: 'base', state: 'hover', property: 'border', value: '2px solid #00aa00' },
@@ -436,7 +458,7 @@ describe('copying and detaching', () => {
     ]);
     const t = applyOperations(s, [{ type: 'component.detachInstance', owner: owner(s), nodeId: g.id } as EditOperation]).state;
     const detached = Object.values(home(t).nodes).filter((n) => n.detachedFrom?.node === card);
-    expect(detached).toHaveLength(cards(s).length);
+    expect(detached).toHaveLength(gridCards(s).length);
     const [one, two] = detached;
     // The placement's white beats the design's hover grey; its hover border beats the design's.
     expect(one.styles?.base?.background).toBe('#ffffff');
@@ -506,14 +528,14 @@ describe('copying and detaching', () => {
   });
 
   it('refuses to detach a placement whose state styles cannot be kept exactly, and changes nothing', () => {
-    let s = fresh();
-    const g = grid(s);
+    let s = withCardGrid();
+    const g = cardGrid(s);
     s = apply(s, [
       { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', scope: 'base', state: 'hover', property: 'border', value: '1px solid #0000ff' },
-      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', itemId: cards(s)[1].id, scope: 'base', property: 'borderBlockStart', value: '3px solid #ff0000' }
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', itemId: gridCards(s)[1].id, scope: 'base', property: 'borderBlockStart', value: '3px solid #ff0000' }
     ]);
     rejects(() => applyOperations(s, [{ type: 'component.detachInstance', owner: owner(s), nodeId: g.id } as EditOperation]), /hover, focus or pressed styles/);
-    expect(grid(s).id).toBe(g.id);
+    expect(cardGrid(s).id).toBe(g.id);
   });
 });
 

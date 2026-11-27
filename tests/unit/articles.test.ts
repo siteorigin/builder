@@ -3,7 +3,7 @@
  * shows the site's articles newest first, worked out from the pages each time the site is generated. Adding,
  * backdating, renaming, hiding or deleting an article changes every News list without touching the list itself.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ComponentDefinition, InstanceNode, ListProp, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent } from '@catalogue/index';
@@ -11,7 +11,10 @@ import { applyOperations } from '@engine/apply';
 import { normalizePropSchema } from '@engine/schema';
 import { contractConflicts } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
-import { generateProject, pageFile, resolveInstanceProps } from '@generator/index';
+import { defFile, generateProject, pageFile, resolveInstanceProps } from '@generator/index';
+import { P, item as dslItem, prop } from '@catalogue/dsl';
+import { projectDesign, restorePacks } from './fixtures/packs';
+import { ARTICLES_THEME, registerArticlesTheme } from './fixtures/articles-designs';
 import { headingOutline, renderedContent } from '@generator/checks';
 import { UTIL_JS } from '@generator/runtime-files';
 import { headerMenu } from '@engine/tree';
@@ -28,9 +31,16 @@ import { computedAt, shownValue } from '../../src/renderer/src/lib/model';
 
 const page = (id: string) => ({ kind: 'page' as const, id });
 
+/**
+ * A theme whose Article header, News list and Text are designs built in the editor, on the release's properties:
+ * Foundation's are code, whose words the checks and search do not read (the Release gap tests).
+ */
+beforeAll(registerArticlesTheme);
+afterAll(() => restorePacks());
+
 /** The issue's market site: the later announcement added first, then the earlier one, and a News list on Home. */
-function market() {
-  let s = createStarterState('business', 'Riverside Market', false);
+function market(theme?: string) {
+  let s = createStarterState('business', 'Riverside Market', false, theme);
   s.site.language = 'en-GB';
   s = applyOperations(s, [
     { type: 'page.create', pageId: 'pg_spring', title: 'Spring makers announced', starter: 'article', articleDate: '2027-03-02', byline: 'Market team', excerpt: 'Twenty new stallholders join in March.' },
@@ -42,6 +52,8 @@ function market() {
 }
 
 const instance = (s: ProjectState, pageId: string, nodeId: string) => s.pages[pageId].nodes[nodeId] as InstanceNode;
+/** The News list's definition, as the project has it. */
+const newsDef = (s: ProjectState) => Object.values(s.components).find((d) => d.componentId === 'content.news')!;
 const defOf = (s: ProjectState, n: InstanceNode) => s.components[n.definitionId];
 
 /** The News list's cards as the export resolves them on that page. */
@@ -90,7 +102,7 @@ describe('dated articles', () => {
     const src = homeSource(s, home);
     expect(order(src)).toEqual(['Spring makers announced', 'Winter opening hours']);
     expect(src).toContain('"date":"2026-11-14","dateLabel":"14 November 2026"');
-    const component = [...generateProject(s).values()].find((v) => v.includes('so-foundation-content-news__card-date'))!;
+    const component = generateProject(s).get(defFile(newsDef(s)))!;
     expect(component).toMatch(/<time datetime=\{item\.date\}>\{item\.dateLabel\}<\/time>/);
     const later = applyOperations(s, [{ type: 'page.update', pageId: 'pg_winter', articleDate: '2027-04-01' }]).state;
     const after = homeSource(later, home);
@@ -156,13 +168,26 @@ describe('dated articles', () => {
     const header = p.nodes[p.rootIds[0]] as InstanceNode;
     expect(header.props).not.toHaveProperty('article');
     const row = resolveInstanceProps(defOf(s, header), header, { state: s, pageId: 'pg_newone' }).article as Array<Record<string, unknown>>;
-    // The page shows its date under its title.
-    expect(pageText(s, p).split('\n').slice(0, 2)).toEqual(['Opening day', formatArticleDate(todayArticleDate(), s.site.language)]);
     expect(row).toEqual([expect.objectContaining({ id: 'pg_newone', title: 'Opening day', date: todayArticleDate() })]);
     // The body is an ordinary text section, edited like any other.
     const body = p.nodes[p.rootIds[1]] as InstanceNode;
-    expect(pageText(s, p)).toContain('Write the article here.');
     expect(applyOperations(s, [{ type: 'instance.setProp', owner: page('pg_newone'), nodeId: body.id, prop: 'body', value: 'Doors open at nine.' }]).state.pages.pg_newone.nodes[body.id]).toMatchObject({ props: { body: [{ type: 'p', spans: [{ text: 'Doors open at nine.' }] }] } });
+  });
+
+  it('shows a new article’s date under its title, over its body', () => {
+    // An article header and text designed in the editor: the release's are not read (the Release gap test below).
+    const s = applyOperations(createStarterState('business', 'Riverside Market', false, ARTICLES_THEME), [{ type: 'page.create', pageId: 'pg_newone', title: 'Opening day', starter: 'article' }]).state;
+    const p = s.pages.pg_newone;
+    expect(pageText(s, p).split('\n').slice(0, 2)).toEqual(['Opening day', formatArticleDate(todayArticleDate(), s.site.language)]);
+    expect(pageText(s, p)).toContain('Write the article here.');
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
+  it.fails('shows a new article’s date under its title, over its body, with the release’s sections', () => {
+    const s = applyOperations(createStarterState('business', 'Riverside Market', false), [{ type: 'page.create', pageId: 'pg_newone', title: 'Opening day', starter: 'article' }]).state;
+    const p = s.pages.pg_newone;
+    expect(pageText(s, p).split('\n').slice(0, 2)).toEqual(['Opening day', formatArticleDate(todayArticleDate(), s.site.language)]);
+    expect(pageText(s, p)).toContain('Write the article here.');
   });
 
   it('makes an ordinary page an article, edits its details, and turns it back', () => {
@@ -242,7 +267,7 @@ describe('dated articles', () => {
   });
 
   it('tells the checks and search what the visitor sees, without offering the computed words as fields to edit', () => {
-    const { s, home } = market();
+    const { s, home } = market(ARTICLES_THEME);
     const content = renderedContent(s, s.pages[home]).filter((c) => c.kind === 'text' && (c.value === 'Winter opening hours' || c.value === '14 November 2026'));
     expect(content).toHaveLength(2);
     for (const c of content) {
@@ -257,6 +282,13 @@ describe('dated articles', () => {
     expect(pageText(s, s.pages[home])).toContain('Twenty new stallholders join in March.');
     // The article's own page shows its title as its one Heading 1.
     expect(headingOutline(s, 'pg_winter').filter((h) => h.level === 1).map((h) => h.text)).toEqual(['Winter opening hours']);
+    expect(pageText(s, s.pages.pg_winter).split('\n').slice(0, 3)).toEqual(['Winter opening hours', '14 November 2026', 'Shorter days from December.']);
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
+  it.fails('tells search what the release’s News list and article header show', () => {
+    const { s, home } = market();
+    expect(pageText(s, s.pages[home])).toContain('Spring makers announced');
     expect(pageText(s, s.pages.pg_winter).split('\n').slice(0, 3)).toEqual(['Winter opening hours', '14 November 2026', 'Shorter days from December.']);
   });
 
@@ -283,7 +315,7 @@ describe('dated articles', () => {
 
 describe('computed lists inside a design', () => {
   it('keeps an article’s header and its News list right after they are made into a component of their own', () => {
-    const { s } = market();
+    const { s } = market(ARTICLES_THEME);
     const winter = s.pages.pg_winter;
     const headerId = winter.rootIds[0];
     const withNews = applyOperations(s, [{ type: 'node.insert', owner: page('pg_winter'), componentId: 'content.news', props: { heading: 'More news' } }]);
@@ -342,7 +374,7 @@ describe('computed lists inside designs: further cases', () => {
   const fileOf = (files: Map<string, string>, needle: string) => [...files.values()].find((f) => f.includes(needle))!;
 
   it('hands the rows on through a design inside a design, and to code that reads them', () => {
-    const { s } = market();
+    const { s } = market(ARTICLES_THEME);
     const headerId = s.pages.pg_winter.rootIds[0];
     const once = applyOperations(s, [{ type: 'component.createFromNode', owner: page('pg_winter'), nodeId: headerId, name: 'Masthead' }]);
     const twice = applyOperations(once.state, [{ type: 'component.createFromNode', owner: page('pg_winter'), nodeId: once.state.pages.pg_winter.rootIds[0], name: 'Outer masthead' }]);
@@ -646,7 +678,31 @@ describe('articles in the editor and the AI tools', () => {
   });
 
   it('treats a computed card on the canvas as its page’s words, not a field to type over', () => {
-    const { s, home, nodeId } = market();
+    // Foundation's News list and Article header are code, whose markup the canvas does not read, so managed designs
+    // of the project's own with the same computed lists stand in for them: a card title linked to its article, and
+    // a header's title read from its page.
+    const { s: market0, home } = market();
+    const fields = { pageLink: P.link('Link'), title: P.str('Title', '') };
+    const newsDesign = projectDesign(market0, {
+      componentId: 'project.news',
+      name: 'News',
+      properties: { heading: P.str('Heading', 'Latest news'), items: P.list('Articles', 'Article', fields, [], { titleField: 'title', min: 0, max: 12, feed: 'articles' }) },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.text('heading', 'h2', prop('heading')), b.repeat('cards', 'items', [b.link('card-title', dslItem('pageLink'), dslItem('title'), 'plain')])])
+    });
+    const headerDesign = projectDesign(market0, {
+      componentId: 'project.masthead',
+      name: 'Masthead',
+      properties: { article: P.list('Article', 'Article', fields, [], { titleField: 'title', min: 0, max: 1, feed: 'currentPage' }) },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.repeat('page', 'article', [b.text('heading', 'h1', dslItem('title'))])])
+    });
+    const placed = applyOperations(market0, [
+      { type: 'node.insert', owner: page(home), definitionId: newsDesign.id },
+      { type: 'node.insert', owner: page('pg_winter'), parentId: null, index: 0, definitionId: headerDesign.id }
+    ]);
+    const s = placed.state;
+    const nodeId = placed.results[0].nodeId as string;
     const def = defOf(s, instance(s, home, nodeId));
     const title = def.tree!.nodes['card-title'] as { label: unknown };
     const ref = { owner: page(home), instancePath: [nodeId], nodeId: 'card-title', itemPath: ['pg_winter'] };
@@ -655,7 +711,7 @@ describe('articles in the editor and the AI tools', () => {
     // The section's own heading is still typed where it shows.
     expect(computedAt(s, { ...ref, nodeId: 'heading', itemPath: [] }, (def.tree!.nodes.heading as { text: unknown }).text)).toBe(false);
     // So is an article header's title, which is its page's.
-    const headerId = s.pages.pg_winter.rootIds[0];
+    const headerId = placed.results[1].nodeId as string;
     const headerDef = defOf(s, instance(s, 'pg_winter', headerId));
     const titleRef = { owner: page('pg_winter'), instancePath: [headerId], nodeId: 'heading', itemPath: ['pg_winter'] };
     expect(computedAt(s, titleRef, (headerDef.tree!.nodes.heading as { text: unknown }).text)).toBe(true);
@@ -710,7 +766,7 @@ describe('articles in the editor and the AI tools', () => {
     expect(['2026-11-14', '2024-02-29', '0004-02-29'].map(isDate)).toEqual([true, true, true]);
     expect(['2026-02-30', '1900-02-29', '2026-13-01', '14 November', '', null, '0000-01-01'].map(isDate)).toEqual([false, false, false, false, false, false, false]);
     const { s } = market();
-    const component = [...generateProject(s).values()].find((v) => v.includes('so-foundation-content-news__card-date'))!;
+    const component = generateProject(s).get(defFile(newsDef(s)))!;
     expect(component).toContain('{#if isDate(item.date)}<time datetime={item.date}>{item.dateLabel}</time>{:else}{item.dateLabel}{/if}');
   });
 

@@ -96,11 +96,11 @@ const alias = {
   '@generator': resolve('src/generator')
 };
 const server = await createServer({ configFile: false, logLevel: 'silent', resolve: { alias }, server: { middlewareMode: true, hmr: false }, appType: 'custom' });
-const { registerBuiltinPacks } = await server.ssrLoadModule(resolve('src/main/packs/build.ts'));
+const { loadBundledPacks } = await server.ssrLoadModule(resolve('src/main/packs/installed.ts'));
 const { createStarterState } = await server.ssrLoadModule(resolve('src/catalogue/starters.ts'));
 const { applyOperations } = await server.ssrLoadModule(resolve('src/engine/apply.ts'));
 const { shellMenu } = await server.ssrLoadModule(resolve('src/engine/tree.ts'));
-registerBuiltinPacks();
+await loadBundledPacks(resolve('.'));
 function renamed(many) {
   let s = createStarterState('business', 'Harbour Lane Studio', false);
   const r = applyOperations(s, [{ type: 'page.create', title: 'Lookbook', route: '/lookbook/', starter: 'intro', addToNavigation: true }]);

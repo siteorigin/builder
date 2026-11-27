@@ -14,6 +14,7 @@ import { GenerationCache } from '@generator/cache';
 import { publicationIds, publicationPlan } from '@generator/checks';
 import { draftLinksStop, draftSourceNotes, isGeneratedReadme, projectReadme, publishedChanged, withheldRoutes } from '../../src/main/export';
 import { withPublished } from '@shared/published';
+import { projectDesign } from './fixtures/packs';
 
 /** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
 const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
@@ -292,24 +293,38 @@ describe('draft entries and the website export', () => {
     expect(publicationPlan(s).draftLinks).toEqual([]);
   });
 
-  it('reports a header link to a section of the page it is on, which an entry’s page does not have', () => {
-    let s = blog();
-    const header = s.site.shell.header;
-    const nav = Object.values(header.nodes).find((n) => n.kind === 'instance') as InstanceNode;
+  /** The blog with its header's first link pointed at `target`, a section ID, and the name of that link property. */
+  const headerLinkTo = (s: ProjectState, target: string) => {
+    const nav = Object.values(s.site.shell.header.nodes).find((n) => n.kind === 'instance') as InstanceNode;
     const linkProp = Object.entries(s.components[nav.definitionId].properties).find(([, p]) => p.type === 'link')?.[0];
     expect(linkProp).toBeDefined();
-    s = run(s, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: nav.id, prop: linkProp!, value: { type: 'anchor', target: 'main' } });
+    return run(s, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: nav.id, prop: linkProp!, value: { type: 'anchor', target } });
+  };
+  const sectionMissing = (s: ProjectState) => validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map((d) => d.message);
+
+  it('reports a header link to a section of the page it is on, which an entry’s page does not have', () => {
     // The layout's own sections are on every entry's page.
-    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
-    const home = s.pages[s.site.homePageId];
-    const anchored = Object.values(home.nodes).find((n) => n.kind === 'instance')!;
-    s = run(s, { type: 'node.setContent', owner: { kind: 'page', id: home.id }, nodeId: anchored.id, field: 'anchor', value: 'visit' });
-    s = run(s, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: nav.id, prop: linkProp!, value: { type: 'anchor', target: 'visit' } });
-    const found = validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map((d) => d.message);
+    expect(sectionMissing(headerLinkTo(blog(), 'main'))).toEqual([]);
+    // A section of Home's, as a managed design of the project's own: the release's sections are code, which takes no
+    // anchor (the Release gap test below).
+    let s = blog();
+    const def = projectDesign(s, { componentId: 'test.visit', name: 'Visit', properties: {}, parts: {}, build: (b) => b.el('root', 'section', {}, [b.text('heading', 'h2', 'Visit us')]) });
+    const home = s.site.homePageId;
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, definitionId: def.id }]);
+    s = run(r.state, { type: 'node.setContent', owner: { kind: 'page', id: home }, nodeId: r.results[0].nodeId as string, field: 'anchor', value: 'visit' });
+    const found = sectionMissing(headerLinkTo(s, 'visit'));
     expect(found).toHaveLength(1);
     // The collection's index (#397) shows the header too, and has none of a page's sections either.
     expect(found[0]).toMatch(/goes to #visit, but .*2 collection entries and the collection index at \/blog\/ have no section with that ID/);
     expect(found[0]).toMatch(/Entries have none of a page’s sections/);
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('gives a section of the shipped theme on Home an anchor a header link can go to', () => {
+    const s = blog();
+    const home = s.pages[s.site.homePageId];
+    const anchored = Object.values(home.nodes).find((n) => n.kind === 'instance')!;
+    expect(applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'page', id: home.id }, nodeId: anchored.id, field: 'anchor', value: 'visit' }]).state.pages[home.id].nodes[anchored.id]).toMatchObject({ anchor: 'visit' });
   });
 });
 

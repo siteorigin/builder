@@ -6,10 +6,11 @@ import { validateState } from '@engine/validate';
 import { MIGRATIONS } from '@shared/migrations';
 import { COLUMN_START_DECL, STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, parseRowSize, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
-import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
+import { getTheme } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
-import { installComponent, makeInstance } from '@engine/install';
+import { makeInstance } from '@engine/install';
 import { STYLES_DIR, generateProject, generateStandaloneComponent } from '@generator/index';
+import { GRID_CLASS, placeGrid } from './fixtures/styles-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -453,21 +454,28 @@ describe('custom CSS in the wide range', () => {
   });
 });
 
+// How a design's own styles, its variant options and a placement's overrides layer, on a managed card grid of the
+// project's own (Foundation's sections are code, whose placement styles are written important).
 describe('style precedence', () => {
-  const grid = (s: ProjectState) => instanceOf(s, 'features.grid');
+  const fresh = () => {
+    const s = createStarterState('business', 'Test Studio', false);
+    placeGrid(s);
+    return s;
+  };
+  const grid = (s: ProjectState) => instanceOf(s, 'styles.grid');
   // The option's class and the node's, on the node itself.
-  const VARIANT = '.so-foundation-features-grid--layout-two-columns.so-foundation-features-grid__grid';
+  const VARIANT = `.${GRID_CLASS}--layout-two-columns.${GRID_CLASS}__grid`;
 
   it('orders definition, variant and instance rules by strength', () => {
     const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const def = defOf(s, 'styles.grid');
     def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { gap: '11px' } } };
     def.tree!.nodes.grid.styles = { base: { layout: 'grid', gap: '10px' } };
     const inst = grid(s);
     inst.variants = { layout: 'two-columns' };
     inst.overrides = { grid: { base: { gap: '12px' } } };
     const components = css(s, 'components');
-    const definition = components.indexOf('.so-foundation-features-grid__grid {\n\tgap: 10px');
+    const definition = components.indexOf(`.${GRID_CLASS}__grid {\n\tgap: 10px`);
     const variant = components.indexOf(`${VARIANT} {\n\tgap: 11px`);
     expect(definition).toBeGreaterThanOrEqual(0);
     expect(variant).toBeGreaterThan(definition);
@@ -488,7 +496,7 @@ describe('style precedence', () => {
 
   it('keeps the phone layout when a variant sets columns for all sizes', () => {
     const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const def = defOf(s, 'styles.grid');
     def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { columns: 2 } } };
     const out = css(s, 'components');
     expect(section(out, null)).not.toContain(`${VARIANT} {\n\tgrid-template-columns`);
@@ -497,7 +505,7 @@ describe('style precedence', () => {
 
   it('lets a variant keep an explicit phone column count', () => {
     const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const def = defOf(s, 'styles.grid');
     def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { columns: 3 }, phone: { columns: 2 } } };
     const out = css(s, 'components');
     expect(ruleOf(section(out, PHONE), VARIANT)).toContain('repeat(2, minmax(0, 1fr))');
@@ -560,35 +568,32 @@ describe('style precedence', () => {
 
   it('lets a variant show a part the definition hides', () => {
     const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const def = defOf(s, 'styles.grid');
     def.tree!.nodes.heading.styles = { ...def.tree!.nodes.heading.styles, base: { ...def.tree!.nodes.heading.styles?.base, hidden: true } };
     def.variantAxes!.layout.options['two-columns'].styles = { heading: { base: { hidden: false } } };
     const out = css(s, 'components');
-    for (const q of [PHONE, TABLET]) expect(ruleOf(section(out, q), '.so-foundation-features-grid--layout-two-columns.so-foundation-features-grid__heading')).toContain('display: revert');
-    expect(section(out, null)).not.toMatch(/--layout-two-columns\.so-foundation-features-grid__heading \{[^}]*display/);
+    for (const q of [PHONE, TABLET]) expect(ruleOf(section(out, q), `.${GRID_CLASS}--layout-two-columns.${GRID_CLASS}__heading`)).toContain('display: revert');
+    expect(section(out, null)).not.toMatch(new RegExp(`--layout-two-columns\\.${GRID_CLASS}__heading \\{[^}]*display`));
   });
 
   it('restores display only where a part is hidden, leaving other ranges their own layout', () => {
     const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const def = defOf(s, 'styles.grid');
     def.tree!.nodes.grid.styles = { base: { layout: 'grid' }, phone: { hidden: true }, tablet: { layout: 'stack' } };
     def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { hidden: false } } };
     const out = css(s, 'components');
     expect(ruleOf(section(out, PHONE), VARIANT)).toContain('display: grid');
     expect(section(out, TABLET)).not.toContain(VARIANT);
-    expect(section(out, null)).not.toMatch(/--layout-two-columns\.so-foundation-features-grid__grid \{[^}]*display/);
+    expect(section(out, null)).not.toMatch(new RegExp(`--layout-two-columns\\.${GRID_CLASS}__grid \\{[^}]*display`));
   });
 
   it('shows a hidden button again as a button, not as the browser default', () => {
     const s = fresh();
-    const id = installComponent(s, 'cta.banner');
-    const def = s.components[id];
+    const def = defOf(s, 'styles.grid');
     const linkId = Object.values(def.tree!.nodes).find((n) => n.kind === 'link')!.id;
     def.parts.action = { nodeId: linkId, label: 'Action' };
     def.tree!.nodes[linkId].styles = { ...def.tree!.nodes[linkId].styles, base: { ...def.tree!.nodes[linkId].styles?.base, hidden: true } };
-    const node = makeInstance(def);
-    home(s).nodes[node.id] = node;
-    home(s).rootIds.push(node.id);
+    const node = grid(s);
     node.overrides = { action: { phone: { hidden: false } } };
     const cls = `so-o-${node.id}-action`;
     expect(ruleOf(section(css(s, 'site'), PHONE), `.${cls}.${cls}`)).toContain('display: inline-flex');
@@ -596,7 +601,7 @@ describe('style precedence', () => {
 
   it('lets a page override beat the override a definition sets on a nested instance', () => {
     const s = fresh();
-    const inner = defOf(s, 'features.grid');
+    const inner = defOf(s, 'styles.grid');
     const outerId = 'project.wrapper';
     const nested = makeInstance(inner);
     nested.overrides = { root: { base: { gap: '1px' } } };
@@ -611,7 +616,7 @@ describe('style precedence', () => {
 
   it('lets an instance show a part the active variant hides', () => {
     const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const def = defOf(s, 'styles.grid');
     def.variantAxes!.layout.options['two-columns'].styles = { heading: { base: { hidden: true } } };
     const inst = grid(s);
     inst.variants = { layout: 'two-columns' };
@@ -623,13 +628,10 @@ describe('style precedence', () => {
 
   it('keeps a hover state on a button with a gradient background', () => {
     const s = fresh();
-    const id = installComponent(s, 'cta.banner');
-    const def = s.components[id];
+    const def = defOf(s, 'styles.grid');
     const linkId = Object.values(def.tree!.nodes).find((n) => n.kind === 'link')!.id;
     def.parts.action = { nodeId: linkId, label: 'Action' };
-    const node = makeInstance(def);
-    home(s).nodes[node.id] = node;
-    home(s).rootIds.push(node.id);
+    const node = grid(s);
     const gradient = 'linear-gradient(90deg, #111, #333)';
     node.overrides = { action: { base: { background: gradient }, phone: { background: '#222' } } };
     const out = css(s, 'site');
@@ -645,6 +647,11 @@ describe('style precedence', () => {
 });
 
 describe('transforms and transitions', () => {
+  // A card grid of the project's own, whose design and placement styles are written as a managed design's are.
+  const designed = () => {
+    const s = fresh();
+    return { s, ...placeGrid(s) };
+  };
   const SHIFT = 'translate: var(--_so-translate-x, 0px) var(--_so-translate-y, 0px)';
   const MOTION = ['translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'];
 
@@ -747,9 +754,8 @@ describe('transforms and transitions', () => {
   it('never outranks the reduced-motion rule in the theme', () => {
     // The theme turns every transition off for visitors who ask for less motion, with !important.
     // Every element, with the weight of an id none has (`:not(#so-motion)`), so a placement's important styles lose too.
-    expect(FOUNDATION_BASE_CSS).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\}\s*:not\(#so-motion\), :not\(#so-motion\)::before, :not\(#so-motion\)::after \{ transition-duration: 0\.01ms !important;/);
-    const s = fresh();
-    const inst = instanceOf(s, 'hero.split');
+    expect(getTheme('foundation').baseCss).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\}\s*:not\(#so-motion\), :not\(#so-motion\)::before, :not\(#so-motion\)::after \{ transition-duration: 0\.01ms !important;/);
+    const { s, inst } = designed();
     inst.overrides = { root: { base: { transition: 'common', transitionDuration: 3000, transitionEasing: 'overshoot', translateY: '-4px', scale: 1.05, rotate: 2 } } };
     const site = css(s, 'site');
     expect(site).toContain('transition-duration: 3000ms');
@@ -782,13 +788,12 @@ describe('transforms and transitions', () => {
   });
 
   it('lets each axis come from a different size and layer, and starts each element from zero', () => {
-    const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const { s, def } = designed();
     def.tree!.nodes.grid.styles = { base: { translateX: '12px', translateY: '2px', transition: 'colors', transitionDuration: 600, transitionEasing: 'linear' } };
-    const inst = instanceOf(s, 'features.grid');
+    const inst = instanceOf(s, 'styles.grid');
     inst.overrides = { grid: { phone: { translateY: '-4px', transition: 'shadow' } } };
     const components = css(s, 'components');
-    const node = '.so-foundation-features-grid__grid';
+    const node = `.${GRID_CLASS}__grid`;
     expect(ruleOf(section(components, null), `:where(${node})`)).toBe(`:where(${node}) {\n\ttransition-duration: 200ms;\n\t--_so-translate-x: 0px;\n\t--_so-translate-y: 0px;\n`);
     // Both axes write the same translate once, and nothing else is merged.
     const own = ruleOf(section(components, null), node);
@@ -806,13 +811,12 @@ describe('transforms and transitions', () => {
   });
 
   it('keeps the starting values at zero specificity in a component converted to code', () => {
-    const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const { s, def } = designed();
     def.tree!.nodes.grid.styles = { base: { translateY: '-4px' }, phone: { transition: 'shadow' } };
     const source = generateStandaloneComponent(s, def);
-    expect(source).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\n\t\t:global\(:where\(\.so-foundation-features-grid__grid\)\) \{\n\t\t\ttransition-duration: 0\.01ms !important;/);
-    expect(source).toContain(':global(:where(.so-foundation-features-grid__grid)) {\n\t\t--_so-translate-x: 0px;\n\t\t--_so-translate-y: 0px;\n\t}');
-    expect(source).toContain(`:global(.so-foundation-features-grid__grid) {\n\t\t--_so-translate-y: -4px;\n\t\t${SHIFT};\n\t}`);
+    expect(source).toContain(`@media (prefers-reduced-motion: reduce) {\n\t\t:global(:where(.${GRID_CLASS}__grid)) {\n\t\t\ttransition-duration: 0.01ms !important;`);
+    expect(source).toContain(`:global(:where(.${GRID_CLASS}__grid)) {\n\t\t--_so-translate-x: 0px;\n\t\t--_so-translate-y: 0px;\n\t}`);
+    expect(source).toContain(`:global(.${GRID_CLASS}__grid) {\n\t\t--_so-translate-y: -4px;\n\t\t${SHIFT};\n\t}`);
   });
 
   it('leaves custom CSS as written, repeats and all', () => {
@@ -824,8 +828,7 @@ describe('transforms and transitions', () => {
   });
 
   it('writes no rule for a variant entry naming a node the design does not have', () => {
-    const s = fresh();
-    const def = defOf(s, 'features.grid');
+    const { s, def } = designed();
     def.variantAxes!.layout.options['two-columns'].styles = { 'grid,': { base: { transition: 'opacity' } } };
     const out = css(s, 'components');
     expect(out).not.toContain('__grid,');
@@ -859,7 +862,8 @@ describe('backdrop blur (#353)', () => {
 
   it('sets, clears and writes it for a placement, beside a hover that clears it', () => {
     const s = fresh();
-    const hero = instanceOf(s, 'hero.split');
+    // A design of the project's own, whose placement styles are written as a managed design's are.
+    const hero = placeGrid(s).inst;
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     const set = (property: string, value: string | null, state?: 'hover') => ({ type: 'node.setStyle' as const, owner, nodeId: hero.id, scope: 'base', ...(state ? { state } : {}), property, value }) as EditOperation;
     const out = applyOperations(s, [set('backdropBlur', '12px'), set('backdropBlur', '0', 'hover')]);
@@ -915,7 +919,8 @@ describe('see-through site colors (#353)', () => {
 
   it('keeps the strength through the edit boundary, stored token first and dropped at full strength', () => {
     const s = fresh();
-    const hero = instanceOf(s, 'hero.split');
+    // A design of the project's own, whose placement styles are written as a managed design's are.
+    const hero = placeGrid(s).inst;
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     const op = (value: unknown, property = 'background') => {
       const checked = validateOperation({ type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property, value });

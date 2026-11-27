@@ -4,6 +4,9 @@ import type { ApplyResult } from '@shared/ops';
 import type { LocalWorkspaceState, ProjectSnapshot } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { makeInstance } from '@engine/install';
+import { P, item } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 import { notePlace, placeOn, placeToKeep, readPlaces, selectionBack, type PagePlaces, type PlaceView } from '../../src/renderer/src/lib/page-place';
 
 // Resuming at the element last selected on a page (#224): after switching pages, after Preview, and on reopening the
@@ -24,17 +27,36 @@ const without = (s: ProjectState, pageId: string, nodeId: string) => {
   next.pages[pageId].rootIds = next.pages[pageId].rootIds.filter((id) => id !== nodeId);
   return next;
 };
-/** Home's Testimonials, nested in a Section at the top of the page, and the name on its second quote. */
+/**
+ * Quotes of the project's own design (a list whose items are elements an author can pick; Foundation's sections are
+ * code, picked by part), added to the project and placed on Home.
+ */
+function placeQuotes(s: ProjectState) {
+  const def = projectDesign(s, {
+    componentId: 'place.quotes',
+    name: 'Quotes',
+    properties: { items: P.list('Quotes', 'Quote', { quote: P.str('Quote', 'Lovely'), name: P.str('Name', 'Ana') }, [{ quote: 'Calm and clear', name: 'Ana' }, { quote: 'On time', name: 'Ben' }]) },
+    parts: { root: { nodeId: 'root', label: 'Quotes' } },
+    build: (b) => b.el('root', 'section', {}, [b.repeat('quotes', 'items', [b.el('card', 'figure', {}, [b.text('quote', 'blockquote', item('quote')), b.text('name', 'figcaption', item('name'))])])])
+  });
+  const node = makeInstance(def);
+  s.pages[homeOf(s)].nodes[node.id] = node;
+  s.pages[homeOf(s)].rootIds.splice(1, 0, node.id);
+  return { def, node };
+}
+
+/** Quotes on Home, nested in a Section at the top of the page, and the name on its second quote. */
 function nestedQuote() {
   const base = starter();
   const home = homeOf(base);
-  const quotes = sectionNamed(base, home, 'testimonials.grid');
+  const { def, node } = placeQuotes(base);
+  const quotes = node.id;
   const s = applyOperations(base, [
     { type: 'node.insert', newNodeId: 'n_holder', owner: page(home), parentId: null, index: 0, componentId: 'layout.section' },
     { type: 'node.move', owner: page(home), nodeId: quotes, parentId: 'n_holder', slot: 'content', index: 0 }
   ]).state;
   const items = (s.pages[home].nodes[quotes] as InstanceNode).props.items as Array<{ id: string }>;
-  return { s, home, quotes, name: ref(page(home), 'name', { instancePath: [quotes], itemPath: [items[1].id] }) };
+  return { s, home, quotes, def, name: ref(page(home), 'name', { instancePath: [quotes], itemPath: [items[1].id] }) };
 }
 
 describe('the place kept for a page', () => {
@@ -94,14 +116,13 @@ describe('the place kept for a page', () => {
 
 describe('what Edit selects again after Preview', () => {
   it('is the element itself while it is there; after a change, a list item gives way to its section', () => {
-    const { s, home, name } = nestedQuote();
+    const { s, home, name, def: quotes } = nestedQuote();
     expect(selectionBack(s, home, name, true)).toEqual(name);
     expect(selectionBack(s, home, name, false)).toEqual(ref(page(home), 'n_holder'));
     const cta = ref(page(home), lastSection(s, home));
     expect(selectionBack(s, home, cta, false), 'an element still on the page after a change').toEqual(cta);
     expect(selectionBack(without(s, home, cta.nodeId), home, cta, true), 'checked even when nothing changed since').toBeNull();
-    const def = Object.keys(s.components)[0];
-    const own = ref({ kind: 'component', id: def }, s.components[def].tree!.rootIds[0]);
+    const own = ref({ kind: 'component', id: quotes.id }, quotes.tree!.rootIds[0]);
     expect(selectionBack(s, home, own, false), 'a component edited everywhere').toEqual(own);
     expect(selectionBack(s, home, { ...own, nodeId: 'n_gone' }, true)).toBeNull();
     // An item of the component's list can only be told apart while nothing has changed.
@@ -436,7 +457,7 @@ describe('the editor resumes where the author was', () => {
   });
 
   it('Preview → Edit never selects a component after editing it everywhere ended meanwhile', () => {
-    const def = Object.keys(s.components).find((id) => s.components[id].tree?.rootIds.length)!;
+    const def = placeQuotes(s).def.id;
     const own = ref({ kind: 'component', id: def }, s.components[def].tree!.rootIds[0]);
     store.setState({ definitionMode: { definitionId: def, returnPageId: home }, selection: own });
     actions.setMode('preview');
@@ -502,7 +523,9 @@ describe('the editor resumes where the author was', () => {
     const def = s.components[(s.pages[home].nodes[cta] as InstanceNode).definitionId];
     store.setState({ selection: ref(page(home), cta) });
     const deleting = actions.deleteSelection();
-    store.setState({ selection: ref(page(home), def.tree!.rootIds[0], { instancePath: [cta] }) });
+    // A part of the section (Foundation's call to action is code: its elements are picked by part).
+    const [partId, part] = Object.entries(def.parts).find(([id]) => id !== 'root')!;
+    store.setState({ selection: ref(page(home), part.nodeId, { instancePath: [cta], partId }) });
     applying!({ ok: true, revision: 9 } as ApplyResult);
     await deleting;
     expect(store.getState().selection).toBeNull();

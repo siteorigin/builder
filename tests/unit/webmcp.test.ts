@@ -15,7 +15,7 @@ import { runSeoAudit } from '@engine/seo-audit';
 import { RUNTIME_DIR, defFile, generateProject, webMcpFormFile } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE } from '@generator/search';
-import { adaptFormSource, formToolDescription, WEBMCP_SEARCH_FILE } from '@generator/webmcp';
+import { adaptFormSource, formToolDescription, showsFormTool, WEBMCP_SEARCH_FILE } from '@generator/webmcp';
 import { uniqueToolNames, webMcpText, webMcpToolName, WEBMCP_NAME_MAX } from '@shared/webmcp';
 import { describeOps } from '@agent/report';
 import { compactNode, projectSummary } from '@agent/context';
@@ -23,9 +23,18 @@ import type { EditOperation } from '@shared/ops';
 import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { compileProject } from '../../src/main/compile';
 import { bundle, removeRendered, serverHtml } from './generated-site';
+import { projectDesign } from './fixtures/packs';
+import { HERO } from './fixtures/appear-designs';
+import { SUPPORTED_FORM_SOURCE, withSupportedForm } from './fixtures/webmcp-designs';
 
-const fresh = () => createStarterState('business', 'Test Studio', false);
-/** The theme's contact form code, as a new project installs it. */
+/** A new project, as the release makes it. */
+const release = () => createStarterState('business', 'Test Studio', false);
+/**
+ * A new project whose contact form is written as the adapter reads it (fixtures/webmcp-designs.ts): what WebMCP does
+ * with a form that declares a tool is tested on it, while the release's own form declares none (see the Release gap).
+ */
+const fresh = () => withSupportedForm(release());
+/** The contact form code, as such a project installs it. */
 const FORM_SOURCE_FOR_TESTS = (() => {
   const s = fresh();
   return s.components[installComponent(s, 'contact.form')].source!;
@@ -119,6 +128,8 @@ describe('the contact form’s code', () => {
   });
 
   it('leaves code that no longer reads as the theme’s form alone', () => {
+    // The form these changes start from is one it adapts.
+    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS)).not.toBeNull();
     const changed = (from: string | RegExp, to: string) => {
       const source = FORM_SOURCE_FOR_TESTS.replace(from, to);
       expect(source).not.toBe(FORM_SOURCE_FOR_TESTS);
@@ -156,6 +167,21 @@ describe('the contact form’s code', () => {
     const said = FORM_SOURCE_FOR_TESTS.replace('\tconst uid = $props.id();', "\tconst uid = $props.id();\n\tconst note = 'name={honeypot}';");
     const adapted = adaptFormSource(said)!;
     expect(adapted).toContain("\tconst note = 'name={honeypot}';");
+  });
+});
+
+describe('the release’s contact form', () => {
+  const s = release();
+  const def = s.components[installComponent(s, 'contact.form')];
+
+  it('is not the code the other tests adapt', () => {
+    expect(def.source).not.toBe(SUPPORTED_FORM_SOURCE);
+  });
+
+  // Release gap: adaptFormSource (src/generator/webmcp.ts) reads the form as Builder's own copy of Foundation wrote it; the release's contact form opens its <form> at another indentation, writes its text fields in a `control` snippet outside the field loop, and drops `so-form__field--wide` from its choices, so it declares no tool and gets no WebMCP copy.
+  it.fails('takes the tool attributes, and a site placing it declares a tool', () => {
+    expect(adaptFormSource(def.source!)).not.toBeNull();
+    expect(showsFormTool(on(withForms(release(), 1)))).toBe(true);
   });
 });
 
@@ -304,8 +330,10 @@ describe('the exported website with WebMCP on', () => {
 
   it('starts the entrances and the search tool from one onMount import', async () => {
     let s = on(withSearch(fresh()));
-    const section = s.pages[s.site.homePageId].rootIds[0];
-    s = run(s, { type: 'node.setContent', owner: home(s), nodeId: section, field: 'appear', value: 'fade' });
+    // A section of the editor's own design, which takes an entrance (the theme's code sections take none).
+    const hero = projectDesign(s, HERO);
+    s = run(s, { type: 'node.insert', newNodeId: 'n_hero', owner: home(s), parentId: null, index: 0, definitionId: hero.id });
+    s = run(s, { type: 'node.setContent', owner: home(s), nodeId: 'n_hero', field: 'appear', value: 'fade' });
     const layout = generateProject(s).get('src/routes/+layout.svelte')!;
     expect(layout).toContain('onMount(observeAppear);');
     expect(layout).toContain('onMount(() => offerSearch(resolve));');

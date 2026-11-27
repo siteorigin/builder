@@ -2,7 +2,7 @@
  * Detaching a placement (#373): one managed component placed on a page becomes the page elements it renders, looking
  * the same, while the component and its other placements stay as they were, and one Undo brings it back.
  */
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -20,6 +20,8 @@ import { EngineError } from '@engine/tree';
 import { introducedDiagnostics, validateState } from '@engine/validate';
 import { defKey, generateProject, generateSiteCss } from '@generator/index';
 import { ProjectSession } from '../../src/main/project/session';
+import { foundationDesign, restorePacks } from './fixtures/packs';
+import { registerManaged } from './fixtures/component-contract-designs';
 
 const DEF = 'proj.showcase-ab12c';
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -460,6 +462,12 @@ describe('component.detachInstance (#373)', () => {
   });
 
   it('keeps a detached gallery one group in the image viewer, apart from another gallery', async () => {
+    // Detaching turns a design's tree into elements, so the Gallery inserted is the managed design of its contract
+    // (fixtures/component-contract-designs), registered as Foundation's.
+    registerManaged('media.gallery');
+    onTestFinished(async () => {
+      await restorePacks();
+    });
     const s = createStarterState('blank', 'Gallery', false);
     const page = home(s);
     page.rootIds = [];
@@ -793,6 +801,10 @@ describe('detaching a placement that shows a copyright line (#828)', () => {
     const s = createStarterState('blank', 'Kloof', false);
     const home = s.pages[s.site.homePageId];
     const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+    // Detaching turns a design's tree into elements, so the footer is a managed design of its contract here, whose
+    // copyright line shows the property.
+    const release = s.components[footer.definitionId];
+    s.components[release.id] = foundationDesign({ componentId: 'shell.footer', name: 'Footer', properties: release.properties, parts: {}, build: (b) => b.el('root', 'footer', {}, [b.text('copyright', 'p', { $prop: 'copyright' })]) });
     const placed = { ...structuredClone(footer), id: 'n_footer_copy' };
     home.nodes[placed.id] = placed;
     home.rootIds.push(placed.id);

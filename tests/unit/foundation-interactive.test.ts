@@ -3,7 +3,8 @@
  * each, and Pricing with billing switch, plans whose prices follow a Monthly / Annual switch. Both are offered where
  * sections are (Insert's catalogue, search_components, upsert_page_with_sections), placed as the theme ships them,
  * rendered as an exported site prerenders them, in every tone, and printed without the controls that only work on
- * screen.
+ * screen. Both are Svelte code in the release, so what is checked is what their placements render and the rules the
+ * theme and their own styles ship.
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,10 +16,9 @@ import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/ty
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, catalogueEntries, getTheme, searchCatalogue } from '@catalogue/index';
-import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
 import { blocksSaving, validateState } from '@engine/validate';
-import { CHOICE_GROUP_CLASS, CHOICE_OFF_CLASS, SCRIPTS_CLASS, STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
+import { CHOICE_GROUP_CLASS, CHOICE_OFF_CLASS, SCRIPTS_CLASS, STATE_OFF_CLASS, defFile, generateProject } from '@generator/index';
 import { newMacroMemory, runUpsert, upsertToolSchema } from '@agent/macros';
 import { executeTool, type ToolHost } from '@agent/tools';
 
@@ -73,6 +73,16 @@ const attrOf = (tag: string, attr: string) => new RegExp(`\\s${attr}="([^"]*)"`)
 /** The words right after an opening tag, up to the next tag. */
 const textAfter = (html: string, tag: string) => html.slice(html.indexOf(tag) + tag.length).replace(/^(\s*<[^>]+>)*/, '').split('<')[0].trim();
 
+/** The showcase's sample tabs, each changed by the matching entry of `edits`. */
+const sampleTabs = (...edits: Array<Record<string, unknown>>) =>
+  (structuredClone(catalogueComponent('foundation', SHOWCASE)!.properties.tabs.default) as Array<Record<string, unknown>>).map((tab, i) => ({ ...tab, ...edits[i] }));
+
+/** A shipped section's own styles, as the Svelte compiler scopes them. */
+const ownCss = (componentId: string) => compile(catalogueComponent('foundation', componentId)!.source!, { filename: `${componentId}.svelte`, generate: 'server', runes: true }).css?.code ?? '';
+
+/** Every stylesheet the exported site ships. */
+const siteCss = (s: ProjectState) => [...generateProject(s)].filter(([path]) => path.startsWith('src/lib/siteorigin/styles/')).map(([, css]) => css).join('\n');
+
 /** Compiler warnings, accessibility ones included, for a design's generated file, for the server and the browser. */
 function compileWarnings(s: ProjectState, def: ComponentDefinition): string[] {
   const out: string[] = [];
@@ -105,10 +115,10 @@ describe('where the sections are offered', () => {
   it('types both in upsert_page_with_sections, and builds a page from them', async () => {
     const schema = upsertToolSchema(fresh()) as { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] }; props: { properties: Record<string, unknown> } } }> } } } };
     const branch = (id: string) => schema.properties.sections.items.oneOf.find((b) => b.properties.componentId.enum[0] === id)!.properties.props.properties;
-    expect(Object.keys(branch(SHOWCASE))).toEqual(['eyebrow', 'heading', 'headingLevel', 'lead', 'tab1', 'tab2', 'tab3', 'tab4', 'tab5', 'tab6']);
+    expect(Object.keys(branch(SHOWCASE))).toEqual(['eyebrow', 'heading', 'headingLevel', 'lead', 'tabs']);
     expect(Object.keys(branch(BILLING))).toEqual(['eyebrow', 'heading', 'headingLevel', 'lead', 'monthlyLabel', 'annualLabel', 'switchLabel', 'plans']);
-    // Each tab is an object of its own fields, its icon one of the offered names or "" for none.
-    expect(branch(SHOWCASE).tab4).toMatchObject({ type: 'object', properties: { label: { type: 'string' }, icon: { enum: expect.arrayContaining(['', 'compass']) }, copy: { type: 'string' } } });
+    // Two to six tabs, each of its own fields, its icon one of the offered names or "" for none.
+    expect(branch(SHOWCASE).tabs).toMatchObject({ type: 'array', minItems: 2, maxItems: 6, items: { type: 'object', properties: { label: { type: 'string' }, icon: { enum: expect.arrayContaining(['', 'compass']) }, copy: { type: 'string' } } } });
     let state = fresh();
     const host = {
       state: () => state,
@@ -133,9 +143,11 @@ describe('where the sections are offered', () => {
             componentId: SHOWCASE,
             props: {
               heading: 'Three ways to train',
-              tab1: { label: 'Classes', icon: 'users', heading: 'Thirty classes a week', copy: 'Strength, mobility and cardio.\n\nBook from the app.' },
-              tab2: { label: 'Open gym', heading: 'Your own pace' },
-              tab3: { label: 'Coaching', icon: 'target', heading: 'A plan made for you', actionLabel: 'Meet a coach', actionLink: '/contact/' }
+              tabs: [
+                { label: 'Classes', icon: 'users', heading: 'Thirty classes a week', copy: 'Strength, mobility and cardio.\n\nBook from the app.' },
+                { label: 'Open gym', heading: 'Your own pace' },
+                { label: 'Coaching', icon: 'target', heading: 'A plan made for you', actionLabel: 'Meet a coach', actionLink: '/contact/' }
+              ]
             }
           },
           {
@@ -153,7 +165,7 @@ describe('where the sections are offered', () => {
     const page = Object.values(state.pages).find((p) => p.route === '/memberships/')!;
     const [showcase, billing] = page.rootIds.map((id) => page.nodes[id] as InstanceNode);
     expect(state.components[showcase.definitionId].componentId).toBe(SHOWCASE);
-    expect(showcase.props.tab3).toMatchObject({ label: 'Coaching', icon: 'target', heading: 'A plan made for you', actionLink: { type: 'page' } });
+    expect((showcase.props.tabs as unknown[])[2]).toMatchObject({ label: 'Coaching', icon: 'target', heading: 'A plan made for you', actionLink: { type: 'page' } });
     expect(state.components[billing.definitionId].componentId).toBe(BILLING);
     expect(billing.variants).toEqual({ tone: 'inverse' });
     expect(validateState(state).filter(blocksSaving)).toEqual([]);
@@ -183,49 +195,36 @@ describe('Tabbed showcase', () => {
     // The sample's icons sit beside the labels. The first tab's action waits for somewhere to go, then shows.
     expect(html.match(/so-link__icon so-link__icon--start/g)).toHaveLength(3);
     expect(html).not.toContain('See recent projects');
-    const linked = await renderHome(inserted(SHOWCASE, { tab1: { actionLink: { type: 'url', target: 'https://example.com/work' } } }).state);
+    const linked = await renderHome(inserted(SHOWCASE, { tabs: sampleTabs({ actionLink: { type: 'url', target: 'https://example.com/work' } }) }).state);
     expect(linked).toMatch(/<a href="https:\/\/example\.com\/work"[^>]*>See recent projects<\/a>/);
   });
 
-  it('has as many tabs as labels: two at least, six at most, each with only its own panel', async () => {
-    const six = Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`tab${n}`, { label: `Stage ${n}`, heading: `Stage ${n} heading` }]));
-    const { state } = inserted(SHOWCASE, six);
+  it('has a tab for each of its two to six tabs, each with only its own panel, and names a blank one by its place', async () => {
+    const six = [1, 2, 3, 4, 5, 6].map((n) => ({ label: `Stage ${n}`, heading: `Stage ${n} heading` }));
+    const { state } = inserted(SHOWCASE, { tabs: six });
     let html = await renderHome(state);
     expect(tagsWith(html, 'role', 'tab').map((t) => textAfter(html, t))).toEqual(['Stage 1', 'Stage 2', 'Stage 3', 'Stage 4', 'Stage 5', 'Stage 6']);
     expect(tagsWith(html, 'role', 'tabpanel').map((p) => html.slice(html.indexOf(p)).match(/<h3[^>]*>([^<]*)</)?.[1])).toEqual([1, 2, 3, 4, 5, 6].map((n) => `Stage ${n} heading`));
-    // Clearing a label leaves its tab out with its panel, whichever it is; the first two always stay.
-    const two = inserted(SHOWCASE, { tab3: { label: '' } }).state;
+    // Removing a tab leaves it out with its panel; two always stay.
+    const two = inserted(SHOWCASE, { tabs: sampleTabs().slice(0, 2) }).state;
     html = await renderHome(two);
     expect(tagsWith(html, 'role', 'tab').map((t) => textAfter(html, t))).toEqual(['Design', 'Build']);
     expect(tagsWith(html, 'role', 'tabpanel')).toHaveLength(2);
     expect(html).not.toContain('Looked after long after we leave');
-    const gap = inserted(SHOWCASE, { tab3: { label: '' }, tab5: { label: 'Extras', heading: 'Odds and ends' } }).state;
-    html = await renderHome(gap);
-    expect(tagsWith(html, 'role', 'tab').map((t) => textAfter(html, t))).toEqual(['Design', 'Build', 'Extras']);
-    expect(tagsWith(html, 'role', 'tabpanel').map((p) => attrOf(p, 'data-tab-label'))).toEqual(['Design', 'Build', 'Extras']);
+    const list = catalogueComponent('foundation', SHOWCASE)!.properties.tabs;
+    expect(list.type === 'list' && [list.min, list.max]).toEqual([2, 6]);
     // A blank first label still names its tab.
-    html = await renderHome(inserted(SHOWCASE, { tab1: { label: ' ' } }).state);
+    html = await renderHome(inserted(SHOWCASE, { tabs: sampleTabs({ label: ' ' }) }).state);
     expect(textAfter(html, tagsWith(html, 'role', 'tab')[0])).toBe('Tab 1');
   });
 
-  it('keeps the tab row on one line that scrolls sideways on a phone, and wraps it from a tablet up', () => {
-    const def = catalogueComponent('foundation', SHOWCASE)!;
-    const list = def.tree!.nodes['tab-list'];
-    expect(list.styles).toMatchObject({ base: { layout: 'row', wrap: false, customCss: 'overflow-x: auto' }, tablet: { wrap: true }, desktop: { wrap: true } });
-    for (let n = 1; n <= 6; n++) expect(def.tree!.nodes[`tab-${n}`].styles?.base).toMatchObject({ flexShrink: 0 });
-  });
-
-  it('follows the tone: on the dark tone its supporting text and every tab’s text turn light', async () => {
-    const def = catalogueComponent('foundation', SHOWCASE)!;
-    const inverse = def.variantAxes!.tone.options.inverse.styles!;
-    for (const id of ['root', 'eyebrow', 'lead', 'copy-1', 'copy-2', 'copy-3', 'copy-4', 'copy-5', 'copy-6']) expect(inverse[id], id).toBeTruthy();
-    for (const id of ['lead', 'copy-1', 'copy-6']) expect(inverse[id].base).toMatchObject({ color: { token: 'color.on-inverse' } });
-    expect(inverse.root.base).toMatchObject({ background: { token: 'color.inverse' }, color: { token: 'color.on-inverse' } });
+  it('follows the tone a placement chooses', async () => {
     for (const tone of ['muted', 'inverse']) {
       const { state, def: placed } = inserted(SHOWCASE, undefined, fresh());
       const r = apply(state, [{ type: 'instance.setVariant', owner: owner(state), nodeId: home(state).rootIds[0], axis: 'tone', variant: tone }]).state;
       expect(compileWarnings(r, placed)).toEqual([]);
-      const root = tagsWith(await renderHome(r), 'class').find((t) => attrOf(t, 'class')!.includes(nodeClass(placed, 'root')))!;
+      // The showcase is the page's first section.
+      const root = tagsWith(await renderHome(r), 'class').find((t) => t.startsWith('<section'))!;
       expect(attrOf(root, 'class')).toContain(`--tone-${tone}`);
     }
   });
@@ -249,10 +248,10 @@ describe('Pricing with billing switch', () => {
     expect(html.match(/per month/g)).toHaveLength(3);
     // Every plan's annual price is in the page too, its row hidden while scripts run: a page whose scripts never run
     // (whose switch does nothing) shows both periods (#885).
-    const monthly = tagsWith(html, 'class').filter((t) => attrOf(t, 'class')!.split(' ').includes(nodeClass(def, 'monthly-price-row')));
-    const annual = tagsWith(html, 'class').filter((t) => attrOf(t, 'class')!.split(' ').includes(nodeClass(def, 'annual-price-row')));
-    expect(monthly.map((t) => attrOf(t, 'class')!.split(' ').includes(CHOICE_OFF_CLASS))).toEqual([false, false, false]);
-    expect(annual.map((t) => attrOf(t, 'class')!.split(' ').includes(CHOICE_OFF_CLASS))).toEqual([true, true, true]);
+    // Each plan's rows, by the price each shows: the monthly one on, the annual one off.
+    const rows = (prices: string[]) => prices.map((price) => html.slice(0, html.indexOf(`>${price}<`) + 1).match(/<[a-z]+\b[^>]*\sclass="([^"]*)"[^>]*>\s*<[^>]*>$/)?.[1].split(' ').includes(CHOICE_OFF_CLASS));
+    expect(rows(['$29', '$49', '$119'])).toEqual([false, false, false]);
+    expect(rows(['$290', '$490', '$1,190'])).toEqual([true, true, true]);
     for (const price of ['$290', '$490', '$1,190']) expect(html).toContain(`>${price}<`);
     expect(html.match(/per year, billed once/g)).toHaveLength(3);
     // Its own name for the switch, in the site's language.
@@ -269,28 +268,18 @@ describe('Pricing with billing switch', () => {
     const html = await renderHome(state);
     expect(html).toContain('>$15<');
     expect(html).not.toContain('$0');
-    // With neither a price nor a note for the period, the row leaves nothing behind.
-    const def = catalogueComponent('foundation', BILLING)!;
-    expect(def.tree!.nodes['annual-price-row']).toMatchObject({ collapseEmpty: true });
-    expect(def.tree!.nodes['annual-price'].when).toEqual({ $item: 'annualPrice' });
-  });
-
-  it('switches every plan’s price and billing note together from the state, with no script of its own', () => {
-    const { state, def } = inserted(BILLING);
-    const source = generateProject(state).get(defFile(def))!;
-    expect(source).toContain('let so_state_billing = $state("monthly");');
-    expect(source).toContain('onclick={() => (so_state_billing = "annual")}');
-    // Each period's price and note show together, inside every plan: both stay in the page, the one not chosen
-    // hidden by a class while scripts run.
-    expect(source).toMatch(/\{#each[\s\S]*!\(so_state_billing === "monthly"\) && "so-choice-off"[\s\S]*monthlyPrice[\s\S]*monthlyNote[\s\S]*!\(so_state_billing === "annual"\) && "so-choice-off"[\s\S]*annualPrice[\s\S]*annualNote[\s\S]*\{\/each\}/);
-    expect(source).not.toContain('{#if so_state_billing');
-    expect(source).not.toMatch(/\$effect|addEventListener|document\./);
+    // With neither a price nor a note for the period, the row leaves nothing behind: nothing is left to hide.
+    expect(html).not.toContain(CHOICE_OFF_CLASS);
   });
 
   it('is its own section beside the plain one, which keeps its fixed prices', () => {
-    const plain = catalogueComponent('foundation', 'pricing.plans')!;
-    expect(plain.state).toBeUndefined();
-    expect(Object.keys(getTheme('foundation').components.find((c) => c.componentId === BILLING)!.state!)).toEqual(['billing']);
+    const fields = (componentId: string) => {
+      const plans = catalogueComponent('foundation', componentId)!.properties.plans;
+      return plans.type === 'list' ? Object.keys(plans.fields) : [];
+    };
+    expect(fields('pricing.plans')).toContain('price');
+    expect(fields('pricing.plans')).not.toContain('annualPrice');
+    expect(fields(BILLING)).toEqual(expect.arrayContaining(['monthlyPrice', 'monthlyNote', 'annualPrice', 'annualNote']));
   });
 });
 
@@ -299,43 +288,42 @@ describe('a copy of the showcase', () => {
     const { state, def } = inserted(SHOWCASE);
     const forked = applyOperations(state, [{ type: 'component.fork', definitionId: def.id }]);
     const copy = forked.results[0].definitionId as string;
-    const schema = forked.state.components[copy].properties.tab1;
-    const again = applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tab1', schema: structuredClone(schema) as unknown as Record<string, unknown> }]);
-    expect((again.state.components[copy].properties.tab1 as { fields: Record<string, { options?: Array<{ value: string }> }> }).fields.icon.options![0]).toEqual({ value: '', label: 'None' });
+    const schema = forked.state.components[copy].properties.tabs;
+    const again = applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tabs', schema: structuredClone(schema) as unknown as Record<string, unknown> }]);
+    expect((again.state.components[copy].properties.tabs as { fields: Record<string, { options?: Array<{ value: string }> }> }).fields.icon.options![0]).toEqual({ value: '', label: 'None' });
     expect(validateState(again.state).filter(blocksSaving)).toEqual([]);
     // An empty choice needs a name to be offered by.
     const unnamed = { ...schema, fields: { ...(schema as { fields: Record<string, unknown> }).fields, icon: { type: 'enum', label: 'Tab icon', options: ['', 'compass'] } } };
-    expect(() => applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tab1', schema: unnamed }])).toThrow(/an empty one \(""\) needs a label/);
+    expect(() => applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tabs', schema: unnamed }])).toThrow(/an empty one \(""\) needs a label/);
     const unlabelled = { ...unnamed, fields: { ...unnamed.fields, icon: { type: 'enum', label: 'Tab icon', options: [{ value: '' }, 'compass'] } } };
-    expect(() => applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tab1', schema: unlabelled }])).toThrow(/an empty one \(""\) needs a label/);
+    expect(() => applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tabs', schema: unlabelled }])).toThrow(/an empty one \(""\) needs a label/);
   });
 });
 
 describe('print', () => {
   it('prints every present tab’s panel under its label without the tab row, and the plans without the switch', () => {
     const { state } = inserted(BILLING, undefined, inserted(SHOWCASE).state);
-    const css = generateProject(state).get('src/lib/siteorigin/styles/components.css')!;
+    const css = siteCss(state);
     expect(css).toMatch(new RegExp(`@media not print \\{\\s*\\.${SCRIPTS_CLASS} \\.${STATE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
     // The billing period not chosen is left out of print as well, while scripts run.
-    expect(css).toContain(`\n.${SCRIPTS_CLASS} .${CHOICE_OFF_CLASS}:not(#so-print) { display: none !important; }`);
-    const print = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media print'));
+    expect(css).toMatch(new RegExp(`\\n\\.${SCRIPTS_CLASS} \\.${CHOICE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
+    const print = getTheme('foundation').baseCss.slice(getTheme('foundation').baseCss.indexOf('@media print'));
     expect(print).toContain('.so-tablist:not(#so-print) { display: none !important; }');
-    // Only the billing switch of Foundation's pricing, in any copy of it: other groups of buttons print.
-    expect(css).not.toContain(CHOICE_GROUP_CLASS);
-    expect(print).toContain(`section:has(:is([class*='__monthly-price-row'], [class*='__annual-price-row'])) .${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
-    expect(print.match(new RegExp(`\\.${CHOICE_GROUP_CLASS}\\b`, 'g'))).toHaveLength(1);
+    // Only the billing switch of Foundation's pricing, in its own styles: other groups of buttons print.
+    expect(print).not.toMatch(new RegExp(`\\.${CHOICE_GROUP_CLASS}[^{}]*\\{[^}]*display: none`));
+    expect(ownCss(BILLING)).toMatch(/@media print \{\s*\.billing__switch\.svelte-[a-z0-9]+ \{\s*display: none;/);
     expect(print).toContain("[role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before");
   });
 });
 
 describe('without scripts (#885)', () => {
   it('shows every tab’s panel under its label and both billing periods, without the controls that would do nothing', async () => {
-    const { state, def } = inserted(SHOWCASE);
+    const { state } = inserted(SHOWCASE);
     const files = generateProject(state);
     // The page marks itself as running scripts in <head>, before the body shows; without that mark nothing a state
     // hides is hidden.
     expect(files.get('src/app.html')).toMatch(new RegExp(`<script>document\\.documentElement\\.classList\\.add\\("${SCRIPTS_CLASS}"\\);</script>\\n\\t\\t%sveltekit\\.head%`));
-    const css = files.get('src/lib/siteorigin/styles/components.css')!;
+    const css = siteCss(state);
     // No rule hides it whether or not scripts run.
     expect(css).not.toMatch(new RegExp(`^\\s*\\.${STATE_OFF_CLASS}`, 'm'));
     // Every panel is in the page, with its content, and the ones not chosen carry only the class that hides them.
@@ -344,13 +332,13 @@ describe('without scripts (#885)', () => {
     expect(panels).toHaveLength(3);
     expect(panels.map((p) => attrOf(p, 'class')!.split(' ').includes(STATE_OFF_CLASS))).toEqual([false, true, true]);
     for (const words of ['Plans drawn around how you live', 'One team from demolition to handover', 'Looked after long after we leave']) expect(html).toContain(words);
-    expect(attrOf(tagsWith(html, 'role', 'tablist')[0], 'class')!.split(' ')).toEqual(expect.arrayContaining(['so-tablist', nodeClass(def, 'tab-list')]));
+    expect(attrOf(tagsWith(html, 'role', 'tablist')[0], 'class')!.split(' ')).toContain('so-tablist');
     // On screen without scripts, the theme lays them out as printed: each under its tab's label, the tab row and
     // Pricing's switch left out.
-    const screen = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media not print {'), FOUNDATION_BASE_CSS.indexOf('@media print'));
+    const screen = getTheme('foundation').baseCss.slice(getTheme('foundation').baseCss.indexOf('@media not print {'), getTheme('foundation').baseCss.indexOf('@media print'));
     const off = `:root:not(.${SCRIPTS_CLASS})`;
     expect(screen).toContain(`${off} .so-tablist:not(#so-print) { display: none !important; }`);
-    expect(screen).toContain(`${off} section:has(:is([class*='__monthly-price-row'], [class*='__annual-price-row'])) .${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
+    expect(ownCss(BILLING)).toMatch(/:where\(:root:not\(\.so-js\)\) \.billing__switch\.svelte-[a-z0-9]+ \{\s*display: none;/);
     expect(screen).toContain(`${off} [role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before {\n    content: attr(data-tab-label);`);
     expect(screen).toContain(`${off} [role='tabpanel'] + [role='tabpanel'] { margin-block-start: 1.5em; }`);
   });
@@ -360,6 +348,6 @@ describe('without scripts (#885)', () => {
     const source = (search.kind === 'code' ? search.source : undefined) ?? '';
     expect(source).toContain('<form class="so-search__form"');
     const { css } = compile(source, { filename: 'SiteSearch.svelte', generate: 'server', runes: true });
-    expect(css?.code).toMatch(new RegExp(`:root:not\\(\\.${SCRIPTS_CLASS}\\) \\.so-search\\.svelte-[a-z0-9]+:not\\(#so-no-js\\) \\{\\s*display: none !important;`));
+    expect(css?.code).toMatch(new RegExp(`:where\\(:root:not\\(\\.${SCRIPTS_CLASS}\\)\\) \\.so-search\\.svelte-[a-z0-9]+:not\\(#so-no-js\\) \\{\\s*display: none !important;`));
   });
 });

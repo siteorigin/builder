@@ -2,29 +2,72 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { InstanceNode, TextNode } from '@shared/types';
+import type { InstanceNode, ProjectState, TextNode } from '@shared/types';
 import { listPropFor, shownValue } from '../../src/renderer/src/lib/model';
 import { createStarterState } from '@catalogue/starters';
+import { P } from '@catalogue/dsl';
+import { makeInstance } from '@engine/install';
+import { projectDesign } from './fixtures/packs';
 import { ProjectSession } from '../../src/main/project/session';
 import { sha } from '../../src/main/project/fsutil';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
-async function make() {
+async function make(start = createStarterState('business', 'Persist', false)) {
   const dir = mkdtempSync(join(tmpdir(), 'so-session-'));
   dirs.push(dir);
-  const s = await ProjectSession.create(dir, createStarterState('business', 'Persist', false));
+  const s = await ProjectSession.create(dir, start);
   return { dir, s };
+}
+
+/**
+ * A grid of cards built in the editor, the project's own design: Foundation's sections are code components, which
+ * have no design tree to edit and take no anchor. Each card has an icon in a badge and a title from its list item.
+ */
+function cardGrid(state: ProjectState) {
+  return projectDesign(state, {
+    componentId: 'test.cards',
+    name: 'Cards',
+    properties: {
+      heading: P.str('Heading', 'What we offer'),
+      items: P.list('Cards', 'Card', { icon: P.icon('Icon', 'star'), title: P.str('Title', 'Card') }, [
+        { icon: 'star', title: 'Planning' },
+        { icon: 'pencil', title: 'Design' },
+        { icon: 'hammer', title: 'Building' }
+      ])
+    },
+    parts: { root: { nodeId: 'root', label: 'Section', styleControls: [] }, cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: [] } },
+    build: (b) =>
+      b.el('root', 'section', { name: 'Section' }, [
+        b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading' }),
+        b.el('grid', 'ul', { name: 'Card grid' }, [
+          b.repeat('cards', 'items', [
+            b.el('card', 'li', { name: 'Card' }, [
+              b.el('card-icon-wrap', 'div', { name: 'Icon badge' }, [b.icon('card-icon', { $item: 'icon' }, { name: 'Icon' })]),
+              b.text('card-title', 'h3', { $item: 'title' }, { name: 'Title' })
+            ])
+          ])
+        ])
+      ])
+  });
+}
+
+/** The starter with a placement of the card grid put at `index` among `pageId`'s sections (Home by default). */
+function startWithCards(index: number, pageId?: (s: ProjectState) => string) {
+  const start = createStarterState('business', 'Persist', false);
+  const page = start.pages[pageId?.(start) ?? start.site.homePageId];
+  const placed = makeInstance(cardGrid(start));
+  page.nodes[placed.id] = placed;
+  page.rootIds.splice(index, 0, placed.id);
+  return { start, placed };
 }
 
 describe('project session', () => {
   it('saves an edit of a repeated item a placement shows from its design’s defaults, and keeps it on reopen (#138)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-session-'));
     dirs.push(dir);
-    const start = createStarterState('business', 'Persist', false);
+    const { start, placed: grid } = startWithCards(1);
     const homeId = start.site.homePageId;
-    const home = start.pages[homeId];
-    const grid = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => start.components[n.definitionId]?.componentId === 'features.grid')!;
     const def = start.components[grid.definitionId];
     const list = listPropFor(def, 'card-title')!;
     // The placement has no list of its own: the page shows the design's default items.
@@ -75,12 +118,11 @@ describe('project session', () => {
   });
 
   it('undoes and redoes a visibility rule and "hide when empty" on a component’s design, step by step (#368)', async () => {
-    const { s } = await make();
+    const { start, placed } = startWithCards(1);
+    const { s } = await make(start);
     const homeId = s.state.site.homePageId;
-    const home = s.state.pages[homeId];
-    const placed = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => s.state.components[n.definitionId]?.componentId === 'features.grid')!;
-    const forked = await s.apply({ operations: [{ type: 'component.fork', definitionId: placed.definitionId }] }, { label: 'Copy' });
-    const defId = String(forked.results?.[0]?.definitionId);
+    // The project's own design, edited everywhere it is placed.
+    const defId = placed.definitionId;
     const owner = { kind: 'component' as const, id: defId };
     /** What the design and the placement hold: the badge's flag, the icon's rule, and the placement's heading. */
     const now = () => {
@@ -681,9 +723,11 @@ describe('placement role (#661)', () => {
 
 describe('section links', () => {
   it('saves a section pick as one step, and lets a linked section be deleted and reported', async () => {
-    const { s } = await make();
+    // The linked section is one built in the editor, after the Contact page's introduction.
+    const { s } = await make(startWithCards(1, (st) => Object.values(st.pages).find((p) => p.route === '/contact/')!.id).start);
     const contact = s.state.site.pageOrder.map((id) => s.state.pages[id]).find((p) => p.route === '/contact/')!;
     const details = contact.rootIds[1];
+    expect(s.state.components[(contact.nodes[details] as InstanceNode).definitionId].owner).toBe('project');
     const header = s.state.site.shell.header.rootIds[0];
     const page = { kind: 'page' as const, id: contact.id };
     const pick = await s.apply(
@@ -831,8 +875,14 @@ describe('undoing one history entry', () => {
   });
 
   it('refuses to bring back an anchor something else on the page has taken since', async () => {
-    const { s } = await make();
-    const node = logos(s);
+    // Two sections built in the editor, which take anchors: the second stands where the logo strip was.
+    const { start } = startWithCards(0);
+    const second = makeInstance(start.components['foundation.test.cards']);
+    const page = start.pages[start.site.homePageId];
+    page.nodes[second.id] = second;
+    page.rootIds.splice(2, 0, second.id);
+    const { s } = await make(start);
+    const node = home(s).nodes[second.id] as InstanceNode;
     expect((await s.apply({ operations: [{ type: 'node.setContent', owner: homeOwner(s), nodeId: node.id, field: 'anchor', value: 'offer' }] }, { label: 'Anchor' })).ok).toBe(true);
     const r = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: node.id }] }, { label: 'Delete Logo strip' });
     const other = home(s).rootIds[0];

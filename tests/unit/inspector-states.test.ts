@@ -171,9 +171,12 @@ function codePlacement(source = CODE): { s: ProjectState; def: ComponentDefiniti
   return { s: r.state, def, node };
 }
 const pageOf = (s: ProjectState, instrument: boolean) => generateProject(s, { instrument }).get(pageFile(s.pages[s.site.homePageId]))!;
-/** The part classes a page hands a placement, as written in its markup. */
+/**
+ * The part classes a page hands the placement it shows last (the one a test placed, after the starter's sections, which
+ * are code components too), as written in its markup.
+ */
 const partMap = (source: string) => {
-  const m = source.match(/so_o=\{(\{[^}]*\})\}/);
+  const m = [...source.matchAll(/so_o=\{(\{[^}]*\})\}/g)].at(-1);
   return m ? (JSON.parse(m[1]) as Record<string, string>) : null;
 };
 

@@ -7,13 +7,43 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations, pageLinkReferences } from '@engine/apply';
 import { pageLinkUses } from '@engine/page-links';
 import { validateState } from '@engine/validate';
-import { installComponent, makeInstance } from '@engine/install';
+import { makeInstance } from '@engine/install';
 import { normalizeRichText } from '@engine/values';
 import { pageSections } from '@generator/checks';
+import { P, prop, tok } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 import { planPageRemoval, reviewPageRemoval } from '../../src/renderer/src/lib/page-removal';
 import { ProjectSession } from '../../src/main/project/session';
 
-const fresh = () => createStarterState('business', 'Test Studio', false);
+/**
+ * A section built in the editor: a heading in a section. Only such a section renders the ID in-page links go to
+ * (Foundation's sections are code components, which take none), so the business starter gets one on Contact and one
+ * on About, each with no links of its own.
+ */
+function hoursDesign(s: ProjectState) {
+  return projectDesign(s, {
+    componentId: 'test.hours',
+    name: 'Opening hours',
+    properties: { heading: P.str('Heading', 'Opening hours') },
+    parts: { root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock'] } },
+    build: (b) => b.el('root', 'section', { name: 'Section', styles: { paddingBlock: tok('space.3xl') } }, [b.text('heading', 'h2', prop('heading'), { name: 'Heading' })])
+  });
+}
+
+/** Places a design at the end of a tree, and returns the placement. */
+function place(tree: { nodes: Record<string, GraphNode>; rootIds: string[] }, def: ReturnType<typeof hoursDesign>) {
+  const node = makeInstance(def);
+  tree.nodes[node.id] = node;
+  tree.rootIds.push(node.id);
+  return node;
+}
+
+const fresh = () => {
+  const s = createStarterState('business', 'Test Studio', false);
+  const def = hoursDesign(s);
+  for (const route of ['/contact/', '/about/']) place(pageAt(s, route), def);
+  return s;
+};
 const pageAt = (s: ProjectState, route: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === route)!;
 const headerOf = (s: ProjectState) => s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
 const footerOf = (s: ProjectState) => s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
@@ -23,12 +53,12 @@ const missing = (s: ProjectState) => validateState(s).filter((d) => d.code === '
 const cta = (s: ProjectState) => headerOf(s).props.ctaLink as LinkValue;
 const header = { kind: 'shell' as const, id: 'header' };
 
-/** The issue's setup: Contact details carries #studio-hours, and the header's action jumps to it. */
+/** The issue's setup: Contact's hours section carries #studio-hours, and the header's action jumps to it. */
 function linkedToSection(link: Partial<LinkValue> = {}) {
   let s = fresh();
   const contact = pageAt(s, '/contact/');
   const about = pageAt(s, '/about/');
-  const details = instanceOf(s, 'contact.details', contact.id);
+  const details = instanceOf(s, 'test.hours', contact.id);
   s = applyOperations(s, [
     { type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: details.id, field: 'anchor', value: 'studio-hours' },
     { type: 'instance.setProp', owner: header, nodeId: headerOf(s).id, prop: 'ctaLink', value: { type: 'page', target: contact.id, anchor: 'studio-hours', ...link } }
@@ -150,8 +180,10 @@ describe('deleting a page with a replacement', () => {
     let s = fresh();
     const contact = pageAt(s, '/contact/');
     const about = pageAt(s, '/about/');
+    // The footer's own hours section, after the footer itself.
+    const hours = place(s.site.shell.footer, Object.values(s.components).find((d) => d.componentId === 'test.hours')!);
     s = applyOperations(s, [
-      { type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footerOf(s).id, field: 'anchor', value: 'studio-hours' },
+      { type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: hours.id, field: 'anchor', value: 'studio-hours' },
       { type: 'instance.setProp', owner: header, nodeId: headerOf(s).id, prop: 'ctaLink', value: { type: 'page', target: contact.id, anchor: 'studio-hours' } }
     ]).state;
     expect(missing(s)).toEqual([]);
@@ -306,15 +338,13 @@ describe('the delete dialog’s review', () => {
 
   it.each(['banner', 'top'])('refuses new IDs that would take #%s away from the page', (inherited) => {
     let { s, contact, about } = linkedToSection();
-    // About's banner and a second placement inherit the ID from their component: neither owns it, so each is
+    // About's hours section and a second placement inherit the ID from their component: neither owns it, so each is
     // offered for a new ID.
-    const def = Object.values(s.components).find((d) => d.componentId === 'cta.banner')!;
+    const def = Object.values(s.components).find((d) => d.componentId === 'test.hours')!;
     def.tree!.nodes[def.tree!.rootIds[0]].anchor = inherited;
     const page = s.pages[about.id];
-    const second = makeInstance(s.components[installComponent(s, 'cta.banner')], {});
-    page.nodes[second.id] = second;
-    page.rootIds.push(second.id);
-    const placed = [instanceOf(s, 'cta.banner', about.id).id, second.id];
+    const second = place(page, def);
+    const placed = [instanceOf(s, 'test.hours', about.id).id, second.id];
     expect(Object.values(page.nodes).filter((n) => n.kind === 'instance' && n.definitionId === def.id)).toHaveLength(2);
     s = footerToSection(s, contact.id, 'visit').s;
     const plan = planPageRemoval(

@@ -10,14 +10,24 @@ import { readField } from '../../src/renderer/src/lib/held';
 import { ProjectSession } from '../../src/main/project/session';
 import { defaultReach, designContent, designContentOp, forwardedProp, propDefaultOp, reachText } from '../../src/renderer/src/lib/design-content';
 import { definitionView, descOf, placementsOn, throughPlacement } from '../../src/renderer/src/lib/model';
+import { placeSplitHero, servicesGrid, testimonials } from './fixtures/definition-tools-designs';
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
 
-/** A fresh business site with its theme's `componentId` made a project component (what Edit everywhere does first). */
-function forked(componentId: string) {
+/**
+ * A fresh business site with its theme's `componentId` made a project component (what Edit everywhere does first).
+ * Foundation's sections are code, with no design to edit, so the theme's design here is the managed one it used to
+ * ship, the hero placed first on Home.
+ */
+function forked(componentId: 'hero.split' | 'features.grid' | 'testimonials.grid') {
   let s = createStarterState('business', 'Test Studio', false);
-  const theme = Object.values(s.components).find((d) => d.componentId === componentId)!;
+  let theme: ComponentDefinition;
+  if (componentId === 'hero.split') theme = placeSplitHero(s).def;
+  else {
+    theme = componentId === 'features.grid' ? servicesGrid() : testimonials();
+    s.components[theme.id] = theme;
+  }
   const r = applyOperations(s, [{ type: 'component.fork', definitionId: theme.id }]);
   s = r.state;
   const defId = r.results[0].definitionId as string;

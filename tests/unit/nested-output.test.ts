@@ -21,9 +21,10 @@ import { GenerationCache } from '@generator/cache';
 import { codeImportantProps } from '@engine/tree';
 import { definitionPick, descOf, selectionFromChain, shownValue, type BridgeDesc } from '../../src/renderer/src/lib/model';
 import { P, item, prop, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
+import { withEditorStructure } from './fixtures/nested-output-designs';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const pageOwner = (s: ProjectState, pageId = s.site.homePageId) => ({ kind: 'page' as const, id: pageId });
@@ -615,9 +616,10 @@ describe.runIf(BROWSER)('overrides of a code component', () => {
 
   it('leave the theme’s print rules their say, whose weighting ids no anchor may take', async () => {
     const t = fresh();
-    const hero = home(t).rootIds[0];
+    // Anchors go on sections built in the editor (a theme section is code, and takes none).
+    const band = place(t, addDef(t, { componentId: 'project.band', name: 'Band', properties: {}, parts: { root: { nodeId: 'root', label: 'Band' } }, build: (b) => b.el('root', 'section', { name: 'Band' }, []) })).id;
     for (const id of ['so-print', 'so-motion', 'so-editor'])
-      expect(() => applyOperations(t, [{ type: 'node.setContent', owner: pageOwner(t), nodeId: hero, field: 'anchor', value: id }])).toThrow(/used by the site itself/);
+      expect(() => applyOperations(t, [{ type: 'node.setContent', owner: pageOwner(t), nodeId: band, field: 'anchor', value: id }])).toThrow(/used by the site itself/);
     const files = generateProject(t);
     const css = `${files.get('src/lib/siteorigin/styles/theme.css')}\n.so-o-a.so-o-a.so-o-a.so-o-a.so-o-a { display: flex !important; position: sticky !important; }`;
     const tab = await browser!.newPage();
@@ -1034,12 +1036,17 @@ const contactFacts = (head: string) =>
     const places = about.filter((a) => a['@type'] === 'Place').map((a) => a.address);
     return [point.email, point.telephone, places.length === 1 ? places[0] : places];
   });
-/** A starter site with a public URL, which its pages' structured data hangs off. */
-const published = () => {
+/** A starter site with a public URL, which its pages' structured data hangs off, on Foundation as it ships. */
+const publishedRelease = () => {
   const s = fresh();
   s.site.baseUrl = 'https://studio.example';
   return s;
 };
+/**
+ * The same site with its FAQ and contact details built in the editor: the structured data is read from a design's
+ * tree, and these cases are about how the generator reads one.
+ */
+const published = () => withEditorStructure(publishedRelease());
 const firstOf = (s: ProjectState, page: PageDoc, componentId: string) => Object.values(page.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === componentId) as InstanceNode;
 /** Text as the page shows it, with tags dropped and entities read. */
 const shownText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ');
@@ -1173,6 +1180,36 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(ofType(about.head, 'WebPageElement')).toEqual([]);
     expect(ofType(about.head, 'FAQPage')).toEqual([]);
     expect(ofType(about.head, 'WebPage')).toHaveLength(1);
+  });
+
+  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
+  it.fails('describes the contact point and place the shipped theme’s Contact details show', async () => {
+    const s = publishedRelease();
+    s.site.baseUrl = 'https://studio.example';
+    const contact = byTitle(s, 'Contact');
+    const page = 'https://studio.example' + contact.route;
+    expect(ofType((await renderPage(s, contact)).head, 'WebPageElement')).toEqual([
+      {
+        '@type': 'WebPageElement',
+        '@id': `${page}#contact`,
+        isPartOf: { '@id': `${page}#webpage` },
+        about: [
+          { '@type': 'ContactPoint', email: 'hello@example.com', telephone: '+1 555 0134' },
+          { '@type': 'Place', address: '12 Harbor Lane, Millbrook' }
+        ]
+      }
+    ]);
+  });
+
+  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
+  it.fails('makes the page the shipped theme’s FAQ is on an FAQ page, with every question and its answer', async () => {
+    const s = publishedRelease();
+    s.site.baseUrl = 'https://studio.example';
+    const contact = byTitle(s, 'Contact');
+    const items = firstOf(s, contact, 'faq.list').props.items as Array<{ question: string; answer: string }>;
+    const [faqPage] = ofType((await renderPage(s, contact)).head, 'FAQPage');
+    expect(faqPage).toMatchObject({ '@type': ['WebPage', 'FAQPage'], '@id': `https://studio.example${contact.route}#webpage` });
+    expect(faqPage.mainEntity).toEqual(items.map((i) => ({ '@type': 'Question', name: i.question, acceptedAnswer: { '@type': 'Answer', text: i.answer } })));
   });
 
   it('reads an FAQ placed in a section, leaves out empty and hidden ones, and keeps hostile text inside its script', async () => {

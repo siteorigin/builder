@@ -195,7 +195,12 @@ describe('planning the cases (#362)', () => {
     expect(t.placement).toEqual({ owner: { kind: 'page', id: home.id }, nodeId: 'n_cta' });
     expect(t.values.heading).toBe('Book a visit');
     expect(t.values[lead]).toEqual(def.properties[lead].default);
-    expect(t.notes).toEqual([`Bound to its surroundings, so shown with the default: ${def.properties[lead].label}.`, 'Shown without its own style changes; inspect_layout measures it on its page.']);
+    // Foundation's call to action is a code component, which says nothing of which of its text is optional.
+    expect(t.notes).toEqual([
+      `Bound to its surroundings, so shown with the default: ${def.properties[lead].label}.`,
+      'Shown without its own style changes; inspect_layout measures it on its page.',
+      'A code component does not say which of its text is optional, so only its links (if it has any) were left empty.'
+    ]);
     const cases = planComponentInspection(t);
     expect(cases[0].label).toBe('as placed');
     expect(cases[0].variants).toEqual({ [axis]: chosen });

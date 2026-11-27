@@ -48,6 +48,7 @@ const { editedGeneratedFile } = await import('../../src/main/export');
 const { componentDocPath } = await import('../../src/main/project/documents');
 const { sha } = await import('../../src/main/project/fsutil');
 const { removeRendered } = await import('./generated-site');
+const { withSupportedForm } = await import('./fixtures/webmcp-designs');
 
 const dirs: string[] = [];
 const controllers: Array<InstanceType<typeof Controller>> = [];
@@ -66,17 +67,26 @@ afterEach(async () => {
 });
 afterAll(() => removeRendered());
 
-const MARKER = 'data-so-part="inner"';
+/**
+ * The element each form's code is marked at. With WebMCP on, the form is the one whose code the WebMCP copy is made
+ * from (fixtures/webmcp-designs.ts), since the release's own contact form declares no tool yet (see webmcp.test.ts).
+ */
+const marked = (webmcp: boolean) => {
+  const part = webmcp ? 'inner' : 'body';
+  return { part, element: `<div class="so-form__${part}">`, marker: `data-so-part="${part}"` };
+};
 
 /** A project whose Home places the theme's contact form, its code marking an element as the editor's preview does. */
 async function projectWithThemeForm(webmcp: boolean) {
+  const { element, marker: MARKER } = marked(webmcp);
   let state = createStarterState('blank', 'Bookshop', false);
+  if (webmcp) withSupportedForm(state);
   state.site.baseUrl = 'https://books.example';
   state = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: state.site.homePageId }, componentId: 'contact.form' }, ...(webmcp ? [{ type: 'site.update' as const, webmcp: true }] : [])]).state;
   const form = Object.values(state.components).find((d) => d.componentId === 'contact.form')!;
   expect(form).toMatchObject({ kind: 'code', owner: 'theme' });
-  expect(form.source).toContain('<div class="so-form__inner">');
-  form.source = form.source!.replace('<div class="so-form__inner">', `<div class="so-form__inner" ${MARKER}>`);
+  expect(form.source).toContain(element);
+  form.source = form.source!.replace(element, element.replace('>', ` ${MARKER}>`));
   const dir = temp('project');
   await (await ProjectSession.create(dir, state)).close();
   const c = new Controller(() => null);
@@ -94,13 +104,15 @@ async function projectWithThemeForm(webmcp: boolean) {
 
 describe('a theme code component’s editor markers', () => {
   for (const webmcp of [false, true]) {
+    const { part, marker: MARKER } = marked(webmcp);
+
     it(`never reach the built website${webmcp ? ', the form’s WebMCP copy included' : ''}, while the project keeps them`, async () => {
       const { c, dir, files } = await projectWithThemeForm(webmcp);
       const r = await c.buildStaticTo(join(temp('out'), 'site'));
       expect(r.message).not.toMatch(/Editor-only/);
       expect(r.ok).toBe(true);
       const html = readFileSync(join(r.path!, 'index.html'), 'utf8');
-      expect(html).toContain('so-form__inner');
+      expect(html).toContain(`so-form__${part}`);
       expect(html).not.toContain('data-so-part');
       if (webmcp) expect(html).toContain('toolname=');
       for (const f of files) expect(readFileSync(join(dir, f), 'utf8')).toContain(MARKER);
@@ -113,7 +125,7 @@ describe('a theme code component’s editor markers', () => {
       expect(r.ok).toBe(true);
       for (const f of files) {
         const copied = readFileSync(join(out, f), 'utf8');
-        expect(copied).toContain('class="so-form__inner"');
+        expect(copied).toContain(`class="so-form__${part}"`);
         expect(copied).not.toContain('data-so-part');
       }
       if (webmcp) expect(readFileSync(join(out, files[1]), 'utf8')).toContain('toolname=');
@@ -122,7 +134,7 @@ describe('a theme code component’s editor markers', () => {
       const manifest = JSON.parse(readFileSync(join(out, 'siteorigin/generated-manifest.json'), 'utf8')) as { files: Record<string, string> };
       for (const f of files) expect(manifest.files[f]).toBe(sha(readFileSync(join(out, f))));
       // The theme's canonical code keeps the marker, for the copy to write back when it is opened.
-      expect(readFileSync(join(out, componentDocPath(form)), 'utf8')).toContain('data-so-part=\\"inner\\"');
+      expect(readFileSync(join(out, componentDocPath(form)), 'utf8')).toContain(`data-so-part=\\"${part}\\"`);
       for (const f of files) expect(readFileSync(join(dir, f), 'utf8')).toContain(MARKER);
     });
   }

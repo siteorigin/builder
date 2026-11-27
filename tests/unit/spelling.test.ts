@@ -44,8 +44,6 @@ const EXEMPT: { file: string; text: RegExp; why: string }[] = [
   { file: 'src/main/project/image-variants.ts', text: /^centre$/, why: 'a position name sharp defines' },
   { file: 'src/renderer/src/panels/CommandMenu.tsx', text: /\bcolors colours\b/, why: 'a search word, so either spelling finds the command' },
   { file: 'src/renderer/src/panels/PropEditors.tsx', text: /\b(?:favourite favorite|colour color)\b/, why: 'search words, so either spelling finds the icon' },
-  { file: 'src/catalogue/foundation/ai-examples.ts', text: /^enquiry$/, why: 'a search word, so either spelling finds the example' },
-  { file: 'src/catalogue/foundation/form.ts', text: /^enquiry$/, why: 'a search tag, so either spelling finds the form' },
   { file: 'src/renderer/src/lib/chatSuggestions.ts', text: /^(?:enquiry|enquiries)$/, why: 'words matched in what the author wrote' },
   { file: 'src/renderer/src/lib/gallery-picks.ts', text: /^Studio, Harbour Lane$/, why: 'an earlier sample caption, matched exactly' },
   {

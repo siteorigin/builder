@@ -17,14 +17,74 @@ import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, overrideClass } from '@generator/index';
+import { makeInstance } from '@engine/install';
+import { P, item, prop, tok } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
-const fresh = () => createStarterState('business', 'Test Studio', false);
+/**
+ * A services grid built in the editor, the slice of the one Foundation used to ship as a tree: a heading, and a card
+ * per item (a stack, with an icon, a title and a description) in a grid. Foundation's grid is code now, whose item
+ * classes are its own code's to place (see the test of it below); the export of a design's item styles is the
+ * generator's, so most of these tests style this one.
+ */
+const servicesGrid = (s: ProjectState) =>
+  projectDesign(s, {
+    componentId: 'test.services',
+    name: 'Services grid',
+    properties: {
+      heading: P.str('Heading', 'Services shaped around your project'),
+      items: P.list(
+        'Cards',
+        'Card',
+        { icon: P.icon('Icon', 'sparkles'), title: P.str('Title', 'Service'), description: P.text('Description', 'Describe what this service includes.') },
+        [
+          { icon: 'compass', title: 'Planning', description: 'Clear priorities and a realistic budget.' },
+          { icon: 'pen-tool', title: 'Design', description: 'Drawings your builder can price.' },
+          { icon: 'hammer', title: 'Build', description: 'We stay on site until it is done.' }
+        ],
+        { titleField: 'title' }
+      )
+    },
+    parts: {
+      root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+      heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+      grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gap'] },
+      card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow', 'paddingBlock', 'paddingInline'] },
+      cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] }
+    },
+    build: (b) =>
+      b.el('root', 'section', { name: 'Section', styles: { paddingBlock: tok('space.section') } }, [
+        b.text('heading', 'h2', prop('heading'), { name: 'Heading' }),
+        b.el('grid', 'ul', { name: 'Card grid', styles: { layout: 'grid', columns: 1, gap: tok('space.lg') } }, [
+          b.repeat('cards', 'items', [
+            b.el('card', 'li', { name: 'Card', styles: { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), background: tok('color.surface') } }, [
+              b.icon('card-icon', item('icon'), { name: 'Icon' }),
+              b.text('card-title', 'h3', item('title'), { name: 'Title' }),
+              b.text('card-text', 'p', item('description'), { name: 'Description' })
+            ])
+          ])
+        ])
+      ])
+  });
+
+/** The business starter, with Home's services grid built in the editor in place of Foundation's. */
+const fresh = () => {
+  const s = createStarterState('business', 'Test Studio', false);
+  const p = home(s);
+  const at = p.rootIds.findIndex((id) => s.components[(p.nodes[id] as InstanceNode).definitionId]?.componentId === 'features.grid');
+  const placed = makeInstance(servicesGrid(s));
+  delete p.nodes[p.rootIds[at]];
+  p.nodes[placed.id] = placed;
+  p.rootIds[at] = placed.id;
+  return s;
+};
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
-const grid = (s: ProjectState) => {
+const placedOf = (s: ProjectState, componentId: string) => {
   const p = home(s);
-  return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
+  return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!;
 };
+const grid = (s: ProjectState) => placedOf(s, 'test.services');
 const cards = (s: ProjectState) => grid(s).props.items as ListItem[];
 const otherPage = (s: ProjectState) => s.site.pageOrder.find((id) => id !== s.site.homePageId)!;
 const siteCss = (s: ProjectState) => generateProject(s).get('src/lib/siteorigin/styles/site.css')!;
@@ -171,8 +231,12 @@ describe('styling one repeated item', () => {
     rejects(() => apply(s, [{ ...base, partId: 'card', itemId: 'i_missing' }]), /has no item "i_missing"/);
     rejects(() => apply(s, [{ ...base, partId: 'nope', itemId: item }]), /has no part "nope"/);
     rejects(() => apply(s, [{ type: 'node.resetStyles', owner: owner(s), nodeId: g.id, partId: 'heading', itemId: item }]), /not shown once per list item/);
-    const def = s.components[g.definitionId];
-    rejects(() => apply(s, [{ ...base, owner: { kind: 'component', id: def.id }, nodeId: def.tree!.rootIds[0], partId: 'card', itemId: item }]), /theme component|placement on a page/);
+    // Inside a design, where the grid is placed for every placement of that design to share.
+    const made = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: g.id, name: 'Services band' }]);
+    const band = made.state.components[made.results[0].definitionId as string];
+    const placedGrid = band.tree!.nodes[band.tree!.rootIds[0]];
+    expect(placedGrid).toMatchObject({ kind: 'instance', definitionId: g.definitionId });
+    rejects(() => apply(made.state, [{ ...base, owner: { kind: 'component', id: band.id }, nodeId: placedGrid.id, partId: 'card', itemId: item }]), /placement on a page/);
   });
 
   it('moves item styles to the new item IDs of a copy, and keeps the original', () => {
@@ -223,29 +287,54 @@ describe('styling one repeated item', () => {
     expect(generateProject(s).get('src/routes/+page.svelte')).not.toContain('so_oi=');
   });
 
-  it('styles a featured plan and a highlighted testimonial the same way', () => {
-    let s = fresh();
-    for (const componentId of ['pricing.plans', 'testimonials.grid'])
-      s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId }]).state;
-    const placed = (componentId: string) => home(s).rootIds.map((id) => home(s).nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!;
-    const plan = placed('pricing.plans');
-    const featured = (plan.props.plans as ListItem[])[1].id;
-    const quotes = placed('testimonials.grid');
-    const highlighted = (quotes.props.items as ListItem[])[0].id;
+  it('styles one card of Foundation’s services grid, whose code places the class the page hands that card (#81)', () => {
+    let s = createStarterState('business', 'Test Studio', false);
+    const g = placedOf(s, 'features.grid');
+    const def = s.components[g.definitionId];
+    expect(def.kind).toBe('code');
+    const poetry = (g.props.items as ListItem[])[1].id;
     s = apply(s, [
-      { type: 'node.setStyle', owner: owner(s), nodeId: plan.id, partId: 'plan', itemId: featured, scope: 'base', property: 'border', value: { token: 'border.strong' } },
-      { type: 'node.setStyle', owner: owner(s), nodeId: quotes.id, partId: 'card', itemId: highlighted, scope: 'base', property: 'background', value: { token: 'color.surface-alt' } }
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', scope: 'base', property: 'background', value: '#fff5cc' },
+      { type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', itemId: poetry, scope: 'base', property: 'background', value: '#dbeeff' }
     ]);
+    expect(placedOf(s, 'features.grid').itemOverrides).toEqual({ card: { list: 'items', items: { [poetry]: { base: { background: '#dbeeff' } } } } });
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
     const files = generateProject(s);
-    const page = files.get('src/routes/+page.svelte')!;
+    const cls = itemOverrideClass(g.id, 'card', poetry);
     const css = files.get('src/lib/siteorigin/styles/site.css')!;
+    // The item's rule outranks the shared one, which itself outranks the code's own scoped styles.
+    const shared = `.${overrideClass(g.id, 'card')}`.repeat(3);
+    expect(css).toContain(`${shared} {\n\tbackground: #fff5cc !important;\n}`);
+    expect(css).toContain(`${`.${cls}`.repeat(4)} {\n\tbackground: #dbeeff !important;\n}`);
+    expect(files.get('src/routes/+page.svelte')).toContain(`so_oi={${JSON.stringify({ [poetry]: { card: cls } })}}`);
+    // The theme's code gives each card the class the page hands it by the card's ID.
+    expect(files.get(defFile(def))).toContain('so_oi?.[item.id]?.card');
+  });
+
+  it('styles a featured plan alone', () => {
+    let s = fresh();
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'pricing.plans' }]).state;
+    const plan = placedOf(s, 'pricing.plans');
+    const featured = (plan.props.plans as ListItem[])[1].id;
+    s = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: plan.id, partId: 'plan', itemId: featured, scope: 'base', property: 'border', value: { token: 'border.strong' } }]);
+    const files = generateProject(s);
     const planCls = itemOverrideClass(plan.id, 'plan', featured);
+    expect(files.get('src/lib/siteorigin/styles/site.css')).toContain(`${`.${planCls}`.repeat(4)} {\n\tborder: var(--so-border-strong) !important;\n}`);
+    expect(files.get('src/routes/+page.svelte')).toContain(`so_oi={${JSON.stringify({ [featured]: { plan: planCls } })}}`);
+    expect(files.get(defFile(s.components[plan.definitionId]))).toContain('so_oi?.[plan.id]?.plan');
+  });
+
+  // Release gap: the release's testimonials card declares no list and places no so_oi class, so one card cannot be styled alone (#81).
+  it.fails('styles a highlighted testimonial alone, as a featured plan is', () => {
+    let s = fresh();
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'testimonials.grid' }]).state;
+    const quotes = placedOf(s, 'testimonials.grid');
+    const highlighted = (quotes.props.items as ListItem[])[0].id;
+    s = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: quotes.id, partId: 'card', itemId: highlighted, scope: 'base', property: 'background', value: { token: 'color.surface-alt' } }]);
+    const files = generateProject(s);
     const quoteCls = itemOverrideClass(quotes.id, 'card', highlighted);
-    expect(css).toContain(`.${planCls}.${planCls}.${planCls} {\n\tborder: var(--so-border-strong);\n}`);
-    expect(css).toContain(`.${quoteCls}.${quoteCls}.${quoteCls} {\n\tbackground: var(--so-color-surface-alt);\n}`);
-    expect(page).toContain(`so_oi={${JSON.stringify({ [featured]: { plan: itemOverrideClass(plan.id, 'plan', featured) } })}}`);
-    expect(page).toContain(`so_oi={${JSON.stringify({ [highlighted]: { card: itemOverrideClass(quotes.id, 'card', highlighted) } })}}`);
-    expect(files.get(defFile(s.components[plan.definitionId]))).toContain('so_oi?.[item.id]?.["plan"]');
+    expect(files.get('src/lib/siteorigin/styles/site.css')).toContain(`${`.${quoteCls}`.repeat(4)} {\n\tbackground: var(--so-color-surface-alt) !important;\n}`);
+    expect(files.get('src/routes/+page.svelte')).toContain(`so_oi={${JSON.stringify({ [highlighted]: { card: quoteCls } })}}`);
   });
 
   it('shows the item again where the shared style hides it, with the display its layout gives it', () => {

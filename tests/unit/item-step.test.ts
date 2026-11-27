@@ -2,8 +2,11 @@
 // to the same part in the card before or after, without wrapping and without changing the list.
 import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
-import type { ElementRef, GraphNode, InstanceNode, ListItem, ProjectState } from '@shared/types';
+import type { ElementRef, InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { itemStep, refExists, stepItem } from '../../src/renderer/src/lib/model';
+import { makeInstance } from '@engine/install';
+import { P } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 const fresh = () => createStarterState('business', 'Step Studio', false);
 const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
@@ -128,14 +131,26 @@ describe('stepping the selection between repeated items (#552)', () => {
 
   it('steps the innermost item of a list repeated inside each item, keeping the outer item', () => {
     const s = fresh();
-    const g = grid(s);
-    const def = s.components[g.definitionId];
-    // Each card lists the same tags: a repeat inside the card's repeat.
-    def.properties.tags = { ...def.properties.items, default: [{ id: 't1', title: 'Fast' }, { id: 't2', title: 'Tidy' }, { id: 't3', title: 'Fair' }] } as typeof def.properties.items;
-    def.tree!.nodes['tag-text'] = { id: 'tag-text', kind: 'text', tag: 'span', text: { $item: 'title' } } as GraphNode;
-    def.tree!.nodes.tags = { id: 'tags', kind: 'repeat', list: { $prop: 'tags' }, children: ['tag-text'] } as GraphNode;
-    (def.tree!.nodes.card as { children: string[] }).children.push('tags');
-    const ids = cards(s).map((c) => c.id as string);
+    // A card grid built in the editor whose cards each list the same tags: a repeat inside the card's repeat.
+    const def = projectDesign(s, {
+      componentId: 'project.tagged-cards',
+      name: 'Tagged cards',
+      properties: {
+        items: P.list('Cards', 'Card', { title: P.str('Title', 'Card') }, [{ title: 'Planning' }, { title: 'Design' }, { title: 'Delivery' }]),
+        tags: P.list('Tags', 'Tag', { title: P.str('Title', 'Tag') }, [])
+      },
+      parts: { root: { nodeId: 'root', label: 'Cards' } },
+      build: (b) =>
+        b.el('root', 'ul', { name: 'Cards' }, [
+          b.repeat('cards', 'items', [b.el('card', 'li', { name: 'Card' }, [b.text('card-title', 'h3', { $item: 'title' }, { name: 'Title' }), b.repeat('tags', 'tags', [b.text('tag-text', 'span', { $item: 'title' }, { name: 'Tag' })])])])
+        ])
+    });
+    const g = makeInstance(def, {});
+    // The tags as the placement holds them, under the IDs the steps below name.
+    g.props.tags = [{ id: 't1', title: 'Fast' }, { id: 't2', title: 'Tidy' }, { id: 't3', title: 'Fair' }];
+    s.pages[s.site.homePageId].nodes[g.id] = g;
+    s.pages[s.site.homePageId].rootIds.push(g.id);
+    const ids = (g.props.items as ListItem[]).map((c) => c.id as string);
     const tag = (item: string, t: string): ElementRef => ({ owner: owner(s), instancePath: [g.id], nodeId: 'tag-text', itemPath: [item, t] });
     const at = itemStep(s, tag(ids[1], 't2'))!;
     expect(at).toMatchObject({ n: 2, count: 3 });

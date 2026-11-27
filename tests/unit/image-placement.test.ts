@@ -4,9 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectSnapshot } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
-import type { AssetRecord, ElementNode, GraphNode, ImageNode, ImageValue, InstanceNode, OwnerRef } from '@shared/types';
+import type { AssetRecord, ElementNode, GraphNode, ImageNode, ImageValue, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { assetUsages } from '@engine/apply';
+import { makeInstance } from '@engine/install';
+import { projectDesign } from './fixtures/packs';
+import { GALLERY } from './fixtures/image-drop-designs';
 import { ProjectSession } from '../../src/main/project/session';
 import { resetPendingForTests, savesInFlight, settle, trackApply } from '../../src/renderer/src/lib/pending';
 import { BASICS, basicSpec } from '../../src/renderer/src/lib/insert-search';
@@ -507,10 +510,13 @@ describe('placing a library image from Assets (issue #13)', () => {
 
   /** Business Home, whose Gallery already shows the reading nook (with alt text of its own), and the studio photo
    *  imported but not used anywhere. The author is editing Home. */
-  async function library() {
+  /** The Business starter opened in a session, with its Gallery's third picture set, after `prepare` adds to it. */
+  async function library(prepare: (s: ProjectState) => void = () => {}) {
     const dir = mkdtempSync(join(tmpdir(), 'so-library-'));
     dirs.push(dir);
-    session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
+    const start = createStarterState('business', 'Test', false);
+    prepare(start);
+    session = await ProjectSession.create(dir, start);
     const home = session.state.site.homePageId;
     const owner: OwnerRef = { kind: 'page', id: home };
     const page = () => session!.state.pages[home];
@@ -584,9 +590,10 @@ describe('placing a library image from Assets (issue #13)', () => {
 
   it('places it beside the component when a picture inside it is selected, and on the page when the header is', async () => {
     const { owner, page, gallery, item, galleryName } = await library();
+    // The Gallery is code: a picture in it is selected as its part.
     const def = session!.state.components[(page().nodes[gallery] as InstanceNode).definitionId];
-    const picture = Object.values(def.tree!.nodes).find((n) => n.kind === 'image')!;
-    store.setState({ selection: { owner, instancePath: [gallery], nodeId: picture.id, itemPath: [item] } });
+    const [partId, picture] = Object.entries(def.parts).find(([id]) => id === 'image')!;
+    store.setState({ selection: { owner, instancePath: [gallery], nodeId: picture.nodeId, partId, itemPath: [item] } });
     const inGallery = actions.imagePlacement();
     expect(inGallery.where).toEqual({ lead: 'in a new section after', target: galleryName, node: true });
     expect(await actions.placeAsset(nook.id, inGallery.key!)).toBe(true);
@@ -966,8 +973,22 @@ describe('placing a library image from Assets (issue #13)', () => {
 
   it('puts the image in the slot a component’s design shows, not one it leaves out', async () => {
     const { owner, page } = await library();
-    const section = (await write([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }])).results![0].nodeId as string;
-    const forked = (await write([{ type: 'component.fork', definitionId: (page().nodes[section] as InstanceNode).definitionId }])).results![0].definitionId as string;
+    // A section of the project's own design, whose slot is a node of it (Foundation's Section is code).
+    const made = await write([
+      {
+        type: 'component.upsert',
+        name: 'Panel',
+        properties: {},
+        nodes: [
+          { kind: 'element', id: 'root', tag: 'section', children: ['inner'] },
+          { kind: 'element', id: 'inner', tag: 'div', children: ['content'] },
+          { kind: 'slot', id: 'content', slot: 'content' }
+        ],
+        slots: { content: { label: 'Content' } }
+      } as EditOperation
+    ]);
+    const forked = made.results![0].definitionId as string;
+    const section = (await write([{ type: 'node.insert', owner, parentId: null, definitionId: forked }])).results![0].nodeId as string;
     const design: OwnerRef = { kind: 'component', id: forked };
     const tree = () => session!.state.components[forked].tree!;
     const contentSlot = Object.values(tree().nodes).find((n) => n.kind === 'slot')!;
@@ -1070,8 +1091,8 @@ describe('placing a library image from Assets (issue #13)', () => {
 
   describe('dropped on an image on the canvas (#505)', () => {
     /** Home's Split hero, with its image emptied, and the images a drag from Assets finds on Home now. */
-    async function onHome() {
-      const lib = await library();
+    async function onHome(prepare?: (s: ProjectState) => void) {
+      const lib = await library(prepare);
       const hero = Object.values(lib.page().nodes).find((n): n is InstanceNode => n.kind === 'instance' && session!.state.components[n.definitionId]?.componentId === 'hero.split')!;
       expect(hero).toBeTruthy();
       await write([{ type: 'instance.setProp', owner: lib.owner, nodeId: hero.id, prop: 'image', value: { assetId: null, alt: '' } }]);
@@ -1099,19 +1120,35 @@ describe('placing a library image from Assets (issue #13)', () => {
     });
 
     it('replaces one Gallery picture for that use alone, opening that row', async () => {
-      const { owner, page, gallery, item, targets, uses } = await onHome();
+      // A Gallery designed in the editor, added to Home: Foundation's takes no drop on one row (the Release gap test below).
+      let gallery = '';
+      const { owner, page, targets, uses } = await onHome((s) => {
+        const placed = makeInstance(projectDesign(s, GALLERY), { images: [{ image: { assetId: null, alt: '' }, caption: 'One' }, { image: { assetId: null, alt: '' }, caption: 'Two' }] });
+        s.pages[s.site.homePageId].nodes[placed.id] = placed;
+        s.pages[s.site.homePageId].rootIds.push(placed.id);
+        gallery = placed.id;
+      });
+      const rows = () => (page().nodes[gallery] as InstanceNode).props.images as Array<{ id: string; image: ImageValue }>;
+      const item = rows()[1].id;
+      await write([{ type: 'instance.setProp', owner, nodeId: gallery, prop: 'images', itemId: item, field: 'image', value: { assetId: nook.id, alt: 'The nook' } }]);
+      const used = uses(nook.id);
       const target = targets().find((t) => t.field?.nodeId === gallery && t.field.itemId === item)!;
       expect(target).toMatchObject({ unfilled: false, field: { prop: 'images', field: 'image' } });
-      const rows = () => (page().nodes[gallery] as InstanceNode).props.images as Array<{ id: string; image: ImageValue }>;
       const before = structuredClone(rows());
       expect(await actions.dropAsset(photo.id, target, store.getState().snapshot!.revision)).toBe(true);
       expect(rows().map((r) => r.image)).toEqual(before.map((r) => (r.id === item ? { assetId: photo.id, alt: photo.altSuggestion } : r.image)));
-      expect(uses(nook.id)).toBe(0);
+      expect(uses(nook.id)).toBe(used - 1);
       expect(store.getState().inspectorFocus).toMatchObject({ owner, nodeId: gallery, prop: 'images', itemId: item, field: 'image' });
       expect(lastToast()!.text).toBe(`Replaced ${target.label} with “${photo.name}”.`);
       lastToast()!.action!.run();
       await vi.waitFor(() => expect(rows()).toEqual(before));
-      expect(uses(nook.id)).toBe(1);
+      expect(uses(nook.id)).toBe(used);
+    });
+
+    // Release gap: renderedImages gives a code placement a drop target for one image property only.
+    it.fails('offers one picture of the release’s Gallery as a drop target of its own', async () => {
+      const { gallery, item, targets } = await onHome();
+      expect(targets().find((t) => t.field?.nodeId === gallery && t.field.itemId === item)).toMatchObject({ unfilled: false, field: { prop: 'images', field: 'image' } });
     });
 
     it('is refused for the reasons Place on page gives, and changes nothing', async () => {

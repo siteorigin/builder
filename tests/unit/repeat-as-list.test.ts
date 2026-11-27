@@ -13,11 +13,11 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, validateState } from '@engine/validate';
 import { defFile, generateProject } from '@generator/index';
 import { P, prop, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR, foundationDesign } from './fixtures/packs';
 import { ProjectSession } from '../../src/main/project/session';
 import { STARTER_ITEMS, planRepeatAsList, repeatAsListPreflight, repeatAsListProblem, repeatAsListTarget, type RepeatPlan } from '../../src/renderer/src/lib/repeat-as-list';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const errors = (s: ProjectState) => validateState(s).filter(blocksSaving);
@@ -298,8 +298,10 @@ describe('Repeat as list is offered only where it works', () => {
     // A pick through a page placement is not the design's own node.
     expect(repeatAsListTarget({ state: s }, { owner: { kind: 'page', id: s.site.homePageId }, instancePath: ['x'], nodeId: 'card' })).toBeNull();
     expect(repeatAsListTarget({ state: s }, { ...ref(def, 'card'), instancePath: ['x'] })).toBeNull();
-    const theme = Object.values(s.components).find((d) => d.owner !== 'project' && d.kind === 'managed')!;
-    expect(repeatAsListProblem(s, theme, theme.tree!.rootIds[0])).toMatch(/isn’t built in the editor/);
+    // A theme's own managed design, installed in the project: its card is a container, but the design is the theme's.
+    const theme = foundationDesign({ componentId: 'test.theme-cards', name: 'Theme cards', properties: {}, parts: {}, build: (b) => b.el('root', 'section', {}, [b.el('card', 'div', {}, [b.text('card-title', 'h3', 'Card')])]) });
+    s.components[theme.id] = theme;
+    expect(repeatAsListProblem(s, theme, 'card')).toMatch(/isn’t built in the editor/);
   });
 
   it('refuses a card already inside a list, where its item fields would change list', () => {

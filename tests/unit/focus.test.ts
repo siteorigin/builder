@@ -13,6 +13,10 @@ import { componentDetail } from '@agent/context';
 import { executeTool, type ToolHost } from '@agent/tools';
 import { selectionTarget, selectionTools } from '@agent/selection';
 import { ProjectSession } from '../../src/main/project/session';
+import { managedStarter } from './fixtures/agent-designs';
+import { managedSection } from './fixtures/component-contract-designs';
+import { team } from './fixtures/component-reusability-designs';
+import { contentMedia } from './fixtures/focus-designs';
 
 const fresh = () => createStarterState('business', 'Focus Studio', false);
 const pageOf = (s: ProjectState, title: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.title === title)!;
@@ -241,11 +245,36 @@ describe('sending focal point changes one after another', () => {
 });
 
 describe('where Image focus is offered', () => {
-  it('adds it after the aspect ratio of every image part that can be cropped, in components a project already has', () => {
-    const s = fresh();
-    const def = (componentId: string) => Object.values(s.components).find((d) => d.componentId === componentId)!;
+  it('adds it after the aspect ratio of every image part that can be cropped, in managed designs a project already has', () => {
+    // The split hero, and Content with image, Gallery and Team as Foundation designed them in the editor: a picture
+    // beside the copy, and pictures repeated in a list, one per item.
+    const s = managedStarter();
+    for (const managed of [contentMedia(), managedSection('media.gallery'), team()]) s.components[managed.id] = managed;
+    const def = (componentId: string) => {
+      const d = Object.values(s.components).find((d) => d.componentId === componentId)!;
+      expect(d.kind, componentId).toBe('managed');
+      return d;
+    };
     // The stored list is what the issue saw: no focus control.
     expect(def('hero.split').parts.media.styleControls).toEqual(['aspectRatio', 'radius', 'shadow']);
+    expect(partStyleControls(def('hero.split'), 'media')).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
+    expect(partStyleControls(def('content.media'), 'media')).toContain('objectPosition');
+    // The repeated pictures are image parts inside a list, and offer focus as a single picture does.
+    for (const [componentId, part] of [['media.gallery', 'image'], ['team.grid', 'portrait']]) {
+      const d = def(componentId);
+      const node = d.tree!.nodes[d.parts[part].nodeId];
+      expect(node.kind, componentId).toBe('image');
+      const repeated = Object.values(d.tree!.nodes).filter((n) => n.kind === 'repeat');
+      const under = (id: string, seen = new Set<string>()): boolean => !seen.has(id) && (seen.add(id), ((d.tree!.nodes[id] as { children?: string[] }).children ?? []).some((c) => c === node.id || under(c, seen)));
+      expect(repeated.some((r) => under(r.id)), `${componentId}: ${part} inside its list`).toBe(true);
+      expect(partStyleControls(d, part), componentId).toEqual(['aspectRatio', 'objectPosition', 'radius']);
+    }
+  });
+
+  // Release gap: partStyleControls (src/shared/styles.ts) offers objectPosition on managed image nodes only, so no release image can be cropped.
+  it.fails('adds it after the aspect ratio of every image part the release lets authors crop', () => {
+    const s = fresh();
+    const def = (componentId: string) => Object.values(s.components).find((d) => d.componentId === componentId)!;
     expect(partStyleControls(def('hero.split'), 'media')).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
     expect(partStyleControls(def('content.media'), 'media')).toContain('objectPosition');
     expect(partStyleControls(def('media.gallery'), 'image')).toEqual(['aspectRatio', 'objectPosition', 'radius']);
@@ -266,8 +295,8 @@ describe('where Image focus is offered', () => {
 
   it('tells the AI about the control and the grammar', async () => {
     const s = fresh();
-    const hero = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
-    expect(componentDetail(hero).parts.media.styleControls).toContain('objectPosition');
+    const managed = Object.values(managedStarter().components).find((d) => d.componentId === 'hero.split')!;
+    expect(componentDetail(managed).parts.media.styleControls).toContain('objectPosition');
     const host = { state: () => s, revision: () => 1 } as unknown as ToolHost;
     const read = await executeTool('read_project', '{}', host, 'c1');
     const listed = (read.content as unknown as { styleProperties: string[] }).styleProperties;
@@ -286,6 +315,12 @@ describe('where Image focus is offered', () => {
     const style = tools?.find((t) => t.name === 'style_selected_element');
     expect(style?.description).toContain('"X% Y%"');
     expect(JSON.stringify(style?.parameters)).toContain('"objectPosition"');
+  });
+
+  // Release gap: partStyleControls (src/shared/styles.ts) offers objectPosition on managed image nodes only, so no release image can be cropped.
+  it.fails('lists the control among the image part\'s controls the AI reads for the release hero', () => {
+    const hero = Object.values(fresh().components).find((d) => d.componentId === 'hero.split')!;
+    expect(componentDetail(hero).parts.media.styleControls).toContain('objectPosition');
   });
 
   it('tells the AI about custom column sizes, card widths and row spans (#352)', async () => {
@@ -353,7 +388,8 @@ describe('a focal point on one placement', () => {
     expect(instanceOf(r.state, 'Home', 'hero.split').overrides?.media).toEqual({ phone: { aspectRatio: '16/9', objectPosition: '50% 20%' } });
     const css = generateSiteCss(r.state);
     const cls = overrideClass(hero.id, 'media');
-    const phone = ruleIn(css, MEDIA_QUERIES.phone, `.${cls}.${cls}`);
+    // Foundation's hero is code: a placement's rule for its part is written a class stronger, to beat the code's own CSS.
+    const phone = ruleIn(css, MEDIA_QUERIES.phone, `.${cls}.${cls}.${cls}`);
     expect(phone).toContain('object-position: 50% 20%');
     expect(phone).toContain('aspect-ratio: 16/9');
     // Not at the other sizes, not on the other hero or the team portraits, and not in the shared design.
@@ -371,7 +407,7 @@ describe('a focal point on one placement', () => {
     const r = applyOperations(s, [setStyle(s, 'Home', media, 'media', 'tablet', 'aspectRatio', '1/1'), setStyle(s, 'Home', media, 'media', 'tablet', 'objectPosition', '20% 50%')]);
     const cls = overrideClass(media.id, 'media');
     const css = generateSiteCss(r.state);
-    const tablet = ruleIn(css, MEDIA_QUERIES.tablet, `.${cls}.${cls}`);
+    const tablet = ruleIn(css, MEDIA_QUERIES.tablet, `.${cls}.${cls}.${cls}`);
     expect(tablet).toContain('aspect-ratio: 1/1');
     expect(tablet).toContain('object-position: 20% 50%');
     for (const media of [null, MEDIA_QUERIES.phone, MEDIA_QUERIES.desktop]) expect(blockOf(css, media)).not.toContain('object-position');

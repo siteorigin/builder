@@ -10,9 +10,12 @@ import { join } from 'node:path';
 import type { ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
+import { P } from '@catalogue/dsl';
+import { makeInstance } from '@engine/install';
 import { ProjectSession } from '../../src/main/project/session';
 import { contentLabel, editLabel, fieldLabel, forLabel, partName, placeWords, refTo, styleLabel, subjectWords } from '../../src/renderer/src/lib/edit-label';
-import { treeFor } from '../../src/renderer/src/lib/model';
+import { codeTextTarget, treeFor, type CodeTextTarget } from '../../src/renderer/src/lib/model';
+import { projectDesign } from './fixtures/packs';
 
 let session: ProjectSession;
 const opening = 'opening#labels';
@@ -47,6 +50,8 @@ const actions = (await load('../../src/renderer/src/lib/actions')) as {
   duplicateLayers: () => Promise<void>;
   commitText: (ref: ElementRef, text: string | RichText) => Promise<'restore' | void>;
   showsInlineText: (snapshot: ProjectSnapshot, ref: ElementRef, shown: string) => boolean;
+  commitCodeText: (t: CodeTextTarget, text: string | RichText) => Promise<'restore' | void>;
+  showsCodeText: (snapshot: ProjectSnapshot, t: CodeTextTarget, shown: string) => boolean;
 };
 const { setState } = (await load('../../src/renderer/src/store')) as { setState: (p: Partial<EditorState>) => void };
 
@@ -55,14 +60,54 @@ function refresh<T>(r: T): T {
   return r;
 }
 
+/**
+ * Foundation's sections are code components, whose marked text the canvas types over through the code path. What
+ * the canvas does with a managed design's text is shown on designs of the project's own: a band whose eyebrow a
+ * placement fills in, and a footer whose copyright line says `{year}`.
+ */
+const BAND_ID = 'foundation.test.band';
+const FOOTER_ID = 'foundation.test.footer';
+function withDesigns(state: ProjectState): ProjectState {
+  projectDesign(state, {
+    componentId: 'test.band',
+    name: 'Band',
+    properties: { eyebrow: P.str('Eyebrow', 'Welcome') },
+    parts: { root: { nodeId: 'root', label: 'Section', styleControls: [] } },
+    build: (b) => b.el('root', 'section', { name: 'Section' }, [b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow' })])
+  });
+  projectDesign(state, {
+    componentId: 'test.footer',
+    name: 'Footer',
+    category: 'shell',
+    properties: { siteName: P.str('Site name', 'Studio'), copyright: P.str('Copyright', '© {year} Studio. All rights reserved.') },
+    parts: { root: { nodeId: 'root', label: 'Footer', styleControls: [] } },
+    build: (b) =>
+      b.el('root', 'footer', { name: 'Footer' }, [b.text('site-name', 'p', { $prop: 'siteName' }, { name: 'Site name' }), b.text('copyright', 'p', { $prop: 'copyright' }, { name: 'Copyright' })])
+  });
+  return state;
+}
+
 const dirs: string[] = [];
-beforeEach(async () => {
+async function open(start: ProjectState) {
   const dir = mkdtempSync(join(tmpdir(), 'so-labels-'));
   dirs.push(dir);
-  session = await ProjectSession.create(dir, createStarterState('business', 'Studio', false));
+  session = await ProjectSession.create(dir, start);
   setState({ toasts: [], selection: null, layerSet: null, pageId: session.state.site.homePageId, definitionMode: null, mode: 'edit' });
   refresh(null);
-});
+}
+beforeEach(() => open(withDesigns(createStarterState('business', 'Studio', false))));
+
+/** The starter with the project's own footer design in the shared footer, in place of Foundation's. */
+async function openWithDesignFooter() {
+  await session.close();
+  const start = withDesigns(createStarterState('business', 'Studio', false));
+  const footer = makeInstance(start.components[FOOTER_ID]);
+  start.site.shell.footer = { rootIds: [footer.id], nodes: { [footer.id]: footer } };
+  await open(start);
+}
+
+/** The marked text `bind` of the code placement `node` on `owner`, as the canvas types over it. */
+const codeText = (owner: OwnerRef, node: string, bind: string) => codeTextTarget(session.state, { ctx: `${owner.kind}:${owner.id}`, node, bind });
 afterEach(async () => {
   await session.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
@@ -187,15 +232,27 @@ describe('manual edits in History', () => {
     expect(newest()).toBe('Edit Heading 2 on Home');
     expect(JSON.stringify(session.state.pages[homeId()].nodes.n_heading)).toContain('Welcome in');
 
-    // Text a placement on the page shows from its content.
-    const hero = boundText(session.state, home());
-    await actions.commitText(hero, 'Changed on the page');
+    // Text a placement of a design on the page shows from its content.
+    const placed = await bridge.project.apply({ operations: [{ type: 'node.insert', newNodeId: 'n_band', owner: home(), parentId: null, index: 0, definitionId: BAND_ID }] }, { label: 'Add Band' });
+    expect(placed.ok).toBe(true);
+    const band = boundText(session.state, home());
+    expect(band.instancePath).toEqual(['n_band']);
+    await actions.commitText(band, 'Changed on the page');
     expect(newest()).toBe('Edit Eyebrow on Home');
 
-    // Text in the shared footer.
-    const inFooter = boundText(session.state, { kind: 'shell', id: 'footer' });
-    await actions.commitText(inFooter, 'Changed in the footer');
-    expect(newest()).toBe('Edit Site name in Footer');
+    // Text a Foundation section on the page shows, which its code marks: named as the inspector names the field.
+    const heroId = roots().find((id) => codeText(home(), id, 'heading'))!;
+    const hero = codeText(home(), heroId, 'heading')!;
+    const heroName = session.state.components[(session.state.pages[homeId()].nodes[heroId] as InstanceNode).definitionId].name;
+    await actions.commitCodeText(hero, 'Changed on the page');
+    expect(newest()).toBe(`Edit Heading in ${heroName} on Home`);
+
+    // Text in Foundation's shared footer.
+    const footer: OwnerRef = { kind: 'shell', id: 'footer' };
+    const inFooter = codeText(footer, session.state.site.shell.footer.rootIds[0], 'siteName')!;
+    expect(inFooter).toBeTruthy();
+    await actions.commitCodeText(inFooter, 'Changed in the footer');
+    expect(newest()).toBe('Edit Site name in the shared footer');
 
     // A heading in a component made from that section, edited in its design.
     const created = await bridge.project.apply({ operations: [{ type: 'component.createFromNode', owner: home(), nodeId: 'n_holder', name: 'Welcome band' }] }, { label: 'Create component Welcome band' });
@@ -210,6 +267,7 @@ describe('manual edits in History', () => {
 
 describe('editing the footer’s copyright line on the page (#828)', () => {
   it('keeps the line on the year the site is built in while the edit leaves the shown year as it was', async () => {
+    await openWithDesignFooter();
     const footer = { kind: 'shell', id: 'footer' } as const;
     const instanceId = session.state.site.shell.footer.rootIds[0];
     const ref: ElementRef = { owner: footer, instancePath: [instanceId], nodeId: 'copyright' };
@@ -229,6 +287,32 @@ describe('editing the footer’s copyright line on the page (#828)', () => {
     expect(session.historyInfo().entries.length).toBe(entries);
     // Another year typed in its place is the author's fixed year.
     await actions.commitText(ref, `© ${year - 1} Studio.`);
+    expect(copyright()).toBe(`© ${year - 1} Studio.`);
+  });
+
+  // Release gap: showsCodeText and commitCodeText (src/renderer/src/lib/actions.ts) skip the footer's copyright year, so typing over it saves a fixed year.
+  it.fails('keeps Foundation’s footer line on the year the site is built in while the edit leaves the shown year as it was', async () => {
+    // The shared footer as the app ships it: Foundation's code footer, whose copyright line the code marks.
+    const footer = { kind: 'shell', id: 'footer' } as const;
+    const instanceId = session.state.site.shell.footer.rootIds[0];
+    const target = codeText(footer, instanceId, 'copyright')!;
+    expect(target).toBeTruthy();
+    const copyright = () => (session.state.site.shell.footer.nodes[instanceId] as InstanceNode).props.copyright ?? session.state.components[(session.state.site.shell.footer.nodes[instanceId] as InstanceNode).definitionId].properties.copyright.default;
+    const year = new Date().getFullYear();
+    expect(copyright()).toBe('© {year} Studio. All rights reserved.');
+    // The page shows the line with the year, which is the text the edit began from, not something else.
+    const now = () => ({ state: session.state, revision: session.revision }) as unknown as ProjectSnapshot;
+    expect(actions.showsCodeText(now(), target, `© ${year} Studio. All rights reserved.`)).toBe(true);
+    expect(actions.showsCodeText(now(), target, '© {year} Studio. All rights reserved.')).toBe(false);
+    // The page shows the year: typing after it changes the words and keeps the year current.
+    await actions.commitCodeText(target, `© ${year} Studio. Photos by Ana Lee.`);
+    expect(copyright()).toBe('© {year} Studio. Photos by Ana Lee.');
+    // Nothing changed but the shown year read back: no edit is made.
+    const entries = session.historyInfo().entries.length;
+    expect(await actions.commitCodeText(target, `© ${year} Studio. Photos by Ana Lee.`)).toBe('restore');
+    expect(session.historyInfo().entries.length).toBe(entries);
+    // Another year typed in its place is the author's fixed year.
+    await actions.commitCodeText(target, `© ${year - 1} Studio.`);
     expect(copyright()).toBe(`© ${year - 1} Studio.`);
   });
 

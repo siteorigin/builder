@@ -25,6 +25,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { BASICS, basicSpec, basicHay, searchItems } from '../../src/renderer/src/lib/insert-search';
 import { insertOps, insertSelection, placeFor } from '../../src/renderer/src/lib/insert-at';
 import { removeRendered, serverHtml } from './generated-site';
+import { foundationDesign } from './fixtures/packs';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -187,7 +188,10 @@ describe('inserting a figure', () => {
     const { s: start, owner } = blank();
     const { s, id } = insert(start, owner, { primitive: 'figure' });
     const caption = (nodes(s)[id] as ElementNode).children[1];
-    const moved = applyOperations(s, [{ type: 'node.move', owner, nodeId: caption, parentId: SECTION, slot: 'content', index: 0 }]);
+    // Moved into a plain container beside the figure: the Section is a code component, whose markup around its slot
+    // the editor does not know, so the caption's new parent has to be one it does.
+    const box = insert(s, owner, { primitive: 'container' });
+    const moved = applyOperations(box.s, [{ type: 'node.move', owner, nodeId: caption, parentId: box.id, index: 0 }]);
     expect(validateState(moved.state).some((d) => d.nodeId === caption && d.severity === 'error' && /goes directly inside a figure/.test(d.message))).toBe(true);
   });
 });
@@ -275,9 +279,11 @@ describe('decorative divider shapes', () => {
     expect(damaged({ icon: 'not-an-icon' })[0].message).toMatch(/not available/);
     expect(damaged({ shape: 'wave', icon: 'star' })[0].message).toMatch(/only a divider of shape "icon"/);
     expect(damaged({ icon: { $prop: 'mark' } })[0].message).toMatch(/not available/);
-    // A theme's own design, as the project keeps its copy, is read the same way.
-    const theme = Object.values(s.components).find((d) => d.owner === 'theme' && d.tree)!;
+    // A theme's own design, as the project keeps its copy, is read the same way. Foundation's sections are code, so
+    // the design is a small managed one stamped as Foundation's.
+    const theme = foundationDesign({ componentId: 'test.band', name: 'Band', properties: {}, parts: {}, build: (b) => b.el('root', 'section', {}, []) });
     const themed = structuredClone(s);
+    themed.components[theme.id] = theme;
     const root = themed.components[theme.id].tree!.rootIds[0];
     themed.components[theme.id].tree!.nodes.edge = { id: 'edge', kind: 'divider', shape: 'zigzag' } as never;
     (themed.components[theme.id].tree!.nodes[root] as ElementNode).children.push('edge');

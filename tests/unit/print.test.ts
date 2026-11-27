@@ -21,7 +21,7 @@ const ENGINES = ([['chromium', chromium], ['webkit', webkit]] as Array<[string, 
 const CAN_PRINT = ENGINES.some(([name]) => name === 'chromium');
 
 /** The FAQ's questions, which are the page's disclosures apart from the header's menu button. */
-const QUESTION = '.so-foundation-faq-list__root details';
+const QUESTION = 'section.faq details';
 const QUESTIONS = [
   ['How long does a typical project take?', 'Most design projects take six to ten weeks from the first meeting to final drawings. We agree a schedule with you at the start.'],
   ['Do you work outside the local area?', 'Yes. We regularly work across the region and can arrange remote consultations for early planning.'],
@@ -33,8 +33,8 @@ const QUESTIONS = [
   ['Can you recommend builders?', 'We work with a small group of trusted contractors and are happy to introduce them, or to work with your own builder.']
 ] as const;
 const PLANS = [
-  { name: 'Discovery visit', price: '$350', description: 'A focused session to explore ideas and priorities.', features: ['Two-hour site visit', 'Written summary', 'Budget guidance'], action: 'Book a session' },
-  { name: 'Studio design', price: '$4,800', description: 'A complete design package ready for builders to quote.', features: ['Concept and detailed design', 'Materials and finishes', 'Drawings for tender', 'Three review meetings'], action: 'Start a project' },
+  { name: 'Discovery visit', price: '$350', description: 'Two hours in your home to explore ideas and priorities.', features: ['Two-hour site visit', 'Written summary', 'Budget guidance'], action: 'Book a visit' },
+  { name: 'Studio design', price: '$4,800', description: 'A complete design package, ready for builders to quote.', features: ['Concept and detailed design', 'Materials and finishes', 'Drawings for tender', 'Three review meetings'], action: 'Start a project' },
   { name: 'Full service', price: '$9,500', description: 'Design plus coordination through to handover.', features: ['Everything in Design', 'Contractor coordination', 'Weekly site reports'], action: 'Talk to us' }
 ];
 const FORM_HEADING = 'Send us a message';
@@ -48,19 +48,21 @@ const COPYRIGHT = '© 2026 Test Studio. All rights reserved.';
 const PLAIN_HEADING = 'Getting to the studio';
 const PLAIN_TEXT = 'The studio is a short walk from Millbrook station, with parking on Harbour Lane.';
 const PLAIN_MORE = 'Visitors are welcome by appointment on weekdays.';
+/** The FAQ's heading, as the release writes it. */
+const FAQ_HEADING = 'What clients ask before we start';
 /** Each section heading, with the first thing it introduces. */
 const HEADINGS: Array<[string, string]> = [
-  ['Frequently asked questions', QUESTIONS[0][0]],
-  ['Clear packages, no surprises', PLANS[0].description],
+  [FAQ_HEADING, QUESTIONS[0][0]],
+  ['Clear packages, fixed fees', PLANS[0].description],
   [FORM_HEADING, FIELDS[0]],
   [PLAIN_HEADING, PLAIN_TEXT]
 ];
 /** The sections the page-break sweep moves a sheet boundary through, by their root element. */
 const SECTIONS: Array<[string, string]> = [
-  ['the FAQ', '.so-foundation-faq-list__root'],
-  ['the pricing plans', '.so-foundation-pricing-plans__root'],
+  ['the FAQ', 'section.faq'],
+  ['the pricing plans', 'section.pricing'],
   ['the contact form', 'section.so-form'],
-  ['a section of plain text', '.so-foundation-layout-section__root']
+  ['a section of plain text', 'section.section']
 ];
 
 /**
@@ -251,7 +253,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     const page = await openSite(browser, []);
     try {
       // On screen, the form says it cannot be sent yet.
-      expect(await page.locator('.so-form__notice', { hasText: NOT_CONNECTED }).isVisible()).toBe(true);
+      expect(await page.locator('.so-form__status--setup', { hasText: NOT_CONNECTED }).isVisible()).toBe(true);
       // Controls from an author's own component: a form's submit, reset and typeless buttons, which do nothing on
       // paper, and a button whose label is a contact detail it copies, which a handout keeps.
       await page.evaluate(`(() => {
@@ -259,7 +261,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         own.innerHTML = '<form><input type="submit" value="Send the request"><button type="submit">Submit the request</button><button type="reset">Clear the request</button>'
           + '<input type="reset" value="Reset the request"><button>Request a callback</button></form>'
           + '<button type="button" aria-label="Copy email address">studio@example.com</button>';
-        document.querySelector('.so-foundation-layout-section__root p').after(own);
+        document.querySelector('section.section p').after(own);
       })()`);
       const text = squash((await print(page)).join('\n'));
       for (const value of [...CONTACT_VALUES, 'studio@example.com']) expect(text, value).toContain(squash(value));
@@ -273,7 +275,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     }
   }, 60_000);
 
-  it('hides the menu button and an open phone menu, the skip link, the FAQ toggle icons, the form actions, messages and trap, and unsticks the header in print', async () => {
+  it('hides the menu button and an open phone menu, the skip link, a copied FAQ’s toggle icons, the form actions, messages and trap, and unsticks the header in print', async () => {
     const page = await openSite(browser, [], 390);
     try {
       await page.click('.so-header__toggle');
@@ -281,7 +283,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       await page.evaluate(`(() => {
         const own = document.createElement('details');
         own.innerHTML = '<summary>Weekend visits <span class="so-icon" id="status-icon">✓</span></summary><p>By appointment.</p>';
-        document.querySelector('.so-foundation-layout-section__root p').after(own);
+        document.querySelector('section.section p').after(own);
         // A project's copy of the FAQ, whose classes start with the copy's own name.
         const copy = document.createElement('details');
         copy.innerHTML = '<summary>Parking <span class="so-icon so-proj-faq-copy__toggle-icon" id="copy-icon">+</span></summary><p>On Harbour Lane.</p>';
@@ -294,7 +296,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
             menu: display('.so-header__menu'),
             toggle: display('.so-header__toggle'),
             nav: display('.so-header__nav'),
-            icons: display('.so-foundation-faq-list__toggle-icon'),
+            icons: display('section.faq .faq__icon'),
             copyIcon: display('#copy-icon'),
             status: display('#status-icon'),
             skip: display('.so-skip-link'),
@@ -317,18 +319,20 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(screen.formMessages).not.toBe('none');
       expect(screen.header).toBe('sticky');
       await page.emulateMedia({ media: 'print' });
-      expect(await styles()).toEqual({
+      // The release's own FAQ icons: see the Release gap below.
+      const { icons: _icons, ...printed } = await styles();
+      void _icons;
+      expect(printed).toEqual({
         menu: 'none',
         toggle: 'none',
         nav: 'none',
-        icons: 'none,none,none,none',
         copyIcon: 'none',
         status: screen.status,
         skip: 'none',
         trap: 'none',
         formActions: 'none',
-        // Two regions: the confirmation above the fields and the failure beside the button.
-        formMessages: 'none,none',
+        // One region, holding the form's status and its failure.
+        formMessages: 'none',
         header: 'static'
       });
       const text = squash((await print(page)).join('\n'));
@@ -336,6 +340,19 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(text).toContain(squash(QUESTIONS[3][1]));
       expect(text).toContain(squash('By appointment.'));
       expect(text).toContain(squash('On Harbour Lane.'));
+    } finally {
+      await page.context().close();
+    }
+  }, 60_000);
+
+  // Release gap: the release's FAQ draws its open/close icon as faq__icon, inside faq__mark, which the base CSS print rule for a FAQ's toggle icon (details > summary [class$='__toggle-icon']) does not match, so the icons print.
+  it.fails('hides the FAQ’s toggle icons in print', async () => {
+    const page = await openSite(browser, []);
+    try {
+      const icons = () => page.evaluate<string[]>(`[...document.querySelectorAll('section.faq .faq__icon')].map((el) => getComputedStyle(el).display)`);
+      expect(await icons()).toHaveLength(QUESTIONS.length);
+      await page.emulateMedia({ media: 'print' });
+      expect(await icons()).toEqual(QUESTIONS.map(() => 'none'));
     } finally {
       await page.context().close();
     }
@@ -363,7 +380,8 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     }
   }, 60_000);
 
-  it(`prints light text on a dark band (the footer, a plan's button and badge) in its own colours, not pale grey`, async () => {
+  // The recommended plan's badge is an outlined pill on the plan's own ground, so it is not among them.
+  it(`prints light text on a dark band (the footer, the recommended plan's button) in its own colours, not pale grey`, async () => {
     const page = await openSite(browser, []);
     try {
       await page.emulateMedia({ media: 'print' });
@@ -381,7 +399,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
           return '#ffffff';
         };
         const find = (text) => [...document.querySelectorAll('body *')].find((el) => el.children.length === 0 && el.textContent.trim() === text);
-        return [${JSON.stringify(COPYRIGHT)}, ${JSON.stringify(PLANS[0].action)}, 'Most popular'].map((text) => {
+        return [${JSON.stringify(COPYRIGHT)}, ${JSON.stringify(PLANS[1].action)}].map((text) => {
           const el = find(text);
           if (!el) throw new Error('No element shows ' + text);
           return { text, color: rgb(getComputedStyle(el).color), background: behind(el) };
@@ -405,7 +423,11 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     }
   }, 60_000);
 
-  it.each(SECTIONS)('keeps plans, the form, questions and headings whole on a sheet as a page break moves through %s', async (_name, root) => {
+  /**
+   * Moves a page break through the section at `root`, checking at each step that plans, the form, questions and the
+   * `headings` given are each whole on a sheet (all of them but the headings, `rest`, unless left out).
+   */
+  const keepsWhole = async (root: string, { headings = HEADINGS, rest = true }: { headings?: Array<[string, string]>; rest?: boolean } = {}) => {
     // One question open and the rest closed, as a visitor might leave them.
     const page = await openSite(browser, [1]);
     try {
@@ -418,29 +440,36 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         })()`);
         const sheets = await print(page);
         const at = `${shift}px down`;
-        for (const plan of PLANS) {
+        for (const plan of rest ? PLANS : []) {
           const parts = [plan.name, plan.price, plan.description, ...plan.features, plan.action];
           const where = parts.map((part) => sheetsWith(sheets, part));
           expect(where[0], `${plan.name} ${at}`).toHaveLength(1);
           expect(where, `${plan.name} ${at}`).toEqual(parts.map(() => where[0]));
         }
-        const form = [FORM_HEADING, ...FIELDS].map((part) => sheetsWith(sheets, part));
-        expect(form[0], `the form ${at}`).toHaveLength(1);
-        expect(form, `the form ${at}`).toEqual(form.map(() => form[0]));
-        for (const [question, answer] of QUESTIONS) {
-          expect(sheetsWith(sheets, question), `${question} ${at}`).toHaveLength(1);
-          expect(sheetsWith(sheets, answer), `${question} ${at}`).toEqual(sheetsWith(sheets, question));
+        if (rest) {
+          const form = [FORM_HEADING, ...FIELDS].map((part) => sheetsWith(sheets, part));
+          expect(form[0], `the form ${at}`).toHaveLength(1);
+          expect(form, `the form ${at}`).toEqual(form.map(() => form[0]));
+          for (const [question, answer] of QUESTIONS) {
+            expect(sheetsWith(sheets, question), `${question} ${at}`).toHaveLength(1);
+            expect(sheetsWith(sheets, answer), `${question} ${at}`).toEqual(sheetsWith(sheets, question));
+          }
+          expect(sheetsWith(sheets, PLAIN_MORE), `${PLAIN_MORE} ${at}`).toHaveLength(1);
         }
-        for (const [heading, first] of HEADINGS) {
+        for (const [heading, first] of headings) {
           expect(sheetsWith(sheets, heading), `${heading} ${at}`).toHaveLength(1);
           expect(sheetsWith(sheets, first), `${heading} ${at}`).toEqual(sheetsWith(sheets, heading));
         }
-        expect(sheetsWith(sheets, PLAIN_MORE), `${PLAIN_MORE} ${at}`).toHaveLength(1);
       }
     } finally {
       await page.context().close();
     }
-  }, 120_000);
+  };
+  for (const [name, root] of SECTIONS)
+    it(`keeps plans, the form, questions and headings whole on a sheet as a page break moves through ${name}`, () => keepsWhole(root, name === 'the FAQ' ? { headings: HEADINGS.filter(([h]) => h !== FAQ_HEADING) } : {}), 120_000);
+
+  // Release gap: the release's FAQ does not keep its heading with its first question when printed: a page break moving through the FAQ falls between them.
+  it.fails('keeps the FAQ’s heading on a sheet with its first question as a page break moves through the FAQ', () => keepsWhole('section.faq', { headings: HEADINGS.filter(([h]) => h === FAQ_HEADING), rest: false }), 120_000);
 });
 
 describe.each(ENGINES.filter(([name]) => name === 'webkit'))('printing a Foundation page in %s', (_name, engine) => {

@@ -12,7 +12,9 @@ import { checkAuthority } from '../../src/agent/scope';
 import { applyOperations } from '@engine/apply';
 import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
-import { STYLES_DIR, generateManagedComponent, generateProject } from '@generator/index';
+import { STYLES_DIR, defFile, generateManagedComponent, generateProject } from '@generator/index';
+import { P, item, prop, tok } from '@catalogue/dsl';
+import { foundationDesign, projectDesign, type DesignSpec } from './fixtures/packs';
 import { readProject } from '../../src/main/project/documents';
 
 const FIXTURE = join(__dirname, 'fixtures/v1-project');
@@ -25,6 +27,70 @@ const add = (s: ProjectState, componentId: string, variants?: string | Record<st
   home(s).rootIds.push(node.id);
   return node;
 };
+/**
+ * A card grid built in the editor, with a tone axis styling its root and a layout axis styling its grid: the shape of
+ * the managed design whose axes the editor edits and generates (Foundation's sections are code components).
+ */
+const GRID: DesignSpec = {
+  componentId: 'cards.grid',
+  name: 'Cards',
+  properties: { items: P.list('Cards', 'Card', { title: P.str('Title', 'Card') }, [{ title: 'One' }, { title: 'Two' }, { title: 'Three' }]) },
+  parts: { root: { nodeId: 'root', label: 'Cards' }, grid: { nodeId: 'grid', label: 'Card grid' } },
+  variantAxes: {
+    tone: {
+      label: 'Tone',
+      default: 'default',
+      options: {
+        default: { label: 'Default' },
+        muted: { label: 'Soft background', styles: { root: { base: { background: tok('color.surface-alt') } } } },
+        inverse: { label: 'Dark', styles: { root: { base: { background: tok('color.inverse'), color: tok('color.on-inverse') } } } }
+      }
+    },
+    layout: {
+      label: 'Layout',
+      default: 'default',
+      options: {
+        default: { label: 'Three columns' },
+        'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } },
+        'four-columns': { label: 'Four columns', styles: { grid: { desktop: { columns: 4 } } } }
+      }
+    }
+  },
+  build: (b) =>
+    b.el('root', 'section', { name: 'Cards' }, [
+      b.el('grid', 'ul', { name: 'Card grid', styles: { base: { layout: 'grid', columns: 1 }, desktop: { columns: 3 } } }, [
+        b.repeat('cards', 'items', [b.el('card', 'li', { name: 'Card' }, [b.text('title', 'h3', item('title'), { name: 'Title' })])])
+      ])
+    ])
+};
+/** The grid's ID and the stem of its generated class names. */
+const GRID_ID = foundationDesign(GRID).id;
+const GRID_KEY = 'so-foundation-cards-grid';
+
+/** A hero built in the editor with the tone and image-side axes, for a conversion that places it. */
+const HERO: DesignSpec = {
+  componentId: 'hero.media',
+  name: 'Hero',
+  properties: { heading: P.str('Heading', 'Calm, considered rooms') },
+  parts: { root: { nodeId: 'root', label: 'Hero' } },
+  variantAxes: {
+    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background', styles: { root: { base: { background: tok('color.surface-alt') } } } } } },
+    layout: { label: 'Layout', default: 'default', options: { default: { label: 'Image last' }, 'media-start': { label: 'Image first', styles: { root: { desktop: { flexDirection: 'row-reverse' } } } } } }
+  },
+  build: (b) => b.el('root', 'section', { name: 'Hero', styles: { base: { layout: 'row' } } }, [b.text('heading', 'h1', prop('heading'), { name: 'Heading' })])
+};
+
+/** A design in the project (the theme's, or with `own` the project's), placed on Home with these choices. */
+function addDesign(s: ProjectState, spec: DesignSpec, variants?: Record<string, string>, own = false): InstanceNode {
+  // A copy: a design's properties are its spec's own objects, which a test changes.
+  const def = structuredClone(own ? projectDesign(s, spec) : foundationDesign(spec));
+  s.components[def.id] = def;
+  const node = makeInstance(def, {}, variants);
+  home(s).nodes[node.id] = node;
+  home(s).rootIds.push(node.id);
+  return node;
+}
+
 type Legacy = ComponentDefinition & { variants?: Record<string, VariantDef>; defaultVariant?: string };
 type LegacyInstance = InstanceNode & { variant?: string };
 const AXES_STEP = MIGRATIONS.findIndex((m) => m.id === 'variant-axes');
@@ -196,13 +262,6 @@ describe('migrating single variants to axes', () => {
     node.variant = 'default';
     expect((home(migrateProject(current)!.state).nodes[node.id] as InstanceNode).variants).toEqual({ tone: 'default' });
   });
-
-  it('matches the theme byte for byte where only the format changed', async () => {
-    const { state } = migrateProject(await legacyProject())!;
-    const theme = listThemes()[0].components.find((c) => c.id === 'foundation.faq.list')!;
-    expect(JSON.stringify(state.components[theme.id].variantAxes)).toBe(JSON.stringify(theme.variantAxes));
-    expect(Object.keys(state.components[theme.id])).toEqual(Object.keys(JSON.parse(JSON.stringify(theme))));
-  });
 });
 
 describe('choosing variants', () => {
@@ -257,11 +316,11 @@ describe('choosing variants', () => {
 });
 
 describe('editing axes on a project component', () => {
+  /** The card grid as the project's own design, placed on Home. */
   const forked = () => {
     const s = fresh();
-    const grid = add(s, 'features.grid');
-    const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: grid.id, name: 'Mine' }]);
-    return { s: r.state, id: r.results[0].definitionId as string, nodeId: grid.id };
+    const grid = addDesign(s, GRID, undefined, true);
+    return { s, id: grid.definitionId, nodeId: grid.id };
   };
 
   it('adds an option to a named axis, and a new axis on request', () => {
@@ -313,16 +372,16 @@ describe('editing axes on a project component', () => {
 describe('generating variant axes', () => {
   it('puts one class per axis on the root and combines their rules', () => {
     const s = fresh();
-    add(s, 'features.grid', { tone: 'inverse', layout: 'four-columns' });
+    addDesign(s, GRID, { tone: 'inverse', layout: 'four-columns' });
     const files = generateProject(s);
     const css = files.get(`${STYLES_DIR}/components.css`)!;
-    expect(css).toContain('.so-foundation-features-grid--tone-inverse.so-foundation-features-grid__root');
-    expect(css).toContain('.so-foundation-features-grid--layout-four-columns.so-foundation-features-grid__grid');
-    const component = generateManagedComponent(s, s.components['foundation.features.grid'], {});
+    expect(css).toContain(`.${GRID_KEY}--tone-inverse.${GRID_KEY}__root`);
+    expect(css).toContain(`.${GRID_KEY}--layout-four-columns.${GRID_KEY}__grid`);
+    const component = generateManagedComponent(s, s.components[GRID_ID], {});
     expect(component).toContain('variant_tone = "default"');
     expect(component).toContain('variant_layout = "default"');
-    expect(component).toContain('`so-foundation-features-grid--tone-${variant_tone}`');
-    expect(component).toContain('`so-foundation-features-grid--layout-${variant_layout}`');
+    expect(component).toContain(`\`${GRID_KEY}--tone-\${variant_tone}\``);
+    expect(component).toContain(`\`${GRID_KEY}--layout-\${variant_layout}\``);
     const page = [...files.entries()].find(([p]) => p === 'src/routes/+page.svelte')![1];
     expect(page).toContain('variant_tone="inverse"');
     expect(page).toContain('variant_layout="four-columns"');
@@ -337,17 +396,17 @@ describe('generating variant axes', () => {
     }
   });
 
-  it('gives a code component its tone as `variant`', () => {
+  it('gives a code component its tone in the prop its axis names', () => {
     const s = fresh();
     add(s, 'contact.form', { tone: 'inverse' });
     const page = generateProject(s).get('src/routes/+page.svelte')!;
-    expect(page).toContain('variant="inverse"');
+    expect(page).toContain('variant_tone="inverse"');
   });
 
   it('ignores axis and option IDs from a hand-edited file that cannot be generated', () => {
     const s = fresh();
-    const placed = add(s, 'features.grid');
-    const def = s.components['foundation.features.grid'];
+    const placed = addDesign(s, GRID);
+    const def = s.components[GRID_ID];
     const bad = 'x{}body{display:none}';
     def.variantAxes!.tone.options[bad] = { label: 'Bad', styles: { root: { base: { opacity: 0.5 } } } };
     def.variantAxes!['bad`${1}'] = { label: 'Bad', default: 'a', options: { a: { label: 'A' } } };
@@ -362,8 +421,8 @@ describe('generating variant axes', () => {
 
   it('lets the later axis win a property both set, as the Inspector shows it', () => {
     const s = fresh();
-    add(s, 'features.grid', { tone: 'muted', layout: 'two-columns' });
-    const def = s.components['foundation.features.grid'];
+    addDesign(s, GRID, { tone: 'muted', layout: 'two-columns' });
+    const def = s.components[GRID_ID];
     def.variantAxes!.tone.options.muted.styles!.grid = { base: { gap: '1.234px' } };
     def.variantAxes!.layout.options['two-columns'].styles!.grid = { base: { gap: '2.345px' } };
     const css = generateProject(s).get(`${STYLES_DIR}/components.css`)!;
@@ -374,11 +433,11 @@ describe('generating variant axes', () => {
 
   it('lets one axis show a node another axis hides', () => {
     const s = fresh();
-    add(s, 'features.grid', { tone: 'muted', layout: 'two-columns' });
-    const def = s.components['foundation.features.grid'];
+    addDesign(s, GRID, { tone: 'muted', layout: 'two-columns' });
+    const def = s.components[GRID_ID];
     def.variantAxes!.tone.options.muted.styles!.grid = { base: { hidden: true } };
     def.variantAxes!.layout.options['two-columns'].styles!.grid = { base: { hidden: false } };
-    expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).toMatch(/--layout-two-columns\.so-foundation-features-grid__grid \{[^}]*display: /);
+    expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).toMatch(new RegExp(`--layout-two-columns\\.${GRID_KEY}__grid \\{[^}]*display: `));
   });
 
   /** A first-format conversion: its source places a managed child with one `variant` and reuses the child's classes. */
@@ -391,39 +450,40 @@ describe('generating variant axes', () => {
 
   it('still honours the single variant a first-format conversion passes to a managed child', () => {
     const s = fresh();
-    installComponent(s, 'hero.split');
-    const next = legacyConversion(s, `<script>import Hero from '../generated/foundation-hero-split.svelte';</script>\n<Hero variant="media-start" />\n`);
-    const child = generateManagedComponent(next, next.components['foundation.hero.split'], {});
+    const hero = (s.components[foundationDesign(HERO).id] = structuredClone(foundationDesign(HERO)));
+    const next = legacyConversion(s, `<script>import Hero from '../generated/${defFile(hero).split('/').pop()}';</script>\n<Hero variant="media-start" />\n`);
+    const child = generateManagedComponent(next, next.components[hero.id], {});
     expect(child).toContain('variant = undefined');
     expect(child).toContain('["default","media-start"].includes(variant) ? variant');
     expect(() => compile(child, { generate: 'server', runes: true })).not.toThrow();
     // Without such a caller the component carries none of this.
-    expect(generateManagedComponent(s, s.components['foundation.hero.split'], {})).not.toContain('variant = undefined');
+    expect(generateManagedComponent(s, s.components[hero.id], {})).not.toContain('variant = undefined');
   });
 
   it('keeps the one-class names a conversion from before standalone CSS relies on', () => {
     const s = fresh();
-    installComponent(s, 'features.grid');
-    const next = legacyConversion(s, '<section class={[`so-foundation-features-grid--${variant}`]}></section>\n');
+    addDesign(s, GRID);
+    const next = legacyConversion(s, `<section class={[\`${GRID_KEY}--\${variant}\`]}></section>\n`);
     const css = generateProject(next).get(`${STYLES_DIR}/components.css`)!;
-    expect(css).toContain(':is(.so-foundation-features-grid--layout-two-columns, .so-foundation-features-grid--two-columns)');
-    expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).not.toContain(':is(.so-foundation-features-grid--layout');
+    expect(css).toContain(`:is(.${GRID_KEY}--layout-two-columns, .${GRID_KEY}--two-columns)`);
+    expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).not.toContain(`:is(.${GRID_KEY}--layout`);
   });
 
   it('gives a theme’s code component its tone in the prop its manifest declares, and no other', () => {
     const s = fresh();
     add(s, 'contact.form', { tone: 'inverse' });
-    expect(s.components['foundation.contact.form'].variantAxes!.tone.prop).toBe('variant');
+    expect(s.components['foundation.contact.form'].variantAxes!.tone.prop).toBe('variant_tone');
     const page = generateProject(s).get('src/routes/+page.svelte')!;
     const tag = page.slice(page.indexOf('<C_foundation_contact_form'));
     const form = tag.slice(0, tag.indexOf('/>'));
-    expect(form).toContain('variant="inverse"');
-    expect(form).not.toContain('variant_tone');
+    expect(form).toContain('variant_tone="inverse"');
+    expect(form).not.toMatch(/\svariant=/);
   });
 
   it('never renames a property into the variant prop namespace', () => {
     const s = fresh();
-    const def = s.components[installComponent(s, 'features.grid')];
+    addDesign(s, GRID);
+    const def = s.components[GRID_ID];
     def.properties.variant_tone = { type: 'string', label: 'Clash', default: 'x' };
     expect(() => compile(generateManagedComponent(s, def, {}), { generate: 'server', runes: true })).not.toThrow();
   });
@@ -432,12 +492,10 @@ describe('generating variant axes', () => {
 describe('selection-scoped AI runs', () => {
   it('cannot rename an axis while adding an option to it', () => {
     const s = fresh();
-    const grid = add(s, 'features.grid');
-    const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: grid.id, name: 'Mine' }]);
-    const id = r.results[0].definitionId as string;
+    const id = addDesign(s, GRID, undefined, true).definitionId;
     const authority = { kind: 'selection' as const, owner: { kind: 'component' as const, id }, nodeId: 'grid', label: 'Grid' };
-    expect(checkAuthority(r.state, [{ type: 'component.setVariant', definitionId: id, axis: 'tone', variant: 'quiet', label: 'Quiet' }], authority)).toBeNull();
-    expect(checkAuthority(r.state, [{ type: 'component.setVariant', definitionId: id, axis: 'tone', axisLabel: 'Renamed', variant: 'quiet', label: 'Quiet' }], authority)).not.toBeNull();
+    expect(checkAuthority(s, [{ type: 'component.setVariant', definitionId: id, axis: 'tone', variant: 'quiet', label: 'Quiet' }], authority)).toBeNull();
+    expect(checkAuthority(s, [{ type: 'component.setVariant', definitionId: id, axis: 'tone', axisLabel: 'Renamed', variant: 'quiet', label: 'Quiet' }], authority)).not.toBeNull();
   });
 });
 

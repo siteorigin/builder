@@ -28,7 +28,8 @@ const { runSync } = await import('../../src/main/sources/run');
 const { ADAPTERS } = await import('../../src/main/sources/adapters');
 const { commitWrites, finishPending, PENDING_DIR, secretEnvName, secretsFromEnv, syncProject, SyncCliError } = await import('../../src/main/sources/standalone');
 const { copyProjectSource, finishExportedSource, isGeneratedReadme, projectReadme, SYNC_COMMAND, SYNC_SCRIPT, writeExportedSources, writeSyncScript } = await import('../../src/main/export');
-const { buildSyncCli } = await import('../../scripts/sync-cli');
+const { buildSyncCli, syncPacks } = await import('../../scripts/sync-cli');
+const { getTheme } = await import('@catalogue/index');
 import type { SyncHandle } from '../../src/main/sources/client';
 import type { SyncReply, SyncRequest } from '../../src/main/sources/protocol';
 import type { EditOperation } from '@shared/ops';
@@ -338,6 +339,40 @@ describe('an exported project with sources', () => {
     await finishExportedSource(dest, state, join(dest, 'no-notice.md'), cli);
     return { dest, state };
   }
+
+  it('checks a sync against the shipped Foundation release, carried in the script without its files', async () => {
+    const [foundation, ...others] = syncPacks();
+    expect(others).toEqual([]);
+    const shipped = getTheme('foundation');
+    expect([foundation.id, foundation.digest, foundation.devOnly]).toEqual(['foundation', shipped.digest, undefined]);
+    expect(foundation.components).toEqual(shipped.components);
+    expect(foundation.tokens).toEqual(shipped.tokens);
+    // Which fonts it has, and none of their files or notices.
+    expect(foundation.fonts.map((f) => f.name)).toEqual(shipped.fonts.map((f) => f.name));
+    expect(foundation.fonts.every((f) => f.faces.length === 0 && f.notice === '')).toBe(true);
+    expect(foundation.previews).toBeUndefined();
+    // The built script carries exactly that, and no preview or font file of it.
+    const cli = await buildSyncCli();
+    expect(cli).toContain(shipped.digest!);
+    expect(cli).toContain(shipped.components[0].id);
+    expect(cli).not.toMatch(/previews\/[\w.-]+\.webp/);
+    expect(cli).not.toMatch(/fonts\/[\w.-]+\.woff2/);
+    expect(cli).not.toContain('SIL OPEN FONT LICENSE');
+  });
+
+  it('takes the shipped releases in the app\'s order, and refuses a release folder that holds another pack', () => {
+    const dir = temp('so-sync-packs-');
+    cpSync(join(process.cwd(), 'resources', 'packs', 'foundation'), join(dir, 'foundation'), { recursive: true });
+    expect(syncPacks(dir).map((p) => p.id)).toEqual(['foundation']);
+    // Another pack whose name sorts first still follows Foundation, as the app ranks them: Foundation stays the default.
+    mkdirSync(join(dir, 'aardvark'));
+    writeFileSync(join(dir, 'aardvark', 'pack.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(dir, 'foundation', 'pack.json'), 'utf8')), id: 'aardvark' }));
+    expect(syncPacks(dir).map((p) => p.id)).toEqual(['foundation', 'aardvark']);
+    rmSync(join(dir, 'aardvark'), { recursive: true });
+    mkdirSync(join(dir, 'aardvark'));
+    copyFileSync(join(dir, 'foundation', 'pack.json'), join(dir, 'aardvark', 'pack.json'));
+    expect(() => syncPacks(dir)).toThrow(`${join(dir, 'aardvark')} holds the pack "foundation"; a release folder is named after its pack.`);
+  });
 
   it('syncs with npm run sync, needing nothing installed, and says so in its README', async () => {
     const server = await api(() => [person('1', 'Ana Ruiz', 'Architect'), person('2', 'Ben Okafor', 'Engineer')]);

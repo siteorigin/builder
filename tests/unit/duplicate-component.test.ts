@@ -9,6 +9,7 @@ import { applyOperations } from '@engine/apply';
 import { developerModeReason } from '@engine/developer-mode';
 import { ProjectSession } from '../../src/main/project/session';
 import { canDuplicate, duplicateName, duplicateOperation } from '../../src/renderer/src/lib/duplicate-component';
+import { foundationDesign, projectDesign } from './fixtures/packs';
 
 /** Duplicate component (spec §8.4, issue #746): what the dialog sends, the name it suggests, and where it is offered. */
 
@@ -88,7 +89,11 @@ describe('what the Duplicate dialog sends', () => {
     expect(id).not.toBe(def.id);
     expect(copy).toMatchObject({ name: 'Service card copy', owner: 'project', provenance: { forkedFrom: def.id } });
     // Everything but what makes it a component of its own: properties and defaults, design, parts, variants, the rest.
-    const contract = ({ id: _id, name: _name, componentId: _componentId, owner: _owner, category: _category, provenance: _provenance, ...rest }: ComponentDefinition) => rest;
+    // Foundation's hero is code, so the copy's source is the original's, in a file of its own.
+    const contract = ({ id: _id, name: _name, componentId: _componentId, owner: _owner, category: _category, provenance: _provenance, sourcePath: _sourcePath, ...rest }: ComponentDefinition) => rest;
+    expect(original.sourcePath).toBeTruthy();
+    expect(copy.sourcePath).toBeTruthy();
+    expect(copy.sourcePath).not.toBe(original.sourcePath);
     expect(Object.keys(original.variantAxes ?? {}).length).toBeGreaterThan(0);
     expect(contract(copy)).toEqual(contract(original));
     expect(uses()).toEqual(before);
@@ -140,9 +145,13 @@ describe('where Duplicate is offered', () => {
   it('offers managed components, theme ones included, code only in Developer mode, and never the header or footer', () => {
     const { state, themeDef } = business();
     const { def } = withServiceCard();
-    expect(themeDef.owner).toBe('theme');
-    expect(canDuplicate(themeDef, false)).toBe(true);
-    expect(canDuplicate(def, false)).toBe(true);
+    // A theme's managed design; Foundation's own sections are code, offered like any other code.
+    const designed = foundationDesign({ componentId: 'designed.card', name: 'Card', properties: {}, parts: { root: { nodeId: 'root', label: 'Card' } }, build: (b) => b.el('root', 'div', {}, []) });
+    expect(designed.owner).toBe('theme');
+    expect(canDuplicate(designed, false)).toBe(true);
+    expect(canDuplicate(projectDesign(structuredClone(state), { componentId: 'project.card', name: 'Card', properties: {}, parts: { root: { nodeId: 'root', label: 'Card' } }, build: (b) => b.el('root', 'div', {}, []) }), false)).toBe(true);
+    expect(themeDef).toMatchObject({ owner: 'theme', kind: 'code' });
+    expect([canDuplicate(themeDef, false), canDuplicate(themeDef, true)]).toEqual([false, true]);
     expect(canDuplicate({ ...def, kind: 'code' }, false)).toBe(false);
     expect(canDuplicate({ ...def, kind: 'code' }, true)).toBe(true);
     const shell = Object.values(state.components).filter((d) => d.category === 'shell');

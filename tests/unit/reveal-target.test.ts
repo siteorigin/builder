@@ -4,8 +4,11 @@ import { createStarterState } from '@catalogue/starters';
 import { defFile, generateProject } from '@generator/index';
 import { MAX_DRAFT_CHARS, revealTarget, sameTarget, type RevealedItem } from '../../src/renderer/src/lib/reveal';
 import { descOf } from '../../src/renderer/src/lib/model';
+import { withManaged } from './fixtures/component-contract-designs';
 
-const s = createStarterState('business', 'Test Studio', false);
+// The Contact page's FAQ is the managed design of its contract (fixtures/component-contract-designs): what a list item
+// reveals is read through the repeat a design draws it with.
+const s = withManaged(createStarterState('business', 'Test Studio', false), 'faq.list');
 const contact = Object.values(s.pages).find((p) => p.route === '/contact/')!;
 const faq = contact.rootIds.map((id) => contact.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'faq.list')!;
 const def = s.components[faq.definitionId];

@@ -17,6 +17,7 @@ import { introducedDiagnostics } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { axesOf } from '@shared/variants';
 import { ProjectSession } from '../../src/main/project/session';
+import { withManaged } from './fixtures/component-contract-designs';
 import { designContent } from '../../src/renderer/src/lib/design-content';
 import {
   addVariantGroupOp,
@@ -52,9 +53,13 @@ const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const pageOwner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
 const errors = (s: ProjectState) => validateState(s).filter(blocksSaving);
 
-/** A fresh business site with its theme's `componentId` made a project component (what Edit everywhere does first). */
+/**
+ * A fresh business site with its theme's `componentId` made a project component (what Edit everywhere does first).
+ * The section is the managed design of its contract (fixtures/component-contract-designs), since the contract
+ * controls edit a design drawn from data.
+ */
 function forked(componentId: string) {
-  const s0 = createStarterState('business', 'Test Studio', false);
+  const s0 = withManaged(createStarterState('business', 'Test Studio', false), componentId);
   const theme = Object.values(s0.components).find((d) => d.componentId === componentId)!;
   const r = applyOperations(s0, [{ type: 'component.fork', definitionId: theme.id }]);
   const defId = r.results[0].definitionId as string;

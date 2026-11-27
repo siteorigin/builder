@@ -36,12 +36,13 @@ const FONTS = `<script>${['inter', 'fraunces']
 /**
  * The header is taller than the theme's 5.5rem fallback margin wider than a phone, and its height changes at each
  * width the tests step through, as a header whose labels wrap once was: with the full menu beside the long name, the
- * links fold into the menu button, which leaves a 72px row on its own.
+ * links fold into the menu button, which leaves a 72px row on its own. The header's own rules are scoped to its
+ * component, which outranks a plain class, so these are marked important.
  */
 const TALL_HEADER = `
-@media (min-width: 768px) { .so-header__inner { padding-block: 30px; } }
-@media (min-width: 1024px) { .so-header__inner { padding-block: 24px; } }
-@media (min-width: 1280px) { .so-header__inner { padding-block: 36px; } }`;
+@media (min-width: 768px) { .so-header__inner { padding-block: 30px !important; } }
+@media (min-width: 1024px) { .so-header__inner { padding-block: 24px !important; } }
+@media (min-width: 1280px) { .so-header__inner { padding-block: 36px !important; } }`;
 /** Where a revealed target lands below the header: the theme's 1rem, give or take rounding. */
 const GAP = { min: 15, max: 18 };
 
@@ -342,7 +343,7 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
 
   it('a web font that makes the header taller after the visit lands is revealed again, unless the visitor has scrolled', async () => {
     await withSite('sticky', 1024, async ({ page, releaseFont }) => {
-      const grow = () => page.addStyleTag({ content: '.so-header__inner { padding-block: 60px; }' });
+      const grow = () => page.addStyleTag({ content: '.so-header__inner { padding-block: 60px !important; }' });
       const { after } = await visit(page, HEADING, '?font');
       expectLanded('before the font loads', after);
       expect(await page.evaluate('document.fonts.status'), 'the font is still loading').toBe('loading');

@@ -34,9 +34,9 @@ describe('locateField', () => {
     const cta = instanceOf(about, 'cta.banner');
     const owner = { kind: 'page' as const, id: about.id };
     expect(locateField(state, { owner, nodeId: cta.id, prop: 'heading' })).toMatchObject({ ok: true, path: ['About', 'Call to action', 'Content', 'Text', 'Heading'] });
-    // "Primary button label" and "Primary button link" are one button: a group with Label and Link, inside the
-    // component's own "Actions" group (issue #96).
-    expect(locateField(state, { owner, nodeId: cta.id, prop: 'primaryLabel' })).toMatchObject({ ok: true, path: ['About', 'Call to action', 'Content', 'Actions', 'Primary button', 'Label'], value: 'Contact the studio' });
+    // "Button label" and "Button link" are one button: a group with Label and Link, inside the component's own
+    // "Actions" group (issue #96).
+    expect(locateField(state, { owner, nodeId: cta.id, prop: 'primaryLabel' })).toMatchObject({ ok: true, path: ['About', 'Call to action', 'Content', 'Actions', 'Button', 'Label'], value: 'Contact the studio' });
   });
 
   it('uses the name the author gave the component, and the row title the list shows', () => {

@@ -10,6 +10,9 @@ import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { partStyleControls, placementStyleControls } from '@shared/styles';
 import { ProjectSession } from '../../src/main/project/session';
+import { P, item, prop } from '@catalogue/dsl';
+import { makeInstance } from '@engine/install';
+import { foundationDesign, projectDesign } from './fixtures/packs';
 import { boundaryOf, createComponentTarget, descOf, designCtx, selectionFromChain } from '../../src/renderer/src/lib/model';
 
 const dirs: string[] = [];
@@ -99,8 +102,9 @@ describe('Create component from a composed Section (#173)', () => {
 });
 
 /** The business starter with a Section on top holding a stack (with a heading), a paragraph, an image, a button, an
- *  icon and a divider, an empty Section below it, and a project component being edited everywhere. */
-function library() {
+ *  icon and a divider, an empty Section below it, and a project component being edited everywhere. The Sections are
+ *  Foundation's, or with `designed`, a section the project designed in the editor. */
+function library(designed = false) {
   let s: ProjectState = createStarterState('business', 'Test Studio', false);
   const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
   const ins = (op: Record<string, unknown>) => {
@@ -108,8 +112,20 @@ function library() {
     s = r.state;
     return r.results[0].nodeId as string;
   };
-  const section = ins({ parentId: null, index: 0, componentId: 'layout.section' });
-  const empty = ins({ parentId: null, index: 1, componentId: 'layout.section' });
+  const what = designed
+    ? {
+        definitionId: projectDesign(s, {
+          componentId: 'project.section',
+          name: 'Section',
+          properties: {},
+          slots: { content: { label: 'Content' } },
+          parts: { root: { nodeId: 'root', label: 'Section' }, container: { nodeId: 'inner', label: 'Container' } },
+          build: (b) => b.el('root', 'section', { name: 'Section' }, [b.el('inner', 'div', { name: 'Container' }, [b.slot('content-slot', 'content', { name: 'Content' })])])
+        }).id
+      }
+    : { componentId: 'layout.section' };
+  const section = ins({ parentId: null, index: 0, ...what });
+  const empty = ins({ parentId: null, index: 1, ...what });
   const into = (primitive: string, extra: Record<string, unknown> = {}) => ins({ parentId: section, slot: 'content', primitive, ...extra });
   const stack = into('stack');
   const heading = ins({ parentId: stack, primitive: 'heading', text: 'Title' });
@@ -126,12 +142,20 @@ function library() {
 
 describe('where Create component… is offered (#173)', () => {
   it('offers every element and basic element, and a section holding content, on a page', () => {
-    const { s, page, section, kinds, at } = library();
+    const { s, page, kinds, at } = library();
     const snap = { state: s };
     for (const [kind, id] of Object.entries(kinds)) expect(createComponentTarget(snap, at(page, id)), kind).toEqual(at(page, id));
-    expect(createComponentTarget(snap, at(page, section))).toEqual(at(page, section));
     // What the menu acts on is the node alone, whichever repeated item it was picked in.
     expect(createComponentTarget(snap, { ...at(page, kinds.text), itemPath: ['i1'], partId: 'x' })).toEqual(at(page, kinds.text));
+    // A section designed in the editor, holding content.
+    const designed = library(true);
+    expect(createComponentTarget({ state: designed.s }, designed.at(designed.page, designed.section))).toEqual(designed.at(designed.page, designed.section));
+  });
+
+  // Release gap: createComponentTarget (src/renderer/src/lib/model.ts) counts slots on managed designs only, so Create component is never offered on the release's Section.
+  it.fails('offers the release’s Section holding content', () => {
+    const { s, page, section, at } = library();
+    expect(createComponentTarget({ state: s }, at(page, section))).toEqual(at(page, section));
   });
 
   it('leaves out a node that is not attached to the page', () => {
@@ -142,7 +166,8 @@ describe('where Create component… is offered (#173)', () => {
   });
 
   it('leaves out an empty section, a plain placement, a code component and a slot that is not declared', () => {
-    const { s, page, section, empty, hero, card, at } = library();
+    // Sections designed in the editor: Foundation's is never offered (the Release gap test above).
+    const { s, page, section, empty, hero, card, at } = library(true);
     expect(createComponentTarget({ state: s }, at(page, empty))).toBeNull();
     // A section whose content was all removed keeps an empty slot list: still nothing to package.
     const filled = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: empty, slot: 'content', primitive: 'paragraph', text: 'Brief' }]);
@@ -178,7 +203,7 @@ describe('where Create component… is offered (#173)', () => {
     expect(createComponentTarget({ state: s }, at(page, kinds.text, [section]))).toBeNull();
     const sectionDef = s.components[(s.pages[page.id].nodes[section] as InstanceNode).definitionId];
     // A part row in Layers, even one naming the placed component's own root, is not the placement.
-    expect(createComponentTarget({ state: s }, at(page, sectionDef.tree!.rootIds[0], [section]))).toBeNull();
+    expect(createComponentTarget({ state: s }, at(page, sectionDef.parts.root.nodeId, [section]))).toBeNull();
     expect(createComponentTarget({ state: s }, at(page, sectionDef.parts.container.nodeId, [section]))).toBeNull();
     expect(createComponentTarget({ state: s }, at(page, 'n_gone0000'))).toBeNull();
     expect(createComponentTarget({ state: s, readOnly: true }, at(page, kinds.text))).toBeNull();
@@ -196,9 +221,26 @@ describe('where Create component… is offered (#173)', () => {
     // The theme's own Section is never edited in place.
     const section = s.components['foundation.layout.section'];
     expect(createComponentTarget({ state: s }, at({ kind: 'component', id: section.id }, section.parts.container.nodeId))).toBeNull();
-    // A project copy of it: its container is offered, its slot is not; nor is a repeat in a copy of a grid.
-    const grid = Object.values(s.components).find((d) => d.componentId === 'features.grid')!;
-    const forked = applyOperations(s, [{ type: 'component.fork', definitionId: section.id }, { type: 'component.fork', definitionId: grid.id }]);
+    // A project copy of a theme's design: its container is offered, its slot is not; nor is a repeat in a copy of a
+    // grid. Foundation's Section and grid are code, so these are a theme's designs made with the editor's tree.
+    const designed = foundationDesign({
+      componentId: 'designed.section',
+      name: 'Section',
+      properties: {},
+      slots: { content: { label: 'Content' } },
+      parts: { root: { nodeId: 'root', label: 'Section' }, container: { nodeId: 'inner', label: 'Container' } },
+      build: (b) => b.el('root', 'section', {}, [b.el('inner', 'div', { name: 'Container' }, [b.slot('content-slot', 'content')])])
+    });
+    const grid = foundationDesign({
+      componentId: 'designed.grid',
+      name: 'Services grid',
+      properties: { items: P.list('Cards', 'Card', { title: P.str('Title', 'Service') }, [{ title: 'Planning' }]) },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'section', {}, [b.el('grid', 'ul', {}, [b.repeat('cards', 'items', [b.el('card', 'li', {}, [b.text('card-title', 'h3', item('title'))])])])])
+    });
+    s.components[designed.id] = designed;
+    s.components[grid.id] = grid;
+    const forked = applyOperations(s, [{ type: 'component.fork', definitionId: designed.id }, { type: 'component.fork', definitionId: grid.id }]);
     const [sec, grd] = forked.results.map((r) => forked.state.components[r.definitionId as string]);
     const own = (d: typeof sec): OwnerRef => ({ kind: 'component', id: d.id });
     const slot = Object.values(sec.tree!.nodes).find((n) => n.kind === 'slot')!.id;
@@ -242,14 +284,13 @@ describe('a component made from a section (#173)', () => {
     expect(placementStyleControls(def, 'root', false)).toEqual(['hidden']);
   });
 
-  it('keeps the section’s own styles, tone and anchor, and every anchor inside it', () => {
+  it('keeps the section’s own styles and tone, and every anchor inside it', () => {
     const { s: base, page, section, kinds } = library();
     let s = base;
     const tone = Object.keys(s.components['foundation.layout.section'].variantAxes!.tone.options).find((o) => o !== 'default')!;
     s = applyOperations(s, [
       { type: 'node.setStyle', owner: page, nodeId: section, partId: 'root', scope: 'base', property: 'paddingBlock', value: '5rem' },
       { type: 'instance.setVariant', owner: page, nodeId: section, axis: 'tone', variant: tone },
-      { type: 'node.setContent', owner: page, nodeId: section, field: 'anchor', value: 'intro' },
       { type: 'node.setContent', owner: page, nodeId: kinds.text, field: 'anchor', value: 'story' }
     ]).state;
     const r = applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }]);
@@ -257,19 +298,35 @@ describe('a component made from a section (#173)', () => {
     const root = def.tree!.nodes[def.tree!.rootIds[0]] as InstanceNode;
     expect(root.overrides?.root?.base?.paddingBlock).toBe('5rem');
     expect(root.variants?.tone).toBe(tone);
-    expect(root.anchor).toBeUndefined();
-    expect((r.state.pages[page.id].nodes[r.results[0].nodeId as string] as InstanceNode).anchor).toBe('intro');
     // A link to the paragraph keeps working: the one copy on the page still renders it, on the paragraph.
     const anchored = Object.values(def.tree!.nodes).filter((n) => n.anchor === 'story');
     expect(anchored).toHaveLength(1);
     expect(anchored[0]).toMatchObject({ kind: 'text', tag: 'p', text: { $prop: 'text' } });
   });
 
+  it('keeps the section’s own anchor on the placement, not in the design', () => {
+    // A section designed in the editor: Foundation's takes no anchor (the Release gap test below).
+    const { s: base, page, section } = library(true);
+    const s = applyOperations(base, [{ type: 'node.setContent', owner: page, nodeId: section, field: 'anchor', value: 'intro' }]).state;
+    const r = applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }]);
+    const def = r.state.components[r.results[0].definitionId as string];
+    expect((def.tree!.nodes[def.tree!.rootIds[0]] as InstanceNode).anchor).toBeUndefined();
+    expect((r.state.pages[page.id].nodes[r.results[0].nodeId as string] as InstanceNode).anchor).toBe('intro');
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('takes an anchor on the release’s Section', () => {
+    const { s, page, section } = library();
+    expect(() => applyOperations(s, [{ type: 'node.setContent', owner: page, nodeId: section, field: 'anchor', value: 'intro' }])).not.toThrow();
+  });
+
   it('carries a code component’s styles into the design, and refuses root styles its code would drop there', () => {
     let s: ProjectState = createStarterState('business', 'Test Studio', false);
     const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    // A unique copy of Foundation's Call to action, which is code: the project's own, so its source is read.
     const cta = s.pages[page.id].rootIds.find((id) => s.components[(s.pages[page.id].nodes[id] as InstanceNode).definitionId]?.componentId === 'cta.banner')!;
-    s = applyOperations(s, [{ type: 'component.convertToCode', owner: page, nodeId: cta }]).state;
+    s = applyOperations(s, [{ type: 'component.makeUnique', owner: page, nodeId: cta }]).state;
+    expect(s.components[(s.pages[page.id].nodes[cta] as InstanceNode).definitionId]).toMatchObject({ kind: 'code', owner: 'project' });
     const sec = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: null, index: 0, componentId: 'layout.section' }]);
     s = sec.state;
     const section = sec.results[0].nodeId as string;
@@ -281,7 +338,8 @@ describe('a component made from a section (#173)', () => {
     ]).state;
     const made = applyOperations(styled, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Band' }]);
     const band = made.state.components[made.results[0].definitionId as string];
-    const copied = Object.values(band.tree!.nodes).find((n) => n.kind === 'instance' && made.state.components[n.definitionId]?.kind === 'code') as InstanceNode;
+    const ctaDef = (styled.pages[page.id].nodes[cta] as InstanceNode).definitionId;
+    const copied = Object.values(band.tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === ctaDef) as InstanceNode;
     expect(copied.overrides).toEqual({ root: { base: { paddingBlock: '4rem' } }, panel: { base: { background: '#123456' } } });
     // Code that reads only its part classes, not the class it is given, keeps its root styles only on a page.
     const partsOnly = structuredClone(styled);
@@ -313,9 +371,19 @@ describe('a component made from a section (#173)', () => {
   it('keeps a code component’s part shown in the new design when its placement showed it', () => {
     let s: ProjectState = createStarterState('business', 'Test Studio', false);
     const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
-    const cta = s.pages[page.id].rootIds.find((id) => s.components[(s.pages[page.id].nodes[id] as InstanceNode).definitionId]?.componentId === 'cta.banner')!;
+    // A banner designed in the editor, placed on Home.
+    const theme = projectDesign(s, {
+      componentId: 'project.banner',
+      name: 'Call to action',
+      properties: { heading: P.str('Heading', 'Let’s talk') },
+      parts: { root: { nodeId: 'root', label: 'Section' }, panel: { nodeId: 'panel', label: 'Panel', styleControls: ['background', 'hidden'] } },
+      build: (b) => b.el('root', 'section', {}, [b.el('panel', 'div', { name: 'Panel' }, [b.text('heading', 'h2', prop('heading'))])])
+    });
+    const placedBanner = makeInstance(theme, {});
+    s.pages[page.id].nodes[placedBanner.id] = placedBanner;
+    s.pages[page.id].rootIds.push(placedBanner.id);
+    const cta = placedBanner.id;
     // The design hides its panel; this placement shows it again, then is converted to code (which keeps the hide).
-    const theme = s.components[(s.pages[page.id].nodes[cta] as InstanceNode).definitionId];
     theme.tree!.nodes.panel.styles = { ...theme.tree!.nodes.panel.styles, base: { ...theme.tree!.nodes.panel.styles?.base, hidden: true } };
     (s.pages[page.id].nodes[cta] as InstanceNode).overrides = { panel: { base: { hidden: false } } };
     const conv = applyOperations(s, [{ type: 'component.convertToCode', owner: page, nodeId: cta }]);
@@ -333,14 +401,14 @@ describe('a component made from a section (#173)', () => {
 });
 
 describe('the canvas finds a component made from a section (#173)', () => {
-  it('outlines the placement by the section it renders, and a click on that section selects the placement', () => {
-    const { s: base, page, section } = library();
+  it('outlines the placement by the designed section it renders, and a click on that section selects the placement', () => {
+    const { s: base, page, section } = library(true);
     const made = applyOperations(base, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }]);
     const s = made.state;
     const placed = made.results[0].nodeId as string;
     const def = s.components[made.results[0].definitionId as string];
     const inner = def.tree!.rootIds[0];
-    const sectionDef = s.components['foundation.layout.section'];
+    const sectionDef = s.components[(base.pages[page.id].nodes[section] as InstanceNode).definitionId];
     const sectionRoot = sectionDef.tree!.rootIds[0];
     const at = (instancePath: string[], nodeId: string): ElementRef => ({ owner: page, instancePath, nodeId });
     // The placement renders no element of its own: the Section inside it renders the outer one.

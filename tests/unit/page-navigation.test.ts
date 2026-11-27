@@ -1,10 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
+import { getTheme } from '@catalogue/index';
+import { registerBeside, restorePacks, testPack } from './fixtures/packs';
+import { centeredHero, pageIntro } from './fixtures/heading-outline-designs';
 import { applyOperations } from '@engine/apply';
 import { shellMenu } from '@engine/tree';
 import { installComponent, makeInstance } from '@engine/install';
@@ -12,7 +15,21 @@ import { pageHeadings } from '@generator/checks';
 import { ProjectSession } from '../../src/main/project/session';
 import { footerCopyPlan, headerOrderPlan, inHeaderMenu, renameLabels } from '../../src/renderer/src/lib/page-navigation';
 
-const fresh = () => createStarterState('business', 'Test Studio', false);
+/**
+ * Foundation's sections under another theme's name, with the page introduction and centered hero designed in the
+ * editor: Foundation's are code components, whose headings Builder does not read (the Release gap test below), so the
+ * headings a rename leaves behind are tried on these.
+ */
+const THEME = 'page-navigation-theme';
+beforeAll(() => {
+  const author = testPack(THEME);
+  const designed = ['intro.page', 'hero.centered'];
+  const others = getTheme('foundation').components.filter((c) => !designed.includes(c.componentId)).map((c) => author.adopt(c));
+  registerBeside(author.define([...others, author.managed(pageIntro('intro.page')), author.managed(centeredHero('hero.centered'))]));
+});
+afterAll(() => restorePacks());
+
+const fresh = () => createStarterState('business', 'Test Studio', false, THEME);
 const apply = (s: ProjectState, ops: EditOperation[]) => applyOperations(s, ops);
 const menuOf = (s: ProjectState, part: 'header' | 'footer') => shellMenu(s, part)!.node;
 const links = (s: ProjectState, part: 'header' | 'footer') => menuOf(s, part).props.links as Array<{ id: string; label: string; link: { type: string; target: string; anchor?: string } }>;
@@ -22,8 +39,8 @@ const intro = (s: ProjectState, id: string) => Object.values(s.pages[id].nodes).
 const h1 = (s: ProjectState, id: string) => pageHeadings(s, id, { shell: false }).outline.filter((h) => h.level === 1).map((h) => h.text);
 
 /** The issue's page: Lookbook, added with its introduction and Add to header menu checked, then renamed Portfolio. */
-function lookbook(edit: (s: ProjectState, id: string) => EditOperation[] = () => []) {
-  let s = fresh();
+function lookbook(edit: (s: ProjectState, id: string) => EditOperation[] = () => [], base = fresh) {
+  let s = base();
   const r = apply(s, [{ type: 'page.create', title: 'Lookbook', route: '/lookbook/', starter: 'intro', addToNavigation: true }]);
   s = r.state;
   const id = r.results[0].pageId as string;
@@ -53,6 +70,22 @@ describe('labels a page rename leaves behind', () => {
     expect(links(after, 'header')[3].id).toBe(links(s, 'header')[3].id);
     // Nothing is left to offer once they match.
     expect(renameLabels(after, id, 'Lookbook')).toEqual([]);
+  });
+
+  it('offers the release’s header menu link that still says the old name, and changes only it', () => {
+    const { s, id } = lookbook(undefined, () => createStarterState('business', 'Test Studio', false));
+    expect(labels(s, 'header')).toEqual(['Home', 'About', 'Contact', 'Lookbook']);
+    const found = renameLabels(s, id, 'Lookbook').filter((l) => l.where === 'Header menu link');
+    expect(found.map((l) => [l.where, l.preselect])).toEqual([['Header menu link', true]]);
+    const after = apply(s, found.map((l) => l.op)).state;
+    expect(labels(after, 'header')).toEqual(['Home', 'About', 'Contact', 'Portfolio']);
+    expect(links(after, 'header')[3]).toMatchObject({ id: links(s, 'header')[3].id, link: { type: 'page', target: id } });
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the release's page introduction heading counts as custom code and pageHeadings never reports it.
+  it.fails('offers the release’s page introduction heading that still says the old name', () => {
+    const { s, id } = lookbook(undefined, () => createStarterState('business', 'Test Studio', false));
+    expect(renameLabels(s, id, 'Lookbook').filter((l) => l.where !== 'Header menu link').map((l) => [l.where, l.preselect])).toEqual([['Page introduction heading', true]]);
   });
 
   it('leaves labels the author changed, even only in case or spacing', () => {
