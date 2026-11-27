@@ -4532,7 +4532,9 @@ export class ProjectSession extends EventEmitter {
           }
           if (written.length) await this.refreshAssetFiles().catch(() => false);
           if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
-          return docsChange ? await this.persist(plan.state, { label, source: 'user' }) : null;
+          // Read from the version's files, every document is a new object: those that read the same are the project's
+          // own (shareUnchanged), so the editor is sent only the documents the restore changes (#967).
+          return docsChange ? await this.persist(shareUnchanged(this.state, this.docs, plan.state, plan.docs), { label, source: 'user' }) : null;
         });
       } catch (e) {
         // Once the documents are saved (in place, or journaled for reopening to finish), the files stay with them; before

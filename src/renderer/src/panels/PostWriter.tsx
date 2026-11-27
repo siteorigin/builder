@@ -7,7 +7,7 @@ import type { SeoSubject } from '@shared/seo';
 import { collectionHasBody, collectionKind, entryRoute, hasDetailPages, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate, todayArticleDate } from '@shared/articles';
 import { COLLECTION_LINK_PREFIX, linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
-import { linkableIndexes } from '@shared/archives';
+import { linkIndexes } from '../lib/link-indexes';
 import { relsFromAttribute } from '@shared/link-rel';
 import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
@@ -574,7 +574,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     }
     const pageLink = kept?.type === 'page' && Object.hasOwn(state.pages, kept.target) ? kept : href && !kept ? linkFromTarget(href, state.pages) : null;
     const entryLink = kept?.type === 'entry' ? kept.target : href.startsWith('entry:') ? href.slice(6) : '';
-    const indexes = linkableIndexes(state);
+    const indexes = linkIndexes(state);
     const indexLink = kept?.type === 'collection' ? kept.target : href.startsWith(COLLECTION_LINK_PREFIX) ? href.slice(COLLECTION_LINK_PREFIX.length) : '';
     const firstPage = state.site.pageOrder[0] ?? Object.keys(state.pages)[0] ?? '';
     const posts = linkablePosts(state, post.entryId);
@@ -605,7 +605,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     // A section the link went to stays while it still goes to that page.
     if (d.to === 'page') href = Object.hasOwn(state.pages, d.page) ? state.pages[d.page].route + (d.section?.page === d.page ? `#${d.section.id}` : '') : '';
     else if (d.to === 'post') href = linkablePosts(state, post.entryId).some((p) => p.id === d.entry) ? `entry:${d.entry}` : '';
-    else if (d.to === 'index') href = linkableIndexes(state).some((x) => x.id === d.index) ? `${COLLECTION_LINK_PREFIX}${d.index}` : '';
+    else if (d.to === 'index') href = linkIndexes(state).some((x) => x.id === d.index) ? `${COLLECTION_LINK_PREFIX}${d.index}` : '';
     else {
       const t = d.url.trim();
       const link: LinkValue | null = linkFromTarget(/^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(t) ? `https://${t}` : t, state.pages);
@@ -1707,7 +1707,7 @@ function LinkDialog({ dialog, state, self, home, onChange, onApply, onCancel, on
   const groups = [...new Set(posts.map((p) => p.collectionId))]
     .sort((a, b) => (a === home ? -1 : b === home ? 1 : state.collections[a].settings.name.localeCompare(state.collections[b].settings.name)))
     .map((id) => ({ id, name: state.collections[id].settings.name, posts: posts.filter((p) => p.collectionId === id) }));
-  const indexes = linkableIndexes(state);
+  const indexes = linkIndexes(state);
   // A change clears only what it could have put right: the words their error, a destination its own; the new tab and
   // what the link tells search engines neither.
   const set = (p: Partial<typeof dialog>, clears: Array<keyof LinkError> = []) => {
