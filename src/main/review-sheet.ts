@@ -129,8 +129,11 @@ export async function* reviewSheet(m: ReviewEditionManifest, picture: (c: Captur
 export async function writeReviewSheet(file: string, chunks: AsyncIterable<string>, opts: { fresh: boolean; stillOpen: () => boolean }): Promise<'written' | 'taken' | 'closed'> {
   const dir = dirname(file);
   const tmp = join(dir, `.${randomBytes(6).toString('hex')}.tmp`);
+  // Removed at the end only once it is this write's own (a name taken by something else is left alone).
+  let made = false;
   try {
     const handle = await fs.open(tmp, 'wx');
+    made = true;
     try {
       // writeFile writes the whole chunk, from where the last one ended.
       for await (const chunk of chunks) await handle.writeFile(chunk);
@@ -163,6 +166,6 @@ export async function writeReviewSheet(file: string, chunks: AsyncIterable<strin
     await syncDir(dir).catch(() => undefined);
     return 'written';
   } finally {
-    await fs.rm(tmp, { force: true }).catch(() => undefined);
+    if (made) await fs.rm(tmp, { force: true }).catch(() => undefined);
   }
 }
