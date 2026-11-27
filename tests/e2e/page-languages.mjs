@@ -125,23 +125,26 @@ try {
   await apply([{ type: 'page.update', pageId: fr, route: '/fr/a-propos/', seoTitle: 'À propos du studio', showHeader: false, showFooter: false }], 'French address and title');
   await pageSettings('À propos');
   const language = win.getByLabel('Page language');
-  assert.equal(await language.getAttribute('placeholder'), 'en', 'an empty language shows the site language it uses');
-  const picker = win.getByLabel('Link a translation');
-  // Still in the site language, the copy cannot become About's translation yet, and says why.
-  assert.equal(await picker.locator('option', { hasText: 'About (en)' }).isDisabled(), true, 'About cannot be linked while both are English');
-  await language.fill('fr');
+  assert.equal(await language.getAttribute('placeholder'), 'English', 'an empty language shows, by name, the site language it uses');
+  const languageSection = win.locator('#dock-panel-inspect .section', { has: win.locator('[aria-label="Page language"]') });
+  // Still in the site language like every other page, the copy has nothing to link yet, and says why in place of the button.
+  assert.match(await languageSection.innerText(), /pages are in English too/, 'nothing can be linked while every page is English');
+  assert.equal(await win.locator('#dock-panel-inspect [data-link-translation]').count(), 0, 'no Link button while nothing can be linked');
+  // Typed by name, saved as the code.
+  await language.fill('French');
   await language.press('Enter');
   await eventually(async () => assert.equal((await snapshot()).state.pages[fr].language, 'fr'));
-  await picker.selectOption({ label: 'About (en)' });
+  await win.getByRole('button', { name: 'Link a translation' }).click();
+  await win.getByRole('menuitem', { name: /^About/ }).first().click();
   state = await eventually(async () => {
     const s = (await snapshot()).state;
     assert.ok(s.pages[fr].translationGroup && s.pages[fr].translationGroup === s.pages[about].translationGroup, 'the two pages are linked');
     return s;
   });
   const translations = () => win.getByRole('list', { name: 'Translations of this page' });
-  assert.match((await translations().innerText()).replace(/\s+/g, ' '), /About en Unlink/, 'the French page lists About as its English version');
+  assert.match((await translations().innerText()).replace(/\s+/g, ' '), /About English Unlink/, 'the French page lists About as its English version');
   await pageSettings('About');
-  assert.match((await translations().innerText()).replace(/\s+/g, ' '), /À propos fr Unlink/, 'About lists the French page too');
+  assert.match((await translations().innerText()).replace(/\s+/g, ' '), /À propos French Unlink/, 'About lists the French page too');
 
   step('each version gets an ordinary link to the other');
   await apply(
