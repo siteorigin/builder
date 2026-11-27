@@ -1,7 +1,7 @@
 /**
  * What the editor says on the body for its stylesheets instead of a `:has()` there (#971), in a real browser with the
- * editor's own stylesheets: the notices sit above the Previewing bar exactly while it is in the page and not inert
- * (src/renderer/src/lib/previewing.ts), and the preview page takes no pointer events while a seam is lit.
+ * editor's own stylesheets: the notices stand above the canvas's foot exactly while it holds something and is not inert
+ * (src/renderer/src/lib/canvas-foot.ts), and the preview page takes no pointer events while a seam is lit.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -13,12 +13,17 @@ const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://previewing.test';
 
 const ENTRY = [
-  `import { previewPill } from ${JSON.stringify(resolve('src/renderer/src/lib/previewing'))};`,
+  `import { canvasFoot } from ${JSON.stringify(resolve('src/renderer/src/lib/canvas-foot'))};`,
   'let stop = null;',
-  'let pill = null;',
-  "window.show = () => { pill = document.createElement('div'); pill.className = 'preview-pill'; document.getElementById('holder').append(pill); stop = previewPill(pill); };",
-  'window.hide = () => { stop?.(); pill?.remove(); stop = pill = null; };',
-  // Let go of the bar while it is still in the page: what follows the page after that is the observer, if it is left.
+  'let foot = null;',
+  // A foot 82px tall whose bottom is 46px above the window's: its top is 128px up, so the notices stand at 140px.
+  "window.show = () => { foot = document.createElement('div'); foot.style.cssText = 'position: fixed; bottom: 46px; left: 0; width: 200px; height: 82px'; document.getElementById('holder').append(foot); stop = canvasFoot(foot); };",
+  // A bar arriving lifts the foot's top, and the notices with it.
+  "window.grow = () => { foot.style.height = '128px'; };",
+  // Everything gone from it: it stands at nothing, and the notices take their own place.
+  "window.empty = () => { foot.style.height = '0px'; };",
+  'window.hide = () => { stop?.(); foot?.remove(); stop = foot = null; };',
+  // Let go of the foot while it is still in the page: what follows the page after that is the observer, if it is left.
   'window.letGo = () => { stop?.(); stop = null; };'
 ].join('\n');
 
@@ -68,41 +73,47 @@ describe.skipIf(!browserInstalled)('the editor’s state on the body', { timeout
     expect(errors).toEqual([]);
   });
 
-  /** Where the notices sit, and whether the body says the bar shows, once the page has taken in the last change. */
-  const notices = () => page.evaluate<[string, boolean]>("new Promise((done) => requestAnimationFrame(() => done([getComputedStyle(document.querySelector('.toasts')).bottom, document.body.classList.contains('previewing')])))");
+  /** Where the notices sit, once the page (and the foot's observers) have taken in the last change. */
+  const notices = () => page.evaluate<string>("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(getComputedStyle(document.querySelector('.toasts')).bottom))))");
   const inert = (id: string, on: boolean) => page.evaluate(`document.getElementById(${JSON.stringify(id)}).inert = ${on}`);
 
-  it('keeps the notices above the Previewing bar exactly while it shows and is not inert', async () => {
-    expect(await notices()).toEqual(['40px', false]);
+  it('keeps the notices above the canvas’s foot exactly while it holds something and is not inert', async () => {
+    expect(await notices()).toBe('40px');
     await page.evaluate('show()');
-    expect(await notices()).toEqual(['90px', true]);
-    // Under the post writer or the SEO view, in a project being left, behind a dialog: the bar is inert.
+    expect(await notices()).toBe('140px');
+    // A bar arriving (or one wrapping) lifts the foot's top, and the notices follow it.
+    await page.evaluate('grow()');
+    expect(await notices()).toBe('186px');
+    // Under the post writer or the SEO view, in a project being left, behind a dialog: the foot is inert.
     for (const id of ['holder', 'editor', 'root']) {
       await inert(id, true);
-      expect(await notices(), `${id} inert`).toEqual(['40px', false]);
+      expect(await notices(), `${id} inert`).toBe('40px');
       await inert(id, false);
-      expect(await notices(), `${id} live again`).toEqual(['90px', true]);
+      expect(await notices(), `${id} live again`).toBe('186px');
     }
+    await page.evaluate('empty()');
+    expect(await notices()).toBe('40px');
+    await page.evaluate('grow()');
     await page.evaluate('hide()');
-    expect(await notices()).toEqual(['40px', false]);
+    expect(await notices()).toBe('40px');
     // Gone, it no longer follows the page: an inert change after it says nothing.
     await inert('holder', true);
     await inert('holder', false);
-    expect(await notices()).toEqual(['40px', false]);
+    expect(await notices()).toBe('40px');
   });
 
-  it('starts from whether the bar is inert when it appears, and stops following the page when let go', async () => {
+  it('starts from whether the foot is inert when it appears, and stops following the page when let go', async () => {
     await inert('editor', true);
     await page.evaluate('show()');
-    expect(await notices()).toEqual(['40px', false]);
+    expect(await notices()).toBe('40px');
     await inert('editor', false);
-    expect(await notices()).toEqual(['90px', true]);
-    // Let go while still in the page: an inert change after it no longer puts the class back.
+    expect(await notices()).toBe('140px');
+    // Let go while still in the page: an inert change after it no longer puts the offset back.
     await page.evaluate('letGo()');
-    expect(await notices()).toEqual(['40px', false]);
+    expect(await notices()).toBe('40px');
     await inert('holder', true);
     await inert('holder', false);
-    expect(await notices()).toEqual(['40px', false]);
+    expect(await notices()).toBe('40px');
   });
 
   it('turns the preview page’s pointer events off while either seam is lit', async () => {

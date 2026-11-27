@@ -159,8 +159,8 @@
      highlight (the accent tint and the 2px inset focus outline on the row Enter adds), .menu-label headings that stay
      at the top as their group scrolls under them, and Insert's own section sketches. The 8px gutter keeps the field's
      focus ring inside the popover. */
-  .quick-insert-veil { position: fixed; inset: 0; z-index: 999; }
-  .quick-insert { position: fixed; z-index: 1000; display: flex; flex-direction: column; width: 304px; max-width: calc(100vw - 16px); padding: 8px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); animation: pop-in 120ms ease-out; }
+  .quick-insert-veil { position: fixed; inset: 0; z-index: calc(var(--z-popover) - 1); }
+  .quick-insert { position: fixed; z-index: var(--z-popover); display: flex; flex-direction: column; width: 304px; max-width: calc(100vw - 16px); padding: 8px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); animation: pop-in 120ms ease-out; }
   .quick-insert .qi-title { padding: 0 2px 8px; overflow: hidden; font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; text-overflow: ellipsis; }
   .quick-insert .qi-search { position: relative; }
   .quick-insert .qi-search > svg { position: absolute; left: 9px; top: 50%; translate: 0 -50%; width: 15px; height: 15px; color: var(--text-3); pointer-events: none; }
@@ -285,13 +285,27 @@
   .canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
   .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
   .canvas-card p { margin: 0; color: var(--text-2); text-wrap: balance; }
-  .preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: var(--r-md); background: var(--ink); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), var(--shadow-lg); font-size: 13px; font-weight: 500; }
+  .preview-pill { width: max-content; max-width: 100%; white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: var(--r-md); background: var(--ink); color: var(--on-ink); box-shadow: 0 0 0 1px color-mix(in srgb, var(--on-ink) 18%, transparent), var(--shadow-lg); font-size: 13px; font-weight: 500; }
   .preview-pill svg { width: 15px; height: 15px; }
   .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: var(--r-sm); background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
   .preview-pill button:hover { background: var(--sky-1); }
-  /* Forms in Preview: what a send does, the practice reply, and a confirmed real test. Above the other bottom bars,
-     which the canvas stacks by the panel's measured height. Folds to its title line so the page gets its foot back. */
-  .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 8px; padding: 8px 6px 12px 14px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); container-type: inline-size; }
+  /* The canvas's foot: everything that stands over the foot of the canvas, in one column, bottom-up from 18px above
+     its floor: the Previewing bar, the AI's notice, a page problem, Form practice (the most lasting at the floor, and
+     the panel beside the page it describes). Each bar takes its own height and a bar that wraps lifts the ones above
+     it, 10px apart, never more than the canvas less 12px each side. The canvas measures the column's top once
+     (Canvas.tsx, foot): the page ends 8px above it in Edit and in Preview, the state card keeps clear of it, and the
+     window's notices stand above it (lib/canvas-foot.ts). The column takes the pointer only on its bars. In the DOM the
+     bars keep their tab order (Previewing bar, problem, practice, AI); `order` stacks them. */
+  .canvas-foot { position: absolute; left: 12px; right: 12px; bottom: 18px; z-index: var(--z-canvas-bar); display: flex; flex-direction: column-reverse; align-items: center; gap: 10px; pointer-events: none; container: canvas-foot / inline-size; }
+  .canvas-foot > * { pointer-events: auto; }
+  .canvas-foot > .preview-pill { order: 0; }
+  .canvas-foot > .pill-address-full { order: 1; }
+  .canvas-foot > .ai-run { order: 2; }
+  .canvas-foot > .issue { order: 3; }
+  .canvas-foot > .form-practice { order: 4; }
+  /* Forms in Preview: what a send does, the practice reply, and a confirmed real test. At the top of the canvas's foot,
+     on the notices' surface (below). Folds to its title line so the page gets its room back. */
+  .form-practice { width: min(560px, 100%); display: flex; flex-direction: column; gap: 8px; padding: 8px 6px 12px 14px; font-size: 12px; color: var(--text-2); container-type: inline-size; }
   /* On a short canvas the panel scrolls inside itself rather than running off the top. */
   .form-practice { overflow-y: auto; }
   .form-practice[data-folded] { padding-bottom: 8px; }
@@ -355,17 +369,20 @@
   }
   /* Back, Forward and the address of the visitor's journey: quiet controls on the pill itself. */
   .preview-pill .pill-note { flex: none; display: inline-flex; align-items: center; gap: 6px; }
-  .preview-pill .pill-step { width: 26px; padding: 0; justify-content: center; background: transparent; color: #fff; }
+  .preview-pill .pill-step { width: 26px; padding: 0; justify-content: center; background: transparent; color: var(--on-ink); }
   .preview-pill .pill-step + .pill-step { margin-left: -8px; }
-  .preview-pill .pill-step:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.16); }
-  .preview-pill .pill-step[aria-disabled='true'] { color: rgb(255 255 255 / 0.38); background: transparent; cursor: default; }
+  .preview-pill .pill-step:hover:not([aria-disabled='true']) { background: color-mix(in srgb, var(--on-ink) 16%, transparent); }
+  .preview-pill .pill-step[aria-disabled='true'] { color: color-mix(in srgb, var(--on-ink) 38%, transparent); background: transparent; cursor: default; }
   /* The address has a slot of its own, so Back to editing stays put from page to page. */
-  .preview-pill .pill-address { flex: 0 1 236px; width: 236px; min-width: 56px; padding: 3px 9px; border-radius: var(--r-sm); background: rgb(255 255 255 / 0.1); overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; color: var(--sky-1); user-select: text; }
+  .preview-pill .pill-address { flex: 0 1 236px; width: 236px; min-width: 56px; padding: 3px 9px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--on-ink) 10%, transparent); overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; color: var(--sky-1); user-select: text; }
   .preview-pill .pill-address:empty { background: transparent; }
-  .pill-address-full { display: none; position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px); padding: 6px 10px; border-radius: 8px; background: var(--ink); color: #fff; box-shadow: var(--shadow-md); font-family: var(--mono); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
-  .pill-address:focus-visible + .pill-address-full { display: block; }
-  /* Above the bars stacked over the pill while the full address is showing. */
-  .preview-pill:has(.pill-address:focus-visible) { z-index: 7; }
+  /* The whole address, while a keyboard user is on an address too long for its slot: a row of the foot just above the
+     bar, on the bar's own ink, so it lifts what stands on the bar instead of covering it. Words only; it takes no
+     pointer. */
+  .pill-address-full { width: max-content; max-width: min(560px, 100%); padding: 6px 10px; border-radius: var(--r-sm); background: var(--ink); color: var(--on-ink); box-shadow: 0 0 0 1px color-mix(in srgb, var(--on-ink) 18%, transparent), var(--shadow-md); font-family: var(--mono); font-size: 12px; line-height: 18px; white-space: normal; overflow-wrap: anywhere; }
+  .canvas-foot > .pill-address-full { pointer-events: none; }
+  /* On a narrow canvas the bar keeps its eye and drops the word, so the address keeps its room. */
+  @container canvas-foot (width < 600px) { .preview-pill .pill-word { display: none; } }
   /* Canvas notices: the cards that float at the foot of the canvas, over the page (the AI at work, a page problem; the
      Form practice panel takes the same surface and edge). One surface in the app's own theme, a --r-md card with a
      complete --border-strong edge and a lift, so it keeps its edge over a website of any colour and over the dark
@@ -373,9 +390,10 @@
      words up to a 560px column, never more than the canvas less 12px each side; it is one line (36px) where it fits, and
      where it does not the words wrap, breaking between the lead and what follows, while the icon and actions keep to the
      first line. A tone colours the edge and face: neutral for status, the accent where it waits on you, red for a
-     problem. At most one action is filled, and only the one answer it expects; the rest are quiet (ghost). Stacked
-     bottom-up from the canvas floor: the Previewing bar, the AI, a page problem, Form practice. */
-  .canvas-notice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: min(560px, calc(100% - 24px)); display: flex; align-items: flex-start; gap: 8px; min-height: 36px; padding: 4px 4px 4px 10px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); font-size: 13px; line-height: 20px; color: var(--text); }
+     problem. At most one action is filled, and only the one answer it expects; the rest are quiet (ghost). They stand
+     in the canvas's foot (above). */
+  :is(.canvas-notice, .form-practice) { border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); }
+  .canvas-notice { width: max-content; max-width: min(560px, 100%); display: flex; align-items: flex-start; gap: 8px; min-height: 36px; padding: 4px 4px 4px 10px; font-size: 13px; line-height: 20px; color: var(--text); }
   .canvas-notice:not(:has(.canvas-notice-actions)) { padding-right: 12px; }
   .canvas-notice-icon { flex: none; display: grid; place-items: center; width: 16px; height: 26px; color: var(--accent-text); }
   .canvas-notice-icon svg { width: 16px; height: 16px; }
@@ -399,9 +417,9 @@
 
   /* A page problem: the red tone, in a wider column (it can carry four actions), the words first and the actions after
      them as one group. Where both fit they share a row; on a narrow canvas the actions wrap below the words as a row of
-     their own, trailing, so the words never shrink to a column. Its height is measured (issueH), so whatever stands on
-     it moves. */
-  .canvas-notice.issue { width: min(760px, calc(100% - 24px)); max-width: none; flex-wrap: wrap; row-gap: 4px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); }
+     their own, trailing, so the words never shrink to a column. It takes its own height in the canvas's foot, so
+     whatever stands on it moves. */
+  .canvas-notice.issue { width: min(760px, 100%); max-width: none; flex-wrap: wrap; row-gap: 4px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); }
   .canvas-notice.issue > .issue-text { flex: 1 1 210px; text-wrap: balance; }
   /* The sentence stays whole: where the words take two lines, they break between it and the reassurance. */
   .canvas-notice.issue .issue-text strong { display: inline-block; }
@@ -452,7 +470,7 @@
   .ov-moving.ov-placing.idle { background: var(--drop-idle); }
   /* What a drag carries, beside the pointer anywhere in the window: above every panel, menu and notice (nothing opens
      mid-drag), keylined white then ink like the marks on the page so it holds on any page or panel, and lifted. */
-  .insert-ghost { position: fixed; z-index: 1200; display: inline-flex; align-items: center; gap: 6px; max-width: 240px; height: 26px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828, 0 4px 10px -2px var(--drag-shade); }
+  .insert-ghost { position: fixed; z-index: var(--z-drag); display: inline-flex; align-items: center; gap: 6px; max-width: 240px; height: 26px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828, 0 4px 10px -2px var(--drag-shade); }
   .insert-ghost span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .insert-ghost svg { flex: none; width: 14px; height: 14px; }
   /* The pointer keeps the gesture's closed hand wherever it goes, and over a place that refuses the drop says so. */
@@ -463,7 +481,7 @@
      since layouts have no hue: the words say it is shared, and Done is a bordered button. It is a container, and gives
      way as it narrows: the words around the controls go, then the picker narrows to its floor (its list has every
      title in full), then the collection's name is cut, and only then the end of who an edit reaches. Done never is. */
-  .template-strip { position: absolute; top: 8px; z-index: 5; height: 42px; container-type: inline-size; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-sm); }
+  .template-strip { position: absolute; top: 8px; z-index: var(--z-canvas-bar); height: 42px; container-type: inline-size; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-sm); }
   /* The words keep their whole width before the picker's column has any room past its floor. */
   .template-strip-row { display: grid; grid-template-columns: auto minmax(120px, max-content) minmax(min-content, 1fr) auto; align-items: center; column-gap: 10px; height: 100%; padding: 0 7px 0 12px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
   .template-strip-mark { width: 16px; height: 16px; color: var(--text); }

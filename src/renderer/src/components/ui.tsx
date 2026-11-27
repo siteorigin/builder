@@ -1809,11 +1809,15 @@ export function Toasts() {
     // Watch what is inside too: the stack's own box stops growing once it is bounded.
     const inside = new MutationObserver(measure);
     inside.observe(el, { childList: true, subtree: true });
+    // And the canvas's foot, which the stack stands above (lib/canvas-foot.ts): a bar arriving or wrapping moves it.
+    const foot = new MutationObserver(measure);
+    foot.observe(document.body, { attributes: true, attributeFilter: ['style'] });
     addEventListener('resize', measure);
     el.addEventListener('scroll', measure, { passive: true });
     return () => {
       watch.disconnect();
       inside.disconnect();
+      foot.disconnect();
       removeEventListener('resize', measure);
       el.removeEventListener('scroll', measure);
       root.style.removeProperty('--toast-band');

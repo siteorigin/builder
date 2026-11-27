@@ -32,7 +32,7 @@
      hang off it. The splitter's 10px target sits mostly over the canvas, clear of the panel's scrollbar, and its
      line is drawn on the edge: a neutral line under the pointer (after a beat, so passing over it is quiet), a
      darker one while it is dragged or its menu is open. */
-  .seam { position: absolute; top: 0; bottom: 0; width: 0; z-index: 5; }
+  .seam { position: absolute; top: 0; bottom: 0; width: 0; z-index: var(--z-canvas-bar); }
   .resizer { position: absolute; top: 0; bottom: 0; width: 10px; cursor: col-resize; outline: none; }
   .resizer::before { content: ''; position: absolute; top: 0; bottom: 0; width: 2px; background: transparent; transition: background 120ms; }
   .seam.left .resizer { left: -2px; }

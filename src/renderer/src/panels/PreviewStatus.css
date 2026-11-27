@@ -6,9 +6,10 @@
      (tokens.css), and keeps one width from state to state, so it never jumps as setting up turns into starting. */
   /* The layer itself lets clicks through (Preview's pill stays usable beneath it); only the card takes them. On a short
      canvas the card keeps its footer in view and its body scrolls. */
-  .canvas-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 6; pointer-events: none; }
-  /* In Preview the pill sits at the foot of the canvas; the card keeps clear of it, so Back to editing is always there. */
-  .canvas:not(.edit-mode) > .canvas-state { padding-bottom: 66px; }
+  .canvas-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; z-index: var(--z-canvas-state); pointer-events: none; }
+  /* The card keeps clear of the canvas's foot (--foot-top, its measured top), so Back to editing and Stop are always
+     there. */
+  .canvas-state { padding-bottom: max(16px, calc(var(--foot-top, 0px) + 12px)); }
   .status-card { pointer-events: auto; display: flex; flex-direction: column; max-height: 100%; width: min(500px, 100%); border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); overflow: hidden; color: var(--text); font-size: 13px; line-height: 1.5; }
   .status-card-body { display: flex; flex-direction: column; min-height: 0; overflow: auto; padding: 22px 24px 20px; }
   .status-card-mark { display: flex; margin-bottom: 14px; }

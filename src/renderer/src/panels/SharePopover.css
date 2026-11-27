@@ -30,12 +30,12 @@
      link, and Lock and End session stay put; only the people lists scroll, so a full room never pushes the link or
      the way out of reach. */
   .share-popover {
-    position: fixed; z-index: 1000; width: 380px; max-width: calc(100vw - 16px); max-height: calc(100vh - 72px); overflow: hidden;
+    position: fixed; z-index: var(--z-popover); width: 380px; max-width: calc(100vw - 16px); max-height: calc(100vh - 72px); overflow: hidden;
     display: flex; flex-direction: column; padding: 12px 14px 14px; border-radius: var(--r-md);
     background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out;
   }
   /* A question it asked is open: it waits under the dialog's scrim. */
-  .share-popover.behind { z-index: 850; }
+  .share-popover.behind { z-index: var(--z-under-dialog); }
   /* It takes focus itself only when the control that had it goes (a guest answered or gone) and nothing else is left:
      a click there draws nothing, the keyboard a ring inside its edge. */
   .share-popover:focus { outline: none; }

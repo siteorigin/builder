@@ -2,7 +2,7 @@
   .cmdk .menu-item.focused { box-shadow: inset 0 0 0 1px var(--accent); }
 
   /* ---------- Command menu & code ---------- */
-  .cmdk { position: fixed; top: 14vh; left: 50%; translate: -50% 0; width: min(600px, calc(100vw - 40px)); border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); overflow: hidden; animation: pop-in 140ms ease-out; z-index: 1001; }
+  .cmdk { position: fixed; top: 14vh; left: 50%; translate: -50% 0; width: min(600px, calc(100vw - 40px)); border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); overflow: hidden; animation: pop-in 140ms ease-out; z-index: var(--z-command); }
   /* The search field is a real field with the house focus ring; the dialog's gutter keeps the ring clear of its edge.
    * Field, rows and footer share one 10px edge, one icon column at 20px and one text column at 46px. */
   .cmdk-search { position: relative; padding: 10px; border-bottom: 1px solid var(--border); }
