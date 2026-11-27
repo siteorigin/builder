@@ -3611,8 +3611,10 @@ export class Controller {
     const abort = new AbortController();
     this.sourceSyncs.add(abort);
     const current = () => !abort.signal.aborted && this.session === s && opening === this.workspaceKey && !this.closing;
+    const timing = perf.span('source.sync');
+    let result: SourceSyncResult = closed;
     try {
-      return await this.serialImport(async () => {
+      return (result = await this.serialImport(async () => {
         if (!current()) return closed;
         return syncSource(
           {
@@ -3626,9 +3628,10 @@ export class Controller {
           },
           sourceId
         );
-      });
+      }));
     } finally {
       this.sourceSyncs.delete(abort);
+      timing({ ok: result.ok, images: result.ok ? result.images : 0 });
     }
   }
 

@@ -199,3 +199,40 @@ export async function galleryPhotos(): Promise<{ dir: string; photos: GalleryPho
   for (const p of photos) for (const f of [p.file, ...p.variants.map((v) => v.file)]) hash.update(f).update('\0').update(readFileSync(join(dir, f.replace(/^static\/assets\//, '')))).update('\0');
   return { dir, photos, hash: hash.digest('hex').slice(0, 16) };
 }
+
+/**
+ * The `sourceSync` scenario's photos (#1045): 40 camera-sized JPEGs (4032 × 3024, about 3 MB each), as a source's
+ * records might show at full size, drawn as the import's photos are, from seeds of their own, and plain (no profile,
+ * orientation or credits, which a CMS's originals often lack). Made once per machine, keyed by this recipe and the
+ * encoder's version, under `.tmp/perf/photos/`.
+ */
+export const SYNC_PHOTO_COUNT = 40;
+const SYNC_RECIPE = 1;
+
+/** Sync photo `i` (from 1): its file name as the source's server gives it. */
+export const syncPhotoName = (i: number) => `sync-photo-${String(i).padStart(2, '0')}.jpg`;
+
+export async function syncPhotos(): Promise<{ dir: string; files: string[]; hash: string }> {
+  const sharp = (await import('sharp')).default;
+  const key = createHash('sha256').update(`sync:${SYNC_RECIPE}:${SYNC_PHOTO_COUNT}:${PHOTO_WIDTH}x${PHOTO_HEIGHT}:${sharp.versions.vips}:${sharp.versions.sharp ?? ''}`).digest('hex').slice(0, 12);
+  const dir = join(ROOT, '.tmp', 'perf', 'photos', `${key}-sync`);
+  const names = Array.from({ length: SYNC_PHOTO_COUNT }, (_, n) => syncPhotoName(n + 1));
+  if (!existsSync(dir)) {
+    const part = `${dir}.part-${process.pid}`;
+    rmSync(part, { recursive: true, force: true });
+    mkdirSync(part, { recursive: true });
+    for (let i = 1; i <= SYNC_PHOTO_COUNT; i++) {
+      const bytes = await sharp(draw(200 + i, PHOTO_WIDTH, PHOTO_HEIGHT), { raw: { width: PHOTO_WIDTH, height: PHOTO_HEIGHT, channels: 3 } })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+      writeFileSync(join(part, syncPhotoName(i)), bytes);
+    }
+    rmSync(dir, { recursive: true, force: true });
+    renameSync(part, dir);
+  }
+  const listed = readdirSync(dir).filter((f) => names.includes(f));
+  if (listed.length !== SYNC_PHOTO_COUNT) throw new Error(`The scenario's sync photos in ${dir} are incomplete: remove the folder to draw them again.`);
+  const hash = createHash('sha256');
+  for (const name of names) hash.update(name).update('\0').update(readFileSync(join(dir, name))).update('\0');
+  return { dir, files: names.map((n) => join(dir, n)), hash: hash.digest('hex').slice(0, 16) };
+}

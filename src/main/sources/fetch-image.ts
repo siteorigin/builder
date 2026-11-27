@@ -9,7 +9,7 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
 /** What a host name resolves to, as the system says: every address. */
 export type Lookup = (host: string) => Promise<Array<{ address: string }>>;
-const systemLookup: Lookup = (host) => lookup(host, { all: true });
+export const systemLookup: Lookup = (host) => lookup(host, { all: true });
 
 /**
  * A picture from the web, read no further than `maxBytes`. It is fetched without the source's credentials, so none
@@ -17,7 +17,7 @@ const systemLookup: Lookup = (host) => lookup(host, { all: true });
  * by what its name resolves to: a name that leads to this computer or the local network, or that cannot be found, is
  * refused. (A name that resolves differently by the time it is asked is not caught.)
  */
-export const createFetchImage = (resolve: Lookup = systemLookup): ImageFetcher => async (url, maxBytes, signal, check) => {
+export const createFetchImage = (resolve: Lookup = systemLookup, platformFetch: typeof fetch = (input, init) => fetch(input, init)): ImageFetcher => async (url, maxBytes, signal, check) => {
   const resolvesLocally = async (address: string) => {
     const host = new URL(address).hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '');
     const found = await resolve(host).catch(() => null);
@@ -30,7 +30,7 @@ export const createFetchImage = (resolve: Lookup = systemLookup): ImageFetcher =
     const problem = check(address);
     if (problem) throw new AdapterError('image', problem);
     if (await resolvesLocally(address)) throw new AdapterError('image', 'a picture is on this computer or the local network, which a sync never reads');
-    res = await fetch(address, { signal, redirect: 'manual', credentials: 'omit' }).catch(() => {
+    res = await platformFetch(address, { signal, redirect: 'manual', credentials: 'omit' }).catch(() => {
       throw new AdapterError('network');
     });
     const next = REDIRECTS.has(res.status) ? res.headers.get('location') : null;

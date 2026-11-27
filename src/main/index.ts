@@ -46,6 +46,7 @@ import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
 import { createReviewShooter } from './review-capture';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
+import { installSourceTestHosts } from './sources/test-hosts';
 import { installAiJournal } from './ai-journal';
 import { aboutIcon, windowIcon } from './window-icon';
 import { createEditorCodeCache, type V8CachePolicy } from './code-cache';
@@ -134,6 +135,8 @@ const { headless, automated } = launchMode(process.env, globalThis);
 const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
 // And they keep every assistant event in order, for a test to follow each run by its own IDs (ai-journal.ts).
 const aiJournal = automated ? installAiJournal(globalThis) : null;
+// And may serve a source's pictures on this computer, which a sync never fetches from otherwise (sources/test-hosts.ts).
+if (automated) installSourceTestHosts(globalThis);
 const AI_TURNS_SPENT = 'This test session allows no more AI requests (its limit or its time is used up), so nothing was sent.';
 /** In a test with a deadline, a provider call that would start after it is refused, wherever in a request it comes. */
 const deadlineFetch: typeof fetch | undefined = aiJournal ? (input, init) => (aiJournal.turns().spent ? Promise.reject(new Error(AI_TURNS_SPENT)) : fetch(input, init)) : undefined;
