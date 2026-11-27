@@ -625,6 +625,9 @@ describe('SEO and performance', () => {
     // Spanning past them adds a column that can stretch over the rest: the whole width.
     wrap.styles = { base: { columnSpan: '3' } };
     expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');
+    // So does starting where the span runs past them.
+    wrap.styles = { base: { columnStart: '2', columnSpan: '2' } };
+    expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');
     wrap.styles = {};
     // With a fixed or content-sized column, any column may be the widest: the whole width, as before.
     for (const template of ['16rem 1fr 14rem', 'minmax(10rem, 1fr) 1fr', 'auto 1fr']) {

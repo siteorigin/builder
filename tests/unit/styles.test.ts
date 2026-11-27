@@ -230,7 +230,7 @@ describe('grid tracks and row spans (#352)', () => {
     const item = `.so-n-${itemId}`;
     expect(ruleOf(section(text, WIDE), grid)).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr))');
     expect(ruleOf(section(text, WIDE), item)).toContain('grid-row: span 2 / span 2');
-    expect(ruleOf(section(text, WIDE), item)).toContain('grid-column: span 2 / span 2');
+    expect(ruleOf(section(text, WIDE), item)).toContain('grid-column-end: span 2;');
     expect(section(text, null)).not.toContain('18rem');
     expect(section(text, null)).not.toContain('grid-row');
     expect(section(text, null)).not.toContain('grid-column');
@@ -264,7 +264,7 @@ describe('grid tracks and row spans (#352)', () => {
 describe('style registry', () => {
   it('emits a declaration for every property it offers', () => {
     const sample: Record<string, unknown> = {
-      layout: 'grid', columns: 2, containerType: 'inline-size', align: 'center', justify: 'center', order: 1, wrap: true, gridTemplate: '1fr 2fr', gridAutoFlow: 'dense', columnSpan: 2, rowSpan: 2, alignSelf: 'center',
+      layout: 'grid', columns: 2, containerType: 'inline-size', align: 'center', justify: 'center', order: 1, wrap: true, gridTemplate: '1fr 2fr', gridAutoFlow: 'dense', columnStart: '2', columnSpan: 2, rowSpan: 2, alignSelf: 'center',
       flexGrow: 1, flexShrink: 0, textStyle: 'text.h2', fontFamily: 'serif', fontWeight: '600', fontStyle: 'italic', textTransform: 'uppercase',
       textAlign: 'center', color: '#000', background: '#fff', shadow: '0 1px 2px #000', opacity: 0.5, marginInline: 'auto', aspectRatio: '16/9',
       objectFit: 'cover', objectPosition: 'top', overflow: 'clip', position: 'sticky', inset: '0', zIndex: 2, hidden: true, customCss: 'filter: blur(2px)',
@@ -288,10 +288,13 @@ describe('style registry', () => {
     expect(styleToCss('gridTemplate', 'auto-fit-sm')[0]).toContain('14rem');
     expect(styleToCss('gridTemplate', 'auto-fit-md')[0]).toContain('20rem');
     // Surrounding spaces in a stored value change nothing.
-    expect(styleToCss('columnSpan', ' full ')).toEqual(['grid-column: 1 / -1']);
+    const placed = (...own: string[]) => [own[0], 'grid-column-start: var(--_so-full-start, var(--_so-column-line, auto))', ...own.slice(1)];
+    expect(styleToCss('columnSpan', ' full ')).toEqual(placed('--_so-full-start: 1', 'grid-column-end: -1'));
     expect(styleToCss('gridTemplate', ' auto-fit-md ')[0]).toContain('20rem');
-    expect(styleToCss('columnSpan', 3)).toEqual(['grid-column: span 3 / span 3']);
-    expect(styleToCss('columnSpan', 'full')).toEqual(['grid-column: 1 / -1']);
+    expect(styleToCss('columnSpan', 3)).toEqual(placed('--_so-full-start: initial', 'grid-column-end: span 3'));
+    expect(styleToCss('columnSpan', 'full')).toEqual(placed('--_so-full-start: 1', 'grid-column-end: -1'));
+    expect(styleToCss('columnStart', ' 3 ')).toEqual(placed('--_so-column-line: 3'));
+    expect(styleToCss('columnStart', 'auto')).toEqual(placed('--_so-column-line: auto'));
   });
 
   it('refuses what a property cannot hold', () => {
@@ -516,7 +519,7 @@ describe('style precedence', () => {
     inst.overrides = { card: { base: { columnSpan: 2 } } };
     const out = css(s, 'site');
     expect(section(out, null)).not.toContain('grid-column');
-    expect(section(out, WIDE)).toContain('grid-column: span 2 / span 2');
+    expect(section(out, WIDE)).toContain('grid-column-end: span 2;');
   });
 
   it('applies a full-width span at every size, and a phone span where it was asked for', () => {
@@ -524,12 +527,12 @@ describe('style precedence', () => {
     const inst = grid(s);
     inst.overrides = { card: { base: { columnSpan: 'full' }, phone: { columnSpan: 2 } } };
     const out = css(s, 'site');
-    expect(section(out, null)).toContain('grid-column: 1 / -1');
-    expect(section(out, PHONE)).toContain('grid-column: span 2 / span 2');
+    expect(section(out, null)).toContain('grid-column-end: -1;');
+    expect(section(out, PHONE)).toContain('grid-column-end: span 2;');
     inst.overrides = { card: { base: { columnSpan: 3 }, phone: { columnSpan: 1 } } };
     const moved = css(s, 'site');
-    expect(section(moved, WIDE)).toContain('grid-column: span 3 / span 3');
-    expect(section(moved, PHONE)).toContain('grid-column: span 1 / span 1');
+    expect(section(moved, WIDE)).toContain('grid-column-end: span 3;');
+    expect(section(moved, PHONE)).toContain('grid-column-end: span 1;');
     expect(section(moved, null)).not.toContain('grid-column');
   });
 

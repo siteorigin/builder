@@ -81,7 +81,7 @@ describe('whether an element is a grid item', () => {
     expect(isGridChild(s.state, s.ref(root, { instancePath: [nested], partId: 'root' }), 'base')).toBe(true);
     const list = placementStyleControls(def, 'root', false)!;
     expect(list).not.toContain('columnSpan');
-    expect(withGridChildProps(list, true)).toEqual([...list, 'columnSpan', 'rowSpan']);
+    expect(withGridChildProps(list, true)).toEqual([...list, 'columnStart', 'columnSpan', 'rowSpan']);
     expect(withGridChildProps(list, false)).toBe(list);
     expect(withGridChildProps(undefined, true)).toBeUndefined();
     // A section of the page itself has no grid around it.
@@ -348,10 +348,11 @@ describe('the Inspector’s style rows for a grid item', () => {
   };
   const layout = (groups: ReturnType<typeof rows>) => groups.find((g) => g.g === 'layout')?.visible.map((p) => p.id) ?? [];
 
-  it('shows Column span and Row span in the closed Layout group of every kind of element', () => {
+  it('shows Column start, Column span and Row span in the closed Layout group of every kind of element', () => {
     for (const kind of ['text', 'image', 'link', 'icon', 'element']) {
       const list = styleSetFor({ kind })!;
-      expect(layout(rows(list, true)), kind).toEqual(expect.arrayContaining(['columnSpan', 'rowSpan']));
+      expect(layout(rows(list, true)), kind).toEqual(expect.arrayContaining(['columnStart', 'columnSpan', 'rowSpan']));
+      expect(layout(rows(list, false)), kind).not.toContain('columnStart');
       expect(layout(rows(list, false)), kind).not.toContain('columnSpan');
       expect(layout(rows(list, false)), kind).not.toContain('rowSpan');
       // They stay one click away outside a grid.
@@ -366,12 +367,12 @@ describe('the Inspector’s style rows for a grid item', () => {
     expect(layout(plain)).toEqual([]);
     expect(plain.find((g) => g.g === 'typography')!.visible.map((p) => p.id)).toEqual(['textStyle', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textAlign']);
     expect(layout(rows(text, false, ['rowSpan']))).toEqual(['rowSpan']);
-    expect(layout(rows(text, true))).toEqual(['columnSpan', 'rowSpan']);
+    expect(layout(rows(text, true))).toEqual(['columnStart', 'columnSpan', 'rowSpan']);
   });
 
   it('tucks and shows every other row as it would outside a grid', () => {
     for (const kind of ['text', 'image', 'link', 'icon', 'element']) {
-      const shown = (gridChild: boolean) => rows(styleSetFor({ kind }), gridChild).flatMap((g) => g.visible.map((p) => p.id)).filter((id) => id !== 'columnSpan' && id !== 'rowSpan');
+      const shown = (gridChild: boolean) => rows(styleSetFor({ kind }), gridChild).flatMap((g) => g.visible.map((p) => p.id)).filter((id) => id !== 'columnStart' && id !== 'columnSpan' && id !== 'rowSpan');
       expect(shown(true), kind).toEqual(shown(false));
     }
   });
@@ -401,12 +402,13 @@ describe('the Inspector’s style rows for a grid item', () => {
     const outside = s.insert({ parentId: null, componentId: 'layout.section' });
     s.style(cell, 'columnSpan', '2');
     s.style(cell, 'rowSpan', '3', 'desktop');
+    s.style(cell, 'columnStart', '3', 'desktop');
     const copy = captureStyle(s.state, s.ref(cell))!;
     for (const target of [nested, outside]) {
       const plan = planStylePaste(s.state, copy, s.ref(target), 'every');
-      expect(plan.rows.filter((r) => r.property.endsWith('Span')).map((r) => [r.property, r.status])).toEqual([['columnSpan', 'change'], ['rowSpan', 'change']]);
+      expect(plan.rows.filter((r) => /^(column|row)(Start|Span)$/.test(r.property)).map((r) => [r.property, r.status]).sort()).toEqual([['columnSpan', 'change'], ['columnStart', 'change'], ['rowSpan', 'change']]);
       expect(plan.operations).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: target, partId: 'root', scope: 'desktop', property: 'rowSpan', value: '3' })]));
     }
-    expect(planStylePaste(s.state, copy, s.ref(nested), 'desktop').operations.map((o) => (o as { property: string }).property)).toEqual(['rowSpan']);
+    expect(planStylePaste(s.state, copy, s.ref(nested), 'desktop').operations.map((o) => (o as { property: string }).property).sort()).toEqual(['columnStart', 'rowSpan']);
   });
 });
