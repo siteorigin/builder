@@ -11,6 +11,7 @@ import { compile } from 'svelte/compiler';
 import type { ElementNode, InstanceNode, ListItem, ProjectState, RepeatNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
+import { drafts } from '@engine/draft';
 import { defFile, generateManagedComponent } from '@generator/index';
 import { executeTool, toolsForRun, type ToolHost } from '@agent/tools';
 import { newMacroMemory } from '@agent/macros';
@@ -424,6 +425,22 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const out = await call(args);
     expect(out.ok).toBe(false);
     expect(fields(out.content)).toEqual(['nodes[1]']);
+  });
+
+  it('builds and places a component with the project copied no more often than the same batch from the editor, and once more', async () => {
+    const tool = await session();
+    const start = drafts.made;
+    const out = await tool.call(pricing({ placeOnPage: { pageId: tool.home } }));
+    const made = drafts.made - start;
+    expect(out.ok).toBe(true);
+    // The same operations from the editor, on a project of its own: the batch applied once.
+    const editor = await session();
+    const before = drafts.made;
+    const ops = out.ops!.map((o) => (o.type === 'node.insert' ? { ...o, owner: { kind: 'page' as const, id: editor.home } } : o));
+    expect((await editor.s.apply({ operations: ops }, { label: 'Build' })).ok).toBe(true);
+    const manual = drafts.made - before;
+    expect(manual).toBe(1);
+    expect(made).toBeLessThanOrEqual(manual + 1);
   });
 
   it('names the root part pointed at another node by its row, and a placement outside the page by placeOnPage', async () => {
