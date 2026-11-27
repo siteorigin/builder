@@ -2,8 +2,8 @@
  * Collection rows (#677): an entry read as one item of a list. A list property connected to a collection (a placed
  * section's `listSources`) and a collection loop (a repeat over `{ $query }` or `{ $archive }`) both show entries,
  * each read field by field by the names a layout's bindings use (see shared/entry-fields.ts): `title`, `excerpt`,
- * `publishedAt`, `featuredImage`, `categories`, `terms.<taxonomy>`, `field.<name>`, `body`, `readingTime`, and three
- * a row has of its own: `id`, `slug` and `entryLink` (a link to the entry's page, which goes nowhere for an entry
+ * `publishedAt`, `featuredImage`, `categories`, `terms.<taxonomy>`, `field.<name>`, `body`, `readingTime`, `slug`, and two
+ * a row has of its own: `id` and `entryLink` (a link to the entry's page, which goes nowhere for an entry
  * without one). The entries before and after one entry belong to its own page, not to a list: no row reads them.
  *
  * A field fills an item field (or a place in an element) of a type that can show it: a picture a picture, a link a
@@ -29,7 +29,6 @@ const EMPTY_IMAGE: ImageValue = { assetId: null, alt: '' };
 /** The fields a row has of its own, beside the entry's. */
 const ROW_FIELDS: Record<string, PropSchema> = {
   id: { type: 'string', label: 'Entry ID', default: '' },
-  slug: { type: 'string', label: 'Slug', default: '' },
   [ENTRY_LINK_FIELD]: { type: 'link', label: 'Link to its page', default: NO_LINK }
 };
 
@@ -53,8 +52,6 @@ export function rowFieldValue(state: Pick<ProjectState, 'site' | 'assets' | 'col
   switch (field) {
     case 'id':
       return entry.id;
-    case 'slug':
-      return typeof entry.slug === 'string' ? entry.slug : '';
     case ENTRY_LINK_FIELD:
       // A record without a page of its own links nowhere: the item shows its words alone.
       return hasDetailPages(collection.settings) ? { type: 'entry', target: entry.id } : NO_LINK;
