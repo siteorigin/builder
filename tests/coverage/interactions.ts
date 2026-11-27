@@ -114,6 +114,7 @@ export const GAP_ISSUES: Record<number, string> = {
 const J = 'tests/e2e/journeys.mjs';
 const L_SHARE = 'tests/e2e/live-share.mjs';
 const L_COLLAB = 'tests/e2e/live-collaborator.mjs';
+const L_VIEWER = 'tests/e2e/live-viewer.mjs';
 
 export const INTERACTIONS: Interaction[] = [
   {
@@ -1935,6 +1936,12 @@ export const INTERACTIONS: Interaction[] = [
       { test: L_SHARE, kind: 'e2e', step: 'removing a guest' },
       { test: L_SHARE, kind: 'e2e', step: 'ending the session' },
       { test: L_SHARE, kind: 'e2e', step: 'closing the project ends a running session for everyone' },
+      { test: L_VIEWER, kind: 'e2e', step: 'before admission, the room’s preview origin refuses the browser' },
+      { test: L_VIEWER, kind: 'e2e', step: 'the browser asks to join under a name, and the host admits it as a viewer' },
+      { test: L_VIEWER, kind: 'e2e', step: 'a heading the host edits updates in the browser without a reload' },
+      { test: L_VIEWER, kind: 'e2e', step: 'a spotlight the viewer points shows on the host’s canvas' },
+      { test: L_VIEWER, kind: 'e2e', step: 'a note the viewer pins shows to the host, on the page the viewer is on' },
+      { test: L_VIEWER, kind: 'e2e', step: 'one browser profile let in to two rooms cannot read either room’s preview from the other’s origin' },
       { test: 'tests/unit/live-share.test.ts', kind: 'unit' },
       { test: 'tests/unit/live-host-relay.test.ts', kind: 'unit', step: 'reaches a guest let in later, and every admitted guest as the host moves' }
     ],
