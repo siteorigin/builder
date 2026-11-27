@@ -159,6 +159,10 @@ export interface UndoTarget {
 
 export interface State {
   screen: 'welcome' | 'editor';
+  /** A recent project being opened straight from Welcome: the window shows the editor's outline from the click until the
+   *  project's snapshot arrives (or the open is refused, needs trust or fails, and Welcome comes back). `id` tells one
+   *  attempt from the next, so a late answer to one never ends another. */
+  openingProject: { id: number; name: string } | null;
   /** Whether the theme catalogue has arrived and is registered; theme packs found at startup but refused, and where a
    *  person installs packs. */
   packs: { ready: boolean; refused: PackRefusal[]; userDir: string };
@@ -409,6 +413,7 @@ const oneView = (p: Partial<State>): Partial<State> => {
 
 const live = create<State>((set) => ({
   screen: 'welcome',
+  openingProject: null,
   packs: { ready: false, refused: [], userDir: '' },
   snapshot: null,
   runtime: { state: 'idle' },

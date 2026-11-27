@@ -206,21 +206,41 @@ function Stopped({ message, detail }: { message: string; detail?: string }) {
   );
 }
 
-/** On its way: setting up the tools, then starting. A wait that runs past what it usually takes says so, once. */
-function Waiting({ runtime }: { runtime: Extract<RuntimeState, { state: 'preparing' | 'starting' }> }) {
+/**
+ * Whether the preview's wait (setting up the tools, or starting) has run past what it usually takes. Timed from when
+ * that kind of wait began, so the canvas can keep its outline over a start until it runs long, and the card that takes
+ * over then says so at once.
+ */
+export function useSlowWait(runtime: RuntimeState): boolean {
+  const waiting = runtime.state === 'preparing' || runtime.state === 'starting' ? runtime.state : null;
+  const [slowFor, setSlowFor] = useState<typeof waiting>(null);
+  useEffect(() => {
+    setSlowFor(null);
+    if (!waiting) return;
+    const t = setTimeout(() => setSlowFor(waiting), waiting === 'preparing' ? SLOW_SETUP_MS : SLOW_START_MS);
+    return () => clearTimeout(t);
+  }, [waiting]);
+  return waiting !== null && slowFor === waiting;
+}
+
+/** On its way: setting up the tools, then starting. A wait that runs past what it usually takes says so, once. While a
+ *  project's first page is outlined on the canvas (Canvas), a start that has not run long shows nothing of its own. */
+function Waiting({ runtime, slow, outlined }: { runtime: Extract<RuntimeState, { state: 'preparing' | 'starting' }>; slow: boolean; outlined: boolean }) {
   const preparing = runtime.state === 'preparing';
   const safe = useSafeLine();
-  const [slow, setSlow] = useState(false);
-  useEffect(() => {
-    setSlow(false);
-    const t = setTimeout(() => setSlow(true), preparing ? SLOW_SETUP_MS : SLOW_START_MS);
-    return () => clearTimeout(t);
-  }, [preparing]);
   const later = 'This is taking longer than usual.';
   // Setting up is installing the website tools, or, for a project open read-only, copying it to preview it unchanged.
   const copying = preparing && /^Copying/.test(runtime.message);
+  // Mounted from the start, under the outline too, so the change is announced when it comes.
+  const announcer = (
+    <p className="sr-only" role="status">
+      {slow ? `${copying ? 'Preparing the preview' : preparing ? 'Setting up website tools' : 'Starting the preview'} is taking longer than usual.` : ''}
+    </p>
+  );
+  if (outlined && !preparing && !slow) return announcer;
   return (
-    <StatusCard
+    <>
+      <StatusCard
       testId={preparing ? 'preview-preparing' : 'preview-starting'}
       mark={<Working />}
       title={copying ? 'Preparing the preview' : preparing ? 'Setting up website tools' : 'Starting preview'}
@@ -235,16 +255,16 @@ function Waiting({ runtime }: { runtime: Extract<RuntimeState, { state: 'prepari
       <p>{preparing ? runtime.message : slow ? later : 'Opening your site. This usually takes a few seconds.'}</p>
       {preparing && slow && <p>{later}</p>}
       {slow && <p className="status-card-safe">{safe}</p>}
-      {/* Mounted from the start, so the change is announced when it comes. */}
-      <p className="sr-only" role="status">
-        {slow ? `${copying ? 'Preparing the preview' : preparing ? 'Setting up website tools' : 'Starting the preview'} is taking longer than usual.` : ''}
-      </p>
-    </StatusCard>
+      </StatusCard>
+      {announcer}
+    </>
   );
 }
 
-/** What the canvas shows instead of the page while the preview is not running, or nothing when it is. */
-export function PreviewStatus({ runtime }: { runtime: RuntimeState }) {
+/** What the canvas shows instead of the page while the preview is not running, or nothing when it is. `slow` is
+ *  useSlowWait's answer for this runtime; `outlined`, that the canvas is showing the project's first page as an outline,
+ *  which a start or a preview not started yet leave in place. */
+export function PreviewStatus({ runtime, slow, outlined = false }: { runtime: RuntimeState; slow: boolean; outlined?: boolean }) {
   const safe = useSafeLine();
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   if (runtime.state === 'ready') return null;
@@ -266,6 +286,7 @@ export function PreviewStatus({ runtime }: { runtime: RuntimeState }) {
         <p className="status-card-safe">{WORK_SAFE_READ_ONLY}</p>
       </StatusCard>
     );
+  if (runtime.state === 'idle' && outlined) return null;
   if (runtime.state === 'idle')
     return (
       <StatusCard
@@ -282,5 +303,5 @@ export function PreviewStatus({ runtime }: { runtime: RuntimeState }) {
         <p className="status-card-safe">{safe}</p>
       </StatusCard>
     );
-  return <Waiting runtime={runtime} />;
+  return <Waiting runtime={runtime} slow={slow} outlined={outlined} />;
 }

@@ -48,7 +48,10 @@ import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/sav
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu, type MenuTriggerProps } from '../components/ui';
-import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement } from './PreviewStatus';
+import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement, useSlowWait } from './PreviewStatus';
+import { CanvasSkeleton } from '../components/EditorSkeleton';
+import { isRemoteOpening } from '../lib/remote-snapshot';
+import { projectDisplayName } from '@shared/project-name';
 import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
 import { useTransitionAnnouncement } from '../lib/announce';
@@ -3020,6 +3023,21 @@ export function Canvas() {
     />
   );
 
+  // A project's first page keeps the outline the window showed from the click on its card (App, EditorSkeleton) until
+  // it is ready to edit: the preview being started, then the page loading, read as one wait. Only a wait that has
+  // something to say takes its card instead: the website tools being set up, a start running long, a stop, a page
+  // that failed. Each opening has its first page once; later pages, restarts and retries show as they always have.
+  // Not for a project followed from another computer, whose preview is the host's to start or pause.
+  const slowWait = useSlowWait(runtime);
+  const [firstPageOf, setFirstPageOf] = useState<string | null>(null);
+  // Marked only by this opening's own server: the frame of the project open before has stopped by the time the next
+  // one's preview is ready.
+  useEffect(() => {
+    if (frameReady && runtime.state === 'ready' && workspaceKey) setFirstPageOf(workspaceKey);
+  }, [frameReady, runtime.state, workspaceKey]);
+  const firstPage = !!workspaceKey && firstPageOf !== workspaceKey && !isRemoteOpening(workspaceKey) && !frameError && !retrying;
+  const outlined = firstPage && (runtime.state === 'idle' || (runtime.state === 'starting' && !slowWait) || (runtime.state === 'ready' && frameShown && !frameReady && mode === 'edit'));
+
   if (!snapshot) return <div className="canvas" />;
 
   // The frame shows a page the editor has not confirmed (one leaving, or one that never arrived): it takes no picks,
@@ -3231,12 +3249,14 @@ export function Canvas() {
     >
       {runtime.state !== 'ready' && (
         <div className="canvas-state">
-          <PreviewStatus runtime={runtime} />
+          <PreviewStatus runtime={runtime} slow={slowWait} outlined={outlined} />
         </div>
       )}
-      {/* Said in the strip above the page (see frame-status below), and here for screen readers. */}
+      {outlined && <CanvasSkeleton label={`Opening ${projectDisplayName(snapshot.state)}…`} />}
+      {/* Said in the strip above the page (see frame-status below), and here for screen readers. The project's first
+          page is part of its opening, which App announces. */}
       <p className="sr-only" role="status">
-        {opening ? `Opening ${view?.title ?? 'the page'}…` : ''}
+        {opening && !outlined ? `Opening ${view?.title ?? 'the page'}…` : ''}
       </p>
       <p className="sr-only" role="status">
         {announcement}
@@ -3440,7 +3460,7 @@ export function Canvas() {
         {url && initialSrc && (
           <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: FRAME_LABEL, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
             {/* The strip above the page: what the page is doing on the left, its screen size on the right. */}
-            {opening && !resizing && !templateMode && (
+            {opening && !outlined && !resizing && !templateMode && (
               <div className="frame-status" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
                 <Spinner decorative />
                 <span>Opening {(studioView && studioDef?.name) ?? view?.title ?? 'the page'}…</span>
