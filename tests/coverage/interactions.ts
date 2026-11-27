@@ -2466,7 +2466,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'settings',
     intent: 'Connect an AI provider with my API key',
     start: 'A project open, Settings closed',
-    routes: ['toolbar:Settings', 'command:settings', 'item:Toolbar:Settings…', 'dialog:Settings › AI assistant › API key'],
+    routes: ['toolbar:Settings', 'command:settings', 'item:Toolbar:Settings…', 'item:Chat:Manage providers and keys…', 'dialog:Settings › AI assistant › API key'],
     outcome: 'The key is stored in a user-only local file and never in the OS keychain; once typed, it never comes back in an observation, a screenshot or a run record; in a zoomed-in interface Settings… is in the More menu',
     scenario: 'Business starter · none',
     proof: [
