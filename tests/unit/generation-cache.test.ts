@@ -2,16 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import type { InstanceNode, ListItem, ListProp, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { getTheme } from '@catalogue/index';
+import { getTheme, listThemes, registerPacks } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { applyOperations } from '@engine/apply';
-import { RUNTIME_DIR, STYLES_DIR, defFile, generateProject, packFileCopies, pageFile } from '@generator/index';
+import { RUNTIME_DIR, STYLES_DIR, defFile, effectiveTokens, generateProject, packFileCopies, pageFile } from '@generator/index';
 import { derived } from '@generator/cache';
 import * as fonts from '@catalogue/fonts';
 import { GenerationCache } from '@generator/cache';
 import { frozen } from '@engine/draft';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { usedIcons } from '@generator/runtime-files';
+import * as seoMetadata from '@generator/seo-metadata';
 import { sameValue } from '@shared/same';
 import { withPublished } from '@shared/published';
 
@@ -236,6 +237,89 @@ describe('incremental generation (#183)', () => {
     expect(made(site, true)).toEqual(open);
   });
 
+  it('looks up again only what an edit changed in a frozen state, and still makes the bytes a full run does', () => {
+    const { s: site, about } = multiPageSite();
+    const n = firstInstance(site, about);
+    const prop = propOf(site, n);
+    const edit = (s: ProjectState, value: string) => apply(s, { type: 'instance.setProp', owner: page(about), nodeId: n.id, prop, value });
+    // The same edits through one cache, on states frozen as the session holds them and on open ones.
+    const looked = (freeze: boolean) => {
+      const hold = (s: ProjectState) => (freeze ? frozen(s) : s);
+      const cache = Object.assign(new GenerationCache(), { timing: true });
+      const start = hold(structuredClone(site));
+      check(start, cache);
+      const changed = hold(edit(start, 'Changed'));
+      generateProject(changed, {}, cache);
+      const counts = { looked: cache.looked, made: [...cache.made] };
+      expect([...generateProject(changed, { instrument: true }, cache)]).toEqual([...generateProject(structuredClone(changed), { instrument: true })]);
+      // Back to the very first state, then on to another: each as a full run makes it.
+      expect(check(start, cache).clean).toEqual([`page:${about}#clean`]);
+      expect(check(hold(edit(start, 'Again')), cache).clean).toEqual([`page:${about}#clean`]);
+      return counts;
+    };
+    const open = looked(false);
+    const held = looked(true);
+    expect(held.made).toEqual(open.made);
+    // What the unchanged pages, nodes and entries hold is not looked up again: they are the very objects, frozen.
+    expect(held.looked).toBeLessThan(open.looked / 4);
+  });
+
+  it('finds the fonts and icons a frozen state names as a search of the whole project does, as edits bring them in and take them away', () => {
+    const { s: site, about, codeId } = multiPageSite();
+    // The searches as they were, over the whole project at once.
+    const wholeFonts = (s: ProjectState) => {
+      const layouts = Object.values(s.collections ?? {}).flatMap((c) => [c?.settings?.template, c?.settings?.archiveTemplate]);
+      const haystack = JSON.stringify([effectiveTokens(s).map((t) => t.value), s.site.shell, s.pages, s.components, layouts]).replace(/(\\[nrt]|\s)+/g, ' ').toLowerCase();
+      return fonts.installedFonts(s).filter((f) => haystack.includes(f.family.toLowerCase()));
+    };
+    const wholeIcons = (s: ProjectState) => {
+      const found = new Set<string>(['sparkles']);
+      const visit = (v: unknown): void => {
+        if (typeof v === 'string') {
+          if (Object.hasOwn(ICONS, v)) found.add(v);
+        } else if (Array.isArray(v)) v.forEach(visit);
+        else if (v && typeof v === 'object') Object.values(v).forEach(visit);
+      };
+      visit(s.pages);
+      visit(s.site.shell);
+      for (const c of Object.values(s.collections ?? {})) visit(c?.settings?.template);
+      for (const c of Object.values(s.collections ?? {})) visit(c?.settings?.archiveTemplate);
+      for (const def of Object.values(s.components)) {
+        if (def.kind === 'code') for (const m of (def.source ?? '').matchAll(/['"`]([a-z0-9-]+)['"`]/g)) if (Object.hasOwn(ICONS, m[1])) found.add(m[1]);
+        visit(def.properties);
+        visit(def.tree);
+      }
+      return Object.keys(ICONS).filter((k) => found.has(k));
+    };
+    const n = firstInstance(site, about);
+    const prop = propOf(site, n);
+    const lora = getTheme(site.site.themeId).fonts.find((f) => f.name === 'Lora')!;
+    const icon = Object.keys(ICONS).find((k) => !wholeIcons(site).includes(k))!;
+    const setText = (s: ProjectState, value: string) => apply(s, { type: 'instance.setProp', owner: page(about), nodeId: n.id, prop, value });
+    let s = frozen(structuredClone(site));
+    const states: ProjectState[] = [s];
+    for (const step of [
+      (x: ProjectState) => setText(x, `Set in ${lora.family}`),
+      (x: ProjectState) => setText(x, 'Plain words'),
+      (x: ProjectState) => setText(x, icon),
+      (x: ProjectState) => setText(x, 'Plain words again'),
+      (x: ProjectState) => apply(x, { type: 'component.updateSource', definitionId: codeId, source: `${x.components[codeId].source}\n<!-- ${lora.family} '${icon}' -->` } as EditOperation)
+    ]) {
+      s = frozen(step(s));
+      states.push(s);
+    }
+    // Every state, in order and then back to the first, frozen and open: the same answer as the whole search.
+    for (const state of [...states, states[0], structuredClone(states[1])]) {
+      expect(fonts.usedPackFonts(state, effectiveTokens(state).map((t) => t.value))).toEqual(wholeFonts(state));
+      expect(usedIcons(state)).toEqual(wholeIcons(state));
+    }
+    expect(wholeFonts(states[1]).map((f) => f.family)).toContain(lora.family);
+    expect(wholeFonts(states[2]).map((f) => f.family)).not.toContain(lora.family);
+    expect(wholeIcons(states[3])).toContain(icon);
+    expect(wholeIcons(states[4])).not.toContain(icon);
+    expect(wholeIcons(states[5])).toContain(icon);
+  });
+
   it('reads a frozen state as a full run does', () => {
     const { s } = multiPageSite();
     const deepFreeze = <T>(v: T): T => {
@@ -355,6 +439,138 @@ describe('incremental generation (#183)', () => {
     expect(cache.derivedFor(structuredClone(s), 'pages')).toBeUndefined();
     expect(cache.derivedFor(s, 'other')).toBeUndefined();
     expect(computed).toBe(1);
+  });
+
+  it('works a derived value out again only when something it read changed (#965)', () => {
+    const { s: site, home, about } = multiPageSite();
+    const cache = new GenerationCache();
+    const computed: Record<string, number> = { title: 0, both: 0, every: 0 };
+    // A value that reads one page's title, one that reads it through another, and one worked out every state.
+    const title = (st: ProjectState) => derived(st, 'title', (x) => (computed.title++, x.pages[home].title));
+    const both = (st: ProjectState) => derived(st, 'both', (x) => (computed.both++, `${title(x)} and ${x.pages[about].route}`));
+    const every = (st: ProjectState) => derived(st, 'every', (x) => (computed.every++, Object.keys(x.pages).length), { opaque: true });
+    const run = (st: ProjectState) => {
+      const r = cache.run(st, false);
+      const content = r.file('a', (x) => `${both(x)} / ${every(x)}`);
+      r.finish();
+      return content;
+    };
+    let s = frozen(structuredClone(site));
+    expect(run(s)).toBe(`${s.pages[home].title} and ${s.pages[about].route} / ${Object.keys(s.pages).length}`);
+    expect(computed).toEqual({ title: 1, both: 1, every: 1 });
+    // Another page's heading: neither value read it, so neither is worked out again; the opaque one is.
+    const n = firstInstance(s, about);
+    s = frozen(apply(s, { type: 'instance.setProp', owner: page(about), nodeId: n.id, prop: propOf(s, n), value: 'Elsewhere' }));
+    run(s);
+    expect(computed).toEqual({ title: 1, both: 1, every: 2 });
+    // The title one read: it is worked out again, and so is the value that read it through it.
+    s = frozen(apply(s, { type: 'page.update', pageId: home, title: 'Start' }));
+    expect(run(s)).toBe(`Start and ${s.pages[about].route} / ${Object.keys(s.pages).length}`);
+    expect(computed).toEqual({ title: 2, both: 2, every: 3 });
+    // Another field of that page: the title it read is the same, so neither is worked out again.
+    s = frozen(apply(s, { type: 'page.update', pageId: home, description: 'Changed' }));
+    run(s);
+    expect(computed).toEqual({ title: 2, both: 2, every: 4 });
+    // Open states are followed just the same.
+    const open = apply(structuredClone(s), { type: 'page.update', pageId: about, route: '/about-us/' });
+    expect(run(open)).toBe(`Start and /about-us/ / ${Object.keys(open.pages).length}`);
+    expect(computed).toEqual({ title: 2, both: 3, every: 5 });
+    // The theme packs replaced: everything is made again, for the very same state too.
+    registerPacks([...listThemes()]);
+    run(open);
+    expect(computed).toEqual({ title: 3, both: 4, every: 6 });
+    expect(cache.derivedFor(open, 'title')).toBe('Start');
+    registerPacks([...listThemes()]);
+    expect(cache.derivedFor(open, 'title')).toBeUndefined();
+  });
+
+  it('works a derived value that hands back what it read out from the plain state, every state (#965)', () => {
+    const { s: site, home } = multiPageSite();
+    const cache = new GenerationCache();
+    let computed = 0;
+    const run = (st: ProjectState) => {
+      const r = cache.run(st, false);
+      const content = r.file('a', (x) => derived(x, 'home', (y) => (computed++, { page: y.pages[home] })).page.title);
+      r.finish();
+      return content;
+    };
+    let s = frozen(structuredClone(site));
+    expect(run(s)).toBe(s.pages[home].title);
+    s = frozen(apply(s, { type: 'page.update', pageId: home, title: 'Start' }));
+    expect(run(s)).toBe('Start');
+    const before = computed;
+    s = frozen(apply(s, { type: 'page.update', pageId: home, description: 'Changed' }));
+    run(s);
+    expect(computed).toBe(before + 1);
+    // A getter may read the view it was made with whenever it is called: from the plain state as well.
+    const named = (st: ProjectState) => {
+      const r = cache.run(st, false);
+      const content = r.file('b', (x) => derived(x, 'named', (y) => ({ get name() { return y.site.name; } })).name);
+      r.finish();
+      return content;
+    };
+    expect(named(s)).toBe(s.site.name);
+    s = frozen(apply(s, { type: 'site.update', name: 'Renamed' } as EditOperation));
+    expect(named(s)).toBe('Renamed');
+  });
+
+  it('gives what an uncached run gives when a derived value goes on past one it could not work out (#965)', () => {
+    const { s: site, home } = multiPageSite();
+    const make = (x: ProjectState) =>
+      derived(x, 'outer', (y) => {
+        try {
+          return derived(y, 'inner', (z) => {
+            if (z.pages[home].title === 'Broken') throw new Error('No title');
+            return z.pages[home].title;
+          });
+        } catch {
+          return 'fallback';
+        }
+      });
+    const cache = new GenerationCache();
+    for (const title of ['Fine', 'Broken', 'Fine again']) {
+      const s = frozen(apply(structuredClone(site), { type: 'page.update', pageId: home, title }));
+      const r = cache.run(s, false);
+      expect(r.file('a', make)).toBe(make(s));
+      r.finish();
+    }
+  });
+
+  it('works out the agents\' listing once for every document a run asks about, not once each (#965)', () => {
+    const { s: site } = multiPageSite();
+    const s = frozen(apply(site, { type: 'site.update', markdownMirrors: true } as EditOperation));
+    const full = [...generateProject(structuredClone(s))];
+    const resolvers = vi.spyOn(seoMetadata, 'createSeoResolver');
+    generateProject(s);
+    const uncached = resolvers.mock.calls.length;
+    resolvers.mockClear();
+    const files = [...generateProject(s, {}, new GenerationCache())];
+    const cached = resolvers.mock.calls.length;
+    resolvers.mockRestore();
+    expect(files).toEqual(full);
+    expect(full.filter(([path]) => path.endsWith('.md')).length).toBeGreaterThan(10);
+    expect(uncached).toBeGreaterThan(0);
+    // Each document's address is read from one listing: a few more than an uncached run, never one per document.
+    expect(cached).toBeLessThan(uncached + 5);
+  });
+
+  it('follows the posts before and after each post, and its summary, as posts are published, dated and written (#965)', () => {
+    let s = createStarterState('business', 'Posts', false);
+    const ops: EditOperation[] = [{ type: 'collection.create', collectionId: 'posts' } as EditOperation];
+    for (let i = 1; i <= 6; i++) ops.push({ type: 'entry.create', collectionId: 'posts', entryId: `en_p${i}`, title: `Post ${i}`, publishedAt: `2024-01-0${i}`, draft: false, ...(i % 2 ? { excerpt: `Post ${i} in short.` } : {}), body: [`Post ${i} says this.`] } as EditOperation);
+    s = frozen(apply(s, ...ops));
+    const cache = new GenerationCache();
+    check(s, cache);
+    for (const op of [
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_p3', draft: true },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_p5', publishedAt: '2023-12-31' },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_p3', draft: false },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_p1', excerpt: null },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_p2', body: ['Written again.'] }
+    ]) {
+      s = frozen(apply(s, op as EditOperation));
+      check(s, cache);
+    }
   });
 
   it('copies the theme fonts a run found the site using, brief or not (#964)', () => {

@@ -6,6 +6,7 @@
  */
 import type { ProjectState } from '@shared/types';
 import { FAMILY_KEYWORDS, importedFontStack, projectFontFamilies } from '@shared/fonts';
+import { isFrozenThrough } from '@engine/draft';
 import { getTheme, listThemes } from './index';
 import type { PackFont } from './pack';
 
@@ -134,9 +135,51 @@ export function declaresFonts(source: string, families: string[]): boolean {
  * component source for the family name; a code component that builds a family name at run time is not seen.
  */
 export function usedPackFonts(state: ProjectState, tokenValues: unknown[]): BundledFont[] {
-  // Whitespace inside a name may be any run of spaces or tabs, which JSON writes as escapes.
   // Collections' layouts style every entry's page.
   const layouts = Object.values(state.collections ?? {}).flatMap((c) => [c?.settings?.template, c?.settings?.archiveTemplate]);
-  const haystack = JSON.stringify([tokenValues, state.site.shell, state.pages, state.components, layouts]).replace(/(\\[nrt]|\s)+/g, ' ').toLowerCase();
-  return installedFonts(state).filter((f) => haystack.includes(f.family.toLowerCase()));
+  const installed = installedFonts(state);
+  const families = installed.map((f) => f.family.toLowerCase());
+  // The text searched is the JSON of the tokens' values, the shell, the pages, the components and the layouts, one
+  // array. A name holding none of JSON's punctuation can only be found inside the JSON of one value or one key, so
+  // each document is searched on its own, and a document frozen through only once for these names.
+  if (families.some((f) => /[[\]{},:]/.test(f))) {
+    const haystack = searchable([tokenValues, state.site.shell, state.pages, state.components, layouts]);
+    return installed.filter((_, i) => haystack.includes(families[i]));
+  }
+  const key = families.join('\n');
+  const found = new Set<string>();
+  const search = (text: string) => {
+    for (const f of families) if (text.includes(f)) found.add(f);
+  };
+  const document = (doc: unknown) => {
+    if (!doc || typeof doc !== 'object' || !isFrozenThrough(doc)) return search(searchable(doc));
+    let seen = namesIn.get(doc);
+    if (seen?.key !== key) {
+      const text = searchable(doc);
+      namesIn.set(doc, (seen = { key, names: families.filter((f) => text.includes(f)) }));
+    }
+    for (const f of seen.names) found.add(f);
+  };
+  search(searchable(tokenValues));
+  document(state.site.shell);
+  for (const map of [state.pages, state.components] as Array<Record<string, unknown>>) {
+    for (const [id, doc] of Object.entries(map)) {
+      // A key is in the text with its value, unless JSON leaves the value out.
+      if (doc === undefined || typeof doc === 'function' || typeof doc === 'symbol') continue;
+      search(searchable(id));
+      document(doc);
+    }
+  }
+  // JSON writes a layout a collection does not have as null.
+  for (const layout of layouts) document(layout ?? null);
+  return installed.filter((_, i) => found.has(families[i]));
 }
+
+/**
+ * The families a document frozen through names, of the families `key` lists (one per line): such a document never
+ * changes, so it is searched once for as long as the site's fonts are the same.
+ */
+const namesIn = new WeakMap<object, { key: string; names: string[] }>();
+
+/** A value's JSON as names are searched for in it: whitespace inside a name may be any run of spaces or tabs, which JSON writes as escapes. */
+const searchable = (value: unknown) => (JSON.stringify(value) ?? 'null').replace(/(\\[nrt]|\s)+/g, ' ').toLowerCase();

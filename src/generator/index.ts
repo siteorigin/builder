@@ -307,7 +307,8 @@ function placedRows(ctx: ResolveContext, schema: Pick<ListProp, 'feed' | 'max'>,
   const max = Number.isFinite(limit) ? limit : undefined;
   const entry = ctx.entry;
   const key = `entryRows:${entryQueryKey(q, max)}:${entry ? `${entry.collectionId}/${entry.entryId}` : ''}`;
-  return derived(ctx.state, key, (s) => feedRows(s, { feed: 'entries', ...(max !== undefined ? { max } : {}) }, { entry, query: q }));
+  // One for each entry's page a layout's feed is on, each reading its whole collection: worked out for every state.
+  return derived(ctx.state, key, (s) => feedRows(s, { feed: 'entries', ...(max !== undefined ? { max } : {}) }, { entry, query: q }), { opaque: true });
 }
 
 /**
@@ -577,8 +578,9 @@ const inComment = (text: string) => text.replace(/\*\//g, '* /');
 const USED_FONTS = 'fonts';
 /** The theme fonts this site uses, which the editor copies into the project from the theme's pack. */
 function usedFonts(state: ProjectState) {
-  // Any string in any document may name a font: a file that depends on the answer, not on every document.
-  return derived(state, USED_FONTS, (s) => usedPackFonts(s, effectiveTokens(s).map((t) => t.value)));
+  // Any string in any document may name a font: a file that depends on the answer, not on every document. Its reads
+  // are every document whole, so it is searched for every state (each frozen document once, usedPackFonts).
+  return derived(state, USED_FONTS, (s) => usedPackFonts(s, effectiveTokens(s).map((t) => t.value)), { opaque: true });
 }
 
 /** The pack files a site needs beside its generated source: project path → the file inside the theme's pack. */
@@ -4510,7 +4512,7 @@ function routeLanguagesJs(state: ProjectState, indent = ''): string {
 }
 
 /** The route IDs of the site's archive pages (see shared/archives.ts), worked out once per state in a cached run. */
-const archiveRouteIds = (state: ProjectState): ReadonlySet<string> => new Set(derived(state, 'archiveRouteIds', (s) => archivePages(s).map((p) => routeId(p.route))));
+const archiveRouteIds = (state: ProjectState): ReadonlySet<string> => new Set(derived(state, 'archiveRouteIds', (s) => siteArchives(s).map((p) => routeId(p.route))));
 
 /** routeLanguages as a file depends on it: on the list alone, not on every page that goes into it. */
 const languagesByRoute = (state: ProjectState) => derived(state, 'routeLanguages', routeLanguages);

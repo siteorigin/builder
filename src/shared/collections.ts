@@ -146,7 +146,14 @@ export function findEntry(state: ProjectState, entryId: string): { collection: C
  */
 export function orderedEntries(collection: Collection): EntryDoc[] {
   const all = Object.values(collection.entries);
-  const byDate = all.sort((a, b) => (a.publishedAt !== b.publishedAt ? (a.publishedAt < b.publishedAt ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // Each entry's date and ID read once, and compared as they are: a sort compares each entry many times over. A
+  // damaged entry (written by hand) is compared as it always was.
+  const byDate = all.every((e) => e && typeof e === 'object')
+    ? all
+        .map((entry) => ({ entry, at: entry.publishedAt, id: entry.id }))
+        .sort((a, b) => (a.at !== b.at ? (a.at < b.at ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .map((k) => k.entry)
+    : all.sort((a, b) => (a.publishedAt !== b.publishedAt ? (a.publishedAt < b.publishedAt ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const order = collection.settings.entryOrder;
   if (!Array.isArray(order)) return byDate;
   const listed = order.filter((id) => Object.hasOwn(collection.entries, id)).map((id) => collection.entries[id]);
