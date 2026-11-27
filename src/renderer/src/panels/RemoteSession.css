@@ -1,20 +1,23 @@
 @layer components {
   /* The remote shell's place in the toolbar (#766): how this app is connected to the host's live session, and Leave.
-     The pill is the host's Share pill in its guest form (SharePopover.css): the same button, fills and pulse, with a
-     glyph of its own for each state, so live, reconnecting and host away differ in shape and words, not hue alone. */
+     The pill is the host's Share pill in its guest form (SharePopover.css): the same button, fills and edge, with a
+     glyph of its own for each state, so live, reconnecting and host away differ in shape and words, not hue alone. Its
+     edge is the host's too: 3:1 or better on the toolbar in both themes. */
   .toolbar .remote-session { display: flex; align-items: center; gap: 6px; min-width: 0; }
-  .toolbar .remote-pill { height: 28px; padding: 0 10px 0 8px; gap: 5px; max-width: 260px; min-width: 0; font-variant-numeric: tabular-nums; }
+  .toolbar .remote-pill { --live-edge: 80%; height: 28px; padding: 0 10px 0 8px; gap: 5px; max-width: 260px; min-width: 0; font-variant-numeric: tabular-nums; }
+  :where(:root[data-appearance='dark']) .toolbar .remote-pill { --live-edge: 60%; }
   .toolbar .remote-pill .remote-glyph { width: 15px; height: 15px; flex: none; }
-  .toolbar .remote-pill.live { background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 55%, transparent); color: var(--text); box-shadow: none; }
+  .toolbar .remote-pill.live { background: var(--green-soft); border-color: color-mix(in srgb, var(--green) var(--live-edge), transparent); color: var(--text); box-shadow: none; }
   .toolbar .remote-pill.live .remote-glyph { color: var(--green); }
-  .toolbar .remote-pill:is(.reconnecting, .away) { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) 60%, transparent); color: var(--text); box-shadow: none; }
+  .toolbar .remote-pill:is(.reconnecting, .away) { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) var(--live-edge), transparent); color: var(--text); box-shadow: none; }
   .toolbar .remote-pill:is(.reconnecting, .away) .remote-glyph { color: var(--amber); }
   .toolbar .remote-pill.reconnecting .remote-glyph { animation: remote-turn 1.6s linear infinite; }
   .toolbar .remote-pill[aria-expanded='true'] { box-shadow: inset 0 0 0 1px var(--border-control); }
   /* Who else is here: the host's people count, a glyph and a number in the pill's quiet ink. */
   .toolbar .remote-pill .remote-count { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: 2px; color: var(--text-2); font-size: 12px; }
   .toolbar .remote-pill .remote-count svg { width: 12px; height: 12px; }
-  .toolbar .remote-leave { gap: 5px; flex: none; }
+  /* As tall as the pill beside it, so the pair shares one top and bottom edge (and the icon-only form is square). */
+  .toolbar .remote-leave { height: 28px; gap: 5px; flex: none; }
   .toolbar .remote-leave svg { width: 14px; height: 14px; }
   .toolbar .remote-leave.icon-only { width: 28px; padding: 0; justify-content: center; }
   @keyframes remote-turn { to { transform: rotate(360deg); } }

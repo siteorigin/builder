@@ -192,8 +192,10 @@ export function JoinRequests() {
 }
 
 /**
- * The waiting room's notice for a session as the editor shows it (none while it is reconnecting: nothing would reach
- * the relay). One guest is answered right there; several are reviewed in Share, where each is named and answered.
+ * The waiting room's notice for a session as the editor shows it. One guest is answered right there; several are
+ * reviewed in Share, where each is named and answered. While the session reconnects it stays, so a request never
+ * vanishes from under the host's hand: an answer would not reach the relay, so its buttons give way to a line that
+ * says when they come back, as they do under a dialog.
  */
 export function JoinRequestList({ live, hidden, onHide }: { live: LiveHostState; hidden?: ReadonlySet<string>; onHide?: (guestIds: string[]) => void }) {
   const pressedHide = useRef<EventTarget | null>(null);
@@ -203,8 +205,15 @@ export function JoinRequestList({ live, hidden, onHide }: { live: LiveHostState;
   const waiting = waitingGuests(live);
   // Shown while anyone waiting has not been put aside; a new arrival brings it back for everyone still waiting, so its
   // count is always the whole queue.
-  if (!run || live.phase !== 'active' || !waiting.some((g) => !hidden?.has(g.guestId))) return null;
+  if (!run || (live.phase !== 'active' && live.phase !== 'reconnecting') || !waiting.some((g) => !hidden?.has(g.guestId))) return null;
+  const paused = live.phase === 'reconnecting';
+  // Its buttons wait while a dialog is open (they act on the page behind): this line says when they come back. A guest
+  // whose answer is on its way, or who waits on the session reconnecting, has its own line instead; a group's Review
+  // in Share is still held back by the dialog then.
+  const later = <span className="notice-later">Answer once this dialog is closed.</span>;
   const one = waiting.length === 1 ? waiting[0] : null;
+  const sent = one ? sentAnswers.get(one.guestId) : undefined;
+  const sending = !!sent && !sent.unconfirmed;
   const titleId = `live-request-${waiting[0].guestId}`;
   return (
     <div className="toast-group" role="region" aria-label="Join requests">
@@ -223,38 +232,47 @@ export function JoinRequestList({ live, hidden, onHide }: { live: LiveHostState;
             )}
           </span>
           {!one && <span className="live-request-names">{namesOf(waiting.map((g) => g.displayName))}</span>}
-          {/* Its buttons wait while a dialog is open (they act on the page behind): it says when it can be answered. */}
-          <span className="live-request-later">Answer once this dialog is closed.</span>
-          {one && sentAnswers.get(one.guestId) && !sentAnswers.get(one.guestId)!.unconfirmed ? (
+          {one && sending ? (
             // Answered: it says so until the roster lets the guest go (and the outcome is announced then).
-            <span className="live-request-sending">{sentAnswers.get(one.guestId)!.answer === 'admitted' ? 'Admitting…' : 'Declining…'}</span>
+            <span className="live-request-sending">{sent!.answer === 'admitted' ? 'Admitting…' : 'Declining…'}</span>
+          ) : one && paused ? (
+            <span className="live-request-paused">Answer once the session reconnects.</span>
           ) : one ? (
             <>
-              {sentAnswers.get(one.guestId)?.unconfirmed && <span className="live-request-note">Not confirmed yet. Try again.</span>}
+              {/* Try again names the buttons, so it goes while a dialog holds them back. */}
+              {sent?.unconfirmed && (
+                <span className="live-request-note">
+                  Not confirmed yet.<span className="live-request-retry"> Try again.</span>
+                </span>
+              )}
+              {later}
               <JoinAnswers run={run} guest={one} />
             </>
           ) : (
-            <span className="live-answers">
-              {/* As the key is let go, as Hide does: Share opens with focus on the first Admit, which a held Enter's repeats
-                  would otherwise press. */}
-              <button
-                type="button"
-                className="btn btn-sm btn-primary"
-                onClick={() => setState({ shareOpen: true })}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter') return;
-                  e.preventDefault();
-                  if (!e.repeat) pressedReview.current = e.currentTarget;
-                }}
-                onKeyUp={(e) => {
-                  if (e.key !== 'Enter' || pressedReview.current !== e.currentTarget) return;
-                  pressedReview.current = null;
-                  e.currentTarget.click();
-                }}
-              >
-                Review in Share
-              </button>
-            </span>
+            <>
+              {later}
+              <span className="live-answers">
+                {/* As the key is let go, as Hide does: Share opens with focus on the first Admit, which a held Enter's repeats
+                    would otherwise press. */}
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => setState({ shareOpen: true })}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return;
+                    e.preventDefault();
+                    if (!e.repeat) pressedReview.current = e.currentTarget;
+                  }}
+                  onKeyUp={(e) => {
+                    if (e.key !== 'Enter' || pressedReview.current !== e.currentTarget) return;
+                    pressedReview.current = null;
+                    e.currentTarget.click();
+                  }}
+                >
+                  Review in Share
+                </button>
+              </span>
+            </>
           )}
         </div>
         {onHide && (

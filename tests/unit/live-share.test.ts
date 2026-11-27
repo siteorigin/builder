@@ -348,9 +348,22 @@ describe('the waiting room', () => {
     expect(html).toContain('aria-label="Hide these requests"');
   });
 
-  it('shows nothing while the session is reconnecting, or when nobody waits', () => {
+  it('stays while the session reconnects, saying when it can be answered instead of offering answers', () => {
     const reconnecting = { ...active('/sites/acme#1', 'run-1', [pending('Ann', 'g1')]), phase: 'reconnecting' } as LiveHostState;
-    expect(renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: reconnecting }))).toBe('');
+    const html = renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: reconnecting }));
+    expect(html).toContain('<strong>Ann</strong> wants to join');
+    expect(html).toContain('Answer once the session reconnects.');
+    expect(html).not.toContain('Admit as viewer');
+    expect(html).not.toContain('Answer once this dialog is closed.');
+    // Several waiting: Review in Share still works while it reconnects, so a dialog is still what holds it back.
+    const group = { ...active('/sites/acme#1', 'run-1', [pending('Ann', 'g1'), pending('Mo', 'g3')]), phase: 'reconnecting' } as LiveHostState;
+    const many = renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: group }));
+    expect(many).toContain('Review in Share');
+    expect(many).toContain('Answer once this dialog is closed.');
+    expect(many).not.toContain('Answer once the session reconnects.');
+  });
+
+  it('shows nothing when nobody waits', () => {
     expect(renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: active('/sites/acme#1', 'run-1', [{ guestId: 'g2', displayName: 'Quill', status: 'admitted', role: 'viewer', guestExpiresAt: null }]) }))).toBe('');
   });
 });

@@ -4,10 +4,16 @@
   .toolbar .share-btn { position: relative; height: 28px; padding: 0 10px 0 8px; gap: 5px; }
   .toolbar .share-btn.idle { background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); }
   .toolbar .share-btn.idle:hover { background: var(--hover); color: var(--text); }
-  .toolbar .share-btn.live { background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 55%, transparent); color: var(--text); box-shadow: none; }
-  .toolbar .share-btn.live .live-dot { color: var(--green); }
-  .toolbar .share-btn.reconnecting { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) 60%, transparent); color: var(--text); box-shadow: none; }
-  .toolbar .share-btn.reconnecting .live-dot { color: var(--amber); animation: share-pulse 1.4s ease-in-out infinite; }
+  /* The pill's edge is what makes the pale tint a button: green or amber at --live-edge holds the 3:1 control edge on
+     the toolbar (light 4.0 and 3.7:1 at 80%, dark 4.0 and 4.2:1 at 60%). The guest's pill (RemoteSession.css) takes the
+     same edge. */
+  .toolbar .share-btn { --live-edge: 80%; }
+  :where(:root[data-appearance='dark']) .toolbar .share-btn { --live-edge: 60%; }
+  .toolbar .share-btn.live { background: var(--green-soft); border-color: color-mix(in srgb, var(--green) var(--live-edge), transparent); color: var(--text); box-shadow: none; }
+  .toolbar .share-btn.live .live-glyph { color: var(--green); }
+  /* Reconnecting takes the guest's turning arrows, in full amber: a change of shape, not only of hue. */
+  .toolbar .share-btn.reconnecting { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) var(--live-edge), transparent); color: var(--text); box-shadow: none; }
+  .toolbar .share-btn.reconnecting .live-glyph { color: var(--amber); animation: share-turn 1.6s linear infinite; }
   .toolbar .share-btn.busy { color: var(--text-2); }
   .toolbar .share-btn[aria-expanded='true'] { box-shadow: inset 0 0 0 1px var(--border-control); }
   /* Room for the waiting badge, so it sits on the pill's corner and never on the people count. */
@@ -17,8 +23,8 @@
   .share-btn .share-count { display: inline-flex; align-items: center; gap: 2px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .share-btn .share-count svg { width: 12px; height: 12px; }
   .share-btn .share-badge { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--panel); }
-  @keyframes share-pulse { 50% { opacity: 0.35; } }
-  @media (prefers-reduced-motion: reduce) { .toolbar .share-btn.reconnecting .live-dot { animation: none; } }
+  @keyframes share-turn { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .toolbar .share-btn.reconnecting .live-glyph { animation: none; } }
 
   /* The popover: beside the toolbar, never over the whole window, and never modal. Its head, the session's state and
      link, and Lock and End session stay put; only the people lists scroll, so a full room never pushes the link or
@@ -30,7 +36,10 @@
   }
   /* A question it asked is open: it waits under the dialog's scrim. */
   .share-popover.behind { z-index: 850; }
+  /* It takes focus itself only when the control that had it goes (a guest answered or gone) and nothing else is left:
+     a click there draws nothing, the keyboard a ring inside its edge. */
   .share-popover:focus { outline: none; }
+  .share-popover:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
   .share-popover .share-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; flex: none; }
   .share-popover h2 { margin: 0; font-size: 14px; font-weight: 600; }
   .share-popover h3 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-2); }
@@ -61,8 +70,8 @@
   .share-popover .segmented.full button { flex: 1 1 0; padding: 0 4px; font-size: 12px; }
   .share-popover .share-start { align-self: stretch; }
   .share-popover .share-status { display: flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; }
-  .share-popover .share-status .live-dot { width: 15px; height: 15px; color: var(--green); }
-  .share-popover .share-status.reconnecting .live-dot { color: var(--amber); }
+  .share-popover .share-status .live-glyph { width: 15px; height: 15px; color: var(--green); }
+  .share-popover .share-status.reconnecting .live-glyph { color: var(--amber); }
   .share-popover .share-locked { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; font-weight: 500; font-size: 12px; color: var(--text-2); }
   .share-popover .share-locked svg { width: 12px; height: 12px; }
   .share-popover .share-link { display: flex; gap: 6px; }
@@ -106,11 +115,12 @@
   .toast.live-request { align-items: flex-start; max-width: 460px; }
   .toast.live-request .live-request-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .toast.live-request .live-request-title { overflow-wrap: anywhere; }
-  .toast.live-request .live-request-names { margin-top: -4px; opacity: 0.85; font-size: 12px; overflow-wrap: anywhere; }
+  /* Who is asking, what an answer is doing, and when one can be sent: the notices' quieter ink, never faded. */
+  .toast.live-request :is(.live-request-names, .live-request-sending, .live-request-note, .live-request-paused) { color: var(--notice-ink-2); font-size: 12px; }
+  .toast.live-request .live-request-names { margin-top: -4px; overflow-wrap: anywhere; }
   .toast.live-request .live-answers { display: flex; flex-wrap: wrap; gap: 6px; }
-  .toast.live-request :is(.live-request-sending, .live-request-note) { opacity: 0.85; font-size: 12px; }
   .toast.live-request .live-request-sending { min-height: 26px; display: flex; align-items: center; }
-  /* While a dialog holds its buttons back, it says when it can be answered instead. */
-  .toast.live-request .live-request-later { display: none; opacity: 0.85; font-size: 12px; }
-  body.dialog-open .toast.live-request .live-request-later { display: block; }
+  /* While a dialog holds its buttons back, the shared later line (.notice-later) says when they come back; the row
+     they sat in goes too, so it leaves no gap, and so does a Try again that would point at them. */
+  body.dialog-open .toast.live-request :is(.live-answers, .live-request-retry) { display: none; }
 }

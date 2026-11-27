@@ -85,9 +85,9 @@ describe('the time left', () => {
 describe('the pill', () => {
   it('names the session in words, with its guests, who is waiting, and the time left', () => {
     const state = room();
-    expect(livePill(state, T0 + HOUR)).toEqual({ kind: 'live', text: 'Live · 1h 00m', label: 'Share: live session, 1 guest, 1 waiting to join, 1 hour left' });
+    expect(livePill(state, T0 + HOUR)).toEqual({ kind: 'live', text: 'Live · 1h 00m left', label: 'Share: live session, 1 guest, 1 waiting to join, 1 hour left' });
     expect(livePill(room({ duration: 'project', expiresAt: T0 + 24 * HOUR }), T0)).toMatchObject({ text: 'Live', label: 'Share: live session, 1 guest, 1 waiting to join' });
-    expect(livePill(room({ phase: 'reconnecting' } as Partial<LiveRoomState>), T0)).toMatchObject({ kind: 'reconnecting', text: 'Reconnecting' });
+    expect(livePill(room({ phase: 'reconnecting' } as Partial<LiveRoomState>), T0)).toMatchObject({ kind: 'reconnecting', text: 'Reconnecting…' });
     expect(livePill({ phase: 'idle', lastError: null }, T0)).toMatchObject({ kind: 'idle', text: 'Share' });
     expect(livePill({ phase: 'starting', workspaceKey: 'k', runId: 'r' }, T0)).toMatchObject({ kind: 'busy', text: 'Starting…' });
     expect(livePill({ phase: 'stopping', workspaceKey: 'k', runId: 'r' }, T0)).toEqual({ kind: 'busy', text: 'Ending…', label: 'Share: the live session is ending' });
