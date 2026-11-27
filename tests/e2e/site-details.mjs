@@ -76,14 +76,14 @@ const imports = [makePng(join(WORK, 'sunrise.png'), [250, 160, 60]), makePng(joi
   // An empty library says so and offers the import, without leaving Site details.
   const box = picker('Favicon');
   await box.getByRole('button', { name: 'Choose image…' }).click();
-  assert.match(await box.locator('.insp-pick').innerText(), /No images yet/, 'an empty library says so');
+  assert.match(await win.locator('.insp-image-pop').innerText(), /No images in Assets yet/, 'an empty library says so');
   for (const [n, f] of imports.entries()) {
     if (n) await box.getByRole('button', { name: 'Change…' }).click();
     await answerChoosers(app, [{ dialog: 'open', paths: [f] }]);
     const before = site().favicon;
-    await box.getByRole('button', { name: 'Import…' }).click();
+    await win.locator('.insp-image-pop').getByRole('button', { name: 'Import…' }).click();
     await eventually(() => assert.ok(site().favicon && site().favicon !== before, 'the imported image is chosen'));
-    await eventually(async () => assert.equal(await box.locator('.insp-pick').count(), 0, 'the picker closed after the import'));
+    await eventually(async () => assert.equal(await win.locator('.insp-image-pop').count(), 0, 'the picker closed after the import'));
   }
   await box.getByRole('button', { name: 'Remove favicon' }).click();
   await eventually(() => assert.equal(site().favicon ?? null, null, 'None again'));
@@ -91,18 +91,18 @@ const imports = [makePng(join(WORK, 'sunrise.png'), [250, 160, 60]), makePng(joi
 for (const [name, key] of [['Favicon', 'favicon'], ['Social sharing image', 'socialImage']]) {
   const box = picker(name);
   // The file is written before the editor hears of the change: the Inspector shows it once it has.
-  await eventually(async () => assert.equal(await box.locator('.insp-image-name').innerText(), 'None', `${name} starts as None`));
+  await eventually(async () => assert.equal(await box.locator('.insp-image-name').innerText(), 'No image chosen', `${name} starts as None`));
   await box.getByRole('button', { name: 'Choose image…' }).click();
-  const tiles = box.locator('.insp-pick-tile');
+  const tiles = win.locator('.insp-image-pop .insp-pick-tile');
   await tiles.first().waitFor();
   assert.ok((await tiles.count()) >= 3, `the picker lists the library as tiles (${await tiles.count()})`);
   assert.ok((await tiles.first().locator('img').count()) === 1, 'each tile shows its picture');
-  await box.getByRole('listbox', { name: 'Your images' }).locator('[tabindex="0"]').focus();
+  await win.locator('.insp-image-pop').getByRole('listbox', { name: 'Your images' }).locator('[tabindex="0"]').focus();
   await win.keyboard.press('ArrowRight');
-  assert.equal(await box.locator('.insp-pick-tile').evaluateAll((els) => els.indexOf(document.activeElement)), 1, 'the arrow key moved to the second tile');
+  assert.equal(await win.locator('.insp-image-pop .insp-pick-tile').evaluateAll((els) => els.indexOf(document.activeElement)), 1, 'the arrow key moved to the second tile');
   await win.keyboard.press('Enter');
   await eventually(() => assert.ok(site()[key], `${name} saved`));
-  assert.equal(await box.locator('.insp-pick').count(), 0, 'the picker closed after choosing');
+  assert.equal(await win.locator('.insp-image-pop').count(), 0, 'the picker closed after choosing');
   await eventually(async () => assert.equal(await box.locator('.insp-image-thumb img').evaluate((el) => el.complete && el.naturalWidth > 0), true, `${name} shows the chosen image, loaded`));
   assert.equal(await box.locator('.insp-alt, input[type="checkbox"], [role="switch"]').count(), 0, 'no description or decorative controls');
   const shape = await box.locator('.insp-image-thumb').evaluate((el) => el.getBoundingClientRect().width / el.getBoundingClientRect().height);
@@ -110,13 +110,13 @@ for (const [name, key] of [['Favicon', 'favicon'], ['Social sharing image', 'soc
   else assert.ok(Math.abs(shape - 1200 / 630) < 0.05, `the social preview is 1.91:1 (${shape})`);
   await box.getByRole('button', { name: `Remove ${name.toLowerCase()}` }).click();
   await eventually(() => assert.equal(site()[key] ?? null, null, `${name} removed (None)`));
-  await eventually(async () => assert.equal(await box.locator('.insp-image-name').innerText(), 'None', `${name} shows None`));
+  await eventually(async () => assert.equal(await box.locator('.insp-image-name').innerText(), 'No image chosen', `${name} shows None`));
 }
 {
   const social = picker('Social sharing image');
   await answerChoosers(app, [{ dialog: 'open', paths: [makePng(join(WORK, 'share.png'), [200, 60, 120], 16, 8)] }]);
   await social.getByRole('button', { name: 'Choose image…' }).click();
-  await social.getByRole('button', { name: 'Import…' }).click();
+  await win.locator('.insp-image-pop').getByRole('button', { name: 'Import…' }).click();
   await eventually(() => assert.ok(site().socialImage, 'an image imported from the picker is chosen'));
   await eventually(async () => assert.equal(await social.locator('.insp-image-thumb img').count(), 1, 'the imported image is shown'));
   await social.getByRole('button', { name: 'Remove social sharing image' }).click();
@@ -130,7 +130,7 @@ step('a wide logo is shown whole in the single-image picker and its preview, whi
   const social = picker('Social sharing image');
   await answerChoosers(app, [{ dialog: 'open', paths: [wordmark] }]);
   await social.getByRole('button', { name: 'Choose image…' }).click();
-  await social.getByRole('button', { name: 'Import…' }).click();
+  await win.locator('.insp-image-pop').getByRole('button', { name: 'Import…' }).click();
   await eventually(() => assert.ok(site().socialImage, 'the logo is chosen'));
   const fit = (loc) => loc.evaluate((el) => getComputedStyle(el).objectFit);
   const loaded = (loc) => loc.evaluate((el) => el.complete && el.naturalWidth > 0);
@@ -140,7 +140,7 @@ step('a wide logo is shown whole in the single-image picker and its preview, whi
   assert.equal(await fit(preview), 'contain', 'the chosen logo preview is shown whole');
   assert.equal(await checker(preview), true, 'the logo preview sits on the transparency checker');
   await social.getByRole('button', { name: 'Change…' }).click();
-  const tiles = social.locator('.insp-pick-tile');
+  const tiles = win.locator('.insp-image-pop .insp-pick-tile');
   await tiles.first().waitFor();
   const logoTile = tiles.filter({ hasText: /wordmark/i }).locator('img');
   const photoTile = tiles.filter({ hasText: /sunrise/i }).locator('img');

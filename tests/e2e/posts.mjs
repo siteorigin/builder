@@ -285,14 +285,14 @@ step('the featured image is chosen, imported and removed in the visual picker, e
 const featured = win.locator('.post-details:not(.post-seo)').getByRole('group', { name: 'Featured image' });
 const featuredNow = () => entryFile(entryId).featuredImage ?? null;
 assert.equal(await featured.locator('select').count(), 0, 'no dropdown of names');
-assert.equal(await featured.locator('.insp-image-name').innerText(), 'None', 'the post starts with none');
+assert.equal(await featured.locator('.insp-image-name').innerText(), 'No image chosen', 'the post starts with none');
 await featured.getByRole('button', { name: 'Choose image…' }).click();
-const featuredTile = featured.locator('.insp-pick-tile', { hasText: /^kiln$/ });
+const featuredTile = win.locator('.insp-image-pop .insp-pick-tile', { hasText: /^kiln$/ });
 await featuredTile.waitFor();
 assert.equal(await featuredTile.locator('img').count(), 1, 'the library shows as thumbnails');
 await featuredTile.click();
 await eventually(() => assert.equal(featuredNow(), photoId, 'the chosen photo is the featured image'), 20000);
-assert.equal(await featured.locator('.insp-pick').count(), 0, 'the picker closed after choosing');
+assert.equal(await win.locator('.insp-image-pop').count(), 0, 'the picker closed after choosing');
 await eventually(async () => assert.equal(await featured.getByTestId('featured-preview').locator('img').evaluate((el) => el.complete && el.naturalWidth > 0), true, 'its thumbnail shows, loaded'));
 assert.equal(await featured.locator('.insp-alt').count(), 0, 'no description to write');
 // A new photo imported from inside the writer replaces it.
@@ -309,19 +309,19 @@ const glazePath = join(WORK, 'glaze.png');
 writeFileSync(glazePath, Buffer.from(glaze, 'base64'));
 await featured.getByRole('button', { name: 'Change…' }).click();
 await answerChoosers(app, [{ dialog: 'open', paths: [glazePath] }]);
-await featured.getByRole('button', { name: 'Import…' }).click();
+await win.locator('.insp-image-pop').getByRole('button', { name: 'Import…' }).click();
 const glazeId = await eventually(() => {
   const id = featuredNow();
   assert.ok(id && id !== photoId, 'the imported photo is the featured image');
   return id;
 }, 20000);
 assert.equal((await snapshot()).state.assets.assets[glazeId].name, 'glaze', 'and it is in the library');
-await eventually(async () => assert.equal(await featured.locator('.insp-pick').count(), 0, 'the picker closed after the import'));
+await eventually(async () => assert.equal(await win.locator('.insp-image-pop').count(), 0, 'the picker closed after the import'));
 await featured.getByRole('button', { name: 'Remove featured image' }).click();
 await eventually(() => assert.equal(featuredNow(), null, 'Remove clears the featured image'), 20000);
 // The file is written before the change is recorded in History and the editor hears of it: the picker shows it once
 // it has, and only then is History counted.
-await eventually(async () => assert.equal(await featured.locator('.insp-image-name').innerText(), 'None', 'the picker shows none'));
+await eventually(async () => assert.equal(await featured.locator('.insp-image-name').innerText(), 'No image chosen', 'the picker shows none'));
 const featuredSteps = (await snapshot()).history.entries.filter((e) => e.applied && e.label === 'Change featured image').length;
 assert.equal(featuredSteps, 3, 'choosing, importing and removing are each an undo step');
 await win.locator('.post-tools').getByRole('button', { name: 'Undo' }).click();
@@ -331,8 +331,8 @@ await eventually(async () => assert.equal(await featured.locator('.insp-image-na
 const stepsBefore = (await snapshot()).history.entries.filter((e) => e.applied).length;
 await featured.getByRole('button', { name: 'Change…' }).click();
 await answerChoosers(app, [{ dialog: 'open', paths: [glazePath] }]);
-await featured.getByRole('button', { name: 'Import…' }).click();
-await eventually(async () => assert.equal(await featured.locator('.insp-pick').count(), 0, 'the picker closed after importing the same photo'), 20000);
+await win.locator('.insp-image-pop').getByRole('button', { name: 'Import…' }).click();
+await eventually(async () => assert.equal(await win.locator('.insp-image-pop').count(), 0, 'the picker closed after importing the same photo'), 20000);
 assert.equal(featuredNow(), glazeId, 'the same photo stays the featured image');
 assert.equal((await snapshot()).history.entries.filter((e) => e.applied).length, stepsBefore, 'and no undo step is added');
 await win.getByRole('button', { name: 'Publish' }).click();
