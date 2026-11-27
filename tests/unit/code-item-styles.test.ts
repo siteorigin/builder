@@ -126,9 +126,10 @@ describe('a code component declares the list a part repeats over', () => {
     // Anything read from a missing class fails too, and so does a read through another name for the placement's map.
     expect(await readErrors(SOURCE.replace("<h3 class={so_o?.name}>", "<h3 class={so_o?.name} data-n={(so_oi?.[plan.id]?.card).length}>"))).toHaveLength(1);
     expect(await readErrors(SOURCE.replace('so_oi = undefined', 'so_oi: map = undefined').replace('so_oi?.[plan.id]?.card', 'map[plan.id]?.card'))).toHaveLength(1);
-    // A read the map guards, or one of a map the markup declares itself, is safe.
-    expect(await readErrors(SOURCE.replace('so_oi?.[plan.id]?.card', 'so_oi?.[plan.id] && so_oi[plan.id].card'))).toEqual([]);
-    expect(await readErrors(SOURCE.replace('so_oi?.[plan.id]?.card', 'so_oi[plan.id]?.card').replace('<li class=', "{@const so_oi = { [plan.id]: { card: 'x' } }}<li class="))).toEqual([]);
+    // A guard of another item's class guards nothing: every read is held to ?. (so a guarded one is refused too).
+    expect(await readErrors(SOURCE.replace('so_oi?.[plan.id]?.card', 'so_oi?.[plan.id] && so_oi[plan.id].card'))).toHaveLength(1);
+    // A list's row under the map's alias is the row, not the map.
+    expect(await readErrors(SOURCE.replace('so_oi = undefined', 'so_oi: row = undefined').replace('{#each plans as plan (plan.id)}', '{#each plans as row (row.id)}').replace('so_oi?.[plan.id]?.card', 'row?.[row.id]?.card').replace('{plan.name}', '{row.name}'))).toEqual([]);
     // The code's own so_oi is its own to read.
     expect(await readErrors(SOURCE.replace(', so_oi = undefined', '').replace('so_oi?.[plan.id]?.card', 'so_oi[plan.id].card').replace('</script>', "\tconst so_oi = { p_basic: { card: 'x' } };\n</script>"))).toEqual([]);
     const itemOnly = await checkSvelteSource(SOURCE.replace("so_o?.card, ", ''), { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } } });

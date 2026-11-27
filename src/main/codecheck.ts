@@ -725,8 +725,8 @@ function itemHooks(ast: Node): ItemHook[] {
  * Reads of the placement's item classes (so_oi, taken from $props(), under any name) that fail when a class is
  * missing: the website is given item classes only for the items styled on their own, and none at all while none is,
  * so every step of a read must be optional (so_oi?.[plan.id]?.card, and anything read from that), wherever in the
- * markup it is. A read under a guard of the map's own (`so_oi?.[plan.id] && so_oi[plan.id].card`) and one of a map
- * of the markup's own ({@const so_oi = …}) are safe.
+ * markup it is. Only a list's row or a snippet's parameter of the same name stands for something else there; any other
+ * read is held to it, a guarded one too (write it with ?. instead).
  */
 function unguardedItemReads(ast: Node): Node[] {
   const map = propsLocals(ast).get('so_oi')?.local;
@@ -737,17 +737,13 @@ function unguardedItemReads(ast: Node): Node[] {
     for (let at = unwrap(n); at; at = unwrap(at.object as Node)) if (at.type !== 'MemberExpression') return at;
     return undefined;
   };
-  const fromMap = (n: Node | undefined) => {
-    const r = rootOf(n);
-    return r?.type === 'Identifier' && r.name === map;
-  };
+  const rebinds = (a: Node) =>
+    (a.type === 'EachBlock' && (boundNames(a.context as Node).has(map) || a.index === map)) || (a.type === 'SnippetBlock' && ((a.parameters as Node[]) ?? []).some((p) => boundNames(p).has(map)));
   const out: Node[] = [];
   walkAst(ast.fragment, (n, around) => {
-    if (n.type !== 'MemberExpression' || n.optional || !fromMap(n.object as Node)) return;
-    const path = [...around, n];
-    if (around.some((a) => a.type === 'Fragment' && constNames(a).has(map))) return;
-    const guarded = around.some((a, i) => a.type === 'LogicalExpression' && a.operator === '&&' && path[i + 1] === a.right && fromMap(a.left as Node));
-    if (!guarded) out.push(n);
+    if (n.type !== 'MemberExpression' || n.optional) return;
+    const r = rootOf(n.object as Node);
+    if (r?.type === 'Identifier' && r.name === map && !around.some(rebinds)) out.push(n);
   });
   return out;
 }
