@@ -58,7 +58,7 @@ import { perf, timed } from '../perf';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
 
 export { statTrusted };
-import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type PendingOutcome, type SavedVersion } from './versions';
+import { heldAsMedia, isVersionMedia, newVersionId, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type PendingOutcome, type SavedVersion } from './versions';
 import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
 import { captureSnapshotInventory, foldName } from './snapshot-inventory';
 import { GitError, type FileInput } from '../git/protocol';
@@ -233,9 +233,7 @@ export interface ExportedVersion {
 interface CaptureOptions {
   /** Saved by the app by itself. */
   auto?: boolean;
-  /** Saved by the app at a milestone of the project (#1156), rather than before a restore. */
-  milestone?: boolean;
-  /** The site as a restore left it (#1155), under the ID its restore noted. */
+  /** The version of the site as a restore left it (#1155), by the ID its restore noted first. */
   restored?: { id: string };
   /** Files a restore is about to put something else in, held as they are now. */
   also?: string[];
@@ -4366,8 +4364,7 @@ export class ProjectSession extends EventEmitter {
     stopIf(opts.stop);
     let stored: { commit: string; tree: string };
     try {
-      const kind = opts.restored ? 'restored' : opts.auto ? (opts.milestone ? 'automatic' : 'before-restore') : 'saved';
-      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, kind, opts.signal ? { signal: opts.signal } : {});
+      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, opts.restored ? 'restored' : opts.auto ? 'auto' : 'saved', opts.signal ? { signal: opts.signal } : {});
     } catch (e) {
       if (opts.stop?.()) throw new CaptureStopped();
       if (e instanceof GitError && e.code === 'corrupt') throw new HistoryDamaged(gitSaveProblem(e));
@@ -4417,7 +4414,7 @@ export class ProjectSession extends EventEmitter {
    * store instead, so a safety version is still there to go back to.
    */
   private captureAuto(name: string, opts: Omit<CaptureOptions, 'auto' | 'plain'> = {}): Promise<SavedVersion> {
-    return this.captureVersion(name, { ...opts, auto: true, milestone: true }).catch((e: unknown) => (e instanceof HistoryDamaged ? this.captureVersion(name, { ...opts, auto: true, milestone: true, plain: true }) : Promise.reject(e)));
+    return this.captureVersion(name, { ...opts, auto: true }).catch((e: unknown) => (e instanceof HistoryDamaged ? this.captureVersion(name, { ...opts, auto: true, plain: true }) : Promise.reject(e)));
   }
 
   /**
@@ -4688,7 +4685,7 @@ export class ProjectSession extends EventEmitter {
         inGit = !!now.git;
         // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
         // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
-        const kept = await this.versions.sameAs(now);
+        const kept = await this.versions.sameAs(now, undefined, true);
         if (kept) backup = kept;
         else {
           if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };

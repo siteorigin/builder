@@ -40,12 +40,12 @@ export const APP_AUTHOR = { name: 'SiteOrigin Builder', email: 'versions@siteori
 export const keptOutOfGit = (path: string): boolean => snapshotPlace(path).kind === 'attachment';
 
 /**
- * What kind of version a commit is: one the author saved, the way back the app saved before a restore, the site as a
- * restore left it (#1155), which the app saves after one, or another the app saved by itself at a milestone (#1156).
+ * What kind of version a commit is: one the author saved, one the app saved by itself (the way back before a restore, a
+ * starting version, a safety milestone, #1156), or the site as a restore left it (#1155), which the app saves after one.
  */
-export type VersionKind = 'saved' | 'before-restore' | 'restored' | 'automatic';
+export type VersionKind = 'saved' | 'auto' | 'restored';
 
-const KIND_MESSAGE: Record<VersionKind, string> = { saved: 'Saved version', 'before-restore': 'Before restoring', restored: 'Restored version', automatic: 'Saved automatically' };
+const KIND_MESSAGE: Record<VersionKind, string> = { saved: 'Saved version', auto: 'Saved automatically', restored: 'Restored version' };
 
 /** A commit's message: what kind of version it is, and the ID that ties it to its row. Never the author's own words. */
 export function commitMessage(id: string, kind: VersionKind): string {

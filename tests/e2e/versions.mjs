@@ -129,7 +129,11 @@ async function run(mode) {
     await history.getByRole('button', { name: 'Delete “Approved by client”' }).click();
     await confirm.getByRole('button', { name: 'Delete version' }).click();
     await eventually(async () =>
-      assert.deepEqual(await versionNames(), [...(inGit ? [['Restored “Approved by client”', true]] : []), ['Before restoring “Approved by client”', true], ['Starting version', true]])
+      assert.deepEqual(await versionNames(), [
+        ...(inGit ? [['Restored “Approved by client”', true]] : []),
+        ['Before restoring “Approved by client”', true],
+        ['Starting version', true]
+      ])
     );
     await history.locator('.versions-list li', { hasText: 'Approved by client' }).filter({ hasNotText: 'Before restoring' }).filter({ hasNotText: 'Restored' }).waitFor({ state: 'detached' });
     assert.ok(await history.isVisible(), 'History stays open after deleting');
