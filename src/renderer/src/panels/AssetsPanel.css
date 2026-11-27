@@ -10,7 +10,7 @@
   .asset-sections.dock-tabs { height: 38px; gap: 0; padding: 0 4px; }
   .asset-sections .dock-tab { gap: 3px; padding: 0 5px; height: 28px; }
   .asset-sections .dock-tab[aria-selected='true']::after { bottom: -5px; }
-  .asset-sections .dock-tab .asset-count { font-size: 11px; }
+  .asset-sections .dock-tab .asset-count { font-size: 12px; }
   .asset-sections .dock-tab svg.asset-tab-warn { width: 13px; height: 13px; color: var(--red); }
   .asset-host .panel-body { scroll-padding-block: 14px; }
   .asset-sections .dock-tab[aria-selected='true'] .asset-count { color: var(--text-2); }
@@ -25,11 +25,8 @@
   .asset-search-row { display: flex; align-items: center; gap: 4px; }
   .asset-search-row .search { flex: 1; min-width: 0; }
   .asset-density { flex: none; width: 30px; height: 30px; }
-  /* On: the accent fill with a full accent ring, so the state reads at 3:1 and not only as a faint tint. */
-  .asset-density[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent); }
-  /* A tile that can't be picked here (its file is missing): dimmed, and its tooltip and spoken name say why. */
-  .asset-tile.blocked { cursor: not-allowed; }
-  .asset-tile.blocked .asset-thumb { opacity: 0.45; }
+  /* On: the raised selected face, as a segmented option's, so the only blue outline beside the search stays focus. */
+  .asset-density[aria-pressed='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
   .asset-result { margin: 0; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   /* Sort and numbered series side by side, one under the other when the panel is narrow. */
   .asset-order { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
@@ -46,17 +43,22 @@
   /* 6px above the first row leaves room for a tile's whole focus ring inside the scrolling body. */
   .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 12px 8px; padding: 10px 10px 16px; }
   /* Smaller thumbnails: three to a row at the default width, pictures only (names are in each tile's tooltip). */
-  .asset-grid.compact { grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
-  .asset-tile { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; border-radius: var(--r-sm); background: none; text-align: left; color: var(--text-2); }
-  .asset-tile:focus-visible { outline-offset: 3px; }
+  /* 75px is the narrowest a tile gets: wide enough for its widest short chip ("Original") whole. */
+  .asset-grid.compact { grid-template-columns: repeat(auto-fill, minmax(75px, 1fr)); gap: 6px; }
+  /* Each tile is a size container, so its chips choose their words by the tile's own width (see .asset-chip-short). */
+  .asset-tile { container-type: inline-size; position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; border-radius: var(--r-sm); background: none; text-align: left; color: var(--text-2); }
+  .asset-tile:focus-visible { outline-offset: 2px; }
   .asset-thumb { position: relative; display: grid; place-items: center; aspect-ratio: 1; flex: none; border-radius: var(--r-sm); overflow: hidden; background: var(--panel-2); }
   .asset-thumb::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--border); pointer-events: none; }
   .asset-thumb img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
   .asset-thumb.contain img { object-fit: contain; padding: 8%; }
   .asset-noimg { width: 20px; height: 20px; color: var(--text-3); }
-  /* Every file of the picture is gone: an empty frame, never the browser's memory of it. */
-  .asset-thumb-gone { background: var(--panel-2); }
+  /* Every file of the picture is gone: an empty frame, never the browser's memory of it. In the library the frame says
+     where the repair is (the details); the tile's tooltip and spoken name say which repair. */
+  .asset-thumb-gone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: var(--panel-2); }
   .asset-thumb-gone svg { width: 22px; height: 22px; color: var(--text-3); }
+  .asset-thumb-repair { padding: 0 6px; font-size: 12px; font-weight: 500; line-height: 1.3; text-align: center; color: var(--text-2); }
+  .asset-tile:hover .asset-thumb-repair { color: var(--text); }
   /* Behind a loaded picture that may be transparent: a mid-light checker in light, a mid grey in dark, so dark
      and white artwork both stay visible. It sits on the picture's own box, so opaque photos hide it. */
   .asset-thumb img.alpha, .asset-preview img.alpha { background-color: #e6e9ee; background-image: conic-gradient(#d3d8df 25%, transparent 0 50%, #d3d8df 0 75%, transparent 0); background-size: 12px 12px; background-clip: content-box; background-origin: content-box; }
@@ -65,13 +67,56 @@
   }
   .asset-tile:hover .asset-thumb::after { box-shadow: inset 0 0 0 1px var(--border-control); }
   .asset-tile:hover .asset-name { color: var(--text); }
+  /* A tile that can't be picked here (its files are missing) is drawn unavailable, never faded: the neutral face and
+     edge around it, its name in the disabled ink, its picture and chip at full strength so it can still be recognised.
+     The tile picked while choosing places takes the raised selected face (the gallery picker's) with the picked check,
+     so blue stays keyboard focus alone. Both faces are drawn just outside the tile, behind it, so the grid's columns
+     stay aligned and the focus outline (2px out) lands on the face's edge. */
+  .asset-tile:is(.blocked, .picked) { isolation: isolate; }
+  .asset-tile:is(.blocked, .picked)::before { content: ''; position: absolute; inset: -3px; z-index: -1; border-radius: calc(var(--r-sm) + 3px); pointer-events: none; }
+  .asset-grid.compact .asset-tile:is(.blocked, .picked)::before { inset: -2px; border-radius: calc(var(--r-sm) + 2px); }
+  .asset-tile.blocked { cursor: not-allowed; }
+  .asset-tile.blocked::before { background: var(--disabled-fill); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .asset-tile.blocked .asset-name, .asset-tile.blocked:hover .asset-name, .asset-tile.blocked .asset-tile-id { color: var(--disabled-ink); }
+  .asset-tile.blocked:hover .asset-thumb::after { box-shadow: inset 0 0 0 1px var(--border); }
+  .asset-tile.picked::before { background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+  .asset-tile.picked .asset-name { color: var(--text); font-weight: 600; }
+  .asset-picked { position: absolute; top: 5px; left: 5px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-sm); background: var(--accent-fill); color: var(--on-accent); box-shadow: 0 0 0 2px var(--raised); pointer-events: none; }
+  .asset-picked svg { width: 13px; height: 13px; stroke-width: 2.5; }
   .asset-name { font-size: 12px; line-height: 1.3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-  /* A chip on a picture: opaque enough that its words never depend on the photo behind them, one line that never
-     outgrows the tile (the full words are in the tile's name and tooltip). */
-  .asset-size { position: absolute; top: 5px; right: 5px; display: inline-flex; align-items: center; gap: 3px; max-width: calc(100% - 10px); height: 18px; padding: 0 6px 0 4px; border-radius: var(--r-sm); background: rgb(20 28 48 / 0.86); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16); color: #fff; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
+  /* A chip on a picture: an opaque raised face, so its words never depend on the photo behind them, and a 3:1 keyline,
+     so its edge holds against a light photo where the face alone would not. The size chip is neutral; the missing chip
+     is the gallery picker's red chip (--red-soft, --red-ink) laid on that same opaque face. One line, never cut: a
+     narrow tile (compact, or the sidebar at its narrowest) shows the short words instead. */
+  .asset-size { position: absolute; top: 5px; right: 5px; display: inline-flex; align-items: center; gap: 3px; max-width: calc(100% - 10px); height: 18px; padding: 0 6px 0 4px; border-radius: var(--r-sm); background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-control); color: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
   .asset-size > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .asset-grid.compact .asset-size { top: 4px; right: 4px; max-width: calc(100% - 8px); height: 16px; padding: 0 5px; font-size: 10px; }
-  .asset-grid.compact .asset-size svg { width: 10px; height: 10px; }
+  .asset-size.asset-gone { background: linear-gradient(var(--red-soft), var(--red-soft)), var(--raised); box-shadow: inset 0 0 0 1px var(--red-ink); color: var(--red-ink); }
+  .asset-chip-short { display: none; }
+  /* A narrow tile: short words; the size chip drops its glyph, so it clears the picked check in the other corner; and an
+     empty frame keeps only "Open to repair", since the Missing chip above it already carries the alert glyph. */
+  @container (max-width: 104px) {
+    .asset-chip-long { display: none; }
+    .asset-chip-short { display: inline; }
+    .asset-size:not(.asset-gone) svg { display: none; }
+    .asset-size:not(.asset-gone) { padding: 0 6px; }
+    /* The picked check owns the top-left corner: a picked tile's size chip moves to the picture's bottom-right one (the
+       picture is square and as wide as the tile). A damaged tile is never picked, so the red chip stays put. */
+    .asset-tile.picked .asset-size:not(.asset-gone) { top: calc(100cqw - 23px); }
+    .asset-thumb-gone:has(.asset-thumb-repair) svg { display: none; }
+    /* A third line keeps a long name's ending (shortName keeps both ends), the picked tile's semibold one included. */
+    .asset-name { -webkit-line-clamp: 3; }
+  }
+  /* The longer damage words need wider tiles than the short ones' 104px: each switches at its own width. */
+  @container (max-width: 112px) {
+    .asset-gone.copy .asset-chip-long { display: none; }
+    .asset-gone.copy .asset-chip-short { display: inline; }
+  }
+  @container (max-width: 126px) {
+    .asset-gone.copies .asset-chip-long { display: none; }
+    .asset-gone.copies .asset-chip-short { display: inline; }
+  }
+  .asset-grid.compact .asset-size { top: 4px; right: 4px; max-width: calc(100% - 8px); }
+  .asset-grid.compact .asset-size.asset-gone { padding: 0 5px 0 4px; }
   .asset-size svg { flex: none; width: 11px; height: 11px; }
   .asset-drop-hint { margin: -4px 14px 18px; font-size: 12px; color: var(--text-3); }
   /* ---------- Fonts: a card a family, its files (one face each) as rows inside it ----------
@@ -282,9 +327,8 @@
   .asset-alt-review .asset-use :is(.where, .what) { overflow-wrap: anywhere; white-space: normal; }
   .asset-alt-review .asset-use .where { flex: 0 1 auto; min-width: 0; max-width: 45%; }
   .asset-alt-review .asset-alt-text { display: block; padding: 0 6px 4px 25px; overflow-wrap: anywhere; color: var(--text-2); }
-  .asset-tile-id { margin-top: -4px; font-size: 10px; line-height: 1.3; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .asset-tile-id { margin-top: -4px; font-size: 12px; line-height: 1.3; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .asset-size.asset-gone { background: rgb(150 32 28); }
   .asset-uses { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
   .asset-uses h5 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
   .asset-uses ul { display: flex; flex-direction: column; margin: 0 -6px; padding: 0; list-style: none; }
@@ -306,7 +350,7 @@
   .asset-replace { display: flex; flex-direction: column; padding-bottom: 8px; }
   .asset-replace-top { flex: none; }
   .asset-replace-top .asset-detail-top { margin-left: 1px; }
-  .asset-replace-head { display: flex; align-items: center; gap: 10px; padding: 0 10px 10px; }
+  .asset-replace-head { display: flex; align-items: flex-start; gap: 10px; padding: 0 10px 10px; }
   .asset-replace-head .asset-thumb { width: 48px; }
   .asset-replace-head h4 { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .asset-replace-head p { margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
@@ -321,16 +365,36 @@
   .asset-choose { margin: 0 10px 10px; padding: 8px 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); min-width: 0; }
   .asset-choose legend { padding: 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
   .asset-choose ul { display: flex; flex-direction: column; max-height: 220px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
-  .asset-choose li { display: flex; align-items: center; gap: 2px; min-width: 0; }
-  .asset-choose label.asset-use { flex: 1; min-width: 0; cursor: pointer; }
-  .asset-choose label.asset-use:hover { background: var(--hover); color: var(--text); }
-  .asset-choose input[type='checkbox'] { flex: none; margin: 0 2px 0 0; }
-  .asset-choose input:disabled + svg, .asset-choose input:disabled ~ span { color: var(--disabled-ink); }
+  /* A row is the place and its Show button together, so the row lights as one. Its words wrap rather than cut: two
+     places on the same page differ only in the block's name. */
+  .asset-choose li { display: flex; align-items: center; gap: 2px; min-width: 0; border-radius: var(--r-sm); }
+  .asset-choose li:hover { background: var(--hover); }
+  .asset-choose label.asset-use { flex: 1; align-items: flex-start; min-width: 0; padding-block: 5px; cursor: pointer; }
+  .asset-choose label.asset-use:hover { background: none; color: var(--text); }
+  /* The page and the block side by side, or one over the other when the list is narrow. */
+  .asset-choose ul { container-type: inline-size; }
+  .asset-choose-place { flex: 1; display: flex; gap: 6px; min-width: 0; }
+  @container (max-width: 200px) {
+    .asset-choose-place { flex-direction: column; gap: 0; }
+    .asset-choose .asset-use .asset-choose-place .where { max-width: none; }
+  }
+  /* Words wrap between words; only one word longer than the row breaks, so nothing runs under the Show button. A narrow
+     list stacks the page over the block, so neither is squeezed into half a row. */
+  .asset-choose .asset-use :is(.where, .what) { min-width: 0; overflow: visible; line-height: 16px; white-space: normal; overflow-wrap: anywhere; }
+  .asset-choose .asset-use .where { flex: 0 1 auto; max-width: 45%; }
+  .asset-choose .asset-use svg { margin-top: 1.5px; }
+  .asset-choose input[type='checkbox'] { flex: none; width: 14px; height: 14px; margin: 1px 0 0; accent-color: var(--accent); }
+  .asset-choose input:disabled + svg, .asset-choose input:disabled ~ .asset-choose-place :is(.where, .what) { color: var(--disabled-ink); }
   .asset-choose-show { flex: none; width: 26px; padding: 0; justify-content: center; }
-  .asset-choose-sum { margin: 8px 4px 0; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
-  .asset-choose-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 4px 0; }
-  .asset-tile.picked .asset-thumb::after { box-shadow: inset 0 0 0 2px var(--accent); }
-  .asset-tile.picked .asset-name { color: var(--text); font-weight: 600; }
-  .asset-picked { position: absolute; top: 5px; left: 5px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent-fill); color: var(--on-accent); pointer-events: none; }
-  .asset-picked svg { width: 13px; height: 13px; }
+  /* In a narrow sidebar the import offer follows the candidates (AssetsPanel.tsx renders it there). */
+  .asset-replace.narrow .asset-replace-add { padding-top: 12px; }
+  .asset-replace.narrow .asset-blocked-note { padding: 6px 8px; }
+  /* What the change will do and the button that makes it, under the images while one is picked from them: a sibling of
+     the scrolling body, not inside it, so a focused tile or button is never scrolled behind it. */
+  .asset-choose-foot { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--border); background: var(--panel); }
+  .asset-choose-sum { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
+  .asset-choose-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* Why some tiles below can't be picked, said once on screen rather than only in each tile's tooltip. */
+  .asset-blocked-note { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; margin: 0 10px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .asset-blocked-note svg { width: 14px; height: 14px; margin-top: 2px; color: var(--red); }
 }

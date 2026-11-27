@@ -921,8 +921,13 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         const apart = sameNames.get(a.id);
         const name = apart ? `${nameOf(a)} (${apart})` : nameOf(a);
         const copies = gone?.variants.length ?? 0;
+        // The chip's words, and the shorter ones a narrow tile (compact, or the sidebar at its narrowest) shows instead: the
+        // alert glyph already says something is wrong, so the short form only names what. Never cut to an ellipsis.
         const chip = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'No original' : copies === 1 ? 'Copy missing' : 'Copies missing';
+        const chipShort = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'Original' : copies === 1 ? 'Copy' : 'Copies';
         const missingLabel = hurt === 'all' ? 'file missing' : hurt === 'original' ? 'original file missing, smaller copies still show' : copies === 1 ? 'a smaller copy missing' : 'smaller copies missing';
+        // In the library, a damaged tile says where its repair is: opening it shows the details, which hold it.
+        const repair = gone && !reason && drag ? (hurt === 'copies' ? 'Open it to make the copies again.' : 'Open it to locate the file.') : '';
         return (
           <button
             key={a.id}
@@ -934,13 +939,18 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             {...(drag ? dragFrom(a) : {})}
             aria-pressed={picked === undefined ? undefined : picked === a.id}
             aria-disabled={reason ? true : undefined}
-            aria-label={`${gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}${reason ? `. ${reason}` : ''}`}
-            title={`${gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}${reason ? `\n${reason}` : ''}`}
+            aria-label={`${gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}${reason ? `. ${reason}` : repair ? `. ${repair}` : ''}`}
+            title={`${gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}${reason ? `\n${reason}` : repair ? `\n${repair}` : ''}`}
           >
             {hurt === 'all' ? (
               // Nothing is left to show: a picture still on screen would only be the browser's memory of it.
               <span className="asset-thumb asset-thumb-gone">
                 <ImageOff aria-hidden="true" />
+                {repair && !compact && (
+                  <span className="asset-thumb-repair" aria-hidden="true">
+                    Open to repair
+                  </span>
+                )}
               </span>
             ) : (
               <Thumb key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={a} devUrl={devUrl} />
@@ -951,15 +961,21 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               </span>
             )}
             {gone && (
-              <span className="asset-size asset-gone" aria-hidden="true">
+              <span className={`asset-size asset-gone${hurt === 'copies' ? (copies === 1 ? ' copy' : ' copies') : ''}`} aria-hidden="true">
                 <TriangleAlert />
-                {/* Smaller tiles say only "Missing"; the details are in the tooltip and the spoken name. */}
-                <span>{compact ? 'Missing' : chip}</span>
+                {chipShort === chip ? (
+                  <span>{chip}</span>
+                ) : (
+                  <>
+                    <span className="asset-chip-long">{chip}</span>
+                    <span className="asset-chip-short">{chipShort}</span>
+                  </>
+                )}
               </span>
             )}
             {big && (
               <span className="asset-size" aria-hidden="true">
-                {!compact && <Info />}
+                <Info />
                 <span>{formatBytes(a.bytes)}</span>
               </span>
             )}
@@ -987,7 +1003,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         ) : series.key ? (
           <>There are no other images in {series.label}.</>
         ) : replacing ? (
-          'There are no other images in this project yet. Import one above.'
+          'There are no other images in this project yet. Import a replacement to use here.'
         ) : (
           'Every image is in use.'
         )}
@@ -1046,10 +1062,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           label="Filter images"
           value={mode}
           onChange={setFilter}
+          // Under 240px three labels and their counts no longer fit the row: the counts go, as the tabs' do.
           options={[
-            { value: 'all' as const, label: <>All <span className="asset-count">{found.length}</span></> },
-            ...(unused.length ? [{ value: 'unused' as const, label: <>Unused <span className="asset-count">{foundUnused.length}</span></> }] : []),
-            ...(damaged.length ? [{ value: 'missing' as const, label: <>Missing <span className="asset-count">{foundDamaged.length}</span></> }] : [])
+            { value: 'all' as const, label: <>All {!narrow && <span className="asset-count">{found.length}</span>}</> },
+            ...(unused.length ? [{ value: 'unused' as const, label: <>Unused {!narrow && <span className="asset-count">{foundUnused.length}</span>}</> }] : []),
+            ...(damaged.length ? [{ value: 'missing' as const, label: <>Missing {!narrow && <span className="asset-count">{foundDamaged.length}</span>}</> }] : [])
           ]}
         />
       )}
@@ -1080,11 +1097,13 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
 
   let tools: React.ReactNode = null;
   let body: React.ReactNode;
+  // Pinned under the scrolling images, outside them, so nothing the keyboard reaches is ever hidden behind it.
+  let foot: React.ReactNode = null;
   if (sel && replacing) {
     const n = places.length || usage[sel.id] || 0;
     // Some places, chosen from the uses still there: one removed meanwhile drops out of the count and the change.
     const chosen = choosing ? places.filter((u) => u.target && choosing.chosen.includes(u.key)) : [];
-    const pick = choosing?.pick ? (snap.state.assets.assets[choosing.pick] ?? null) : null;
+    const picked = choosing?.pick ? (snap.state.assets.assets[choosing.pick] ?? null) : null;
     const choosable = places.filter((u) => u.target).length;
     const onPick = (a: AssetRecord) => {
       if (!choosing) return void replaceWith(a.id);
@@ -1098,6 +1117,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const startChoosing = () => {
       replaceSession.current++;
       setChoosing({ chosen: places.flatMap((u) => (u.target ? [u.key] : [])), pick: null });
+      // The button that opened the list goes with it: focus lands on the first place, inside the labelled group.
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-choose input:not(:disabled)')?.focus());
     };
     const stopChoosing = () => {
       replaceSession.current++;
@@ -1112,6 +1133,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       const hurt = damage(a, missingOf.get(a.id));
       return hurt === 'copies' ? 'Some of its smaller copies are missing. Make them again in its details first.' : hurt ? 'Its file is missing, so it can’t be used here. Locate it first.' : null;
     };
+    // A picked image whose files went missing since is no longer the pick: the places stay ticked, and the foot asks for another.
+    const pick = picked && !unusable(picked) ? picked : null;
+    const pickLost = !!picked && !pick;
+    // Two pictures can share a name: the foot names the pick the way its tile does.
+    const pickName = pick ? (sameNames.get(pick.id) ? `${nameOf(pick)} (${sameNames.get(pick.id)})` : nameOf(pick)) : '';
+    const blockedCount = shown.filter((a) => unusable(a)).length;
     // Only Cancel and the search stay put; what is being replaced scrolls away with the images.
     tools = (
       <div className="asset-replace-top">
@@ -1123,8 +1150,65 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         {browseTools}
       </div>
     );
+    const importOffer = (
+      <div className="asset-replace-add">
+        <button
+          className="btn btn-sm"
+          disabled={importing}
+          onClick={async () => {
+            const session = replaceSession.current;
+            const r = await importFiles(undefined, 'image');
+            if (replaceSession.current !== session) return;
+            // Applied only while the picker is still open for this image, and only for the one file chosen, come in
+            // cleanly. Choosing places, it is picked for them, to replace there once the author says so. Otherwise a
+            // photo the import review showed (converted or made web-sized) waits here to be picked: that review's button
+            // said Add, not Replace.
+            if (r.chosen === 1 && r.ids.length === 1 && !r.failed && (choosing || !r.reviewed)) {
+              if (choosing) {
+                // A file the library already had as this very image is no replacement for it.
+                if (r.ids[0] !== sel.id) setChoosing((c) => c && { ...c, pick: r.ids[0] });
+              } else void replaceWith(r.ids[0]);
+            } else {
+              const next = r.ids.find((id) => id !== sel.id);
+              if (!next) return;
+              setPickQ('');
+              pickSeries.choose('');
+              focusTile(next);
+            }
+          }}
+        >
+          <ImagePlus /> Import a replacement…
+        </button>
+        <p>{choosing ? 'One file is picked as soon as it’s added. Several wait here for you to pick.' : 'One file is used straight away. Several, or a photo that needs a check first, wait here for you to pick.'}</p>
+      </div>
+    );
+    if (choosing)
+      foot = (
+        // What the change will do, and the button that makes it, stay in view below the images being picked from.
+        <div className="asset-choose-foot">
+          <p className="asset-choose-sum" role="status">
+            {lost > 0 && `${lost === 1 ? 'A place you ticked no longer shows' : `${lost} places you ticked no longer show`} ${nameOf(sel)}. `}
+            {!chosen.length
+              ? 'Tick at least one place.'
+              : pick
+                ? // In a narrow sidebar the first sentence is enough: the unticked rows above say which places keep it.
+                  `${pickName} will show in ${chosen.length === n ? `all ${n} places` : `${chosen.length} of ${n} places`}.${chosen.length < n && !narrow ? ` ${n - chosen.length === 1 ? 'The other place keeps' : `The other ${n - chosen.length} places keep`} ${nameOf(sel)}.` : ''}`
+                : pickLost && picked
+                  ? `${nameOf(picked)} can’t be used now: its files are missing. Pick another image to show in ${plural(chosen.length, 'place', 'places')}.`
+                  : `Pick the image to show in ${plural(chosen.length, 'place', 'places')}.`}
+          </p>
+          <div className="asset-choose-actions">
+            <button className="btn btn-sm btn-primary" disabled={!pick || !chosen.length} onClick={() => pick && void replaceWith(pick.id, { uses: chosen, revision: snap.revision })}>
+              <Replace /> {chosen.length ? `Replace in ${plural(chosen.length, 'place', 'places')}` : 'Replace'}
+            </button>
+            <button className="btn btn-sm btn-ghost" onClick={stopChoosing}>
+              Every place instead
+            </button>
+          </div>
+        </div>
+      );
     body = (
-      <div className="asset-replace">
+      <div className={`asset-replace${narrow ? ' narrow' : ''}`}>
         <div className="asset-replace-head">
           {damage(sel, missingOf.get(sel.id)) === 'all' ? (
             <span className="asset-thumb asset-thumb-gone">
@@ -1146,8 +1230,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 'Pick the image to show in its place instead.'
               ) : (
                 `Pick the image to show in all ${n} places instead.`
-              )}{' '}
-              {choosing ? 'You can undo it.' : 'It changes as soon as you pick, and you can undo it.'}
+              )}
+              {choosing ? (narrow ? '' : ' You can undo it.') : ' It changes as soon as you pick, and you can undo it.'}
             </p>
             {!choosing && n > 1 && choosable > 0 && (
               <button className="link-btn asset-choose-open" onClick={startChoosing}>
@@ -1171,8 +1255,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                     <label className="asset-use" title={u.target ? label : `${label}\nOnly Replace everywhere can change this one.`}>
                       <input type="checkbox" checked={!!u.target && choosing.chosen.includes(u.key)} disabled={!u.target} onChange={(e) => tick(u.key, e.target.checked)} />
                       <Icon aria-hidden="true" />
-                      <span className="where">{u.where}</span>
-                      <span className="what">{u.what}</span>
+                      <span className="asset-choose-place">
+                        <span className="where">{u.where}</span>
+                        <span className="what">{u.what}</span>
+                      </span>
                     </label>
                     {go && (
                       <button className="btn btn-sm btn-ghost asset-choose-show" onClick={go} aria-label={showLabel(snap.state, u)} title={showLabel(snap.state, u)}>
@@ -1183,55 +1269,21 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 );
               })}
             </ul>
-            <p className="asset-choose-sum" role="status">
-              {lost > 0 && `${lost === 1 ? 'A place you ticked no longer shows' : `${lost} places you ticked no longer show`} ${nameOf(sel)}. `}
-              {!chosen.length
-                ? 'Tick at least one place.'
-                : pick
-                  ? `${nameOf(pick)} will show in ${chosen.length === n ? `all ${n} places` : `${chosen.length} of ${n} places`}.${chosen.length < n ? ` The other ${plural(n - chosen.length, 'place keeps', 'places keep')} ${nameOf(sel)}.` : ''}`
-                  : `Pick the image to show in ${plural(chosen.length, 'place', 'places')}.`}
-            </p>
-            <div className="asset-choose-actions">
-              <button className="btn btn-sm btn-primary" disabled={!pick || !chosen.length} onClick={() => pick && void replaceWith(pick.id, { uses: chosen, revision: snap.revision })}>
-                <Replace /> {chosen.length ? `Replace in ${plural(chosen.length, 'place', 'places')}` : 'Replace'}
-              </button>
-              <button className="btn btn-sm btn-ghost" onClick={stopChoosing}>
-                Every place instead
-              </button>
-            </div>
           </fieldset>
         )}
-        <div className="asset-replace-add">
-          <button
-            className="btn btn-sm"
-            disabled={importing}
-            onClick={async () => {
-              const session = replaceSession.current;
-              const r = await importFiles(undefined, 'image');
-              if (replaceSession.current !== session) return;
-              // Applied only while the picker is still open for this image, and only for the one file chosen, come in
-              // cleanly. Choosing places, it is picked for them, to replace there once the author says so. Otherwise a
-              // photo the import review showed (converted or made web-sized) waits here to be picked: that review's button
-              // said Add, not Replace.
-              if (r.chosen === 1 && r.ids.length === 1 && !r.failed && (choosing || !r.reviewed)) {
-                if (choosing) {
-                  // A file the library already had as this very image is no replacement for it.
-                  if (r.ids[0] !== sel.id) setChoosing((c) => c && { ...c, pick: r.ids[0] });
-                } else void replaceWith(r.ids[0]);
-              } else {
-                const next = r.ids.find((id) => id !== sel.id);
-                if (!next) return;
-                setPickQ('');
-                pickSeries.choose('');
-                focusTile(next);
-              }
-            }}
-          >
-            <ImagePlus /> Import a replacement…
-          </button>
-          <p>One file is used straight away. Several, or a photo that needs a check first, wait here for you to pick.</p>
-        </div>
+        {!narrow && importOffer}
+        {blockedCount > 0 && (
+          <p className="asset-blocked-note">
+            <TriangleAlert aria-hidden="true" />
+            <span>
+              {blockedCount === 1 ? 'One image has' : `${blockedCount} images have`} missing files, so {blockedCount === 1 ? 'it can’t' : 'they can’t'} be used here. Repair {blockedCount === 1 ? 'it' : 'them'} in {blockedCount === 1 ? 'its' : 'their'} details first.
+            </span>
+          </p>
+        )}
         {shown.length ? grid(onPick, choosing ? 'Image to show in the places ticked' : `Images to use instead of ${nameOf(sel)}`, { blocked: unusable, picked: choosing ? (pick?.id ?? null) : undefined }) : noMatches}
+        {/* In a narrow sidebar the candidates come first, so one shows above the pinned foot; the offer follows them, in
+            reading and tab order alike. */}
+        {narrow && importOffer}
       </div>
     );
   } else if (sel) {
@@ -1559,6 +1611,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       <div ref={bodyRef} className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>
         {body}
       </div>
+      {foot}
     </>
   );
   const add = section === 'fonts' ? { label: 'Add fonts', icon: <Type />, run: () => void addFonts(), title: 'Choose WOFF2 or WOFF font files' } : section === 'documents' ? { label: 'Add documents', icon: <FilePlus />, run: () => void addDocuments(), title: 'Choose PDFs or other files for visitors to download' } : { label: 'Add images', icon: <ImagePlus />, run: () => void addImages(), title: 'Choose images to add, or drop files anywhere on this panel' };
