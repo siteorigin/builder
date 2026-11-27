@@ -9,7 +9,7 @@ import { PREVIEW_COMPONENT_STYLES, PREVIEW_META, PREVIEW_MODULE, PREVIEW_NODE_ID
 import { axesOf } from '@shared/variants';
 import { siteDirection, siteLanguage } from '@shared/languages';
 import { catalogueComponent } from '@catalogue/index';
-import { namesFormFields } from '@catalogue/foundation/form';
+import { namesFormFields } from '@shared/form-contract';
 import { defaultProps, installComponent } from '@engine/install';
 import { declaredState, stateValueFits } from '@engine/schema';
 import { normalizeProp } from '@engine/values';

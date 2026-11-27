@@ -7,7 +7,7 @@ import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type Style
 import { addressSlug, normalizeRoute } from '@shared/routes';
 import { FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';

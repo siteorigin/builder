@@ -38,5 +38,5 @@ if (failed.length) {
   process.exit(1);
 }
 Object.assign(out, BRANDS);
-writeFileSync('src/catalogue/foundation/icons.ts', `/* Icon data from Lucide (https://lucide.dev), ISC licence. Copyright (c) Lucide contributors. */\nexport type IconElement = [string, Record<string, string | number>];\nexport const ICONS: Record<string, IconElement[]> = ${JSON.stringify(out)};\n`);
+writeFileSync('src/shared/icons.ts', `/* Icon data from Lucide (https://lucide.dev), ISC licence. Copyright (c) Lucide contributors. */\nexport type IconElement = [string, Record<string, string | number>];\nexport const ICONS: Record<string, IconElement[]> = ${JSON.stringify(out)};\n`);
 console.log(Object.keys(out).length, 'icons');

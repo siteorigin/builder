@@ -18,7 +18,7 @@ import { richTextToPlain, toRichText } from '@shared/richtext';
 import { findVariant } from '@shared/variants';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { isCarouselTrack } from '@generator/card-links';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { EngineError, RESERVED_ANCHORS, enclosingRepeatProp, fail, getTree, instancesOf } from './tree';
 import { clone } from './install';
 import { normalizeImage, normalizeLink, normalizeRichText } from './values';

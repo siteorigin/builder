@@ -33,7 +33,7 @@ import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
-import { formConnectionProblem, formNoun, isFormContract, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
+import { formConnectionProblem, formNoun, isFormContract, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';

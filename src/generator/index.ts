@@ -77,7 +77,7 @@ import { RANGE_WIDTHS, backgroundImageAt, backgroundImageDecls, paintDecls, rese
 import { hasBackgroundImage } from '@shared/background-image';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
 import { resolveRedirects, type LiveRedirect } from '@shared/redirects';

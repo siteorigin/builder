@@ -6,7 +6,7 @@ import { collectionIndexRoutes } from '@shared/archives';
 import { readablePath } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { normalizeTable } from './table';
 import { declaredTokens } from './tokens';
 import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';

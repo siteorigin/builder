@@ -22,7 +22,7 @@ import { hiddenLayers } from './search';
 import { resolveLink, sortedBrokenCards } from './index';
 import { cardKey, isCardLink } from './card-links';
 import { derived } from './cache';
-import { isFormContract } from '@catalogue/foundation/form';
+import { isFormContract } from '@shared/form-contract';
 
 /** What the Markdown of one document is written for. */
 export interface MarkdownContext {

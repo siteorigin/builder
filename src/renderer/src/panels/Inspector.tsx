@@ -67,7 +67,7 @@ import type { EditOperation } from '@shared/ops';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
-import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
+import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@shared/form-contract';
 import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { stateActionRuns } from '@engine/schema';
