@@ -35,6 +35,7 @@ import { holdsSecretValue, sourceFingerprint } from '@shared/sources';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { readContained } from './posts-import/files';
+import { isImageBlock } from '@shared/richtext';
 import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
@@ -2606,7 +2607,9 @@ export class Controller {
         const assetIds = new Map<string, string>();
         const byFile = new Map<string, string>();
         const added: AssetRecord[] = [];
-        const notes: string[] = [];
+        const notes: NonNullable<PostImportResult['notes']> = [];
+        // The posts each picture is shown in, so a picture that can't be added says where it is missing.
+        const shownIn = (key: string) => plan.posts.filter((p) => p.featured === key || p.body.some((b) => isImageBlock(b) && b.assetId === key)).map((p) => p.title);
         for (const m of plan.media) {
           if (!open()) return closed;
           if (!m.path) continue;
@@ -2635,7 +2638,13 @@ export class Controller {
             assetIds.set(m.key, record.id);
             byFile.set(m.path, record.id);
           } catch (e) {
-            notes.push((e as Error).message);
+            // Its reason alone: the result names the file and its posts beside it.
+            const file = basename(m.path);
+            const message = (e as Error).message;
+            // The library's messages begin "{its name} was not imported because …" (or ": …"), the name as it spelled it.
+            const said = /^.*? was not imported(?::| because)\s*/.exec(message);
+            const reason = said ? message.slice(said[0].length) : message;
+            notes.push({ file, posts: shownIn(m.key), reason });
           }
         }
         if (!open()) return closed;

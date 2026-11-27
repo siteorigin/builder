@@ -377,7 +377,9 @@ export async function reviewImportFile(sourcePath: string, opts: { converter: bo
   // A plain image is read too, so a file that can't be added (a text file named .png, an empty .jpg, one over 25 MB)
   // is counted out here instead of in a count of files added.
   if (!heic && !large && !mime) return row;
-  const label = heic ? 'HEIC' : (extname(sourcePath).slice(1) || 'Image').toUpperCase();
+  // Named as the format is, not as its extension is spelled: a .jpg file is a JPEG, like the rows that read it.
+  const ext = extname(sourcePath).slice(1).toUpperCase();
+  const label = heic ? 'HEIC' : ext === 'JPG' ? 'JPEG' : ext || 'Image';
   if (!heic && !large && stat.size > MAX_BYTES) return { ...row, action: 'refuse', format: label, reason: 'it is larger than 25 MB.' };
   if (stat.size > CONVERT_MAX_BYTES) return { ...row, action: 'refuse', format: label, reason: 'it is larger than 64 MB.' };
   const buf = await fs.readFile(sourcePath).catch(() => null);

@@ -64,6 +64,15 @@ function sitePath(pathname: string): string {
   return p.endsWith('/') ? p : `${p}/`;
 }
 
+/** Every title, quoted, so the author can check each one: (“About us”, “Contact” and 2 untitled). Empty when none have one. */
+function namesOf(titles: string[]): string {
+  const named = titles.filter(Boolean).map((t) => `“${t}”`);
+  if (!named.length) return '';
+  const untitled = titles.length - named.length;
+  const all = untitled ? [...named, `${untitled} untitled`] : named;
+  return ` (${all.length > 1 ? `${all.slice(0, -1).join(', ')} and ${all[all.length - 1]}` : all[0]})`;
+}
+
 /** The plural, for counts in the report. */
 const KINDS: Record<string, [string, string]> = { page: ['page', 'pages'], nav_menu_item: ['menu item', 'menu items'], revision: ['revision', 'revisions'], wp_block: ['reusable block', 'reusable blocks'] };
 
@@ -93,25 +102,33 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
   const media = new MediaTable(root, realRoot, siteOrigin);
   const authors = new Map(childElements(channel, 'wp:author').map((a) => [childText(a, 'wp:author_login').trim(), childText(a, 'wp:author_display_name').trim()]));
   const attachments = new Map<string, string>();
-  const skipped = new Map<string, number>();
+  // What is left out, by kind, with each item's title so the author can tell which page it was. Revisions and menu
+  // items are counted only: an export can hold thousands, and none is content the author would look for.
+  const skipped = new Map<string, string[]>();
+  const UNNAMED = new Set(['revision', 'nav_menu_item']);
   const items: XmlElement[] = [];
   for (const item of childElements(channel, 'item')) {
     const type = childText(item, 'wp:post_type').trim();
     if (type === 'attachment') attachments.set(childText(item, 'wp:post_id').trim(), childText(item, 'wp:attachment_url').trim());
     else if (type === 'post') items.push(item);
-    else skipped.set(type || 'other', (skipped.get(type || 'other') ?? 0) + 1);
+    else {
+      const kind = type || 'other';
+      const titles = skipped.get(kind) ?? [];
+      titles.push(UNNAMED.has(kind) ? '' : childText(item, 'title').trim());
+      skipped.set(kind, titles);
+    }
   }
 
   // Every post's old addresses first, so a post's text can link to one read after it.
   const byPath = new Map<string, string>();
   const byId = new Map<string, string>();
   const accepted: Array<{ item: XmlElement; key: string; status: { draft: boolean; reason?: string } }> = [];
-  let unpublished = 0;
+  const unpublished: string[] = [];
   let over = 0;
   for (const item of items) {
     const status = statusDraft(childText(item, 'wp:status').trim(), childText(item, 'wp:post_password').trim());
     if (!status) {
-      unpublished++;
+      unpublished.push(childText(item, 'title').trim());
       continue;
     }
     if (accepted.length >= MAX_IMPORT_POSTS) {
@@ -225,11 +242,12 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
   await media.resolve();
 
   const out: string[] = [];
-  for (const [type, n] of skipped) {
+  for (const [type, titles] of skipped) {
     const [one, many] = KINDS[type] ?? ['other item', 'other items'];
-    out.push(`${n} ${n === 1 ? one : many}: only posts are imported.`);
+    const n = titles.length;
+    out.push(`${n} ${n === 1 ? one : many}${namesOf(titles)}: only posts are imported.`);
   }
-  if (unpublished) out.push(`${unpublished} ${unpublished === 1 ? 'post' : 'posts'} in the trash or never started.`);
+  if (unpublished.length) out.push(`${unpublished.length} ${unpublished.length === 1 ? 'post' : 'posts'}${namesOf(unpublished)} in the trash or never started.`);
   if (over) out.push(`${over} more ${over === 1 ? 'post' : 'posts'}: an import brings at most ${MAX_IMPORT_POSTS}.`);
   return { kind: 'wordpress', label, root, realRoot, ...(siteOrigin ? { site: siteOrigin } : {}), posts, media: media.items, skipped: out };
 }

@@ -1,25 +1,106 @@
 @layer components {
-  .import-review-lead { margin: 0 0 10px; }
-  .import-review-group + .import-review-group, .import-review-rest + .import-review-group, .import-review-all + .import-review-group { margin-top: 14px; }
-  .import-review-group h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  /* The import reviews (Assets files, posts): facts first, then each group of items under a counted heading. */
+
+  /* ---------- Summary: one row per question, label beside value; label above value when the dialog is narrow ---------- */
+  .import-summary { container-type: inline-size; margin: 0 0 4px; }
+  /* Where a review opens for reading (its facts, its blocker, its result): a place to start, not a control. As the
+     editor's other opening headings (Inspector.css .insp-name h3), it shows the ring only to the keyboard. */
+  .import-summary:focus, .post-import-problems:focus, .import-result-lead:focus { outline: none; }
+  .import-summary:focus-visible, .post-import-problems:focus-visible, .import-result-lead:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
+  .import-summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--panel-2); }
+  .import-summary dl > div { display: contents; }
+  .import-summary dt { font-size: 12px; line-height: 19px; color: var(--text-2); }
+  .import-summary dd { min-width: 0; margin: 0; font-size: 13px; line-height: 19px; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  /* What is lost on the way in reads as such in words; the weight only makes it findable. */
+  .import-summary-loss { font-weight: 600; }
+  .import-summary-note { margin: 8px 0 0; font-size: 12px; color: var(--text-2); }
+  /* Several values under one label (the reasons something is not imported): one per line. */
+  .import-summary-list { margin: 0; padding: 0; list-style: none; }
+  .import-summary-list li + li { margin-top: 2px; }
+  @container (max-width: 440px) {
+    .import-summary dl { grid-template-columns: 1fr; gap: 0; }
+    .import-summary dd + dt, .import-summary div + div dt { margin-top: 6px; }
+  }
+
+  /* ---------- Groups and their headings ---------- */
+  .import-review-group { margin-top: 16px; }
+  .import-review-heading { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .import-review-heading svg { flex: none; width: 14px; height: 14px; }
+  .import-review { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+
+  /* ---------- A row: name and its facts, then what happens to it ---------- */
+  .import-review-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
   /* A file left out is not a card to act on: no fill, a dashed outline. */
   .import-review-row.refuse { background: transparent; border-style: dashed; border-color: var(--border-control); }
-  .import-review { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
-  .import-review-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
   .import-review-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 13px; }
   .import-review-name b { overflow-wrap: anywhere; font-weight: 600; color: var(--text); }
   .import-review-name .muted { font-size: 12px; font-variant-numeric: tabular-nums; }
-  .import-review-what { display: flex; align-items: flex-start; gap: 6px; margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
-  .import-review-what svg { flex: none; width: 13px; height: 13px; margin-top: 2px; }
-  .import-review-what input { flex: none; margin: 2px 0 0; }
-  /* The one choice in a row reads as a choice, not as its quieter explanation. */
-  label.import-review-what { color: var(--text); cursor: pointer; }
-  .import-review-all { margin: 4px 0 0; font-size: 12px; color: var(--text-2); }
-  .import-review-all summary { cursor: pointer; color: var(--accent-text); font-weight: 500; }
-  .import-review-all ul { margin: 4px 0 0; padding-left: 18px; columns: 2; overflow-wrap: anywhere; }
-  .import-review-refused { color: var(--text); }
+  /* Draft reads at the reviews' 12px meta size, not the badge's default 11px. */
+  .import-review-name .badge, .post-import-line .badge { align-self: center; height: 18px; font-size: 12px; }
+  .import-review-what { display: flex; align-items: flex-start; gap: 6px; margin: 6px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); }
+  .import-review-what .muted { font-size: 12px; }
+  .import-review-what > span { min-width: 0; overflow-wrap: anywhere; }
+  .import-review-what svg { flex: none; width: 13px; height: 13px; margin-top: 3px; color: var(--text-2); }
+  /* The one choice in a row: the app's checkbox, the whole line its target. */
+  .import-review-choice { cursor: default; }
+  .import-review-choice input { flex: none; width: 14px; height: 14px; margin: 2px 0 0; accent-color: var(--accent); }
   .import-review-refused svg { color: var(--red); }
-  .import-review-rest { margin: 10px 0 0; font-size: 12px; }
-  .post-import-notes { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
-  .post-import-missing ul { columns: 1; }
+  .import-review-rest { margin: 12px 0 0; font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+  .import-review-meta { display: block; margin-top: 2px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .import-review-filed { margin: 4px 0 0; font-size: 12px; color: var(--text-2); }
+  .import-review-warn, .import-review-what svg.import-review-warn, .import-review-heading svg.import-review-warn { color: var(--amber); }
+  .modal-head > svg.import-review-icon-blocked { color: var(--red); }
+
+  /* ---------- Disclosure: the house chevron, neutral ink ---------- */
+  .import-disclosure > summary { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; min-height: 26px; margin-left: -6px; padding: 2px 8px 2px 6px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600; color: var(--text-2); list-style: none; }
+  .import-disclosure > summary::-webkit-details-marker { display: none; }
+  .import-disclosure > summary:hover { background: var(--hover); color: var(--text); }
+  .import-disclosure > summary svg { flex: none; width: 14px; height: 14px; }
+  .import-disclosure > summary .chev { color: var(--text-3); transition: transform 120ms; }
+  .import-disclosure[open] > summary .chev { transform: rotate(90deg); }
+  .import-disclosure[open] > summary { margin-bottom: 6px; }
+  .import-review-rest.import-disclosure { margin-top: 10px; }
+
+  /* ---------- Name lists: two columns while names fit, one when they don't ---------- */
+  .import-names { margin: 0; padding: 0 0 0 20px; list-style: none; columns: 2 220px; column-gap: 24px; font-size: 12px; line-height: 1.6; color: var(--text); }
+  .import-names li { break-inside: avoid; overflow-wrap: anywhere; }
+  .import-names b { font-weight: 600; }
+  .import-names.single { columns: auto; }
+  .import-names.single li + li { margin-top: 4px; }
+  .import-review-ref { display: block; color: var(--text-2); }
+
+  /* ---------- Posts ---------- */
+  .post-import-problems { display: flex; flex-direction: column; gap: 6px; margin: 0 0 12px; }
+  .post-import-problems .scope-note { margin: 0; }
+  .post-import-notes { margin: 6px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+  .post-import-notes:empty { display: none; }
+  .post-import-notes li::marker { color: var(--text-3); }
+  /* Posts that come in as they are: one line each, title then date and address, ruled like a list rather than carded. */
+  .post-import-lines { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--border); }
+  .post-import-line { display: flex; align-items: baseline; gap: 2px 16px; padding: 6px 2px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .post-import-line-title { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+  .post-import-line-title b { font-weight: 500; overflow-wrap: anywhere; }
+  .post-import-line .badge { height: 18px; }
+  .post-import-line .import-review-meta { flex: 0 1 auto; max-width: 60%; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  /* With no details switch to show it whole, an address wraps rather than being cut. */
+  .post-import-lines.wrap .import-review-meta { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+  .post-import-missing ul { padding-left: 20px; }
+  /* Every line's details, on demand: the whole address wraps instead of being cut. */
+  .post-import-details { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 12px; color: var(--text-2); }
+  .post-import-details input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+  .post-import-line.full { flex-direction: column; gap: 2px; }
+  .post-import-line-more { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .post-import-line-more .import-review-meta, .post-import-line-more .import-review-filed { max-width: none; margin: 0; overflow: visible; white-space: normal; text-align: left; overflow-wrap: anywhere; }
+  @container (max-width: 520px) {
+    .post-import-line { flex-direction: column; }
+    .post-import-line .import-review-meta { max-width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  }
+
+  /* ---------- After importing, when pictures could not be added ---------- */
+  .import-result-lead { margin: 0; font-size: 13px; color: var(--text); }
+  .import-result-steps { margin: 6px 0 0; font-size: 12px; color: var(--text-2); }
+  /* The dialog body is the container the post lines and name lists answer to. */
+  .modal-body:has(> .import-summary) { container-type: inline-size; }
+
+  @media (prefers-reduced-motion: reduce) { .import-disclosure > summary .chev { transition: none; } }
 }
