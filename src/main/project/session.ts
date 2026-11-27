@@ -3135,20 +3135,31 @@ export class ProjectSession extends EventEmitter {
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined) continue;
         const was = this.state.components[def.id];
+        // The props its axes arrive in, checked alone against code that passed its other checks: unchanged code (a
+        // theme refresh among them), or code the app ships.
+        const axesOnly = async () => {
+          const errors = ((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []).filter((p) => p.severity === 'error');
+          return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
+        };
         if (was?.source === def.source) {
-          // Unchanged code passed its checks when it was saved: only a change of the props its axes arrive in is
-          // checked, against that code (a project's own; a theme's comes with its code).
-          if (def.owner !== 'project' || axisPropsKey(was) === axisPropsKey(def)) continue;
-          const errors = ((await codeAxisPropProblems(def.source, def.variantAxes)) ?? []).filter((p) => p.severity === 'error');
-          if (errors.length) return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => e.message).join(' ')}`, recoverable: true, details: errors } };
+          // Unchanged code passed its checks when it was saved: only a change of the props its axes arrive in is checked.
+          if (axisPropsKey(was) === axisPropsKey(def)) continue;
+          const refused = await axesOnly();
+          if (refused) return refused;
           continue;
         }
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
         // whichever pack reuses it; nor does a package bringing that code to a site whose theme lacks it, unchanged
-        // with the settings it takes (a form's destinations are emptied as it lands).
-        // Shipped code is shipped with the props its axes arrive in: the same code under another mapping is checked.
-        const shipped = (c: ComponentDefinition) => c.kind === 'code' && c.source === def.source && axisPropsKey(c) === axisPropsKey(def) && (def.owner === 'theme' || (importing && JSON.stringify(c.properties) === JSON.stringify(def.properties)));
-        if ((def.owner === 'theme' || importing) && listThemes().some((t) => t.source !== 'user' && t.components.some(shipped))) continue;
+        // with the settings it takes (a form's destinations are emptied as it lands). Under a mapping of its axes other
+        // than the one it ships with, those are checked.
+        const shipped = (c: ComponentDefinition) => c.kind === 'code' && c.source === def.source && (def.owner === 'theme' || (importing && JSON.stringify(c.properties) === JSON.stringify(def.properties)));
+        const shippedAs = (def.owner === 'theme' || importing) && listThemes().flatMap((t) => (t.source !== 'user' ? t.components.filter(shipped) : []));
+        if (shippedAs && shippedAs.length) {
+          if (shippedAs.some((c) => axisPropsKey(c) === axisPropsKey(def))) continue;
+          const refused = await axesOnly();
+          if (refused) return refused;
+          continue;
+        }
         // Code the AI writes is held to a stricter policy than code a developer writes, and so is an installed pack's
         // own code, which nobody here wrote or reviewed.
         const installed = def.owner === 'theme' && listThemes().some((t) => t.source === 'user' && t.components.some((c) => c.id === def.id));

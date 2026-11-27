@@ -547,24 +547,32 @@ function propsLocals(ast: Node): Map<string, { local: string; defaulted: boolean
 }
 
 /**
- * What the script reads of $props() taken as a whole object (`let props = $props()`): the props it reads from that
- * object by name (`props.tone`, `props['tone']`), and whether it also hands the object on (to a helper, in a spread)
- * or reads it by a computed name, where any prop may be read.
+ * What the script reads of $props() taken as a whole object (`let props = $props()`) or of the rest of them
+ * (`let { title, ...rest } = $props()`): the props it reads from that object by name (`props.tone`, `rest['tone']`),
+ * and whether it also hands the object on (to a helper, a component) or reads it by a computed name, where any prop
+ * may be read. Spread onto a plain element, the rest only become its attributes.
  */
 function wholePropsReads(ast: Node): { read: Set<string>; handed: boolean } {
   const whole = new Set<string>();
+  const rests = new Set<string>();
   walkAst(ast.instance, (n) => {
     if (n.type !== 'VariableDeclarator' || (n.init as Node | null)?.type !== 'CallExpression') return;
     const callee = (n.init as Node).callee as Node;
-    if (callee?.type === 'Identifier' && callee.name === '$props' && (n.id as Node)?.type === 'Identifier') whole.add(String((n.id as Node).name));
+    if (callee?.type !== 'Identifier' || callee.name !== '$props') return;
+    const id = n.id as Node;
+    if (id?.type === 'Identifier') whole.add(String(id.name));
+    if (id?.type === 'ObjectPattern')
+      for (const p of (id.properties as Node[]) ?? []) if (p.type === 'RestElement' && (p.argument as Node)?.type === 'Identifier') rests.add(String((p.argument as Node).name));
   });
   const read = new Set<string>();
   let handed = false;
-  if (!whole.size) return { read, handed };
+  if (!whole.size && !rests.size) return { read, handed };
   const visit = (n: Node, around: Node[]) => {
-    if (n.type !== 'Identifier' || !whole.has(String(n.name))) return;
+    if (n.type !== 'Identifier' || !(whole.has(String(n.name)) || rests.has(String(n.name)))) return;
     const parent = around[around.length - 1];
     if (parent?.type === 'VariableDeclarator' && parent.id === n) return;
+    if (parent?.type === 'RestElement') return;
+    if (rests.has(String(n.name)) && parent?.type === 'SpreadAttribute' && around[around.length - 2]?.type === 'RegularElement') return;
     if (parent?.type === 'MemberExpression' && parent.object === n) {
       const p = parent.property as Node;
       const name = !parent.computed && p?.type === 'Identifier' ? String(p.name) : parent.computed && p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
@@ -581,9 +589,9 @@ function wholePropsReads(ast: Node): { read: Set<string>; handed: boolean } {
 
 /**
  * Each variant axis whose property (`prop`) the code does not take from $props(): what placements choose there never
- * reaches the code. Taken by name in the destructuring, or read by name from the whole props object, it is taken; a
- * rest element only passes it on unread. When the code hands the whole object on (to a helper, say), it may be read
- * there, which the check cannot follow, so it only warns.
+ * reaches the code. Taken by name in the destructuring, or read by name from the whole props object or the rest of
+ * them, it is taken; rest spread onto an element only become its attributes. When the code hands the object on (to a
+ * helper, say), it may be read there, which the check cannot follow, so it only warns.
  */
 function axisProblems(ast: Node, variantAxes: ComponentDefinition['variantAxes']): Array<{ severity: CodeProblem['severity']; message: string }> {
   const out: Array<{ severity: CodeProblem['severity']; message: string }> = [];

@@ -187,6 +187,9 @@ describe('the code check holds code to the props its axes declare', () => {
     const { s, defId } = placed();
     const rest = SOURCE.replace("palette = 'light', ", '').replace("class: className = ''", "class: className = '', ...others").replace('<p class', '<p {...others} class');
     expect(await said(rest, contract(s, defId))).toEqual([expect.stringMatching(/^error: The “Tone” variant arrives in palette/)]);
+    // Read from the rest by name, it is taken; handed on to a helper, it may be.
+    expect(await said(rest.replace('<p {...others} class={[className, layout, palette]}', '<p class={[className, layout, others.palette]}'), contract(s, defId))).toEqual([]);
+    expect(await said(rest.replace('<p {...others} class={[className, layout, palette]}', '<p class={[className, layout, String(others)]}'), contract(s, defId))).toEqual([expect.stringMatching(/^warning: The “Tone” variant arrives in palette/)]);
   });
 
   it('checks the axes alone against code that is unchanged', async () => {
