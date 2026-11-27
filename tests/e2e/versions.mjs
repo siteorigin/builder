@@ -4,8 +4,9 @@
 // a version is deleted only after the author confirms.
 //
 // It runs twice (#1153): with the default store, which never makes a Git repository, and with Git snapshots on in
-// Settings, where every version is a commit in the project's .siteorigin/versions.git/, and versions saved that way are
-// still restored once the setting is turned off again.
+// Settings, where every version is a commit in the project's .siteorigin/versions.git/, a restore also saves the site as
+// it left it on top of that history (#1155), and versions saved that way are still restored once the setting is turned
+// off again.
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -80,6 +81,7 @@ async function run(mode) {
       assert.ok(!Object.values(s.state.pages).some((p) => p.title === 'Experiments'), 'the page added since is gone');
     });
     assert.deepEqual(await versionNames(), [
+      ...(inGit ? [['Restored “Approved by client”', true]] : []),
       ['Before restoring “Approved by client”', true],
       ['Approved by client', false]
     ]);
@@ -112,11 +114,11 @@ async function run(mode) {
     else assert.doesNotMatch(await confirm.innerText(), /version history/, 'deleting a plain version says nothing of history');
     await confirm.getByRole('button', { name: 'Cancel' }).click();
     await confirm.waitFor({ state: 'detached' });
-    assert.equal((await versionNames()).length, 2, 'cancelling keeps it');
+    assert.equal((await versionNames()).length, inGit ? 3 : 2, 'cancelling keeps it');
     await history.getByRole('button', { name: 'Delete “Approved by client”' }).click();
     await confirm.getByRole('button', { name: 'Delete version' }).click();
-    await eventually(async () => assert.deepEqual(await versionNames(), [['Before restoring “Approved by client”', true]]));
-    await history.locator('.versions-list li', { hasText: 'Approved by client' }).filter({ hasNotText: 'Before restoring' }).waitFor({ state: 'detached' });
+    await eventually(async () => assert.deepEqual(await versionNames(), [...(inGit ? [['Restored “Approved by client”', true]] : []), ['Before restoring “Approved by client”', true]]));
+    await history.locator('.versions-list li', { hasText: 'Approved by client' }).filter({ hasNotText: 'Before restoring' }).filter({ hasNotText: 'Restored' }).waitFor({ state: 'detached' });
     assert.ok(await history.isVisible(), 'History stays open after deleting');
     assert.match(await win.locator('.toast', { hasText: 'Deleted “Approved by client”' }).innerText(), /Deleted/);
 
