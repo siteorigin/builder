@@ -13,6 +13,7 @@ import type { PreparedComponentPreview } from '@shared/component-preview';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { installComponent } from '@engine/install';
+import { getTheme, listThemes, registerPacks } from '@catalogue/index';
 import { ComponentThumbs, readThumb, thumbCrop, thumbKey, writeThumb, type CaptureResult, type ThumbHost } from '../../src/main/runtime/component-thumbs';
 
 const apply = (state: ProjectState, operations: unknown[]) => applyOperations(state, operations as Parameters<typeof applyOperations>[1]);
@@ -86,7 +87,7 @@ describe('a thumbnail’s key', () => {
     expect(thumbKey(edited, id)).not.toBe(key);
   });
 
-  it('changes with the site’s brand colours, fonts and language', () => {
+  it('changes with the site’s brand colours, fonts, language and the way its text runs', () => {
     const { state, card } = withCard();
     const key = thumbKey(state, card);
     expect(thumbKey(apply(state, [{ type: 'token.set', tokenId: 'color.brand', value: '#123456' }]).state, card)).not.toBe(key);
@@ -94,6 +95,10 @@ describe('a thumbnail’s key', () => {
     const french = structuredClone(state);
     french.site.language = 'fr';
     expect(thumbKey(french, card)).not.toBe(key);
+    // The preview is drawn right to left for a site set to run that way in the same language (#972).
+    const rtl = structuredClone(state);
+    rtl.site.direction = 'rtl';
+    expect(thumbKey(rtl, card)).not.toBe(key);
   });
 
   it('changes when a font of the project’s own is replaced, and when an article a list shows changes', () => {
@@ -252,6 +257,34 @@ describe('the thumbnail queue', () => {
     rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
     expect(await thumbs.get(card, 'open#1')).toEqual(a);
     expect(host.captured).toBe(1);
+  });
+
+  it('works out the site’s brand once for each state of the project and theme, and again for a new one of either', async () => {
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state);
+    // Asked for, checked again around its photograph, and asked for again: one brand for one state.
+    const first = (await thumbs.get(card, 'open#1')) as { key: string };
+    expect(await thumbs.get(card, 'open#1', first.key)).toEqual({ state: 'ready', key: first.key });
+    expect(thumbs.brands).toBe(1);
+    expect(first.key).toBe(thumbKey(state, card));
+    // A colour changed: a new state, so a new brand and a new key, the same as worked out afresh.
+    host.state = apply(state, [{ type: 'token.set', tokenId: 'color.brand', value: '#123456' }]).state;
+    const recoloured = (await thumbs.get(card, 'open#1')) as { key: string };
+    expect(thumbs.brands).toBe(2);
+    expect(recoloured.key).not.toBe(first.key);
+    expect(recoloured.key).toBe(thumbKey(host.state, card));
+    // The same state with the theme's pack registered again, its styles changed: the brand is worked out again.
+    const packs = listThemes();
+    const themeId = host.state.site.themeId;
+    registerPacks(packs.map((p) => (p.id === getTheme(themeId).id ? { ...p, baseCss: `${p.baseCss}\n/* changed */` } : p)));
+    try {
+      const restyled = (await thumbs.get(card, 'open#1')) as { key: string };
+      expect(thumbs.brands).toBe(3);
+      expect(restyled.key).not.toBe(recoloured.key);
+      expect(restyled.key).toBe(thumbKey(host.state, card));
+    } finally {
+      registerPacks(packs);
+    }
   });
 
   it('reads a thumbnail drawn in an earlier opening from the project’s cache, without photographing it', async () => {

@@ -385,6 +385,31 @@ the main process took in, `controller.apply`), `appliesPerSecond` (those begun d
 showing the settled revision), `previewUpdates`, `snapshotsSent` and `snapshotBytes`, `rendererCommits`, and the
 longest main-process stall.
 
+**`thumbs`** (after `open`; run it on `large` alone: `small` has no project components): the thumbnails of Your
+components in Insert, in four windows. Before them (untimed) the fixture's first card, in view in Insert, is painted on
+the brand colour, so the colour change must draw it again (drawn again, the fixture's other cards come out the same).
+`fill`: Insert opened (hidden until then: no thumbnail was asked for in the launch, and the project's thumbnail cache is
+empty, both checked) and Show all pressed, until every tile in view in the panel's scrolling area shows its picture: the
+panel filled from cold. `edit`: with Insert open,
+the home hero's Heading changed through the editor's API, which cannot change how any component looks. `colour`: the
+brand colour changed once (`token.set`), until the preview's primary button shows it and the card painted on it shows a
+new picture. `scroll`: the last component's tile scrolled into view, until every tile in view there shows its picture. Each window ends once no thumbnail was asked for, answered or
+photographed for 3.5 s and none is under way. Checks: every tile in view shows a picture and none failed, after every
+window the picture each tile in view shows is the one the main process gives for the component as the project is now
+(asked for after the window, so not counted in it), the edit and the colour change each moved the project one revision
+(the heading in the page's document on disk, the colour in the project and on the preview's primary button), the scroll
+brought tiles into view that were not before and the last tile into view, and no window was shown or focused (every
+window's `show` and `focus` watched from before the first window). A fill that marks no request or photograph fails (a
+build without the marks, not a free fill). Per window (`thumbs.<window>.*`): `requests` (the editor's thumbnail requests,
+`thumbs.asked`), `components` (the components they named), `bytes` (their answers as IPC serializes them: a picture's
+size depends on the machine's display as well as the build, the same 30 pictures 130 KiB in one launch and 1.1 MiB in
+another, so compare bytes only between runs taken together and read `pictures` across launches), `pictures` (answers
+carrying a picture), `captures` (photographs taken, `thumbs.captures`) and `captureMs` (their time in the hidden
+window), `keys` (thumbnail keys worked out), `brands` (brand fingerprints worked out) and `keyMs` (their time in the main
+process), `busyMs` (from the window's start to the last thumbnail request, answer or photograph in it) and the longest
+main-process stall; for `fill` and `scroll`, `ms` (to every tile in view showing its picture) and `inView` (the tiles in
+view then).
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -573,7 +598,10 @@ its new state does not share with the old, `src/main/project/session.ts`), `docs
 serialized, `src/main/project/documents.ts`), `run.docsHashed` (documents an AI run's recovery marker hashed),
 `session.reloadFromDisk`, `session.reloadUnchanged` (a reload that read the project and
 found nothing changed), `tools.npmRuns` (npm runs that set up a project's website tools), `tools.idealTrees` (the npm
-dependency trees worked out to check what they need, `src/main/runtime/manager.ts`), `main.stalls` (main), and
+dependency trees worked out to check what they need, `src/main/runtime/manager.ts`), `thumbs.requests` and
+`thumbs.bytes` (Insert's thumbnail requests and their answers as IPC serializes them, `src/main/controller.ts`),
+`thumbs.captures` (thumbnails photographed), `thumbs.keys`, `thumbs.brands` and `thumbs.keyMs` (thumbnail keys and brand
+fingerprints worked out, and the time the keys took: `src/main/runtime/component-thumbs.ts`), `main.stalls` (main), and
 `react.commits`, `react.renders`
 (components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes

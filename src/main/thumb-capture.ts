@@ -31,12 +31,15 @@ interface Measured {
 
 /**
  * Waits for the preview's module to mount the component and for the bridge to arrive (or for the mount to fail),
- * then asks the bridge to settle and measure. Runs in the preview's page.
+ * then asks the bridge to settle and measure. Runs in the preview's page. It looks for the bridge every 10 ms for
+ * 15 s of the page's own clock, and once more as that ends: the bridge usually arrives a few milliseconds after the
+ * page loads, and every photograph waits on this.
  */
 const MEASURE = `(async () => {
-  for (let i = 0; i < 150; i++) {
+  for (const end = performance.now() + 15000; ; ) {
     if (typeof window.__siteoriginThumb === 'function') return await window.__siteoriginThumb();
-    await new Promise((r) => setTimeout(r, 100));
+    if (performance.now() >= end) break;
+    await new Promise((r) => setTimeout(r, 10));
   }
   const p = window.__siteoriginPreview;
   return p && typeof p === 'object' ? { key: String(p.key || ''), mounted: p.mounted === true, error: p.error ? String(p.error) : undefined } : null;

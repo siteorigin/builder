@@ -1647,7 +1647,23 @@ export class Controller {
 
   /** The thumbnail of a project component for Insert, in the opening `opening` (see @shared/component-thumbs). */
   componentThumb(definitionId: unknown, opening: unknown, have?: unknown): Promise<ComponentThumb> {
-    return this.thumbs.get(definitionId, opening, have);
+    if (!perf.on) return this.thumbs.get(definitionId, opening, have);
+    // Each request the editor makes, and its answer as IPC serializes it (scripts/perf: the thumbs scenario).
+    perf.count('thumbs.requests');
+    perf.mark('thumbs.asked', { definitionId: typeof definitionId === 'string' ? definitionId : null });
+    const end = perf.span('thumbs.answered', { definitionId: typeof definitionId === 'string' ? definitionId : null });
+    return this.thumbs.get(definitionId, opening, have).then(
+      (r) => {
+        const bytes = serializedSize(r);
+        if (bytes !== null) perf.count('thumbs.bytes', bytes);
+        end({ state: r.state, picture: r.state === 'ready' && !!r.url, bytes });
+        return r;
+      },
+      (e: unknown) => {
+        end({ state: 'error', bytes: null });
+        throw e;
+      }
+    );
   }
 
   /** Remove a prepared component preview's files. */
