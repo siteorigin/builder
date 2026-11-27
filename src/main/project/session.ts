@@ -713,6 +713,8 @@ export class ProjectSession extends EventEmitter {
     locking();
     if (lockErr) throw lockErr;
     try {
+      // The fence's claim, the ownership check and the local folders made and flushed.
+      const preparing = perf.span('session.open.prepare');
       // Recovery writes too, so it runs fenced like any command.
       await s.serialize(async () => {
         if (!(await s.stillOwner())) {
@@ -720,6 +722,7 @@ export class ProjectSession extends EventEmitter {
           throw new ProjectLockedError('The project was taken over while it was opening. Try again.', now ? judgeLock(s.local('lock.json'), now, instanceId, false).owner : { host: 'another computer', token: NO_LOCK });
         }
         await s.ensureLocalDirs();
+        preparing();
         await s.openLocked(opts.preview?.start);
       });
     } catch (e) {

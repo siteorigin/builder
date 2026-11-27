@@ -78,16 +78,20 @@ files read and hashed before the window was created, React commits until recents
 **`open`**: open the fixture from its card on Welcome, to the canvas bridge reporting the home page ready to edit.
 Checks: the project opened writable, from the fixture's folder, with its pages, posts, images, project components and
 home page, and the home hero's heading in the preview. Times from `open.requested` (the click): `controller` (the open
-call), `session` and its phases `session.formatCheck` (the scan for a newer format), `.lock`, `.recover`, `.read`,
-`.localState`, `.validate`, `.sweep`, `publish` (generated files checked and written), `generate` (its two generator
-runs), `attach`, `assetCheck`, `startRuntime` (spans); `firstSnapshotSent`, `editorShown`, `runtimeForked`,
+call), `session` and its phases `session.formatCheck` (the scan for a newer format), `.lock`, `.prepare` (the fence's
+claim, the ownership check and the local folders made and flushed), `.recover`, `.read`, `.localState`, `.validate`;
+`publish` (the open's publication, generated files checked and written, inside `session` or after it, before the canvas
+is ready), `generate` (its two generator runs), `sweep` (the open's sweep of history blobs and unused assets, wherever
+it runs until the scenario ends), `attach`, `assetCheck`, `startRuntime` (spans); `firstSnapshotSent`, `editorShown`, `runtimeForked`,
 `runtimeReady` and `canvasReady` (the headline). The preview's start, from the marks of the preview process that served
 the page the canvas reported ready: `runtimeStarted` (the worker given its start), `runtimeViteLoaded`,
 `runtimeServerCreated`, `runtimeReady` (listening), `runtimeFirstRequest` and `runtimeFirstResponse` (the first page a
 browser asked for that was answered, when it was asked for and when the answer had gone), with the stretches
 `forkToListen`, `listenToFirstResponse`, `firstResponseToCanvasReady`, and `editorToCanvasReady` (what the author
-watches as "Starting preview"). Counts: files read and hashed, document files read, durable
-writes and fsyncs (session open, attach and preview start), the publication's files read, hashed and written, its
+watches as "Starting preview"). Counts: what the editor's first snapshot waited for (`generationsBeforeSnapshot`,
+`sweepsBeforeSnapshot`, `assetChecksBeforeSnapshot`: those that ended before it was sent); files read and hashed,
+document files read, durable writes and fsyncs (everything the main process counted from the scenario's start to its
+end, so work moved later is still counted), the publication's files read, hashed and written, its
 synchronous filesystem calls, path stats and bytes hashed, `project:changed` sends and their bytes until the canvas is ready, `reloadFromDisk` calls, React commits; the longest
 main-process stall.
 
