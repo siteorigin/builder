@@ -227,17 +227,17 @@ describe('saving a project’s code holds it to its axes’ props', () => {
       const defId = Object.values(session.state.components).find((d) => d.name === 'Two axes')!.id;
       const missing = await session.apply({ operations: [{ type: 'component.setVariant', definitionId: defId, axis: 'tone', variant: 'dark', label: 'Dark' }] }, opts);
       expect(missing.ok).toBe(false);
-      expect(!missing.ok && missing.error.message).toContain('The “Tone” variant arrives in tone, which the code never takes');
+      expect(missing.error?.message).toContain('The “Tone” variant arrives in tone, which the code never takes');
       expect(session.state.components[defId].variantAxes).toBeUndefined();
       expect((await session.apply({ operations: axes(defId) }, opts)).ok).toBe(true);
       const dropped = await session.apply({ operations: [{ type: 'component.updateSource', definitionId: defId, source: SOURCE.replace("arrangement: layout = 'stack', ", '').replace('[className, layout, palette]', '[className, palette]') }] }, opts);
       expect(dropped.ok).toBe(false);
-      expect(!dropped.ok && dropped.error.message).toContain('The “Layout” variant arrives in arrangement');
+      expect(dropped.error?.message).toContain('The “Layout” variant arrives in arrangement');
       // Moving an existing axis to a prop the unchanged code never takes is refused, and leaves the axis where it was.
       const revision = session.revision;
       const moved = await session.apply({ operations: [{ type: 'component.setVariant', definitionId: defId, axis: 'tone', variant: 'dark', label: 'Dark', prop: 'mood' }] }, opts);
       expect(moved.ok).toBe(false);
-      expect(!moved.ok && moved.error.message).toContain('The “Tone” variant arrives in mood');
+      expect(moved.error?.message).toContain('The “Tone” variant arrives in mood');
       expect(session.state.components[defId].variantAxes!.tone.prop).toBe('palette');
       expect(session.revision).toBe(revision);
       // The code and the axis renamed together is saved.
@@ -247,7 +247,7 @@ describe('saving a project’s code holds it to its axes’ props', () => {
       // A property added later under the axis's prop is refused.
       const clash = await session.apply({ operations: [{ type: 'component.setPropSchema', definitionId: defId, prop: 'arrangement', schema: { type: 'string', label: 'Arrangement', default: '' } }] }, opts);
       expect(clash.ok).toBe(false);
-      expect(!clash.ok && clash.error.message).toContain("also one of the component's properties");
+      expect(clash.error?.message).toContain("also one of the component's properties");
     } finally {
       await session.close();
     }
