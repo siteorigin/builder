@@ -1527,12 +1527,12 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Let a code component take content and expose parts to style',
     start: 'Blank site, a code component that marks a part and shows a slot',
     routes: ['canvas:click the marked part', 'canvas:+ inside the slot'],
-    outcome: 'Both are declared when it is created; content inserted on the canvas goes into the slot; a background set in the Inspector reaches the marked element; the website’s build carries no marker while the editable project keeps them',
+    outcome: 'Both are declared when it is created; content inserted on the canvas goes into the slot; a background set in the Inspector reaches the marked element; neither the website’s build nor the source export carries a marker while the editable project keeps them',
     scenario: 'Blank starter · none',
     proof: [
       { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'a Stack and a Button inserted on the canvas go into the code component’s slot' },
       { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'a background set in the Inspector reaches the marked element' },
-      { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'the website’s build carries no marker' },
+      { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'neither export carries a marker; the editable project keeps them' },
       { test: 'tests/unit/code-parts.test.ts', kind: 'unit' }
     ]
   },
