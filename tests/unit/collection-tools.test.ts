@@ -326,13 +326,18 @@ describe('one block of an entry’s text (#1120)', () => {
       }
     expect([...rows.keys()].sort((a, b) => a - b)).toEqual(body.map((_, i) => i));
     for (const [i, r] of rows) expect(whole.slice(r.start, r.end)).toBe(richTextToMarkdown([body[i]], s.pages));
+    // Every part lists exactly the blocks it shows any of, so a part that goes on with a paragraph still locates it.
+    for (const p of parts) expect(p.blocks.map((r) => r.block)).toEqual([...rows.values()].filter((r) => r.start < p.offset + p.text.length && r.end > p.offset).map((r) => r.block));
+    expect([...rows.keys()].some((b) => parts.filter((p) => p.blocks.some((r) => r.block === b)).length > 1)).toBe(true);
     // The picture is marked, and has no hash; the two identical paragraphs have hashes of their own.
     expect(rows.get(2)).toEqual({ block: 2, start: expect.any(Number), end: expect.any(Number), picture: true });
-    expect(rows.get(0)!.hash).toMatch(/^[0-9a-f]{12}$/);
+    expect(rows.get(0)!.hash).toMatch(/^[0-9a-f]{16}$/);
     expect(rows.get(0)!.hash).not.toBe(rows.get(1)!.hash);
-    // The same block of another entry hashes differently too.
-    const spring = await read(h, 0, 'en_spring');
-    expect(spring.blocks.map((r) => r.hash ?? 'picture')).not.toContain(rows.get(0)!.hash);
+    // The same words at the same place of another entry hash differently too.
+    const twin = applyOperations(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['Doors open at ten.'] }] as EditOperation[]).state;
+    const th = host(twin).h;
+    expect(entry(twin, 'en_spring').body[0]).toEqual(body[0]);
+    expect((await read(th, 0, 'en_spring')).blocks[0].hash).not.toBe((await read(th)).blocks[0].hash);
   });
 
   it('reads a text of many tiny paragraphs in parts its rows fit in, always moving on', async () => {
@@ -359,7 +364,7 @@ describe('one block of an entry’s text (#1120)', () => {
     expect(first.next).not.toBeNull();
     const second = first.blocks.find((r) => r.block === 1)!;
     const r = await edit(h, { block: 1, hash: second.hash, revision: first.revision, text: 'Doors open at **eleven**.' });
-    expect(r).toMatchObject({ ok: true, mutated: true, content: { ok: true, collectionId: 'posts', entryId: 'en_winter', block: { block: 1, hash: expect.stringMatching(/^[0-9a-f]{12}$/) } } });
+    expect(r).toMatchObject({ ok: true, mutated: true, content: { ok: true, collectionId: 'posts', entryId: 'en_winter', block: { block: 1, hash: expect.stringMatching(/^[0-9a-f]{16}$/) } } });
     const before = entry(s, 'en_winter').body;
     const after = entry(now(), 'en_winter').body;
     expect(after).toEqual([before[0], { type: 'p', spans: [{ text: 'Doors open at ' }, { text: 'eleven', strong: true }, { text: '.' }] }, ...before.slice(2)]);
@@ -374,8 +379,14 @@ describe('one block of an entry’s text (#1120)', () => {
     const content = r.content as unknown as { revision: number; block: { hash: string } };
     expect(again.revision).toBe(content.revision);
     expect(again.blocks.find((b) => b.block === 1)!.hash).toBe(content.block.hash);
+    expect(content.block.hash).not.toBe(second.hash);
+    const unchanged = structuredClone(now());
+    expect((await edit(h, { block: 1, hash: second.hash, revision: content.revision, text: 'Doors open at noon.' })).content).toMatchObject({ error: { code: 'STALE_REVISION', message: expect.stringMatching(/does not have the hash/) } });
+    expect(now()).toEqual(unchanged);
     const grew = 'Doors open at **eleven**.'.length - 'Doors open at ten.'.length;
-    expect(again.blocks.filter((b) => b.block !== 1)).toEqual(first.blocks.filter((b) => b.block !== 1).map((b) => (b.start > second.start ? { ...b, start: b.start + grew, end: b.end + grew } : b)));
+    const kept = again.blocks.filter((b) => b.block !== 1);
+    expect(kept.length).toBeGreaterThan(10);
+    expect(kept).toEqual(first.blocks.filter((b) => b.block !== 1 && kept.some((k) => k.block === b.block)).map((b) => (b.start > second.start ? { ...b, start: b.start + grew, end: b.end + grew } : b)));
     const list = first.blocks.find((b) => b.block === 3)!;
     expect((await edit(h, { block: 3, hash: list.hash, revision: content.revision, text: '- Clay\n- Glass\n- Wood' }, { title: 'Winter hours, revised' })).ok).toBe(true);
     expect(entry(now(), 'en_winter').body[3]).toEqual({ type: 'ul', items: [[{ text: 'Clay' }], [{ text: 'Glass' }], [{ text: 'Wood' }]] });
@@ -426,7 +437,7 @@ describe('one block of an entry’s text (#1120)', () => {
     // A list sent between two lists would make them one.
     const spring = await read(h, 0, 'en_spring');
     const mid = spring.blocks.find((r) => r.block === 1)!;
-    await refused({ block: 1, hash: mid.hash, revision: spring.revision, text: '- Wood' }, /would join or change the block next to it/, {}, 'en_spring');
+    await refused({ block: 1, hash: mid.hash, revision: spring.revision, text: '- Wood' }, /would join or change the block next to it/, { title: 'Not this', categories: ['Brand new'] }, 'en_spring');
     expect(grants).toEqual([]);
     expect(now()).toEqual(s);
     // A heading in its place is one block, and the lists and the picture stay.
@@ -439,7 +450,7 @@ describe('one block of an entry’s text (#1120)', () => {
     const { h, grants, now } = host(s, requestAuthority({ pageId: 'pg_any', pageTitle: 'Home', selection: null, selectionLabel: null, post: { collectionId: 'posts', entryId: 'en_spring', title: 'Spring' } }, s));
     const other = await read(host(s).h);
     for (const hash of [other.blocks[0].hash, 'not-a-hash'])
-      expect((await edit(h, { block: 0, hash, revision: other.revision, text: 'Changed.' })).content).toMatchObject({ error: { code: 'SCOPE_MISMATCH', message: 'entryId: this request is about the post “Spring open studio” (posts/en_spring) alone, so only it can be changed. Nothing was applied.' } });
+      expect((await edit(h, { block: 0, hash, revision: other.revision, text: 'Changed.' })).content).toMatchObject({ error: { code: 'SCOPE_MISMATCH', message: "entryId: this request is about the post “Spring open studio” (posts/en_spring) alone, so only it can be changed. Nothing was applied. Change this post's blocks, or ask with request_clarification (widenScope: true) to change another." } });
     expect(grants).toEqual([]);
     expect(now()).toEqual(s);
     // Its own post's blocks it may change.
@@ -448,6 +459,44 @@ describe('one block of an entry’s text (#1120)', () => {
     expect((await edit(h, { block: 1, hash: p.hash, revision: own.revision, text: 'Twenty new makers join us this year.' }, {}, 'en_spring')).ok).toBe(true);
     expect(entry(now(), 'en_spring').body.map((b) => b.type)).toEqual(['h2', 'p', 'image', 'ul']);
     expect(entry(now(), 'en_winter')).toEqual(entry(s, 'en_winter'));
+  });
+  it('edits a block beside one stored in a form the engine writes more simply, an empty or picture-only text not at all, and says to read again when the project moved meanwhile', async () => {
+    const s = article();
+    // Two spans with the same link side by side, as a link pointed elsewhere leaves them.
+    const link = { type: 'entry' as const, target: 'en_spring' };
+    s.collections.posts.entries.en_winter.body[0] = { type: 'p', spans: [{ text: 'See ', link }, { text: 'spring', link }] };
+    const { h, now } = host(s);
+    const p = await read(h);
+    const r = await edit(h, { block: 1, hash: p.blocks[1].hash, revision: p.revision, text: 'Doors open at noon.' });
+    expect(r.ok).toBe(true);
+    expect(entry(now(), 'en_winter').body[0]).toEqual({ type: 'p', spans: [{ text: 'See spring', link }] });
+    expect(entry(now(), 'en_winter').body.slice(2)).toEqual(entry(s, 'en_winter').body.slice(2));
+    const again = await read(h);
+    expect(again.blocks[1].hash).toBe((r.content as unknown as { block: { hash: string } }).block.hash);
+    // An entry with no block of text is written whole.
+    const bare = applyOperations(blog(), [
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: [] },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'image', assetId: PHOTO.id, alt: 'Kiln' }] }
+    ] as EditOperation[]).state;
+    const b = host(bare);
+    expect((await read(b.h)).blocks).toEqual([]);
+    expect((await edit(b.h, { block: 0, hash: 'x', revision: 1, text: 'Hello.' })).content).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/blockEdit: the entry's text has no block of text to change: send body with the whole text\. Nothing/) } });
+    expect((await edit(b.h, { block: 0, hash: 'x', revision: 1, text: 'Hello.' }, {}, 'en_spring')).content).toMatchObject({ error: { message: expect.stringMatching(/no block of text to change: send body with the whole text, keeping each picture line as read/) } });
+    // Another change lands between the call's checks and its write: the session refuses it, and the call says what to do.
+    const late = host(article());
+    const lp = await read(late.h);
+    const racing: ToolHost = { ...late.h, apply: async (ops, expected, ...rest) => (await late.h.apply([{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', title: 'Meanwhile' } as EditOperation], expected, 'Author', 'author', { collectionWrite: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring' } }), late.h.apply(ops, expected, ...rest)) };
+    expect((await edit(racing, { block: 1, hash: lp.blocks[1].hash, revision: lp.revision, text: 'Changed.' })).content).toMatchObject({ error: { code: 'STALE_REVISION', message: expect.stringMatching(/Read that part of the entry again with read_collection_entry/) } });
+    expect(entry(late.now(), 'en_winter')).toEqual(entry(article(), 'en_winter'));
+  });
+
+  it('offers blockEdit as a closed object with every key required, in the site and the pinned schema', () => {
+    const state = blog();
+    for (const run of [toolsForRun({ state, selection: null, capabilities: constrained, codeEnabled: false, definitionOps: false }), toolsForRun({ state, selection: null, capabilities: constrained, codeEnabled: false, definitionOps: false, entry: { collectionId: 'posts', entryId: 'en_spring' } })]) {
+      const upsert = run.tools.find((t) => t.name === 'upsert_collection_entry')!.parameters as { properties: Record<string, { type?: string; required?: string[]; additionalProperties?: unknown }> };
+      expect(upsert.properties.blockEdit).toMatchObject({ type: 'object', additionalProperties: false });
+      expect([...(upsert.properties.blockEdit.required ?? [])].sort()).toEqual(['block', 'hash', 'revision', 'text']);
+    }
   });
 });
 

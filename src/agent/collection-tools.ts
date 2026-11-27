@@ -76,7 +76,8 @@ export const UPSERT_ENTRY_ARGS = z
         block: z.number().int().min(0).max(MAX_BODY_LINES).describe('The block to change: its number in blocks, from read_collection_entry.'),
         hash: z.string().min(1).max(16).describe("That block's hash, as read."),
         revision: z.number().int().min(0).describe('The revision of that read (or of a block edit of this entry since, whose result names it).'),
-        text: z.string().min(1).max(MAX_BODY_LINE).describe('The whole block again as Markdown, with the change made: one paragraph, heading, quote or list.')
+        // Markdown escapes literal marks, so a block the engine holds can take up to twice its length to send back.
+        text: z.string().min(1).max(2 * MAX_BODY_LINE).describe('The whole block again as Markdown, with the change made: one paragraph, heading, quote or list.')
       })
       .strict()
       .optional()
@@ -89,7 +90,7 @@ export type UpsertEntryArgs = z.infer<typeof UPSERT_ENTRY_ARGS>;
 
 /** How one block is changed alone (#1120): the locator a read returns, checked against the revision it was read at. */
 const BLOCK_EDIT_FORMAT =
-  "To change one paragraph, heading, quote or list alone, send blockEdit: its block and hash from the read's blocks, that read's revision, and the whole block again as Markdown with the change made, once you have read it to its end. Every other block, pictures included, stays exactly as it is. After STALE_REVISION, read that part again and use what it returns.";
+  "To change one paragraph, heading, quote or list alone, send blockEdit: its block and hash from the read's blocks, that read's revision, and the whole block again as Markdown with the change made, once you have read it to its end. Every other block, pictures included, stays as it is, with its block and hash, at the revision the result gives; text after the block moves, so read again for any part not yet read. After STALE_REVISION, read that part again and use what it returns.";
 const BODY_FORMAT =
   'Each line of body is a block: a paragraph, "## " or "### " a heading, "- " or "1. " a list item, "> " a quote, with **bold**, *italic* and [label](/route/, https://… or entry:en_…) links. A picture line (![…](asset:…)) is placed by the author: keep each one exactly as read (its alt text and caption cannot be changed here), on a line of its own, where it belongs.';
 
@@ -244,7 +245,7 @@ const sortedJson = (v: unknown): string =>
  * another entry.
  */
 export function entryBlockHash(collectionId: string, entryId: string, index: number, block: RichBlock): string {
-  return sha256Hex(sortedJson([collectionId, entryId, index, block])).slice(0, 12);
+  return sha256Hex(sortedJson([collectionId, entryId, index, block])).slice(0, 16);
 }
 
 /** Where one block of an entry's text sits in its Markdown, as a read lists it: a prose block with its hash, a picture marked as one. */
@@ -401,8 +402,12 @@ function blockEditValue(edit: NonNullable<UpsertEntryArgs['blockEdit']>, body: R
   next[edit.block] = made[0];
   const stored = store(next);
   if (typeof stored === 'string') return issue(stored.replace(/\.$/, ''));
-  if (sortedJson(stored) !== sortedJson(next)) return issue('stored there, this block would join or change the block next to it (a list beside a list becomes one). Send another kind of block, or body with the whole text');
-  return next;
+  // Every other block as any write stores it: one kept in a form the engine writes more simply (two spans with the same
+  // marks, left by a link pointed elsewhere) is no change of the author's, and does not stand in the way.
+  const was = store(body);
+  const expected = typeof was === 'string' || was.length !== body.length ? null : was.map((b, i) => (i === edit.block ? made[0] : b));
+  if (!expected || sortedJson(stored) !== sortedJson(expected)) return issue('stored there, this block would join or change the block next to it (a list beside a list becomes one). Send another kind of block, or body with the whole text');
+  return stored;
 }
 
 /**
@@ -530,7 +535,7 @@ const entryNoun = (collection: Collection) => (collection.settings.singularName?
 export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, callId: string): Promise<ToolOutcome> {
   // A block edit in a run limited to one post names that post, before anything says whether another has such a block.
   const outside = args.blockEdit ? outsidePost(host, args.collectionId, args.entryId, 'changed') : null;
-  if (outside) return toolError('SCOPE_MISMATCH', `${outside.field}: ${outside.message}. Nothing was applied.`);
+  if (outside) return toolError('SCOPE_MISMATCH', `${outside.field}: ${outside.message}. Nothing was applied. Change this post's blocks, or ask with request_clarification (widenScope: true) to change another.`);
   const state = host.state();
   const revision = host.revision();
   const found = collectionFor(state, args.collectionId);
@@ -554,6 +559,7 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
     const reread = 'Nothing was applied. Read that part of the entry again with read_collection_entry, and send the block, hash and revision it returns.';
     if (blockEdit.revision !== revision) return toolError('STALE_REVISION', `The read of ${where} was at revision ${blockEdit.revision}, and the project is at ${revision} now. ${reread}`, { revision });
     const current = Array.isArray(entry.body) ? entry.body : [];
+    if (!current.some((b) => !isImageBlock(b))) return fieldError([{ field: 'blockEdit', message: `the entry's text has no block of text to change: send body with the whole text${current.length ? ', keeping each picture line as read' : ''}` }], 'Nothing was applied.');
     if (blockEdit.block >= current.length) return fieldError([{ field: 'blockEdit.block', message: `the entry's text has ${current.length} block${current.length === 1 ? '' : 's'} (0 to ${current.length - 1}): use a block number its blocks list` }], 'Nothing was applied.');
     if (isImageBlock(current[blockEdit.block])) return fieldError([{ field: 'blockEdit.block', message: `${where} is a picture, which the author changes in the editor: choose a block of text` }], 'Nothing was applied.');
     if (entryBlockHash(collection.settings.id, entry.id, blockEdit.block, current[blockEdit.block]) !== blockEdit.hash) return toolError('STALE_REVISION', `${where} does not have the hash "${blockEdit.hash}". ${reread}`, { revision });
@@ -585,7 +591,7 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
   const noun = entryNoun(collection);
   const label = entry ? `Edit ${noun} “${String(fields.title ?? entry.title).slice(0, 60)}”` : `Draft ${noun} “${String(fields.title).slice(0, 60)}”`;
   const res = await host.apply(ops, revision, label, callId, { collectionWrite: { kind: 'entry', collectionId: collection.settings.id, ...(entry ? { entryId: entry.id } : {}) } });
-  if (!res.ok) return applyFailure(res);
+  if (!res.ok) return applyFailure(res, blockEdit && res.error?.code === 'STALE_REVISION' ? 'Read that part of the entry again with read_collection_entry, and send the block, hash and revision it returns.' : undefined);
   const written = (res.results?.at(-1) ?? {}) as { entryId?: string; slug?: string; route?: string };
   const added = (taxonomyId: string) => (terms?.create ?? []).filter((t) => t.taxonomyId === taxonomyId).map((t) => t.label);
   const addedTerms = Object.fromEntries([...new Set((terms?.create ?? []).map((t) => t.taxonomyId))].filter((t) => t !== 'categories').map((t) => [t, added(t)]));
