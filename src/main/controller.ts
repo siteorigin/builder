@@ -51,7 +51,7 @@ import { isValidFontAsset } from '@shared/fonts';
 import { photoMetadata } from './project/photo-metadata';
 import { watchTree, type FolderWatch } from './folder-watch';
 import { importSamples, type SampleCache } from './project/starter-samples';
-import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools, type RuntimeStatus } from './runtime/manager';
+import { DevServer, buildProject, dependenciesReady, prepareDependencies, stageDependencies, starterTools, type RuntimeStatus, type StagedDependencies } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { type BuildTools, createPreviewStage, KeptTools, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
@@ -744,6 +744,8 @@ export class Controller {
     // Set once the open project closed for this one, and once this one was handed to the editor.
     let committed = false;
     let attached = false;
+    // The website tools, when they are installed beside the project while its sample photos are encoded (below).
+    let tools: StagedDependencies | null = null;
     try {
       if (signal.aborted) throw new Error('Canceled');
       progress({ step: 'files', message: 'Preparing project files…' });
@@ -773,18 +775,33 @@ export class Controller {
       dir = canonicalDir(dir);
       own(...(await fs.readdir(templateFiles())));
       await fs.cp(templateFiles(), dir, { recursive: true });
+      // The package files are the template's, named for this project, made from the app's own copies and never read back
+      // from the folder: what npm installs from (stageDependencies, below) is what the app wrote there.
       const pkgPath = join(dir, 'package.json');
-      const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
+      const pkg = JSON.parse(await fs.readFile(join(templateFiles(), 'package.json'), 'utf8'));
       pkg.name = slugify(name) || 'website';
-      await fs.writeFile(pkgPath, JSON.stringify(pkg, null, '\t') + '\n');
+      const pkgText = JSON.stringify(pkg, null, '\t') + '\n';
+      await fs.writeFile(pkgPath, pkgText);
       const lockPath = join(dir, 'package-lock.json');
-      const lock = JSON.parse(await fs.readFile(lockPath, 'utf8'));
+      const lock = JSON.parse(await fs.readFile(join(templateFiles(), 'package-lock.json'), 'utf8'));
       lock.name = pkg.name;
       if (lock.packages?.['']) lock.packages[''].name = pkg.name;
-      await fs.writeFile(lockPath, JSON.stringify(lock, null, '\t') + '\n');
+      const lockText = JSON.stringify(lock, null, '\t') + '\n';
+      await fs.writeFile(lockPath, lockText);
       own('README.md');
       await fs.writeFile(join(dir, 'README.md'), projectReadme(name));
       filing();
+      let settingUp: (() => void) | null = null;
+      // While the sample photos are encoded, a second or more of the processor's work with the disk mostly idle, npm
+      // installs the website tools from these package files outside the project; they are moved in once it is locked
+      // and trusted, below. Beside durable writes alone (photos from the cache, or none) npm slows them about as much as
+      // it saves, so then it runs in the project after them, as it always has.
+      const stage = () => {
+        // Cancelled meanwhile: nothing more is started.
+        if (signal.aborted) return;
+        settingUp = perf.span('create.dependencies');
+        tools = stageDependencies(dir, { 'package.json': pkgText, 'package-lock.json': lockText }, signal);
+      };
       const notice = starterNotice();
       const assetsDir = join(resourcesDir(), 'resources', 'starter-assets');
       const withImages = opts.starter === 'business' && opts.sampleImages && existsSync(assetsDir);
@@ -794,7 +811,7 @@ export class Controller {
       if (withImages) {
         const importing = perf.span('create.images');
         own('static');
-        for (const { asset: a, record } of await importSamples(dir, assetsDir, sampleCache())) {
+        for (const { asset: a, record } of await importSamples(dir, assetsDir, sampleCache(), stage)) {
           record.id = a.id;
           record.name = a.name;
           // A bundled sample is no file of the author's.
@@ -835,7 +852,10 @@ export class Controller {
       own('node_modules');
       let toolsMissing: RuntimeState | null = null;
       try {
-        await timed('create.dependencies', () => prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner()))();
+        const setUp = (line: string) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) });
+        const installed = tools as StagedDependencies | null;
+        if (installed) await installed.adopt(setUp, { mayWrite: () => staged.stillOwner(), whileOwner: (fn) => staged.whileOwner(fn) }).finally(() => settingUp?.());
+        else await timed('create.dependencies', () => prepareDependencies(dir, setUp, signal, () => staged.stillOwner()))();
       } catch (e) {
         // The tools needed a download and the registry could not be reached (offline, say). The project itself is
         // complete and this app's, so it opens for editing, its preview saying what is missing, with Try again. A
@@ -885,6 +905,8 @@ export class Controller {
       progress({ step: 'done', message: 'Ready' });
       return { ok: true };
     } catch (e) {
+      // An install still running beside the project stops, and its folder goes.
+      await (tools as StagedDependencies | null)?.discard();
       // Keeping editing (or quitting) at the switch is no failure to explain: the dialog just makes way.
       // A handover that never reached the editor ends here, so later switches are not held up by it.
       if (committed && !attached) this.handingOver = false;

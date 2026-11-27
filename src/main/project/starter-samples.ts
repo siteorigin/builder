@@ -247,9 +247,9 @@ export function addedTimes(n: number, now: number = Date.now()): string[] {
  * (with an ID and the time it was added of its own). With `cache`, the bytes this build's first project was given are
  * given again when its entry checks; otherwise each photo is imported, and kept for the next project when every
  * import made all its copies. The cache costs a creation nothing it would not do anyway: one that cannot be read or
- * kept is passed over.
+ * kept is passed over. `encoding` is called once the photos are to be imported afresh, as their encoding begins.
  */
-export async function importSamples(projectDir: string, assetsDir: string, cache: SampleCache | null): Promise<ImportedSample[]> {
+export async function importSamples(projectDir: string, assetsDir: string, cache: SampleCache | null, encoding?: () => void): Promise<ImportedSample[]> {
   // Without a cache the photos are only looked for, and each importer reads its own, as always.
   const sources = await readSources(assetsDir, !!cache);
   if (!sources.length) return [];
@@ -267,6 +267,7 @@ export async function importSamples(projectDir: string, assetsDir: string, cache
     const at = addedTimes(kept.length);
     return kept.map((s, i) => ({ asset: s.asset, record: { ...s.record, id: newId('a'), createdAt: at[i] } }));
   }
+  encoding?.();
   // The folder every photo goes in, made durably before several importers write into it at once.
   await ensureParents(projectDir, [`${ASSETS_FOLDER}/.`]);
   const imported: Array<Awaited<ReturnType<typeof importAsset>>> = [];

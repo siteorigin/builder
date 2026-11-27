@@ -31,6 +31,7 @@ vi.mock('../../src/main/settings', () => ({
 vi.mock('../../src/main/runtime/manager', () => ({
   dependenciesReady: async () => true,
   prepareDependencies: async () => undefined,
+  stageDependencies: () => ({ adopt: async () => undefined, discard: async () => undefined }),
   buildProject: async () => ({ ok: true, logs: [] }),
   DevServer: class {
     status = { state: 'idle' };

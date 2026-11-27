@@ -1,12 +1,13 @@
 import { app, utilityProcess, type UtilityProcess } from 'electron';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
+import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, promises as fs } from 'node:fs';
-import { dirname, join, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { WebsiteTools } from '@shared/api';
-import { sha } from '../project/fsutil';
+import { safeJoin, sha } from '../project/fsutil';
 import { statesFailure, type BuildErrorInfo } from '../../runtime/build-diagnostics';
 import { LineTail } from './line-tail';
 import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, nativeNotInstalled, npmErrorCode, npmLibc, type LockedPackage, type ToolsAvailability } from './availability';
@@ -158,9 +159,18 @@ const CACHE_PROBLEMS = new Set(['ENOTCACHED', 'EINTEGRITY']);
  * over meanwhile gets nothing more.
  */
 export async function prepareDependencies(dir: string, onLine: (line: string) => void, signal?: AbortSignal, mayWrite: () => Promise<boolean> = async () => true): Promise<void> {
-  const stillMine = async () => {
-    if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Canceled');
-  };
+  const stillMine = ownership(signal, mayWrite);
+  await installTools(dir, onLine, signal, stillMine);
+  await markTools(dir, stillMine);
+}
+
+/** Throws `Canceled` when `signal` has been aborted or `mayWrite` says no. */
+const ownership = (signal: AbortSignal | undefined, mayWrite: () => Promise<boolean>) => async () => {
+  if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Canceled');
+};
+
+/** The cache seeded, what the tools need checked and npm run in `dir`; `stillMine` is asked before each npm run. */
+async function installTools(dir: string, onLine: (line: string) => void, signal: AbortSignal | undefined, stillMine: () => Promise<void>): Promise<void> {
   const npmCli = join(npmDir(), 'bin', 'npm-cli.js');
   const seeding = perf.span('tools.seedCache');
   let cache = await seedCache();
@@ -227,13 +237,340 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
     onLine(tools ? 'Downloading the website tools that are not included for this computer…' : 'Setting up the website tools. Some may need to be downloaded…');
     await download();
   }
+}
+
+/** The marker that `dir`'s tools are set up for its lock (dependenciesReady), written once `stillMine` agrees. */
+async function markTools(dir: string, stillMine: () => Promise<void>): Promise<void> {
   const marking = perf.span('tools.marker');
-  const marker = JSON.stringify({ lockHash: await lockHash(dir), preparedAt: new Date().toISOString() });
+  const hash = await lockHash(dir);
   // Cancelled or taken over as the install finished: the project may belong to someone else now.
   await stillMine();
-  await fs.mkdir(join(dir, '.siteorigin', 'cache'), { recursive: true });
-  await fs.writeFile(join(dir, '.siteorigin', 'cache', 'deps.json'), marker);
+  await writeMarker(dir, hash);
   marking();
+}
+
+async function writeMarker(dir: string, hash: string): Promise<void> {
+  await fs.mkdir(join(dir, '.siteorigin', 'cache'), { recursive: true });
+  await fs.writeFile(join(dir, '.siteorigin', 'cache', 'deps.json'), JSON.stringify({ lockHash: hash, preparedAt: new Date().toISOString() }));
+}
+
+/** Where a new project's website tools are installed before they are moved into it (stageDependencies). */
+const stagingRoot = () => join(app.getPath('userData'), 'tools-staging');
+/** Stages are named after the app process that made them, so one a crash left behind can be told apart. */
+const TOOLS_STAGE_RE = /^tools-(\d+)-[0-9a-f]{12}$/;
+/** Every stage carries this mark: only a folder with it is ever removed as one. */
+const TOOLS_STAGE_MARK = '.siteorigin-tools-stage';
+/** The stages in use in this app. */
+const activeStages = new Set<string>();
+/** Windows can refuse to move a folder of files just written while something (an indexer, antivirus) holds one open. */
+const MOVE_RETRY = new Set(['EPERM', 'EACCES', 'EBUSY']);
+/** How many times a refused move is tried, each under its own claim on the lock, with a longer wait after each. */
+const MOVE_ATTEMPTS = 8;
+
+/** The package files a new project is made with, as the app wrote them: what npm installs from. */
+export interface PackageFiles {
+  'package.json': string;
+  'package-lock.json': string;
+}
+
+/** What a staged install may do in the project it is moved into: its session's checks of the lock. */
+export interface ToolsOwner {
+  /** Asked before an install runs in the project itself (prepareDependencies' `mayWrite`). */
+  mayWrite(): Promise<boolean>;
+  /** Run `fn` only while this app owns the project, holding its lock's claim throughout (ProjectSession.whileOwner). */
+  whileOwner(fn: () => Promise<unknown>): Promise<boolean>;
+}
+
+/** A new project's website tools being installed beside it, until they are moved in (`adopt`) or dropped (`discard`). */
+export interface StagedDependencies {
+  /**
+   * Wait for the install, then, holding the project's lock claim, move its `node_modules` into the project and mark
+   * the tools set up, as prepareDependencies leaves them. npm's lines so far go to `onLine` at once, later ones as they
+   * come. When the install could not be staged (no stage could be made on the project's volume) or the project is no
+   * longer as it was staged for (its package files changed, it has npm settings of its own, something is where its
+   * node_modules go), or the move is refused, the install runs in the project now instead.
+   */
+  adopt(onLine: (line: string) => void, owner: ToolsOwner): Promise<void>;
+  /** Stop the install and everything it started, and remove what it left; nothing goes into the project. */
+  discard(): Promise<void>;
+}
+
+/**
+ * Start installing the website tools of the project being made in `dir` from `files`, the package files the app wrote
+ * there, in a folder of the app's own, so npm's run overlaps the writing of the project's documents while nothing is
+ * written into the project before it is locked: `adopt` moves the install in by a rename, which keeps every file npm
+ * wrote as it wrote it. npm installs from the same lock and manifest, in a folder of the project's name, so the project
+ * gets the node_modules an install in place makes (npm's hidden lockfile names the package, and every link in it is
+ * relative). Aborting `signal` stops it.
+ */
+export function stageDependencies(dir: string, files: PackageFiles, signal?: AbortSignal): StagedDependencies {
+  const abort = new AbortController();
+  const stop = () => abort.abort();
+  if (signal?.aborted) stop();
+  else signal?.addEventListener('abort', stop, { once: true });
+  const stage = join(stagingRoot(), `tools-${process.pid}-${randomBytes(6).toString('hex')}`);
+  const cwd = join(stage, basename(dir));
+  // As lockHash reads the project's own.
+  const hash = sha(files['package-lock.json'] + files['package.json']);
+  activeStages.add(stage);
+  let sink: ((line: string) => void) | null = null;
+  const held: string[] = [];
+  const onLine = (line: string) => (sink ? sink(line) : held.push(line));
+  let warmer: Warmer | null = null;
+  // Set once this made the stage: only then is it this one's to remove.
+  let made = false;
+  // A folder to install in, on the project's volume (a rename cannot cross volumes), never through a link. One that
+  // cannot be made is no failure of the install: it runs in the project instead, as before.
+  const prepare = async () => {
+    try {
+      await fs.mkdir(stagingRoot(), { recursive: true });
+      if ((await fs.lstat(stagingRoot())).isSymbolicLink()) return false;
+      await fs.mkdir(stage);
+      made = true;
+      await fs.writeFile(join(stage, TOOLS_STAGE_MARK), JSON.stringify({ pid: process.pid }));
+      await fs.mkdir(cwd);
+      if ((await fs.stat(cwd)).dev !== (await fs.stat(dir)).dev) return false;
+      for (const [name, text] of Object.entries(files)) await fs.writeFile(join(cwd, name), text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // Whether the install is in the stage, ready to move in.
+  const work = (async () => {
+    if (abort.signal.aborted) throw new Error('Canceled');
+    void clearLeftStages();
+    if (!(await prepare())) return false;
+    warmer = startWarmer(abort.signal);
+    try {
+      await installTools(cwd, onLine, abort.signal, ownership(abort.signal, async () => true));
+      // What there is to load is read while it is all still here; the tools move in once installed, loaded or not.
+      warmer?.load(cwd, await nativeModules(cwd));
+      return true;
+    } catch (e) {
+      warmer?.stop();
+      throw e;
+    }
+  })();
+  work.catch(() => undefined);
+  let removed: Promise<void> | null = null;
+  const remove = () =>
+    (removed ??= work
+      .catch(() => undefined)
+      .then(() => (made ? fs.rm(stage, { recursive: true, force: true }) : undefined))
+      .catch(() => undefined)
+      .finally(() => {
+        activeStages.delete(stage);
+        signal?.removeEventListener('abort', stop);
+      }));
+  // The process loading native modules stopped and gone, when there is one.
+  const ended = async () => {
+    warmer?.stop();
+    await warmer?.exited;
+  };
+  // Each attempt under its own claim, every check made again: a wait between two never holds the claim, which an
+  // unlock passes over once it has sat unchanged for a while.
+  const moveIn = async (owner: ToolsOwner) => {
+    // Ended only with the marker written: a move that does not happen leaves the marker to the install in place.
+    const marking = perf.span('tools.marker');
+    let moved = false;
+    let marked = false;
+    try {
+      for (let attempt = 1; ; attempt++) {
+        let busy = false;
+        const ran = await owner.whileOwner(async () => {
+          if (signal?.aborted) return;
+          const target = safeJoin(dir, 'node_modules');
+          // Installed for the package files the project has now, with no npm settings of its own, into a place
+          // nothing has taken meanwhile.
+          if ((await lockHash(dir)) !== hash || (await taken(join(dir, '.npmrc'))) || (await taken(target))) return;
+          try {
+            await fs.rename(join(cwd, 'node_modules'), target);
+          } catch (e) {
+            busy = MOVE_RETRY.has((e as NodeJS.ErrnoException).code ?? '');
+            return;
+          }
+          moved = true;
+          await writeMarker(dir, hash);
+          marked = true;
+        });
+        if (!ran || signal?.aborted) throw new Error('Canceled');
+        if (moved || !busy || attempt === MOVE_ATTEMPTS) return moved;
+        await new Promise((r) => setTimeout(r, 100 * attempt));
+      }
+    } finally {
+      if (marked) marking();
+    }
+  };
+  return {
+    async adopt(lines, owner) {
+      sink = lines;
+      for (const line of held.splice(0)) lines(line);
+      try {
+        const moved = (await work) && (await moveIn(owner));
+        if (moved) warmer?.moved(dir);
+        else {
+          await ended();
+          const stillMine = ownership(signal, () => owner.mayWrite());
+          await installTools(dir, lines, signal, stillMine);
+          await markTools(dir, stillMine);
+        }
+      } catch (e) {
+        // A project opened without its tools (a download that failed) has nothing of this running on.
+        await ended();
+        throw e;
+      } finally {
+        await remove();
+      }
+    },
+    async discard() {
+      stop();
+      await remove();
+      await ended();
+    }
+  };
+}
+
+/** The process loading a new project's native modules once (startWarmer). */
+interface Warmer {
+  /** Settles once the process has gone. */
+  readonly exited: Promise<void>;
+  /** The native modules to load, relative to `root`, where they are now. */
+  load(root: string, files: string[]): void;
+  /** They are in `root` now, moved there by the app: the rest load from there. */
+  moved(root: string): void;
+  stop(): void;
+}
+
+/**
+ * macOS checks a native binary the first time anything loads it, which for one npm has just written takes a while
+ * (on an M4 Max, ~240 ms for Rolldown's 18 MB binding and ~130 ms for the file watcher's 160 KB one, one check at a time
+ * for the whole system), and remembers the check for that file wherever it is moved. So a new project's native modules
+ * are loaded once in a process of their own while the project is still being made, and its preview's first start finds
+ * them checked. The process starts with the install and waits for it (`load`), so its own start is not waited for too.
+ * It loads only what npm installed into the stage, and from the project only once the app has moved that install there
+ * itself (`moved`). Failing or slow, it is only time not saved. Null where there is nothing to gain.
+ */
+function startWarmer(signal: AbortSignal): Warmer | null {
+  if (process.platform !== 'darwin' || signal.aborted) return null;
+  const child = spawn(process.execPath, ['-e', WARM_NATIVES], { env: projectEnv({ ELECTRON_RUN_AS_NODE: '1' }), stdio: ['pipe', 'ignore', 'ignore'] });
+  const stop = () => {
+    child.kill();
+  };
+  const exited = new Promise<void>((resolve) => {
+    child.on('error', () => resolve());
+    child.on('exit', () => resolve());
+  });
+  // One that never got its list, or never finished it, is ended. Its input ends when the app does, and so does it.
+  const timer = setTimeout(stop, 60_000);
+  signal.addEventListener('abort', stop, { once: true });
+  child.stdin?.on('error', () => undefined);
+  void exited.then(() => {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', stop);
+  });
+  const send = (m: { root: string; files?: string[] }) => child.stdin?.write(`${JSON.stringify(m)}\n`);
+  return {
+    exited,
+    load(root, files) {
+      if (!files.length) return stop();
+      const warming = perf.span('tools.warm', { files: files.length });
+      void exited.then(() => warming());
+      send({ root, files });
+    },
+    moved(root) {
+      send({ root });
+      child.stdin?.end();
+    },
+    stop
+  };
+}
+/**
+ * Every native module npm wrote into `dir`'s node_modules, relative to `dir`, in the order of their paths, as the lock
+ * lists packages (a scoped build tool's binding before the file watcher's).
+ */
+async function nativeModules(dir: string): Promise<string[]> {
+  const names = await fs.readdir(join(dir, 'node_modules'), { recursive: true }).catch(() => [] as string[]);
+  return names
+    .filter((n) => n.endsWith('.node'))
+    .map((n) => join('node_modules', n))
+    .sort();
+}
+
+/**
+ * Reads lines of `{ root, files }` (the modules to load, relative to `root`) and then `{ root }` (they were moved there)
+ * and loads each native module, as Node's require would, and nothing else. One no longer where it was waits to be told
+ * where it went; once its input ends it loads what it can and stops.
+ */
+const WARM_NATIVES = `const path = require('node:path');
+const fs = require('node:fs');
+let root = '';
+let files = [];
+let input = '';
+let ended = false;
+const step = () => {
+  while (files.length) {
+    const file = path.join(root, files[0]);
+    try {
+      process.dlopen({ exports: {} }, file);
+    } catch {
+      if (!ended && !fs.existsSync(file)) return;
+    }
+    files.shift();
+  }
+  if (ended) process.exit(0);
+};
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (d) => {
+  input += d;
+  for (let i; (i = input.indexOf('\\n')) >= 0; ) {
+    const m = JSON.parse(input.slice(0, i));
+    input = input.slice(i + 1);
+    root = m.root;
+    if (m.files) files = m.files;
+  }
+  step();
+});
+process.stdin.on('end', () => {
+  ended = true;
+  step();
+});`;
+
+/** Whether anything is at `path`, a link included. */
+async function taken(path: string): Promise<boolean> {
+  perf.count('files.stats');
+  return fs.lstat(path).then(
+    () => true,
+    (e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return false;
+      throw e;
+    }
+  );
+}
+
+/**
+ * Remove the stages a creation that never finished (the app quit or crashed meanwhile) left behind: only folders with
+ * the mark, made by an app that is no longer running, or by this one and no longer in use; never through a link.
+ */
+async function clearLeftStages(): Promise<void> {
+  const root = stagingRoot();
+  if (!(await fs.lstat(root).catch(() => null))?.isDirectory()) return;
+  for (const name of await fs.readdir(root).catch(() => [] as string[])) {
+    const pid = Number(TOOLS_STAGE_RE.exec(name)?.[1]);
+    const path = join(root, name);
+    if (!pid || activeStages.has(path) || (pid !== process.pid && running(pid))) continue;
+    if (!(await fs.lstat(path).catch(() => null))?.isDirectory() || !(await fs.lstat(join(path, TOOLS_STAGE_MARK)).catch(() => null))?.isFile()) continue;
+    await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function running(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 /**

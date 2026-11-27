@@ -29,36 +29,66 @@ vi.mock('../../src/main/settings', () => ({
   loadSettings: async () => ({ settings: { developerMode: false } })
 }));
 // The website tools install stands in for npm: by default it finishes at once; a test can make it wait for Cancel,
-// fail, or write into the folder while it runs.
-const deps = vi.hoisted(() => ({ run: null as null | ((dir: string, signal?: AbortSignal) => Promise<void>), previewFails: false, ready: true, installs: 0, starts: 0 }));
-vi.mock('../../src/main/runtime/manager', () => ({
-  dependenciesReady: async () => deps.ready,
-  prepareDependencies: async (dir: string, _onLine: (l: string) => void, signal?: AbortSignal) => {
+// fail, or write into the folder while it runs. A creation stages its install beside the project (stageDependencies);
+// here the install runs in the project when it is moved in, once the project is locked, as npm did there. `staged`
+// records each creation's staging: what the project held when it began, and whether it was discarded.
+const deps = vi.hoisted(() => ({
+  run: null as null | ((dir: string, signal?: AbortSignal) => Promise<void>),
+  previewFails: false,
+  ready: true,
+  installs: 0,
+  starts: 0,
+  staged: [] as Array<{ dir: string; held: string[]; discarded: boolean; files: Record<string, string> }>,
+  discard: null as null | (() => Promise<void>),
+  atInstall: null as null | { manifest: boolean; lock: boolean },
+  onStage: null as null | (() => void)
+}));
+vi.mock('../../src/main/runtime/manager', async () => {
+  const { existsSync, readdirSync } = await import('node:fs');
+  const prepareDependencies = async (dir: string, _onLine: (l: string) => void, signal?: AbortSignal) => {
     deps.installs++;
+    // What the project held as its install began: its manifest, and its lock taken.
+    deps.atInstall = { manifest: existsSync(`${dir}/siteorigin.project.json`), lock: existsSync(`${dir}/.siteorigin/lock.json`) };
     const run = deps.run;
     deps.run = null;
     await run?.(dir, signal);
-  },
-  buildProject: async () => ({ ok: true, logs: [] }),
-  DevServer: class {
-    status = { state: 'idle' };
-    constructor(private dir: string) {}
-    onStatus() {}
-    onPublished() {}
-    onGone() {}
-    notifyRevision() {}
-    async start() {
-      deps.starts++;
-      if (!deps.previewFails) return;
-      // It got as far as writing its own output into the project.
-      const { mkdirSync, writeFileSync } = await import('node:fs');
-      mkdirSync(`${this.dir}/.svelte-kit`, { recursive: true });
-      writeFileSync(`${this.dir}/.svelte-kit/tsconfig.json`, '{}');
-      throw new Error('The preview could not start.');
+  };
+  return {
+    dependenciesReady: async () => deps.ready,
+    prepareDependencies,
+    stageDependencies: (dir: string, files: Record<string, string>, signal?: AbortSignal) => {
+      const staged = { dir, held: readdirSync(dir).sort(), discarded: false, files };
+      deps.staged.push(staged);
+      deps.onStage?.();
+      return {
+        adopt: (onLine: (l: string) => void) => prepareDependencies(dir, onLine, signal),
+        discard: async () => {
+          staged.discarded = true;
+          await deps.discard?.();
+        }
+      };
+    },
+    buildProject: async () => ({ ok: true, logs: [] }),
+    DevServer: class {
+      status = { state: 'idle' };
+      constructor(private dir: string) {}
+      onStatus() {}
+      onPublished() {}
+      onGone() {}
+      notifyRevision() {}
+      async start() {
+        deps.starts++;
+        if (!deps.previewFails) return;
+        // It got as far as writing its own output into the project.
+        const { mkdirSync, writeFileSync } = await import('node:fs');
+        mkdirSync(`${this.dir}/.svelte-kit`, { recursive: true });
+        writeFileSync(`${this.dir}/.svelte-kit/tsconfig.json`, '{}');
+        throw new Error('The preview could not start.');
+      }
+      async stop() {}
     }
-    async stop() {}
-  }
-}));
+  };
+});
 
 const { Controller } = await import('../../src/main/controller');
 const { ToolsDownloadError } = await import('../../src/main/runtime/availability');
@@ -76,6 +106,10 @@ afterEach(async () => {
   deps.ready = true;
   deps.installs = 0;
   deps.starts = 0;
+  deps.staged = [];
+  deps.discard = null;
+  deps.atInstall = null;
+  deps.onStage = null;
   settings.recentsFail = false;
   settings.recents = 0;
   vi.restoreAllMocks();
@@ -186,6 +220,73 @@ describe('New project after Cancel', () => {
     // Until the lock goes no other app can open the folder as a project, and once it goes there is none to open.
     expect(atClose).toEqual([['.siteorigin']]);
     expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('installs the website tools beside the project while its sample photos are encoded, before its documents', async () => {
+    const { c, parent } = setup();
+    expect(await c.create(opts(parent))).toEqual({ ok: true });
+    expect(deps.staged).toHaveLength(1);
+    const [staged] = deps.staged;
+    expect(staged.dir).toBe(join(parent, 'meadow-studio'));
+    expect(staged.held).toEqual(expect.arrayContaining(['.siteorigin', 'package.json', 'package-lock.json']));
+    expect(staged.held).not.toContain('siteorigin.project.json');
+    expect(staged.held).not.toContain('static');
+    // Moved in once the project was locked (here, where the install runs), and nothing left to discard.
+    expect(deps.installs).toBe(1);
+    expect(staged.discarded).toBe(false);
+  });
+
+  it('starts no install once the attempt is cancelled before its photos are encoded', async () => {
+    const { c, parent, hooks } = setup();
+    hooks.cancelAt = 'files';
+    expect(await c.create(opts(parent))).toEqual({ ok: false, message: 'Canceled.' });
+    expect(deps.staged).toEqual([]);
+    expect(deps.installs).toBe(0);
+  });
+
+  it('installs the website tools in the project after its files, as before, when no photos are encoded', async () => {
+    const { c, parent } = setup();
+    expect(await c.create({ ...opts(parent), sampleImages: false })).toEqual({ ok: true });
+    expect(deps.staged).toEqual([]);
+    expect(deps.installs).toBe(1);
+    // In the project once its documents are written and it holds its lock.
+    expect(deps.atInstall).toEqual({ manifest: true, lock: true });
+    expect(existsSync(join(parent, 'meadow-studio', 'siteorigin.project.json'))).toBe(true);
+  });
+
+  it('installs from the package files it wrote, made from its own template, whatever the folder held after the copy', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    const cp = fs.cp.bind(fs);
+    vi.spyOn(fs, 'cp').mockImplementation(async (from, to, o) => {
+      await cp(from, to, o);
+      // Something changes the copied package files before the app has made them this project's.
+      if (String(to) === dir) for (const f of ['package.json', 'package-lock.json']) writeFileSync(join(dir, f), '{"name":"x","changedMeanwhile":true}');
+    });
+    expect(await c.create(opts(parent))).toEqual({ ok: true });
+    const [staged] = deps.staged;
+    expect(Object.keys(staged.files).sort()).toEqual(['package-lock.json', 'package.json']);
+    for (const f of ['package.json', 'package-lock.json'] as const) {
+      expect(staged.files[f]).toBe(readFileSync(join(dir, f), 'utf8'));
+      expect(staged.files[f]).not.toContain('changedMeanwhile');
+    }
+    expect(JSON.parse(staged.files['package.json']).name).toBe('meadow-studio');
+  });
+
+  it('stops the install beside the project when the attempt stops before it is moved in, and waits for it', async () => {
+    const { c, parent } = setup();
+    let stopped = false;
+    deps.discard = async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      stopped = true;
+    };
+    // Cancel pressed as the install begins, while the photos are encoded.
+    deps.onStage = () => c.cancelCreate();
+    expect(await c.create(opts(parent))).toEqual({ ok: false, message: 'Canceled.' });
+    expect(deps.staged.map((s) => s.discarded)).toEqual([true]);
+    expect(stopped).toBe(true);
+    expect(deps.installs).toBe(0);
+    expect(readdirSync(parent)).toEqual([]);
   });
 
   it('cancels a Cancel pressed straight after Create, before anything is written', async () => {
