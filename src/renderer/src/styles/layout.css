@@ -63,9 +63,11 @@
   .seam.collapsed .resizer:focus-visible::after { content: ''; position: absolute; top: 14px; width: 4px; height: 16px; border-radius: 2px; background: var(--focus); outline: 2px solid var(--focus); outline-offset: 2px; }
   .seam.collapsed.left .resizer:focus-visible::after { left: 0; }
   .seam.collapsed.right .resizer:focus-visible::after { left: 6px; }
-  /* While a splitter is dragged the preview page takes no pointer events, so a fast drag over it stays with the
-     splitter (the frame is a separate process, which would otherwise get the moves before capture applies). */
-  .editor:has(.resizer.dragging) .frame-box iframe { pointer-events: none; }
+  /* While a splitter is dragged (or its menu is open) the preview page takes no pointer events, so a fast drag over
+     it stays with the splitter (the frame is a separate process, which would otherwise get the moves before capture
+     applies). The seam says so on the body (Editor.tsx): an `.editor:has(.resizer.dragging)` here made every change
+     anywhere in the editor restyle all of it. */
+  body:is(.splitting-left, .splitting-right) .frame-box iframe { pointer-events: none; }
   .panel-head { display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 10px 0 14px; flex: none; }
   /* The sidebar's head is ruled off like the dock's tab strip, so both panels frame the canvas with one top band,
      and what follows (a search, a view switch, a list) starts a beat below the rule. */

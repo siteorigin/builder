@@ -343,8 +343,10 @@
   }
   /* Above dialogs (their backdrop is 900), so a notice stays readable, and dismissable, while one is open. */
   .toasts { position: fixed; bottom: var(--notices-bottom); left: 50%; transform: translateX(-50%); z-index: 1100; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
-  /* The Previewing bar sits 18px above the canvas floor (about 42px above the window) and is 36px tall: keep the stack above it. */
-  body:has(.preview-pill:not([inert] *)) .toasts { --notices-bottom: 90px; }
+  /* The Previewing bar sits 18px above the canvas floor (about 42px above the window) and is 36px tall: keep the stack
+     above it while it shows and is not inert. The bar says so on the body (lib/previewing.ts): a `body:has(.preview-pill…)`
+     here made every change anywhere in the window restyle all of it. */
+  body.previewing .toasts { --notices-bottom: 90px; }
   /* Crowded (Toasts marks it when the notices are taller than the window below the toolbar allows): the stack stops
      short of the toolbar and scrolls, so every notice stays reachable; Tab brings each into view. The side room keeps
      the notices' edges and focus rings inside it. */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, toolCallsReply } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -732,6 +732,109 @@ describe('panels metrics', () => {
     expect(gone.metrics['panels.click.renders.insert']).toBeUndefined();
     const uncounted = new Trace(trace().records.map((x) => (x.name === 'scenario.start' && x.proc === 'renderer' ? { ...x, c: { 'react.commits': 100 } } : x)));
     expect(panels.measure(uncounted, facts).missing).toEqual(['panels.click (the editor did not count component renders)']);
+  });
+});
+
+describe('layers pages', () => {
+  it('hold the nodes they are named for, in sections, with a hidden section and clicks across the page', () => {
+    for (const size of LAYERS_SIZES) {
+      const page = layersPage(size);
+      expect(page.order).toHaveLength(size);
+      expect(new Set(page.order).size).toBe(size);
+      const inserts = page.operations.filter((o) => o.type === 'node.insert');
+      expect(inserts.map((o) => o.newNodeId)).toEqual(page.order);
+      for (const id of page.order) expect(id).toMatch(/^n_[a-z0-9]{4,32}$/);
+      expect(page.pageId).toMatch(/^pg_[a-z0-9]{4,32}$/);
+      // Six deep at most, every parent made before its children.
+      expect(Math.max(...page.order.map((id) => layersAncestors(page, id).length))).toBe(5);
+      page.order.forEach((id, i) => {
+        const parent = page.parents.get(id);
+        if (parent) expect(page.order.indexOf(parent)).toBeLessThan(i);
+      });
+      // The hidden inner container and the 23 layers it holds.
+      expect(page.hidden).toHaveLength(24);
+      expect(page.hidden.slice(1).every((id) => layersAncestors(page, id).includes(page.hidden[0]))).toBe(true);
+      // Seven different rows, none hidden, at depths from a section to a button; the eye's section is none of them.
+      expect(new Set(page.clicks).size).toBe(7);
+      expect(page.clicks.some((id) => page.hidden.includes(id) || id === page.hides || layersAncestors(page, id).includes(page.hides))).toBe(false);
+      expect(new Set(page.clicks.map((id) => layersAncestors(page, id).length))).toEqual(new Set([0, 1, 2, 3, 4, 5]));
+      expect(page.parents.get(page.hides)).toBeNull();
+      // The arrow keys start from the last click, a section, and stay in it.
+      const start = page.order.indexOf(page.clicks.at(-1)!);
+      expect(page.parents.get(page.order[start])).toBeNull();
+      expect(page.order.slice(start + 1, start + 1 + LAYERS_SAMPLES.key).every((id) => layersAncestors(page, id).includes(page.order[start]))).toBe(true);
+    }
+  });
+});
+
+describe('layers metrics', () => {
+  /** The editor's counters at a mark. */
+  const counters = (rows: number, renders: number, ms: number, walks: number, commits: number) => ({ 'layers.rows': rows, 'panel.layers.renders': renders, 'panel.layers.renderMs': ms, 'react.renders': renders + 10, 'react.commits': commits, 'tree.findParent': walks * 3, 'tree.subtreeIds': walks });
+  const sample = (size: number, kind: LayersKind, i: number, edge: 'start' | 'end', attempt = 1) => ({ attrs: { scenario: 'layers', size, kind, i, edge, attempt, ...(edge === 'start' ? { rows: size + 20 } : {}) } });
+  /** A sample i of a kind on a page: its window from t, the change taking `ms` to commit and one more to paint, its
+   *  counters growing by `grow` (rows) and `grow / 2` (walks). */
+  function window(size: number, kind: LayersKind, i: number, t: number, ms: number, grow: number, attempt = 1): PerfRecord[] {
+    const out: PerfRecord[] = [r('layers.sample', t, { ...sample(size, kind, i, 'start', attempt), c: counters(1000, 5000, 100, 1000, 50) })];
+    if (kind === 'edit') {
+      const rev = 10 + i;
+      out.push(r('edit.requested', t + 5, { attrs: { revision: rev, operations: 1 } }), r('renderer.snapshotReceived', t + 20, { attrs: { revision: rev + 1 } }), r('renderer.commit', t + 20 + ms, { attrs: { revision: rev + 1 } }));
+    } else {
+      out.push(r('layers.input', t + 5, { attrs: { kind } }), r('renderer.selectionCommit', t + 5 + ms, { attrs: { selected: true } }), r('layers.painted', t + 6 + ms, { attrs: { kind } }));
+    }
+    out.push(r('layers.sample', t + 30 + ms + 300, { ...sample(size, kind, i, 'end', attempt), c: counters(1000 + grow, 5000 + grow * 5, 100 + ms / 2, 1000 + grow / 2, 50 + 2) }));
+    return out;
+  }
+  function trace(drop: (x: PerfRecord) => boolean = () => false, extra: PerfRecord[] = []) {
+    const records: PerfRecord[] = [r('scenario.start', 1000, { attrs: { scenario: 'layers' } })];
+    let t = 2000;
+    for (const size of LAYERS_SIZES)
+      for (const kind of LAYERS_KINDS)
+        for (let i = 0; i < LAYERS_SAMPLES[kind]; i++) {
+          // Samples i take 10·(i+1) ms on the small page and ten times that on the large one; rows grow the same way.
+          const k = size === 300 ? 1 : 10;
+          records.push(...window(size, kind, i, t, 10 * (i + 1) * k, 100 * k));
+          t += 2000;
+        }
+    records.push(r('scenario.end', t, { attrs: { scenario: 'layers' } }));
+    return new Trace([...records, ...extra].filter((x) => !drop(x)).sort((a, b) => a.t - b.t));
+  }
+
+  it('time each selection change and edit to its commit, with what the editor counted over it, per page', () => {
+    const got = layers.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k]?.value;
+    // Seven samples of 10..70 ms: the median is the fourth; two edits of 10 and 20: their mean.
+    expect([v('layers.at300.click.commitMs'), v('layers.at300.key.commitMs'), v('layers.at300.edit.commitMs')]).toEqual([40, 40, 15]);
+    expect([v('layers.at1000.click.commitMs'), v('layers.at1000.click.paintMs'), v('layers.at1000.edit.commitMs')]).toEqual([400, 401, 150]);
+    expect(got.metrics['layers.at300.edit.paintMs']).toBeUndefined();
+    expect([v('layers.at300.click.rowRenders'), v('layers.at300.click.layersRenders'), v('layers.at300.click.renders'), v('layers.at300.click.commits')]).toEqual([100, 500, 500, 2]);
+    expect([v('layers.at1000.key.rowRenders'), v('layers.at1000.key.findParent'), v('layers.at1000.key.subtreeIds')]).toEqual([1000, 1500, 500]);
+    expect([v('layers.at300.rows'), v('layers.at1000.rows')]).toEqual([320, 1020]);
+    expect(got.metrics['layers.at300.click.layersMs']).toEqual({ unit: 'ms', value: 20 });
+    expect(got.metrics['layers.at300.click.findParent'].unit).toBe('count');
+  });
+
+  it('measure the last attempt of a sample done again', () => {
+    // A first attempt of the first click on the large page, before the measured one, that took far longer.
+    const first = window(1000, 'click', 0, 1100, 500, 99999, 1).map((x) => ({ ...x, attrs: { ...x.attrs, ...(x.name === 'layers.sample' ? { attempt: 1 } : {}) } }));
+    const records = trace().records.map((x) => (x.name === 'layers.sample' && x.attrs?.size === 1000 && x.attrs?.kind === 'click' && x.attrs?.i === 0 ? { ...x, attrs: { ...x.attrs, attempt: 2 } } : x));
+    const got = layers.measure(new Trace([...records, ...first].sort((a, b) => a.t - b.t)), facts);
+    expect(got.missing).toEqual([]);
+    expect(got.metrics['layers.at1000.click.commitMs'].value).toBe(400);
+    expect(got.metrics['layers.at1000.click.rowRenders'].value).toBe(1000);
+  });
+
+  it('name what is missing, and never count a scan the editor never counted as none', () => {
+    expect(layers.measure(trace((x) => x.name === 'layers.input' && x.t === 2005), facts).missing).toEqual(['layers.input (layers.at300 click 1)', 'renderer.selectionCommit (layers.at300 click 1)', 'layers.painted (layers.at300 click 1)']);
+    expect(layers.measure(trace((x) => x.name === 'layers.sample' && x.attrs?.kind === 'key' && x.attrs?.i === 6 && x.attrs?.size === 300 && x.attrs?.edge === 'end'), facts).missing).toEqual(['layers.sample end (layers.at300 key 7)']);
+    const edit = layers.measure(trace((x) => x.name === 'renderer.commit'), facts);
+    expect(edit.missing).toContain('renderer.commit (layers.at300 edit 1)');
+    expect(edit.metrics['layers.at300.edit.commitMs']).toBeUndefined();
+    const uncounted = new Trace(trace().records.map((x) => (x.name === 'layers.sample' && x.c ? { ...x, c: Object.fromEntries(Object.entries(x.c).filter(([k]) => k !== 'tree.findParent')) } : x)));
+    const none = layers.measure(uncounted, facts);
+    expect(none.missing).toEqual(['tree.findParent (the editor never counted it)']);
+    expect(none.metrics['layers.at300.click.findParent']).toBeUndefined();
+    expect(layers.measure(trace((x) => x.name === 'scenario.end'), facts).missing).toEqual(['scenario.end (renderer)']);
   });
 });
 

@@ -1,5 +1,5 @@
 import './LayersPanel.css';
-import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown, BookmarkPlus, Box, Download, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X, LayoutTemplate } from 'lucide-react';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
@@ -17,7 +17,7 @@ import { withSeparator, wrapItems } from './WrapItems';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { copyPasteItems, PasteHere } from './CopyPaste';
 import { styleCopyItems } from './StylePaste';
-import { clip, contentText, everySizeEdits, eyeAction, hiddenAncestor, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
+import { clip, contentText, everySizeEdits, eyeAction, eyeFace, hiddenAncestor, hideHereEdits, holdsSelection, isSelectedRow, layerLabel, rowVisibility, selectionKeysOf, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
@@ -29,6 +29,7 @@ import { templateOwner } from '../lib/template-view';
 import { layerSlots, placeOps } from '../lib/layer-drop';
 import { sameSlotTarget, type SlotTarget } from '../lib/slot-target';
 import { askAiHint } from '../lib/ask-ai-key';
+import { perfCount } from '../lib/perf';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -48,33 +49,51 @@ import { askAiHint } from '../lib/ask-ai-key';
 /** A row's depth, for the CSS that turns it into its indent (and its guide and drop-line positions). */
 const depthVar = (depth: number) => ({ '--depth': depth }) as React.CSSProperties;
 
+/**
+ * The glyphs every row draws, made once: a row drawn again (every row is, when the project changes) gives React the
+ * same element, which it leaves as it is rather than drawing the icon again.
+ */
+const GLYPH = {
+  instance: <Component />,
+  text: <Type />,
+  image: <Image />,
+  link: <Link2 />,
+  icon: <Shapes />,
+  divider: <Minus />,
+  repeat: <Repeat />,
+  slot: <SquareDashed />,
+  grid: <LayoutGrid />,
+  row: <Columns3 />,
+  stack: <Rows3 />,
+  element: <Square />,
+  other: <Box />,
+  open: <ChevronRight />,
+  hider: <CornerLeftUp />,
+  eye: <Eye />,
+  eyeOff: <EyeOff />,
+  more: <Ellipsis />
+};
+
 function kindIcon(n: GraphNode) {
   switch (n.kind) {
     case 'instance':
-      return <Component />;
     case 'text':
-      return <Type />;
     case 'image':
-      return <Image />;
     case 'link':
-      return <Link2 />;
     case 'icon':
-      return <Shapes />;
     case 'divider':
-      return <Minus />;
     case 'repeat':
-      return <Repeat />;
     case 'slot':
-      return <SquareDashed />;
+      return GLYPH[n.kind];
     case 'element': {
       const layout = n.styles?.base?.layout;
-      if (layout === 'grid') return <LayoutGrid />;
-      if (layout === 'row') return <Columns3 />;
-      if (layout === 'stack') return <Rows3 />;
-      return <Square />;
+      if (layout === 'grid') return GLYPH.grid;
+      if (layout === 'row') return GLYPH.row;
+      if (layout === 'stack') return GLYPH.stack;
+      return GLYPH.element;
     }
     default:
-      return <Box />;
+      return GLYPH.other;
   }
 }
 
@@ -212,6 +231,13 @@ function listName(st: ProjectState, ref: ElementRef): string | null {
 const headingTag = (kind: string) => /^Heading (\d)$/.exec(kind)?.[1] ?? null;
 
 
+/** The owners and paths the panel's lists are shown with: the same objects every render, so rows left alone stay so. */
+const HEADER: OwnerRef = { kind: 'shell', id: 'header' };
+const FOOTER: OwnerRef = { kind: 'shell', id: 'footer' };
+const TOP: string[] = [];
+const IN_HEADER = ['Shared header'];
+const IN_FOOTER = ['Shared footer'];
+
 /** The row to keep as the tree's one tab stop: the selection's (of several selected together), any selected, the focused one, else the first. */
 const tabStop = (rows: HTMLElement[]) =>
   rows.find((r) => r.dataset.primary === 'true') ?? rows.find((r) => r.getAttribute('aria-selected') === 'true') ?? rows.find((r) => r.contains(document.activeElement)) ?? rows[0];
@@ -270,6 +296,21 @@ export function LayersPanel() {
   const layerSet = useStore((s) => s.layerSet);
   useStore((s) => s.slotTarget);
   useRovingTabStop(treeRef, 'treeitem');
+  // What every row is given stays the same object while it means the same thing, so a change of the selection renders
+  // only the rows it changes (LayerRow is memoized): the owners, and the menu, whose latest version a row's call reaches.
+  const pageOwner = useMemo<OwnerRef | null>(() => (pageId ? { kind: 'page', id: pageId } : null), [pageId]);
+  const definitionId = definitionMode?.definitionId;
+  const componentOwner = useMemo<OwnerRef | null>(() => (definitionId ? { kind: 'component', id: definitionId } : null), [definitionId]);
+  // A layout's owner is its collection's, and whether it is the archive's (templateOwner reads nothing else).
+  const layoutKey = templateMode ? `${templateMode.archive ? 'archive' : 'template'}:${templateMode.collectionId}` : null;
+  const layoutOwner = useMemo<OwnerRef | null>(() => (templateMode ? templateOwner(templateMode) : null), [layoutKey]);
+  // The menu a row opens is the one the last committed render made (with its project, mode and group).
+  const drawnMenu = useRef<MenuFn>(() => {});
+  const menuFn = useRef<MenuFn>(() => {});
+  useLayoutEffect(() => {
+    menuFn.current = drawnMenu.current;
+  });
+  const onMenu = useCallback<MenuFn>((...args) => menuFn.current(...args), []);
   // A selection made elsewhere (the canvas, the inspector) scrolls its row into view once its branches have
   // opened, and again when the panel is shown; keyboard focus stays where it is.
   useEffect(() => {
@@ -329,7 +370,7 @@ export function LayersPanel() {
   }, []);
   // Leaving several layers for one (Esc, the bar's X, a Cmd/Ctrl-click) is said, whichever way it happened.
   // Only when the project is unchanged and the one left is one of them: a delete, an undo or a pick elsewhere is not it.
-  const groupNow = snap && pageId ? liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode, templateMode }) : null;
+  const groupNow = useMemo(() => (snap && pageId ? liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode, templateMode }) : null), [snap, selection, layerSet, pageId, definitionMode, templateMode]);
   const hadGroup = useRef<{ rev: number; owner: string; ids: string[] } | null>(null);
   useEffect(() => {
     const was = hadGroup.current;
@@ -397,13 +438,13 @@ export function LayersPanel() {
   if (!snap || !pageId) return null;
   const st = snap.state;
   const page = st.pages[pageId];
-  const defOwner: OwnerRef | null = definitionMode ? { kind: 'component', id: definitionMode.definitionId } : null;
+  const defOwner: OwnerRef | null = componentOwner;
   const defTree = defOwner ? st.components[defOwner.id]?.tree : null;
   // A collection's layout being edited: its layers, between the shared header and footer every entry shows.
   const layoutTree = templateMode ? (templateMode.archive ? st.collections[templateMode.collectionId]?.settings.archiveTemplate : st.collections[templateMode.collectionId]?.settings.template) : undefined;
-  const layout = !defOwner && templateMode && layoutTree ? { owner: templateOwner(templateMode), tree: layoutTree, name: `${st.collections[templateMode.collectionId].settings.name} ${templateMode.archive ? 'index layout' : 'layout'}` } : null;
+  const layout = !defOwner && templateMode && layoutTree && layoutOwner ? { owner: layoutOwner, tree: layoutTree, name: `${st.collections[templateMode.collectionId].settings.name} ${templateMode.archive ? 'index layout' : 'layout'}` } : null;
   // The layers selected together, while the selection is one of them and they still sit side by side here.
-  const picked = liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode, templateMode });
+  const picked = groupNow;
 
   /** The page a section (or the sections selected together) can be moved to, at its end; the moved ones are selected there. */
   const pageMenu = (anchor: { x: number; y: number }, plan: LayersPlan | null, pages: Array<{ id: string; title: string }>, what: string, returnTo: HTMLElement | null) =>
@@ -656,6 +697,7 @@ export function LayersPanel() {
     } else if (el instanceof HTMLElement) menu.openAt(el, items, `${name} options`);
     else menu.open(el.x, el.y, items, `${name} options`, el.returnTo ?? (document.activeElement as HTMLElement | null));
   };
+  drawnMenu.current = openMenu;
 
   /**
    * Arrow keys (shared roving), plus type-ahead: typing a name's first letters jumps to the next match. Shift+↑/↓
@@ -816,7 +858,7 @@ export function LayersPanel() {
         {defOwner && defTree ? (
           <>
             <SectionLabel id="layers-sec-component" icon={<Component />} label="Component layers" />
-            <TreeList state={st} owner={defOwner} tree={defTree} ids={defTree.rootIds} depth={0} onMenu={openMenu} path={[]} labelledBy="layers-sec-component" />
+            <TreeList state={st} owner={defOwner} tree={defTree} ids={defTree.rootIds} depth={0} onMenu={onMenu} path={TOP} labelledBy="layers-sec-component" />
           </>
         ) : defOwner ? (
           // A code component (in Component Studio) has no layers of its own: its markup is its code.
@@ -829,10 +871,10 @@ export function LayersPanel() {
         ) : layout ? (
           <>
             <SectionLabel id="layers-sec-header" icon={<PanelTop />} label="Shared header" />
-            <TreeList state={st} owner={{ kind: 'shell', id: 'header' }} tree={st.site.shell.header} ids={st.site.shell.header.rootIds} depth={0} onMenu={openMenu} path={['Shared header']} labelledBy="layers-sec-header" />
+            <TreeList state={st} owner={HEADER} tree={st.site.shell.header} ids={st.site.shell.header.rootIds} depth={0} onMenu={onMenu} path={IN_HEADER} labelledBy="layers-sec-header" />
             <SectionLabel id="layers-sec-layout" icon={<LayoutTemplate />} label="Layout of every entry" />
             {layout.tree.rootIds.length > 0 ? (
-              <TreeList state={st} owner={layout.owner} tree={layout.tree} ids={layout.tree.rootIds} depth={0} onMenu={openMenu} path={[]} labelledBy="layers-sec-layout" />
+              <TreeList state={st} owner={layout.owner} tree={layout.tree} ids={layout.tree.rootIds} depth={0} onMenu={onMenu} path={TOP} labelledBy="layers-sec-layout" />
             ) : (
               <div className="layers-empty" role="none" onKeyDown={(e) => !((e.metaKey || e.ctrlKey) && ['z', 'y', 'v'].includes(e.key.toLowerCase())) && e.stopPropagation()}>
                 <p>No layout content yet</p>
@@ -842,19 +884,19 @@ export function LayersPanel() {
               </div>
             )}
             <SectionLabel id="layers-sec-footer" icon={<PanelBottom />} label="Shared footer" />
-            <TreeList state={st} owner={{ kind: 'shell', id: 'footer' }} tree={st.site.shell.footer} ids={st.site.shell.footer.rootIds} depth={0} onMenu={openMenu} path={['Shared footer']} labelledBy="layers-sec-footer" />
+            <TreeList state={st} owner={FOOTER} tree={st.site.shell.footer} ids={st.site.shell.footer.rootIds} depth={0} onMenu={onMenu} path={IN_FOOTER} labelledBy="layers-sec-footer" />
           </>
         ) : (
           <>
             {showsPart(page, 'header') && (
               <>
                 <SectionLabel id="layers-sec-header" icon={<PanelTop />} label="Shared header" />
-                <TreeList state={st} owner={{ kind: 'shell', id: 'header' }} tree={st.site.shell.header} ids={st.site.shell.header.rootIds} depth={0} onMenu={openMenu} path={['Shared header']} labelledBy="layers-sec-header" />
+                <TreeList state={st} owner={HEADER} tree={st.site.shell.header} ids={st.site.shell.header.rootIds} depth={0} onMenu={onMenu} path={IN_HEADER} labelledBy="layers-sec-header" />
               </>
             )}
             <SectionLabel id="layers-sec-page" icon={<FileText />} label="Page content" />
             {page.rootIds.length > 0 ? (
-              <TreeList state={st} owner={{ kind: 'page', id: pageId }} tree={page} ids={page.rootIds} depth={0} onMenu={openMenu} path={[]} labelledBy="layers-sec-page" />
+              <TreeList state={st} owner={pageOwner!} tree={page} ids={page.rootIds} depth={0} onMenu={onMenu} path={TOP} labelledBy="layers-sec-page" />
             ) : (
               <div
                 className="layers-empty"
@@ -876,7 +918,7 @@ export function LayersPanel() {
             {showsPart(page, 'footer') && (
               <>
                 <SectionLabel id="layers-sec-footer" icon={<PanelBottom />} label="Shared footer" />
-                <TreeList state={st} owner={{ kind: 'shell', id: 'footer' }} tree={st.site.shell.footer} ids={st.site.shell.footer.rootIds} depth={0} onMenu={openMenu} path={['Shared footer']} labelledBy="layers-sec-footer" />
+                <TreeList state={st} owner={FOOTER} tree={st.site.shell.footer} ids={st.site.shell.footer.rootIds} depth={0} onMenu={onMenu} path={IN_FOOTER} labelledBy="layers-sec-footer" />
               </>
             )}
           </>
@@ -1025,8 +1067,16 @@ function TreeList(props: ListProps & { ids: string[]; labelledBy: string }) {
 
 type Drop = { where: 'before' | 'after' | 'inside' | 'first'; depth: number; label?: string };
 
-function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlot }: ListProps & { id: string; parentId?: string; inSlot?: string }) {
-  const selection = useStore((s) => s.selection);
+/**
+ * One layer's row and, while it is open, what it holds. It reads only what decides how it looks (whether it is the
+ * selection, whether it holds it, which of its parts is selected), so moving the selection renders only the rows it
+ * moves between, with their containers; everything else it is given stays the same object while it means the same.
+ */
+const LayerRow = memo(LayerRowBody);
+
+function LayerRowBody({ state, owner, tree, id, depth, onMenu, path, parentId, inSlot }: ListProps & { id: string; parentId?: string; inSlot?: string }) {
+  // Each render of a row, for the performance harness (scripts/perf/README.md); nothing while timing marks are off.
+  perfCount('layers.rows');
   const definitionMode = useStore((s) => s.definitionMode);
   const picked = useContext(Picked);
   const trigger = useContext(MenuTriggers);
@@ -1039,6 +1089,9 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
   const cancelRename = useRef(false);
   const n = tree.nodes[id];
   const ref: ElementRef = { owner, instancePath: [], nodeId: id };
+  // What a pick selects: a new reference each time, as before rows were memoized, so picking the row again still
+  // changes the selection (the panel then puts the tree's one tab stop back on it).
+  const freshRef = (): ElementRef => ({ ...ref });
   const def = n?.kind === 'instance' ? state.components[n.definitionId] : undefined;
   const parts = def ? Object.entries(def.parts).filter(([pid]) => pid !== 'root') : [];
   // Slot content, per slot in the definition's order, each slot the component shows listed even while empty (an
@@ -1053,22 +1106,21 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
   const intoLabel = into?.label;
   // A design's slot outlet holds its fallback, shown while a placement leaves the slot empty.
   const canHold = n?.kind === 'element' || !!intoSlot || (n?.kind === 'slot' && owner.kind === 'component');
-  // In component editing the canvas selects the definition's root through the placement; match it here. A part
-  // of a component placed in the design is never that root, whatever its node is called inside that component.
   const isDefRoot = owner.kind === 'component' && state.components[owner.id]?.tree?.rootIds[0] === id;
-  const defRoot = isDefRoot && !!definitionMode && !!selection && selection.owner.kind !== 'component' && selection.instancePath.length === 1 && selection.nodeId === id;
-  // A node of a component being edited, picked on the canvas in one repeated item, is still this row.
-  const own = sameRef(selection, ref) || defRoot || (owner.kind === 'component' && !!selection?.itemPath?.length && sameRef({ ...selection, itemPath: undefined }, ref));
+  const rowKey = refKey(ref);
+  const own = useStore((s) => isSelectedRow(s.selection, s.definitionMode, rowKey, owner, id, isDefRoot));
   // One of several selected together: shown as selected too, while the selection itself stays the one row marked primary.
   const member = !!picked && picked.owner.kind === owner.kind && picked.owner.id === owner.id && picked.ids.includes(id);
   const selected = own || member;
-  // Holds the selection: a part of this component (at any depth), or anything nested inside this container,
-  // judged by where the selection's outermost component sits in this tree.
-  const anchor = selection && selection.owner.id === owner.id ? (selection.instancePath[0] ?? selection.nodeId) : null;
-  // Or a slot picked for Insert: of this component, or of one nested inside it.
-  const slotTarget = useStore((s) => s.slotTarget);
-  const slotAt = slotTarget && slotTarget.owner.kind === owner.kind && slotTarget.owner.id === owner.id ? slotTarget.parentId : null;
-  const containsSel = !!n && ((!!anchor && (anchor === id ? !!selection!.instancePath.length : subtreeIds(tree, id).includes(anchor))) || (!!slotAt && (slotAt === id || subtreeIds(tree, id).includes(slotAt))));
+  const containsSel = useStore((s) => !!n && holdsSelection(tree, owner, id, s.selection, s.slotTarget));
+  // The part of this placement that is selected, as its key (a repeated item's path aside), or null.
+  // (A part record a hand edit left empty has no key, and is only read as a row while the placement is open.)
+  const partKeys = parts.map(([pid, p]) => (p ? refKey({ owner, instancePath: [id], nodeId: p.nodeId, partId: pid }) : null));
+  const selectedPart = useStore((s) => {
+    if (!partKeys.length || !s.selection) return null;
+    const bare = selectionKeysOf(s.selection).bare;
+    return partKeys.includes(bare) ? bare : null;
+  });
   // Opening to reveal a selected part latches, so moving the selection back to the parent keeps the branch open.
   useEffect(() => {
     if (containsSel) setOpen(true);
@@ -1080,13 +1132,16 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
     markDraft(`layer-rename:${id}`, renaming);
     return () => markDraft(`layer-rename:${id}`, false);
   }, [renaming, id]);
-  if (!n) return null;
+  // An unnamed text or button is told apart by its words; the root of a component being edited is the component.
+  const ownerDef = owner.kind === 'component' ? state.components[owner.id] : undefined;
+  const label = !n ? null : isDefRoot ? { label: ownerDef?.name ?? displayName(state, n), kind: ownerDef?.name ?? displayName(state, n), full: ownerDef?.name ?? displayName(state, n) } : layerLabel(state, n, ownerDef);
+  // The names this row's children are shown under: the same array while they are the same, so a child row this row
+  // renders again with nothing new for it is left alone.
+  const childPath = useMemo(() => [...path, label?.label ?? ''], [path, label?.label]);
+  if (!n || !label) return null;
   // Open already in the render that first shows the selection inside it (a panel shown again, lib/hideable), not only
   // once the latch above has run.
   const isOpen = (open || containsSel) && expandable;
-  // An unnamed text or button is told apart by its words; the root of a component being edited is the component.
-  const ownerDef = owner.kind === 'component' ? state.components[owner.id] : undefined;
-  const label = isDefRoot ? { label: ownerDef?.name ?? displayName(state, n), kind: ownerDef?.name ?? displayName(state, n), full: ownerDef?.name ?? displayName(state, n) } : layerLabel(state, n, ownerDef);
   const name = label.label;
   // The words of an unnamed text or button, which the row leads with (its kind is in its glyph, tooltip and label).
   const words = !isDefRoot && !n.name && !label.empty && contentText(n) ? label.excerpt : undefined;
@@ -1103,7 +1158,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
   const title = [label.full, path.length ? `In ${path.join(' › ')}` : '', custom ? 'Made in this project' : '', sentence(vis.note), ...conditions].filter(Boolean).join('\n');
   const draggable = owner.kind !== 'shell' && !isDefRoot;
   const canToggleHidden = owner.kind !== 'shell' && !isDefRoot && hideable(state, n);
-  const eye = canToggleHidden ? eyeAction(state, n, size) : null;
+  // What the eye shows; what a click on it changes is planned when it is clicked.
+  const eye = canToggleHidden ? eyeFace(vis.own, size) : null;
   // Hidden here by its own setting and by a layer above as well: showing it here takes both, and the eye says so.
   const alsoBy = vis.hiddenHere ? hiddenAncestor(state, tree, id, size) : null;
   const alsoNote = alsoBy ? ` ${alsoBy.name} also hides it on ${size}.` : '';
@@ -1231,11 +1287,11 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
         onClick={(e) => {
           // Shift picks a range from the layer picked before; Cmd (Ctrl) adds this one, or takes it away.
           if (e.shiftKey || additive(e)) {
-            if (pickRow(e.shiftKey ? 'range' : 'toggle', ref)) e.currentTarget.focus();
+            if (pickRow(e.shiftKey ? 'range' : 'toggle', freshRef())) e.currentTarget.focus();
             return;
           }
           // Shown on the page even when already selected: the page may have scrolled it away (issue #168).
-          showLayer(ref);
+          showLayer(freshRef());
         }}
         onDoubleClick={(e) => !e.shiftKey && !additive(e) && startRename()}
         onMouseEnter={() => setState({ hover: ref })}
@@ -1263,7 +1319,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
           if (e.key === 'ArrowLeft') {
             e.preventDefault();
             if (isOpen) {
-              if (containsSel) setState({ selection: ref });
+              if (containsSel) setState({ selection: freshRef() });
               setOpen(false);
               row.focus();
             } else if (parentId) {
@@ -1276,8 +1332,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
             e.preventDefault();
             // Space adds the focused layer to the selection (focus reached it with Cmd/Ctrl+↑/↓) or takes it away, the
             // last one too (WAI-ARIA tree); Enter selects this layer alone.
-            if (e.key === ' ' && !e.shiftKey) pickRow('toggle', ref);
-            else showLayer(ref);
+            if (e.key === ' ' && !e.shiftKey) pickRow('toggle', freshRef());
+            else showLayer(freshRef());
           }
           if (e.key === 'F2') (e.preventDefault(), startRename());
           // From the row's ⋯ (focus can be there after a click) the menu opens at that button and returns to it.
@@ -1297,19 +1353,19 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
               e.stopPropagation();
               // Collapsing a branch that holds the selection moves the selection, and focus if it was in the tree, to the branch.
               if (isOpen && containsSel) {
-                setState({ selection: ref });
+                setState({ selection: freshRef() });
                 const row = e.currentTarget.closest<HTMLElement>('[role="treeitem"]');
                 if (row?.closest('[role="tree"]')?.contains(document.activeElement)) row.focus();
               }
               setOpen(!isOpen);
             }}
           >
-            <ChevronRight />
+            {GLYPH.open}
           </button>
         ) : (
           <span className="tree-spacer" />
         )}
-        <span className={`layer-kind${n.kind === 'instance' && owner.kind === 'shell' ? ' shell' : isDefRoot && definitionMode ? ' definition' : ''}`}>{isDefRoot ? <Component /> : kindIcon(n)}</span>
+        <span className={`layer-kind${n.kind === 'instance' && owner.kind === 'shell' ? ' shell' : isDefRoot && definitionMode ? ' definition' : ''}`}>{isDefRoot ? GLYPH.instance : kindIcon(n)}</span>
         {renaming ? (
           <input
             className="input inline-edit grow"
@@ -1396,7 +1452,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
             onClick={(e) => (e.stopPropagation(), selectHider(owner, vis.hiddenBy!))}
             onDoubleClick={(e) => e.stopPropagation()}
           >
-            <CornerLeftUp />
+            {GLYPH.hider}
           </button>
         )}
         {hidden && !renaming && !canToggleHidden && (
@@ -1416,10 +1472,10 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
             aria-pressed={eye.pressed}
             aria-description={eye.pressed ? `${sentence(vis.note)} ${eye.action}.${alsoNote}` : `${eye.action}.`}
             title={eye.pressed ? `${sentence(vis.note)} Click to ${eye.action.toLowerCase()}.${alsoNote}` : eye.action}
-            onClick={(e) => (e.stopPropagation(), applyVisibility(owner, n.id, eye.edits, eye.action.replace(/^(Show|Hide)/, (verb) => `${verb} ${name} ${placeWords(state, owner)}`)))}
+            onClick={(e) => (e.stopPropagation(), applyVisibility(owner, n.id, eyeAction(state, n, size).edits, eye.action.replace(/^(Show|Hide)/, (verb) => `${verb} ${name} ${placeWords(state, owner)}`)))}
             onDoubleClick={(e) => e.stopPropagation()}
           >
-            {eyeTag ? <SizesTag text={sizesTag} sizes={vis.own.hiddenAt} /> : eye.pressed ? <EyeOff /> : <Eye />}
+            {eyeTag ? <SizesTag text={sizesTag} sizes={vis.own.hiddenAt} /> : eye.pressed ? GLYPH.eyeOff : GLYPH.eye}
           </button>
         )}
         {drop?.where === 'inside' && (
@@ -1438,7 +1494,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
             onDoubleClick={(e) => e.stopPropagation()}
             onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, ref, true, startRename))}
           >
-            <Ellipsis />
+            {GLYPH.more}
           </button>
         </span>
       </div>
@@ -1449,7 +1505,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
           {parts.length > 0 && <SubLabel depth={depth + 1} label="Parts" />}
           {parts.map(([pid, p]) => {
             const pref: ElementRef = { owner, instancePath: [id], nodeId: p.nodeId, partId: pid };
-            const psel = !!selection && refKey({ ...selection, itemPath: undefined }) === refKey(pref);
+            const psel = selectedPart !== null && selectedPart === refKey(pref);
             const partNode = def?.tree?.nodes[p.nodeId];
             // A part hidden in this preview by this placement's settings, or by the placement or a layer above it.
             const pvis = rowVisibility(state, tree, n, size, pid);
@@ -1468,17 +1524,17 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
                 tabIndex={-1}
                 onClick={(e) => {
                   // A Shift or Cmd/Ctrl pick of a part says why it can't join layers selected, rather than replacing them.
-                  if (e.shiftKey || additive(e)) return void pickRow(e.shiftKey ? 'range' : 'toggle', pref);
-                  showLayer(pref);
+                  if (e.shiftKey || additive(e)) return void pickRow(e.shiftKey ? 'range' : 'toggle', { ...pref });
+                  showLayer({ ...pref });
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'ArrowLeft') (e.preventDefault(), showLayer(ref), rowFor(id)?.focus());
+                  if (e.key === 'ArrowLeft') (e.preventDefault(), showLayer(freshRef()), rowFor(id)?.focus());
                   if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
                     e.preventDefault();
                     // Space toggles, as on any row: a selected part lets go; Enter selects it.
-                    if (e.key === ' ' && !psel) pickRow('toggle', pref);
+                    if (e.key === ' ' && !psel) pickRow('toggle', { ...pref });
                     else if (e.key === ' ') setState({ selection: null });
-                    else showLayer(pref);
+                    else showLayer({ ...pref });
                   }
                   if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') (e.preventDefault(), onMenu((e.target as HTMLElement).closest<HTMLElement>('.actions button') ?? e.currentTarget, pref, false));
                 }}
@@ -1490,7 +1546,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
                 onMouseLeave={() => setState({ hover: null })}
               >
                 <span className="tree-spacer" />
-                <span className="layer-kind part">{partNode ? kindIcon(partNode) : <Box />}</span>
+                <span className="layer-kind part">{partNode ? kindIcon(partNode) : GLYPH.other}</span>
                 <span className="grow ellipsis layer-name" title={[p.label, `Part of ${[...path, name].join(' › ')}`, sentence(pvis.note)].filter(Boolean).join('\n')}>
                   {p.label}
                 </span>
@@ -1501,7 +1557,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
                 )}
                 <span className="actions">
                   <button className="icon-btn sm" tabIndex={-1} {...trigger(`${triggerKey}:${pid}`)} aria-label={`${p.label} options`} title="Part options" onDoubleClick={(e) => e.stopPropagation()} onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, pref, false))}>
-                    <Ellipsis />
+                    {GLYPH.more}
                   </button>
                 </span>
               </div>
@@ -1529,7 +1585,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
                 return by?.part && by.id === id ? <SubLabel depth={depth + 1} label={`Hidden on ${size} by ${by.name}`} icon={<EyeOff />} /> : null;
               })()}
               {l.ids.map((cid) => (
-                <LayerRow key={cid} state={state} owner={owner} tree={tree} id={cid} depth={depth + 1} onMenu={onMenu} path={[...path, name]} parentId={id} inSlot={n.kind === 'instance' && slotLists.length > 1 ? l.label : undefined} />
+                <LayerRow key={cid} state={state} owner={owner} tree={tree} id={cid} depth={depth + 1} onMenu={onMenu} path={childPath} parentId={id} inSlot={n.kind === 'instance' && slotLists.length > 1 ? l.label : undefined} />
               ))}
             </Fragment>
           ))}
@@ -1577,7 +1633,7 @@ function SlotRow({ state, owner, tree, placementId, placementName, slot, label, 
       tabIndex={-1}
       onClick={(e) => {
         if (e.shiftKey || additive(e)) return void refuse(SLOT_ALONE);
-        selectSlot(target);
+        selectSlot({ ...target });
       }}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
@@ -1592,7 +1648,7 @@ function SlotRow({ state, owner, tree, placementId, placementName, slot, label, 
           e.preventDefault();
           // Space lets a picked slot go, as on any row; Enter picks it.
           if (e.key === ' ' && selected) setState({ slotTarget: null });
-          else selectSlot(target);
+          else selectSlot({ ...target });
         }
       }}
       onDragOver={(e) => {

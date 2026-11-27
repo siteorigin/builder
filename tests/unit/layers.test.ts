@@ -4,7 +4,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { breadcrumb } from '../../src/renderer/src/lib/model';
-import { clip, everySizeEdits, eyeAction, hideHereEdits, layerLabel, ownVisibility, rowVisibility, showHereEdits, type Size, type VisibilityEdit } from '../../src/renderer/src/lib/layers';
+import { clip, everySizeEdits, eyeAction, eyeFace, hideHereEdits, layerLabel, ownVisibility, rowVisibility, showHereEdits, type Size, type VisibilityEdit } from '../../src/renderer/src/lib/layers';
 
 /** A home page whose first section holds a Grid with a paragraph in it: Section > Grid > Text. */
 function nested() {
@@ -465,6 +465,41 @@ describe('the eye in Layers', () => {
     expect(eyeAction(t.s, t.node(t.para), 'phone')).toEqual({ pressed: false, action: 'Hide at every size', edits: [{ scope: 'phone', value: null }] });
     click(t, 'phone');
     expect(hiddenAt(t)).toEqual(['phone', 'tablet', 'desktop']);
+  });
+
+  it('shows what a click does, from the row’s own visibility, as the action planned for the click says', () => {
+    type Face = { pressed: boolean; action: string };
+    const open: Face = { pressed: false, action: 'Hide at every size' };
+    const everywhere: Face = { pressed: true, action: 'Show at every size' };
+    const here = (size: Size): Face => ({ pressed: true, action: `Show on ${size}` });
+    // What each size's eye says, for each way the paragraph can be hidden.
+    const cases: Array<{ steps: Array<['base' | Size, boolean]>; want: Record<Size, Face> }> = [
+      { steps: [], want: { phone: open, tablet: open, desktop: open } },
+      { steps: [['phone', true]], want: { phone: here('phone'), tablet: open, desktop: open } },
+      { steps: [['base', true]], want: { phone: everywhere, tablet: everywhere, desktop: everywhere } },
+      { steps: [['base', true], ['phone', true]], want: { phone: here('phone'), tablet: everywhere, desktop: everywhere } },
+      { steps: [['base', true], ['phone', false]], want: { phone: open, tablet: everywhere, desktop: everywhere } },
+      { steps: [['tablet', true], ['desktop', true]], want: { phone: open, tablet: here('tablet'), desktop: here('desktop') } }
+    ];
+    for (const { steps, want } of cases)
+      for (const size of ['phone', 'tablet', 'desktop'] as Size[]) {
+        const t = nested();
+        for (const [scope, value] of steps) set(t, scope, value);
+        const face = eyeFace(rowVisibility(t.s, t.s.pages[t.pageId], t.node(t.para), size).own, size);
+        expect(face, `${JSON.stringify(steps)} on ${size}`).toEqual(want[size]);
+        // The edits planned when it is clicked do what it says.
+        const { edits, ...action } = eyeAction(t.s, t.node(t.para), size);
+        expect(action).toEqual(face);
+        click(t, size);
+        expect(hiddenAt(t).includes(size), `${JSON.stringify(steps)} on ${size}, clicked`).toBe(!face.pressed);
+        expect(edits.length).toBeGreaterThan(0);
+      }
+    // Hidden by the Grid above it, the paragraph's own eye stays open: only its own settings press it.
+    const t = nested();
+    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.grid, scope: 'base', property: 'hidden', value: true }]);
+    const vis = rowVisibility(t.s, t.s.pages[t.pageId], t.node(t.para), 'desktop');
+    expect(vis.hiddenBy?.id).toBe(t.grid);
+    expect(eyeFace(vis.own, 'desktop')).toEqual(open);
   });
 
   it('shows a placement its design hides on this size when every size is shown again', () => {

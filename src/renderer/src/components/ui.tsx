@@ -522,6 +522,10 @@ export const MenuTriggers = createContext<(key?: string) => MenuTriggerProps>((k
 export function useMenu() {
   const [menu, setMenu] = useState<{ key: number; x: number; y: number; items: MenuItems; label?: string; trigger?: HTMLElement; owner?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; focusLast?: boolean; above?: boolean } | null>(null);
   const close = useCallback(() => setMenu(null), []);
+  // The same function until another trigger's menu opens or it closes, so what is handed it (MenuTriggers, which every
+  // Layers row reads) changes only then, and a row a selection change leaves alone stays so.
+  const owner = menu?.owner;
+  const triggerProps = useCallback((key = 'menu'): MenuTriggerProps => ({ 'aria-haspopup': 'menu', 'aria-expanded': owner === key, 'data-menu-trigger': key }), [owner]);
   /** Close the menu if its trigger has left the page (a toolbar control that moved into another menu). */
   const closeIfTriggerGone = useCallback(() => setMenu((m) => (m?.trigger && !m.trigger.isConnected ? null : m)), []);
   const node = menu ? (() => {
@@ -533,7 +537,7 @@ export function useMenu() {
     isOpen: !!menu,
     close,
     /** The props for a button that opens this menu with `openAt`. */
-    triggerProps: (key = 'menu'): MenuTriggerProps => ({ 'aria-haspopup': 'menu', 'aria-expanded': menu?.owner === key, 'data-menu-trigger': key }),
+    triggerProps,
     closeIfTriggerGone,
     /** Open at a point (right-click); focus returns to `returnTo` (the row) on close. */
     open: (x: number, y: number, items: MenuItems, label?: string, returnTo?: HTMLElement | null) => setMenu({ key: ++menuKey, x, y, items, label, returnTo }),

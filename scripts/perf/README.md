@@ -172,6 +172,29 @@ shown in that window (all but Project for the click, all but the Inspector for t
 rendered) and React commits. The panels are the sidebar's six views, the post writer and SEO view over the canvas, and
 the dock's four. Showing the Inspector between the two windows is in neither.
 
+**`layers`** (after `open`): two pages made for it in one change each before the timed part, of 300 and 1,000 layers:
+sections of 25 (a container holding a container with a heading, a paragraph and a row of four cards, each card a heading,
+a paragraph and a button in a stack of its own, six deep), the second section's inner container hidden at every size and
+the fourth's first card on phones. Each page is opened from Pages, with Layers shown and every branch in it opened; then
+7 rows across the page, at every depth, are clicked in turn (each scrolled into view and pointed at first, untimed),
+the arrow keys step 7 rows down from the last, and the eye of a section's row hides it at every size and then shows
+it again. Each of those is a sample with a window of its own, which stays open 300 ms after the change is shown; a window
+a reload from disk or another snapshot lands in is done again from where it started (up to five times), and the last
+attempt is measured. Checks, after every sample: Layers lists every layer of the page in order with no branch closed,
+the row clicked or stepped to is the one selection, exactly its containers are marked as holding it, exactly the hidden
+section's rows (and the section the eye hid) are dimmed as hidden in the desktop preview, those a layer above hides
+saying so, keyboard focus is on the selected row before each step, and the project hides the section after the first
+edit and not after the second. Per page (`layers.at300.*`, `layers.at1000.*`) and kind (`click`, `key`, `edit`), medians of
+the samples: `commitMs` (for a click or key, from the event, as the page timed it, to the commit that shows the
+selection; for an edit, from the editor receiving the edited project to the commit that shows it), `paintMs` (clicks and
+keys: from the event to the end of the first frame painted after it), `layersMs` (React's time in Layers), and the
+counts `rowRenders` (Layers rows rendered), `layersRenders` (every component rendered in Layers), `renders`, `commits`,
+`findParent` and `subtreeIds` (the editor's calls of each tree scan), over the window; and `rows`, the rows Layers listed
+(the shared header's and footer's too). A listener the scenario puts in the editor's page, ahead of the editor's own,
+marks each click and arrow key in Layers when it happened (`layers.input`, from the event's time) and the end of the
+first frame after it (`layers.painted`). The fixture's own pages are not what is measured, so `--fixture small` is
+enough: Layers lists one page.
+
 **`chat`**: in the AI panel, in a conversation of 6 messages and then in one of 100, type a 66-character question one
 key at a time and stream a long Markdown answer to it (about 2,200 characters, 4 at a time every 8 ms, from the scripted
 model server in native tool mode: no live provider). The conversations' earlier turns are seeded into the project's
@@ -550,7 +573,8 @@ dependency trees worked out to check what they need, `src/main/runtime/manager.t
 React renders before and after the panel), `chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model
 text read into blocks), `canvas.renders`, `canvas.rectReports`, `canvas.rectReportsSame` and `canvas.hoverReports` (the
 `canvas` scenario's), `canvas.dropShows`, `canvas.dropMeasures`, `canvas.dropMeasured` and `canvas.dropScrolls` (a drag
-onto the page, `drag`'s) (renderer). The main process also
+onto the page, `drag`'s), `layers.rows` (a Layers row rendered), `tree.findParent` and `tree.subtreeIds` (the editor's
+calls of the two scans of a tree in `src/engine/tree.ts`, counted from zero) (renderer). The main process also
 watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
 lateness (a block shorter than about 70 ms can go unseen).
 
