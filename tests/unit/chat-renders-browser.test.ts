@@ -205,23 +205,31 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await page.evaluate<string>('so.draft()')).toBe('A');
   });
 
-  it('shows another thread’s request as running elsewhere, with nothing here to stop or answer (#1124)', async () => {
+  it('shows another thread’s request as running elsewhere, stopped and answered by going back to its thread (#1124, #1125)', async () => {
     expect(await page.locator('.run-strip').getAttribute('data-run-id')).toBe('run_live');
     // In its own thread it is stopped by its ID: a request that ended meanwhile is not followed by another being stopped.
     await page.getByRole('button', { name: /Stop/ }).click();
     expect(await page.evaluate("so.calls('ai.stop')")).toEqual([['run_live']]);
     await page.evaluate('so.elsewhere()');
-    // The note says where the request is, and nothing here stops it or answers its question.
-    expect(await page.locator('.run-strip.elsewhere').innerText()).toContain('Working in another conversation');
+    // The note says where the request is and that it waits for an answer; this thread has no answer box of its own.
+    const strip = page.locator('.run-strip.elsewhere');
+    expect(await strip.innerText()).toContain('The AI needs your answer in another conversation');
     expect(await page.locator('.run-strip[data-run-id]').count()).toBe(0);
-    expect(await page.getByRole('button', { name: /Stop/ }).count()).toBe(0);
     expect(await page.getByRole('textbox', { name: 'Your answer', exact: true }).count()).toBe(0);
     expect(await page.locator('.chat-log').getAttribute('aria-busy')).not.toBe('true');
     // It still holds the app: nothing is sent until it ends, though a message is written.
     await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Next, the footer');
     expect(await page.getByRole('button', { name: /^Send/ }).isDisabled()).toBe(true);
-    expect(await page.getByRole('button', { name: 'Earlier conversations' }).isDisabled()).toBe(true);
+    // Other conversations can be read meanwhile; this one is empty, so a new one has nothing to leave behind.
+    expect(await page.getByRole('button', { name: 'Earlier conversations' }).isDisabled()).toBe(false);
     expect(await page.getByRole('button', { name: 'New conversation' }).isDisabled()).toBe(true);
+    // Answer goes back to the thread that asked; Stop stops that request by its ID and goes back to it too.
+    await strip.getByRole('button', { name: 'Answer' }).click();
+    expect(await page.evaluate("so.calls('ai.openConversation')")).toEqual([['c_r']]);
+    await strip.getByRole('button', { name: /Stop/ }).click();
+    expect(await page.evaluate("so.calls('ai.stop')")).toEqual([['run_live'], ['run_live']]);
+    expect(await page.evaluate("so.calls('ai.openConversation')")).toEqual([['c_r'], ['c_r']]);
+    expect(await page.evaluate('so.draft()')).toBe('');
   });
 
   it('renders no message while an answer to the AI’s question is typed', async () => {

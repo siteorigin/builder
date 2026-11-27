@@ -240,7 +240,8 @@ try {
   assert.equal(await notice.count(), 0, 'a running turn with an empty composer has no switch notice');
   await message.fill('A fresh question for first-model');
   await eventually(async () => assert.equal(await notice.innerText(), 'Your next message goes to Local model · first-model with recent messages from your conversation with Local model · second-model. Start fresh'));
-  assert.equal(await notice.getByRole('button', { name: 'Start fresh' }).isDisabled(), true, 'a new conversation waits for the running request');
+  // A new conversation could take it now (#1125); this one waits for the running request to finish, then starts fresh.
+  assert.equal(await notice.getByRole('button', { name: 'Start fresh' }).isDisabled(), false, 'a new conversation need not wait for the running request');
   release();
   await win.locator('.msg-ai').last().getByText('Noted cobalt.').waitFor({ timeout: 60000 });
   assert.equal(posts().at(-1).body.model, 'second-model', 'the held request was sent to the model chosen when it started');
