@@ -3484,7 +3484,7 @@ function SeoOverview({ state }: { state: ProjectState }) {
       <Header title={doc?.title ?? 'SEO'} kind={kind} icon={<SearchCheck />} />
       <div className="insp-empty">
         <SearchCheck aria-hidden="true" />
-        <p>{doc ? `The SEO view shows this ${noun} in the canvas’s place. Nothing here changes the page under it.` : 'Choose a page or post in the SEO list. The SEO view covers the canvas, and nothing here changes the page under it.'}</p>
+        <p>{doc ? `The SEO view shows this ${noun} in the canvas’s place. Nothing here changes the page under it.` : 'Choose a page or entry in the SEO list. The SEO view covers the canvas, and nothing here changes the page under it.'}</p>
       </div>
     </div>
   );
@@ -3494,11 +3494,12 @@ function SeoOverview({ state }: { state: ProjectState }) {
 function writerNote(collection: ProjectState['collections'][string]): string {
   const { settings } = collection;
   if (isReadOnlyCollection(collection)) return `This ${entryNounLower(collection)} is synced from an external source, so it is read-only here.`;
-  const hasBody = collectionHasBody(settings);
+  const body = collectionHasBody(settings) ? ['text'] : [];
+  const fields = Object.keys(settings.fields ?? {}).length ? ['fields'] : [];
   const held =
     collectionKind(settings) === 'structured'
-      ? ['title', ...(Object.keys(settings.fields ?? {}).length ? ['fields'] : []), ...(hasBody ? ['text'] : []), 'publishing details']
-      : [...(hasBody ? ['text'] : []), ...(hasDetailPages(settings) ? ['address'] : []), 'date', 'author', 'excerpt', 'featured image'];
+      ? ['title', ...fields, ...body, 'publishing details']
+      : [...body, ...(hasDetailPages(settings) ? ['address'] : []), 'date', 'author', 'excerpt', 'featured image', ...fields];
   return `Its ${held.slice(0, -1).join(', ')} and ${held.at(-1)} are edited in the writer.`;
 }
 
@@ -3509,7 +3510,7 @@ function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'w
   const opened = postAt(state, post);
   // The entry the writer has open, by its own collection's noun: a visitor's link may go on to another's.
   const openedCollection = post ? state.collections[post.collectionId] : undefined;
-  const openedTitle = opened ? `“${opened.title || 'Untitled'}”` : `the ${entryNounLower(openedCollection)}`;
+  const openedTitle = opened ? `“${opened.title || 'Untitled'}”` : `the ${openedCollection ? entryNounLower(openedCollection) : 'entry'}`;
   // The writer shows again even when the sidebar was hidden or showed another panel during the preview.
   const back = (
     <button className="btn btn-sm" onClick={() => setState({ postView: 'write', leftTab: 'posts' })}>
