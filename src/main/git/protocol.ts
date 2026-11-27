@@ -34,12 +34,15 @@ export interface Identity {
 }
 
 /**
- * One file of a tree, by its path in the tree (`siteorigin/site.json`): its bytes, or a project-relative file the worker
- * reads itself, so a large picture never passes through the main process. With `sha256`, the file must still hold the
- * bytes the caller hashed: the worker checks the very bytes it stores, and fails the write as `changed` when they are
- * others, so a file replaced after the caller looked at it is never saved under the caller's hash.
+/**
+ * One file of a tree, by its path in the tree (`siteorigin/site.json`): its bytes, a project-relative file the worker
+ * reads itself, so a large picture never passes through the main process, or a blob already in the repository (written
+ * by writeBlob), so a tree of files from outside the project (a publication's staged copy, #1154) is written a file per
+ * request rather than all in one. With `sha256`, a project file must still hold the bytes the caller hashed: the worker
+ * checks the very bytes it stores, and fails the write as `changed` when they are others, so a file replaced after the
+ * caller looked at it is never saved under the caller's hash.
  */
-export type FileInput = ({ path: string; bytes: Uint8Array } | { path: string; source: string; sha256?: string }) & {
+export type FileInput = ({ path: string; bytes: Uint8Array } | { path: string; source: string; sha256?: string } | { path: string; oid: Oid }) & {
   /** Git's mode for it: `100755` for a file that can be run; `100644`, the default, for any other. */
   mode?: '100644' | '100755';
 };

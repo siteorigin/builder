@@ -287,6 +287,42 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     return st;
   };
 
+  /**
+   * The size of the blob `oid` that a tree is to name, or throws: it must be in the repository, and be a blob. A loose
+   * one, as the app writes every object, is known by its header alone, so a large picture is not read again; one a
+   * stock Git has packed is read whole.
+   */
+  const blobSize = async (oid: Oid): Promise<{ size: number; loose: boolean }> => {
+    const st = await looseExists(oid);
+    if (st) {
+      const handle = await fs.open(objectPath(oid), 'r');
+      let header: RegExpExecArray | null = null;
+      try {
+        const start = Buffer.alloc(Math.min(st.size, 256));
+        const { bytesRead } = await handle.read(start, 0, start.length, 0);
+        const head = inflateSync(start.subarray(0, bytesRead), { finishFlush: zlibConstants.Z_SYNC_FLUSH });
+        header = /^(blob|tree|commit|tag) (\d{1,15})\0/.exec(head.subarray(0, 32).toString('latin1'));
+      } catch {
+        // Not readable from its start alone: read whole below, which tells damage from an unusual stream.
+      } finally {
+        await handle.close();
+      }
+      if (header) {
+        if (header[1] !== 'blob') throw new GitError('invalid', `${oid} is not a file in the versions repository.`);
+        return { size: Number(header[2]), loose: true };
+      }
+    }
+    let found: Awaited<ReturnType<typeof git.readObject>>;
+    try {
+      found = await git.readObject({ fs: gfs, gitdir, oid, format: 'content' });
+    } catch (e) {
+      if ((e as { code?: string })?.code === 'NotFoundError') throw new GitError('not-found', `A file of the version (${oid}) is not in the versions repository.`);
+      throw e;
+    }
+    if (found.type !== 'blob') throw new GitError('invalid', `${oid} is not a file in the versions repository.`);
+    return { size: (found.object as Uint8Array).byteLength, loose: !!st };
+  };
+
   /** A loose object a write relies on without writing it: made durable by the write's flush (fs.ts reuse). */
   const relyOn = (oid: Oid) => looseExists(oid).then((st) => st && gfs.reuse(objectPath(oid), st.mtimeMs));
   /**
@@ -542,6 +578,8 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         // Everything is checked before anything is written: a refused version leaves nothing behind.
         const top: Dir = { kind: 'dir', name: '', children: new Map() };
         const seen: Array<{ abs: string; st: BigIntStats } | undefined> = [];
+        /** Files given as blobs that were loose objects when checked: each must still be one when the tree relies on it. */
+        const looseAtCheck = new Set<number>();
         let total = 0;
         let inline = 0;
         for (const [index, f] of files.entries()) {
@@ -553,10 +591,17 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
             inline += f.bytes.byteLength;
             total += f.bytes.byteLength;
             seen.push(undefined);
-          } else if (typeof f?.source === 'string') {
-            if (f.sha256 !== undefined && (typeof f.sha256 !== 'string' || !SHA256_RE.test(f.sha256))) throw new GitError('invalid', `${f.path} has a hash that is not a SHA-256.`);
-            const file = await sourceFile(f.source);
-            if (file.st.size > BigInt(limits.maxBlobBytes)) throw new GitError('too-large', `${f.source} is too large for a version.`);
+          } else if ('oid' in f && typeof f.oid === 'string') {
+            const { size, loose } = await blobSize(checkOid(f.oid));
+            if (size > limits.maxBlobBytes) throw new GitError('too-large', `${f.path} is too large for a version.`);
+            total += size;
+            seen.push(undefined);
+            if (loose) looseAtCheck.add(index);
+          } else if (typeof (f as { source?: unknown })?.source === 'string') {
+            const src = f as { path: string; source: string; sha256?: unknown };
+            if (src.sha256 !== undefined && (typeof src.sha256 !== 'string' || !SHA256_RE.test(src.sha256))) throw new GitError('invalid', `${f.path} has a hash that is not a SHA-256.`);
+            const file = await sourceFile(src.source);
+            if (file.st.size > BigInt(limits.maxBlobBytes)) throw new GitError('too-large', `${src.source} is too large for a version.`);
             total += Number(file.st.size);
             seen.push(file);
           } else throw new GitError('invalid', `${String(f?.path)} has no content.`);
@@ -579,9 +624,20 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         const oids: Oid[] = [];
         for (const [index, f] of files.entries()) {
           check(token);
-          const bytes = 'bytes' in f ? f.bytes : await readSource(f.source, seen[index]);
-          if ('source' in f && f.sha256 !== undefined && createHash('sha256').update(bytes).digest('hex') !== f.sha256) throw new GitError('changed', `${f.source} changed while the version was being saved.`);
-          oids[index] = await blob(bytes);
+          // In the order the files were checked in: bytes, then a blob written already, then a project file.
+          if ('bytes' in f) oids[index] = await blob(f.bytes);
+          else if ('oid' in f) {
+            // The tree relies on the blob, so the flush makes it durable with the tree; one removed since it was checked
+            // (another Git pruning what nothing named yet) is not there to rely on.
+            const st = await looseExists(f.oid);
+            if (st) gfs.reuse(objectPath(f.oid), st.mtimeMs);
+            else if (looseAtCheck.has(index)) throw new GitError('changed', `${f.path} was removed from the versions repository while the version was being saved.`);
+            oids[index] = f.oid;
+          } else {
+            const bytes = await readSource(f.source, seen[index]);
+            if (f.sha256 !== undefined && createHash('sha256').update(bytes).digest('hex') !== f.sha256) throw new GitError('changed', `${f.source} changed while the version was being saved.`);
+            oids[index] = await blob(bytes);
+          }
           if (opts.fault) await opts.fault('file-written', f.path);
         }
         /**

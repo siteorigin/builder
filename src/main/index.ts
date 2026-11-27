@@ -791,6 +791,9 @@ function registerIpc() {
   if (!app.isPackaged) {
     handle('test:exportStatic', (dest: string, format?: unknown) => controller.buildStaticTo(dest, format === 'zip' ? 'zip' : 'folder'));
     handle('test:exportSource', (dest: string, format?: unknown) => controller.exportSourceTo(dest, format === 'zip' ? 'zip' : 'folder'));
+    // The publication history (#1154) has no window of its own yet: the export script prepares one to build it.
+    handle('test:preparePublication', () => controller.preparePublication());
+    handle('test:publicationStatus', () => controller.publicationStatus());
     handle('test:previewComponent', (steps: unknown) => previewComponents(Array.isArray(steps) ? (steps as ComponentPreviewStep[]) : []));
     handle('test:thumbCaptures', () => controller.thumbs.captures);
     handle('test:exportComponent', (id: unknown, dest: unknown) => controller.exportComponent(String(id), String(dest)));

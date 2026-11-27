@@ -35,6 +35,11 @@ import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents'
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { gitClient } from './git/process';
+import { GitError, type GitRepository } from './git/protocol';
+import { SNAPSHOT_ROOT_FILES } from './project/snapshot-inventory';
+import { commitPublication, credentialProblem, projectPublication, publishedTree, treeOid, type PreparedPublication, type Projection, type PublicationStatus } from './publication';
+import { redactSecrets } from './sources/redact';
 import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
 import { createAgentSources } from './sources/agent';
 import { sourceFingerprint } from '@shared/sources';
@@ -62,7 +67,7 @@ import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/compo
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
-import { addRecent, isTrusted, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
+import { addRecent, isTrusted, keyValues, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
 import { LIVE_BATCH_LABEL_MAX, type LiveEditBatch } from '@shared/live/capabilities';
@@ -331,6 +336,12 @@ const editorScript = (js: string) => /siteorigin-bridge|data-so-ctx/.test(js) ||
  * time is one change, so the library is written and the editor sent the project once rather than once a picture.
  */
 const COPIES_FILL_MS = 5000;
+
+/** What a publication says when the versions repository refused it: the repository's own words, which name no secret. */
+function publicationFailed(e: unknown): { ok: false; message: string; warnings: string[] } {
+  if (e instanceof GitError && e.code === 'conflict') return { ok: false, message: 'Another publication was prepared while this one was. Prepare the publication again.', warnings: [] };
+  return { ok: false, message: e instanceof GitError ? e.message : 'The versions repository could not be used, so the publication was not prepared.', warnings: [] };
+}
 
 export class Controller {
   session: ProjectSession | null = null;
@@ -3807,6 +3818,121 @@ export class Controller {
     return this.session ? listReviewEditions(this.session.dir) : [];
   }
 
+  /** The versions repository of the project in a folder (#1152): the Git worker's. Tests give one of their own. */
+  repository: (root: string) => GitRepository = (root) => gitClient.repository(root);
+
+  /** The publication being prepared or checked, so one waits for the other (#1154). */
+  private publishing: Promise<unknown> = Promise.resolve();
+
+  private onePublication<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.publishing.then(fn, fn);
+    this.publishing = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * The open project's website as it would be published, staged in `staging` (#1154): the website build's isolated
+   * copy, its root files held still too, turned into the publication (projectPublication).
+   */
+  private async stagePublication(s: ProjectSession, staging: string): Promise<Projection> {
+    const project = join(staging, 'project');
+    const snap = await this.snapshotSource(s, project, { forBuild: true, roots: SNAPSHOT_ROOT_FILES });
+    if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+    return projectPublication(project, snap.state);
+  }
+
+  /**
+   * Prepare the open project's publication (#1154): its published website alone, committed onto the publication's own
+   * history in the project's versions repository (made now if the project has none), after the last one prepared.
+   * Stops, moving nothing, when the website holds one of the user's secrets or keys, an address with a password in it,
+   * or is missing a file it uses. A website the same as the last publication's makes no commit.
+   */
+  preparePublication(): Promise<PreparedPublication> {
+    // The project asked for is the one prepared: one opened meanwhile, while an earlier publication finished, is not it.
+    const s = this.session;
+    return this.onePublication(() => timed('controller.preparePublication', () => this.preparePublicationNow(s), (r) => ({ ok: r?.ok ?? false }))());
+  }
+
+  /** The user's secrets and keys, to search the publication for and to keep out of what it says, or why they cannot be read. */
+  private async publicationSecrets(s: ProjectSession): Promise<{ values: string[] } | { failed: string }> {
+    try {
+      return { values: [...(await sourceSecrets.values(s.state.manifest.projectId)), ...(await keyValues())] };
+    } catch (e) {
+      return { failed: `${(e as Error).message} The website could not be checked for your secrets, so it was not prepared.` };
+    }
+  }
+
+  private async preparePublicationNow(s: ProjectSession | null): Promise<PreparedPublication> {
+    const closed = { ok: false as const, message: 'The project was closed before the publication was prepared.', warnings: [] };
+    if (s && this.session !== s) return closed;
+    const blocked = this.exportBlocked();
+    if (blocked || !s) return { ok: false, message: blocked?.message ?? 'No project open.', warnings: [] };
+    await this.copiesMade();
+    if (this.session !== s) return closed;
+    const repo = this.repository(s.dir);
+    // The publication goes after the last one as it was before the project was read: one made meanwhile is never built on unseen.
+    let last: Awaited<ReturnType<typeof publishedTree>>;
+    try {
+      last = await publishedTree(repo);
+    } catch (e) {
+      return publicationFailed(e);
+    }
+    // Read before the website is and again after, so a key replaced meanwhile is searched for as it was and as it is.
+    const before = await this.publicationSecrets(s);
+    if ('failed' in before) return { ok: false, message: before.failed, warnings: [] };
+    return this.withStaging(async (staging) => {
+      const made = await this.stagePublication(s, staging);
+      const after = await this.publicationSecrets(s);
+      if ('failed' in after) return { ok: false, message: after.failed, warnings: [] };
+      const secrets = { values: [...new Set([...before.values, ...after.values])] };
+      // What a stop says names files and pictures, any of which may be named with a secret.
+      const told = <T extends { ok: false; message: string; warnings: string[] }>(r: T): T => ({ ...r, message: redactSecrets(r.message, secrets.values), warnings: r.warnings.map((w) => redactSecrets(w, secrets.values)) });
+      if (!made.ok) return told(made);
+      const problem = await credentialProblem(made.files, secrets.values);
+      if (problem) return { ok: false, message: problem, warnings: [] };
+      if (this.session !== s) return closed;
+      try {
+        return { ok: true, ...(await commitPublication(repo, made.files, last)) };
+      } catch (e) {
+        return told(publicationFailed(e));
+      }
+    });
+  }
+
+  /**
+   * Whether the open project's website differs from its last publication (#1154): its publication made again and
+   * compared file by file, so an edit to what the website does not carry (the brief, a draft), or one undone, is no
+   * change, and a picture replaced on disk is one. Writes nothing, and makes no repository.
+   */
+  publicationStatus(): Promise<PublicationStatus> {
+    const s = this.session;
+    return this.onePublication(() => timed('controller.publicationStatus', () => this.publicationStatusNow(s), (r) => ({ ok: r?.ok ?? false }))());
+  }
+
+  private async publicationStatusNow(s: ProjectSession | null): Promise<PublicationStatus> {
+    const closed = { ok: false as const, message: 'The project was closed before its publication was checked.', warnings: [] };
+    if (s && this.session !== s) return closed;
+    const blocked = this.exportBlocked();
+    if (blocked || !s) return { ok: false, message: blocked?.message ?? 'No project open.', warnings: [] };
+    await this.copiesMade();
+    if (this.session !== s) return closed;
+    return this.withStaging(async (staging) => {
+      const made = await this.stagePublication(s, staging);
+      if (!made.ok) {
+        const secrets = await this.publicationSecrets(s);
+        const values = 'values' in secrets ? secrets.values : [];
+        return { ...made, message: redactSecrets(made.message, values), warnings: made.warnings.map((w) => redactSecrets(w, values)) };
+      }
+      // The last publication as it is now that the website has been read, so the answer is about the branch as it stands.
+      try {
+        const last = await publishedTree(this.repository(s.dir));
+        return { ok: true, prepared: last?.commit ?? null, changed: last?.tree !== treeOid(made.files) };
+      } catch (e) {
+        return publicationFailed(e);
+      }
+    });
+  }
+
   /** Each open project's file hashes from its last export's fingerprints, by the stamps they stand for (projectInventory). */
   private exportHashes = new WeakMap<ProjectSession, ExportHashes>();
 
@@ -3852,11 +3978,11 @@ export class Controller {
    * build configuration the user trusted, because the build runs the copy. The state returned is the one the
    * files were copied from, so everything said about the export describes this snapshot.
    */
-  private snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+  private snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean; roots?: readonly string[] } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
     return timed('export.stage', () => this.snapshotSourceNow(s, dest, opts), (r) => ({ ok: r?.ok ?? false, forBuild: !!opts.forBuild }))();
   }
 
-  private async snapshotSourceNow(s: ProjectSession, dest: string, opts: { forBuild?: boolean }): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+  private async snapshotSourceNow(s: ProjectSession, dest: string, opts: { forBuild?: boolean; roots?: readonly string[] }): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
     const stop = (message: string) => ({ ok: false as const, message });
     // The website's icons follow a favicon file changed with no document changing (put back by Locate, replaced in the
     // folder), so the export never carries icons of another picture than its favicon. They are drawn without holding
@@ -3881,7 +4007,7 @@ export class Controller {
       // Files left alone since an earlier pass (this export's, or the last one's) are known by their stamps.
       const cache = this.exportHashes.get(s) ?? new Map();
       this.exportHashes.set(s, cache);
-      const before = await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs }), () => ({ pass: 'before' }))();
+      const before = await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs, roots: opts.roots }), () => ({ pass: 'before' }))();
       // The generated files were just hashed for the fingerprint: those whose stamps stand for their bytes are checked
       // against the manifest by those hashes (inventoryChanged below sees any write to them since), the rest are read.
       const trusted = new Map([...before.hashes].filter(([rel]) => before.stamps.get(rel)?.trusted));
@@ -3911,7 +4037,7 @@ export class Controller {
       if (opts.forBuild) {
         if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
       } else await finishExportedSource(dest, s.state, starterNotice(), await syncCliText(s.state));
-      if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
+      if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs, roots: opts.roots }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       return { ok: true as const, revision: s.revision, state: structuredClone(s.state) };
     }));
