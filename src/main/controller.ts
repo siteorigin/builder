@@ -486,7 +486,11 @@ export class Controller {
       resolve: (opening, id, resolved, check) => this.guestNoteChange(opening, check, (_s, store, authorize) => store.resolve(id, resolved, authorize)),
       delete: (opening, id, check) => this.guestNoteChange(opening, check, (_s, store, authorize) => store.delete(id, authorize))
     },
-    emit: (channel, payload) => this.send(channel, payload)
+    emit: (channel, payload) => {
+      this.send(channel, payload);
+      // A session that starts or ends with no window open changes who can see the preview (settlePreview).
+      if (channel === 'live:state') this.settlePreview();
+    }
   });
   /**
    * This app as a guest in another computer's live session (#766): the remote shell's connection. It holds no project
@@ -534,6 +538,21 @@ export class Controller {
   onOpeningChange: (() => void) | null = null;
   aiBusy = () => false;
   aiRunId = (): string | null => null;
+  /** No editor window is open: macOS keeps the app, and the project with it, running without one (#1036). */
+  private windowless = false;
+  /**
+   * The preview at rest because nobody can see it (settlePreview): `pending` once that is decided, until its stop has its
+   * turn on the preview queue (a window back before then calls it off); `stopped` from that turn, or when a start was
+   * refused for it, until a window or a guest needs it again and it starts.
+   */
+  private previewRest: 'none' | 'pending' | 'stopped' = 'none';
+  /** Starts of the preview after a rest, for whoever needs it now, not yet done. */
+  private resuming = 0;
+  /** The preview server stopPreview is stopping now. */
+  private stoppingDev: DevServer | null = null;
+  /** Saves of the open project landing their files now, and those waiting for none to be (startRuntimeChecked). */
+  private savesLanding = 0;
+  private landingIdle: Array<() => void> = [];
   /** The editor is sent each change against the copy it was sent before (#967), while it is the same page's. */
   private feed = new ProjectFeed();
   private feedTo: WebContents | null = null;
@@ -816,6 +835,9 @@ export class Controller {
   private runtimeStatus(): RuntimeState {
     const s = this.session;
     if (s && previewUnavailable(s)) return { state: 'unavailable', message: s.readOnly?.preview ?? PREVIEW_UNAVAILABLE };
+    // A preview at rest starting again for a window that has just come up is starting, not paused, until a server of
+    // its own speaks for it: never the one its rest is still stopping.
+    if (this.resuming > 0 && !this.pendingStatus && (!this.dev || this.dev === this.stoppingDev)) return { state: 'starting' };
     return (this.dev?.status ?? this.pendingStatus ?? { state: 'idle' }) as RuntimeState;
   }
 
@@ -1470,6 +1492,8 @@ export class Controller {
     this.workspaceKey = `${session.dir}#${++this.openings}`;
     // Another opening: the editor is sent it whole, never as a change from the project before.
     this.forgetEditorCopy();
+    // Its preview is its own: one the project before left at rest is never started for it.
+    this.previewRest = 'none';
     this.onOpeningChange?.();
     // Another app took the project over and edits its folder now: stop the preview running there at once (and any
     // install into it), then start it again from a private copy.
@@ -1484,10 +1508,35 @@ export class Controller {
     // brought up to date instead (syncStage). Until the server started while the project opened is taken over or
     // stopped, what lands counts against it, as the opening's own publication does (usableEarly).
     const opened = this.early?.session === session ? session.previewHold : null;
+    // Every save is counted until its files have landed, whichever server holds its updates, or none (the preview at
+    // rest, failed or stopped, or the one holding it stopped since): a server started meanwhile waits for it rather
+    // than read it part way through (startRuntimeChecked).
     session.previewHold = async () => {
-      if (opened && this.early?.session === session) return opened();
-      const dev = this.session === session && !this.stage ? this.dev : null;
-      return dev ? dev.hold() : () => {};
+      this.savesLanding++;
+      let done = false;
+      const landed = () => {
+        if (done) return;
+        done = true;
+        if (--this.savesLanding === 0) for (const wake of this.landingIdle.splice(0)) wake();
+      };
+      let release: ((files: string[]) => void) | null;
+      try {
+        if (opened && this.early?.session === session) release = await opened();
+        else {
+          const dev = this.session === session && !this.stage ? this.dev : null;
+          release = dev ? await dev.hold() : null;
+        }
+      } catch (e) {
+        landed();
+        throw e;
+      }
+      return (files) => {
+        try {
+          release?.(files);
+        } finally {
+          landed();
+        }
+      };
     };
     // The Recent projects entry follows a rename as soon as it is made, and an undo of one, or one made outside. A
     // working copy keeps its own name through them (#176).
@@ -1616,7 +1665,8 @@ export class Controller {
       // One started for this folder by an earlier opening and stopped since has exited first.
       await this.earlyExits.get(dir);
       await clearComponentPreviews(dir).catch(() => undefined);
-      if (!(await mine())) return;
+      // Nobody to see it (the window closed while the project opened): it starts once a window shows the project.
+      if (!(await mine()) || this.previewUnseen()) return;
       const dev: DevServer = new DevServer(dir, async (): Promise<boolean> => this.dev === dev && (await session.stillOwner()));
       early.dev = dev;
       await dev.start();
@@ -1668,6 +1718,14 @@ export class Controller {
     if (this.session !== session) return;
     await this.stopPreview();
     if (this.session !== session) return;
+    // Nobody can see it (a restart asked for with no window open, a takeover's copy): it starts, with every check
+    // below, once a window shows the project again. At rest from now, before the wait below, so a window brought up
+    // meanwhile starts it.
+    if (this.previewUnseen()) {
+      this.previewRest = 'stopped';
+      await this.dropEarly(session);
+      return;
+    }
     // A server started while the project opened is looked at now, and stopped and waited for when it cannot be taken,
     // before the checks below: so they run, as always, with no wait between them and anything running in the folder.
     // One that can be is taken only after them (startRuntimeNow stops it if the start ends without it).
@@ -1744,6 +1802,26 @@ export class Controller {
       if (this.session !== session || !(await session.stillOwner()) || this.session !== session) return;
       early = null;
     }
+    // Last, with nothing waited for between these looks and the fork: nobody to see it any more (the window closed
+    // during the checks), and it starts when a window shows the project; and a fresh server in the project's folder
+    // waits for every save under way to land its files (one it read part way through would show half of it), then reads
+    // the lock again, as before any fork, and again if another save began meanwhile.
+    for (;;) {
+      if (this.previewUnseen()) {
+        this.previewRest = 'stopped';
+        if (stage) await removePreviewStage(stage).catch(() => undefined);
+        // One started while the project opened, not taken, goes with the start (startRuntimeNow).
+        return;
+      }
+      if (early || stage || this.savesLanding === 0) break;
+      while (this.savesLanding > 0) await new Promise<void>((wake) => this.landingIdle.push(wake));
+      // Waited for: the configuration is still the one trusted, and the project still this app's.
+      if (!(await isTrusted(session.dir, await configHash(session.dir)))) {
+        if (this.session === session) this.status({ state: 'error', message: TRUST_CHANGED });
+        return;
+      }
+      if (this.session !== session || !(await session.stillOwner()) || this.session !== session) return;
+    }
     if (early) this.early = null;
     const dev: DevServer = early?.dev ?? new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
@@ -1756,8 +1834,9 @@ export class Controller {
     this.pendingStatus = null;
     if (stage) this.watchStageSources(session);
     const onStatus = (s: RuntimeStatus) => {
-      // A preview that was stopped or replaced no longer speaks for the project.
-      if (this.dev !== dev) return;
+      // A preview that was stopped or replaced no longer speaks for the project, nor one being stopped while a window
+      // waits for the server starting after it (it says it is idle as it goes: that window is told it is starting).
+      if (this.dev !== dev || (dev === this.stoppingDev && this.resuming > 0)) return;
       // A server that has just come up serves the files as they are now: the project's own folder at the session's
       // revision, or the private copy at the revision it was brought to. Changes saved while none ran were published
       // to nothing, so this is the revision a page loaded from it shows (#766).
@@ -1964,6 +2043,90 @@ export class Controller {
     }
   }
 
+  /**
+   * Nobody can see or use the preview: no editor window is open, and no live session's guests are being shown it. (The
+   * assistant measures pages in the editor's own frames: with no window it has none to measure in.) The project stays
+   * open, its lock held and its folder watched.
+   */
+  private previewUnseen(): boolean {
+    return this.windowless && !this.live.running;
+  }
+
+  /** The last editor window closed with the project still open: its preview stops until a window shows it again. */
+  windowClosed() {
+    this.windowless = true;
+    this.settlePreview();
+  }
+
+  /**
+   * An editor window is being made: a preview at rest starts again now, while the editor loads, and the new window's
+   * canvas waits for it as an opening's does.
+   */
+  windowOpened() {
+    this.windowless = false;
+    this.settlePreview();
+  }
+
+  /**
+   * Bring the preview in line with whether anybody can see it, whenever that may have changed: a window closed or came
+   * up, a live session began or ended. With nobody, a preview that runs, is starting or is about to stops, its
+   * server's process with it; one that failed keeps its error for the window that comes back. With somebody again, a
+   * preview at rest starts, with every check a start makes. Each decision is recorded at once and carried out in turn
+   * on the preview queue, so a window brought up while a stop is under way gets its start after it.
+   */
+  settlePreview() {
+    const session = this.session;
+    if (!session) return;
+    if (this.previewUnseen()) {
+      if (this.previewRest !== 'none') return;
+      const state = this.runtimeStatus().state;
+      if (state === 'unavailable') return;
+      // A preview that failed is put away now; any other (running, starting, about to) is stopped in its turn, and
+      // looked at again then: one that failed meanwhile is put away as one that failed.
+      if (state === 'error') return this.putAwayFailed(session);
+      this.previewRest = 'pending';
+      void this.enqueue(async () => {
+        // Called off (a window came back first), or another opening's.
+        if (this.session !== session || this.previewRest !== 'pending') return;
+        if (this.runtimeStatus().state === 'error') {
+          this.previewRest = 'none';
+          return this.putAwayFailed(session);
+        }
+        this.previewRest = 'stopped';
+        await this.stopPreview();
+        await this.dropEarly(session);
+      }).catch(() => undefined);
+      return;
+    }
+    if (this.previewRest === 'pending') this.previewRest = 'none';
+    if (this.previewRest !== 'stopped') return;
+    this.previewRest = 'none';
+    this.resuming++;
+    void this.startRuntime()
+      .catch(() => undefined)
+      .finally(() => {
+        // A start that ended without a server (taken over, closed, or nobody to see it again) says where the preview
+        // is now, so a window it told "starting" is never left waiting.
+        if (--this.resuming === 0 && !this.dev && this.session === session) this.send('runtime:status', this.runtimeStatus());
+      });
+  }
+
+  /**
+   * With nobody to see it, a preview that failed keeps its error for the window that comes back, and starts again only
+   * when the author asks; a server process it left running (a start that threw, or timed out) is stopped meanwhile.
+   */
+  private putAwayFailed(session: ProjectSession) {
+    const failed = this.dev;
+    if (!failed) return;
+    const shown = this.runtimeStatus();
+    void this.enqueue(async () => {
+      if (this.session !== session || this.dev !== failed || !this.previewUnseen()) return;
+      await this.stopPreview();
+      // Told to a window that has come up meanwhile too: the server's own word as it stopped was that it was idle.
+      if (this.session === session && !this.dev && !this.pendingStatus) this.status(shown);
+    }).catch(() => undefined);
+  }
+
   /** Stop the preview, then remove the private copy it ran from (again once its process has really gone). */
   /** Remove the files of every component preview prepared for the preview server running now. */
   private async dropComponentPreviews() {
@@ -1982,7 +2145,9 @@ export class Controller {
     if (this.stageTimer) clearTimeout(this.stageTimer);
     this.stageTimer = null;
     this.pendingStatus = null;
+    if (dev) this.stoppingDev = dev;
     await dev?.stop();
+    if (this.stoppingDev === dev) this.stoppingDev = null;
     if (this.dev === dev) this.dev = null;
     if (this.stage === stage) this.stage = null;
     this.publishMoved();
@@ -2331,6 +2496,8 @@ export class Controller {
     } finally {
       // The next project loads its own workspace state, or starts empty.
       this.localState = {};
+      // A preview at rest went with the project.
+      this.previewRest = 'none';
       this.send('project:closed');
       this.forgetEditorCopy();
     }
