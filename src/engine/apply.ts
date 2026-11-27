@@ -346,7 +346,7 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
     case 'component.create':
       return componentCreate(state, op);
     case 'component.upsert':
-      return componentUpsert(state, op, { setStyle: (st, o) => void nodeSetStyle(st, o) });
+      return componentUpsert(state, op, { setStyle: (st, o) => void nodeSetStyle(st, o), dependsOn: (st, defId, targetId) => dependsOn(st, defId, targetId), placesClass: (d) => mayPlaceClass(d) });
     case 'component.createFromNode':
       return createFromNode(state, op);
     case 'component.makeUnique':

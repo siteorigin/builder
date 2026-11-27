@@ -217,6 +217,18 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
       slot: z.string().describe('The declared slot whose content shows here.'),
       children: DESIGN_CHILDREN.describe('IDs of the nodes shown here instead while a placement leaves the slot empty, in order.')
     })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('instance'),
+      ...DESIGN_NODE_BASE,
+      definitionId: z.string().min(1).max(120).describe('An installed component to place in the design, such as a project component of the site.'),
+      props: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe('Its property values by name, each a literal or the property ({"$prop"}) or list item field ({"$item"}) of this design it shows. Left out, a property starts at its default (or, on a rebuild, keeps what the placement holds).'),
+      variants: z.record(z.string(), z.string()).optional().describe('The option it shows on each of its variant axes, by axis. An axis left out uses its default (or, on a rebuild, keeps the option the placement shows).')
+    })
     .strict()
 ]);
 
