@@ -21,7 +21,8 @@ describe('the Git snapshots setting', () => {
 
   it('is off by default, and off for settings saved before it existed', async () => {
     expect((await (await freshSettings(null)).loadSettings()).settings.gitSnapshots).toBe(false);
-    expect((await (await freshSettings({ settings: { appearance: 'dark' } })).loadSettings()).settings.gitSnapshots).toBe(false);
+    const older = (await (await freshSettings({ settings: { appearance: 'dark' } })).loadSettings()).settings;
+    expect(older).toMatchObject({ gitSnapshots: false, appearance: 'dark' });
   });
 
   it('is kept on across a restart, and off again once turned off', async () => {
@@ -31,6 +32,7 @@ describe('the Git snapshots setting', () => {
     const again = await freshSettings(JSON.parse(readFileSync(settingsFile, 'utf8')));
     expect((await again.loadSettings()).settings.gitSnapshots).toBe(true);
     expect((await again.updateSettings({ gitSnapshots: false })).gitSnapshots).toBe(false);
+    expect(JSON.parse(readFileSync(settingsFile, 'utf8')).settings.gitSnapshots).toBe(false);
   });
 
   it('reads anything but true as off, and refuses a value that is not on or off, keeping the one in use', async () => {
@@ -38,5 +40,7 @@ describe('the Git snapshots setting', () => {
     const { updateSettings } = await freshSettings({ settings: { gitSnapshots: true } });
     const s = await updateSettings({ gitSnapshots: 'no' as unknown as boolean, appearance: 'light' });
     expect(s).toMatchObject({ gitSnapshots: true, appearance: 'light' });
+    const off = await freshSettings(null);
+    expect(await off.updateSettings({ gitSnapshots: 'yes' as unknown as boolean })).toMatchObject({ gitSnapshots: false });
   });
 });

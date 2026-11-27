@@ -67,10 +67,12 @@ export interface SavedVersion {
   filled?: Record<string, string>;
   /**
    * A version saved with Git snapshots on (#1153): the commit on the project's versions branch, and the tree of the
-   * whole site it holds. Its documents and media are read from that tree by path and checked against the hashes above;
-   * only external sources' settings and converters (keptOutOfGit) are objects of this store. Absent: every file is one.
+   * whole site it holds. Its documents and media are read from that tree by path and checked against the hashes above,
+   * but for what is kept out of Git as objects of this store: external sources' settings and converters (keptOutOfGit),
+   * and `outside`, the media the site names that a snapshot leaves out by their name or place (a private name, a file
+   * of a nested repository). Absent: every file is an object of this store.
    */
-  git?: { commit: string; tree: string };
+  git?: { commit: string; tree: string; outside?: string[] };
 }
 
 interface VersionsFile {
@@ -93,6 +95,7 @@ function validVersion(v: unknown): v is SavedVersion {
   if (!Object.entries(v.docs).every(([p, h]) => isCanonicalPath(p) && typeof h === 'string' && OBJECT_RE.test(h))) return false;
   if (v.filled !== undefined && (!record(v.filled) || !Object.entries(v.filled).every(([p, h]) => isVersionMedia(p) && typeof h === 'string' && OBJECT_RE.test(h)))) return false;
   if (v.git !== undefined && (!record(v.git) || typeof v.git.commit !== 'string' || !OID_RE.test(v.git.commit) || typeof v.git.tree !== 'string' || !OID_RE.test(v.git.tree))) return false;
+  if (v.git?.outside !== undefined && (!Array.isArray(v.git.outside) || !v.git.outside.every((p) => typeof p === 'string' && isVersionMedia(p)))) return false;
   return Object.entries(v.media).every(([p, h]) => isVersionMedia(p) && (h === null || (typeof h === 'string' && OBJECT_RE.test(h))));
 }
 
@@ -101,10 +104,14 @@ export function objectsOf(v: SavedVersion): Set<string> {
   return new Set([...Object.values(v.docs), ...Object.values(v.media).filter((h): h is string => !!h)]);
 }
 
+/** Whether the file at `path` of `v` is an object of this store, rather than in its commit. */
+export const heldHere = (v: SavedVersion, path: string): boolean => !v.git || keptOutOfGit(path) || !!v.git.outside?.includes(path);
+
 /** The objects of this store a version needs: all of them, or for one in Git only what is kept out of it. */
 export function localObjectsOf(v: SavedVersion): Set<string> {
   if (!v.git) return objectsOf(v);
-  return new Set(Object.entries(v.docs).filter(([p]) => keptOutOfGit(p)).map(([, h]) => h));
+  const files = [...Object.entries(v.docs), ...Object.entries(v.media)];
+  return new Set(files.filter((e): e is [string, string] => !!e[1] && heldHere(v, e[0])).map(([, h]) => h));
 }
 
 /** Whether two versions hold exactly the same documents and media, and record the same files filled. */
@@ -195,8 +202,8 @@ export class VersionStore {
     await this.measureGit();
   }
 
-  /** Measure the versions repository again: only looked at, never made. */
-  private async measureGit(): Promise<void> {
+  /** Measure the versions repository again (once a capture has written to it): only looked at, never made. */
+  async measureGit(): Promise<void> {
     const bytes = await repositoryBytes(this.project).catch(() => this.gitBytes);
     if (bytes !== this.gitBytes) {
       this.gitBytes = bytes;
@@ -217,7 +224,7 @@ export class VersionStore {
    * object, or a repository that is not there, is never taken for the file.
    */
   async readFile(v: SavedVersion, path: string, h: string): Promise<Buffer> {
-    if (!v.git || keptOutOfGit(path)) return this.read(h);
+    if (!v.git || heldHere(v, path)) return this.read(h);
     let buf: Buffer;
     try {
       const repo = this.repository();
@@ -234,7 +241,8 @@ export class VersionStore {
   /**
    * Add `v` to the list. A version in Git is put at the tip of the versions branch first (its commit is written by the
    * capture, the branch moved only now), so the list never names a commit that history does not hold. A move refused or
-   * failing adds nothing. Gives back the row as listed (its commit made again if another save moved the branch).
+   * failing adds nothing. Gives back the row as listed (its commit made again if another save moved the branch). The
+   * repository is measured again only once the list is written, so nothing slow comes between the move and the list.
    */
   async add(v: SavedVersion): Promise<SavedVersion> {
     if (this.problem) throw new Error(this.problem);
@@ -245,11 +253,10 @@ export class VersionStore {
         if (commit !== v.git.commit) row = { ...v, git: { ...v.git, commit } };
       } catch (e) {
         throw new Error(e instanceof GitError ? gitSaveProblem(e) : (e as Error).message);
-      } finally {
-        await this.measureGit();
       }
     }
     await this.publish([...this.versions, row]);
+    if (row.git) await this.measureGit();
     return row;
   }
 

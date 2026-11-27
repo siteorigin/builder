@@ -34,12 +34,29 @@ beforeEach(() => {
   git.enabled = false;
 });
 type Mode = 'objects' | 'git';
-/** A test run twice: with versions saved to the plain store (Git snapshots off, the default) and to Git (on). */
+/**
+ * A test run twice: with versions saved to the plain store (Git snapshots off, the default) and to Git (on). Every
+ * version either run leaves listed is checked to be in the store it ran with, so the Git run can never quietly pass on
+ * the plain store. Saving to Git takes longer, so both runs have longer than the default.
+ */
 const both = (name: string, fn: (mode: Mode) => Promise<void>, timeout?: number) =>
-  it.each<Mode>(['objects', 'git'])(`${name} [%s]`, async (mode) => {
-    git.enabled = mode === 'git';
-    await fn(mode);
-  }, timeout);
+  it.each<Mode>(['objects', 'git'])(
+    `${name} [%s]`,
+    async (mode) => {
+      git.enabled = mode === 'git';
+      await fn(mode);
+      for (const d of dirs) {
+        let rows: SavedVersion[] = [];
+        try {
+          rows = JSON.parse(readFileSync(join(d, '.siteorigin/versions/versions.json'), 'utf8')).versions;
+        } catch {
+          continue;
+        }
+        for (const v of rows) expect(!!v.git, `${v.name} is in ${mode === 'git' ? 'Git' : 'the plain store'}`).toBe(mode === 'git');
+      }
+    },
+    timeout ?? 30_000
+  );
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -270,7 +287,7 @@ describe('saved versions', () => {
     };
     const shown = s.versionsInfo();
     expect({ list: shown.list.map((v) => v.bytes), bytes: shown.bytes }).toEqual(onDisk());
-    expect(shown.list.every((v) => v.bytes > 0)).toBe(true);
+    expect(shown.list.every((v) => v.bytes !== null && v.bytes > 0)).toBe(true);
     // An edit changes no version: every snapshot after it shows the same answer.
     await describe1(s, 'Not a version', 'Edit');
     expect(s.versionsInfo()).toBe(shown);
@@ -940,15 +957,28 @@ describe('saved versions in Git (#1153)', () => {
     expect((await s.reviewVersion(saved.id!)).review!.problem).toMatch(/damaged/);
     writeFileSync(object, original);
     expect((await s.reviewVersion(saved.id!)).review!.problem).toBeUndefined();
+    // An intact snapshot whose bytes are not the ones the list recorded is no more the version than a damaged one.
+    const listPath = join(dir, '.siteorigin/versions/versions.json');
+    const list = readFileSync(listPath, 'utf8');
+    const other = JSON.parse(list);
+    other.versions[0].docs['siteorigin/site.json'] = sha('{"name":"Another site"}');
+    writeFileSync(listPath, JSON.stringify(other));
+    await s.close();
+    const swapped = await reopen(dir);
+    expect((await swapped.reviewVersion(saved.id!)).review!.problem).toMatch(/damaged/);
+    await swapped.close();
+    writeFileSync(listPath, list);
+    const s2 = await reopen(dir);
+    expect((await s2.reviewVersion(saved.id!)).review!.problem).toBeUndefined();
     // The whole repository gone: the version can't be restored, and nothing is made to look for it.
     rmSync(gitdir(dir), { recursive: true });
-    const { review } = await ok(s.reviewVersion(saved.id!));
+    const { review } = await ok(s2.reviewVersion(saved.id!));
     expect(review!.problem).toMatch(/damaged/);
     expect(existsSync(gitdir(dir))).toBe(false);
-    const r = await s.restoreVersion(saved.id!, review!.revision);
+    const r = await s2.restoreVersion(saved.id!, review!.revision);
     expect(r).toMatchObject({ ok: false, message: expect.stringMatching(/damaged/) });
-    expect(s.state.site.description).toBe('Later');
-    expect(s.versionsInfo().list).toHaveLength(1);
+    expect(s2.state.site.description).toBe('Later');
+    expect(s2.versionsInfo().list).toHaveLength(1);
   });
 
   it('leaves the developer’s own Git repository, and every watched folder, untouched by saving and by Git', async () => {
@@ -972,11 +1002,68 @@ describe('saved versions in Git (#1153)', () => {
     const { review } = await ok(s.reviewVersion(saved.id!));
     expect(outsideState(dir)).toEqual(afterEdit);
     await ok(s.restoreVersion(saved.id!, review!.revision));
-    // The restore writes the site's own documents, as ever; nothing of Git's lands where the project is watched.
-    const moved = Object.keys(outsideState(dir)).filter((p) => outsideState(dir)[p] !== afterEdit[p]);
+    // The restore writes the site's own documents, as ever (and says so); nothing of Git's lands where the project is
+    // watched, and nothing of the developer's repository is added, changed or removed.
+    const after = outsideState(dir);
+    const moved = [...new Set([...Object.keys(after), ...Object.keys(afterEdit)])].filter((p) => after[p] !== afterEdit[p]);
+    expect(moved).toContain('siteorigin/site.json');
     expect(moved.filter((p) => p === '.git' || p.startsWith('.git/'))).toEqual([]);
-    expect(changed.flat().every((p) => !p.startsWith('.git'))).toBe(true);
+    expect(changed.flat()).toContain('siteorigin/site.json');
+    expect(changed.flat().filter((p) => p.startsWith('.git') || p.startsWith('.siteorigin'))).toEqual([]);
     expect(readFileSync(join(dir, '.git', 'index.lock'), 'utf8')).toBe('held by the developer');
+  });
+
+  it('keeps a file the site names but a snapshot leaves out (a private name) beside the list, never in Git, and restores it', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    mkdirSync(join(dir, 'static', 'brand'), { recursive: true });
+    // An editor's backup of a key, under a public folder, that a component happens to name.
+    writeFileSync(join(dir, 'static/brand/client.pem.bak'), 'PRIVATE KEY BYTES');
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Key', source: '<a href="/brand/client.pem.bak">Key</a>\n' }] }, { label: 'Add key link' }));
+    const saved = await ok(s.saveVersion('With the key'));
+    const [row] = catalogue(dir);
+    expect(row.git!.outside).toEqual(['static/brand/client.pem.bak']);
+    expect(await treeFiles(dir, row.git!.tree)).not.toContain('static/brand/client.pem.bak');
+    expect(objects(dir)).toContain(row.media['static/brand/client.pem.bak']);
+    rmSync(join(dir, 'static/brand/client.pem.bak'));
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(review!.files).toEqual(['static/brand/client.pem.bak']);
+    await ok(s.restoreVersion(saved.id!, review!.revision));
+    expect(readFileSync(join(dir, 'static/brand/client.pem.bak'), 'utf8')).toBe('PRIVATE KEY BYTES');
+    // Deleting every version that holds it frees it: it was never part of history.
+    for (const v of s.versionsInfo().list) await ok(s.deleteVersion(v.id));
+    expect(objects(dir)).toEqual([]);
+  });
+
+  it('saves the work a restore replaces as a new snapshot when the site differs where a restore never looks', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    await describe1(s, 'One', 'One');
+    const one = await ok(s.saveVersion('One'));
+    await describe1(s, 'Two', 'Two');
+    const two = await ok(s.saveVersion('Two'));
+    // The same documents and media as Two, but a public file no document names has changed since.
+    writeFileSync(join(dir, 'static', 'notes.txt'), 'changed after Two');
+    const r = await ok(s.restoreVersion(one.id!, s.revision));
+    expect(r.backup!.id).not.toBe(two.id);
+    const backup = catalogue(dir).find((v) => v.id === r.backup!.id)!;
+    expect(await treeFiles(dir, backup.git!.tree)).toContain('static/notes.txt');
+    // With nothing else changed, the snapshot that already holds the whole site is the way back.
+    const again = await ok(s.restoreVersion(r.backup!.id, s.revision));
+    const back = await ok(s.restoreVersion(one.id!, s.revision));
+    expect(back.backup!.id).toBe(r.backup!.id);
+    expect(again.ok).toBe(true);
+  });
+
+  it('passes the hash a source file was read under through to the worker, which refuses other bytes', async () => {
+    const { dir } = await make();
+    writeFileSync(join(dir, 'static', 'notes.txt'), 'these bytes');
+    const repo = git.client.repository(dir);
+    await repo.init();
+    await expect(repo.writeFiles([{ path: 'static/notes.txt', source: 'static/notes.txt', sha256: sha('other bytes') }])).rejects.toMatchObject({ code: 'changed' });
+    const tree = await repo.writeFiles([{ path: 'static/notes.txt', source: 'static/notes.txt', sha256: sha('these bytes'), mode: '100755' }]);
+    const [folder] = await repo.readTree(tree);
+    expect(await repo.readTree(folder.oid)).toEqual([expect.objectContaining({ path: 'notes.txt', mode: '100755' })]);
   });
 
   it('commits again on top of a branch another save moved meanwhile, holding the same site', async () => {
@@ -992,7 +1079,8 @@ describe('saved versions in Git (#1153)', () => {
     expect(tip).not.toBe(mine.commit);
     expect(await repo.resolveRef(VERSIONS_BRANCH)).toBe(tip);
     const c = await repo.readCommit(tip);
-    expect(c).toMatchObject({ tree: mine.tree, parents: [theirs.commit] });
+    const first = await repo.readCommit(mine.commit);
+    expect(c).toEqual({ oid: tip, tree: mine.tree, parents: [theirs.commit], author: first.author, committer: first.committer, message: first.message });
   });
 });
 

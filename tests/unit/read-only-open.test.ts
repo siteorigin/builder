@@ -163,6 +163,8 @@ describe('read-only opens leave saved versions in Git as they are (#1153)', () =
     try {
       const calls = git.calls.length;
       const before = snapshotTree(dir);
+      const err = await ProjectSession.open(dir, 'me').catch((e) => e);
+      expect(err).toBeInstanceOf(ProjectFormatError);
       const session = await openReadOnly(dir);
       expect(session.versionsInfo()).toEqual({ list: [], bytes: 0 });
       expect((await session.saveVersion('Nope')).ok).toBe(false);
@@ -193,21 +195,30 @@ describe('read-only opens leave saved versions in Git as they are (#1153)', () =
     writeFileSync(join(dir, '.siteorigin/versions/restoring.json'), JSON.stringify({ version: 'First', backup: 'Before restoring “First”', time: new Date().toISOString() }));
     lockByAnother(dir);
     const before = snapshotTree(dir);
+    const calls = git.calls.length;
     const session = await openReadOnly(dir);
     const listed = session.versionsInfo().list;
     expect(listed.map((v) => [v.name, v.bytes])).toEqual([
       ['Before restoring “First”', null],
       ['First', null]
     ]);
+    // Listing reads the list alone; reviewing reads each version from Git, and finds what each would change.
+    expect(git.calls.length).toBe(calls);
+    const reviews = [];
     for (const v of listed) {
       const r = await session.reviewVersion(v.id);
       expect(r.ok).toBe(true);
       expect(r.review!.problem).toBeUndefined();
+      reviews.push(r.review!);
     }
+    expect(reviews.map((r) => r.site)).toEqual([true, false]);
+    expect(git.calls.slice(calls)).toContain('readBlob');
     expect((await session.restoreVersion(listed[1].id, session.revision)).ok).toBe(false);
     expect((await session.deleteVersion(listed[1].id)).ok).toBe(false);
     await exercise(session, false);
     expect(snapshotTree(dir)).toEqual(before);
+    // Nothing that writes was ever asked of Git: not even making the repository.
+    expect(git.calls.slice(calls).filter((op) => ['init', 'writeBlob', 'writeFiles', 'writeCommit', 'advanceRef'].includes(op))).toEqual([]);
   });
 });
 

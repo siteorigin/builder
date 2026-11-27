@@ -234,7 +234,8 @@ export interface SavedVersionInfo {
   pages: number;
   /**
    * What deleting it frees: what no other saved version also holds. Null for a version saved with Git snapshots on,
-   * whose snapshot stays in the project's version history when it is deleted from the list, so nothing is freed.
+   * whose snapshot stays in the project's version history when it is deleted from the list: at most the few files kept
+   * beside the history (an external source's settings) are freed.
    */
   bytes: number | null;
   /** Files its documents name that were missing from the project folder when it was saved. */

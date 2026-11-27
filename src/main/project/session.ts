@@ -58,7 +58,7 @@ import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf,
 
 export { statTrusted };
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
-import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit } from './versions-git';
+import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
 import { captureSnapshotInventory } from './snapshot-inventory';
 import type { FileInput } from '../git/protocol';
 
@@ -4087,8 +4087,9 @@ export class ProjectSession extends EventEmitter {
    * one that could not be read stops the save.
    */
   private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
+    // Asked once per version: the same Git decides and stores it.
     const git = versionsGit();
-    if (git && (await git.enabled())) return this.captureGitVersion(name, opts);
+    if (git && (await git.enabled())) return this.captureGitVersion(git, name, opts);
     const docs: Record<string, string> = {};
     // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
     // Nor what has been published: a restore never takes back what the website was exported with.
@@ -4119,14 +4120,16 @@ export class ProjectSession extends EventEmitter {
    * captureVersion with Git snapshots on (#1153): the whole site (snapshot-inventory.ts) written as a tree and a commit
    * of it on the versions branch's tip, the branch not moved yet (VersionStore.add moves it). The documents are the
    * loaded ones, as for any version, so what the row records is what the tree holds; external sources' settings and
-   * converters are objects of the list's store instead, never in Git. The media a restore puts back are recorded as
-   * ever, by their SHA-256, and the worker stores each file only while it still holds the bytes hashed.
+   * converters are objects of the list's store instead, never in Git, as is a file the site names that a snapshot
+   * leaves out (a private name, a file of a nested repository). The media a restore puts back are recorded as ever, by
+   * their SHA-256, and the worker stores each file only while it still holds the bytes hashed.
    */
-  private async captureGitVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> }): Promise<SavedVersion> {
+  private async captureGitVersion(git: VersionsGit, name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> }): Promise<SavedVersion> {
     const id = newVersionId();
     const time = new Date().toISOString();
     const docs: Record<string, string> = {};
     const files: FileInput[] = [];
+    const inline = new Set<string>();
     for (const [path, content] of this.docs) {
       if (path === BRIEF_FILE || path === PUBLISHED_FILE) continue;
       if (keptOutOfGit(path)) docs[path] = await this.versions.putText(content);
@@ -4134,6 +4137,7 @@ export class ProjectSession extends EventEmitter {
         const bytes = Buffer.from(content, 'utf8');
         docs[path] = sha(bytes);
         files.push({ path, bytes });
+        inline.add(path);
       }
     }
     let inventory: Awaited<ReturnType<typeof captureSnapshotInventory>>;
@@ -4142,13 +4146,15 @@ export class ProjectSession extends EventEmitter {
     } catch (e) {
       throw new Error(`${(e as Error).message} Nothing was saved.`);
     }
-    // Every other file of the site, as it is on disk; the documents on disk are the loaded ones (checked before saving).
+    // Every other file of the site, as it is on disk (the record of what was published, and code no component claims,
+    // included); the documents on disk are the loaded ones, checked before saving.
     const hashed = new Map<string, string>();
     for (const f of inventory.tree) {
-      if (isCanonicalPath(f.path)) continue;
+      if (inline.has(f.path)) continue;
       hashed.set(f.path, f.sha256);
-      files.push({ path: f.path, source: f.path, sha256: f.sha256 });
+      files.push({ path: f.path, source: f.path, sha256: f.sha256, mode: f.mode });
     }
+    const outside: string[] = [];
     const media: Record<string, string | null> = {};
     for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
       let abs: string;
@@ -4175,19 +4181,22 @@ export class ProjectSession extends EventEmitter {
         media[rel] = h;
         continue;
       }
-      // A file the site names that a snapshot leaves out by its name (a `.tmp` file, say): still held, as it always was.
-      const bytes = await fs.readFile(abs).catch((e: Error) => Promise.reject(new Error(`${rel} could not be read, so nothing was saved: ${e.message}`)));
-      media[rel] = sha(bytes);
-      files.push({ path: rel, source: rel, sha256: media[rel] });
+      // A file the site names that a snapshot leaves out (a private name, a nested repository's, another spelling of a
+      // file on a disk that ignores case): held as it always was, an object beside the list, and never in history.
+      media[rel] = await this.versions.putFile(abs);
+      outside.push(rel);
     }
-    let git: { commit: string; tree: string };
+    let stored: { commit: string; tree: string };
     try {
-      git = await writeVersionCommit(versionsGit()!.repository(this.dir), files, id, time, !!opts.auto);
+      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, !!opts.auto);
     } catch (e) {
       throw new Error(gitSaveProblem(e));
+    } finally {
+      // Whatever was written counts from now, whether this version is listed or not.
+      await this.versions.measureGit();
     }
     const filled = opts.filled && Object.keys(opts.filled).length ? { filled: opts.filled } : {};
-    return { id, name, time, revision: this.revision, schemaVersion: SCHEMA_VERSION, ...(opts.auto ? { auto: true } : {}), docs, media, ...filled, git };
+    return { id, name, time, revision: this.revision, schemaVersion: SCHEMA_VERSION, ...(opts.auto ? { auto: true } : {}), docs, media, ...filled, git: { ...stored, ...(outside.length ? { outside: outside.sort() } : {}) } };
   }
 
   /**
@@ -4383,8 +4392,9 @@ export class ProjectSession extends EventEmitter {
       let backup: SavedVersion;
       try {
         const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled });
-        // A version that holds exactly what a restore of either kind would put back is the way back, whichever store holds it.
-        const kept = this.versions.versions.find((x) => sameContents(x, now));
+        // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
+        // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
+        const kept = this.versions.versions.find((x) => sameContents(x, now) && (now.git ? x.git?.tree === now.git.tree : !x.git));
         if (kept) backup = kept;
         else {
           if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };

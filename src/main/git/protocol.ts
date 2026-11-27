@@ -39,7 +39,10 @@ export interface Identity {
  * bytes the caller hashed: the worker checks the very bytes it stores, and fails the write as `changed` when they are
  * others, so a file replaced after the caller looked at it is never saved under the caller's hash.
  */
-export type FileInput = { path: string; bytes: Uint8Array } | { path: string; source: string; sha256?: string };
+export type FileInput = ({ path: string; bytes: Uint8Array } | { path: string; source: string; sha256?: string }) & {
+  /** Git's mode for it: `100755` for a file that can be run; `100644`, the default, for any other. */
+  mode?: '100644' | '100755';
+};
 /** A blob's content, as for FileInput. */
 export type BlobInput = { bytes: Uint8Array } | { source: string };
 

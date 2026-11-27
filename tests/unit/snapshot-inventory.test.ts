@@ -275,6 +275,22 @@ describe('capturing a project', () => {
     expect(mode(SNAPSHOT_SYNC_SCRIPT)).toBe(posix ? '100755' : '100644');
   });
 
+  it('reads nothing of a nested repository’s work, a submodule or a checkout inside the project (#1153)', async () => {
+    const root = smallProject();
+    // A submodule's worktree, marked by its `.git` file, and a nested checkout with a `.git` folder.
+    write(root, 'src/vendor/lib/.git', 'gitdir: ../../../.git/modules/lib');
+    write(root, 'src/vendor/lib/index.js', 'export const lib = 1;');
+    write(root, 'static/kit/.git/HEAD', 'ref: refs/heads/main\n');
+    write(root, 'static/kit/logo.svg', '<svg/>');
+    write(root, 'src/vendor/own.js', 'export const own = 1;');
+    // The project's own repository leaves the project as it is.
+    write(root, '.git/HEAD', 'ref: refs/heads/main\n');
+    const paths = (await captureSnapshotInventory(root, { settleMs: 0 })).tree.map((f) => f.path);
+    expect(paths).toContain('src/vendor/own.js');
+    expect(paths).toContain('src/routes/+page.svelte');
+    expect(paths.filter((p) => p.startsWith('src/vendor/lib') || p.startsWith('static/kit'))).toEqual([]);
+  });
+
   it('refuses a project that is not a folder', async () => {
     const root = temp();
     write(root, 'file', 'x');

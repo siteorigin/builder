@@ -218,14 +218,14 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
   const remove = async (version: SavedVersionInfo) => {
     const key = getState().snapshot?.workspaceKey;
     if (!key || busy) return;
-    // A version saved with Git snapshots on leaves its snapshot in the project's version history: nothing is freed (#1153).
+    // A version saved with Git snapshots on leaves its snapshot in the project's version history when deleted (#1153).
     const inHistory = version.bytes === null;
     const yes = await confirmDialog({
       title: 'Delete saved version?',
       body: inHistory ? 'This saved version is removed from Saved versions.' : 'This saved version is deleted from the project.',
       subject: version.name,
       subjectKind: 'version',
-      subjectNote: inHistory ? 'Frees no space: its snapshot stays in the project’s version history' : version.bytes ? `Frees up to ${formatBytes(version.bytes)}` : undefined,
+      subjectNote: inHistory ? 'Its snapshot stays in the project’s version history' : version.bytes ? `Frees up to ${formatBytes(version.bytes)}` : undefined,
       details: [
         { kind: 'keep', text: 'Your site and its undo history stay as they are.' },
         { kind: 'final', text: 'A deleted version can’t be brought back.' }

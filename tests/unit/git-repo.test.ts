@@ -214,6 +214,28 @@ describe('writing and reading versions', () => {
     await expect(repo.writeFiles([{ path: 'x', source: 'static/assets/photo.jpg', sha256: 'not-a-hash' }])).rejects.toMatchObject({ code: 'invalid' });
   });
 
+  it('writes again an object it would reuse when the copy there is damaged, and keeps a file’s executable mode (#1153)', async () => {
+    const repo = openRepo(root);
+    await repo.init();
+    const bytes = text('a picture, stored once');
+    const tree = await repo.writeFiles([{ path: 'static/photo.jpg', bytes }]);
+    const oid = blobOid(bytes);
+    const path = join(gitdir(), 'objects', oid.slice(0, 2), oid.slice(2));
+    // Cut short in place, as a disk that lost its last write would leave it.
+    writeFileSync(path, readFileSync(path).subarray(0, 6));
+    // A worker that has not read it back yet (a fresh one) finds it damaged and stores it again.
+    const again = openRepo(root);
+    expect(await again.writeFiles([{ path: 'static/photo.jpg', bytes }])).toBe(tree);
+    expect(Buffer.from(await again.readBlob(tree, 'static/photo.jpg')).equals(Buffer.from(bytes))).toBe(true);
+    const run = await again.writeFiles([{ path: 'scripts/run.sh', bytes: text('#!/bin/sh'), mode: '100755' }, { path: 'scripts/notes.txt', bytes: text('notes') }]);
+    const [scripts] = await again.readTree(run);
+    expect((await again.readTree(scripts.oid)).map((e) => [e.path, e.mode])).toEqual([
+      ['notes.txt', '100644'],
+      ['run.sh', '100755']
+    ]);
+    await expect(again.writeFiles([{ path: 'x', bytes: text('x'), mode: '120000' as '100644' }])).rejects.toMatchObject({ code: 'invalid' });
+  });
+
   it('publishes commits to a branch, lists them newest first, and keeps a second history with its own root', async () => {
     const repo = openRepo(root, { limits: { maxLogDepth: 3 } });
     await repo.init();

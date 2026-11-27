@@ -289,6 +289,9 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
       throw unreadable(rel, e);
     }
     const names = raw.map((b) => ({ name: b.toString('utf8'), raw: b })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    // A folder with a `.git` of its own (a submodule, a nested checkout) is another repository's work: none of it is
+    // read. The marker itself is never opened. The project's own `.git`, at its top, leaves the project as it is.
+    if (rel && names.some(({ name }) => fold(name) === '.git')) return;
     for (const { name, raw: bytes } of names) {
       const r = rel ? `${rel}/${name}` : name;
       const place = snapshotPlace(r);

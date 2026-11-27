@@ -758,7 +758,7 @@ function GitStatus() {
       {status.bundled.ready ? <Check aria-hidden="true" /> : <CircleAlert aria-hidden="true" />}
       <span>
         {status.bundled.ready ? `Built-in Git ${status.bundled.version} is ready. ` : `The built-in Git couldn’t start, so versions can’t be saved until it can: ${status.bundled.reason} `}
-        {system.status === 'present' ? `Git ${system.version} is also installed on this computer.` : system.status === 'unusable' ? 'A Git found on this computer couldn’t be used, so only the built-in one is.' : 'No other Git is needed.'}
+        {system.status === 'present' ? `Git ${system.version} is also installed on this computer.` : system.status === 'unusable' ? 'A Git found on this computer couldn’t be used.' : 'No other Git is needed.'}
       </span>
     </span>
   );

@@ -53,11 +53,11 @@ export function appIdentity(time: string): Identity {
 export function gitSaveProblem(e: unknown): string {
   if (!(e instanceof GitError)) return (e as Error)?.message ?? String(e);
   switch (e.code) {
-    // These name the file and say what to do.
+    // These name the file and say what to do, unless they are the repository's own words.
     case 'changed':
     case 'too-large':
     case 'invalid':
-      return e.message;
+      return /repository/i.test(e.message) ? (e.code === 'too-large' ? 'The site’s files are too large together for one version.' : 'The version could not be saved to the project’s version history.') : e.message;
     case 'locked':
     case 'conflict':
       return 'Another copy of SiteOrigin Builder is saving a version of this project. Try again in a moment.';
@@ -106,9 +106,10 @@ export async function advanceVersions(repo: GitRepository, commit: Oid): Promise
 
 /** The bytes the repository takes on disk, every file under it counted (links are not followed); 0 when there is none. */
 export async function repositoryBytes(project: string): Promise<number> {
-  const top = join(project, ...VERSIONS_GITDIR.split('/'));
-  const st = await lstat(top).catch(() => null);
-  if (!st?.isDirectory()) return 0;
+  // Each folder on the way looked at itself: a `.siteorigin` that is a link may lead to another project's history.
+  const parts = VERSIONS_GITDIR.split('/');
+  for (let i = 1; i <= parts.length; i++) if (!(await lstat(join(project, ...parts.slice(0, i))).catch(() => null))?.isDirectory()) return 0;
+  const top = join(project, ...parts);
   let total = 0;
   const walk = async (dir: string, depth: number): Promise<void> => {
     for (const name of await readdir(dir).catch(() => [] as string[])) {

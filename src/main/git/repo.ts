@@ -20,7 +20,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs, type BigIntStats } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
-import { constants as zlibConstants, createDeflate, deflateSync } from 'node:zlib';
+import { constants as zlibConstants, createDeflate, deflateSync, inflateSync } from 'node:zlib';
 import git from 'isomorphic-git';
 import { eachAtMost, ensureDir, renameReplacing, safeJoinLooking, syncDir } from '../project/fsutil';
 import { openRegularFile, readAtMost } from '../regular-file';
@@ -163,6 +163,8 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
   const alive = opts.processAlive ?? isAlive;
   /** Whether this worker has cleared its exited predecessors' temporary objects yet. */
   let swept = false;
+  /** Loose objects this worker has read back whole and found to be their names' content: reused as they are. */
+  const intact = new Set<Oid>();
   // Writes one at a time in this worker: what one stages is flushed or discarded before the next begins.
   let queue: Promise<unknown> = Promise.resolve();
   const serial = <T>(f: () => Promise<T>): Promise<T> => {
@@ -328,13 +330,25 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     const path = objectPath(oid);
     if (gfs.staged(path)) return oid;
     const there = await looseExists(oid);
-    if (there) {
+    // One already there is reused only once it has been read back whole as this content (once per worker): a copy cut
+    // short or damaged is written again, so a new version never leans on bytes that would fail its restore.
+    if (there && (intact.has(oid) || (await holds(path, oid)))) {
+      intact.add(oid);
       gfs.reuse(path, there.mtimeMs);
       return oid;
     }
     const deflate = createDeflate({ level: incompressible(bytes) ? 0 : zlibConstants.Z_DEFAULT_COMPRESSION });
     await gfs.stage(path, Readable.from([header, bytes], { objectMode: false }).pipe(deflate));
     return oid;
+  };
+
+  /** Whether the loose object file at `path` inflates to content whose name is `oid`. */
+  const holds = async (path: string, oid: Oid): Promise<boolean> => {
+    try {
+      return createHash('sha1').update(inflateSync(await fs.readFile(path))).digest('hex') === oid;
+    } catch {
+      return false;
+    }
   };
 
   /** The commit a branch points at, exactly as written (never a shorthand or a link to another), or null. */
@@ -522,6 +536,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         let inline = 0;
         for (const [index, f] of files.entries()) {
           const parts = checkTreePath(f?.path, limits);
+          if (f.mode !== undefined && f.mode !== '100644' && f.mode !== '100755') throw new GitError('invalid', `${f.path} has a mode a version cannot hold.`);
           if ('bytes' in f) {
             if (!(f.bytes instanceof Uint8Array)) throw new GitError('invalid', `${f.path} has no bytes.`);
             if (f.bytes.byteLength > limits.maxBlobBytes) throw new GitError('too-large', `${f.path} is too large for a version.`);
@@ -563,7 +578,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
           const entries: TreeEntry[] = [];
           for (const child of dir.children.values()) {
             check(token);
-            if (child.kind === 'file') entries.push({ mode: '100644', path: child.name, oid: oids[child.index], type: 'blob' });
+            if (child.kind === 'file') entries.push({ mode: files[child.index].mode ?? '100644', path: child.name, oid: oids[child.index], type: 'blob' });
             else entries.push({ mode: '040000', path: child.name, oid: await writeDir(child), type: 'tree' });
           }
           return git.writeTree({ fs: gfs, gitdir, tree: entries });

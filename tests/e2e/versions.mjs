@@ -108,7 +108,8 @@ async function run(mode) {
     await history.getByRole('button', { name: 'Delete “Approved by client”' }).click();
     const confirm = win.getByRole('dialog', { name: 'Delete saved version?' });
     await confirm.waitFor();
-    if (inGit) assert.match(await confirm.innerText(), /Frees no space/, 'deleting a version in Git says it frees nothing');
+    if (inGit) assert.match(await confirm.innerText(), /Its snapshot stays in the project’s version history/, 'deleting a version in Git says its snapshot stays');
+    else assert.doesNotMatch(await confirm.innerText(), /version history/, 'deleting a plain version says nothing of history');
     await confirm.getByRole('button', { name: 'Cancel' }).click();
     await confirm.waitFor({ state: 'detached' });
     assert.equal((await versionNames()).length, 2, 'cancelling keeps it');
@@ -128,6 +129,10 @@ async function run(mode) {
       await history.getByTestId('restore-version').click();
       await history.waitFor({ state: 'detached' });
       await eventually(async () => assert.equal((await snapshot()).state.site.name, 'Redesign'));
+      const [backup] = (await snapshot()).versions.list;
+      assert.equal(backup.name, 'Before restoring “Before restoring “Approved by client””', 'the work the restore replaced is saved');
+      assert.equal(backup.auto, true);
+      assert.notEqual(backup.bytes, null, 'with Git snapshots off, it is saved in the plain store');
     }
 
     assert.deepEqual(errors, [], 'no uncaught errors in the editor');
