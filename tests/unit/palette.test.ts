@@ -10,6 +10,7 @@ import { contrastBetween, evaluatePairs, type ContrastPair } from '@shared/contr
 import { PALETTE_MOODS, PALETTE_ROLES, darkPins, darkSection, harmonizePalette, oklchHex, paletteChanges, paletteSeed, type PaletteMood } from '@shared/palette';
 import { compositeOver } from '@shared/contrast';
 import { getTheme } from '@catalogue/index';
+import { withErrorRoles } from './fixtures/error-roles-designs';
 
 /** Yellows, cyans, deep indigos, pastels, near-blacks and near-whites, saturated mid-tones, and the greys where a tinted eyebrow pill reads on neither page. */
 const BRANDS = [
@@ -42,6 +43,8 @@ const themeOf = (id: string) => {
   return { tokens: theme.tokens as TokenDef[], pairs: theme.contrastPairs ?? [] };
 };
 const make = (brand: string, mood: PaletteMood, themeId = 'foundation', accent?: string) => harmonizePalette({ brand, mood, ...themeOf(themeId), accent });
+/** The same, on the theme with the error roles declared (its error colours and their pairs), as the release does not yet do (#1016). */
+const makeWithErrors = (brand: string, mood: PaletteMood, themeId = 'foundation') => harmonizePalette({ brand, mood, ...withErrorRoles(themeOf(themeId)) });
 const lch = (hex: string) => {
   const [L, a, b] = rgbToOklab(parseColor(hex)!);
   return { L, C: Math.hypot(a, b), h: ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360 };
@@ -143,19 +146,20 @@ describe('every pair readable, for any brand and mood (#357)', () => {
     expect([...pages].sort()).toEqual(['dark', 'light']);
   });
 
-  // Release gap: the release has no error colour (color.error, color.error-on-inverse) or error contrast pairs (#1016).
-  it.fails('sets a red error colour for the light grounds and one for dark sections, readable on each, for any brand, mood and page (#1016)', () => {
+  it('sets a red error colour for the light grounds and one for dark sections, readable on each, for any brand, mood and page, on a theme that declares them (#1016)', () => {
     const red = (hex: string) => {
       const c = lch(hex);
       // sRGB takes chroma away, never hue: the red stays within a few degrees of the one asked for.
       return c.C > 0.08 && Math.abs(((c.h - 27 + 540) % 360) - 180) < 3;
     };
+    const pages = new Set<string>();
     for (const themeId of THEMES)
       for (const mood of PALETTE_MOODS)
         for (const brand of BRANDS) {
-          const h = make(brand, mood, themeId);
+          const h = makeWithErrors(brand, mood, themeId);
           const v = h.values;
           const at = `${themeId} ${mood} ${brand} (${h.page} page)`;
+          pages.add(h.page);
           // Both roles are made on every theme that has them, as saved #rrggbb, and stay red whatever the brand.
           expect(v['color.error'], at).toMatch(/^#[0-9a-f]{6}$/);
           expect(v['color.error-on-inverse'], at).toMatch(/^#[0-9a-f]{6}$/);
@@ -165,8 +169,10 @@ describe('every pair readable, for any brand and mood (#357)', () => {
           for (const ground of ['color.background', 'color.surface', 'color.surface-alt'] as const) expect(ratio(v['color.error']!, v[ground]!), `${at} on ${ground}`).toBeGreaterThanOrEqual(4.5);
           expect(ratio(v['color.error-on-inverse']!, v['color.inverse']!), `${at} in dark sections`).toBeGreaterThanOrEqual(4.5);
         }
+    // Dark pages (a yellow brand) are among them: their error colour turns light with their grounds.
+    expect([...pages].sort()).toEqual(['dark', 'light']);
     // Each page and mood at the lightness it asks for, where every pair allows it (Foundation keeps the targets here).
-    const L = (brand: string, mood: PaletteMood, id: 'color.error' | 'color.error-on-inverse') => lch(make(brand, mood).values[id]!).L;
+    const L = (brand: string, mood: PaletteMood, id: 'color.error' | 'color.error-on-inverse') => lch(makeWithErrors(brand, mood).values[id]!).L;
     expect(L('#ffff00', 'neutral', 'color.error')).toBeCloseTo(0.72, 2);
     expect(L('#1f5a4c', 'neutral', 'color.error')).toBeCloseTo(0.5, 2);
     expect(L('#1f5a4c', 'high-contrast', 'color.error')).toBeCloseTo(0.44, 2);

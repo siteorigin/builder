@@ -498,7 +498,7 @@ describe('the loaded context window', () => {
     expect(body.tools.map((t: { function: { name: string } }) => t.function.name)).toContain('apply_source_patch');
   });
 
-  // Release gap: with the release's sections, the small native tools' first request of a code run takes about 13,700 tokens, over the 12,150 measured on the 39-section copy, so it no longer fits a 13,312-token window beside a reply and the run is refused before anything is sent.
+  // Release gap: with the release's sections, the small native tools' first request of a code run takes about 13,700 tokens (Builder asks for at least 15,360 with a short reply), so it no longer fits a 13,312-token window beside a reply of 1,024 tokens or more, as it did on the 39-section copy, and the run is refused before anything is sent.
   it.fails('fits a code run and its reply into a 13,312-token window', async () => {
     // Small enough that the reply must shrink to fit beside a code run's small tools, with room for them to grow
     // (inspect_layout's refs, #743, took it past 12,288).
@@ -510,9 +510,32 @@ describe('the loaded context window', () => {
     const body = chatPosts()[0].body;
     expect(body.max_tokens).toBeGreaterThanOrEqual(1024);
     expect(estimateOf(body) + body.max_tokens).toBeLessThanOrEqual(window);
+  });
+
+  /**
+   * A code run's first request as Builder builds it for a 13,312-token window, untrimmed: the profile guesses that size
+   * and nothing sets or reports it, so the request goes out whole, with no refusal and nothing cut to fit.
+   */
+  const untrimmedCodeRequest = async () => {
+    const { run } = await setup({ toolMode: 'native' }, { profile: { ...DEFAULT_LOCAL_PROFILE, contextWindow: 13_312 } });
+    server.script(textReply('Hello.'));
+    const { result } = await run('Hi');
+    return { result, posts: chatPosts() };
+  };
+
+  it("sends a code run's whole first request when it only guesses a 13,312-token window", async () => {
+    const { result, posts } = await untrimmedCodeRequest();
+    expect(result?.status).toBe('no-changes');
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body.tools.map((t: { function: { name: string } }) => t.function.name)).toContain('apply_source_patch');
+  });
+
+  // Release gap: with the release's sections, the small native tools' first request of a code run, built for a 13,312-token window, takes about 13,700 tokens, over the 12,150 measured on the 39-section copy.
+  it.fails("keeps a code run's first request for a 13,312-token window within 12,150 tokens", async () => {
+    const { posts } = await untrimmedCodeRequest();
     // The request itself stays small: 12,113 tokens measured with the source patch's revision and scope (#740),
     // inspect_layout's refs (#743), and a theme's code patched on a project copy with its properties (#1078).
-    expect(estimateOf(body)).toBeLessThanOrEqual(12_150);
+    expect(estimateOf(posts[0].body)).toBeLessThanOrEqual(12_150);
   });
 
   it('keeps the full reply budget in a normal larger window', async () => {

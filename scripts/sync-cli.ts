@@ -29,8 +29,7 @@ export const SYNC_CLI_BANNER = [
  * it from its config, before the app's module aliases exist. The build checks those releases against their lock
  * first (`npm run build:packs -- --committed`), and the unit tests load them as the app does.
  */
-export function syncPacks(): ThemePack[] {
-  const dir = resolve(root, 'resources', 'packs');
+export function syncPacks(dir = resolve(root, 'resources', 'packs')): ThemePack[] {
   // In the order the app ranks them (bundledOrder in src/main/packs/loader.ts), so the default theme is the app's.
   const rank = (id: string) => (BUNDLED_PACK_IDS.includes(id) ? BUNDLED_PACK_IDS.indexOf(id) : BUNDLED_PACK_IDS.length);
   const ids = readdirSync(dir, { withFileTypes: true })
@@ -41,6 +40,8 @@ export function syncPacks(): ThemePack[] {
   return ids.map((id) => {
     const raw = readFileSync(join(dir, id, 'pack.json'));
     const { format: _format, schemaVersion: _schema, files: _files, previews: _previews, fonts, ...pack } = JSON.parse(raw.toString('utf8')) as PackManifest;
+    // As the app's loader refuses one: a release is named after the pack it holds.
+    if (pack.id !== id) throw new Error(`${join(dir, id)} holds the pack "${pack.id}"; a release folder is named after its pack.`);
     void [_format, _schema, _files, _previews];
     return { ...pack, fonts: fonts.map((f) => ({ ...f, notice: '', faces: [] })), digest: createHash('sha256').update(raw).digest('hex'), source: 'bundled' as const };
   });

@@ -12,6 +12,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { STARTERS, createStarterState } from '@catalogue/starters';
 import { derivedBrandTokens } from '@agent/brand';
 import { sayContrast } from '../../src/renderer/src/lib/announce';
+import { withErrorRoles } from './fixtures/error-roles-designs';
 
 /** The colour pairs the shipped Foundation release declares. */
 const PAIRS: ContrastPair[] = getTheme('foundation').contrastPairs ?? [];
@@ -21,6 +22,15 @@ function business(overrides: Record<string, unknown>): TokenDef[] {
   const state = createStarterState('business', 'Harbour', false);
   state.tokens.overrides = overrides as never;
   return effectiveTokens(state);
+}
+
+/**
+ * The Business starter's tokens and Foundation's pairs with the error roles declared (#1016), which the release does not
+ * yet do, and some tokens, error colours included, set the way an author's edit saves them.
+ */
+function businessWithErrors(overrides: Record<string, unknown>): { tokens: TokenDef[]; pairs: ContrastPair[] } {
+  const { tokens, pairs } = withErrorRoles({ tokens: business(overrides), pairs: PAIRS });
+  return { tokens: tokens.map((t) => (t.id in overrides ? ({ ...t, value: overrides[t.id] } as TokenDef) : t)), pairs };
 }
 
 const byId = (results: PairResult[], id: string) => results.find((r) => r.pair.id === id)!;
@@ -432,34 +442,40 @@ describe('what ships', () => {
       ['dark-error', 'color.error-on-inverse', 'color.inverse', 4.5, 'dark-error'],
       ['dark-error-edge', 'color.error-on-inverse', 'color.inverse', 3, 'dark-error-edge']
     ]);
+    // The error colour is the author's to choose, so the release offers no change to it.
+    expect(PAIRS.filter((p) => p.fg.startsWith('color.error')).every((p) => p.fixable === false)).toBe(true);
     // The development fixture draws the same forms, so it checks the same pairs.
     for (const id of ['foundation-alt']) expect((getTheme(id).contrastPairs ?? []).filter((p) => p.fg.startsWith('color.error')).map((p) => p.id), id).toEqual(errorPairs.map(([pid]) => pid));
   });
 
-  // Release gap: the release has no error colour (color.error, color.error-on-inverse) or error contrast pairs (#1016).
-  it.fails('measures error messages at 4.5:1 and the edges of fields to put right at 3:1, on the light grounds and in dark sections (#1016)', () => {
+  it('measures error messages at 4.5:1 and the edges of fields to put right at 3:1, on the light grounds and in dark sections, on a theme that declares them (#1016)', () => {
     const errorIds = ['error-background', 'error-surface', 'error-surface-alt', 'error-edge-background', 'error-edge-surface', 'error-edge-surface-alt', 'dark-error', 'dark-error-edge'];
     const status = (results: PairResult[]) => errorIds.map((id) => [id, byId(results, id).status]);
-    // As shipped, every error pair reads.
-    expect(status(evaluatePairs(business({}), PAIRS)).filter(([, s]) => s !== 'pass')).toEqual([]);
+    const evaluate = (overrides: Record<string, unknown>) => {
+      const { tokens, pairs } = businessWithErrors(overrides);
+      return evaluatePairs(tokens, pairs);
+    };
+    // As declared, every error pair reads.
+    expect(status(evaluate({})).filter(([, s]) => s !== 'pass')).toEqual([]);
     // A grey that reads as an edge on white cards (3.54:1) but not as text: only the text pair warns there.
-    const grey = evaluatePairs(business({ 'color.error': '#888888' }), PAIRS);
+    const grey = evaluate({ 'color.error': '#888888' });
     expect(byId(grey, 'error-surface')).toMatchObject({ status: 'fail', min: 4.5, fg: '#888888', bg: '#ffffff' });
     expect(ratioOf(byId(grey, 'error-surface'))).toBeCloseTo(3.5449, 4);
     expect(byId(grey, 'error-edge-surface')).toMatchObject({ status: 'pass', min: 3 });
     // Paler still, it fails as an edge too.
-    const pale = evaluatePairs(business({ 'color.error': '#aaaaaa' }), PAIRS);
+    const pale = evaluate({ 'color.error': '#aaaaaa' });
     expect(byId(pale, 'error-surface').status).toBe('fail');
     expect(byId(pale, 'error-edge-surface')).toMatchObject({ status: 'fail', min: 3 });
     expect(ratioOf(byId(pale, 'error-edge-surface'))).toBeCloseTo(2.3231, 4);
     // Dark sections are checked on their own error colour, which the light grounds' never stands in for.
-    const dark = evaluatePairs(business({ 'color.error-on-inverse': '#5a1a1a' }), PAIRS);
+    const dark = evaluate({ 'color.error-on-inverse': '#5a1a1a' });
     expect(byId(dark, 'dark-error')).toMatchObject({ status: 'fail', fg: '#5a1a1a', bg: '#14211d', min: 4.5 });
     expect(byId(dark, 'dark-error-edge')).toMatchObject({ status: 'fail', min: 3 });
     expect(status(dark).filter(([id, s]) => s !== 'pass' && !String(id).startsWith('dark-'))).toEqual([]);
     // The error colour is the author's to choose: Site styles names what fails and offers no change to it.
-    expect(PAIRS.filter((p) => p.fg.startsWith('color.error')).every((p) => p.fixable === false)).toBe(true);
-    expect(suggestForeground(business({ 'color.error': '#888888' }), PAIRS, byId(grey, 'error-surface') as never)).toBeNull();
+    const { tokens, pairs } = businessWithErrors({ 'color.error': '#888888' });
+    expect(pairs.filter((p) => p.fg.startsWith('color.error')).every((p) => p.fixable === false)).toBe(true);
+    expect(suggestForeground(tokens, pairs, byId(grey, 'error-surface') as never)).toBeNull();
   });
 
   it('measures the focus outline against the page, cards and alternate sections at 3:1', () => {

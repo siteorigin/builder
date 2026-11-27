@@ -191,6 +191,19 @@ describe('what the website publishes', () => {
     expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined], [draft, 'top']]);
   });
 
+  it('checks the shipped theme’s gallery photo’s link to a draft while the photo follows it (#75)', () => {
+    const { s, draft } = withDraft();
+    const home = s.pages[s.site.homePageId];
+    const gallery = Object.values(home.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'media.gallery') as InstanceNode;
+    const images = gallery.props.images as Array<Record<string, unknown>>;
+    const fromGallery = () => publicationPlan(s).draftLinks.filter((l) => l.nodeId === gallery.id);
+    expect(fromGallery()).toEqual([]);
+    images[0] = { ...images[0], action: 'link', link: { type: 'page', target: draft } };
+    expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined]]);
+    images[1] = { ...images[1], action: 'link', link: { type: 'page', target: draft, anchor: 'top' } };
+    expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined], [draft, 'top']]);
+  });
+
   // Release gap: publicationPlan (src/generator/checks.ts, codeLinks) reports every link of the release's Gallery as a
   // draft link, though a photo follows its link only while its action is link.
   it.fails('checks the shipped theme’s gallery photo’s link only while the photo follows it (#75)', () => {

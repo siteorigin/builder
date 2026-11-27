@@ -360,6 +360,20 @@ describe('an exported project with sources', () => {
     expect(cli).not.toContain('SIL OPEN FONT LICENSE');
   });
 
+  it('takes the shipped releases in the app\'s order, and refuses a release folder that holds another pack', () => {
+    const dir = temp('so-sync-packs-');
+    cpSync(join(process.cwd(), 'resources', 'packs', 'foundation'), join(dir, 'foundation'), { recursive: true });
+    expect(syncPacks(dir).map((p) => p.id)).toEqual(['foundation']);
+    // Another pack whose name sorts first still follows Foundation, as the app ranks them: Foundation stays the default.
+    mkdirSync(join(dir, 'aardvark'));
+    writeFileSync(join(dir, 'aardvark', 'pack.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(dir, 'foundation', 'pack.json'), 'utf8')), id: 'aardvark' }));
+    expect(syncPacks(dir).map((p) => p.id)).toEqual(['foundation', 'aardvark']);
+    rmSync(join(dir, 'aardvark'), { recursive: true });
+    mkdirSync(join(dir, 'aardvark'));
+    copyFileSync(join(dir, 'foundation', 'pack.json'), join(dir, 'aardvark', 'pack.json'));
+    expect(() => syncPacks(dir)).toThrow(`${join(dir, 'aardvark')} holds the pack "foundation"; a release folder is named after its pack.`);
+  });
+
   it('syncs with npm run sync, needing nothing installed, and says so in its README', async () => {
     const server = await api(() => [person('1', 'Ana Ruiz', 'Architect'), person('2', 'Ben Okafor', 'Engineer')]);
     const dir = await project(server.origin);
