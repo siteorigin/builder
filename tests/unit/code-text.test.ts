@@ -19,7 +19,9 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generateProject } from '@generator/index';
 import { parseCodeText } from '@shared/code-text';
-import { checkSvelteSource, withoutPartMarkers } from '../../src/main/codecheck';
+import { checkSvelteSource, withoutCodeMarkers } from '../../src/main/codecheck';
+import { carriesCodeMarker } from '../../src/main/export';
+import { isCodeMarker } from '@shared/code-markers';
 import { ProjectSession } from '../../src/main/project/session';
 import { codeTextShown, codeTextTarget, type CodeTextTarget } from '../../src/renderer/src/lib/model';
 
@@ -181,12 +183,18 @@ describe('the editor names the text a marked element shows', () => {
 
 describe('the website’s build takes text markers out of the code too', () => {
   it('cuts each one, written out or through the hook, and leaves words that only mention one', async () => {
-    const clean = await withoutPartMarkers(SOURCE.replace(`data-so-text={so_text?.('heading')}`, 'data-so-text="heading"'));
+    const clean = await withoutCodeMarkers(SOURCE.replace(`data-so-text={so_text?.('heading')}`, 'data-so-text="heading"'));
     expect(clean).not.toContain('data-so-text');
     expect(clean).toContain('<h2 class="services__heading">{heading}</h2>');
     expect(clean).toContain('<SoRichText value={body} />');
     const said = '<p>Mark text with data-so-text.</p>\n';
-    expect(await withoutPartMarkers(said)).toBe(said);
+    expect(await withoutCodeMarkers(said)).toBe(said);
+  });
+
+  it('is one of the editor’s code markers, so both exports refuse a build that still writes one', () => {
+    expect(isCodeMarker('data-so-text')).toBe(true);
+    expect(carriesCodeMarker('<h2 data-so-text="heading">Hello</h2>')).toBe(true);
+    expect(carriesCodeMarker('<p>Mark text with data-so-text.</p>')).toBe(false);
   });
 });
 
