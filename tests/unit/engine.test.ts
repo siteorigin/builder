@@ -15,6 +15,10 @@ import { tokenUsageCounts } from '@engine/tokens';
 import { slotFill } from '@engine/slots';
 import { validateOperation } from '@shared/ops';
 import { withPublished } from '@shared/published';
+import { managedFoundation, useManaged } from './fixtures/engine-designs';
+import { metaOf } from './fixtures/packs';
+import { createPack } from '@catalogue/dsl';
+import { withoutCodeMarkers } from '../../src/main/codecheck';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -43,9 +47,19 @@ describe('starter and generator', () => {
     expect([...a.entries()]).toEqual([...b.entries()]);
   });
 
-  it('keeps editor instrumentation out of clean output', () => {
+  it('keeps editor instrumentation out of clean output', async () => {
     const s = fresh();
-    for (const [path, content] of generateProject(s)) expect(content.includes('data-so-'), path).toBe(false);
+    // One section built in the editor, which the preview hands the page's editing context (`__so`), beside code ones.
+    useManaged(s, 'hero.split');
+    // A code component's source is written as it is stored, with the text markers its author put in for the preview;
+    // both exports take those out (withoutCodeMarkers), so what ships carries none. Everything the generator writes
+    // itself carries none to begin with.
+    const codeFiles = new Set(Object.values(s.components).filter((d) => d.kind === 'code').map((d) => `src/lib/siteorigin/generated/${d.id.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()}.svelte`));
+    expect(codeFiles.size).toBeGreaterThan(0);
+    for (const [path, content] of generateProject(s)) {
+      const shipped = codeFiles.has(path) ? await withoutCodeMarkers(content) : content;
+      expect(shipped.includes('data-so-'), path).toBe(false);
+    }
     const dev = generateProject(s, { instrument: true });
     expect(dev.get('src/routes/+page.svelte')).toContain('__so=');
     expect([...dev.values()].some((c) => c.includes('data-so-ctx'))).toBe(true);
@@ -130,6 +144,8 @@ describe('content operations', () => {
 describe('components', () => {
   it('forks a theme definition before shared edits and rebinds every use', () => {
     let s = fresh();
+    // A theme design built in the editor: Foundation's own CTA is code, which is edited through its source.
+    useManaged(s, 'cta.banner');
     const cta = firstInstance(s, 'cta.banner');
     const oldDef = cta.definitionId;
     expect(() => applyOperations(s, [{ type: 'node.setStyle', owner: { kind: 'component', id: oldDef }, nodeId: 'panel', scope: 'base', property: 'radius', value: '0' }])).toThrow(/Fork it first/);
@@ -321,8 +337,10 @@ describe('theme switching (P06, I03)', () => {
     expect(instancesOf(s, fork.results[0].definitionId as string).length).toBeGreaterThan(0);
     expect(s.tokens.overrides['color.brand']).toBe('#123456');
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
-    const css = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
-    expect(css).toContain('foundation-alt-hero-split');
+    // The hero the site shows is the new theme's: its own file, which the page imports.
+    const files = generateProject(s);
+    expect(files.has('src/lib/siteorigin/generated/foundation-alt-hero-split.svelte')).toBe(true);
+    expect(files.get('src/routes/+page.svelte')).toContain('generated/foundation-alt-hero-split.svelte');
   });
 
   it('moves a Foundation site to another theme and back with its content, links, images, styles and forks intact (#390)', () => {
@@ -373,10 +391,15 @@ describe('theme switching (P06, I03)', () => {
     expect(switched.assets).toEqual(s.assets);
     expect(switched.tokens).toEqual(s.tokens);
     expect(validateState(switched).filter((d) => d.severity === 'error')).toEqual([]);
-    // Its own layout reaches the site: its split hero is stacked and centred, and its stylesheet is the theme's.
+    // Its own sections and site styles reach the site: the page shows its hero's file in place of Foundation's, and
+    // a site style the project leaves to the theme takes the new theme's value.
     const files = generateProject(switched);
-    expect(files.get('src/lib/siteorigin/styles/components.css')).toMatch(/\.so-foundation-alt-hero-split__grid \{[^}]*flex-direction: column;[^}]*text-align: center;/);
-    expect(files.get('src/lib/siteorigin/styles/components.css')).not.toContain('.so-foundation-hero-split__grid');
+    expect(files.has('src/lib/siteorigin/generated/foundation-alt-hero-split.svelte')).toBe(true);
+    expect(files.get('src/routes/+page.svelte')).toContain('generated/foundation-alt-hero-split.svelte');
+    expect(files.has('src/lib/siteorigin/generated/foundation-hero-split.svelte')).toBe(false);
+    const background = (themeId: string) => getTheme(themeId).tokens.find((t) => t.id === 'color.background')!.value as string;
+    expect(background('foundation-alt')).not.toBe(background('foundation'));
+    expect(files.get('src/lib/siteorigin/styles/tokens.css')).toContain(background('foundation-alt'));
 
     const back = applyOperations(switched, [{ type: 'theme.apply', themeId: 'foundation' }]).state;
     // Nothing was lost or changed on the way: the project is the one it was before the two switches.
@@ -426,6 +449,9 @@ describe('review regressions', () => {
 
   it('keeps what placements showed from their old definition when the new theme’s defaults differ (#103)', () => {
     let s = fresh();
+    // The hero is a design built in the editor, where a choice naming no option shows the axis's default; a code
+    // placement's passes nothing at all.
+    useManaged(s, 'hero.split');
     const hero = firstInstance(s, 'hero.split');
     const grid = firstInstance(s, 'features.grid');
     // An installed hero and grid whose defaults differ from the new theme's, and placements that rely on them.
@@ -528,7 +554,8 @@ describe('review regressions', () => {
     const at = alt.components.findIndex((c) => c.componentId === 'layout.section');
     const shipped = alt.components[at];
     try {
-      const next = structuredClone(shipped);
+      // The new theme's Section built in the editor, with its slot inside a repeat over a list it leaves empty.
+      const next = createPack(metaOf(alt)).adopt(managedFoundation('layout.section'));
       next.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { text: { type: 'string', label: 'Text', default: '' } }, default: [] } as never;
       const slotId = Object.values(next.tree!.nodes).find((n) => n.kind === 'slot')!.id;
       const parent = Object.values(next.tree!.nodes).find((n) => (n.kind === 'element' || n.kind === 'repeat') && n.children.includes(slotId)) as { children: string[] };
@@ -568,6 +595,7 @@ describe('review regressions', () => {
 
   it('rejects unbound or out-of-list bindings after structural edits (I17)', () => {
     let s = fresh();
+    useManaged(s, 'features.grid');
     const grid = firstInstance(s, 'features.grid');
     const fork = applyOperations(s, [{ type: 'component.fork', definitionId: grid.definitionId }]);
     s = fork.state;
@@ -597,6 +625,7 @@ describe('follow-up regressions', () => {
 
   it('removing a part while editing a definition removes the part too', () => {
     let s = fresh();
+    useManaged(s, 'hero.split');
     const fork = applyOperations(s, [{ type: 'component.fork', definitionId: firstInstance(s, 'hero.split').definitionId }]);
     s = fork.state;
     const defId = fork.results[0].definitionId as string;
@@ -618,8 +647,14 @@ describe('follow-up regressions', () => {
 
 const defOf = (s: ProjectState, componentId: string) => Object.values(s.components).find((d) => d.componentId === componentId && d.owner === 'theme')!;
 const errors = (s: ProjectState) => validateState(s).filter((d) => d.severity === 'error');
+/**
+ * The project's own copy of a Foundation section built in the editor. Foundation ships its sections as code, so the
+ * section is first given its managed stand-in (fixtures/engine-designs.ts), then forked like any theme design.
+ */
 const fork = (s: ProjectState, componentId: string) => {
-  const r = applyOperations(s, [{ type: 'component.fork', definitionId: firstInstance(s, componentId).definitionId }]);
+  const managed = structuredClone(s);
+  useManaged(managed, componentId);
+  const r = applyOperations(managed, [{ type: 'component.fork', definitionId: firstInstance(managed, componentId).definitionId }]);
   return { state: r.state, id: r.results[0].definitionId as string };
 };
 async function compiles(path: string, src: string) {
@@ -643,6 +678,8 @@ describe('style token groups (§1.5)', () => {
 describe('convert to code (§2.1)', () => {
   it('carries its own styles, so deleting the original keeps the appearance', async () => {
     let s = fresh();
+    // A design built in the editor is what converts: Foundation's own hero is code already.
+    useManaged(s, 'hero.split');
     const hero = firstInstance(s, 'hero.split');
     // A project copy used once, so it can be deleted after converting.
     const u = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: hero.id, name: 'Hero copy' }]);
@@ -916,6 +953,9 @@ describe('create component from a selection (§2.3)', () => {
 describe('fork keeps theme data fixed (§2.4)', () => {
   it('does not rebind uses inside theme-owned definitions', () => {
     const s = fresh();
+    // Theme designs built in the editor, so one can place another.
+    useManaged(s, 'cta.banner');
+    useManaged(s, 'hero.split');
     const cta = defOf(s, 'cta.banner');
     const hero = defOf(s, 'hero.split');
     // A theme definition that places another one.
@@ -1539,6 +1579,7 @@ describe('site styles that follow other styles (#201)', () => {
 describe('validateState catches external corruption (§2.5)', () => {
   it('reports token cycles, missing tokens, bad tags, stray slots and component cycles', () => {
     const s = fresh();
+    useManaged(s, 'cta.banner');
     s.tokens.overrides['color.brand'] = { token: 'color.accent' };
     s.tokens.overrides['color.accent'] = { token: 'color.brand' };
     const page = home(s);
@@ -1571,6 +1612,8 @@ describe('theme switching contracts (§2.5)', () => {
   it('leaves pinned theme definitions untouched and uses one lock hash format', async () => {
     const { definitionHash } = await import('@engine/install');
     let s = fresh();
+    // A CTA built in the editor, so it can place the Statistics section.
+    useManaged(s, 'cta.banner');
     const cta = defOf(s, 'cta.banner');
     const stats = defOf(s, 'stats.row');
     // A theme definition (CTA) placing another (Stats), pinned by a project component that places the CTA.
@@ -1692,6 +1735,8 @@ describe('duplicating a page', () => {
   /** A Contact page with an "Hours" section and links: to its own section, to the page itself, and to another page's section. */
   const contactWithLinks = () => {
     let s = fresh();
+    // The Hours section is one built in the editor, which takes an anchor (a code section takes none).
+    useManaged(s, 'layout.section');
     const [homeId, aboutId, contactId] = s.site.pageOrder;
     const o = { kind: 'page' as const, id: contactId };
     const sec = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: null, index: 0, componentId: 'layout.section' }]);

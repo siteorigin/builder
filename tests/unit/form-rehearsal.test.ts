@@ -40,8 +40,11 @@ function site() {
   return { files: generateProject(s), dev: generateProject(s, { instrument: true }), formFile: defFile(def) };
 }
 
-/** The exported contact form, compiled for the browser with Svelte's runtime; `window.mountForm(props)` places one. */
-async function bundleForm(source: string, visitorText: string): Promise<string> {
+/**
+ * The exported contact form, compiled for the browser with Svelte's runtime and the export's runtime modules it
+ * imports; `window.mountForm(props)` places one.
+ */
+async function bundleForm(source: string, files: Map<string, string>): Promise<string> {
   const modules: Record<string, string> = {
     '\0entry': `import { flushSync, mount } from 'svelte'; import Form from '\0form';
 window.mountForm = (props) => {
@@ -49,7 +52,8 @@ window.mountForm = (props) => {
 	flushSync();
 };`,
     '\0form': compile(source, { filename: 'ContactForm.svelte', generate: 'client', css: 'injected', runes: true }).js.code,
-    '../runtime/visitor-text.js': visitorText
+    '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
+    '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!
   };
   const out = (await build({
     configFile: false,
@@ -110,7 +114,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
   beforeAll(async () => {
     const { files, dev, formFile } = site();
     hold = holdFrom(dev.get('src/routes/+layout.svelte')!);
-    const [bundled, launched] = await Promise.allSettled([bundleForm(files.get(formFile)!, files.get(`${RUNTIME_DIR}/visitor-text.js`)!), chromium.launch({ headless: true, executablePath: chromium.executablePath() })]);
+    const [bundled, launched] = await Promise.allSettled([bundleForm(files.get(formFile)!, files), chromium.launch({ headless: true, executablePath: chromium.executablePath() })]);
     if (launched.status === 'fulfilled') browser = launched.value;
     if (bundled.status === 'rejected') throw bundled.reason;
     if (launched.status === 'rejected') throw launched.reason;

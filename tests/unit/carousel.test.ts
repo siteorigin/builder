@@ -11,8 +11,7 @@ import { compile } from 'svelte/compiler';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ComponentDefinition, ElementNode, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { CATEGORY_LABELS, catalogueComponent, catalogueEntries, searchCatalogue } from '@catalogue/index';
-import { FOUNDATION_EXAMPLES } from '@catalogue/foundation/ai-examples';
+import { CATEGORY_LABELS, catalogueComponent, catalogueEntries, getTheme, searchCatalogue } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { RUNTIME_DIR, defFile, generateProject, generateVisitorTextJs } from '@generator/index';
@@ -20,6 +19,8 @@ import { CAROUSEL_JS, CAROUSEL_SVELTE } from '@generator/carousel';
 import { isCarouselTrack } from '@generator/card-links';
 import { builtInVisitorText, type VisitorText } from '@shared/visitor-text';
 import { pickImagesField } from '../../src/renderer/src/lib/gallery-picks';
+import { projectDesign } from './fixtures/packs';
+import { CAROUSEL } from './fixtures/carousel-designs';
 
 interface Measured {
   rtl: boolean;
@@ -312,18 +313,37 @@ describe('the Carousel section', () => {
     expect(clean.get(`${RUNTIME_DIR}/Carousel.svelte`)).toBe(CAROUSEL_SVELTE);
     expect(clean.get(`${RUNTIME_DIR}/carousel.js`)).toBe(CAROUSEL_JS);
     const source = clean.get(defFile(def))!;
+    expect(source).toContain("import SoCarousel from '../runtime/Carousel.svelte';");
+    // The list keeps its own classes and is named by the heading; its slides repeat inside it, each one a list item.
+    expect(source).toMatch(/<SoCarousel\s+class="[^"]*__track[^"]*"\s+aria-label=\{has\(heading\) \? heading : undefined\}\s*>\s*\{#each[^}]*\}\s*<li\b/);
+    // The theme's code as it ships; the page hands it nothing of the editor's, so its editor hooks render nothing.
+    expect(source).toBe(def.source);
+    const page = clean.get('src/routes/contact/+page.svelte')!;
+    expect(page).toContain('Measuring the room');
+    expect(page).not.toMatch(/data-so-|so_text/);
+  });
+
+  it('renders a list of the editor’s own design marked as a carousel through the helper, found in the editor by its list and slides', () => {
+    const s = fresh();
+    const def = projectDesign(s, CAROUSEL);
+    const page = contact(s);
+    const owner = { kind: 'page' as const, id: page.id };
+    const r = applyOperations(s, [{ type: 'node.insert', owner, definitionId: def.id, index: 1, props: { slides: SLIDES } }]);
+    const clean = generateProject(r.state);
+    expect(clean.get(`${RUNTIME_DIR}/Carousel.svelte`)).toBe(CAROUSEL_SVELTE);
+    const source = clean.get(defFile(def))!;
     expect(source).toContain('import SoCarousel from "../runtime/Carousel.svelte";');
     // The list keeps its own classes and is named by the heading; its slides repeat inside it, each one a list item.
     expect(source).toMatch(/<SoCarousel\s+class=\{[^}]*__track[^}]*\}\s+aria-label=\{has\(heading\) \? heading : undefined\}\s*>\s*\{#each[^}]*\}\s*<li\b/);
     expect(source).not.toContain('data-so-');
     // In the editor the list carries what finds it, and each slide its item.
-    const dev = generateProject(s, { instrument: true }).get(defFile(def))!;
+    const dev = generateProject(r.state, { instrument: true }).get(defFile(def))!;
     expect(dev).toMatch(/<SoCarousel[^>]*data-so-node="track"/);
     expect(dev).toMatch(/<li[^>]*data-so-node="slide"[^>]*data-so-items=/);
   });
 
   it('has a worked example of slides with captions and a link, shown two at a time', () => {
-    const example = FOUNDATION_EXAMPLES.find((e) => e.componentId === 'media.carousel')!;
+    const example = getTheme('foundation').aiProfile!.examples!.find((e) => e.componentId === 'media.carousel')!;
     expect(example.keywords).toEqual(expect.arrayContaining(['carousel', 'slider', 'product tour']));
     expect(example.variants).toEqual({ layout: 'two-columns' });
     expect((example.props.slides as unknown[]).length).toBeGreaterThan(1);
@@ -348,13 +368,10 @@ describe('what may be a carousel', () => {
     expect(isCarouselTrack({ id: 'x', kind: 'text', tag: 'p', text: 'Hi', carousel: true } as never)).toBe(false);
   });
 
-  /** The project's own copy of the Carousel, with its list changed by `change`. */
+  /** A Carousel of the project's own design, with its list changed by `change`. */
   function ownCopy(change: (nodes: ComponentDefinition['tree'] & object) => void): ProjectState {
     const s = createStarterState('business', 'Kloof', false);
-    const theme = catalogueComponent('foundation', 'media.carousel')!;
-    const def: ComponentDefinition = structuredClone({ ...theme, id: 'def_own_carousel', owner: 'project' as const, componentId: 'project.carousel' });
-    change(def.tree!);
-    s.components[def.id] = def;
+    change(projectDesign(s, CAROUSEL).tree!);
     return s;
   }
   const carouselErrors = (s: ProjectState) => validateState(s).filter((d) => d.code === 'CAROUSEL_INVALID');

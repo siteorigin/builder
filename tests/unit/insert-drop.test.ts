@@ -3,6 +3,7 @@ import type { EditOperation } from '@shared/ops';
 import type { ElementNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent } from '@catalogue/index';
+import { registerBeside, restorePacks, testPack } from './fixtures/packs';
 import { applyOperations } from '@engine/apply';
 import type { AssetRecord, InstanceNode } from '@shared/types';
 import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, INSIDE_ITSELF, measuredLists, measureIds, MOVE_TOP, MOVE_UNSHOWN, moveDestination, savingProblems, slotKey, slotOfKey, type Measured } from '../../src/renderer/src/lib/insert-drop';
@@ -251,31 +252,38 @@ describe('a new node among siblings with an Order style (#52)', () => {
     expect(dropTarget(lists, 'element', 500, 396, 10, null)).toMatchObject({ index: 1, list: { parentId: null } });
   });
 
-  it('reads the incoming order of a theme component from the project’s installed copy, else the theme’s (#664)', () => {
-    let s = createStarterState('blank', 'Order', false);
-    const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
-    expect(incomingOrder(s, { componentId: 'block.stat' })).toBe(0);
-    // Not installed yet: the theme's own design says.
-    const shipped = catalogueComponent(s.site.themeId, 'block.stat')!;
-    const shippedRoot = shipped.tree!.nodes[shipped.tree!.rootIds[0]] as { styles?: Record<string, Record<string, unknown>> };
-    const kept = shippedRoot.styles;
+  it('reads the incoming order of a theme component from the project’s installed copy, else the theme’s (#664)', async () => {
+    // A theme whose block is a design built in the editor: Foundation's are code, whose root has no Order to read.
+    const author = testPack('order-test');
+    const tone = { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' } } };
+    const block = author.managed({ componentId: 'block.ordered', name: 'Ordered block', description: '', category: 'content', tags: [], icon: 'square', properties: {}, parts: { root: { nodeId: 'root', label: 'Block' } }, variantAxes: { tone }, build: (b) => b.el('root', 'div', {}, [b.text('value', 'p', '42')]) });
+    registerBeside(author.define([block]));
     try {
-      shippedRoot.styles = { ...kept, base: { ...(kept?.base ?? {}), order: 4 } };
-      expect(incomingOrder(s, { componentId: 'block.stat' })).toBe(4);
+      let s = createStarterState('blank', 'Order', false);
+      s.site.themeId = 'order-test';
+      const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
+      expect(incomingOrder(s, { componentId: 'block.ordered' })).toBe(0);
+      // Not installed yet: the theme's own design says.
+      const shipped = catalogueComponent(s.site.themeId, 'block.ordered')!;
+      const shippedRoot = shipped.tree!.nodes[shipped.tree!.rootIds[0]] as { styles?: Record<string, Record<string, unknown>> };
+      const kept = shippedRoot.styles;
+      try {
+        shippedRoot.styles = { ...kept, base: { ...(kept?.base ?? {}), order: 4 } };
+        expect(incomingOrder(s, { componentId: 'block.ordered' })).toBe(4);
+      } finally {
+        shippedRoot.styles = kept;
+      }
+      s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, componentId: 'block.ordered' }]).state;
+      const def = s.components['order-test.block.ordered'];
+      (def.tree!.nodes[def.tree!.rootIds[0]] as { styles?: Record<string, Record<string, unknown>> }).styles = { base: { order: 3 } };
+      expect(incomingOrder(s, { componentId: 'block.ordered' })).toBe(3);
+      // A tone it is inserted with can order its root too.
+      def.variantAxes!.tone.options.muted.styles = { ...def.variantAxes!.tone.options.muted.styles, [def.tree!.rootIds[0]]: { base: { order: 5 } } };
+      expect(incomingOrder(s, { componentId: 'block.ordered', variants: { tone: 'muted' } })).toBe(5);
+      expect(incomingOrder(s, { componentId: 'no.such' })).toBe(0);
     } finally {
-      shippedRoot.styles = kept;
+      await restorePacks();
     }
-    s = applyOperations(s, [
-      { type: 'node.insert', newNodeId: 'n_sec', owner, parentId: null, componentId: 'layout.section' },
-      { type: 'node.insert', owner, parentId: 'n_sec', slot: 'content', componentId: 'block.stat' }
-    ]).state;
-    const def = s.components['foundation.block.stat'];
-    (def.tree!.nodes[def.tree!.rootIds[0]] as { styles?: Record<string, Record<string, unknown>> }).styles = { base: { order: 3 } };
-    expect(incomingOrder(s, { componentId: 'block.stat' })).toBe(3);
-    // A tone it is inserted with can order its root too.
-    def.variantAxes!.tone.options.muted.styles = { ...def.variantAxes!.tone.options.muted.styles, [def.tree!.rootIds[0]]: { base: { order: 5 } } };
-    expect(incomingOrder(s, { componentId: 'block.stat', variants: { tone: 'muted' } })).toBe(5);
-    expect(incomingOrder(s, { componentId: 'no.such' })).toBe(0);
   });
 
   it('reads the incoming order from a component’s root', () => {

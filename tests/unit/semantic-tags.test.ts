@@ -8,8 +8,7 @@ import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/ty
 import { ELEMENT_TAGS, TEXT_TAGS } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState, STARTERS } from '@catalogue/starters';
-import { listThemes } from '@catalogue/index';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
 import { prop, P, type ComponentSpec } from '@catalogue/dsl';
 import { makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
@@ -18,7 +17,7 @@ import { nestingProblems, tagOptions, tagProblem } from '@engine/semantic-tags';
 import { defFile, generateProject } from '@generator/index';
 import { ELEMENT_TAG_GROUPS, TEXT_TAG_GROUPS, standingReason, tagSelectOptions, unavailableReasons } from '../../src/renderer/src/lib/tag-options';
 
-const { managed } = FOUNDATION;
+const managed = (spec: ComponentSpec) => FOUNDATION_AUTHOR.managed(spec);
 const blank = () => createStarterState('blank', 'Blank', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const pageOwner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
@@ -691,21 +690,12 @@ describe('the tag select (#189)', () => {
 });
 
 describe('shipped content (#189)', () => {
-  it('has no nesting problems in any starter or theme design', () => {
+  // The themes' sections are Svelte code (built and checked in their own repository), so what Builder lays out from
+  // element tags is the starters' pages.
+  it('has no nesting problems in any starter', () => {
     for (const { id } of STARTERS) {
       const s = createStarterState(id, 'Test', false);
       expect(nesting(s), id).toEqual([]);
-      for (const theme of listThemes()) {
-        // The whole pack at once, so a design placing another reads that one's root.
-        const st = { ...s, components: { ...s.components, ...Object.fromEntries(theme.components.map((d) => [d.id, d])) } };
-        let checked = 0;
-        for (const def of theme.components) {
-          if (def.kind !== 'managed' || !def.tree) continue;
-          expect(nestingProblems(st, defOwner(def), def.tree), `${theme.id} ${def.id}`).toEqual([]);
-          checked++;
-        }
-        expect(checked, theme.id).toBeGreaterThan(10);
-      }
     }
   });
 });

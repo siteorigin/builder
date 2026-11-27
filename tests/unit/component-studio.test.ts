@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ElementRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, ElementRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { generateComponentPreview } from '@generator/preview';
@@ -8,14 +8,24 @@ import { descOf, listPropFor, needsStudio, refExists, studioRef, studioCtx, stud
 import { NEW_STUDIO, StudioLoads, placementOption, studioContent, studioContentChoice, studioContentValue, studioPlacements, studioSpec, studioStates, studioVariants } from '../../src/renderer/src/lib/studio';
 import { applyOperations } from '@engine/apply';
 import { defFile, generateProject } from '@generator/index';
+import { mediaBlock, servicesGrid } from './fixtures/component-studio-designs';
 
 const starter = () => createStarterState('blank', 'Studio Test', false);
 const own = (id: string) => ({ kind: 'component' as const, id });
 
-/** A theme component installed in a blank project, unplaced, and its own nodes. */
-function design(componentId: string) {
+/** Adds a design to the project, as installing it would, and returns its ID. */
+const add = (state: ProjectState, def: ComponentDefinition) => {
+  state.components[def.id] = def;
+  return def.id;
+};
+
+/**
+ * A theme's managed design (a services grid) in a blank project, unplaced, and its own nodes. Foundation's sections
+ * are code, which the studio previews whole; the studio picks the nodes only a design built as a tree has.
+ */
+function design() {
   const state = starter();
-  const id = installComponent(state, componentId);
+  const id = add(state, servicesGrid());
   const def = state.components[id];
   return { state, id, def, nodes: Object.values(def.tree!.nodes) };
 }
@@ -23,8 +33,8 @@ function design(componentId: string) {
 /** A design with another managed component placed inside it, as the last child of its root element. */
 function nestingDesign(): { state: ProjectState; id: string; nested: string } {
   const state = starter();
-  const id = installComponent(state, 'features.grid');
-  const inner = state.components[installComponent(state, 'content.media')];
+  const id = add(state, servicesGrid());
+  const inner = state.components[add(state, mediaBlock())];
   const def = state.components[id];
   const root = def.tree!.nodes[def.tree!.rootIds[0]];
   if (root.kind !== 'element' || inner.kind !== 'managed' || !inner.tree) throw new Error('Unexpected fixture');
@@ -36,7 +46,7 @@ function nestingDesign(): { state: ProjectState; id: string; nested: string } {
 
 describe('Component Studio: the design in the isolated preview', () => {
   it('renders the design under the context the studio maps', () => {
-    const { state, id, def } = design('features.grid');
+    const { state, id, def } = design();
     const out = generateComponentPreview(state, { definitionId: id });
     if ('error' in out) throw new Error(out.error);
     // The preview passes the design's context to its one instance; the design's own nodes carry it.
@@ -46,7 +56,7 @@ describe('Component Studio: the design in the isolated preview', () => {
   });
 
   it('picks the design’s own nodes and gives back the same reference for each', () => {
-    const { state, id, def, nodes } = design('features.grid');
+    const { state, id, def, nodes } = design();
     for (const n of nodes) {
       const ref: ElementRef = { owner: own(id), instancePath: [], nodeId: n.id };
       const desc = studioDescOf(state, id, ref)!;
@@ -62,7 +72,7 @@ describe('Component Studio: the design in the isolated preview', () => {
   });
 
   it('keeps an item of the design’s own list, and lets go of one only the sample content has', () => {
-    const { state, id, def, nodes } = design('features.grid');
+    const { state, id, def, nodes } = design();
     const repeated = nodes.find((n) => listPropFor(def, n.id));
     expect(repeated).toBeDefined();
     const list = def.properties[listPropFor(def, repeated!.id)!];
@@ -102,7 +112,7 @@ describe('Component Studio: the design in the isolated preview', () => {
   });
 
   it('picks the innermost of the design’s own nodes the bridge reports', () => {
-    const { state, id, def, nodes } = design('features.grid');
+    const { state, id, def, nodes } = design();
     const root = def.tree!.rootIds[0];
     const inner = nodes.find((n) => n.id !== root && !listPropFor(def, n.id))!;
     const chain = [inner.id, root].map((nodeId) => studioDescOf(state, id, { owner: own(id), instancePath: [], nodeId })!);
@@ -110,7 +120,7 @@ describe('Component Studio: the design in the isolated preview', () => {
   });
 
   it('ignores the page, other components and the code wrapper', () => {
-    const { state, id, def } = design('features.grid');
+    const { state, id, def } = design();
     const root = def.tree!.rootIds[0];
     expect(studioPick(state, id, [{ ctx: `page:${state.site.homePageId}`, node: root, items: '' }])).toBeNull();
     expect(studioPick(state, id, [{ ctx: 'preview:other|preview', node: root, items: '' }])).toBeNull();
@@ -125,7 +135,7 @@ describe('Component Studio: the design in the isolated preview', () => {
 
 describe('Component Studio: when editing everywhere needs it', () => {
   it('shows a component the page no longer places on its own, and leaves one placed there on the page', () => {
-    const { state, id } = design('features.grid');
+    const { state, id } = design();
     // The project's own copy, as Edit everywhere makes one.
     state.components[id] = { ...state.components[id], owner: 'project' };
     const theme = state.components[installComponent(state, 'content.media')];
@@ -151,7 +161,7 @@ describe('Component Studio: when editing everywhere needs it', () => {
 
 describe('Component Studio: what it shows', () => {
   it('shows the chosen option on each axis, the look being styled on its own, and the default for one gone', () => {
-    const { def } = design('features.grid');
+    const { def } = design();
     const [[axis, a]] = Object.entries(def.variantAxes!);
     const other = Object.keys(a.options).find((o) => o !== a.default)!;
     expect(studioSpec(def, NEW_STUDIO)).toEqual({ definitionId: def.id });
@@ -169,9 +179,9 @@ describe('Component Studio: what it shows', () => {
 });
 
 describe('Component Studio: the content of a real placement (#1147)', () => {
-  /** features.grid placed twice on Home (the second named) and once in the shared footer. */
+  /** The services grid placed twice on Home (the second named) and once in the shared footer. */
   function placed() {
-    const { state, id, def } = design('features.grid');
+    const { state, id, def } = design();
     const home = state.site.homePageId;
     const page = state.pages[home];
     const a = makeInstance(def);

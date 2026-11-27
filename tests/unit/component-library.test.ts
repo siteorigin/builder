@@ -9,16 +9,13 @@ import { applyOperations } from '@engine/apply';
 import { ProjectSession } from '../../src/main/project/session';
 import { keepPagesValid } from '../../src/renderer/src/lib/model';
 import { componentDocPath } from '../../src/main/project/documents';
+import { projectDesign } from './fixtures/packs';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 const home = (s: ProjectState) => s.site.homePageId;
 const page = (s: ProjectState) => ({ kind: 'page' as const, id: home(s) });
-const firstOf = (s: ProjectState, componentId: string) => {
-  const p = s.pages[home(s)];
-  return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!.definitionId;
-};
 
 /** The issue's own steps: an Exhibitor card made from a group, a second copy, and Make unique twice. */
 async function exhibitorCards() {
@@ -97,18 +94,18 @@ describe('where a library component is used (#56)', () => {
     // An ID such as "constructor" with no placements has no count.
     expect(placementCounts(s).constructor).toBeUndefined();
     const about = s.site.pageOrder.find((id) => id !== pageId)!;
+    // A project component whose design places it too.
+    s = structuredClone(s);
+    const wrapper = projectDesign(s, { componentId: 'project.wrapper', name: 'Wrapper', properties: {}, parts: { root: { nodeId: 'root', label: 'Wrapper' } }, build: (b) => b.el('root', 'section', { name: 'Wrapper' }, []) });
     const r = applyOperations(s, [
       { type: 'node.insert', owner, definitionId: def },
       { type: 'node.insert', owner: { kind: 'page', id: about }, definitionId: def },
-      { type: 'node.insert', owner: { kind: 'shell', id: 'footer' }, definitionId: def },
-      // A project component whose design places it too.
-      { type: 'component.duplicate', definitionId: firstOf(s, 'cta.banner'), name: 'Wrapper' }
+      { type: 'node.insert', owner: { kind: 'shell', id: 'footer' }, definitionId: def }
     ]);
     s = r.state;
     const again = r.results[0].nodeId as string;
-    const wrapper = s.components[r.results[3].definitionId as string];
-    wrapper.tree!.nodes.nested = { id: 'nested', kind: 'instance', definitionId: def, props: {} };
-    (wrapper.tree!.nodes[wrapper.tree!.rootIds[0]] as { children: string[] }).children.push('nested');
+    s.components[wrapper.id].tree!.nodes.nested = { id: 'nested', kind: 'instance', definitionId: def, props: {} };
+    (s.components[wrapper.id].tree!.nodes.root as { children: string[] }).children.push('nested');
     const places = placesOf(s, def);
     expect(places.map((p) => [p.owner, p.label, p.nodeIds])).toEqual([
       [{ kind: 'shell', id: 'footer' }, 'Footer', [r.results[2].nodeId]],

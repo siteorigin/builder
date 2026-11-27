@@ -10,6 +10,7 @@ import { defFile, generateProject } from '@generator/index';
 import { repeatedPartList } from '@shared/item-styles';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { relocateSource, textOfBytes } from '../../src/main/project/edited-design';
+import { HERO, withConvertibleDesigns } from './fixtures/convert-edited-designs';
 
 const FROM = 'src/lib/siteorigin/generated/hero.svelte';
 const TO = 'src/lib/siteorigin/custom/HeroCode-ab12c.svelte';
@@ -114,12 +115,12 @@ describe('a design’s file moved to the custom folder (#737)', () => {
 
 describe('placements of a converted design file (#737)', () => {
   /**
-   * The starter's hero placed with its own choices (an axis, an entrance, an anchor, a part's styles), then its file
+   * A hero built in the editor, on the starter's Home, placed with its own choices (an axis, an entrance, an anchor, a part's styles), then its file
    * converted unchanged: the site is generated as it was, but for which file the placements import.
    */
   function converted(keepLink = true) {
-    const state = createStarterState('business', 'Convert', false);
-    const hero = 'foundation.hero.split';
+    const state = withConvertibleDesigns(createStarterState('business', 'Convert', false));
+    const hero = HERO;
     const [{ node }] = instancesOf(state, hero) as Array<{ node: InstanceNode }>;
     node.variants = { ...node.variants, tone: 'inverse' };
     node.appear = 'lift';
@@ -194,9 +195,9 @@ describe('placements of a converted design file (#737)', () => {
   });
 
   it('counts a placement’s own entrance however the code reads it, when it is the only one on the site', () => {
-    const state = createStarterState('business', 'Convert', false);
+    const state = withConvertibleDesigns(createStarterState('business', 'Convert', false));
     for (const { tree } of allTrees(state)) for (const n of Object.values(tree.nodes)) if ('appear' in n) delete (n as { appear?: unknown }).appear;
-    const hero = 'foundation.hero.split';
+    const hero = HERO;
     const [{ node }] = instancesOf(state, hero) as Array<{ node: InstanceNode }>;
     node.appear = 'lift';
     expect(usesAppear(state)).toBe(true);
@@ -242,8 +243,8 @@ describe('placements of a converted design file (#737)', () => {
 
 describe('the code a design’s file becomes (#737)', () => {
   it('keeps the design’s contract, so a slot that takes the design takes it too', () => {
-    const state = createStarterState('business', 'Convert', false);
-    const hero = state.components['foundation.hero.split'];
+    const state = withConvertibleDesigns(createStarterState('business', 'Convert', false));
+    const hero = state.components[HERO];
     const made = convertEditedDesign(state, hero.id, '<p>edited</p>\n');
     const code = state.components[made.definitionId];
     expect(code).toMatchObject({ kind: 'code', owner: 'project', componentId: hero.componentId, category: hero.category, generatedFrom: hero.id });

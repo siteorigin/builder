@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { compile } from 'svelte/compiler';
 import { render } from 'svelte/server';
 import type { Component } from 'svelte';
-import type { InstanceNode, LinkNode, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, LinkNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
@@ -14,18 +14,30 @@ import { unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { linkSvelte } from '@generator/runtime-files';
 import { unlinkedButtonWarnings, unlinkedMenuLinkWarnings } from '../../src/main/export';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../../src/renderer/src/lib/unlinked';
+import { bannerDesign, heroDesign, pricingDesign, sectionDesign } from './fixtures/unlinked-buttons-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const pageNamed = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
 
-/** The Business starter with Pricing added to Home and a standalone button placed on Home. */
-function withPricing() {
+/** Place a component at the end of a page (Home unless another is given). */
+function place(s: ProjectState, def: ComponentDefinition, props: Record<string, unknown> = {}, page = home(s)): InstanceNode {
+  const node = makeInstance(def, props);
+  page.nodes[node.id] = node;
+  page.rootIds.push(node.id);
+  return node;
+}
+
+/**
+ * The Business starter with a Pricing section added to Home, none of its cards' buttons with a destination, and a
+ * standalone button placed on Home. Foundation's Pricing unless `design` asks for one made in the editor, whose cards'
+ * buttons the editor finds node by node.
+ */
+function withPricing(design = false) {
   const s = fresh();
-  const id = installComponent(s, 'pricing.plans');
-  const pricing = makeInstance(s.components[id], {});
-  home(s).nodes[pricing.id] = pricing;
-  home(s).rootIds.push(pricing.id);
+  const def = design ? pricingDesign(s) : s.components[installComponent(s, 'pricing.plans')];
+  const plans = (def.properties.plans as { default: Array<Record<string, unknown>> }).default.map((p) => ({ ...p, actionLink: { type: 'none', target: '' } }));
+  const pricing = place(s, def, { plans });
   const button: LinkNode = { id: 'n_standalone', kind: 'link', link: { type: 'none', target: '' }, label: 'Call us today', appearance: 'primary' };
   home(s).nodes[button.id] = button;
   home(s).rootIds.push(button.id);
@@ -77,7 +89,21 @@ async function renderHome(s: ProjectState, opts: { instrument?: boolean } = {}):
 /** The element that carries `text` as its whole content, or undefined. */
 const elementWith = (html: string, text: string) => new RegExp(`<(a|span)\\b[^>]*>\\s*${text}\\s*</\\1>`).exec(html)?.[0];
 /** The Pricing section and what follows it on Home (the standalone button comes last). */
-const fromPricing = (html: string) => html.slice(html.indexOf('so-foundation-pricing-plans__root'));
+const fromPricing = (html: string) => html.slice(html.indexOf('<section class="pricing '));
+
+/** The Business starter with a split hero on Home after its own sections, its buttons going to Contact and About. */
+function withHero(s = fresh()) {
+  const def = heroDesign(s);
+  const hero = place(s, def, { primaryLink: { type: 'page', target: pageNamed(s, 'Contact').id }, secondaryLink: { type: 'page', target: pageNamed(s, 'About').id } });
+  return { s, hero, heroDef: def };
+}
+
+/** A call to action banner on Home, whose design a test puts more inside, its own button going to Contact. */
+function withBanner(s = fresh()) {
+  const banner = bannerDesign(s);
+  const placed = place(s, banner, { primaryLink: { type: 'page', target: pageNamed(s, 'Contact').id } });
+  return { banner, placed };
+}
 
 describe('buttons without a destination in visitor output', () => {
   it('leaves unlinked pricing actions and a standalone button out of the exported page', async () => {
@@ -85,9 +111,9 @@ describe('buttons without a destination in visitor output', () => {
     const page = await renderHome(s);
     const html = fromPricing(page);
     // The section and every card still render, and so does the hero's working "Start a project".
-    for (const text of ['Clear packages, no surprises', 'Consultation', 'Full service', '$4,800']) expect(html).toContain(text);
+    for (const text of ['Clear packages, fixed fees', 'Consultation', 'Full service', '$4,800']) expect(html).toContain(text);
     expect(page).toMatch(/<a\b[^>]*href="\/studio\/contact\/"[^>]*>Start a project<\/a>/);
-    for (const label of ['Book a session', 'Start a project', 'Talk to us', 'Call us today']) expect(html).not.toContain(label);
+    for (const label of ['Book a visit', 'Start a project', 'Talk to us', 'Call us today']) expect(html).not.toContain(label);
     expect(page).not.toContain('so-btn--static');
     expect(page).not.toMatch(/<span\b[^>]*class="[^"]*so-btn/);
     // Nothing stands in for a button that has no anchor.
@@ -116,7 +142,7 @@ describe('buttons without a destination in visitor output', () => {
     expect(elementWith(html, 'Talk to us')).toMatch(/^<a\b[^>]*href="mailto:hello@example\.com"/);
     expect(elementWith(html, 'Call us today')).toMatch(/^<a\b[^>]*href="https:\/\/example\.com\/book"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
     // Only the card still without a destination is left out.
-    expect(html).not.toContain('Book a session');
+    expect(html).not.toContain('Book a visit');
   });
 
   it('still renders a text link without a destination as its text', async () => {
@@ -131,11 +157,13 @@ describe('buttons without a destination in visitor output', () => {
 });
 
 describe('buttons without a destination in the editor preview', () => {
-  it('shows each unlinked button flagged, selectable and not a link', async () => {
-    const { s, pricing } = withPricing();
+  it('shows each unlinked button of a design flagged, selectable and not a link', async () => {
+    const { s, pricing } = withPricing(true);
     const about = pageNamed(s, 'About');
     linkPlan(s, pricing, 1, { type: 'page', target: about.id });
-    const html = fromPricing(await renderHome(s, { instrument: true }));
+    const page = await renderHome(s, { instrument: true });
+    // The design's section and what follows it on Home (the standalone button comes last).
+    const html = page.slice(page.indexOf('so-foundation-project-pricing__root'));
     for (const label of ['Book a session', 'Talk to us', 'Call us today']) {
       const el = elementWith(html, label);
       expect(el, label).toMatch(/^<span\b/);
@@ -200,7 +228,7 @@ describe('finding buttons without a destination', () => {
   const plans = (s: ProjectState, pricing: InstanceNode) => pricing.props.plans as Array<{ id: string; actionLabel: string }>;
 
   it('names the exact pricing card fields that set and show each button', () => {
-    const { s, pricing } = withPricing();
+    const { s, pricing } = withPricing(true);
     const found = unlinkedAt(s, { kind: 'page', id: s.site.homePageId }, pricing.id);
     const ids = plans(s, pricing).map((p) => p.id);
     expect(found).toEqual(
@@ -218,9 +246,9 @@ describe('finding buttons without a destination', () => {
   });
 
   it('names a section property, and reports a standalone button as itself', () => {
-    const { s, button } = withPricing();
+    const { s, button } = withPricing(true);
     const owner = { kind: 'page' as const, id: s.site.homePageId };
-    const hero = Object.values(home(s).nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'hero.split') as InstanceNode;
+    const { hero } = withHero(s);
     hero.props.secondaryLink = { type: 'none', target: '' };
     expect(unlinkedAt(s, owner, hero.id)).toEqual([{ nodeId: hero.id, label: 'About the studio', defNodeId: 'secondary', link: { prop: 'secondaryLink' }, hide: { prop: 'secondaryLabel' } }]);
     expect(unlinkedAt(s, owner, button.id)).toEqual([{ nodeId: button.id, label: 'Call us today' }]);
@@ -238,8 +266,8 @@ describe('finding buttons without a destination', () => {
   it('never points at a placement’s own field for a button a component inside it sets', () => {
     const s = fresh();
     // The banner has its own primaryLink and primaryLabel; a hero inside its design has fields of the same names.
-    const banner = Object.values(s.components).find((d) => d.componentId === 'cta.banner')!;
-    const heroDef = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
+    const { banner } = withBanner(s);
+    const heroDef = heroDesign(s);
     const inner = makeInstance(heroDef, { primaryLabel: 'Inner go', primaryLink: { type: 'none', target: '' }, secondaryLabel: '' });
     banner.tree!.nodes[inner.id] = inner;
     (banner.tree!.nodes[banner.tree!.rootIds[0]] as { children: string[] }).children.push(inner.id);
@@ -253,8 +281,8 @@ describe('finding buttons without a destination', () => {
 
   it('follows a component inside a design back to the placement field its bindings read', () => {
     const s = fresh();
-    const banner = Object.values(s.components).find((d) => d.componentId === 'cta.banner')!;
-    const heroDef = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
+    const { banner } = withBanner(s);
+    const heroDef = heroDesign(s);
     // The inner hero's primary button takes the banner's own "inner" label and link, which nothing else reads.
     banner.properties.innerLabel = { type: 'string', label: 'Inner label', default: '' };
     banner.properties.innerLink = { type: 'link', label: 'Inner link', default: { type: 'none', target: '' } };
@@ -273,11 +301,9 @@ describe('finding buttons without a destination', () => {
   });
 
   it('offers no Hide when anything else around the button reads its label, or it carries an id', () => {
-    const s = fresh();
+    const { s, hero, heroDef } = withHero();
     const owner = { kind: 'page' as const, id: s.site.homePageId };
-    const hero = Object.values(home(s).nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'hero.split') as InstanceNode;
     hero.props.secondaryLink = { type: 'none', target: '' };
-    const heroDef = s.components[hero.definitionId];
     expect(unlinkedAt(s, owner, hero.id)[0].hide).toEqual({ prop: 'secondaryLabel' });
     // The wrapper around both buttons shows only with the secondary label: hiding would take the working primary too.
     const wrapper = Object.values(heroDef.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes('secondary'))!;
@@ -291,7 +317,7 @@ describe('finding buttons without a destination', () => {
   });
 
   it('names every list a button sits in, and offers no Hide inside a list within a list', () => {
-    const { s, pricing } = withPricing();
+    const { s, pricing } = withPricing(true);
     const def = s.components[pricing.definitionId];
     const none = { type: 'none', target: '' };
     def.properties.extras = { type: 'list', label: 'Extras', itemLabel: 'Extra', fields: { label: { type: 'string', label: 'Label', default: '' }, link: { type: 'link', label: 'Link', default: none } }, default: [] } as never;
@@ -307,15 +333,15 @@ describe('finding buttons without a destination', () => {
 
   it('offers no Hide for a button a second slot of the same name shows again', () => {
     const s = fresh();
-    const section = Object.values(s.components).find((d) => d.componentId === 'layout.section') ?? s.components[installComponent(s, 'layout.section')];
+    const section = sectionDesign(s);
     const slotNode = Object.values(section.tree!.nodes).find((n) => n.kind === 'slot')!;
     const holder = Object.values(section.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
     section.tree!.nodes['slot-again'] = { ...slotNode, id: 'slot-again' };
     holder.children.push('slot-again');
-    const banner = Object.values(s.components).find((d) => d.componentId === 'cta.banner')!;
+    const { banner } = withBanner(s);
     banner.properties.innerLabel = { type: 'string', label: 'Inner label', default: 'Again' };
     banner.properties.innerLink = { type: 'link', label: 'Inner link', default: { type: 'none', target: '' } };
-    const heroDef = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
+    const heroDef = heroDesign(s);
     const hero = makeInstance(heroDef, { primaryLabel: { $prop: 'innerLabel' }, primaryLink: { $prop: 'innerLink' }, secondaryLabel: '' });
     const holderInstance = makeInstance(section, {});
     holderInstance.slots = { [(slotNode as { slot: string }).slot]: [hero.id] };
@@ -332,7 +358,7 @@ describe('finding buttons without a destination', () => {
 
   it('walks content one child placed in two slots shows once per supplier, however deep', () => {
     const s = fresh();
-    const section = Object.values(s.components).find((d) => d.componentId === 'layout.section') ?? s.components[installComponent(s, 'layout.section')];
+    const section = sectionDesign(s);
     const slotNode = Object.values(section.tree!.nodes).find((n) => n.kind === 'slot') as { id: string; slot: string };
     const holder = Object.values(section.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
     section.tree!.nodes['slot-b'] = { ...slotNode, id: 'slot-b', slot: 'b' } as never;
@@ -355,17 +381,17 @@ describe('finding buttons without a destination', () => {
 
   it('offers no Hide for a button a slot inside a list shows more than once', () => {
     const s = fresh();
-    const section = Object.values(s.components).find((d) => d.componentId === 'layout.section') ?? s.components[installComponent(s, 'layout.section')];
+    const section = sectionDesign(s);
     const slotNode = Object.values(section.tree!.nodes).find((n) => n.kind === 'slot')!;
     const holder = Object.values(section.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
     section.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: {}, default: [{ id: 'r1' }, { id: 'r2' }] } as never;
     section.tree!.nodes['rows'] = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: [slotNode.id] };
     holder.children = holder.children.map((c) => (c === slotNode.id ? 'rows' : c));
     // The banner's design puts a section inside it, and in the section's slot a hero whose button reads the banner's fields.
-    const banner = Object.values(s.components).find((d) => d.componentId === 'cta.banner')!;
+    const { banner } = withBanner(s);
     banner.properties.innerLabel = { type: 'string', label: 'Inner label', default: 'Twice' };
     banner.properties.innerLink = { type: 'link', label: 'Inner link', default: { type: 'none', target: '' } };
-    const heroDef = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
+    const heroDef = heroDesign(s);
     const hero = makeInstance(heroDef, { primaryLabel: { $prop: 'innerLabel' }, primaryLink: { $prop: 'innerLink' }, secondaryLabel: '' });
     const holderInstance = makeInstance(section, {});
     holderInstance.slots = { [slotNode.kind === 'slot' ? slotNode.slot : 'content']: [hero.id] };
@@ -379,7 +405,7 @@ describe('finding buttons without a destination', () => {
   });
 
   it('offers Hide only for a label that clears and belongs to that one button', () => {
-    const { s, pricing } = withPricing();
+    const { s, pricing } = withPricing(true);
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     const def = s.components[pricing.definitionId];
     const action = def.tree!.nodes['plan-action'] as LinkNode;
@@ -409,7 +435,7 @@ describe('finding buttons without a destination', () => {
   });
 
   it('counts a broken page link and a rejected address as no destination, and a section link as one', () => {
-    const { s, pricing } = withPricing();
+    const { s, pricing } = withPricing(true);
     linkPlan(s, pricing, 0, { type: 'page', target: 'pg_gone' });
     linkPlan(s, pricing, 1, { type: 'url', target: 'javascript:alert(1)' });
     linkPlan(s, pricing, 2, { type: 'anchor', target: 'contact' });
@@ -419,7 +445,7 @@ describe('finding buttons without a destination', () => {
 
 describe('fixing a button without a destination', () => {
   it('hides one card’s button, or gives it a page, without touching the other cards', () => {
-    const { s: start, pricing } = withPricing();
+    const { s: start, pricing } = withPricing(true);
     const owner = { kind: 'page' as const, id: start.site.homePageId };
     const [first, second] = unlinkedAt(start, owner, pricing.id);
     let s = applyOperations(start, [hideButtonOp(owner, pricing.id, first.hide!)]).state;
@@ -436,7 +462,7 @@ describe('fixing a button without a destination', () => {
   });
 
   it('fixes a card of a placement that still shows the design’s own list', () => {
-    const { s: start, pricing } = withPricing();
+    const { s: start, pricing } = withPricing(true);
     delete pricing.props.plans;
     const owner = { kind: 'page' as const, id: start.site.homePageId };
     const [first, second] = unlinkedAt(start, owner, pricing.id);
@@ -452,9 +478,8 @@ describe('fixing a button without a destination', () => {
   });
 
   it('hides a section’s own button by clearing its label', () => {
-    const s0 = fresh();
+    const { s: s0, hero } = withHero();
     const owner = { kind: 'page' as const, id: s0.site.homePageId };
-    const hero = Object.values(home(s0).nodes).find((n) => n.kind === 'instance' && s0.components[n.definitionId]?.componentId === 'hero.split') as InstanceNode;
     const s1 = applyOperations(s0, [{ type: 'instance.setProp', owner, nodeId: hero.id, prop: 'secondaryLink', value: { type: 'none', target: '' } }]).state;
     const [found] = unlinkedAt(s1, owner, hero.id);
     const s2 = applyOperations(s1, [hideButtonOp(owner, hero.id, found.hide!)]).state;
@@ -467,12 +492,12 @@ describe('reporting buttons without a destination', () => {
   it('says visitors will not see the button', () => {
     const { s } = withPricing();
     const found = validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED');
-    expect(found.map((d) => d.message)).toEqual(expect.arrayContaining([expect.stringContaining('the “Book a session” button has no link, so visitors won’t see it')]));
+    expect(found.map((d) => d.message)).toEqual(expect.arrayContaining([expect.stringContaining('the “Book a visit” button has no link, so visitors won’t see it')]));
   });
 
   it('warns on export about each button left out, naming where it is', () => {
     expect(unlinkedButtonWarnings(fresh())).toEqual([]);
-    const { s, pricing } = withPricing();
+    const { s, pricing } = withPricing(true);
     expect(unlinkedButtonWarnings(s)).toEqual([
       '4 buttons have no link, so they were left out of the site. Choose where each one goes in the editor, or hide it:',
       'Home · Pricing: “Book a session”',
@@ -487,7 +512,7 @@ describe('reporting buttons without a destination', () => {
   });
 
   it('sums up a long list', () => {
-    const { s } = withPricing();
+    const { s } = withPricing(true);
     for (let i = 0; i < 6; i++) {
       const b: LinkNode = { id: `n_more${i}`, kind: 'link', link: { type: 'none', target: '' }, label: `More ${i}`, appearance: 'secondary' };
       home(s).nodes[b.id] = b;
@@ -573,7 +598,7 @@ describe('header menu links without a destination (#208)', () => {
   it('names one menu link once, however often a design repeats the header around it', () => {
     const s = fresh();
     const headerDef = s.components[headerOf(s).definitionId];
-    const banner = Object.values(s.components).find((d) => d.componentId === 'cta.banner')!;
+    const { banner } = withBanner(s);
     // The banner's design shows a header for each of its two rows.
     banner.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { label: { type: 'string', label: 'Label', default: '' } }, default: [{ id: 'r1', label: 'One' }, { id: 'r2', label: 'Two' }] } as never;
     const inner = makeInstance(headerDef, { links: [{ id: 'soon', label: 'Soon', link: none }] });

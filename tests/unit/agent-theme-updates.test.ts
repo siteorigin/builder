@@ -12,7 +12,6 @@ import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme } from '@catalogue/index';
-import { header as HEADER_DEF } from '@catalogue/foundation/shell';
 import { definitionHash } from '@shared/migrations';
 import { applyOperations } from '@engine/apply';
 import { themeUpdates } from '@engine/theme-updates';
@@ -25,7 +24,7 @@ import { themeUpdateChanges } from '@agent/theme-update';
 import { describeOps } from '@agent/report';
 import { ProjectSession } from '../../src/main/project/session';
 
-const HEADER = HEADER_DEF.id;
+const HEADER = getTheme('foundation').components.find((c) => c.componentId === 'shell.header')!.id;
 const current = (id: string) => getTheme('foundation').components.find((c) => c.id === id)!;
 const headerNode = (s: ProjectState) => s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
 const HERO = 'foundation.hero.split';
@@ -96,7 +95,7 @@ describe('what a newer theme version adds', () => {
     const next = structuredClone(was);
     const [prop, schema] = Object.entries(next.properties).find(([, p]) => p.type === 'enum')! as [string, Extract<(typeof next.properties)[string], { type: 'enum' }>];
     schema.options = [...schema.options, { value: 'extra', label: 'Extra choice' }];
-    next.parts = { ...next.parts, badge: { nodeId: next.tree!.rootIds[0], label: 'Badge' } };
+    next.parts = { ...next.parts, badge: { nodeId: next.parts.root.nodeId, label: 'Badge' } };
     next.slots = { ...next.slots, aside: { label: 'Aside' } };
     next.variantAxes = { ...next.variantAxes, density: { label: 'Density', default: 'roomy', options: { roomy: { label: 'Roomy' }, tight: { label: 'Tight' } } } } as never;
     // A property whose type changed is offered as new, and so is a new field of a list's items, with its choices.
@@ -272,7 +271,7 @@ describe('update_theme_component', () => {
     // A part of the hero (its heading, say) never updates the hero; the whole hero does.
     const home = s.site.homePageId;
     const heroNode = s.pages[home].rootIds.find((id) => (s.pages[home].nodes[id] as InstanceNode).definitionId === HERO)!;
-    const [partId] = Object.entries(s.components[HERO].parts).find(([, p]) => p.nodeId !== s.components[HERO].tree!.rootIds[0])!;
+    const [partId] = Object.entries(s.components[HERO].parts).find(([, p]) => p.nodeId !== s.components[HERO].parts.root.nodeId)!;
     expect(offered(big, { selection: { owner: { kind: 'page', id: home }, nodeId: heroNode, partId } })).toBeNull();
     expect(offered(small, { selection: { owner: { kind: 'page', id: home }, nodeId: heroNode } })).toEqual([HERO]);
     // A component's own design changes no placement, until the user lets the run change more.

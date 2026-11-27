@@ -23,10 +23,8 @@ import { itemStateProblems, stateValueFits } from '@engine/schema';
 import { defFile, generateManagedComponent, generateProject, keptPanels } from '@generator/index';
 import { renderedContent } from '@generator/checks';
 import { UTIL_JS } from '@generator/runtime-files';
-import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
-import { FOUNDATION_PACK } from '@catalogue/builtin';
 import { P, uiState, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
 import { executeTool, type ToolHost } from '@agent/tools';
 import { newMacroMemory } from '@agent/macros';
 import { conditionSources, describeConditions } from '../../src/renderer/src/lib/conditions';
@@ -35,7 +33,7 @@ import { studioSpec, studioStates } from '../../src/renderer/src/lib/studio';
 import { previewSpec } from '../../src/main/runtime/component-preview';
 import { ProjectSession } from '../../src/main/project/session';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
 const NONE = { type: 'none' as const, target: '' };
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -427,56 +425,6 @@ describe('the editor and Component Studio', () => {
     // The preview request crosses to the main process with the position, and only a position.
     expect(previewSpec(JSON.parse(JSON.stringify(spec)))?.states).toEqual({ active: 2 });
     expect(previewSpec({ ...spec, states: { active: -1 } })).toBeNull();
-  });
-});
-
-describe('the Foundation layouts', () => {
-  const foundation = (componentId: string) => structuredClone(FOUNDATION_PACK.components.find((d) => d.componentId === componentId)!);
-
-  it('ships Steps with pictures, one list driving its step buttons and its pictures', async () => {
-    const s = fresh();
-    const def = foundation('content.steps-media');
-    s.components[def.id] = def;
-    home(s).rootIds = [];
-    place(s, def);
-    expect(errors(s)).toEqual([]);
-    expect(def.state).toEqual({ activeStep: { type: 'item', label: 'Active step', list: 'steps', initial: 0 } });
-    const repeats = Object.values(def.tree!.nodes).filter((n) => n.kind === 'repeat');
-    expect(repeats.map((r) => (r as { list: { $prop: string } }).list.$prop)).toEqual(['steps', 'steps']);
-    expect([...keptPanels(s, def)].sort()).toEqual(['step-details', 'step-media']);
-    const trigger = def.tree!.nodes['step-trigger'] as LinkNode;
-    expect(trigger.stateAction).toEqual({ state: 'activeStep', op: 'select' });
-    const html = await renderHome(s);
-    expect(html.match(/<figure[^>]*>/g)).toHaveLength(3);
-    expect(html.match(/<button[^>]*aria-expanded="true"/g)).toHaveLength(1);
-  });
-
-  it('pins the picture and the Services grid heading below the sticky header from tablet width up, never on phones', () => {
-    const steps = foundation('content.steps-media');
-    const stage = steps.tree!.nodes['media-stage'].styles!;
-    const grid = foundation('features.grid');
-    const option = grid.variantAxes!.layout.options['sticky-split'];
-    for (const styles of [stage, option.styles!.intro]) {
-      expect(styles.base?.position).toBeUndefined();
-      for (const size of ['tablet', 'desktop'] as const) expect(styles[size]).toMatchObject({ position: 'sticky', inset: 'calc(var(--so-header-offset, 4.5rem) + 1.5rem) auto auto auto', alignSelf: 'start' });
-    }
-    expect(option.styles!.inner.tablet).toMatchObject({ layout: 'grid', gridTemplate: '1fr 1.5fr' });
-    expect(option.styles!.inner.base).toBeUndefined();
-    const s = fresh();
-    s.components[grid.id] = grid;
-    const node = place(s, grid);
-    node.variants = { layout: 'sticky-split' };
-    expect(errors(s)).toEqual([]);
-  });
-
-  it('prints pinned columns in their place, one after the other', () => {
-    const print = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media print'));
-    expect(print).toContain(":is([class$='--layout-sticky-split'], [class*='--layout-sticky-split ']):is([class$='__intro'], [class*='__intro ']):not(#so-print) { position: static !important; inset: auto !important; }");
-    expect(print).toContain(":is([class$='__steps-layout'], [class*='__steps-layout ']) > :is([class$='__steps-stage'], [class*='__steps-stage ']):not(#so-print) { order: 0 !important; }");
-    // Every browser that prints a site applies them: none of the print resets needs :has().
-    expect(print.slice(print.indexOf('What stays in view'), print.indexOf('Where the sheet has room'))).not.toContain(':has(');
-    expect(print).toContain("{ position: static !important; inset: auto !important; }");
-    expect(print).toContain("{ grid-template-columns: minmax(0, 1fr) !important; }");
   });
 });
 

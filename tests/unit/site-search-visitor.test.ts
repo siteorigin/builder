@@ -69,6 +69,7 @@ window.mountSearch = (props) => {
     '\0helper': files.get(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`)!,
     '\0index': files.get(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`)!,
     '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
+    '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!,
     '$app/state': compileModule(STATE_STUB, { filename: 'state.svelte.js', generate: 'client' }).js.code,
     '$app/paths': PATHS_STUB
   };
@@ -154,8 +155,11 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await expect(link.innerText()).resolves.toBe('Workshop commission 105');
       await expect(link.getAttribute('href')).resolves.toBe(`${BASE}/portfolio/workshop-commission-105/`);
       await expect(results(page).first().locator('.so-search__excerpt').innerText()).resolves.toContain('number 105 of the series');
-      // From the box, Tab reaches the button and then the result; Enter follows it.
+      // From the box, Tab reaches the button that clears it, the Search button and then the result; Enter follows it.
       await page.keyboard.press('Tab');
+      await expect(page.evaluate('document.activeElement.getAttribute("aria-label")')).resolves.toBe('Clear search');
+      await page.keyboard.press('Tab');
+      await expect(page.evaluate('document.activeElement.textContent.trim()')).resolves.toBe('Search');
       await page.keyboard.press('Tab');
       await expect(page.evaluate('document.activeElement.getAttribute("href")')).resolves.toBe(`${BASE}/portfolio/workshop-commission-105/`);
       await page.keyboard.press('Enter');
@@ -166,7 +170,7 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
 
   it('says what to do with an empty search and when nothing matches', async () => {
     await withSearch(async (page) => {
-      await page.getByRole('button', { name: 'Search' }).tap();
+      await page.getByRole('button', { name: 'Search', exact: true }).tap();
       await expect.poll(() => status(page).innerText()).toBe('Type a word or phrase to search for.');
       await expect(results(page).count()).resolves.toBe(0);
       await box(page).fill('commission');
@@ -234,7 +238,8 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await box(page).press('Enter');
       await expect.poll(() => results(page).count()).toBe(20);
       await expect(page.evaluate('document.documentElement.scrollWidth')).resolves.toBeLessThanOrEqual(360);
-      for (const target of [box(page), page.getByRole('button', { name: 'Search' }), results(page).first().getByRole('link')]) {
+      // The box, its Search and Clear search buttons, and a result.
+      for (const target of [box(page), page.getByRole('button', { name: 'Search', exact: true }), page.getByRole('button', { name: 'Clear search' }), results(page).first().getByRole('link')]) {
         const size = await target.boundingBox();
         expect(size!.height).toBeGreaterThanOrEqual(44);
       }

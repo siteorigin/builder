@@ -14,7 +14,7 @@ import { createStarterState } from '@catalogue/starters';
 import { makeInstance } from '@engine/install';
 import { generateProject } from '@generator/index';
 import { eq, uiState } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR as FOUNDATION } from './fixtures/packs';
 import { bundle, removeRendered, serverHtml } from './generated-site';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');

@@ -10,16 +10,26 @@ import { join } from 'node:path';
 import { chromium } from 'playwright';
 import sharp from 'sharp';
 import { afterAll, describe, expect, it } from 'vitest';
-import { BUILTIN_PACKS } from '@catalogue/builtin';
+import { getTheme } from '@catalogue/index';
 import { generateProject, pageFile } from '@generator/index';
-import { buildPack } from '../../src/main/packs/build';
+import { packFileInfo } from '../../src/main/packs/files';
 import { frameOf, inkBoundsSource, previewHtml, previewProject, renderPreviews } from '../../scripts/packs/previews';
+import { restorePacks } from './fixtures/packs';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const dirs: string[] = [];
-afterAll(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+afterAll(async () => {
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+  // Drawing thumbnails registers the pack it draws alone.
+  await restorePacks();
+});
 
-const foundation = () => buildPack(BUILTIN_PACKS.find((p) => p.id === 'foundation')!);
+/** Foundation as the app loads it, and where its font files are, as a pack build hands them to the drawing. */
+function foundation() {
+  const pack = getTheme('foundation');
+  const files = new Map(pack.fonts.flatMap((f) => f.faces).map((face) => [face.file, packFileInfo(pack.id, face.file)!.abs]));
+  return { pack, files };
+}
 
 /** The share of the thumbnail's width and height that its content covers: what differs from the corner's colour. */
 async function coverage(webp: Buffer): Promise<{ width: number; height: number }> {

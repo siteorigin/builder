@@ -17,6 +17,8 @@ import { readField } from '../../src/renderer/src/lib/held';
 import { describeOps } from '@agent/report';
 import type { EditOperation } from '@shared/ops';
 import type { GraphNode, InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types';
+import { P, prop } from '@catalogue/dsl';
+import { foundationDesign, projectDesign, type DesignSpec } from './fixtures/packs';
 
 const HELPER = `${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`;
 const INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
@@ -30,13 +32,33 @@ function withSearch(s: ProjectState = fresh()): ProjectState {
   return apply(s, [{ type: 'node.insert', owner: home(s), componentId: 'site.search' }]);
 }
 
-/** A project page with a text section, its body ending with `tail` after a long run of other words. */
-function project(s: ProjectState, n: number, tail = `Commissioned as piece ${n}.`): ProjectState {
+/** A text section built in the editor: a heading over rich text, each a property it shows. */
+const TEXT_SECTION: DesignSpec = {
+  componentId: 'project.text',
+  name: 'Text',
+  properties: { heading: P.str('Heading', 'Heading'), body: P.rich('Text', []) },
+  parts: { root: { nodeId: 'root', label: 'Text' } },
+  build: (b) => b.el('root', 'section', { name: 'Text' }, [b.text('heading', 'h2', prop('heading'), { name: 'Heading' }), b.rich('body', prop('body'), { name: 'Text' })])
+};
+
+/**
+ * A project page with a text section, its body ending with `tail` after a long run of other words. The section is
+ * one built in the editor, whose words the index reads from its design, unless `componentId` names one of the
+ * theme's.
+ */
+function project(s: ProjectState, n: number, tail = `Commissioned as piece ${n}.`, componentId?: string): ProjectState {
   const id = `pg_project${n}`;
   const filler = Array.from({ length: 60 }, (_, i) => `Oak and linen panel ${i} with a hand-rubbed finish.`).join(' ');
+  let placed: { componentId: string } | { definitionId: string };
+  if (componentId) placed = { componentId };
+  else {
+    const def = foundationDesign(TEXT_SECTION);
+    if (!s.components[def.id]) projectDesign((s = structuredClone(s)), TEXT_SECTION);
+    placed = { definitionId: def.id };
+  }
   return apply(s, [
     { type: 'page.create', pageId: id, title: `Workshop commission ${n}`, route: `/portfolio/workshop-commission-${n}/` },
-    { type: 'node.insert', owner: { kind: 'page', id }, componentId: 'content.text', props: { heading: `Commission ${n}`, body: `${filler}\n\n${tail}` } }
+    { type: 'node.insert', owner: { kind: 'page', id }, ...placed, props: { heading: `Commission ${n}`, body: `${filler}\n\n${tail}` } } as EditOperation
   ]);
 }
 
@@ -133,9 +155,9 @@ describe('site search files', () => {
 });
 
 describe('site search index', () => {
-  it('lists every page in page order with its address, title and the words it shows', () => {
+  it('lists every page in page order with its address, title and the words its theme section shows', () => {
     let s = withSearch();
-    s = project(s, 1, 'Built for the Harbour Library reading room.');
+    s = project(s, 1, 'Built for the Harbour Library reading room.', 'content.text');
     const index = buildSearchIndex(s);
     expect(index.map((e) => e.route)).toEqual(s.site.pageOrder.map((id) => s.pages[id].route));
     const entry = index.find((e) => e.route === '/portfolio/workshop-commission-1/')!;

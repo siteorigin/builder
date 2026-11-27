@@ -6,6 +6,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { frozen } from '@engine/draft';
 import { ProjectFeed, ProjectFeedReader, type ProjectChange } from '@shared/project-feed';
+import { foundationDesign } from './fixtures/packs';
 
 // What `project:changed` carries (#967): each change against the copy the editor was sent before, made back into the
 // main process's snapshot by the editor. Messages go through structuredClone as IPC does.
@@ -676,9 +677,10 @@ describe('a state rebuilt from document texts', async () => {
     const same = shareUnchanged(a, stateToDocs(a), again, stateToDocs(frozen(again)));
     expect(same.pages).toBe(a.pages);
     expect(same.collections.posts).toBe(a.collections.posts);
-    // A definition as the theme installs it in memory holds fields that are undefined, which its file leaves out: it
-    // is not the value rebuilt from that file, so it is not kept.
-    const installed = start();
+    // A managed design as its author's DSL writes it in memory holds fields that are undefined, which its file leaves
+    // out: it is not the value rebuilt from that file, so it is not kept.
+    const design = foundationDesign({ componentId: 'test.banner', name: 'Banner', properties: {}, parts: {}, build: (t) => t.el('root', 'section', {}, []) });
+    const installed = frozen({ ...start(), components: { ...start().components, [design.id]: design } });
     const fresh = reread(installed);
     const kept = shareUnchanged(installed, stateToDocs(installed), fresh, stateToDocs(frozen(fresh)));
     const id = Object.keys(installed.components).find((k) => Object.values(installed.components[k]).includes(undefined))!;

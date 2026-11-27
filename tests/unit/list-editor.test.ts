@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { placedItemId } from '../../src/engine/install';
 import type { ProjectState } from '../../src/shared/types';
 import { addLimitNote, countLabel, countText, listEditLabel, moveAnnouncement, moveFocusTarget, removeLimitNote, type ListEdit } from '../../src/renderer/src/lib/list-editor';
-import { contact } from '../../src/catalogue/foundation/conversion';
+import { getTheme } from '../../src/catalogue/index';
 
 describe('list capacity', () => {
   it('shows the maximum next to the count only when the list has one', () => {
@@ -37,6 +37,7 @@ describe('list capacity', () => {
   });
 
   it('reads the Contact details limit from its schema', () => {
+    const contact = getTheme('foundation').components.find((c) => c.componentId === 'contact.details')!;
     const list = contact.properties.items;
     expect(list.type === 'list' && list.max).toBe(8);
     if (list.type !== 'list') return;

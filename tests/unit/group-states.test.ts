@@ -11,7 +11,7 @@ import { STYLE_STATES, parseStyleScopeKey } from '@shared/types';
 import { STATE_STYLE_PROPS, flattenStates, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { enclosingGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import { createStarterState } from '@catalogue/starters';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR as FOUNDATION, projectDesign } from './fixtures/packs';
 import { P, item } from '@catalogue/dsl';
 import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
@@ -536,10 +536,18 @@ describe('the assistant', () => {
 
   it('offers them to a placement whose design holds a group, or that sits inside one', async () => {
     const s = fresh();
-    const heroId = home(s).rootIds[0];
-    const hero = home(s).nodes[heroId] as InstanceNode;
-    const def = s.components[hero.definitionId];
-    expect(def.kind).toBe('managed');
+    // A managed hero of the project's own (Foundation's sections are code), placed first on Home.
+    const def = projectDesign(s, {
+      componentId: 'project.hero',
+      name: 'Hero',
+      properties: { heading: P.str('Heading', 'Welcome') },
+      parts: { root: { nodeId: 'root', label: 'Hero' }, heading: { nodeId: 'heading', label: 'Heading' } },
+      build: (b) => b.el('root', 'section', { name: 'Hero' }, [b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading' })])
+    });
+    const hero = makeInstance(def, {}) as InstanceNode;
+    const heroId = hero.id;
+    home(s).nodes[heroId] = hero;
+    home(s).rootIds.unshift(heroId);
     expect(await offered(s, heroId)).toEqual({ states: OWN, named: false });
     // A placement of the same design inside a page group: what it shows follows that group.
     const placed = makeInstance(def, {}) as InstanceNode;

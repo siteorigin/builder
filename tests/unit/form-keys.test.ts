@@ -13,13 +13,16 @@ import type { Component } from 'svelte';
 import type { ComponentDefinition, InstanceNode, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { contactForm, formFieldKey, formKeyClashes, formKeyNote, namesFormFields, formRefusesClashes } from '@catalogue/foundation/form';
+import { formFieldKey, formKeyClashes, formKeyNote, namesFormFields, formRefusesClashes } from '@shared/form-contract';
+import { getTheme } from '@catalogue/index';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { RUNTIME_DIR, generateProject } from '@generator/index';
 import { ProjectSession } from '../../src/main/project/session';
 
+/** The contact form Foundation ships, as the app loads it. */
+const contactForm: ComponentDefinition = structuredClone(getTheme('foundation').components.find((c) => c.componentId === 'contact.form')!);
 const LEGACY: ComponentDefinition = JSON.parse(readFileSync(join(__dirname, 'fixtures/v1-project/siteorigin/components/foundation.contact.form/component.json'), 'utf8'));
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -74,7 +77,8 @@ describe('the editor computes the keys the exported form sends', () => {
     // Beside the runtime the current form imports, as in the exported site.
     mkdirSync(join(dir, 'components'));
     mkdirSync(join(dir, 'runtime'));
-    writeFileSync(join(dir, 'runtime', 'visitor-text.js'), generateProject(fresh()).get(`${RUNTIME_DIR}/visitor-text.js`)!);
+    const files = generateProject(fresh());
+    for (const name of ['util.js', 'visitor-text.js']) writeFileSync(join(dir, 'runtime', name), files.get(`${RUNTIME_DIR}/${name}`)!);
     for (const [name, def] of [['current', contactForm], ['legacy', LEGACY]] as const) {
       writeFileSync(join(dir, 'components', `${name}.js`), compile(def.source!, { filename: `${name}.svelte`, generate: 'server', runes: true }).js.code);
       forms[name] = (await import(/* @vite-ignore */ join(dir, 'components', `${name}.js`))).default;

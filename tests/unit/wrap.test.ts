@@ -6,6 +6,8 @@ import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { validateOperation } from '@shared/ops';
 import { checkAuthority, OP_REACH, type Authority } from '@agent/scope';
+import { foundationDesign, projectDesign } from './fixtures/packs';
+import { CTA, FEATURES } from './fixtures/wrap-designs';
 
 // Wrap in Stack, Row or Grid, and Ungroup (#386): one operation each, so one change and one Undo, that keeps what it
 // moves (IDs, styles, bindings) and a component's one root, measures a slot before it, and refuses what it can't do.
@@ -205,13 +207,11 @@ describe('Wrap and Ungroup in a slot with a limit', () => {
 });
 
 describe('Wrap and Ungroup in a component’s design', () => {
-  /** The Features grid as the project's own: root > inner > (intro, grid > cards (repeat) > card (li) > icon wrap, title, text, link). */
+  /** A Services grid as the project's own: root > inner > (intro, grid > cards (repeat) > card (li) > icon wrap, title, text, link). */
   function features() {
     const s = createStarterState('business', 'Test Studio', false);
-    const placed = home(s).rootIds.map((id) => home(s).nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
-    const r = apply(s, [{ type: 'component.fork', definitionId: placed.definitionId }]);
-    const id = r.results[0].definitionId as string;
-    return { s: r.state, id, own: { kind: 'component' as const, id } };
+    const id = projectDesign(s, FEATURES).id;
+    return { s, id, own: { kind: 'component' as const, id } };
   }
   const tree = (s: ProjectState, id: string) => s.components[id].tree!;
   /** The fork without its pinned-heading layout, whose styles on the heading group and the container keep them grouped. */
@@ -339,7 +339,10 @@ describe('Wrap and Ungroup in a component’s design', () => {
 describe('Ungroup on a detached component', () => {
   it('ungroups a plain detached container, but not one keeping its design’s tone, which the theme colours its content by', () => {
     let s = createStarterState('blank', 'Blank', false);
-    const placed = apply(s, [{ type: 'node.insert', newNodeId: 'n_cta', owner: page(s), componentId: 'cta.banner' }]);
+    // A theme's managed Call to action, whose tone colours its panel.
+    const cta = foundationDesign(CTA);
+    s.components[cta.id] = cta;
+    const placed = apply(s, [{ type: 'node.insert', newNodeId: 'n_cta', owner: page(s), definitionId: cta.id }]);
     s = apply(placed.state, [{ type: 'component.detachInstance', owner: page(s), nodeId: 'n_cta' }]).state;
     const nodes = home(s).nodes;
     const byNode = (design: string) => Object.values(nodes).find((n) => n.detachedFrom?.node === design)!;
@@ -373,13 +376,12 @@ describe('what an assistant run may wrap and ungroup', () => {
   it('keeps a component run inside its design, and off its root', () => {
     const st = createStarterState('business', 'Test Studio', false);
     const placed = home(st).rootIds.map((id) => home(st).nodes[id] as InstanceNode).find((n) => st.components[n.definitionId]?.componentId === 'features.grid')!;
-    const f = apply(st, [{ type: 'component.fork', definitionId: placed.definitionId }]);
-    const id = f.results[0].definitionId as string;
+    const id = projectDesign(st, FEATURES).id;
     const own = { kind: 'component' as const, id };
     const run: Authority = { kind: 'component', definitionId: id, label: 'the Features design' };
-    expect(checkAuthority(f.state, [{ type: 'node.wrap', owner: own, nodeIds: ['card-title', 'card-text'], primitive: 'stack' }], run)).toBeNull();
-    expect(checkAuthority(f.state, [{ type: 'node.wrap', owner: own, nodeIds: ['root'], primitive: 'stack' }], run)).toMatch(/root/);
-    expect(checkAuthority(f.state, [{ type: 'node.wrap', owner: own, nodeIds: ['card-title', 'n_elsewhere'], primitive: 'stack' }], run)).toMatch(/outside the Features design/);
-    expect(checkAuthority(f.state, [{ type: 'node.unwrap', owner: page(st), nodeIds: [placed.id] }], run)).toMatch(/outside the Features design/);
+    expect(checkAuthority(st, [{ type: 'node.wrap', owner: own, nodeIds: ['card-title', 'card-text'], primitive: 'stack' }], run)).toBeNull();
+    expect(checkAuthority(st, [{ type: 'node.wrap', owner: own, nodeIds: ['root'], primitive: 'stack' }], run)).toMatch(/root/);
+    expect(checkAuthority(st, [{ type: 'node.wrap', owner: own, nodeIds: ['card-title', 'n_elsewhere'], primitive: 'stack' }], run)).toMatch(/outside the Features design/);
+    expect(checkAuthority(st, [{ type: 'node.unwrap', owner: page(st), nodeIds: [placed.id] }], run)).toMatch(/outside the Features design/);
   });
 });

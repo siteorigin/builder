@@ -20,6 +20,7 @@ import { heldAsMedia } from '../../src/main/project/versions';
 import { ProjectSession } from '../../src/main/project/session';
 import { projectSummary } from '../../src/agent/context';
 import { run, seoSite } from './fixtures/seo-site';
+import { markdownDesigns } from './fixtures/llms-designs';
 
 const SECRET = 'PRIVATE-SENTINEL-7f3a';
 
@@ -27,11 +28,22 @@ const discovery = (s: ProjectState, on = true) => run(s, { type: 'site.update', 
 const files = (s: ProjectState) => generateProject(s);
 const llmsTxt = (s: ProjectState) => files(s).get('static/llms.txt');
 const discoveryFiles = (s: ProjectState) => [...files(s).keys()].filter((p) => /^static\/(llms(-full)?\.txt|(.*\/)?index\.html\.md)$/.test(p)).sort();
-const insert = (s: ProjectState, pageId: string, componentId: string, props: Record<string, unknown>) => {
-  const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, componentId, props } as never]);
+/** Place a catalogue component (by its component ID) or one of the project's own designs (by its definition ID). */
+const insert = (s: ProjectState, pageId: string, component: string, props: Record<string, unknown>) => {
+  const which = s.components[component]?.owner === 'project' ? { definitionId: component } : { componentId: component };
+  const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, ...which, props } as never]);
   return { state: r.state, nodeId: r.results[0].nodeId as string };
 };
 const postRoute = (s: ProjectState) => entryRoute(s.collections.posts, s.collections.posts.entries.en_spring)!;
+/**
+ * The SEO site with the managed designs the Markdown writer is read through. Foundation's sections are code
+ * components, whose words the writer cannot know (generator/markdown.ts), so what it makes of headings, rich text,
+ * lists, quotes, buttons, cards and feeds is shown on designs of the project's own.
+ */
+const designedSite = () => {
+  const site = seoSite();
+  return { ...site, d: markdownDesigns(site.state) };
+};
 
 describe('llms.txt', () => {
   it('lists the published, indexable pages and entries with their own descriptions, under the site’s name and summary', () => {
@@ -130,14 +142,14 @@ describe('llms.txt', () => {
   });
 
   it('writes words that look like Markdown literally in a document, and keeps a line break as a line break', () => {
-    const { state, home } = seoSite();
+    const { state, home, d } = designedSite();
     const body: RichText = [
       { type: 'p', spans: [{ text: '## Details' }] },
       { type: 'p', spans: [{ text: '>quoted' }] },
       { type: 'p', spans: [{ text: '1. First\n2) Second\n---' }] },
       { type: 'p', spans: [{ text: '12 River Lane\nTownsville' }] }
     ];
-    const s = insert(discovery(state), home, 'content.text', { heading: '', body }).state;
+    const s = insert(discovery(state), home, d.text, { heading: '', body }).state;
     const md = files(s).get('static/index.html.md')!;
     expect(md).toContain('\\## Details\n\n\\>quoted\n\n1\\. First\\\n2\\) Second\\\n\\---\n\n12 River Lane\\\nTownsville');
   });
@@ -166,22 +178,26 @@ describe('Markdown copies', () => {
     { type: 'ul', items: [[{ text: 'An apron' }], [{ text: 'Old clothes' }]] }
   ];
 
-  function richHome() {
-    const site = seoSite();
+  /**
+   * Home with a text section and questions, and Foundation's table. `release` places Foundation's own text section and
+   * FAQ; otherwise the project's designs stand in for them.
+   */
+  function richHome({ release = false } = {}) {
+    const site = designedSite();
     let s = discovery(site.state);
     const home = site.home;
-    const text = insert(s, home, 'content.text', { heading: 'How classes run', body: BODY });
+    const text = insert(s, home, release ? 'content.text' : site.d.text, { heading: 'How classes run', body: BODY });
     s = text.state;
-    s = insert(s, home, 'faq.list', { heading: 'Questions', lead: '', eyebrow: '', items: [{ id: 'q1', question: 'Do I need experience?', answer: 'No. Beginners are welcome.' }] }).state;
+    s = insert(s, home, release ? 'faq.list' : site.d.faq, { heading: 'Questions', ...(release ? { lead: '', eyebrow: '' } : {}), items: [{ id: 'q1', question: 'Do I need experience?', answer: 'No. Beginners are welcome.' }] }).state;
     s = insert(s, home, 'data.table', {
       heading: 'Timetable',
       caption: 'Weekly classes',
       table: { columns: [{ id: 'col_day', label: 'Day' }, { id: 'col_class', label: 'Class | level' }], rows: [{ id: 'row_mon', cells: { col_day: 'Monday', col_class: 'Wheel | beginners' } }, { id: 'row_any', cells: { col_class: 'Glazing' } }] }
     }).state;
-    return { s, home, services: site.services, textNode: text.nodeId };
+    return { s, home, services: site.services, textNode: text.nodeId, d: site.d };
   }
 
-  it('keeps headings, paragraphs, lists, links, tables and questions with their answers, without the header and footer', () => {
+  it('keeps a design’s headings, paragraphs, lists, links and questions with their answers, and the theme’s table, without the header and footer', () => {
     const { s } = richHome();
     const md = files(s).get('static/index.html.md')!;
     expect(md.startsWith('# Home\n\nURL: https://example.com/studio/\n\n> Pottery classes for beginners')).toBe(true);
@@ -202,11 +218,33 @@ describe('Markdown copies', () => {
     for (const words of footerWords) expect(md).not.toContain(words);
   });
 
+  it('keeps the headings, paragraphs, lists, links, tables and questions with their answers of Foundation’s sections, without the header and footer', () => {
+    // What a Foundation site's own sections say, as the app ships them.
+    const { s } = richHome({ release: true });
+    const md = files(s).get('static/index.html.md')!;
+    expect(md.startsWith('# Home\n\nURL: https://example.com/studio/\n\n> Pottery classes for beginners')).toBe(true);
+    // The page's own headings sit under its title.
+    expect(md).toContain('\n### How classes run\n');
+    expect(md).toContain('We throw, **trim** and glaze. See [our services](https://example.com/studio/services/).');
+    expect(md).toContain('#### What to bring\n\n- An apron\n- Old clothes');
+    expect(md).toContain('**Do I need experience?**\n\nNo. Beginners are welcome.');
+    expect(md).toContain('### Timetable\n\n**Weekly classes**\n\n| Day | Class \\| level |\n| --- | --- |\n| Monday | Wheel \\| beginners |\n|   | Glazing |');
+    // The shared header's menu and the footer are not the page's content.
+    const header = s.site.shell.header.rootIds.map((id) => s.site.shell.header.nodes[id] as InstanceNode)[0];
+    expect(header).toBeTruthy();
+    expect(md).not.toContain('Skip to');
+    expect(md.match(/\[Services\]/g)).toBeNull();
+    const footer = generateProject(s).get('src/lib/siteorigin/shell/Footer.svelte') ?? '';
+    const footerWords = [...s.site.shell.footer.rootIds].flatMap((id) => Object.values((s.site.shell.footer.nodes[id] as InstanceNode).props ?? {})).filter((v): v is string => typeof v === 'string' && v.length > 6);
+    expect(footer.length + footerWords.length).toBeGreaterThan(0);
+    for (const words of footerWords) expect(md).not.toContain(words);
+  });
+
   it('keeps a quote apart from the words after it in a list item, and a working button’s words when its page is not listed', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services, d } = designedSite();
     let s = discovery(run(state, { type: 'page.update', pageId: services, noindex: true }));
-    s = insert(s, home, 'testimonials.grid', { heading: 'Kind words', items: [{ id: 't1', quote: 'The best class in town.', name: 'Ana Ruiz', role: 'Student' }] }).state;
-    s = insert(s, home, 'cta.banner', { heading: 'Ready?', primaryLabel: 'See our classes', primaryLink: { type: 'page', target: services } }).state;
+    s = insert(s, home, d.testimonials, { heading: 'Kind words', items: [{ id: 't1', quote: 'The best class in town.', name: 'Ana Ruiz', role: 'Student' }] }).state;
+    s = insert(s, home, d.cta, { heading: 'Ready?', primaryLabel: 'See our classes', primaryLink: { type: 'page', target: services } }).state;
     const md = files(s).get('static/index.html.md')!;
     const item = md.slice(md.indexOf('- '), md.indexOf('Ana Ruiz') + 'Ana Ruiz'.length);
     expect(item).toMatch(/^- (> )?.*The best class in town\./);
@@ -261,9 +299,9 @@ describe('Markdown copies', () => {
   });
 
   it('keeps the words of a link to a noindex page but not where it goes, and leaves out its card', () => {
-    const { s: rich, home, services } = richHome();
+    const { s: rich, home, services, d } = richHome();
     let s = run(rich, { type: 'page.update', pageId: services, noindex: true, description: `Hidden ${SECRET}` });
-    s = insert(s, home, 'content.pages', { heading: 'Explore', items: [{ id: 'it1', pageLink: { type: 'page', target: services }, title: '', description: '' }] }).state;
+    s = insert(s, home, d.pages, { heading: 'Explore', items: [{ id: 'it1', pageLink: { type: 'page', target: services }, title: '', description: '' }] }).state;
     const md = files(s).get('static/index.html.md')!;
     expect(md).toContain('We throw, **trim** and glaze. See our services.');
     expect(md).not.toContain('/services/');
@@ -274,10 +312,10 @@ describe('Markdown copies', () => {
   });
 
   it('lists the posts and articles of news lists that agents are told of, and leaves out the rest', () => {
-    const { state, home, services } = seoSite();
+    const { state, home, services, d } = designedSite();
     let s = discovery(run(state, { type: 'page.update', pageId: services, articleDate: '2027-01-05', excerpt: `Classes ${SECRET}` } as never));
-    s = insert(s, home, 'blog.list', { heading: 'Latest posts' }).state;
-    s = insert(s, home, 'content.news', { heading: 'Studio news' }).state;
+    s = insert(s, home, d.posts, { heading: 'Latest posts' }).state;
+    s = insert(s, home, d.news, { heading: 'Studio news' }).state;
     const md = files(s).get('static/index.html.md')!;
     expect(md).toContain(`[Spring pottery classes](https://example.com/studio${postRoute(s)})`);
     expect(md).toContain(`[Services](https://example.com/studio/services/)`);

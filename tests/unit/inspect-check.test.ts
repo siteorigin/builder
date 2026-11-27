@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { projectDesign } from './fixtures/packs';
+import { contentSection } from './fixtures/inspector-workflows-designs';
 import { failedImages, missingImages, missingSections, staleImages } from '../../src/renderer/src/lib/inspect-check';
 
 /** Home with an image placed on the page, showing photo B (the page changed from photo A). */
@@ -50,8 +52,10 @@ describe('measured preview loads', () => {
   it('expects only images the page renders for certain, so an up-to-date load is never called stale', () => {
     let { state, home } = page();
     const owner = { kind: 'page' as const, id: home };
-    // A section whose content slot the component really shows, holding photo A.
-    let r = applyOperations(state, [{ type: 'node.insert', owner, componentId: 'layout.section' }]);
+    // A section built in the editor whose content slot its design really shows, holding photo A. (What a code
+    // component does with a slot cannot be read, so nothing in one is expected for certain.)
+    const design = projectDesign(state, contentSection());
+    let r = applyOperations(state, [{ type: 'node.insert', owner, definitionId: design.id }]);
     const section = (r.results[0] as { nodeId: string }).nodeId;
     r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'image' }]);
     state = applyOperations(r.state, [{ type: 'node.setContent', owner, nodeId: (r.results[0] as { nodeId: string }).nodeId, field: 'image', value: 'as_a' }]).state;

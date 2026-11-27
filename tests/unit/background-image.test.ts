@@ -11,7 +11,7 @@ import { validateOperation } from '@shared/ops';
 import type { AssetRecord, ComponentDefinition, ElementNode, ElementRef, InstanceNode, ProjectState, TextNode } from '@shared/types';
 import { canonicalStyleValue, flattenStates, partStyleControls, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR, projectDesign } from './fixtures/packs';
 import { prop } from '@catalogue/dsl';
 import { applyOperations, assetUsages } from '@engine/apply';
 import { EngineError } from '@engine/tree';
@@ -86,7 +86,7 @@ const setBg = (s: ProjectState, value: unknown, extra: Record<string, unknown> =
 /** A project design with a Tone axis, whose Dark option gives its box a photograph of its own. */
 function toned(s: ProjectState): ComponentDefinition {
   const def = {
-    ...FOUNDATION.managed({
+    ...FOUNDATION_AUTHOR.managed({
       componentId: 'project.banner',
       name: 'Banner',
       category: 'content',
@@ -536,6 +536,8 @@ describe('the stylesheet', () => {
   it('names a design’s picture in its own file, not in components.css, so a design no live page places ships none', () => {
     const s = studio();
     const def = toned(s);
+    // Foundation's sections are code components with files of their own, so the design with no picture is the project's too.
+    const plain = projectDesign(s, { componentId: 'project.note', name: 'Note', properties: {}, parts: { root: { nodeId: 'root', label: 'Box' } }, build: (b) => b.el('root', 'div', { name: 'Box' }, []) });
     const files = generateProject(s);
     const shared = generateComponentsCss(s);
     expect(shared).not.toContain('url(');
@@ -554,7 +556,7 @@ describe('the stylesheet', () => {
     expect(compiled.css?.code).toMatch(new RegExp(`:root \\{\\s*${v}: url\\("/assets/harbour-1a2b3c4d\\.jpg"\\);`));
     expect(compiled.warnings).toEqual([]);
     // A design with no picture keeps its file as it was.
-    const plain = Object.values(s.components).find((d) => d.kind === 'managed' && d.id !== def.id)!;
+    expect(files.get(defFile(plain))).toBeDefined();
     expect(files.get(defFile(plain))).not.toContain('<style>');
   });
 });

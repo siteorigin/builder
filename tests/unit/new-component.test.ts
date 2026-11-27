@@ -6,7 +6,7 @@ import type { ComponentDefinition, ElementNode, InstanceNode, ProjectState } fro
 import { newId } from '@shared/ids';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { createStarterState } from '@catalogue/starters';
-import { catalogueComponent, getTheme } from '@catalogue/index';
+import { getTheme } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
@@ -14,6 +14,7 @@ import { componentStructure, STRUCTURE_CHARS } from '@agent/context';
 import { executeTool, searchProjectComponents, serializeResult } from '@agent/tools';
 import type { ToolSuccessResult } from '@agent/result';
 import { ProjectSession } from '../../src/main/project/session';
+import { servicesGrid } from './fixtures/new-component-designs';
 import { componentRequest, componentRequestContext, newComponentPlace, startBlankOps } from '../../src/renderer/src/lib/new-component';
 
 const dirs: string[] = [];
@@ -143,7 +144,9 @@ describe('read_component with structure (#172)', () => {
 
   it('shows a theme design as stored: its nodes, bindings to properties and list items, parts, screen-size rules and every token it uses', async () => {
     const s = createStarterState('blank', 'Expo', false);
-    const grid = catalogueComponent('foundation', 'features.grid')!;
+    // Foundation's own grid is code: a managed design of the theme's, installed in the project, is read by its ID.
+    const grid = servicesGrid();
+    s.components[grid.id] = grid;
     const out = await read(s, { componentId: 'features.grid', structure: true });
     // The contract comes with it.
     expect(Object.keys(out.properties)).toEqual(expect.arrayContaining(['heading', 'items']));
@@ -189,7 +192,7 @@ describe('read_component with structure (#172)', () => {
       expect(JSON.parse(serializeResult(first)).truncated, c.componentId).toBeUndefined();
     }
     // A long design: more nodes than one read holds, and a contract long enough to leave its first part less room.
-    const long = structuredClone(catalogueComponent('foundation', 'features.grid')!);
+    const long = servicesGrid();
     long.id = 'proj.long-abcde';
     long.owner = 'project';
     for (let p = 0; p < 4; p++) long.properties[`choice${p}`] = { type: 'enum', label: `Choice ${p}`, default: 'v0', options: Array.from({ length: 40 }, (_, k) => ({ value: `v${k}-${'x'.repeat(50)}`, label: `Option ${k}` })) };
@@ -221,7 +224,7 @@ describe('read_component with structure (#172)', () => {
 
   it('reads the design alone when its contract and its first node would not fit one result together', async () => {
     const s = createStarterState('blank', 'Expo', false);
-    const big = structuredClone(catalogueComponent('foundation', 'features.grid')!);
+    const big = servicesGrid();
     big.id = 'proj.big-abcde';
     big.owner = 'project';
     for (let p = 0; p < 10; p++) big.properties[`choice${p}`] = { type: 'enum', label: `Choice ${p}`, default: 'v0', options: Array.from({ length: 40 }, (_, k) => ({ value: `v${k}-${'x'.repeat(50)}`, label: `Option ${k}` })) };
@@ -242,7 +245,7 @@ describe('read_component with structure (#172)', () => {
 
   it('lists the first hundred children of a container of thousands, so every read stays whole and goes on', async () => {
     const s = createStarterState('blank', 'Expo', false);
-    const wide = structuredClone(catalogueComponent('foundation', 'features.grid')!);
+    const wide = servicesGrid();
     wide.id = 'proj.wide-abcde';
     wide.owner = 'project';
     const root = wide.tree!.nodes[wide.tree!.rootIds[0]] as ElementNode;

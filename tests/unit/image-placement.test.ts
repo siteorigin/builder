@@ -584,9 +584,10 @@ describe('placing a library image from Assets (issue #13)', () => {
 
   it('places it beside the component when a picture inside it is selected, and on the page when the header is', async () => {
     const { owner, page, gallery, item, galleryName } = await library();
+    // The Gallery is code: a picture in it is selected as its part.
     const def = session!.state.components[(page().nodes[gallery] as InstanceNode).definitionId];
-    const picture = Object.values(def.tree!.nodes).find((n) => n.kind === 'image')!;
-    store.setState({ selection: { owner, instancePath: [gallery], nodeId: picture.id, itemPath: [item] } });
+    const [partId, picture] = Object.entries(def.parts).find(([id]) => id === 'image')!;
+    store.setState({ selection: { owner, instancePath: [gallery], nodeId: picture.nodeId, partId, itemPath: [item] } });
     const inGallery = actions.imagePlacement();
     expect(inGallery.where).toEqual({ lead: 'in a new section after', target: galleryName, node: true });
     expect(await actions.placeAsset(nook.id, inGallery.key!)).toBe(true);
@@ -966,8 +967,22 @@ describe('placing a library image from Assets (issue #13)', () => {
 
   it('puts the image in the slot a component’s design shows, not one it leaves out', async () => {
     const { owner, page } = await library();
-    const section = (await write([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }])).results![0].nodeId as string;
-    const forked = (await write([{ type: 'component.fork', definitionId: (page().nodes[section] as InstanceNode).definitionId }])).results![0].definitionId as string;
+    // A section of the project's own design, whose slot is a node of it (Foundation's Section is code).
+    const made = await write([
+      {
+        type: 'component.upsert',
+        name: 'Panel',
+        properties: {},
+        nodes: [
+          { kind: 'element', id: 'root', tag: 'section', children: ['inner'] },
+          { kind: 'element', id: 'inner', tag: 'div', children: ['content'] },
+          { kind: 'slot', id: 'content', slot: 'content' }
+        ],
+        slots: { content: { label: 'Content' } }
+      } as EditOperation
+    ]);
+    const forked = made.results![0].definitionId as string;
+    const section = (await write([{ type: 'node.insert', owner, parentId: null, definitionId: forked }])).results![0].nodeId as string;
     const design: OwnerRef = { kind: 'component', id: forked };
     const tree = () => session!.state.components[forked].tree!;
     const contentSlot = Object.values(tree().nodes).find((n) => n.kind === 'slot')!;

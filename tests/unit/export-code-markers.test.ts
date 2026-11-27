@@ -66,7 +66,7 @@ afterEach(async () => {
 });
 afterAll(() => removeRendered());
 
-const MARKER = 'data-so-part="inner"';
+const MARKER = 'data-so-part="body"';
 
 /** A project whose Home places the theme's contact form, its code marking an element as the editor's preview does. */
 async function projectWithThemeForm(webmcp: boolean) {
@@ -75,8 +75,8 @@ async function projectWithThemeForm(webmcp: boolean) {
   state = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: state.site.homePageId }, componentId: 'contact.form' }, ...(webmcp ? [{ type: 'site.update' as const, webmcp: true }] : [])]).state;
   const form = Object.values(state.components).find((d) => d.componentId === 'contact.form')!;
   expect(form).toMatchObject({ kind: 'code', owner: 'theme' });
-  expect(form.source).toContain('<div class="so-form__inner">');
-  form.source = form.source!.replace('<div class="so-form__inner">', `<div class="so-form__inner" ${MARKER}>`);
+  expect(form.source).toContain('<div class="so-form__body">');
+  form.source = form.source!.replace('<div class="so-form__body">', `<div class="so-form__body" ${MARKER}>`);
   const dir = temp('project');
   await (await ProjectSession.create(dir, state)).close();
   const c = new Controller(() => null);
@@ -100,7 +100,7 @@ describe('a theme code component’s editor markers', () => {
       expect(r.message).not.toMatch(/Editor-only/);
       expect(r.ok).toBe(true);
       const html = readFileSync(join(r.path!, 'index.html'), 'utf8');
-      expect(html).toContain('so-form__inner');
+      expect(html).toContain('so-form__body');
       expect(html).not.toContain('data-so-part');
       if (webmcp) expect(html).toContain('toolname=');
       for (const f of files) expect(readFileSync(join(dir, f), 'utf8')).toContain(MARKER);
@@ -113,7 +113,7 @@ describe('a theme code component’s editor markers', () => {
       expect(r.ok).toBe(true);
       for (const f of files) {
         const copied = readFileSync(join(out, f), 'utf8');
-        expect(copied).toContain('class="so-form__inner"');
+        expect(copied).toContain('class="so-form__body"');
         expect(copied).not.toContain('data-so-part');
       }
       if (webmcp) expect(readFileSync(join(out, files[1]), 'utf8')).toContain('toolname=');
@@ -122,7 +122,7 @@ describe('a theme code component’s editor markers', () => {
       const manifest = JSON.parse(readFileSync(join(out, 'siteorigin/generated-manifest.json'), 'utf8')) as { files: Record<string, string> };
       for (const f of files) expect(manifest.files[f]).toBe(sha(readFileSync(join(out, f))));
       // The theme's canonical code keeps the marker, for the copy to write back when it is opened.
-      expect(readFileSync(join(out, componentDocPath(form)), 'utf8')).toContain('data-so-part=\\"inner\\"');
+      expect(readFileSync(join(out, componentDocPath(form)), 'utf8')).toContain('data-so-part=\\"body\\"');
       for (const f of files) expect(readFileSync(join(dir, f), 'utf8')).toContain(MARKER);
     });
   }

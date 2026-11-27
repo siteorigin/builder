@@ -10,18 +10,19 @@ import sharp from 'sharp';
 import type { ComponentDefinition } from '@shared/types';
 import { BUNDLED_PACK_IDS, type AuthoredPack, type PackManifest } from '@catalogue/pack';
 import { createPack } from '@catalogue/dsl';
-import { FOUNDATION_ALT_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
-import { buildPack, fileSource, registerBuiltinPacks, writeRelease } from '../../src/main/packs/build';
+import { builtinFont } from '@catalogue/builtin-fonts';
+import { buildPack, fileSource, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir, loadPacks, type PackRoot } from '../../src/main/packs/loader';
 import { readPackFile, registerPackFiles } from '../../src/main/packs/files';
 import { loadInstalledPacks, packPreview } from '../../src/main/packs/installed';
-import { defaultTheme, findTheme, registerPacks } from '@catalogue/index';
+import { defaultTheme, findTheme, getTheme, registerPacks } from '@catalogue/index';
 import { sha } from '../../src/main/project/fsutil';
+import { ROOT, metaOf, restorePacks } from './fixtures/packs';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 // Some tests load packs the way the app does, which replaces the registered packs.
-afterAll(() => registerBuiltinPacks());
+afterAll(() => restorePacks());
 
 const tmp = () => {
   const d = mkdtempSync(join(tmpdir(), 'so-packs-'));
@@ -29,21 +30,51 @@ const tmp = () => {
   return d;
 };
 
-/** A managed stand-in for a code component: the same contract, drawn from data. */
+type Nodes = NonNullable<ComponentDefinition['tree']>['nodes'];
+
+/**
+ * A managed stand-in for a code component: the same contract, drawn from data, with an element for each of its parts,
+ * a place for each of its slots, and a line of text and a button for the refusals below to change. The carousel's
+ * slides are a list marked as a carousel, each with its picture and caption, as a managed carousel draws them.
+ */
 const asManaged = (c: ComponentDefinition): ComponentDefinition => {
   const { source: _source, ...rest } = c;
   void _source;
-  return { ...rest, kind: 'managed', tree: { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'div', children: [] } } } };
+  const own: Nodes =
+    c.componentId === 'media.carousel'
+      ? {
+          track: { id: 'track', kind: 'element', tag: 'ul', carousel: true, children: ['slides'] },
+          slides: { id: 'slides', kind: 'repeat', list: { $prop: 'slides' }, children: ['slide'] },
+          slide: { id: 'slide', kind: 'element', tag: 'li', children: ['image', 'caption'] },
+          image: { id: 'image', kind: 'image', image: { $item: 'image' } },
+          caption: { id: 'caption', kind: 'text', tag: 'figcaption', text: { $item: 'caption' } }
+        }
+      : {};
+  const inner = [...new Set(Object.values(c.parts).map((p) => p.nodeId))].filter((id) => id !== 'root' && !(id in own));
+  const slots = Object.keys(c.slots ?? {});
+  const nodes: Nodes = {
+    root: { id: 'root', kind: 'element', tag: 'div', children: [...inner, ...slots.map((s) => `slot-${s}`), ...(c.componentId === 'media.carousel' ? ['track'] : []), 'say', 'go'] },
+    ...Object.fromEntries(inner.map((id) => [id, { id, kind: 'element', tag: 'div', children: [] }])),
+    ...Object.fromEntries(slots.map((s) => [`slot-${s}`, { id: `slot-${s}`, kind: 'slot', slot: s }])),
+    ...own,
+    say: { id: 'say', kind: 'text', tag: 'p', text: 'Hello' },
+    go: { id: 'go', kind: 'link', link: { type: 'none', target: '' }, label: 'Go', appearance: 'primary' }
+  };
+  return { ...rest, kind: 'managed', tree: { rootIds: ['root'], nodes } };
 };
 
 /**
- * A third-party pack: Foundation's components under another identity, with one font. `reuse` keeps Foundation's
- * own code components as they are; otherwise the pack brings data only.
+ * A third-party pack: Foundation's components, as the app loads them, under another identity, with one font. `reuse`
+ * keeps Foundation's own code components as they are; otherwise the pack brings data only.
  */
 function studio(id = 'studio', reuse = false): AuthoredPack {
-  const { components, fonts, ...meta } = FOUNDATION_PACK;
-  const author = createPack({ ...meta, id, name: 'Studio', version: '1.0.0', license: 'MIT', fonts: fonts.filter((f) => f.name === 'Lora') });
-  return author.define(components.map((c) => author.adopt(c.kind === 'code' && !reuse ? asManaged(c) : c)));
+  const foundation = getTheme('foundation');
+  const author = createPack(metaOf(foundation, { id, name: 'Studio', version: '1.0.0', license: 'MIT', devOnly: undefined, fonts: [builtinFont('Lora')] }));
+  return author.define(foundation.components.map((c) => author.adopt(c.kind === 'code' && !reuse ? asManaged(c) : c)));
+}
+/** Copy a release the app ships (Foundation, or the development fixture) into `root`, as it is committed. */
+function shipped(root: string, packId: 'foundation' | 'foundation-alt'): void {
+  cpSync(join(ROOT, 'resources', packId === 'foundation' ? 'packs' : 'packs-dev', packId), join(root, packId), { recursive: true });
 }
 /** Make a component of a release a code component with this source. */
 const asCode = (m: PackManifest, i: number, source: string) => {
@@ -400,29 +431,24 @@ describe('loading every installed pack', () => {
 
   it('loads the packs the app ships in their own order, not by name, so Foundation stays the default (#390)', async () => {
     const bundled = tmp();
-    {
-      const { pack, files } = buildPack(FOUNDATION_PACK);
-      writeRelease(join(bundled, pack.id), pack, files);
-    }
+    shipped(bundled, 'foundation');
     // A folder the list does not name comes after the ones it does.
     const { pack, files } = buildPack(studio('aardvark'));
     writeRelease(join(bundled, 'aardvark'), pack, files);
     // The development fixtures' folder follows, as packaged builds list it.
     const fixtures = tmp();
-    const alt = buildPack(FOUNDATION_ALT_PACK);
-    writeRelease(join(fixtures, 'foundation-alt'), alt.pack, alt.files);
+    shipped(fixtures, 'foundation-alt');
     const { packs, refused } = await loadPacks([{ dir: bundled, source: 'bundled' }, { dir: fixtures, source: 'bundled' }]);
     expect(refused).toEqual([]);
     expect(packs.map((p) => p.pack.id)).toEqual(['foundation', 'aardvark', 'foundation-alt']);
     registerPacks(packs.map((p) => p.pack));
     expect(defaultTheme().id).toBe('foundation');
-    registerBuiltinPacks();
+    await restorePacks();
   });
 
   it("lets an installed pack reuse the app's own code unchanged, and only then", async () => {
     const bundled = tmp();
-    const { pack, files } = buildPack(FOUNDATION_PACK);
-    writeRelease(join(bundled, 'foundation'), pack, files);
+    shipped(bundled, 'foundation');
     const mine = tmp();
     const reuses = await release(mine, studio('atelier', true));
     const loaded = await loadPacks([{ dir: bundled, source: 'bundled' }, user(mine)]);
@@ -434,8 +460,7 @@ describe('loading every installed pack', () => {
 
   it("refuses an installed pack that reuses the app's code under properties the code does not take", async () => {
     const bundled = tmp();
-    const { pack, files } = buildPack(FOUNDATION_PACK);
-    writeRelease(join(bundled, 'foundation'), pack, files);
+    shipped(bundled, 'foundation');
     const mine = tmp();
     const reuses = await release(mine, studio('atelier', true));
     edit(reuses, (m) => {

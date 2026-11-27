@@ -5,8 +5,9 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { makeInstance } from '@engine/install';
 import { findParent } from '@engine/tree';
-import { P, item, prop, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { P, item, prop } from '@catalogue/dsl';
+import { projectDesign, type DesignSpec } from './fixtures/packs';
+import { GALLERY, SPLIT_HERO, TEAM } from './fixtures/image-drop-designs';
 import { showsWithSoImage } from '@generator/checks';
 import { aimKey, assetAim, imageDropOps, imageDropTargets, resolveImageDrop, showsFile, type ImageTarget, type PointedAt } from '../../src/renderer/src/lib/image-drop';
 import type { InsertAim } from '../../src/renderer/src/lib/insert-drop';
@@ -34,10 +35,16 @@ const asset = (id: string, alt: string): AssetRecord => ({
 const nook = asset('img_nook', 'A reading corner with an armchair');
 const studio = asset('img_studio', 'The studio at sunrise');
 
-/** Home with an empty Split hero, a Team of three with no portraits yet, and a Gallery of two pictures of the nook. */
+/**
+ * Home with an empty Split hero, a Team of three with no portraits yet, and a Gallery of two pictures of the nook:
+ * managed designs of the project's own (Foundation's sections are code components), beside Foundation's header.
+ */
 function site() {
   let state: ProjectState = createStarterState('blank', 'Studio', false);
   const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
+  const heroId = projectDesign(state, SPLIT_HERO).id;
+  const teamId = projectDesign(state, TEAM).id;
+  const galleryId = projectDesign(state, GALLERY).id;
   const step = (ops: EditOperation[]) => {
     const out = applyOperations(state, ops);
     state = out.state;
@@ -45,9 +52,9 @@ function site() {
   };
   step([{ type: 'asset.add', asset: nook }, { type: 'asset.add', asset: studio }]);
   const [hero, team, gallery] = step([
-    { type: 'node.insert', owner, parentId: null, componentId: 'hero.split' },
-    { type: 'node.insert', owner, parentId: null, componentId: 'team.grid' },
-    { type: 'node.insert', owner, parentId: null, componentId: 'media.gallery' }
+    { type: 'node.insert', owner, parentId: null, definitionId: heroId },
+    { type: 'node.insert', owner, parentId: null, definitionId: teamId },
+    { type: 'node.insert', owner, parentId: null, definitionId: galleryId }
   ]);
   step([
     {
@@ -64,7 +71,7 @@ function site() {
   const node = (id: string) => state.pages[owner.id].nodes[id] as InstanceNode;
   const people = () => (node(team).props.people as Array<{ id: string; name: string; portrait: ImageValue }>).map((p) => p.id);
   const header = state.site.shell.header.rootIds[0];
-  return { get state() { return state; }, set state(s) { state = s; }, owner, hero, team, gallery, node, people, header, step };
+  return { get state() { return state; }, set state(s) { state = s; }, owner, hero, heroId, team, gallery, node, people, header, step };
 }
 
 /** The chain the page sends for a point on a design's node: that node's element and every one of the design's around it. */
@@ -88,10 +95,8 @@ const pick = (state: ProjectState, targets: ImageTarget[], at: BridgeDesc[], pic
 const headingOf = (state: ProjectState, placement: InstanceNode) => Object.values(state.components[placement.definitionId].tree!.nodes).find((n) => n.kind === 'text' && n.name === 'Heading')!;
 
 /** A project component built with the catalogue helpers, installed into the project. */
-function addDef(state: ProjectState, spec: Omit<ComponentSpec, 'category' | 'tags' | 'icon' | 'description'>): ComponentDefinition {
-  const def = { ...FOUNDATION.managed({ category: 'content', tags: [], icon: 'sparkles', description: '', ...spec }), owner: 'project' as const };
-  state.components[def.id] = def;
-  return def;
+function addDef(state: ProjectState, spec: DesignSpec): ComponentDefinition {
+  return projectDesign(state, { icon: 'sparkles', ...spec });
 }
 
 describe('the image a drop changes (#505)', () => {
@@ -113,7 +118,7 @@ describe('the image a drop changes (#505)', () => {
   it('replaces a chosen image for that one use, with the new image’s suggested alt text', () => {
     const s = site();
     // A second Split hero shows the same picture.
-    const [other] = s.step([{ type: 'node.insert', owner: s.owner, parentId: null, componentId: 'hero.split' }]);
+    const [other] = s.step([{ type: 'node.insert', owner: s.owner, parentId: null, definitionId: s.heroId }]);
     s.step([
       { type: 'instance.setProp', owner: s.owner, nodeId: s.hero, prop: 'image', value: { assetId: nook.id, alt: 'My own words' } },
       { type: 'instance.setProp', owner: s.owner, nodeId: other, prop: 'image', value: { assetId: nook.id, alt: 'Other words' } }

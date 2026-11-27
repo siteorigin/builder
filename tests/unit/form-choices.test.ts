@@ -10,7 +10,8 @@ import type { ChoiceOption, ComponentDefinition, InstanceNode, ListItem, Project
 import type { EditOperation } from '@shared/ops';
 import { definitionHash } from '@shared/migrations';
 import { createStarterState } from '@catalogue/starters';
-import { contactForm, formFieldKey, formFieldSettingsHidden, formRefusesUnchoosable, formUnchoosable, offersFormChoices } from '@catalogue/foundation/form';
+import { getTheme } from '@catalogue/index';
+import { formFieldKey, formFieldSettingsHidden, formRefusesUnchoosable, formUnchoosable, offersFormChoices } from '@shared/form-contract';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { themeUpdates } from '@engine/theme-updates';
@@ -21,6 +22,8 @@ import { generateProject } from '@generator/index';
 import { renderedContent } from '@generator/checks';
 import { applyChoiceAction, staleRename } from '../../src/renderer/src/lib/choices';
 
+/** Foundation's contact form as the app loads it. */
+const contactForm = getTheme('foundation').components.find((c) => c.componentId === 'contact.form')!;
 const LEGACY: ComponentDefinition = JSON.parse(readFileSync(join(__dirname, 'fixtures/v1-project/siteorigin/components/foundation.contact.form/component.json'), 'utf8'));
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];

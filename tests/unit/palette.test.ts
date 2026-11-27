@@ -208,7 +208,8 @@ describe('the palette follows the brand (#357)', () => {
     const tokens = getTheme('foundation').tokens.filter((t) => t.id !== 'color.focus') as TokenDef[];
     const h = harmonizePalette({ brand: '#1f5a4c', mood: 'neutral', tokens, pairs: [] });
     expect(Object.keys(h.values)).not.toContain('color.focus');
-    expect(Object.keys(h.values)).toHaveLength(PALETTE_ROLES.length - 1);
+    // Every role the theme's tokens name, and no other.
+    expect(Object.keys(h.values).sort()).toEqual(PALETTE_ROLES.filter((r) => tokens.some((t) => t.id === r)).sort());
   });
 
   it('reports a pair of a theme of its own that no palette can make readable, without moving the brand for it', () => {

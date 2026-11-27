@@ -3,7 +3,7 @@ import type { InstanceNode, ListItem, ListProp, ProjectState } from '@shared/typ
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme, listThemes, registerPacks } from '@catalogue/index';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { applyOperations } from '@engine/apply';
 import { RUNTIME_DIR, STYLES_DIR, defFile, effectiveTokens, generateProject, packFileCopies, pageFile } from '@generator/index';
 import { derived } from '@generator/cache';
@@ -15,6 +15,8 @@ import { usedIcons } from '@generator/runtime-files';
 import * as seoMetadata from '@generator/seo-metadata';
 import { sameValue } from '@shared/same';
 import { withPublished } from '@shared/published';
+import { P, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 /** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
 const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
@@ -25,10 +27,22 @@ const firstInstance = (s: ProjectState, pageId: string, propType = 'string') =>
   Object.values(s.pages[pageId].nodes).find((n) => n.kind === 'instance' && Object.values(s.components[n.definitionId]?.properties ?? {}).some((p) => p.type === propType)) as InstanceNode;
 const propOf = (s: ProjectState, n: InstanceNode, propType = 'string') => Object.entries(s.components[n.definitionId].properties).find(([, p]) => p.type === propType)![0];
 
-/** A 21-page site: the business starter, fifteen more service pages, a projects index listing two project pages, and a code component. */
+/**
+ * A 21-page site: the business starter, fifteen more service pages, a projects index listing two project pages, a
+ * code component, and a managed design of the project's own on About and its copies (Foundation's sections are code,
+ * so this is the design whose tree a definition edit changes).
+ */
 function multiPageSite() {
   let s = createStarterState('business', 'Incremental', false);
   const [home, about, contact] = s.site.pageOrder;
+  const note = projectDesign(s, {
+    componentId: 'project.note',
+    name: 'Note',
+    properties: { heading: P.str('Heading', 'A note'), body: P.str('Body', 'Kept short.') },
+    parts: { root: { nodeId: 'root', label: 'Note' } },
+    build: (b) => b.el('root', 'section', {}, [b.el('inner', 'div', {}, [b.text('heading', 'h2', prop('heading')), b.text('body', 'p', prop('body'))])])
+  });
+  s = apply(s, { type: 'node.insert', owner: page(about), definitionId: note.id } as EditOperation);
   for (let i = 0; i < 15; i++) s = apply(s, { type: 'page.duplicate', pageId: i % 2 ? about : contact, title: `Service ${i}` });
   s = apply(
     s,
@@ -50,7 +64,7 @@ function multiPageSite() {
   s = coded.state;
   const codeId = coded.results[0].definitionId as string;
   s = apply(s, { type: 'node.insert', owner: page(contact), definitionId: codeId } as EditOperation);
-  return { s, home, about, contact, listId: listed.results[0].nodeId as string, codeId };
+  return { s, home, about, contact, listId: listed.results[0].nodeId as string, codeId, noteId: note.id };
 }
 
 /** Runs both kinds of generation through `cache`, checks each against a full run, and says what each had to make. */
@@ -66,7 +80,7 @@ function check(state: ProjectState, cache: GenerationCache) {
 
 describe('incremental generation (#183)', () => {
   it('makes again only what an edit reaches, and the same bytes as a full run', () => {
-    const { s: start, home, about, contact, codeId } = multiPageSite();
+    const { s: start, home, about, contact, codeId, noteId } = multiPageSite();
     expect(start.site.pageOrder.length).toBeGreaterThanOrEqual(20);
     const cache = new GenerationCache();
     let s = start;
@@ -115,11 +129,11 @@ describe('incremental generation (#183)', () => {
     s = apply(s, { type: 'token.set', tokenId: 'color.brand', value: '#0b6e4f' });
     expect(check(s, cache).clean).toContain('tokens.css');
 
-    // A component definition: its file and stylesheet, and the pages that place it.
-    const forked = applyOperations(s, [{ type: 'component.fork', definitionId: inst.definitionId }]);
-    s = forked.state;
+    // A component definition: its file and stylesheet, and the pages that place it. A theme section copied into the
+    // project, then a style in the tree of the project's own design.
+    s = applyOperations(s, [{ type: 'component.fork', definitionId: inst.definitionId }]).state;
     check(s, cache);
-    const def = s.components[forked.results[0].definitionId as string];
+    const def = s.components[noteId];
     s = apply(s, { type: 'node.setStyle', owner: { kind: 'component', id: def.id }, nodeId: def.tree!.rootIds[0], scope: 'base', property: 'paddingBlock', value: '40px' });
     made = check(s, cache);
     expect(made.clean).toEqual(expect.arrayContaining(['components.css']));

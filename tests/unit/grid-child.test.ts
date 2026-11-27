@@ -1,16 +1,23 @@
 // Column span and Row span show in the Layout group itself when the styled element sits directly in a grid (#666):
 // which box that is, as the site renders it, and which style rows the Inspector then shows with every group closed.
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ComponentDefinition, ElementNode, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { STYLE_PROPS, STYLE_PROP_MAP, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { designGridRef, isGridChild, styleRowGroups, withGridChildProps } from '../../src/renderer/src/lib/grid-child';
 import { captureStyle, planStylePaste } from '../../src/renderer/src/lib/style-copy';
+import { restorePacks } from './fixtures/packs';
+import { registerManaged } from './fixtures/component-contract-designs';
 
 vi.stubGlobal('window', { builder: { project: { saveLocalState: async () => {} }, ai: { stop: async () => {} }, platform: 'darwin' } });
 
 type Insert = Record<string, unknown>;
+
+// Which box is a grid item is read through a design's tree, so the Section and the Services grid inserted here are the
+// managed designs of their contracts (fixtures/component-contract-designs), registered as Foundation's.
+beforeAll(() => registerManaged('layout.section', 'features.grid'));
+afterAll(() => restorePacks());
 
 /** A blank site's home page with one Section, and helpers to build inside it. */
 function site() {

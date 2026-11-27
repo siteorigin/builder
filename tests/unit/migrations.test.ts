@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
@@ -13,14 +13,14 @@ import { themeUpdates } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { getTheme } from '@catalogue/index';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR, foundationDesign } from './fixtures/packs';
 import { installComponent, makeInstance } from '@engine/install';
 import { examplesFor } from '@agent/examples';
 import { readProject, readState } from '../../src/main/project/documents';
 import { ProjectSession } from '../../src/main/project/session';
 import { sha, toJson } from '../../src/main/project/fsutil';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
 const FIXTURE = join(__dirname, 'fixtures/v1-project');
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -852,9 +852,23 @@ describe('theme component updates', () => {
     const SECTION = 'foundation.layout.section';
     const theme = getTheme('foundation');
     const at = theme.components.findIndex((c) => c.id === SECTION);
-    const shipped = theme.components[at];
-    afterEach(() => {
+    const released = theme.components[at];
+    // Foundation's Section is a code component, which has no slot node a new version could move: the theme here ships
+    // a managed Section in its place, a band around its one content slot.
+    const shipped = foundationDesign({
+      componentId: 'layout.section',
+      name: 'Section',
+      category: 'layout',
+      properties: {},
+      slots: { content: { label: 'Content' } },
+      parts: { root: { nodeId: 'root', label: 'Section' }, container: { nodeId: 'inner', label: 'Container' } },
+      build: (b) => b.el('root', 'section', { name: 'Section' }, [b.el('inner', 'div', { name: 'Container' }, [b.slot('content-slot', 'content', { name: 'Content' })])])
+    });
+    beforeEach(() => {
       theme.components[at] = shipped;
+    });
+    afterEach(() => {
+      theme.components[at] = released;
     });
     const rows = (defaultRows: Array<Record<string, unknown>>): ComponentDefinition['properties'][string] =>
       ({ type: 'list', label: 'Rows', itemLabel: 'Row', fields: { text: { type: 'string', label: 'Text', default: '' } }, default: defaultRows }) as unknown as ComponentDefinition['properties'][string];

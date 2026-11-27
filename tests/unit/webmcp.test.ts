@@ -23,6 +23,8 @@ import type { EditOperation } from '@shared/ops';
 import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { compileProject } from '../../src/main/compile';
 import { bundle, removeRendered, serverHtml } from './generated-site';
+import { projectDesign } from './fixtures/packs';
+import { HERO } from './fixtures/appear-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 /** The theme's contact form code, as a new project installs it. */
@@ -304,8 +306,10 @@ describe('the exported website with WebMCP on', () => {
 
   it('starts the entrances and the search tool from one onMount import', async () => {
     let s = on(withSearch(fresh()));
-    const section = s.pages[s.site.homePageId].rootIds[0];
-    s = run(s, { type: 'node.setContent', owner: home(s), nodeId: section, field: 'appear', value: 'fade' });
+    // A section of the editor's own design, which takes an entrance (the theme's code sections take none).
+    const hero = projectDesign(s, HERO);
+    s = run(s, { type: 'node.insert', newNodeId: 'n_hero', owner: home(s), parentId: null, index: 0, definitionId: hero.id });
+    s = run(s, { type: 'node.setContent', owner: home(s), nodeId: 'n_hero', field: 'appear', value: 'fade' });
     const layout = generateProject(s).get('src/routes/+layout.svelte')!;
     expect(layout).toContain('onMount(observeAppear);');
     expect(layout).toContain('onMount(() => offerSearch(resolve));');

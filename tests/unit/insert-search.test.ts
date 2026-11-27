@@ -50,7 +50,8 @@ describe('column layouts in Insert (#514)', () => {
     expect(names('sticky')).toContain('Sidebar + main');
     expect(names('asymmetric')).toEqual(expect.arrayContaining(['Bento grid', 'Sidebar + main', 'Asymmetric split']));
     expect(names('wide narrow')[0]).toBe('Asymmetric split');
-    expect(names('2:1')).toEqual(['Asymmetric split']);
+    // Foundation's Split layout offers a 2:1 split among its proportions too.
+    expect(names('2:1')).toEqual(['Split layout', 'Asymmetric split']);
   });
 
   it('adds a Grid that starts with its columns, offered with the Row and Grid ahead of the other elements', () => {

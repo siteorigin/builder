@@ -6,7 +6,10 @@ import { styleToCss, VIEWPORT_PRESETS } from '@shared/styles';
 import { designStyles } from '@shared/variants';
 import { generateComponentsCss, generateSiteCss, nodeClass, overrideClass, variantClass } from '@generator/index';
 import { readStyleNumber, refinementShown, styleReached, styleUnder } from '../../src/renderer/src/lib/style-source';
-import { STYLE_PROP_MAP } from '@shared/styles';
+import { STICKY_BELOW_HEADER, STYLE_PROP_MAP } from '@shared/styles';
+import { makeInstance } from '@engine/install';
+import { P, tok } from '@catalogue/dsl';
+import { foundationDesign, type DesignSpec } from './fixtures/packs';
 
 // The Inspector's inherited style values are checked against the stylesheet the site really gets: the generated
 // CSS is evaluated for one element at each preview width (selector classes, specificity, media queries and source
@@ -103,10 +106,67 @@ const cssOf = (prop: string, value: unknown) => {
   return decl.slice(decl.indexOf(':') + 1).trim();
 };
 
-/** The Features grid of a fresh business site, with its variant styles replaced by the ones a case gives. */
-function grid(setup: { node?: Record<string, ResponsiveStyles>; tone?: Record<string, ResponsiveStyles>; layout?: Record<string, ResponsiveStyles> }) {
+const STICKY_SPLIT = { layout: 'grid', gridTemplate: '1fr 1.5fr', align: 'start', columnGap: tok('space.2xl') } as const;
+
+/**
+ * A features grid built in the editor, as Foundation's managed one was before the theme's sections became code: a
+ * heading over a card grid of one column on phones, two on tablets and three on desktops, with layout options that
+ * change the desktop columns or pin the heading beside the cards.
+ */
+const FEATURES: DesignSpec = {
+  componentId: 'features.cards',
+  name: 'Services grid',
+  properties: {
+    heading: P.str('Heading', 'Services shaped around your project'),
+    items: P.list('Cards', 'Card', { title: P.str('Title', 'Service') }, [{ title: 'Planning' }, { title: 'Design' }, { title: 'Delivery' }])
+  },
+  parts: { root: { nodeId: 'root', label: 'Section' }, heading: { nodeId: 'heading', label: 'Heading' }, grid: { nodeId: 'grid', label: 'Card grid' }, card: { nodeId: 'card', label: 'Card' } },
+  variantAxes: {
+    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background', styles: { root: { base: { background: tok('color.surface-alt') } } } } } },
+    layout: {
+      label: 'Layout',
+      default: 'default',
+      options: {
+        default: { label: 'Three columns' },
+        'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } },
+        'four-columns': { label: 'Four columns', styles: { grid: { desktop: { columns: 4 } } } },
+        'sticky-split': {
+          label: 'Heading pinned beside cards',
+          styles: {
+            inner: { tablet: STICKY_SPLIT, desktop: { ...STICKY_SPLIT, columnGap: tok('space.3xl') } },
+            intro: { tablet: STICKY_BELOW_HEADER, desktop: STICKY_BELOW_HEADER },
+            grid: { tablet: { columns: 1 }, desktop: { columns: 1 } }
+          }
+        }
+      }
+    }
+  },
+  build: (b) =>
+    b.el('root', 'section', { name: 'Section', styles: { base: { paddingBlock: tok('space.3xl') } } }, [
+      b.el('inner', 'div', { name: 'Container', styles: { base: { layout: 'stack', gap: tok('space.2xl') } } }, [
+        b.el('intro', 'div', { name: 'Heading group', styles: { base: { layout: 'stack', gap: tok('space.md') } } }, [b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading' })]),
+        b.el('grid', 'ul', { name: 'Card grid', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.lg') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
+          b.repeat('cards', 'items', [b.el('card', 'li', { name: 'Card' }, [b.text('card-title', 'h3', { $item: 'title' }, { name: 'Title' })])])
+        ])
+      ])
+    ])
+};
+
+/** A fresh business site with the features grid placed on Home, as the theme's design (a copy, for a case to change). */
+function withFeatures(): { state: ProjectState; def: ComponentDefinition } {
   const state: ProjectState = createStarterState('business', 'Test Studio', false);
-  const def = Object.values(state.components).find((d) => d.componentId === 'features.grid')!;
+  const def = structuredClone(foundationDesign(FEATURES));
+  state.components[def.id] = def;
+  const node = makeInstance(def, {});
+  const home = state.pages[state.site.homePageId];
+  home.nodes[node.id] = node;
+  home.rootIds.push(node.id);
+  return { state, def };
+}
+
+/** The features grid on a fresh business site, with its variant styles replaced by the ones a case gives. */
+function grid(setup: { node?: Record<string, ResponsiveStyles>; tone?: Record<string, ResponsiveStyles>; layout?: Record<string, ResponsiveStyles> }) {
+  const { state, def } = withFeatures();
   for (const [id, styles] of Object.entries(setup.node ?? {})) def.tree!.nodes[id].styles = styles;
   def.variantAxes = {
     tone: { label: 'Tone', default: 'plain', options: { plain: { label: 'Plain', styles: setup.tone ?? {} } } },
@@ -176,9 +236,8 @@ describe('the Inspector’s inherited styles match the generated CSS', () => {
     agree(rows);
   });
 
-  it('matches the theme’s own Features grid with each layout option', () => {
-    const state: ProjectState = createStarterState('business', 'Test Studio', false);
-    const def = Object.values(state.components).find((d) => d.componentId === 'features.grid')!;
+  it('matches a features grid design with each of its layout options', () => {
+    const { state, def } = withFeatures();
     const rules = parseCss(generateComponentsCss(state));
     for (const option of Object.keys(def.variantAxes!.layout.options)) {
       const variants = { layout: option };
@@ -371,7 +430,7 @@ describe('the Inspector’s inherited styles match the generated CSS', () => {
 });
 
 describe('a placement’s own grid for all sizes', () => {
-  /** The Features grid on the home page with its card grid set to `columns` columns for all sizes. */
+  /** The features grid on the home page with its card grid set to `columns` columns for all sizes. */
   function placed(columns: number) {
     const { state, def } = grid({ node: { grid: { base: { layout: 'grid' }, desktop: { columns: 3 } } }, layout: { grid: { base: { columns: 2 } } } });
     const owner = { kind: 'page' as const, id: state.site.homePageId };

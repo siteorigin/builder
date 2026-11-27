@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { ElementRef, InstanceNode, ProjectState, ResponsiveScope } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { validateOperation } from '@shared/ops';
+import { validateOperation, type EditOperation } from '@shared/ops';
+import { projectDesign } from './fixtures/packs';
 import { dragLabel, dragValue, draggedSize, groupSignature, groupTokens, spacingOp, spacingTarget, type SpaceStop, type SpacingTarget } from '../../src/renderer/src/lib/spacing-drag';
 import {
   RATIO_STOPS,
@@ -289,10 +290,21 @@ const placed = (s: ProjectState, componentId: string) => {
   return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!;
 };
 const partRef = (s: ProjectState, n: InstanceNode, partId: string): ElementRef => ({ owner: homeOwner(s), instancePath: [n.id], nodeId: s.components[n.definitionId].parts[partId].nodeId, partId });
-/** A business site with an empty Section added to Home, and its Container part. */
-function withSection(overrides?: Record<string, unknown>) {
+/** A section designed in the editor, its Container part styled by the design itself. */
+const designedSection = (s: ProjectState) =>
+  projectDesign(s, {
+    componentId: 'project.section',
+    name: 'Section',
+    properties: {},
+    slots: { content: { label: 'Content' } },
+    parts: { root: { nodeId: 'root', label: 'Section' }, container: { nodeId: 'inner', label: 'Container', styleControls: ['layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap'] } },
+    build: (b) => b.el('root', 'section', {}, [b.el('inner', 'div', { name: 'Container' }, [b.slot('content-slot', 'content')])])
+  });
+/** A business site with an empty Section added to Home (Foundation's, or one designed in the editor), and its Container part. */
+function withSection(overrides?: Record<string, unknown>, design?: (s: ProjectState) => { id: string }) {
   let s = fresh();
-  const r = applyOperations(s, [{ type: 'node.insert', owner: homeOwner(s), parentId: null, index: 0, componentId: 'layout.section' }]);
+  const what = design ? { definitionId: design(s).id } : { componentId: 'layout.section' };
+  const r = applyOperations(s, [{ type: 'node.insert', owner: homeOwner(s), parentId: null, index: 0, ...what } as EditOperation]);
   s = r.state;
   const id = r.results[0].nodeId as string;
   for (const [property, value] of Object.entries(overrides ?? {})) s = applyOperations(s, [{ type: 'node.setStyle', owner: homeOwner(s), nodeId: id, partId: 'container', scope: 'base', property, value } as never]).state;
@@ -315,7 +327,7 @@ describe('planSplit: column dividers', () => {
   });
 
   it('reads them through the design, where the placement sets none of its own', () => {
-    const { s, n, t } = withSection();
+    const { s, n, t } = withSection(undefined, designedSection);
     const designed = structuredClone(s);
     const def = designed.components[n.definitionId];
     const inner = def.tree!.nodes[def.parts.container.nodeId];

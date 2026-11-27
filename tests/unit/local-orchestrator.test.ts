@@ -22,6 +22,7 @@ import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import type { CanonicalItem, ToolDefinition } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { registerSecondTheme } from './second-theme';
+import { withManaged } from './fixtures/component-contract-designs';
 import { closedPort, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
 // Only Foundation ships, so the brand tool's theme switch (and the room its grammar needs) is measured against a second theme.
@@ -37,10 +38,11 @@ afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
-async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOptions = {}, codeEnabled = true, provider: ProviderId = 'local', starter: StarterId = 'business', discover = false) {
+/** `managed`: sections of the starter that are the managed designs of their contracts (fixtures/component-contract-designs). */
+async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOptions = {}, codeEnabled = true, provider: ProviderId = 'local', starter: StarterId = 'business', discover = false, managed: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'so-local-'));
   dirs.push(dir);
-  const session = await ProjectSession.create(dir, createStarterState(starter, 'Test', false));
+  const session = await ProjectSession.create(dir, withManaged(createStarterState(starter, 'Test', false), ...managed));
   const adapter = new LocalAdapter({ baseURL: server.baseURL, model: 'test-model', ...endpoint }, opts);
   const events: AiEvent[] = [];
   let busy = false;
@@ -91,7 +93,8 @@ describe('orchestrator with constrained JSON', () => {
   });
 
   it('applies a structured value sent in the encoded form', async () => {
-    const { session, events, orch } = await setup();
+    // The assistant edits a design drawn from data everywhere, so the grid is the managed design of its contract.
+    const { session, events, orch } = await setup({}, {}, true, 'local', 'business', false, ['features.grid']);
     // A component edited everywhere gets the general edit tool on a small model once the author lets it change more.
     const home = session.state.pages[session.state.site.homePageId];
     const grid = home.rootIds.map((id) => home.nodes[id] as unknown as { id: string; definitionId: string }).find((n) => session.state.components[n.definitionId]?.componentId === 'features.grid')!;
@@ -958,7 +961,7 @@ describe("a component's design on a small model (#360)", () => {
   const posts = () => server.requests.filter((r) => r.method === 'POST').map((r) => r.body);
   const grammar = (body: Record<string, any>) => JSON.stringify(body.response_format.json_schema.schema);
 
-  /** The Split hero copied for editing everywhere, as the editor makes one. */
+  /** The Split hero (the managed design of its contract) copied for editing everywhere, as the editor makes one. */
   async function editEverywhere(session: ProjectSession) {
     const home = session.state.pages[session.state.site.homePageId];
     const made = await session.apply({ operations: [{ type: 'component.fork', definitionId: (home.nodes[home.rootIds[0]] as unknown as { definitionId: string }).definitionId }] }, { label: 'Edit everywhere', source: 'user' });
@@ -967,7 +970,7 @@ describe("a component's design on a small model (#360)", () => {
   }
 
   it('adds a property, binds a condition to it, exposes a part and styles a variant option, without apply_operations', async () => {
-    const { session, run } = await setup({}, {}, false);
+    const { session, run } = await setup({}, {}, false, 'local', 'business', false, ['hero.split']);
     const { id } = await editEverywhere(session);
     const before = structuredClone(session.state.components[id]);
     server.script(
@@ -1005,7 +1008,7 @@ describe("a component's design on a small model (#360)", () => {
   });
 
   it('tells a small model to read shortened text whole before it rewrites it', async () => {
-    const { session, run } = await setup({}, {}, false);
+    const { session, run } = await setup({}, {}, false, 'local', 'business', false, ['hero.split']);
     const { id, owner } = await editEverywhere(session);
     const long = `${'Every room is made by hand from local timber and finished with natural oils. '.repeat(5)}The end.`;
     expect((await session.apply({ operations: [{ type: 'node.setBinding', owner, nodeId: 'lead', field: 'text', binding: null }, { type: 'node.setContent', owner, nodeId: 'lead', field: 'text', value: long }] }, { label: 'Long lead', source: 'user' })).ok).toBe(true);
@@ -1017,7 +1020,7 @@ describe("a component's design on a small model (#360)", () => {
   });
 
   it('keeps a node selected in the design to what is inside it', async () => {
-    const { session, run } = await setup({}, {}, false);
+    const { session, run } = await setup({}, {}, false, 'local', 'business', false, ['hero.split']);
     const { id, owner } = await editEverywhere(session);
     server.script(
       envelopeReply('manage_component_prop', { change: { action: 'add', prop: 'headline', label: 'Headline', type: 'string', default: 'Made by hand' } }),

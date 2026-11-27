@@ -10,6 +10,7 @@ import { familyUses, fontFaceCss, importedFontStack, projectFontFamilies, rename
 import { validateOperation } from '@shared/ops';
 import type { AssetRecord, ComponentDefinition } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
+import { foundationDesign } from './fixtures/packs';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -251,7 +252,9 @@ describe('imported fonts', () => {
 
   it('never rewrites a theme definition when a family is renamed, only the ones the project owns', () => {
     const state = createStarterState('business', 'Theme rename', false);
-    const theme = Object.values(state.components).find((d) => d.owner === 'theme' && d.kind === 'managed' && d.tree)!;
+    // A theme-owned managed design in the project, beside Foundation's code sections.
+    const theme = foundationDesign({ componentId: 'test.banner', name: 'Banner', properties: {}, parts: {}, build: (t) => t.el('root', 'section', {}, []) });
+    state.components[theme.id] = theme;
     const fontOf = (d: ComponentDefinition) => (Object.values(d.tree!.nodes)[0] as unknown as { styles: { base: { fontFamily: string } } }).styles.base.fontFamily;
     (Object.values(theme.tree!.nodes)[0] as { styles?: unknown }).styles = { base: { fontFamily: "Georgia, 'Old Name', serif" } };
     state.components['project.copy'] = { ...structuredClone(theme), id: 'project.copy', owner: 'project' };

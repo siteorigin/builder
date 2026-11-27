@@ -3,6 +3,7 @@
  * current one compares their text, so a project whose theme components are all current hashes none of them. A changed
  * one is still found, and its lock still checked by its hash.
  */
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 let hashed = 0;
@@ -17,11 +18,12 @@ vi.mock('@shared/sha256', async (load) => {
   };
 });
 
-// The setup file has loaded the packs, and with them the hash, before this mock: the modules are loaded again with it.
+// The setup file has loaded the packs, and with them the hash, before this mock: the modules are loaded again with it,
+// and the committed releases registered on them as the app registers them.
 vi.resetModules();
-(await import('../../src/main/packs/build')).registerBuiltinPacks();
+await (await import('../../src/main/packs/installed')).loadBundledPacks(resolve(import.meta.dirname, '..', '..'));
 const { createStarterState } = await import('@catalogue/starters');
-const { header } = await import('@catalogue/foundation/shell');
+const header = (await import('@catalogue/index')).getTheme('foundation').components.find((c) => c.componentId === 'shell.header')!;
 const { definitionHash } = await import('@shared/migrations');
 const { themeUpdates } = await import('@engine/theme-updates');
 

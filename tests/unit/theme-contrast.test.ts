@@ -10,11 +10,11 @@ import { evaluatePairs, formatRatio, isFailing, pairsOf, suggestForeground, type
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { STARTERS, createStarterState } from '@catalogue/starters';
-import { FOUNDATION_CONTRAST_PAIRS } from '@catalogue/foundation/contrast';
 import { derivedBrandTokens } from '@agent/brand';
 import { sayContrast } from '../../src/renderer/src/lib/announce';
 
-const PAIRS = FOUNDATION_CONTRAST_PAIRS;
+/** The colour pairs the shipped Foundation release declares. */
+const PAIRS: ContrastPair[] = getTheme('foundation').contrastPairs ?? [];
 
 /** The Business starter with some tokens set the way an author's edit saves them. */
 function business(overrides: Record<string, unknown>): TokenDef[] {
@@ -99,10 +99,11 @@ describe('offers', () => {
     const tokens = business({ 'color.text': '#fbfaf7' });
     const results = evaluatePairs(tokens, PAIRS);
     const failing = results.filter(isFailing).filter((r) => r.pair.fg === 'color.text');
-    expect(failing.map((r) => r.pair.id).sort()).toEqual(['text-background', 'text-surface', 'text-surface-alt']);
+    // The page, cards, alternate sections and Foundation's callout boxes.
+    expect(failing.map((r) => r.pair.id).sort()).toEqual(['callout-text', 'text-background', 'text-surface', 'text-surface-alt']);
     const offer = suggestForeground(tokens, PAIRS, failing[0]);
     expect(offer).toMatchObject({ token: 'color.text', value: '#14181a', everyState: true });
-    expect(offer!.after.map((r) => r.pair.id).sort()).toEqual(['text-background', 'text-surface', 'text-surface-alt']);
+    expect(offer!.after.map((r) => r.pair.id).sort()).toEqual(['callout-text', 'text-background', 'text-surface', 'text-surface-alt']);
   });
 
   it('offers a joint fix for a failing hover state when one exists', () => {
@@ -140,7 +141,7 @@ describe('offers', () => {
     const other: ContrastPair = { id: 'other', use: 'Other', fg: 'color.text', bg: 'color.inverse', state: 'rest', group: 'other' };
     const failing = byId(evaluatePairs(tokens, PAIRS), 'text-background');
     const offer = suggestForeground(tokens, [...PAIRS, other], failing as never)!;
-    expect(offer.after.map((r) => r.pair.id).sort()).toEqual(['text-background', 'text-surface', 'text-surface-alt']);
+    expect(offer.after.map((r) => r.pair.id).sort()).toEqual(['callout-text', 'text-background', 'text-surface', 'text-surface-alt']);
     // A sibling that is not the author's to fix still counts against a choice: white hover on white, black rest on black.
     const sibling = { id: 'rest', use: 'Rest', fg: 'color.text', bg: 'color.inverse', state: 'rest' as const, group: 'text', fixable: false };
     const hover = { id: 'hov', use: 'Hover', fg: 'color.text', bg: 'color.background', state: 'hover' as const, group: 'text' };
@@ -204,9 +205,9 @@ describe('offers', () => {
     });
     const offer = suggestForeground(tokens, PAIRS, byId(evaluatePairs(tokens, PAIRS), 'button') as never)!;
     expect(offer.value).toBe('#000000');
-    // What black makes measurable and failing is said (the light button's hover, and error messages on the alternate
-    // ground that black now is), not hidden.
-    expect(offer.breaks.map((r) => r.pair.id)).toEqual(['error-surface-alt', 'light-button-hover']);
+    // What black makes measurable and failing is said (the light button's hover, on the alternate ground that black
+    // now is), not hidden.
+    expect(offer.breaks.map((r) => r.pair.id)).toEqual(['light-button-hover']);
   });
 
   it('offers a choice for a brand linked to an independent color', () => {
@@ -393,7 +394,7 @@ describe('what ships', () => {
     expect(byId(results, 'brand-text-surface')).toMatchObject({ fg: '#1f5a4c', bg: '#ffffff' });
     expect(byId(results, 'brand-text-surface-alt')).toMatchObject({ fg: '#1f5a4c', bg: '#f2efe8' });
     expect(PAIRS.map((p) => p.id).sort()).toEqual([
-      'brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'dark-accent', 'dark-button', 'dark-button-hover', 'dark-error', 'dark-error-edge', 'dark-text',
+      'brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'callout-brand', 'callout-focus', 'callout-muted', 'callout-text', 'dark-accent', 'dark-button', 'dark-button-hover', 'dark-error', 'dark-error-edge', 'dark-text',
       'error-background', 'error-edge-background', 'error-edge-surface', 'error-edge-surface-alt', 'error-surface', 'error-surface-alt',
       'focus-background', 'focus-surface', 'focus-surface-alt', 'light-button', 'light-button-hover', 'muted-background', 'muted-surface', 'muted-surface-alt',
       'text-background', 'text-surface', 'text-surface-alt'
@@ -464,7 +465,10 @@ describe('what ships', () => {
 
   it('lists the pairs that involve a token as foreground or background, hover mixes included', () => {
     expect(pairsOf(PAIRS, 'color.on-brand').map((p) => p.id)).toEqual(expect.arrayContaining(['button', 'button-hover', 'light-button', 'light-button-hover']));
-    expect(pairsOf(PAIRS, 'color.brand').map((p) => p.id).sort()).toEqual(['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'light-button-hover']);
+    // Callout boxes are a tint of the brand, so every pair drawn on one involves it too.
+    expect(pairsOf(PAIRS, 'color.brand').map((p) => p.id).sort()).toEqual([
+      'brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'callout-brand', 'callout-focus', 'callout-muted', 'callout-text', 'light-button-hover'
+    ]);
     expect(pairsOf(PAIRS, 'color.border')).toEqual([]);
   });
 

@@ -15,8 +15,9 @@ import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { makeInstance } from '@engine/install';
 import { generateProject } from '@generator/index';
-import { FOUNDATION_PACK } from '@catalogue/builtin';
+import { getTheme } from '@catalogue/index';
 import { bundle, removeRendered, serverHtml } from './generated-site';
+import { scopedStyles } from './fixtures/split-layout-styles';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
@@ -31,7 +32,7 @@ function project(): ProjectState {
   const s = createStarterState('business', 'Steps Studio', false);
   const home = s.pages[s.site.homePageId];
   const add = (componentId: string, props: Record<string, unknown> = {}, variants?: Record<string, string>) => {
-    const def = structuredClone(FOUNDATION_PACK.components.find((d) => d.componentId === componentId)!);
+    const def = structuredClone(getTheme('foundation').components.find((d) => d.componentId === componentId)!);
     s.components[def.id] = def;
     const node: InstanceNode = { ...makeInstance(def, props), ...(variants ? { variants } : {}) };
     home.nodes[node.id] = node;
@@ -57,8 +58,10 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
     const s = project();
     const clean = generateProject(s);
     const dev = generateProject(s, { instrument: true });
-    ssr = await serverHtml(clean, 'steps-media-browser-');
-    css = ['tokens', 'theme', 'components', 'site'].map((f) => clean.get(`src/lib/siteorigin/styles/${f}.css`) ?? '').join('\n');
+    // Foundation's sections are code components: their scoped styles go in the page beside the site's stylesheets.
+    const scoped = scopedStyles(clean, dev, await serverHtml(clean, 'steps-media-browser-'));
+    ssr = scoped.ssr;
+    css = [...['tokens', 'theme', 'components', 'site'].map((f) => clean.get(`src/lib/siteorigin/styles/${f}.css`) ?? ''), scoped.css].join('\n');
     script = await bundle(clean, dev);
     browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
   }, 120_000);
@@ -118,9 +121,9 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
 
   /** Each Steps with pictures placement: its step buttons as [title, expanded], and the descriptions and pictures on screen. */
   const steps = (site: Frame) =>
-    site.evaluate(`[...document.querySelectorAll('[class*="steps-media__steps-layout"]')].map((layout) => ({
+    site.evaluate(`[...document.querySelectorAll('[class*="tour__layout"]')].map((layout) => ({
       buttons: [...layout.querySelectorAll('button')].map((b) => [b.textContent.trim(), b.getAttribute('aria-expanded')]),
-      shown: [...layout.querySelectorAll('[class*="__step-details"]')].filter((d) => getComputedStyle(d).display !== 'none').map((d) => d.textContent.trim().slice(0, 20)),
+      shown: [...layout.querySelectorAll('[class*="tour__details"]')].filter((d) => getComputedStyle(d).display !== 'none').map((d) => d.textContent.trim().slice(0, 20)),
       pictures: [...layout.querySelectorAll('figure')].filter((f) => getComputedStyle(f).display !== 'none').map((f) => f.querySelector('[role="img"], img')?.getAttribute('aria-label') ?? f.querySelector('img')?.alt)
     }))`) as Promise<Array<{ buttons: string[][]; shown: string[]; pictures: string[] }>>;
   const expanded = (buttons: string[][]) => buttons.filter((b) => b[1] === 'true').map((b) => b[0]);
@@ -131,7 +134,7 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
       expect(await site.evaluate(`document.querySelector('ol').fromServer === true`)).toBe(true);
       const start = { buttons: [['Plan together', 'true'], ['Design the details', 'false'], ['Build and hand over', 'false']], shown: ['We walk the site wit'], pictures: ['Planning a project at a table'] };
       expect(await steps(site)).toEqual([start, start]);
-      const first = site.locator('[class*="steps-media__steps-layout"]').first();
+      const first = site.locator('[class*="tour__layout"]').first();
       await first.getByRole('button', { name: 'Design the details' }).click();
       await expect.poll(async () => (await steps(site))[0]).toEqual({ buttons: [['Plan together', 'false'], ['Design the details', 'true'], ['Build and hand over', 'false']], shown: ['Layouts, materials a'], pictures: ['Material samples laid out for review'] });
       expect((await steps(site))[1]).toEqual(start);
@@ -144,15 +147,15 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
       await page.keyboard.press('Space');
       await expect.poll(async () => expanded((await steps(site))[0].buttons)).toEqual(['Plan together']);
       // Every step names its own description and picture, once each, in its own placement.
-      const named = (await site.evaluate(`[...document.querySelectorAll('[class*="steps-media__steps-layout"] button')].map((b) => b.getAttribute('aria-controls').split(' ').map((id) => {
+      const named = (await site.evaluate(`[...document.querySelectorAll('[class*="tour__layout"] button')].map((b) => b.getAttribute('aria-controls').split(' ').map((id) => {
         const found = [...document.querySelectorAll('[id]')].filter((e) => e.id === id);
         return found.length === 1 && b.closest('section').contains(found[0]) ? found[0].tagName : 'missing';
       }))`)) as string[][];
       expect(named).toEqual(Array(6).fill(['DIV', 'FIGURE']));
       // Each names its own row's description (right after it) and the picture of the same item, which no other step names.
-      const own = (await site.evaluate(`[...document.querySelectorAll('[class*="steps-media__steps-layout"] button')].map((b) => {
+      const own = (await site.evaluate(`[...document.querySelectorAll('[class*="tour__layout"] button')].map((b) => {
         const [details, figure] = b.getAttribute('aria-controls').split(' ');
-        return [b.nextElementSibling.id === details, details.split('.panel.step-details.')[1] === figure.split('.panel.step-media.')[1], figure];
+        return [b.nextElementSibling.id === details, details.split('-details-')[1] === figure.split('-picture-')[1], figure];
       })`)) as Array<[boolean, boolean, string]>;
       expect(own.map(([a, b]) => [a, b])).toEqual(Array(6).fill([true, true]));
       expect(new Set(own.map(([, , figure]) => figure)).size).toBe(6);
@@ -165,10 +168,10 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
   /** Where the pinned heading and the first card are, and the header's bottom, in the viewport. */
   const pinned = (site: Frame) =>
     site.evaluate(`(() => {
-      const root = document.querySelector('[class*="features-grid--layout-sticky-split"][class*="__root"]');
+      const root = document.querySelector('[class*="features--layout-sticky-split"]');
       const box = (sel) => root.querySelector(sel).getBoundingClientRect();
-      const intro = box('[class*="features-grid__intro"]');
-      return { introTop: intro.top, introBottom: intro.bottom, cardTop: box('li').top, innerBottom: box('[class*="features-grid__inner"]').bottom, header: document.getElementById('stand-in-header')?.getBoundingClientRect().bottom ?? 0, position: getComputedStyle(root.querySelector('[class*="features-grid__intro"]')).position, columns: getComputedStyle(root.querySelector('[class*="features-grid__inner"]')).gridTemplateColumns, sectionTop: root.getBoundingClientRect().top + scrollY, sectionHeight: root.offsetHeight };
+      const intro = box('[class*="features__intro"]');
+      return { introTop: intro.top, introBottom: intro.bottom, cardTop: box('li').top, innerBottom: box('[class*="features__inner"]').bottom, header: document.getElementById('stand-in-header')?.getBoundingClientRect().bottom ?? 0, position: getComputedStyle(root.querySelector('[class*="features__intro"]')).position, columns: getComputedStyle(root.querySelector('[class*="features__inner"]')).gridTemplateColumns, sectionTop: root.getBoundingClientRect().top + scrollY, sectionHeight: root.offsetHeight };
     })()`) as Promise<{ introTop: number; introBottom: number; cardTop: number; innerBottom: number; header: number; position: string; columns: string; sectionTop: number; sectionHeight: number }>;
   const scrollTo = (site: Frame, y: number) => site.evaluate(`new Promise((done) => { scrollTo({ top: ${y}, behavior: 'instant' }); requestAnimationFrame(() => requestAnimationFrame(done)); })`);
 
@@ -196,9 +199,9 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
       expect(now.introTop).toBeLessThan(HEADER + GAP);
       // With its heading group cleared, the cards take the whole row rather than the narrow column.
       const cleared = (await site.evaluate(`(() => {
-        const root = document.querySelectorAll('[class*="features-grid--layout-sticky-split"][class*="__root"]')[1];
-        const inner = root.querySelector('[class*="features-grid__inner"]');
-        return [root.querySelector('[class*="features-grid__intro"]') === null, Math.round(root.querySelector('ul').getBoundingClientRect().width), Math.round(inner.getBoundingClientRect().width)];
+        const root = document.querySelectorAll('[class*="features--layout-sticky-split"]')[1];
+        const inner = root.querySelector('[class*="features__inner"]');
+        return [root.querySelector('[class*="features__intro"]') === null, Math.round(root.querySelector('ul').getBoundingClientRect().width), Math.round(inner.getBoundingClientRect().width)];
       })()`)) as [boolean, number, number];
       expect(cleared[0]).toBe(true);
       expect(cleared[1]).toBe(cleared[2]);
@@ -214,9 +217,9 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
         const at = await pinned(site);
         expect([width, at.position]).toEqual([width, sticky ? 'sticky' : 'static']);
         const stack = (await site.evaluate(`(() => {
-          const layout = document.querySelector('[class*="steps-media__steps-layout"]');
+          const layout = document.querySelector('[class*="tour__layout"]');
           const list = layout.querySelector('ol').getBoundingClientRect();
-          const stage = layout.querySelector('[class*="__media-stage"]');
+          const stage = layout.querySelector('[class*="tour__stage"]');
           return { position: getComputedStyle(stage).position, below: stage.getBoundingClientRect().top >= list.bottom - 1 };
         })()`)) as { position: string; below: boolean };
         expect([width, stack.position, stack.below]).toEqual([width, sticky ? 'sticky' : 'static', !sticky]);
@@ -230,26 +233,26 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
   it('prints every step’s description and picture, and each pinned column in its place, one after the other', async () => {
     const { page, site } = await open('clean', 1280);
     try {
-      await site.locator('[class*="steps-media__steps-layout"]').first().getByRole('button', { name: 'Design the details' }).click();
+      await site.locator('[class*="tour__layout"]').first().getByRole('button', { name: 'Design the details' }).click();
       // On screen the second placement shows its picture first, beside its steps.
       const pictureFirst = (await site.evaluate(`(() => {
-        const layout = document.querySelectorAll('[class*="steps-media__steps-layout"]')[1];
-        return layout.querySelector('[class*="__media-stage"]').getBoundingClientRect().left < layout.querySelector('ol').getBoundingClientRect().left;
+        const layout = document.querySelectorAll('[class*="tour__layout"]')[1];
+        return layout.querySelector('[class*="tour__stage"]').getBoundingClientRect().left < layout.querySelector('ol').getBoundingClientRect().left;
       })()`)) as boolean;
       expect(pictureFirst).toBe(true);
       await page.emulateMedia({ media: 'print' });
       const printed = (await site.evaluate(`(() => {
         const shown = (sel) => [...document.querySelectorAll(sel)].filter((e) => getComputedStyle(e).display !== 'none').length;
-        const root = document.querySelector('[class*="features-grid--layout-sticky-split"][class*="__root"]');
-        const intro = root.querySelector('[class*="features-grid__intro"]');
+        const root = document.querySelector('[class*="features--layout-sticky-split"]');
+        const intro = root.querySelector('[class*="features__intro"]');
         return {
-          details: shown('[class*="__step-details"]'),
-          figures: shown('[class*="steps-media__media-stage"] figure'),
-          stage: [...document.querySelectorAll('[class*="steps-media__steps-layout"]')].map((layout) => {
-            const stage = layout.querySelector('[class*="__media-stage"]');
+          details: shown('[class*="tour__details"]'),
+          figures: shown('[class*="tour__stage"] figure'),
+          stage: [...document.querySelectorAll('[class*="tour__layout"]')].map((layout) => {
+            const stage = layout.querySelector('[class*="tour__stage"]');
             return [getComputedStyle(stage).position, stage.getBoundingClientRect().height > 0 && stage.getBoundingClientRect().top >= layout.querySelector('ol').getBoundingClientRect().bottom - 1];
           }),
-          intro: [getComputedStyle(intro).position, getComputedStyle(root.querySelector('[class*="features-grid__inner"]')).gridTemplateColumns.split(' ').length, root.querySelector('li').getBoundingClientRect().top >= intro.getBoundingClientRect().bottom - 1]
+          intro: [getComputedStyle(intro).position, getComputedStyle(root.querySelector('[class*="features__inner"]')).gridTemplateColumns.split(' ').length, root.querySelector('li').getBoundingClientRect().top >= intro.getBoundingClientRect().bottom - 1]
         };
       })()`)) as { details: number; figures: number; stage: Array<[string, boolean]>; intro: [string, number, boolean] };
       expect(printed).toEqual({ details: 6, figures: 6, stage: [['static', true], ['static', true]], intro: ['static', 1, true] });

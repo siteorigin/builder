@@ -114,6 +114,7 @@ window.unmountForms = () => {
     '\0layout': compiled(`<script>\n\timport { keepDrafts } from '\\0drafts';\n\tkeepDrafts();\n</script>\n`, 'Layout.svelte'),
     '\0drafts': files.get(`${RUNTIME_DIR}/drafts.js`)!,
     '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
+    '../runtime/util.js': files.get(`${RUNTIME_DIR}/util.js`)!,
     '$app/navigation': NAVIGATION_STUB,
     '$app/state': STATE_STUB
   };
@@ -209,7 +210,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     await page.goto(`${ORIGIN}/contact/`);
     // Runs in the page, so it is passed as text (the Node project has no DOM types).
     await page.evaluate(`window.mountForm(${JSON.stringify(props)})`);
-    const field = (label: string) => page.getByLabel(label);
+    // Among the forms' fields: a form itself is named by its heading ("Send us a message"), which holds a field's label.
+    const field = (label: string) => page.locator('form').getByLabel(label);
     return {
       page,
       field,
@@ -217,8 +219,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       button: page.locator('.so-form__actions button'),
       status: () => page.locator('.so-form__status[role="status"]').innerText(),
       alert: () => page.locator('.so-form__status[role="alert"]').innerText(),
-      // Why the form cannot be sent, shown above its fields.
-      notice: () => page.locator('.so-form__notice').innerText(),
+      // Why the form cannot be sent, in its status line under the button.
+      notice: () => page.locator('.so-form__status--setup[role="status"]').innerText(),
       /** Calls to fetch so far, counted in the page as each send starts. */
       fetches: () => page.evaluate<number>('window.fetches'),
       nextPost: () =>
@@ -497,7 +499,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       // Beside the runtime it imports, as in the exported site.
       mkdirSync(join(dir, 'components'));
       mkdirSync(join(dir, 'runtime'));
-      writeFileSync(join(dir, 'runtime', 'visitor-text.js'), exportedSite().files.get(`${RUNTIME_DIR}/visitor-text.js`)!);
+      for (const file of ['visitor-text.js', 'util.js']) writeFileSync(join(dir, 'runtime', file), exportedSite().files.get(`${RUNTIME_DIR}/${file}`)!);
       writeFileSync(join(dir, 'components', 'form.js'), compile(exportedFormSource(), { filename: 'ContactForm.svelte', generate: 'server', runes: true }).js.code);
       serverForm = (await import(/* @vite-ignore */ join(dir, 'components', 'form.js'))).default;
     });
@@ -542,12 +544,13 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
 
     /** Fills in the text answers, then shows that neither the unanswered question nor unticked consent lets it go. */
     async function answerAll(page: Page, submit: () => Promise<void>, sent: () => Promise<number> | number) {
-      const question = page.getByRole('group', { name: SERVICE });
+      // The question is a radio group named by its legend.
+      const question = page.getByRole('radiogroup', { name: SERVICE });
       expect(await question.getByRole('radio').count()).toBe(3);
       expect(await question.getByRole('radio', { name: 'Éclairage', exact: true }).getAttribute('value')).toBe('Lighting');
-      await page.getByLabel('Name').fill('Ada');
-      await page.getByLabel('Email').fill('ada@example.com');
-      await page.getByLabel('Message').fill('A new kitchen');
+      await page.locator('form').getByLabel('Name').fill('Ada');
+      await page.locator('form').getByLabel('Email').fill('ada@example.com');
+      await page.locator('form').getByLabel('Message').fill('A new kitchen');
       await submit();
       await page.waitForTimeout(250);
       expect(await sent()).toBe(0);
@@ -597,7 +600,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     it('refuses to send while a question has nothing to choose from, and says why', async () => {
       const fields = [...FIELDS, { id: 'f4', label: SERVICE, name: 'service', type: 'choice', required: true, placeholder: '', options: [] }];
       await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, button, notice, fetches }) => {
-        expect(await page.getByRole('group', { name: SERVICE }).getByRole('radio').count()).toBe(0);
+        expect(await page.getByRole('radiogroup', { name: SERVICE }).getByRole('radio').count()).toBe(0);
         expect(await button.isDisabled()).toBe(true);
         expect(await notice()).toBe('A question in this form has no answers to choose from yet, so it cannot be sent.');
         await page.evaluate(`document.querySelector('form').requestSubmit()`);

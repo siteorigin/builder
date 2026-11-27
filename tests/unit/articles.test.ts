@@ -11,7 +11,9 @@ import { applyOperations } from '@engine/apply';
 import { normalizePropSchema } from '@engine/schema';
 import { contractConflicts } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
-import { generateProject, pageFile, resolveInstanceProps } from '@generator/index';
+import { defFile, generateProject, pageFile, resolveInstanceProps } from '@generator/index';
+import { P, item as dslItem, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 import { headingOutline, renderedContent } from '@generator/checks';
 import { UTIL_JS } from '@generator/runtime-files';
 import { headerMenu } from '@engine/tree';
@@ -42,6 +44,8 @@ function market() {
 }
 
 const instance = (s: ProjectState, pageId: string, nodeId: string) => s.pages[pageId].nodes[nodeId] as InstanceNode;
+/** The News list's definition, as the project has it. */
+const newsDef = (s: ProjectState) => Object.values(s.components).find((d) => d.componentId === 'content.news')!;
 const defOf = (s: ProjectState, n: InstanceNode) => s.components[n.definitionId];
 
 /** The News list's cards as the export resolves them on that page. */
@@ -90,7 +94,7 @@ describe('dated articles', () => {
     const src = homeSource(s, home);
     expect(order(src)).toEqual(['Spring makers announced', 'Winter opening hours']);
     expect(src).toContain('"date":"2026-11-14","dateLabel":"14 November 2026"');
-    const component = [...generateProject(s).values()].find((v) => v.includes('so-foundation-content-news__card-date'))!;
+    const component = generateProject(s).get(defFile(newsDef(s)))!;
     expect(component).toMatch(/<time datetime=\{item\.date\}>\{item\.dateLabel\}<\/time>/);
     const later = applyOperations(s, [{ type: 'page.update', pageId: 'pg_winter', articleDate: '2027-04-01' }]).state;
     const after = homeSource(later, home);
@@ -646,7 +650,31 @@ describe('articles in the editor and the AI tools', () => {
   });
 
   it('treats a computed card on the canvas as its page’s words, not a field to type over', () => {
-    const { s, home, nodeId } = market();
+    // Foundation's News list and Article header are code, whose markup the canvas does not read, so managed designs
+    // of the project's own with the same computed lists stand in for them: a card title linked to its article, and
+    // a header's title read from its page.
+    const { s: market0, home } = market();
+    const fields = { pageLink: P.link('Link'), title: P.str('Title', '') };
+    const newsDesign = projectDesign(market0, {
+      componentId: 'project.news',
+      name: 'News',
+      properties: { heading: P.str('Heading', 'Latest news'), items: P.list('Articles', 'Article', fields, [], { titleField: 'title', min: 0, max: 12, feed: 'articles' }) },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.text('heading', 'h2', prop('heading')), b.repeat('cards', 'items', [b.link('card-title', dslItem('pageLink'), dslItem('title'), 'plain')])])
+    });
+    const headerDesign = projectDesign(market0, {
+      componentId: 'project.masthead',
+      name: 'Masthead',
+      properties: { article: P.list('Article', 'Article', fields, [], { titleField: 'title', min: 0, max: 1, feed: 'currentPage' }) },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.repeat('page', 'article', [b.text('heading', 'h1', dslItem('title'))])])
+    });
+    const placed = applyOperations(market0, [
+      { type: 'node.insert', owner: page(home), definitionId: newsDesign.id },
+      { type: 'node.insert', owner: page('pg_winter'), parentId: null, index: 0, definitionId: headerDesign.id }
+    ]);
+    const s = placed.state;
+    const nodeId = placed.results[0].nodeId as string;
     const def = defOf(s, instance(s, home, nodeId));
     const title = def.tree!.nodes['card-title'] as { label: unknown };
     const ref = { owner: page(home), instancePath: [nodeId], nodeId: 'card-title', itemPath: ['pg_winter'] };
@@ -655,7 +683,7 @@ describe('articles in the editor and the AI tools', () => {
     // The section's own heading is still typed where it shows.
     expect(computedAt(s, { ...ref, nodeId: 'heading', itemPath: [] }, (def.tree!.nodes.heading as { text: unknown }).text)).toBe(false);
     // So is an article header's title, which is its page's.
-    const headerId = s.pages.pg_winter.rootIds[0];
+    const headerId = placed.results[1].nodeId as string;
     const headerDef = defOf(s, instance(s, 'pg_winter', headerId));
     const titleRef = { owner: page('pg_winter'), instancePath: [headerId], nodeId: 'heading', itemPath: ['pg_winter'] };
     expect(computedAt(s, titleRef, (headerDef.tree!.nodes.heading as { text: unknown }).text)).toBe(true);
@@ -710,7 +738,7 @@ describe('articles in the editor and the AI tools', () => {
     expect(['2026-11-14', '2024-02-29', '0004-02-29'].map(isDate)).toEqual([true, true, true]);
     expect(['2026-02-30', '1900-02-29', '2026-13-01', '14 November', '', null, '0000-01-01'].map(isDate)).toEqual([false, false, false, false, false, false, false]);
     const { s } = market();
-    const component = [...generateProject(s).values()].find((v) => v.includes('so-foundation-content-news__card-date'))!;
+    const component = generateProject(s).get(defFile(newsDef(s)))!;
     expect(component).toContain('{#if isDate(item.date)}<time datetime={item.date}>{item.dateLabel}</time>{:else}{item.dateLabel}{/if}');
   });
 

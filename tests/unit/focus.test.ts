@@ -353,7 +353,8 @@ describe('a focal point on one placement', () => {
     expect(instanceOf(r.state, 'Home', 'hero.split').overrides?.media).toEqual({ phone: { aspectRatio: '16/9', objectPosition: '50% 20%' } });
     const css = generateSiteCss(r.state);
     const cls = overrideClass(hero.id, 'media');
-    const phone = ruleIn(css, MEDIA_QUERIES.phone, `.${cls}.${cls}`);
+    // Foundation's hero is code: a placement's rule for its part is written a class stronger, to beat the code's own CSS.
+    const phone = ruleIn(css, MEDIA_QUERIES.phone, `.${cls}.${cls}.${cls}`);
     expect(phone).toContain('object-position: 50% 20%');
     expect(phone).toContain('aspect-ratio: 16/9');
     // Not at the other sizes, not on the other hero or the team portraits, and not in the shared design.
@@ -371,7 +372,7 @@ describe('a focal point on one placement', () => {
     const r = applyOperations(s, [setStyle(s, 'Home', media, 'media', 'tablet', 'aspectRatio', '1/1'), setStyle(s, 'Home', media, 'media', 'tablet', 'objectPosition', '20% 50%')]);
     const cls = overrideClass(media.id, 'media');
     const css = generateSiteCss(r.state);
-    const tablet = ruleIn(css, MEDIA_QUERIES.tablet, `.${cls}.${cls}`);
+    const tablet = ruleIn(css, MEDIA_QUERIES.tablet, `.${cls}.${cls}.${cls}`);
     expect(tablet).toContain('aspect-ratio: 1/1');
     expect(tablet).toContain('object-position: 20% 50%');
     for (const media of [null, MEDIA_QUERIES.phone, MEDIA_QUERIES.desktop]) expect(blockOf(css, media)).not.toContain('object-position');

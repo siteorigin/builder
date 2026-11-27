@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OPERATION_SCHEMAS, validateOperation } from '@shared/ops';
-import { FORM_DESTINATIONS } from '@catalogue/foundation/form';
+import { FORM_DESTINATIONS } from '@shared/form-contract';
 import { canCall, canEditOperation, checkEditBatch, checkRpcRequest, COLLABORATOR_METHODS, COLLABORATOR_OPERATIONS, COPY_EDITOR_METHODS, HOST_ONLY_PROPS, LIVE_BATCH_MAX_COPIES, LIVE_BATCH_MAX_OPERATIONS, VIEWER_METHODS } from '@shared/live/capabilities';
 import { COPY_EDITOR_OPERATIONS } from '@shared/live/copy-editor';
 import { GUEST_ROLES, leastRole, narrower } from '@shared/live/limits';

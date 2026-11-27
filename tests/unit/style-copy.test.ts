@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ElementRef, InstanceNode, ProjectState, ResponsiveScope, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementRef, InstanceNode, ProjectState, ResponsiveScope, StyleValue } from '@shared/types';
 import { MEDIA_QUERIES, placementStyleControls } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { makeInstance } from '@engine/install';
+import { P, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 import { generateSiteCss, overrideClass } from '@generator/index';
 import { ProjectSession } from '../../src/main/project/session';
 import { captureStyle, planStylePaste, styleSelection, type StyleCopy } from '../../src/renderer/src/lib/style-copy';
@@ -29,6 +32,30 @@ const part = (s: ProjectState, componentId: string, partId: string): ElementRef 
 };
 const style = (s: ProjectState, ref: ElementRef, scope: ResponsiveScope, property: string, value: StyleValue | null) =>
   applyOperations(s, [{ type: 'node.setStyle', owner: ref.owner, nodeId: ref.instancePath[0] ?? ref.nodeId, ...(ref.partId ? { partId: ref.partId } : {}), scope, property, value }]).state;
+
+/**
+ * A banner built in the editor, its own design in the project: a section box with a heading and a picture, the parts a
+ * managed design's controls are read from (Foundation's sections are code, which offer their manifest's lists as given).
+ */
+const pictureBand = (s: ProjectState) =>
+  projectDesign(s, {
+    componentId: 'test.picture-band',
+    name: 'Picture band',
+    properties: { heading: P.str('Heading', 'Rooms we have planned'), image: P.image('Image') },
+    parts: {
+      root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background', 'color', 'minHeight'] },
+      heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+      media: { nodeId: 'media', label: 'Image', styleControls: ['aspectRatio', 'radius', 'shadow'] }
+    },
+    build: (b) => b.el('root', 'section', { name: 'Section' }, [b.text('heading', 'h2', prop('heading'), { name: 'Heading' }), b.image('media', prop('image'), { name: 'Image' })])
+  });
+/** Places a design at the end of Home, and returns the placement. */
+const placeOwn = (s: ProjectState, def: ComponentDefinition) => {
+  const node = makeInstance(def);
+  s.pages[homeId(s)].nodes[node.id] = node;
+  s.pages[homeId(s)].rootIds.push(node.id);
+  return node;
+};
 
 /** The declarations the generated stylesheet gives one selector at one size. */
 function declsAt(css: string, scope: ResponsiveScope, selector: string): string[] {
@@ -58,25 +85,38 @@ describe('copy style', () => {
     expect(hero.kind).toBe('section');
     expect(hero.label).toBe('Split hero');
     expect(hero.where).toBe('on the Home page');
-    const root = hero.targets.find((t) => t.part === 'root')!;
-    // A box that lets its background change also offers a background image.
-    expect(root.offered).toEqual(['paddingBlock', 'background', 'backgroundImage', 'color', 'minHeight', 'hidden']);
-    // An image part that can be cropped also offers its focal point.
-    expect(hero.targets.find((t) => t.part === 'media')!.offered).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
+    // Foundation's hero is code: its parts offer the lists its manifest names, with Hidden on the ones it styles.
+    expect(hero.targets.find((t) => t.part === 'root')!.offered).toEqual(['paddingBlock', 'background', 'color', 'minHeight', 'hidden']);
+    expect(hero.targets.find((t) => t.part === 'media')!.offered).toEqual(['aspectRatio', 'radius', 'shadow', 'hidden']);
+    // In a design built in the editor, a box that lets its background change also offers a background image, and an
+    // image part that can be cropped also offers its focal point.
+    const own = fresh();
+    const banner = placeOwn(own, pictureBand(own));
+    const band = styleSelection(own, { owner: owner(own), instancePath: [], nodeId: banner.id })!;
+    expect(band.targets.find((t) => t.part === 'root')!.offered).toEqual(['paddingBlock', 'background', 'backgroundImage', 'color', 'minHeight', 'hidden']);
+    expect(band.targets.find((t) => t.part === 'media')!.offered).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
     const heading = styleSelection(s, part(s, 'content.media', 'heading'))!;
     expect(heading).toMatchObject({ kind: 'single', label: 'Heading in Content with image' });
     expect(heading.targets).toHaveLength(1);
-    expect(heading.targets[0]).toMatchObject({ part: null, partId: 'heading', offered: ['textStyle', 'color'] });
+    // A part of a code section offers Hidden beside its own list.
+    expect(heading.targets[0]).toMatchObject({ part: null, partId: 'heading', offered: ['textStyle', 'color', 'hidden'] });
     // A card part is styled once for every card.
     expect(styleSelection(s, part(s, 'features.grid', 'card'))!.targets[0].reach).toBe('every card');
   });
 
   it('matches the inspector: Hidden on a section and on code parts, a part’s own list elsewhere', () => {
     const s = fresh();
+    // A section built in the editor: Hidden on its root beside its own list, a part's own list elsewhere.
+    const band = pictureBand(s);
+    expect(placementStyleControls(band, 'root', false)).toEqual(['paddingBlock', 'background', 'backgroundImage', 'color', 'minHeight', 'hidden']);
+    expect(placementStyleControls(band, 'heading', false)).toEqual(['textStyle', 'color']);
+    expect(placementStyleControls(band, 'nope', false)).toBeNull();
+    // Foundation's Content with image is code that places the classes it is given: Hidden on every part it names.
     const media = s.components[placed(s, 'content.media').definitionId];
-    expect(placementStyleControls(media, 'root', false)).toEqual(['paddingBlock', 'background', 'backgroundImage', 'hidden']);
-    expect(placementStyleControls(media, 'heading', false)).toEqual(['textStyle', 'color']);
-    expect(placementStyleControls(media, 'nope', false)).toBeNull();
+    expect(media.kind).toBe('code');
+    expect(placementStyleControls(media, 'root', true)).toEqual(['paddingBlock', 'background', 'hidden']);
+    expect(placementStyleControls(media, 'heading', true)).toEqual(['textStyle', 'color', 'hidden']);
+    expect(placementStyleControls(media, 'nope', true)).toBeNull();
     const header = s.components[(s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode).definitionId];
     expect(placementStyleControls(header, 'root', false)).toBeNull();
     expect(placementStyleControls(header, 'root', true)).toContain('hidden');
@@ -173,14 +213,15 @@ describe('paste style', () => {
     expect(after.pages[homeId(s)].rootIds).toEqual(s.pages[homeId(s)].rootIds);
     expect(placed(after, 'hero.split')).toEqual(placed(s, 'hero.split'));
 
-    // The exported site gives the destination 72px at desktop and 16px on phones.
+    // The exported site gives the destination 72px at desktop and 16px on phones. Content with image is code, whose
+    // own scoped styles a placement's overrides outrank with a tripled class and !important.
     const css = generateSiteCss(after);
-    const sel = `.${overrideClass(id, 'root')}.${overrideClass(id, 'root')}`;
-    expect(declsAt(css, 'base', sel)).toContain('padding-block: 72px');
-    expect(declsAt(css, 'phone', sel)).toEqual(['padding-block: 16px']);
+    const sel = `.${overrideClass(id, 'root')}`.repeat(3);
+    expect(declsAt(css, 'base', sel)).toContain('padding-block: 72px !important');
+    expect(declsAt(css, 'phone', sel)).toEqual(['padding-block: 16px !important']);
     expect(declsAt(css, 'desktop', sel)).toEqual([]);
     expect(declsAt(css, 'tablet', sel)).toEqual([]);
-    expect(declsAt(generateSiteCss(s), 'desktop', sel)).toEqual(['padding-block: 96px']);
+    expect(declsAt(generateSiteCss(s), 'desktop', sel)).toEqual(['padding-block: 96px !important']);
 
     // Pasting again changes nothing.
     const again = planStylePaste(after, copy, dest, 'every');

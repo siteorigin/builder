@@ -7,8 +7,7 @@ import { join } from 'node:path';
 import type { InstanceNode, PageDoc, ProjectState } from '@shared/types';
 import type { AuthoredPack, ThemePack } from '@catalogue/pack';
 import { P, createPack } from '@catalogue/dsl';
-import { BUILTIN_PACKS, FOUNDATION_PACK } from '@catalogue/builtin';
-import { catalogueComponent, registerPacks } from '@catalogue/index';
+import { catalogueComponent, getTheme, listThemes, registerPacks } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { pageStarterComponents, type PageStarter } from '@engine/page-starters';
@@ -17,7 +16,8 @@ import { toRichText } from '@shared/richtext';
 import { validateOperation } from '@shared/ops';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { toolDefinitions } from '@agent/tools';
-import { buildPack, registerBuiltinPacks } from '../../src/main/packs/build';
+import { buildPack } from '../../src/main/packs/build';
+import { metaOf, restorePacks } from './fixtures/packs';
 import { ProjectSession } from '../../src/main/project/session';
 import { titleOnlyPage } from '../../src/renderer/src/lib/page-start';
 
@@ -91,7 +91,10 @@ describe('page.create starters', () => {
     const ids = (p: PageDoc) => (sections(two.state, p)[1].props.items as Array<{ id: string }>).map((i) => i.id);
     const first = ids(two.state.pages[one.page.id]);
     const second = ids(two.page);
-    expect([first.length, second.length]).toEqual([3, 3]);
+    // Each has every one of the theme's default items, under IDs of its own.
+    const defaults = (catalogueComponent('foundation', 'features.grid')!.properties.items.default as unknown[]).length;
+    expect(defaults).toBeGreaterThan(1);
+    expect([first.length, second.length]).toEqual([defaults, defaults]);
     expect(new Set([...first, ...second]).size).toBe(first.length + second.length);
   });
 
@@ -144,12 +147,13 @@ describe('a page with only its title', () => {
 });
 
 describe('a theme without some of a starter’s sections', () => {
-  afterEach(() => registerBuiltinPacks());
+  afterEach(() => restorePacks());
 
   /** Foundation, installed as "lean", without the components named, and with a form that sends to its author. */
   function lean(without: string[], fixedEndpoint = false): ThemePack {
-    const { components, ...meta } = FOUNDATION_PACK;
-    const author = createPack({ ...meta, id: 'lean', name: 'Lean', version: '1.0.0', license: 'MIT' });
+    const foundation = getTheme('foundation');
+    const components = foundation.components;
+    const author = createPack(metaOf(foundation, { id: 'lean', name: 'Lean', version: '1.0.0', license: 'MIT', devOnly: undefined }));
     const adopt = (c: (typeof components)[number]) => {
       if (c.componentId !== 'contact.form') return author.adopt(c);
       const form = structuredClone(c);
@@ -161,7 +165,7 @@ describe('a theme without some of a starter’s sections', () => {
     };
     const pack: AuthoredPack = author.define(components.filter((c) => !without.includes(c.componentId)).map(adopt));
     const built: ThemePack = { ...buildPack(pack).pack, source: 'user', digest: 'lean1' };
-    registerPacks([...BUILTIN_PACKS.map((a) => buildPack(a).pack), built]);
+    registerPacks([...listThemes(), built]);
     return built;
   }
 
@@ -255,9 +259,8 @@ describe('page starters and project health (#873)', () => {
   const codes = (s: ProjectState) => counted(s).map((d) => d.code).sort();
 
   for (const project of ['business', 'blank'] as const) {
-    it(`adds no warnings of its own to a ${project} project, in any theme`, () => {
-      registerBuiltinPacks();
-      for (const themeId of BUILTIN_PACKS.map((a) => buildPack(a).pack.id)) {
+    it(`adds no warnings of its own to a ${project} project, in any theme`, async () => {
+      for (const themeId of (await restorePacks()).map((p) => p.id)) {
         const base = applyOperations(createStarterState(project, 'Starter Studio', false), [{ type: 'theme.apply', themeId }]).state;
         const before = codes(base);
         for (const starter of STARTERS) {

@@ -107,12 +107,18 @@ describe('only the editor’s preview carries text markers', () => {
   it('gives the hook to a code placement that marks text, in the preview only', () => {
     const { s } = services();
     const dev = generateProject(s, { instrument: true }).get(homeFile)!;
-    expect(dev).toContain(`so_text={(path, item) => (item == null ? path : path + '#' + item)}`);
+    // On the placement itself: the theme's sections on Home are given it too.
+    const placementIn = (page: string) => page.match(/<C_code_services_\w+\n[\s\S]*?\/>/)?.[0];
+    expect(placementIn(dev)).toContain(`so_text={(path, item) => (item == null ? path : path + '#' + item)}`);
     const clean = generateProject(s, { instrument: false }).get(homeFile)!;
     expect(clean).not.toContain('so_text');
-    // Code that marks no text is given no hook.
+    // Code that marks no text is given no hook, though the theme's sections beside it, which mark theirs, are.
     const plain = services(SOURCE.replaceAll(/ data-so-text=\{so_text\?\.\([^)]*\)\}/g, '').replace(', so_text }', ' }'));
-    expect(generateProject(plain.s, { instrument: true }).get(homeFile)).not.toContain('so_text');
+    const page = generateProject(plain.s, { instrument: true }).get(homeFile)!;
+    const placement = placementIn(page);
+    expect(placement).toContain('heading={"Our services"}');
+    expect(placement).not.toContain('so_text');
+    expect(page).toContain(`so_text={(path, item) => (item == null ? path : path + '#' + item)}`);
   });
 
   it('marks the heading, the intro and each item’s field in the preview, and nothing in the website', async () => {

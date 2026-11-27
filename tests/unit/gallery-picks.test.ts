@@ -5,13 +5,18 @@ import { join } from 'node:path';
 import type { EditOperation } from '@shared/ops';
 import type { AssetRecord, InstanceNode, ListItem, ListProp, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { carousel, gallery } from '@catalogue/foundation/content';
-import { team } from '@catalogue/foundation/people';
+import { getTheme } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { ProjectSession } from '../../src/main/project/session';
 import { emptyPickNote, mergeChoice, movePick, overNote, pickAnnouncement, pickedImage, pickImagesField, pickLabel, pickOperations, pickRoom, planChoice, planPicks, sampleRows, startingSamples, togglePick, type PickStep } from '../../src/renderer/src/lib/gallery-picks';
 
 /** Issue #60: build a gallery by choosing several library images in one pass. */
+
+/** Foundation's components as the app loads them. */
+const theme = (componentId: string) => getTheme('foundation').components.find((c) => c.componentId === componentId)!;
+const gallery = theme('media.gallery');
+const carousel = theme('media.carousel');
+const team = theme('team.grid');
 
 const images = gallery.properties.images as ListProp;
 /** The six rows a Gallery used to start with, as a project made then still holds them. */

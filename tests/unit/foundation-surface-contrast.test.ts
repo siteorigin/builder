@@ -25,8 +25,11 @@ import { STYLES_DIR, effectiveTokens, generateProject } from '@generator/index';
 const browserInstalled = existsSync(chromium.executablePath());
 const ORIGIN = 'https://site.test';
 
-/** The colour a ground draws in: the theme's own (brand links and buttons, the focus colour), or a dark or brand ground's text colour. */
-type Ink = 'theme' | 'on-inverse' | 'on-brand';
+/**
+ * The colour a ground draws in: the theme's own (brand links and buttons, the focus colour), the same with text buttons
+ * in the ground's text colour (a soft panel's), or a dark or brand ground's text colour.
+ */
+type Ink = 'theme' | 'theme-text' | 'on-inverse' | 'on-brand';
 /** Where the theme's primitives are dropped in a section: on its ground, in a light card, or in faded rich text (links and checks only). */
 interface Spot {
   selector: string;
@@ -50,6 +53,8 @@ interface Placement {
 const INNER = ":is([class$='__inner'], [class*='__inner '])";
 /** A part a tone styles carries the tone's class after its own, so its class is matched anywhere in the list. */
 const PANEL = ":is([class$='__panel'], [class*='__panel '])";
+/** A light card in a section (a contact method, a plan, a feature), which carries the theme's surface class after its own. */
+const card = (name: string) => `:is([class$='__${name}'], [class*='__${name} '])`;
 const at = (selector: string, ink: Ink, rich = false): Spot => ({ selector, ink, rich });
 const PLACEMENTS: Placement[] = [
   { name: 'hero.centered default', component: 'hero.centered', tone: 'default', spots: [at(INNER, 'theme')] },
@@ -57,20 +62,22 @@ const PLACEMENTS: Placement[] = [
   { name: 'hero.centered inverse', component: 'hero.centered', tone: 'inverse', spots: [at(INNER, 'on-inverse')] },
   { name: 'hero.centered brand', component: 'hero.centered', tone: 'brand', spots: [at(INNER, 'on-brand')], ownInk: 'on-brand' },
   { name: 'hero.split inverse', component: 'hero.split', tone: 'inverse', spots: [at(INNER, 'on-inverse')], ownInk: 'on-inverse' },
-  { name: 'contact.details inverse', component: 'contact.details', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at("[class$='__method']", 'theme')] },
+  { name: 'contact.details inverse', component: 'contact.details', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at(card('method'), 'theme')] },
   // The Call to action's panel is the brand ground by default, dark or soft in its other tones; around it is the page.
   { name: 'cta.banner default', component: 'cta.banner', tone: 'default', spots: [at(PANEL, 'on-brand')], ownInk: 'on-brand' },
   { name: 'cta.banner inverse', component: 'cta.banner', tone: 'inverse', spots: [at(PANEL, 'on-inverse'), at(INNER, 'theme')], ownInk: 'on-inverse' },
-  { name: 'cta.banner muted', component: 'cta.banner', tone: 'muted', spots: [at(PANEL, 'theme')], ownInk: 'theme' },
+  // On the soft panel its own button takes the brand's fill and its text button the panel's text colour.
+  { name: 'cta.banner muted', component: 'cta.banner', tone: 'muted', spots: [at(PANEL, 'theme')], ownInk: 'theme-text' },
   { name: 'content.text inverse', component: 'content.text', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at('.so-rich', 'on-inverse', true)] },
   { name: 'layout.section inverse', component: 'layout.section', tone: 'inverse', spots: [at(INNER, 'on-inverse')] },
   // A light section placed in a dark one starts afresh.
   { name: 'intro.page default in a dark section', component: 'intro.page', tone: 'default', spots: [at(INNER, 'theme')], nestIn: 'layout.section inverse' },
   // White cards inside a dark section keep the theme's own colours, in a copy of the section too.
-  { name: 'pricing.plans inverse', component: 'pricing.plans', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at("[class$='__plan']", 'theme')] },
-  { name: 'features.grid inverse', component: 'features.grid', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at("[class$='__card']", 'theme')] },
-  { name: 'features.grid inverse copy', component: 'features.grid', tone: 'inverse', copy: true, spots: [at(INNER, 'on-inverse'), at("[class$='__card']", 'theme')] },
-  { name: 'testimonials.grid inverse', component: 'testimonials.grid', tone: 'inverse', spots: [at("[class$='__card']", 'theme')] },
+  { name: 'pricing.plans inverse', component: 'pricing.plans', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at(card('plan'), 'theme')] },
+  { name: 'features.grid inverse', component: 'features.grid', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at(card('card'), 'theme')] },
+  { name: 'features.grid inverse copy', component: 'features.grid', tone: 'inverse', copy: true, spots: [at(INNER, 'on-inverse'), at(card('card'), 'theme')] },
+  // Testimonials stand on the section's own ground, each under a hairline rather than in a card.
+  { name: 'testimonials.grid inverse', component: 'testimonials.grid', tone: 'inverse', spots: [at(INNER, 'on-inverse')] },
   { name: 'contact.form inverse', component: 'contact.form', tone: 'inverse', spots: [at('.so-form__inner', 'on-inverse')], ownInk: 'on-inverse' },
   { name: 'site.search inverse', component: 'site.search', tone: 'inverse', spots: [at('.so-search__inner', 'on-inverse')], ownInk: 'on-inverse' }
 ];
@@ -121,6 +128,7 @@ function exportedSite(opts: { placements?: Placement[]; header?: { surface?: str
     brand: computed('color.brand'),
     onBrand: computed('color.on-brand'),
     focus: computed('color.focus'),
+    text: computed('color.text'),
     inverse: computed('color.inverse'),
     onInverse: computed('color.on-inverse')
   };
@@ -132,6 +140,7 @@ type Colors = ReturnType<typeof exportedSite>['colors'];
 function inkColors(ink: Ink, c: Colors) {
   if (ink === 'on-inverse') return { link: c.onInverse, fill: c.onInverse, outline: c.onInverse };
   if (ink === 'on-brand') return { link: c.onBrand, fill: c.onBrand, outline: c.onBrand };
+  if (ink === 'theme-text') return { link: c.text, fill: c.brand, outline: c.focus };
   return { link: c.brand, fill: c.brand, outline: c.focus };
 }
 
@@ -206,7 +215,7 @@ interface Sample {
   outline: { color: string; style: string; width: string; focusVisible: boolean } | null;
   /** A check list item's disc (::before) and mark (::after), with what makes the mark show. */
   check?: { mark: string; disc: string; content: string; width: string };
-  /** A current-page link's underline (::after). */
+  /** A current-page link's mark: a 2 px rule its menu item draws under it (the item's ::after bottom border). */
   current?: { color: string; content: string; height: string };
   above: Array<{ background: string; opacity: string }>;
   opacity: string;
@@ -221,12 +230,14 @@ const SAMPLE_FN = `(el) => {
   for (let p = el.parentElement; p; p = p.parentElement) above.push({ background: getComputedStyle(p).backgroundColor, opacity: getComputedStyle(p).opacity });
   const after = getComputedStyle(el, '::after');
   const check = role === 'check' ? { mark: after.borderRightColor, disc: getComputedStyle(el, '::before').backgroundColor, content: after.content, width: after.borderRightWidth } : undefined;
-  const current = role === 'current' ? { color: after.backgroundColor, content: after.content, height: after.height } : undefined;
+  const mark = role === 'current' ? getComputedStyle(el.closest('li'), '::after') : undefined;
+  const current = mark ? { color: mark.borderBottomColor, content: mark.content, height: mark.borderBottomWidth } : undefined;
   return { id: el.dataset.probeId, label: el.dataset.label, role, ink: el.dataset.ink || undefined, color: cs.color, background: cs.backgroundColor, outline: null, check, current, above, opacity: cs.opacity };
 }`;
 
+// A search query's ring goes round the whole search row it sits in, the row's button included.
 const OUTLINE_FN = `(el) => {
-  const f = getComputedStyle(el);
+  const f = getComputedStyle(el.matches('.so-search__input') ? el.closest('.so-search__row') : el);
   return { color: f.outlineColor, style: f.outlineStyle, width: f.outlineWidth, focusVisible: el.matches(':focus-visible') };
 }`;
 
@@ -432,7 +443,12 @@ describe.skipIf(!browserInstalled)('Foundation colours on dark and brand grounds
       await label(p, '.so-header__cta', "label(el, 'header action', 'primary', 'on-inverse')");
       await label(p, '.so-header__nav ul a', "label(el, 'header link ' + i, i ? 'link' : 'current', 'on-inverse')");
       await label(p, '.so-header__brand', "label(el, 'header brand', 'control', 'on-inverse')");
-      await p.evaluate(`document.querySelector('.so-header__nav ul a').setAttribute('aria-current', 'page')`);
+      // The first link's page as the current one, as the header marks it: on the link, and on its menu item.
+      await p.evaluate(`(() => {
+        const link = document.querySelector('.so-header__nav ul a');
+        link.setAttribute('aria-current', 'page');
+        link.closest('li').classList.add('so-header__item--current');
+      })()`);
       const { rest, hover } = await sampleAll(p);
       const headerColor = (await p.evaluate(`getComputedStyle(document.querySelector('header.so-header')).color`)) as string;
       expect(rest.map((s) => s.label).sort()).toEqual(['header action', 'header brand', 'header link 0', 'header link 1']);

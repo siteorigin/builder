@@ -5,8 +5,9 @@
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState, TextNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { P } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { getTheme } from '@catalogue/index';
+import { P, type ComponentSpec, type TreeBuilder } from '@catalogue/dsl';
+import { FOUNDATION_AUTHOR, registerBeside, restorePacks, testPack } from './fixtures/packs';
 import { applyOperations } from '@engine/apply';
 import { makeInstance } from '@engine/install';
 import { blocksSaving, validateState } from '@engine/validate';
@@ -16,7 +17,23 @@ import { headingOutline, pageHeadings } from '@generator/checks';
 import { generateProject } from '@generator/index';
 import { headingLevelOps, headingTarget, pageOutline } from '../../src/renderer/src/lib/outline';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
+
+/** A centered hero designed with the editor's tree: its heading's level is the placement's choice. */
+const heroSpec = (): ComponentSpec => ({
+  componentId: 'hero.centered',
+  name: 'Centered hero',
+  description: '',
+  category: 'hero',
+  tags: [],
+  icon: 'sparkles',
+  properties: {
+    heading: P.str('Heading', 'Thoughtful work for people who care about the details'),
+    headingLevel: P.choice('Heading level', 'h1', [['h1', 'Heading 1 (page title)'], ['h2', 'Heading 2'], ['h3', 'Heading 3'], ['h4', 'Heading 4'], ['h5', 'Heading 5'], ['h6', 'Heading 6']])
+  },
+  parts: { root: { nodeId: 'root', label: 'Section' }, heading: { nodeId: 'heading', label: 'Heading' } },
+  build: (b: TreeBuilder) => b.el('root', 'section', {}, [b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' } })])
+});
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const pageAt = (s: ProjectState, route: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === route)!;
@@ -118,13 +135,19 @@ describe('heading outline', () => {
     const home = s.site.homePageId;
     withHeadings(s, home, [{ id: 'n_title', tag: 'h1', text: 'Welcome' }]);
     expect(own(s, home)[0]).toMatchObject({ level: 1, text: 'Welcome', nodeId: 'n_title', levelSource: { kind: 'node' } });
-    // A hero installed before its heading level could be chosen keeps a fixed Heading 1.
-    const { s: withHero, pageId } = contactWithHero();
-    const hero = withHero.components['foundation.hero.centered'];
+    // A hero designed before its heading level could be chosen keeps a fixed Heading 1.
+    const withHero = fresh();
+    const heroHome = withHero.site.homePageId;
+    withHeadings(withHero, heroHome, [{ id: 'n_intro', tag: 'h2', text: 'Intro' }]);
+    const hero = FOUNDATION_AUTHOR.managed(heroSpec());
     delete hero.properties.headingLevel;
     (hero.tree!.nodes.heading as TextNode).tag = 'h1';
-    expect(own(withHero, pageId)[1]).toMatchObject({ level: 1, defNodeId: 'heading' });
-    expect(own(withHero, pageId)[1].levelSource).toBeUndefined();
+    withHero.components[hero.id] = hero;
+    const placed = makeInstance(hero, {});
+    withHero.pages[heroHome].nodes[placed.id] = placed;
+    withHero.pages[heroHome].rootIds.push(placed.id);
+    expect(own(withHero, heroHome)[1]).toMatchObject({ level: 1, defNodeId: 'heading' });
+    expect(own(withHero, heroHome)[1].levelSource).toBeUndefined();
   });
 
   it('counts a page title shown more than once from one place, such as slot content a list repeats', () => {
@@ -321,9 +344,17 @@ describe('heading review in Project health', () => {
     expect(headingWarnings(createStarterState('blank', 'Blank', false))).toEqual([]);
   });
 
-  it('offers a heading level once an older installed hero is updated from the theme', () => {
-    const { s, pageId } = contactWithHero();
-    const hero = s.components['foundation.hero.centered'];
+  it('offers a heading level once an older installed hero is updated from the theme', async () => {
+    // Foundation's sections under another theme's name, with its centered hero a design (Foundation's is code, whose
+    // headings are not read here), and a site on that theme.
+    const author = testPack('outline-theme');
+    const others = getTheme('foundation').components.filter((c) => c.componentId !== 'hero.centered').map((c) => author.adopt(c));
+    registerBeside(author.define([...others, author.managed(heroSpec())]));
+    const site = createStarterState('blank', 'Test Studio', false, 'outline-theme');
+    const pageId = site.site.homePageId;
+    withHeadings(site, pageId, [{ id: 'n_intro', tag: 'h1', text: 'Let’s talk' }]);
+    const s = applyOperations(site, [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, componentId: 'hero.centered', index: 1 }]).state;
+    const hero = s.components['outline-theme.hero.centered'];
     // The hero as installed before its heading level could be chosen.
     delete hero.properties.headingLevel;
     (hero.tree!.nodes.heading as TextNode).tag = 'h1';
@@ -332,6 +363,7 @@ describe('heading review in Project health', () => {
     expect(themeUpdates(s).available.map((u) => u.id)).toContain(hero.id);
     const next = applyOperations(s, [{ type: 'theme.refresh' }]).state;
     expect(own(next, pageId)[1]).toMatchObject({ level: 1, levelSource: { kind: 'prop', prop: 'headingLevel' } });
+    await restorePacks();
   });
 });
 

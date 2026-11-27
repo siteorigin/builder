@@ -17,6 +17,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { reviewEntryId, reviewNote, standingNote, undoableId } from '../../src/renderer/src/lib/result';
 import { reviewPlan, stepChangeText, turnName } from '../../src/renderer/src/lib/turn-review';
 import { ownAddress, ownAddresses, stepChanges } from '../../src/main/project/turn-review';
+import { withManaged } from './fixtures/component-contract-designs';
 import { defFile } from '@generator/index';
 
 const dirs: string[] = [];
@@ -26,10 +27,11 @@ afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
-async function make() {
+/** A session on the business starter; `managed` sections are the managed designs of their contracts (fixtures/component-contract-designs). */
+async function make(...managed: string[]) {
   const dir = mkdtempSync(join(tmpdir(), 'so-turn-review-'));
   dirs.push(dir);
-  const s = await ProjectSession.create(dir, createStarterState('business', 'Field Notes Bookshop', false));
+  const s = await ProjectSession.create(dir, withManaged(createStarterState('business', 'Field Notes Bookshop', false), ...managed));
   open.push(s);
   return { dir, s };
 }
@@ -292,7 +294,8 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
   });
 
   it('treats a later change to where a component is used as depending on a turn that changed its design', async () => {
-    const { s } = await make();
+    // A design drawn from data, whose defaults a turn changes in its manifest alone.
+    const { s } = await make('hero.split');
     // The site's own copy of the hero, which the AI can redesign.
     await ok(s.apply({ operations: [{ type: 'component.fork', definitionId: (s.state.pages[homeId(s)].nodes[hero(s)] as InstanceNode).definitionId }] }, { label: 'Fork hero' }));
     const def = (s.state.pages[homeId(s)].nodes[hero(s)] as InstanceNode).definitionId;

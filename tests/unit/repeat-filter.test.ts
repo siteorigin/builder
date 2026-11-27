@@ -21,12 +21,12 @@ import { repeatFilterProblem } from '@engine/schema';
 import { FILTER_OFF_CLASS, defFile, generateComponentsCss, generateProject, generateStandaloneComponent } from '@generator/index';
 import { UTIL_JS } from '@generator/runtime-files';
 import { P, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR, projectDesign } from './fixtures/packs';
 import { MIGRATIONS } from '@shared/migrations';
 import { partReach } from '@agent/scope';
 import { VISITOR_TEXT_GROUPS, visitorTextFor } from '@shared/visitor-text';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
 const fresh = () => createStarterState('business', 'Test Studio', false);
 /** A single empty Home page: nothing on it but what a test places. */
 const blank = () => createStarterState('blank', 'Test Studio', false);
@@ -47,15 +47,41 @@ function place(s: ProjectState, def: ComponentDefinition, props: Record<string, 
 /** The project's copy of a Foundation component. */
 const foundation = (s: ProjectState, componentId: string) => s.components[installComponent(s, componentId)];
 
-/** Foundation's Page list (a portfolio) on Home: a card per category, linking in turn to the starter's other pages. */
-function portfolio(s: ProjectState, categories: string[], props: Record<string, unknown> = {}) {
-  const list = foundation(s, 'content.pages');
+/**
+ * A Page list as a design made in the editor: the slice of the one Foundation used to ship as a tree that filters, a
+ * card per page in a list filtered by its category, left out with its list item when its page link goes nowhere.
+ */
+function pageListDesign(s: ProjectState): ComponentDefinition {
+  return projectDesign(s, {
+    componentId: 'project.page-list',
+    name: 'Page list',
+    properties: { items: P.list('Pages', 'Page', { pageLink: P.link('Page'), title: P.str('Title', ''), group: P.str('Category', '') }, [], { titleField: 'title', min: 0 }) },
+    parts: {},
+    build: (b) =>
+      b.el('root', 'section', {}, [
+        b.el('inner', 'div', {}, [
+          b.el('grid', 'ul', { collapseEmpty: true }, [
+            b.repeat('cards', 'items', [
+              b.el('card-item', 'li', { when: { $item: 'pageLink' }, collapseEmpty: true }, [
+                b.el('card', 'div', { when: { $item: 'title' } }, [b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain')])
+              ])
+            ], { filter: { field: 'group' } })
+          ])
+        ])
+      ])
+  });
+}
+
+/** A Page list on Home, Foundation's unless another is given: a card per category, linking in turn to the starter's other pages. */
+function portfolio(s: ProjectState, categories: string[], props: Record<string, unknown> = {}, list = foundation(s, 'content.pages')) {
   const pages = Object.keys(s.pages).filter((id) => id !== s.site.homePageId);
   const items = categories.map((group, i) => ({ id: `p${i + 1}`, pageLink: { type: 'page', target: pages[i % pages.length] }, title: `Project ${i + 1}`, group }));
   return { list, node: place(s, list, { items, ...props }) };
 }
-/** The Page list cards on a page. */
-const portfolioCards = (html: string) => html.match(/<li class="so-foundation-content-pages__card-item\b/g) ?? [];
+/** Foundation's Page list cards on a page. */
+const portfolioCards = (html: string) => html.match(/<li class="page-list__item\b/g) ?? [];
+/** The class Foundation's Page list hides a card of another category with. */
+const PAGE_LIST_OFF_CLASS = 'so-state-off';
 
 /** A project component built with the catalogue helpers, installed into the project. */
 function addDef(s: ProjectState, spec: Omit<ComponentSpec, 'category' | 'tags' | 'icon' | 'description'>): ComponentDefinition {
@@ -125,8 +151,9 @@ async function renderHome(s: ProjectState): Promise<string> {
 
 /** Each filter row on the page: its pills as [label, pressed, disabled] and the status it reads out. */
 function bars(html: string) {
-  return [...html.matchAll(/<div class="so-filter"[^>]*>([\s\S]*?)<\/div>/g)].map((m) => ({
-    open: /<div class="so-filter"[^>]*>/.exec(m[0])![0],
+  // A theme's own class on the row may sit beside the filter's (Svelte's scoping class is left out, as it changes with the CSS).
+  return [...html.matchAll(/<div class="so-filter(?: [^"]*)?"[^>]*>([\s\S]*?)<\/div>/g)].map((m) => ({
+    open: /<div class="so-filter(?: [^"]*)?"[^>]*>/.exec(m[0])![0].replace(/ svelte-[a-z0-9]+/g, ''),
     pills: [...m[1].matchAll(/<button([^>]*)>([^<]*)<\/button>/g)].map((b) => [b[2], /aria-pressed="true"/.test(b[1]), /\bdisabled\b/.test(b[1])]),
     status: /role="status"[^>]*>([^<]*)</.exec(m[1])?.[1]
   }));
@@ -153,7 +180,7 @@ describe('generated category filters', () => {
     // The second placement's cards name one category between them: no pills there.
     expect(bars(html)).toEqual([
       {
-        open: '<div class="so-filter" role="group" aria-label="Filter by category">',
+        open: '<div class="so-filter page-list__filter" role="group" aria-label="Filter by category">',
         pills: [['All', true, true], ['Homes', false, true], ['Offices', false, true]],
         status: '3 items showing'
       }
@@ -161,8 +188,10 @@ describe('generated category filters', () => {
     // Every card is in the page, none hidden.
     expect(portfolioCards(html)).toHaveLength(5);
     expect(html).not.toContain(FILTER_OFF_CLASS);
+    expect(html).not.toContain(PAGE_LIST_OFF_CLASS);
     // The row goes just above the list, inside the section's own container.
-    expect(html.indexOf('class="so-filter"')).toBeLessThan(html.indexOf('so-foundation-content-pages__grid'));
+    expect(html.indexOf('class="so-filter')).toBeGreaterThan(html.indexOf('page-list__inner'));
+    expect(html.indexOf('class="so-filter')).toBeLessThan(html.indexOf('page-list__grid'));
   });
 
   it('pills a text field’s categories in the order items first name them, once each however they are spelt, and leaves blanks to All', async () => {
@@ -237,7 +266,7 @@ describe('generated category filters', () => {
 
   it('keeps filtering, with its hiding rules, in a code copy of a placement', () => {
     const s = fresh();
-    const { node } = portfolio(s, ['Homes', 'Offices']);
+    const { node } = portfolio(s, ['Homes', 'Offices'], {}, pageListDesign(s));
     const r = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id }]);
     const copy = r.state.components[(r.results[0] as { definitionId: string }).definitionId];
     expect(copy.kind).toBe('code');
@@ -473,15 +502,16 @@ describe('editing designs that filter', () => {
 
   it('refuses to detach a placement that filters its items, and detaches one whose cards name one category', () => {
     const s = fresh();
-    const on = portfolio(s, ['Homes', 'Offices']).node;
-    const off = portfolio(s, ['Homes', 'homes ']).node;
+    const list = pageListDesign(s);
+    const on = portfolio(s, ['Homes', 'Offices'], {}, list).node;
+    const off = portfolio(s, ['Homes', 'homes '], {}, list).node;
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: on.id }])).toThrow(/filters its items by category here/);
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: on.id }])).toThrow(/Give its items one category between them, or none, first/);
     expect(() => apply(s, [{ type: 'component.detachInstance', owner, nodeId: off.id }])).not.toThrow();
     // Only cards that render count: the second category is on a card whose page link goes nowhere.
     const t = fresh();
-    const { node } = portfolio(t, ['Homes', 'Offices']);
+    const { node } = portfolio(t, ['Homes', 'Offices'], {}, pageListDesign(t));
     ((node.props.items as ListItem[])[1] as Record<string, unknown>).pageLink = { type: 'none', target: '' };
     expect(() => apply(t, [{ type: 'component.detachInstance', owner: { kind: 'page', id: t.site.homePageId }, nodeId: node.id }])).not.toThrow();
   });

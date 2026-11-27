@@ -12,16 +12,16 @@ import type { Component } from 'svelte';
 import type { ComponentDefinition, Condition, GraphNode, InstanceNode, LinkNode, ProjectState, UiStateSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { installComponent, makeInstance } from '@engine/install';
+import { makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { REUSABILITY_CODES } from '@engine/reusability';
 import { CHOICE_GROUP_CLASS, CHOICE_OFF_CLASS, SCRIPTS_CLASS, STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
 import { notFoundSectionRoutes, publicationPlan, renderedContent } from '@generator/checks';
 import { UTIL_JS } from '@generator/runtime-files';
-import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
+import { getTheme } from '@catalogue/index';
 import { P, eq, ne, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR, foundationDesign } from './fixtures/packs';
 import { MODEL_BINDING, OPERATION_SCHEMAS, validateOperation } from '@shared/ops';
 import { MIGRATIONS, migrateProject } from '@shared/migrations';
 import { SCHEMA_VERSION } from '@shared/types';
@@ -31,7 +31,9 @@ import { executeTool } from '@agent/tools';
 import { startingVariants } from '@shared/variants';
 import { conditionSources, describeConditions, readRule, ruleOp } from '../../src/renderer/src/lib/conditions';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
+/** Foundation's base stylesheet, as its release ships it. */
+const FOUNDATION_BASE_CSS = getTheme('foundation').baseCss;
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const owner = (def: ComponentDefinition) => ({ kind: 'component' as const, id: def.id });
@@ -258,7 +260,9 @@ describe('UI state a component declares', () => {
     const code = apply(s, [{ type: 'component.createCode', name: 'Widget', source: '<p>Hi</p>\n' }]);
     const codeId = Object.values(code.components).find((d) => d.name === 'Widget')!.id;
     expect(() => apply(code, [{ type: 'component.setState', definitionId: codeId, state: 'open', schema: { type: 'boolean' } }])).toThrow(/code component/);
-    const theme = s.components[installComponent(s, 'features.grid')];
+    // A design the theme owns, in the project as a theme's section is.
+    const theme = foundationDesign({ componentId: 'features.grid', name: 'Services grid', properties: {}, parts: { root: { nodeId: 'root', label: 'Section' } }, build: (b) => b.el('root', 'section', {}, []) });
+    s.components[theme.id] = theme;
     expect(() => apply(s, [{ type: 'component.setState', definitionId: theme.id, state: 'open', schema: { type: 'boolean' } }])).toThrow(/belongs to the theme/);
     // A fork carries the theme's state as its own.
     theme.state = { open: structuredClone(OPEN) };

@@ -7,14 +7,15 @@
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition, ProjectState, TokenDef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { BUILTIN_PACKS, FOUNDATION_PACK } from '@catalogue/builtin';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { getTheme, listThemes } from '@catalogue/index';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
+import { featuresGrid, reusabilityDesigns } from './fixtures/component-reusability-designs';
 import { P, item, prop, tok, type ComponentSpec } from '@catalogue/dsl';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { componentReusabilityDiagnostics, isMicroLabel, isReusabilityWarning } from '@engine/reusability';
 import { effectiveTokens } from '@generator/index';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
 const fresh = () => createStarterState('business', 'Test Studio', false);
 
 /** A project component built with the catalogue helpers, installed into the project. */
@@ -28,19 +29,24 @@ const reusability = (s: ProjectState) => validateState(s).filter(isReusabilityWa
 const where = (ds: Diagnostic[]) => ds.map((d) => [d.code, d.nodeId]);
 const field = (d: Diagnostic) => JSON.parse(d.site!) as string[];
 
-describe('the built-in Foundation components', () => {
-  const managedDefs = FOUNDATION_PACK.components.filter((d) => d.kind === 'managed');
-  const asProject = (pack: (typeof BUILTIN_PACKS)[number], componentId: string) => ({ ...structuredClone(pack.components.find((d) => d.componentId === componentId)!), owner: 'project' as const });
+describe('the shipped themes and the designs a person makes', () => {
+  const asProject = (def: ComponentDefinition) => ({ ...structuredClone(def), owner: 'project' as const });
+  const design = (componentId: string) => asProject(reusabilityDesigns().find((d) => d.componentId === componentId)!);
+  const tokens = getTheme('foundation').tokens;
 
   it('raise no reusability warning, read as project components', () => {
-    expect(managedDefs.length).toBeGreaterThan(15);
-    for (const pack of BUILTIN_PACKS) {
+    const packs = listThemes();
+    expect(packs.map((p) => p.id)).toEqual(expect.arrayContaining(['foundation', 'foundation-alt']));
+    for (const pack of packs) {
       // Every check has site styles to compare with, so none passes by having nothing to suggest.
       expect(['color', 'space'].every((g) => pack.tokens.some((t) => t.group === g))).toBe(true);
-      const found = pack.components.filter((d) => d.kind === 'managed').flatMap((d) => componentReusabilityDiagnostics({ ...structuredClone(d), owner: 'project' }, pack.tokens));
-      expect(found.map((d) => d.message)).toEqual([]);
-      // Each pack is really read: a fixed heading added to one of its components is reported.
-      const features = asProject(pack, 'features.grid');
+      // The shipped sections are Svelte code, which is not a design to check: none is reported, read as a project's.
+      expect(pack.components.length).toBeGreaterThan(15);
+      expect(pack.components.flatMap((d) => componentReusabilityDiagnostics(asProject(d), pack.tokens)).map((d) => d.message)).toEqual([]);
+      // Designs shaped like the sections Foundation used to ship as trees raise none against either theme's styles.
+      expect(reusabilityDesigns().flatMap((d) => componentReusabilityDiagnostics(asProject(d), pack.tokens)).map((d) => d.message)).toEqual([]);
+      // Each pack is really read: a fixed heading added to one of the designs is reported.
+      const features = design('features.grid');
       (features.tree!.nodes.card as { children: string[] }).children.push('fixed');
       features.tree!.nodes.fixed = { id: 'fixed', kind: 'text', tag: 'h4', text: 'Popular' };
       expect(where(componentReusabilityDiagnostics(features, pack.tokens))).toEqual([['COMPONENT_UNBOUND_CONTENT', 'fixed']]);
@@ -48,40 +54,42 @@ describe('the built-in Foundation components', () => {
   });
 
   it('are still read: a part or a style taken away from one is reported', () => {
-    const pages = asProject(FOUNDATION_PACK, 'content.pages');
+    const pages = design('content.pages');
     delete pages.parts.cardImage;
-    expect(where(componentReusabilityDiagnostics(pages, FOUNDATION_PACK.tokens))).toEqual([['COMPONENT_PART_MISSING', 'card-image']]);
+    expect(where(componentReusabilityDiagnostics(pages, tokens))).toEqual([['COMPONENT_PART_MISSING', 'card-image']]);
     // The team's portrait is the card's picture, so it needs its part.
-    const team = asProject(FOUNDATION_PACK, 'team.grid');
+    const team = design('team.grid');
     delete team.parts[Object.entries(team.parts).find(([, p]) => p.nodeId === 'portrait')![0]];
-    expect(where(componentReusabilityDiagnostics(team, FOUNDATION_PACK.tokens))).toEqual([['COMPONENT_PART_MISSING', 'portrait']]);
+    expect(where(componentReusabilityDiagnostics(team, tokens))).toEqual([['COMPONENT_PART_MISSING', 'portrait']]);
     // The testimonial's 44px portrait beside a name is a detail; at 65px across it is the card's picture.
-    const quotes = asProject(FOUNDATION_PACK, 'testimonials.grid');
+    const quotes = design('testimonials.grid');
     expect(Object.values(quotes.parts).some((p) => p.nodeId === 'portrait')).toBe(false);
-    expect(componentReusabilityDiagnostics(quotes, FOUNDATION_PACK.tokens)).toEqual([]);
+    expect(componentReusabilityDiagnostics(quotes, tokens)).toEqual([]);
     quotes.tree!.nodes.portrait.styles = { base: { ...quotes.tree!.nodes.portrait.styles!.base, width: '64px' } };
-    expect(componentReusabilityDiagnostics(quotes, FOUNDATION_PACK.tokens)).toEqual([]);
+    expect(componentReusabilityDiagnostics(quotes, tokens)).toEqual([]);
     quotes.tree!.nodes.portrait.styles = { base: { ...quotes.tree!.nodes.portrait.styles!.base, width: '65px' } };
-    expect(where(componentReusabilityDiagnostics(quotes, FOUNDATION_PACK.tokens))).toEqual([['COMPONENT_PART_MISSING', 'portrait']]);
+    expect(where(componentReusabilityDiagnostics(quotes, tokens))).toEqual([['COMPONENT_PART_MISSING', 'portrait']]);
     // Small on phones but large from desktop up is not a detail.
     quotes.tree!.nodes.portrait.styles = { base: { ...quotes.tree!.nodes.portrait.styles!.base, width: '44px' }, desktop: { width: '320px' } };
-    expect(where(componentReusabilityDiagnostics(quotes, FOUNDATION_PACK.tokens))).toEqual([['COMPONENT_PART_MISSING', 'portrait']]);
+    expect(where(componentReusabilityDiagnostics(quotes, tokens))).toEqual([['COMPONENT_PART_MISSING', 'portrait']]);
     // The news card is an article named Card, with only a gap of its own: still the card a placement restyles.
-    const news = asProject(FOUNDATION_PACK, 'content.news');
+    const news = design('content.news');
     const card = Object.entries(news.parts).find(([, p]) => news.tree!.nodes[p.nodeId]?.name === 'Card')!;
     delete news.parts[card[0]];
-    expect(where(componentReusabilityDiagnostics(news, FOUNDATION_PACK.tokens))).toEqual([['COMPONENT_PART_MISSING', card[1].nodeId]]);
-    // A literal color in one is reported against the pack's own site styles. White is two site colors here (cards,
+    expect(where(componentReusabilityDiagnostics(news, tokens))).toEqual([['COMPONENT_PART_MISSING', card[1].nodeId]]);
+    // A literal color in one is reported against Foundation's own site styles. White is two site colors there (cards,
     // and text on brand), so neither is guessed.
-    const features = asProject(FOUNDATION_PACK, 'features.grid');
+    const features = design('features.grid');
     features.tree!.nodes.card.styles = { base: { ...features.tree!.nodes.card.styles?.base, background: '#ffffff' } };
-    const [literal] = componentReusabilityDiagnostics(features, FOUNDATION_PACK.tokens);
+    const [literal] = componentReusabilityDiagnostics(features, tokens);
     expect(literal.message).toContain('uses #ffffff for its background. Link it to one of the site colors');
   });
 
   it('are never reported in a project, which cannot change them', () => {
     const s = fresh();
-    const theme = Object.values(s.components).find((d) => d.owner === 'theme' && d.componentId === 'features.grid')!;
+    // A design the theme owns, in the project as a theme's section is.
+    const theme = featuresGrid();
+    s.components[theme.id] = theme;
     const nodes = theme.tree!.nodes;
     nodes.root.styles = { ...nodes.root.styles, base: { ...nodes.root.styles?.base, background: '#ff0000' } };
     nodes.fixed = { id: 'fixed', kind: 'text', tag: 'h2', text: 'Our services' };

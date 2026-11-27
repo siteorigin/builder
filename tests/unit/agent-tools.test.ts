@@ -19,7 +19,8 @@ import { applyOperations } from '@engine/apply';
 import type { EditOperation } from '@shared/ops';
 import { compactPropsSchema, hasOpenSchema, propsJsonSchema } from '@agent/propschema';
 import { propSchemaSummary } from '@agent/context';
-import { P } from '@catalogue/dsl';
+import { P, item, prop } from '@catalogue/dsl';
+import { foundationDesign, projectDesign, type DesignSpec } from './fixtures/packs';
 import { registerSecondTheme } from './second-theme';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { envelopeInstructions } from '@agent/constrained';
@@ -74,6 +75,62 @@ function inSection(s: ProjectState, node: GraphNode) {
   home.nodes[section.id] = section;
   home.nodes[node.id] = node;
   home.rootIds.push(section.id);
+}
+
+/**
+ * Sections built in the editor, for the tests of what the AI's tools do with a design's tree: which properties a
+ * selected part shows, its nodes, its parts. Foundation's sections are code, whose parts show only their own styles.
+ */
+const HERO_DESIGN: DesignSpec = {
+  componentId: 'test.hero',
+  name: 'Hero',
+  properties: { heading: P.str('Heading', 'Designed for living in'), lead: P.text('Supporting text', 'Homes planned around the way you use them.') },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color', 'maxWidth', 'textAlign'] },
+    lead: { nodeId: 'lead', label: 'Supporting text', styleControls: ['textStyle', 'color'] }
+  },
+  variantAxes: { tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' } } } },
+  build: (b) => b.el('root', 'section', { name: 'Section' }, [b.text('heading', 'h1', prop('heading'), { name: 'Heading' }), b.text('lead', 'p', prop('lead'), { name: 'Supporting text' })])
+};
+
+/** A grid of cards built in the editor, one per item of its list. */
+const CARDS_DESIGN: DesignSpec = {
+  componentId: 'test.cards',
+  name: 'Cards',
+  properties: {
+    heading: P.str('Heading', 'Services'),
+    items: P.list('Cards', 'Card', { icon: P.icon('Icon', 'sparkles'), title: P.str('Title', 'Service'), description: P.text('Description', 'What it includes.') }, [
+      { icon: 'compass', title: 'Design consultation', description: 'A visit to your home.' },
+      { icon: 'ruler', title: 'Space planning', description: 'Measured drawings.' },
+      { icon: 'pen-tool', title: 'Interior design', description: 'Materials and lighting.' }
+    ])
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+    card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'radius', 'shadow'] },
+    cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] }
+  },
+  build: (b) =>
+    b.el('root', 'section', { name: 'Section' }, [
+      b.text('heading', 'h2', prop('heading'), { name: 'Heading' }),
+      b.el('grid', 'ul', { name: 'Card grid' }, [
+        b.repeat('cards', 'items', [
+          b.el('card', 'li', { name: 'Card' }, [b.icon('card-icon', item('icon')), b.text('card-title', 'h3', item('title'), { name: 'Title' }), b.text('card-text', 'p', item('description'), { name: 'Description' })])
+        ])
+      ])
+    ])
+};
+
+/** Add `spec` to the project as its own design and place it on Home in place of the section at `index`. */
+function designOnHome(s: ProjectState, spec: DesignSpec, index: number): InstanceNode {
+  const node = makeInstance(projectDesign(s, spec));
+  const home = s.pages[s.site.homePageId];
+  delete home.nodes[home.rootIds[index]];
+  home.rootIds[index] = node.id;
+  home.nodes[node.id] = node;
+  return node;
 }
 
 // Only Foundation ships, so the brand tool's theme switch is exercised against a second, offered theme.
@@ -366,6 +423,7 @@ describe('upsert_page_with_sections', () => {
 
   it('removes forked and custom project sections when asked, but leaves layout that is not an instance', async () => {
     let layoutId = '';
+    let notes: InstanceNode[] = [];
     const { session, run } = await setup(
       [() => [call('r1', 'upsert_page_with_sections', { slug: 'home', removeOtherSections: true, sections: [{ componentId: 'hero.split', props: { heading: 'Only this' } }] })], () => finish()],
       {},
@@ -380,6 +438,17 @@ describe('upsert_page_with_sections', () => {
         const block = makeInstance(s.components[installComponent(s, 'block.feature')], { title: 'Kept by hand' });
         home.nodes[block.id] = block;
         home.rootIds.push(block.id);
+        // Two sections of the project's own built in the editor, one of them to be converted to code.
+        const note = projectDesign(s, {
+          componentId: 'project.note',
+          name: 'Note',
+          properties: { text: P.str('Text', 'Open late on Fridays') },
+          parts: { root: { nodeId: 'root', label: 'Section' } },
+          build: (b) => b.el('root', 'section', { name: 'Section' }, [b.text('text', 'p', prop('text'), { name: 'Text' })])
+        });
+        notes = [makeInstance(note), makeInstance(note)];
+        for (const n of notes) home.nodes[n.id] = n;
+        home.rootIds.splice(1, 0, ...notes.map((n) => n.id));
       }
     );
     const home = () => pageAt(session.state, '/')!;
@@ -390,10 +459,11 @@ describe('upsert_page_with_sections', () => {
     expect(fork.ok).toBe(true);
     const unique = await session.apply({ operations: [{ type: 'component.makeUnique', owner: homeOwner, nodeId: instanceOf('cta.banner'), name: 'Our banner' }] }, { label: 'Make unique', source: 'user' });
     expect(unique.ok).toBe(true);
-    const code = await session.apply({ operations: [{ type: 'component.convertToCode', owner: homeOwner, nodeId: instanceOf('logos.strip'), name: 'Logo code' }] }, { label: 'Convert to code', source: 'user' });
+    const code = await session.apply({ operations: [{ type: 'component.convertToCode', owner: homeOwner, nodeId: notes[0].id, name: 'Note code' }] }, { label: 'Convert to code', source: 'user' });
     expect(code.ok).toBe(true);
     const defs = home().rootIds.filter((id) => home().nodes[id].kind === 'instance').map((id) => session.state.components[(home().nodes[id] as InstanceNode).definitionId]);
-    expect(defs.filter((d) => d.owner === 'project').map((d) => d.kind).sort()).toEqual(['code', 'managed', 'managed']);
+    // Foundation's sections are code, and so are the copies Edit everywhere and Make unique take of them.
+    expect(defs.filter((d) => d.owner === 'project').map((d) => d.kind).sort()).toEqual(['code', 'code', 'code', 'managed']);
 
     await run('Rebuild the home page with just a hero');
     expect(home().rootIds.map((id) => (home().nodes[id].kind === 'instance' ? session.state.components[(home().nodes[id] as InstanceNode).definitionId].componentId : id))).toEqual(['hero.split', layoutId, 'block.feature']);
@@ -1049,6 +1119,8 @@ describe('selection tools', () => {
 
   it('chooses tools by task: small sets for local models, the general tools kept for cloud models', () => {
     const state = createStarterState('business', 'Test', false);
+    // A grid built in the editor, whose section box and card titles say which styles they take.
+    designOnHome(state, CARDS_DESIGN, 2);
     const names = (t: ToolDefinition[]) => t.map((x) => x.name);
     const target = { owner: { kind: 'page' as const, id: state.site.homePageId }, nodeId: pageAt(state, '/')!.rootIds[2] };
     const base = { state, codeEnabled: true, definitionOps: true };
@@ -1310,6 +1382,7 @@ describe('selection tools', () => {
       'business',
       // The hero's design made a card: its root is an interaction group around the heading.
       (s) => {
+        designOnHome(s, HERO_DESIGN, 0);
         const def = s.components[(pageAt(s, '/')!.nodes[pageAt(s, '/')!.rootIds[0]] as InstanceNode).definitionId];
         (def.tree!.nodes[def.tree!.rootIds[0]] as ElementNode).interactionGroup = true;
       }
@@ -2309,7 +2382,6 @@ describe('read_component and installed theme components', () => {
     expect(await read()).toContain('headingLevel');
     const old = structuredClone(catalogueComponent('foundation', 'hero.centered')!);
     delete old.properties.headingLevel;
-    old.tree!.nodes.heading = { ...old.tree!.nodes.heading, tag: 'h1' } as never;
     s.components[old.id] = old;
     const installed = JSON.parse(await read()) as { properties: Record<string, unknown>; themeUpdate?: { status: string; newVersionAdds: { properties: Record<string, unknown> } } };
     expect(installed.properties).not.toHaveProperty('headingLevel');
@@ -2538,7 +2610,9 @@ describe('a selected part or placement scopes the run (#132)', () => {
         () => [call('h6', 'update_selected_props', { props: { lead: 'Still outside the heading' } })],
         () => finish('Changed the headline; the rest stays as it is.')
       ],
-      focused
+      focused,
+      'business',
+      (s) => void designOnHome(s, HERO_DESIGN, 0)
     );
     answers.push('No, only change the selection');
     const hero = nodeAt(session.state, 0);
@@ -2602,7 +2676,7 @@ describe('a selected part or placement scopes the run (#132)', () => {
       // The style every card shares is not the selected card's alone.
       () => [call('c6', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'node.setStyle', owner: owner(), nodeId: gridId(), partId: 'card', scope: 'base', property: 'radius', value: '0px' }] })],
       () => finish('Renamed and coloured this card.')
-    ]);
+    ], {}, 'business', (s) => void designOnHome(s, CARDS_DESIGN, 2));
     const grid = nodeAt(session.state, 2);
     const items = grid.props.items as ListItem[];
     poetry = items[1].id;
@@ -2641,10 +2715,8 @@ describe('a selected part or placement scopes the run (#132)', () => {
       {},
       'business',
       (s) => {
-        // A project copy of the hero, placed twice: once with its own heading, once showing the default.
-        const page = s.pages[s.site.homePageId];
-        const hero = page.nodes[page.rootIds[0]] as InstanceNode;
-        defId = (applyOperation(s, { type: 'component.makeUnique', owner: { kind: 'page', id: page.id }, nodeId: hero.id }) as { definitionId: string }).definitionId;
+        // A hero of the project's own, placed twice: once with its own heading, once showing the default.
+        defId = designOnHome(s, HERO_DESIGN, 0).definitionId;
         const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
         const { nodeId } = applyOperation(s, { type: 'node.insert', owner: { kind: 'page', id: about.id }, definitionId: defId, index: 0 }) as { nodeId: string };
         delete (about.nodes[nodeId] as InstanceNode).props.heading;
@@ -2867,8 +2939,8 @@ describe('validate_project and components that are not reusable yet (#363)', () 
       s.pages[`pg_x${i}`] = { ...structuredClone(home), id: `pg_x${i}`, route: `/x${i}/`, title: `X${i}` };
       s.site.pageOrder.push(`pg_x${i}`);
     }
-    const hero = structuredClone(catalogueComponent('foundation', 'hero.centered')!);
-    const def = { ...hero, id: 'proj.hero', owner: 'project' as const };
+    // A hero of the project's own built in the editor, with headings of fixed text that no property fills.
+    const def = { ...foundationDesign(HERO_DESIGN), id: 'proj.hero', owner: 'project' as const };
     const root = def.tree!.rootIds[0];
     for (let i = 0; i < 10; i++) {
       def.tree!.nodes[`fixed${i}`] = { id: `fixed${i}`, kind: 'text', tag: 'h2', text: `Spring offers ${i}` };
@@ -3101,7 +3173,7 @@ describe('a run limited to one page (#513)', () => {
     expect(relisted).not.toContain('features.grid');
     // The catalogue and a search say which components are blocks.
     const catalogue = (await executeTool('read_project', JSON.stringify({ sections: ['catalogue'] }), host, 'r1')).content as unknown as { catalogue: Array<{ componentId: string; block?: boolean }> };
-    expect(catalogue.catalogue.filter((c) => c.block).map((c) => c.componentId)).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
+    expect(catalogue.catalogue.filter((c) => c.block).map((c) => c.componentId)).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.download', 'block.facts', 'block.signup', 'block.video']);
     const found = (await executeTool('search_components', JSON.stringify({ query: 'stat card statistics' }), host, 's1')).content as unknown as { results: Array<{ componentId?: string; block?: boolean }> };
     expect(found.results.find((r) => r.componentId === 'block.stat')).toMatchObject({ block: true });
     expect(found.results.find((r) => r.componentId === 'stats.row')).toBeDefined();

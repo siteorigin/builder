@@ -16,6 +16,7 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { themeLayoutRules } from '@engine/theme-layout-rules';
 import { layoutGuardrailDiagnostics } from '@engine/layout-guardrails';
+import { projectDesign } from './fixtures/packs';
 
 const fresh = () => createStarterState('blank', 'Blank', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -64,6 +65,23 @@ function addDesign(s: ProjectState, id: string, nodes: GraphNode[], extra: Parti
   s.components[id] = def;
   return def;
 }
+/**
+ * A managed Section of the project's own, as Foundation's used to be before its sections became code: a section
+ * around a container that holds the content slot, the container a part a placement can make a grid of.
+ */
+const sectionDesign = (s: ProjectState): ComponentDefinition =>
+  projectDesign(s, {
+    componentId: 'layout.section',
+    name: 'Section',
+    category: 'layout',
+    properties: {},
+    slots: { content: { label: 'Content' } },
+    parts: {
+      root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+      container: { nodeId: 'inner', label: 'Container', styleControls: ['layout', 'columns', 'gap'] }
+    },
+    build: (b) => b.el('root', 'section', { name: 'Section' }, [b.el('inner', 'div', { name: 'Container', styles: { layout: 'stack', width: 'fill' } }, [b.slot('content-slot', 'content', { name: 'Content' })])])
+  });
 const placement = (id: string, definitionId: string, extra: Partial<InstanceNode> = {}): InstanceNode => ({ id, kind: 'instance', definitionId, props: {}, ...extra }) as InstanceNode;
 const slotNode = (id: string, slot = 'content'): GraphNode => ({ id, kind: 'slot', slot }) as GraphNode;
 
@@ -251,8 +269,7 @@ describe('a grid child spanning more columns than its grid has', () => {
 
   it('reads the grid a placed component wraps its slot in, and a placement as a grid child', () => {
     const s = fresh();
-    const sectionId = installComponent(s, 'layout.section');
-    const section = makeInstance(s.components[sectionId], {});
+    const section = makeInstance(sectionDesign(s), {});
     section.overrides = { container: { base: { layout: 'grid', columns: 2 } } };
     section.slots = { content: ['n_feature'] };
     page([section, el('n_feature', 'Feature', { base: { columnSpan: '3' } })], s);
@@ -264,7 +281,7 @@ describe('a grid child spanning more columns than its grid has', () => {
 
     // A section placed in an authored grid, spanning through its own change to its root.
     const t = fresh();
-    const inner = makeInstance(t.components[installComponent(t, 'layout.section')], {});
+    const inner = makeInstance(sectionDesign(t), {});
     inner.overrides = { root: { base: { columnSpan: '3' } } };
     page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, [inner.id]), inner], t);
     expect(guardrails(t).map((x) => [x.code, x.nodeId])).toEqual([[SPAN, inner.id]]);
@@ -309,7 +326,7 @@ describe('a grid child spanning more columns than its grid has', () => {
     // Inside a code component's slot, a section's grid may be styled by the component's own stylesheet.
     const u = fresh();
     addDesign(u, 'c_code', [], { kind: 'code' });
-    const section = makeInstance(u.components[installComponent(u, 'layout.section')], {});
+    const section = makeInstance(sectionDesign(u), {});
     section.overrides = { container: { base: { layout: 'grid', columns: 2 } } };
     section.slots = { content: ['n_feature'] };
     page([placement('n_code', 'c_code', { slots: { content: [section.id] } }), section, el('n_feature', 'Feature', { base: { columnSpan: '3' } })], u);
@@ -557,7 +574,7 @@ describe('the guardrails as diagnostics', () => {
         expect(guardrails(s), `${theme.id} ${starter.id}`).toEqual([]);
         if (starter.id !== 'business') continue;
         // Each design placed straight on the page, as it comes.
-        for (const c of theme.components.filter((x) => x.kind === 'managed')) {
+        for (const c of theme.components) {
           const id = installComponent(s, c.componentId);
           const node = makeInstance(s.components[id], {});
           home(s).nodes[node.id] = node;

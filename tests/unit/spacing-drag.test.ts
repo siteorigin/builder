@@ -27,6 +27,8 @@ import {
 } from '../../src/renderer/src/lib/spacing-drag';
 import { chosenReach, itemReachKey, reachByItem, showReach } from '../../src/renderer/src/lib/item-reach';
 import { spacingOf, spaceSizes } from '../../src/renderer/src/lib/payload';
+import { projectDesign } from './fixtures/packs';
+import { placeOnHome, splitHero } from './fixtures/inspector-workflows-designs';
 
 // The foundation theme's spacing scale, as the page measures it at a desktop width.
 const SCALE: SpaceStop[] = [
@@ -190,6 +192,8 @@ const part = (s: ProjectState, componentId: string, partId: string, itemId?: str
 };
 const handle = (box: SpacingHandle['box'], side: SpacingHandle['side']) => SPACING_HANDLES.find((h) => h.box === box && h.side === side)!;
 const apply = (s: ProjectState, ops: Parameters<typeof applyOperations>[1]) => applyOperations(s, ops).state;
+/** A Split hero built in the editor, placed last on Home: a design whose root element and unnamed wrappers a pick can land on. */
+const builtHero = (s: ProjectState) => placeOnHome(s, projectDesign(s, splitHero()));
 const element = (offered: string[], styles: SpacingTarget['styles'] = {}): SpacingTarget => ({ owner: { kind: 'page', id: 'p' }, nodeId: 'n', styles, offered, everyItem: false });
 const EDGES = ['paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd', 'marginBlockStart', 'marginBlockEnd', 'paddingBlock', 'paddingInline'];
 
@@ -203,7 +207,7 @@ describe('spacingTarget: the styles a drag writes', () => {
 
   it('writes a section picked by its design\u2019s root element to the section', () => {
     const s = fresh();
-    const n = placed(s, 'hero.split');
+    const n = builtHero(s);
     const root = s.components[n.definitionId].tree!.rootIds[0];
     expect(spacingTarget(s, { owner: owner(s), instancePath: [n.id], nodeId: root, partId: 'root' })).toMatchObject({ nodeId: n.id, partId: 'root' });
   });
@@ -269,7 +273,7 @@ describe('spacingTarget: the styles a drag writes', () => {
 
   it('writes nothing for an element inside a section that is not one of its parts', () => {
     const s = fresh();
-    const n = placed(s, 'hero.split');
+    const n = builtHero(s);
     const def = s.components[n.definitionId];
     const named = new Set(Object.values(def.parts).map((p) => p.nodeId));
     const inner = Object.keys(def.tree!.nodes).find((id) => !named.has(id) && id !== def.tree!.rootIds[0])!;

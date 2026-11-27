@@ -4,27 +4,38 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { breadcrumb } from '../../src/renderer/src/lib/model';
+import { contentSection, installThemeDesigns, servicesGrid } from './fixtures/inspector-workflows-designs';
 import { clip, everySizeEdits, eyeAction, eyeFace, hideHereEdits, layerLabel, ownVisibility, rowVisibility, showHereEdits, type Size, type VisibilityEdit } from '../../src/renderer/src/lib/layers';
 
-/** A home page whose first section holds a Grid with a paragraph in it: Section > Grid > Text. */
-function nested() {
+/**
+ * A home page whose first section holds a Grid with a paragraph in it: Section > Grid > Text. The section is
+ * Foundation's, a code component, unless `built` asks for one built in the editor, whose design (its root, and the
+ * Container holding its Content slot) the test can read and change. A Services grid built in the editor is installed
+ * beside Foundation's sections, for `insertGrid`: its parts sit in a tree of wrappers and a repeat.
+ */
+function nested(built?: 'built') {
   let s: ProjectState = createStarterState('business', 'Test Studio', false);
+  const [section, grid] = installThemeDesigns(s, contentSection(), servicesGrid());
   const pageId = s.site.homePageId;
   const owner = { kind: 'page' as const, id: pageId };
   const run = (ops: EditOperation[]) => (s = applyOperations(s, ops).state);
-  run([{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' }]);
-  const section = s.pages[pageId].rootIds[0];
-  run([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'grid' }]);
-  const grid = (s.pages[pageId].nodes[section] as InstanceNode).slots!.content.at(-1)!;
-  run([{ type: 'node.insert', owner, parentId: grid, primitive: 'paragraph', text: 'Meet the makers. Download the exhibitor guide.' }]);
-  const para = (s.pages[pageId].nodes[grid] as { children: string[] }).children.at(-1)!;
+  run([{ type: 'node.insert', owner, parentId: null, index: 0, ...(built ? { definitionId: section.id } : { componentId: 'layout.section' }) }]);
+  const sectionId = s.pages[pageId].rootIds[0];
+  run([{ type: 'node.insert', owner, parentId: sectionId, slot: 'content', primitive: 'grid' }]);
+  const gridId = (s.pages[pageId].nodes[sectionId] as InstanceNode).slots!.content.at(-1)!;
+  run([{ type: 'node.insert', owner, parentId: gridId, primitive: 'paragraph', text: 'Meet the makers. Download the exhibitor guide.' }]);
+  const para = (s.pages[pageId].nodes[gridId] as { children: string[] }).children.at(-1)!;
   const at = (nodeId: string, instancePath: string[] = []): ElementRef => ({ owner, instancePath, nodeId });
   const node = (id: string) => s.pages[pageId].nodes[id];
   const insert = (componentId: string) => {
     run([{ type: 'node.insert', owner, parentId: null, index: 0, componentId }]);
     return s.pages[pageId].rootIds[0];
   };
-  return { get s() { return s; }, run, owner, pageId, section, grid, para, at, node, insert };
+  const insertGrid = () => {
+    run([{ type: 'node.insert', owner, parentId: null, index: 0, definitionId: grid.id }]);
+    return s.pages[pageId].rootIds[0];
+  };
+  return { get s() { return s; }, run, owner, pageId, section: sectionId, grid: gridId, para, at, node, insert, insertGrid };
 }
 type T = ReturnType<typeof nested>;
 
@@ -77,7 +88,7 @@ describe('the breadcrumb shows every layer the selection sits in', () => {
 
   it('keeps the repeated item for the parts inside it, and drops it above the repeat', () => {
     const t = nested();
-    const fg = t.insert('features.grid');
+    const fg = t.insertGrid();
     const item = ((t.node(fg) as InstanceNode).props.items as Array<{ id: string }>)[1].id;
     const crumbs = breadcrumb(t.s, { owner: t.owner, instancePath: [fg], nodeId: 'card-title', partId: 'cardTitle', itemPath: [item] });
     expect(labels(crumbs)).toEqual(['Home', 'Services grid', 'Card grid', 'Card', 'Card title']);
@@ -88,7 +99,7 @@ describe('the breadcrumb shows every layer the selection sits in', () => {
 
   it('keeps the outer item of nested repeats for layers between them', () => {
     const t = nested();
-    const fg = t.insert('features.grid');
+    const fg = t.insertGrid();
     const def = t.s.components[(t.node(fg) as InstanceNode).definitionId];
     // A second repeat inside each card, around its title.
     const tree = def.tree!;
@@ -253,7 +264,7 @@ describe('visibility at the previewed size', () => {
   });
 
   it('shows a placement its design hides by saying so on the placement', () => {
-    const t = nested();
+    const t = nested('built');
     const def = t.s.components[(t.node(t.section) as InstanceNode).definitionId];
     const root = def.tree!.rootIds[0];
     def.tree!.nodes[root].styles = { ...def.tree!.nodes[root].styles, base: { ...def.tree!.nodes[root].styles?.base, hidden: true } };
@@ -273,7 +284,7 @@ describe('visibility at the previewed size', () => {
   });
 
   it('finds a section’s Container part hiding what is placed in its slot, even over a child’s own exception', () => {
-    const t = nested();
+    const t = nested('built');
     hide(t, t.para, 'base');
     hide(t, t.para, 'phone', false);
     expect(row(t, t.para, 'phone')).toMatchObject({ hiddenHere: false, hiddenBy: null });
@@ -295,7 +306,7 @@ describe('visibility at the previewed size', () => {
 
   it('finds a part hidden by a wrapper inside its placement', () => {
     const t = nested();
-    const fg = t.insert('features.grid');
+    const fg = t.insertGrid();
     hide(t, fg, 'phone', true, 'grid');
     const title = row(t, fg, 'phone', 'cardTitle');
     expect(title.hiddenHere).toBe(false);
@@ -305,7 +316,7 @@ describe('visibility at the previewed size', () => {
 
   it('names a wrapper of the design that hides a part, and selects the placement for it', () => {
     const t = nested();
-    const fg = t.insert('features.grid');
+    const fg = t.insertGrid();
     const def = t.s.components[(t.node(fg) as InstanceNode).definitionId];
     def.tree!.nodes['card-icon-wrap'].styles = { ...def.tree!.nodes['card-icon-wrap'].styles, phone: { hidden: true } };
     expect(row(t, fg, 'phone', 'cardIcon').hiddenBy).toEqual({ id: fg, name: 'Services grid › Icon badge', target: 'Services grid', sizes: ['phone'] });
@@ -392,7 +403,7 @@ describe('visibility at the previewed size', () => {
 
   it('counts the option a placement chose: one can show a part its design hides on phone', () => {
     const t = nested();
-    const fg = t.insert('features.grid');
+    const fg = t.insertGrid();
     const def = t.s.components[(t.node(fg) as InstanceNode).definitionId];
     def.tree!.nodes.grid.styles = { ...def.tree!.nodes.grid.styles, phone: { hidden: true } };
     def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { hidden: false } } };
@@ -417,7 +428,7 @@ describe('visibility at the previewed size', () => {
 
   it('never counts a repeat as hiding what it repeats', () => {
     const t = nested();
-    const fg = t.insert('features.grid');
+    const fg = t.insertGrid();
     const def = t.s.components[(t.node(fg) as InstanceNode).definitionId];
     const repeat = Object.values(def.tree!.nodes).find((n) => n.kind === 'repeat')!;
     repeat.styles = { phone: { hidden: true } };
@@ -503,7 +514,7 @@ describe('the eye in Layers', () => {
   });
 
   it('shows a placement its design hides on this size when every size is shown again', () => {
-    const t = nested();
+    const t = nested('built');
     const def = t.s.components[(t.node(t.section) as InstanceNode).definitionId];
     const root = def.tree!.rootIds[0];
     def.tree!.nodes[root].styles = { ...def.tree!.nodes[root].styles, phone: { hidden: true } };

@@ -15,13 +15,15 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { defFile, generateProject, keptPanels } from '@generator/index';
 import { UTIL_JS } from '@generator/runtime-files';
-import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
+import { getTheme } from '@catalogue/index';
 import { P, eq, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
 import { MIGRATIONS } from '@shared/migrations';
 import { executeTool } from '@agent/tools';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
+/** The stylesheet the shipped Foundation gives every page. */
+const FOUNDATION_BASE_CSS = getTheme('foundation').baseCss ?? '';
 const NONE = { type: 'none' as const, target: '' };
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -398,7 +400,7 @@ describe('the stylesheets', () => {
     expect(FOUNDATION_BASE_CSS).toContain('.so-overlay::backdrop');
     expect(UTIL_JS).toContain('export function overlayOpen(dialog, open)');
     // The surface takes the page's own ink, in a dark section too, and a design's radius for a drawer wins.
-    expect(FOUNDATION_BASE_CSS).toMatch(/\.so-video-section, \.so-overlay\n\) \{ --so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; \}/);
+    expect(FOUNDATION_BASE_CSS).toMatch(/, \.so-overlay\n\) \{ --so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; \}/);
     expect(FOUNDATION_BASE_CSS).toContain('.so-overlay:where(.so-overlay--drawer-start, .so-overlay--drawer-end, .so-overlay--drawer-bottom) { border-radius: 0; }');
   });
 });

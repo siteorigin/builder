@@ -8,6 +8,8 @@ import { applyOperations } from '@engine/apply';
 import { missingSectionLinks, renderedContent } from '@generator/checks';
 import { contentFields, contentTarget, entryTarget, findContent, placedSections, planReplace, sampleContactMatches, sectionMatches, type ContentMatch } from '../../src/renderer/src/lib/find-content';
 import { ProjectSession } from '../../src/main/project/session';
+import { P, item as dslItem, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const pageAt = (s: ProjectState, route: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === route)!;
@@ -38,17 +40,18 @@ describe('finding content', () => {
     const contact = pageAt(s, '/contact/');
     const ms = findContent(s, 'hello@example.com');
     const rows = ms.map((m) => [m.field.where, m.field.section, m.field.label, m.kind]);
+    // A code section's fields come in the order its properties are declared, its action after its contact methods.
     expect(rows).toEqual([
-      ['Contact', 'Contact details', 'Action link', 'link'],
       ['Contact', 'Contact details', 'Contact methods › Email › Value', 'text'],
       ['Contact', 'Contact details', 'Contact methods › Email › Link', 'link'],
-      ['Footer', 'Footer', 'Contact links › hello@example.com › Label', 'text'],
-      ['Footer', 'Footer', 'Contact links › hello@example.com › Destination', 'link']
+      ['Contact', 'Contact details', 'Action link', 'link'],
+      ['Footer', 'Footer', 'Contact details › hello@example.com › Label', 'text'],
+      ['Footer', 'Footer', 'Contact details › hello@example.com › Destination', 'link']
     ]);
     // The footer is one shared field shown on every page that uses it; the page's copy is its own.
     expect(ms.filter((m) => m.field.where === 'Footer').every((m) => m.field.sharedPages === 3)).toBe(true);
     expect(ms.filter((m) => m.field.where === 'Contact').every((m) => m.field.sharedPages === undefined && m.field.owner.id === contact.id)).toBe(true);
-    expect(ms[1]).toMatchObject({ before: '', match: 'hello@example.com', after: '' });
+    expect(ms[0]).toMatchObject({ before: '', match: 'hello@example.com', after: '' });
 
     // A page without the shared header does not count for it, and still counts for the footer it keeps.
     const about = pageAt(s, '/about/').id;
@@ -71,7 +74,7 @@ describe('finding content', () => {
     const defaults = (def.properties.contact as { default: ListItem[] }).default;
     const ms = findContent(s, defaults[0].label as string).filter((m) => m.field.where === 'Footer');
     expect(ms.map((m) => m.kind)).toEqual(['text', 'link']);
-    expect(ms[0].field.label).toBe(`Contact links › ${defaults[0].label} › Label`);
+    expect(ms[0].field.label).toBe(`Contact details › ${defaults[0].label} › Label`);
     const { after } = apply(s, ms, 'books@example.org');
     const own = footerOf(after).props.contact as ListItem[];
     expect(own.map((x) => x.id)).toEqual(defaults.map((x) => x.id));
@@ -498,7 +501,7 @@ describe('what replacing keeps safe', () => {
 });
 
 describe('opening a match', () => {
-  it('opens a shared footer item on a page that shows the footer, at the item’s part', () => {
+  it('opens a shared footer item on a page that shows the footer, at its placement with the item revealed', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
     s.pages[about.id].showFooter = false;
@@ -506,15 +509,37 @@ describe('opening a match', () => {
     const footer = footerOf(s);
     const target = contentTarget(s, m.field, about.id)!;
     expect(target.pageId).toBe(s.site.homePageId);
-    expect(target.selection).toMatchObject({ owner: { kind: 'shell', id: 'footer' }, instancePath: [footer.id], nodeId: m.field.defNodeId, itemPath: [m.field.source?.kind === 'prop' ? m.field.source.itemId : ''] });
+    // Foundation's footer is code: the placement is selected, and the item's field opened in its list.
+    expect(target.selection).toEqual({ owner: { kind: 'shell', id: 'footer' }, instancePath: [], nodeId: footer.id });
+    expect(target.reveal).toEqual({ prop: 'contact', itemId: m.field.source?.kind === 'prop' ? m.field.source.itemId : '', field: 'label' });
     expect(contentTarget(s, m.field, pageAt(s, '/contact/').id)!.pageId).toBe(pageAt(s, '/contact/').id);
     // A page that hides only the header still shows the footer, so its items open there.
     s.pages[about.id].showFooter = true;
     s.pages[about.id].showHeader = false;
     expect(contentTarget(s, m.field, about.id)!.pageId).toBe(about.id);
+  });
+
+  it('opens a managed design’s list item at the item’s part, and a part it declares as that part', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    const design = projectDesign(s, {
+      componentId: 'project.contact-strip',
+      name: 'Contact strip',
+      properties: {
+        siteName: P.str('Site name', 'Strip Studio'),
+        contact: P.list('Contact links', 'Contact link', { label: P.str('Label', ''), link: P.link('Destination') }, [{ label: 'strip@example.com', link: { type: 'email', target: 'strip@example.com' } }])
+      },
+      parts: { brand: { nodeId: 'name', label: 'Site name', styleControls: ['textStyle'] } },
+      build: (b) => b.el('root', 'footer', {}, [b.text('name', 'p', prop('siteName')), b.el('list', 'ul', {}, [b.repeat('each', 'contact', [b.el('entry', 'li', {}, [b.link('contact-link', dslItem('link'), dslItem('label'), 'plain')])])])])
+    });
+    const placed = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, definitionId: design.id }]);
+    const st = placed.state;
+    const nodeId = placed.results[0].nodeId as string;
+    const m = findContent(st, 'strip@example.com').find((x) => x.kind === 'text')!;
+    expect(contentTarget(st, m.field, null)!.selection).toMatchObject({ owner: { kind: 'page', id: about.id }, instancePath: [nodeId], nodeId: m.field.defNodeId, itemPath: [m.field.source?.kind === 'prop' ? m.field.source.itemId : ''] });
     // A part the component declares is selected as that part, with the field it shows focused.
-    const name = findContent(s, 'Test Studio').find((x) => x.field.where === 'Footer' && x.field.label === 'Site name')!;
-    const at = contentTarget(s, name.field, about.id)!;
+    const name = findContent(st, 'Strip Studio').find((x) => x.field.label === 'Site name')!;
+    const at = contentTarget(st, name.field, null)!;
     expect(at.selection.partId).toBeTruthy();
     expect(at).toMatchObject({ section: 'part-content', focus: 'siteName' });
   });
@@ -551,22 +576,23 @@ describe('the starter’s sample contact details (#15)', () => {
     expect(sampleContactMatches(s).map((g) => [g.kind, g.value, g.matches.length])).toEqual([
       ['email', 'hello@example.com', 5],
       ['phone', '+1 555 0134', 4],
-      ['address', '12 Harbor Lane, Millbrook', 1]
+      // The studio's street address, on the Contact page and among the footer's contact details.
+      ['address', '12 Harbor Lane, Millbrook', 2]
     ]);
     // The visible address, the contact method's link, the section's call to action, and the shared footer.
     expect(rows(group(s, 'email'))).toEqual([
-      ['Contact', 'Action link', 'link', 'hello@example.com'],
       ['Contact', 'Contact methods › Email › Value', 'text', 'hello@example.com'],
       ['Contact', 'Contact methods › Email › Link', 'link', 'hello@example.com'],
-      ['Footer', 'Contact links › hello@example.com › Label', 'text', 'hello@example.com'],
-      ['Footer', 'Contact links › hello@example.com › Destination', 'link', 'hello@example.com']
+      ['Contact', 'Action link', 'link', 'hello@example.com'],
+      ['Footer', 'Contact details › hello@example.com › Label', 'text', 'hello@example.com'],
+      ['Footer', 'Contact details › hello@example.com › Destination', 'link', 'hello@example.com']
     ]);
     // The number as written and as its links dial it are the same sample.
     expect(rows(group(s, 'phone'))).toEqual([
       ['Contact', 'Contact methods › Phone › Value', 'text', '+1 555 0134'],
       ['Contact', 'Contact methods › Phone › Link', 'link', '+15550134'],
-      ['Footer', 'Contact links › +1 555 0134 › Label', 'text', '+1 555 0134'],
-      ['Footer', 'Contact links › +1 555 0134 › Destination', 'link', '+15550134']
+      ['Footer', 'Contact details › +1 555 0134 › Label', 'text', '+1 555 0134'],
+      ['Footer', 'Contact details › +1 555 0134 › Destination', 'link', '+15550134']
     ]);
     // The header's call to action goes to the Contact page, not to a sample address.
     expect(sampleContactMatches(s).flatMap((g) => g.matches).some((m) => m.field.where === 'Header')).toBe(false);
@@ -669,9 +695,9 @@ describe('the starter’s sample contact details (#15)', () => {
     footer.props.contact = ['+ 1 555 0134', '1-555-0134', '+1 555 0134-5', '+44 20 1555 0134', '+1 (0)555 0134', '+1 555 (0)0134'].map(tel);
     const links = group(s, 'phone').filter((m) => m.field.where === 'Footer');
     expect(links.map((m) => [m.field.label, m.match])).toEqual([
-      ['Contact links › Call › Destination', '+ 1 555 0134'],
-      ['Contact links › Call › Destination', '1-555-0134'],
-      ['Contact links › Call › Destination', '+1 (0)555 0134']
+      ['Contact details › Call › Destination', '+ 1 555 0134'],
+      ['Contact details › Call › Destination', '1-555-0134'],
+      ['Contact details › Call › Destination', '+1 (0)555 0134']
     ]);
     const after = apply(s, links, '+27 21 555 0199').after;
     expect((footerOf(after).props.contact as ListItem[]).map((i) => (i.link as LinkValue).target)).toEqual(['+27 21 555 0199', '+27 21 555 0199', '+1 555 0134-5', '+44 20 1555 0134', '+27 21 555 0199', '+1 555 (0)0134']);

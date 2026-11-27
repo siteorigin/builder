@@ -10,7 +10,10 @@ import { chromium, webkit, type Browser, type BrowserType } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
+import { P, item, prop } from '@catalogue/dsl';
+import { makeInstance } from '@engine/install';
 import { STYLES_DIR, generateProject } from '@generator/index';
+import { projectDesign } from './fixtures/packs';
 
 const ENGINES = ([['chromium', chromium], ['webkit', webkit]] as Array<[string, BrowserType]>).filter(([, engine]) => existsSync(engine.executablePath()));
 
@@ -18,18 +21,37 @@ const instanceOf = (s: ProjectState, componentId: string) =>
   Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === componentId) as InstanceNode;
 
 /**
- * A hero placement shifted 80px sideways and 10px down holds the cases. The features grid's own design shifts its
- * grid 12px sideways and animates colors over 600ms linear; its placement lifts the grid 4px on phones and animates
- * the shadow there instead. The placement's cards are lifted 6px, and its heading picks a preset and shifts 3px
- * sideways on phones only.
+ * A hero placement shifted 80px sideways and 10px down holds the cases. A card grid of the project's own (a managed
+ * design, whose elements carry design styles) shifts its grid 12px sideways and animates colors over 600ms linear;
+ * its placement lifts the grid 4px on phones and animates the shadow there instead. The placement's cards are lifted
+ * 6px, and its heading picks a preset and shifts 3px sideways on phones only.
  */
 function site() {
   const s = createStarterState('business', 'Motion Studio', false);
   const hero = instanceOf(s, 'hero.split');
   hero.overrides = { root: { base: { translateX: '80px', translateY: '10px' } } };
-  const grid = instanceOf(s, 'features.grid');
-  const def = s.components[grid.definitionId];
-  def.tree!.nodes.grid.styles = { base: { translateX: '12px', transition: 'colors', transitionDuration: 600, transitionEasing: 'linear' } };
+  const def = projectDesign(s, {
+    componentId: 'motion.grid',
+    name: 'Card grid',
+    properties: { heading: P.str('Heading', 'Services'), items: P.list('Cards', 'Card', { title: P.str('Title', 'Service') }, [{ title: 'Planning' }]) },
+    parts: {
+      root: { nodeId: 'root', label: 'Section', styleControls: ['background'] },
+      heading: { nodeId: 'heading', label: 'Heading', styleControls: ['color'] },
+      grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['gap'] },
+      card: { nodeId: 'card', label: 'Card', styleControls: ['background'] }
+    },
+    build: (b) =>
+      b.el('root', 'section', {}, [
+        b.text('heading', 'h2', prop('heading')),
+        b.el('grid', 'ul', { styles: { base: { translateX: '12px', transition: 'colors', transitionDuration: 600, transitionEasing: 'linear' } } }, [
+          b.repeat('cards', 'items', [b.el('card', 'li', {}, [b.text('card-title', 'h3', item('title'))])])
+        ])
+      ])
+  });
+  const grid = makeInstance(def);
+  const home = s.pages[s.site.homePageId];
+  home.nodes[grid.id] = grid;
+  home.rootIds.splice(1, 0, grid.id);
   grid.overrides = { grid: { phone: { translateY: '-4px', transition: 'shadow' } }, card: { base: { translateY: '6px' } }, heading: { base: { transition: 'opacity' }, phone: { translateX: '3px' } } };
   const files = generateProject(s);
   const sheets = (names: string[]) => names.map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n');
@@ -39,9 +61,9 @@ function site() {
   const o = (part: string) => `so-o-${grid.id}-${part}`.replace(/[^a-zA-Z0-9_-]/g, '-');
   const heroClass = `so-o-${hero.id}-root`.replace(/[^a-zA-Z0-9_-]/g, '-');
   const body = `<div id="parent" class="${heroClass}">
-    <div id="placed" class="so-foundation-features-grid__grid ${o('grid')}"></div>
-    <div id="design" class="so-foundation-features-grid__grid"></div>
-    <div id="lifted" class="so-foundation-features-grid__card ${o('card')}"></div>
+    <div id="placed" class="so-foundation-motion-grid__grid ${o('grid')}"></div>
+    <div id="design" class="so-foundation-motion-grid__grid"></div>
+    <div id="lifted" class="so-foundation-motion-grid__card ${o('card')}"></div>
     <div id="faded" class="${o('heading')}"></div>
     <div id="plain"></div>
   </div>`;

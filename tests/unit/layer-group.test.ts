@@ -241,9 +241,17 @@ describe('sections selected together in Layers', () => {
   });
 
   it('says how many links the move leaves going nowhere, not counting one that already did', async () => {
-    const gallery = sectionOf('media.gallery');
-    const testimonials = sectionOf('testimonials.grid');
-    await bridge.project.apply(
+    // Foundation's sections are code, which take no section ID: two sections built in the editor, at the end of
+    // Home, are the ones linked to and moved.
+    const made = await bridge.project.apply({ operations: [{ type: 'component.create', name: 'Gallery' }, { type: 'component.create', name: 'Testimonials' }] }, { label: 'Designs' });
+    expect(made.ok).toBe(true);
+    const placed = await bridge.project.apply(
+      { operations: made.results!.map((x) => ({ type: 'node.insert' as const, owner: home(), parentId: null, definitionId: x.definitionId as string })) },
+      { label: 'Sections' }
+    );
+    expect(placed.ok).toBe(true);
+    const [gallery, testimonials] = placed.results!.map((x) => x.nodeId as string);
+    const ids = await bridge.project.apply(
       {
         operations: [
           { type: 'node.setContent', owner: home(), nodeId: gallery, field: 'anchor', value: 'gallery' },
@@ -252,6 +260,7 @@ describe('sections selected together in Layers', () => {
       },
       { label: 'Section IDs' }
     );
+    expect(ids.ok).toBe(true);
     // Buttons on About that jump to both sections on Home, and one that already goes nowhere.
     const about = { kind: 'page' as const, id: aboutId() };
     const button = (text: string) => ({ type: 'node.insert' as const, owner: about, parentId: 'n_jumpsection', slot: 'content', primitive: 'button' as const, text });
@@ -260,12 +269,12 @@ describe('sections selected together in Layers', () => {
     const [b1, b2, b3] = [1, 2, 3].map((i) => r.results![i].nodeId as string);
     const link = (nodeId: string, anchor: string) => ({ type: 'node.setContent' as const, owner: about, nodeId, field: 'link' as const, value: { type: 'page', target: homeId(), anchor } });
     await bridge.project.apply({ operations: [link(b1, 'gallery'), link(b2, 'praise'), link(b3, 'nowhere')] }, { label: 'Links' });
-    pickGalleryAndTestimonials();
-    const ids = await actions.moveToPage(aboutId());
-    expect(ids).toHaveLength(2);
+    setState({ selection: ref(home(), testimonials), layerSet: { owner: home(), ids: [gallery, testimonials], anchor: gallery } });
+    const moved = await actions.moveToPage(aboutId());
+    expect(moved).toHaveLength(2);
     expect(getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: 'Moved Gallery and Testimonials to the end of About. 2 links now go to a section that isn’t there (moved from Home): Project health lists them.' });
     // The section IDs go with them (About has none of its own by those names).
-    expect(ids!.map((id) => session.state.pages[aboutId()].nodes[id].anchor)).toEqual(['gallery', 'praise']);
+    expect(moved!.map((id) => session.state.pages[aboutId()].nodes[id].anchor)).toEqual(['gallery', 'praise']);
   });
 
   it('a link that already went nowhere and moves with its section is not counted again', async () => {
@@ -617,8 +626,8 @@ describe('Wrap in Stack, Row or Grid, and Ungroup (#386)', () => {
   });
 
   it('says so when the component’s own root is asked to be wrapped', async () => {
-    const def = (session.state.pages[homeId()].nodes[sectionOf('media.gallery')] as InstanceNode).definitionId;
-    const r = await bridge.project.apply({ operations: [{ type: 'component.fork', definitionId: def }] }, { label: 'Fork' });
+    // A design built in the editor: Foundation's own sections are code, with no root element to select.
+    const r = await bridge.project.apply({ operations: [{ type: 'component.create', name: 'Gallery' }] }, { label: 'New component' });
     const id = r.results![0].definitionId as string;
     const root = session.state.components[id].tree!.rootIds[0];
     setState({ selection: ref({ kind: 'component', id }, root), layerSet: null });

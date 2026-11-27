@@ -11,6 +11,8 @@ import { validateState } from '@engine/validate';
 import { checkAuthority, OP_REACH, type Authority } from '@agent/scope';
 import { describeOps } from '@agent/report';
 import { ProjectSession } from '../../src/main/project/session';
+import { projectDesign } from './fixtures/packs';
+import { FEATURES } from './fixtures/wrap-designs';
 
 // Delete a container or a slotted placement but keep what it holds (#656): one operation, so one change and one Undo,
 // that lifts its children (a placement's slots in the order its component declares them) into its place.
@@ -280,12 +282,11 @@ describe('Delete a placement inside a component’s design and keep what it hold
 });
 
 describe('Delete a container in a component’s design and keep what it holds', () => {
+  /** A Services grid as the project's own: root > inner > (intro, grid > cards (repeat) > card (li) > icon wrap, title, text, link). */
   function features() {
     const s = createStarterState('business', 'Test Studio', false);
-    const placed = home(s).rootIds.map((id) => home(s).nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
-    const r = apply(s, [{ type: 'component.fork', definitionId: placed.definitionId }]);
-    const id = r.results[0].definitionId as string;
-    return { s: r.state, id, own: { kind: 'component' as const, id } };
+    const id = projectDesign(s, FEATURES).id;
+    return { s, id, own: { kind: 'component' as const, id } };
   }
 
   it('deletes the container’s part and the variant styles on it, and keeps those of what it held', () => {
@@ -334,9 +335,8 @@ describe('What can’t be deleted keeping its content', () => {
 
   it('refuses a list repeat in a design', () => {
     const s = createStarterState('business', 'Test Studio', false);
-    const placed = home(s).rootIds.map((id) => home(s).nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
-    const f = apply(s, [{ type: 'component.fork', definitionId: placed.definitionId }]);
-    expect(() => lift(f.state, 'cards', { kind: 'component', id: f.results[0].definitionId as string })).toThrow(/once per list item/);
+    const id = projectDesign(s, FEATURES).id;
+    expect(() => lift(s, 'cards', { kind: 'component', id })).toThrow(/once per list item/);
   });
 
   it('refuses content left in a slot the component no longer has', () => {
@@ -370,11 +370,9 @@ describe('What can’t be deleted keeping its content', () => {
 
   it('refuses what holds tab buttons, alone or beside other content, and keeps a yes/no state’s button', () => {
     const s = createStarterState('business', 'Test Studio', false);
-    const placed = home(s).rootIds.map((id) => home(s).nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
-    const f = apply(s, [{ type: 'component.fork', definitionId: placed.definitionId }]);
-    const id = f.results[0].definitionId as string;
+    const id = projectDesign(s, FEATURES).id;
     const own = { kind: 'component' as const, id };
-    const t = f.state.components[id].tree!;
+    const t = s.components[id].tree!;
     const tab = (nid: string, value: string) => ({ id: nid, kind: 'link' as const, link: { type: 'none' as const, target: '' }, label: value, appearance: 'primary', stateAction: { state: 'view', op: 'set' as const, value } });
     t.nodes.tabs = { id: 'tabs', kind: 'element', tag: 'div', children: ['t1', 't2'] };
     t.nodes.t1 = tab('t1', 'a');
@@ -385,10 +383,10 @@ describe('What can’t be deleted keeping its content', () => {
     t.nodes.toggles = { id: 'toggles', kind: 'element', tag: 'div', children: ['b1'] };
     t.nodes.b1 = { id: 'b1', kind: 'link', link: { type: 'none', target: '' }, label: 'More', appearance: 'primary', stateAction: { state: 'open', op: 'set', value: true } };
     (t.nodes.inner as ElementNode).children.push('tabs', 'mixed', 'toggles');
-    expect(() => lift(f.state, 'tabs', own)).toThrow(/holds buttons that choose what the component shows \(its tabs\)/);
+    expect(() => lift(s, 'tabs', own)).toThrow(/holds buttons that choose what the component shows \(its tabs\)/);
     // A stray tab among other content could join another tab list's panels once lifted.
-    expect(() => lift(f.state, 'mixed', own)).toThrow(/holds buttons that choose what the component shows/);
-    const r = lift(f.state, 'toggles', own);
+    expect(() => lift(s, 'mixed', own)).toThrow(/holds buttons that choose what the component shows/);
+    const r = lift(s, 'toggles', own);
     expect((r.state.components[id].tree!.nodes.inner as ElementNode).children.slice(-1)).toEqual(['b1']);
   });
 

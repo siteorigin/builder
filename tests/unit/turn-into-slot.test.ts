@@ -17,6 +17,8 @@ import { applyOperations } from '@engine/apply';
 import { containerToSlotProblem } from '@engine/container-to-slot';
 import { blocksSaving, validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
+import { foundationDesign } from './fixtures/packs';
+import { contentSection } from './fixtures/inspector-workflows-designs';
 import { dropListSpecs } from '../../src/renderer/src/lib/insert-drop';
 import { defaultSlotLabel, turnIntoSlotItem, turnIntoSlotOp, turnIntoSlotPreflight, turnIntoSlotScope, turnIntoSlotTarget } from '../../src/renderer/src/lib/turn-into-slot';
 
@@ -261,8 +263,10 @@ describe('Turn into slot refuses (#659)', () => {
     const def = t.s.components[t.defId];
     const heading = (def.tree!.nodes[t.side] as ElementNode).children[0];
     expect(refused(t.s, toSlot(t.defId, heading, 'none'))).toMatch(/^Pick a container/);
-    const section = Object.values(t.s.components).find((d) => d.owner === 'theme' && d.tree)!;
-    expect(refused(t.s, toSlot(section.id, section.tree!.rootIds[0], 'none'))).toMatch(/belongs to the theme/);
+    // A design built in the editor that Foundation installed is the theme's, not the project's to change.
+    const section = foundationDesign(contentSection());
+    const withTheme = { ...t.s, components: { ...t.s.components, [section.id]: section } };
+    expect(refused(withTheme, toSlot(section.id, section.tree!.rootIds[0], 'none'))).toMatch(/belongs to the theme/);
   });
 
   it('a container whose own behaviour depends on what it holds', () => {
@@ -420,8 +424,9 @@ describe('Turn into slot refuses (#659)', () => {
     // Two placements on Home: the second copy can't take the anchor the first one keeps.
     expect(refused(anchored, toSlot(t.defId, t.side, 'placements'))).toBe('Home already uses the anchor “hours”, which “Heading 2” would take there. Rename one of them first, or choose an empty slot.');
     const one = run(anchored, [{ type: 'node.remove', owner: t.page, nodeId: t.second }]).state;
-    // An element of the page itself that holds it already.
-    const taken = run(one, [{ type: 'node.setContent', owner: t.page, nodeId: t.section, field: 'anchor', value: 'hours' }]).state;
+    // An element of the page itself that holds it already: a heading in the Section's content.
+    const placedHeading = run(one, [{ type: 'node.insert', owner: t.page, parentId: t.section, slot: 'content', primitive: 'heading', text: 'Hours' }]);
+    const taken = run(placedHeading.state, [{ type: 'node.setContent', owner: t.page, nodeId: placedHeading.results[0].nodeId as string, field: 'anchor', value: 'hours' }]).state;
     expect(refused(taken, toSlot(t.defId, t.side, 'placements'))).toBe('Home already uses the anchor “hours”, which “Heading 2” would take there. Rename one of them first, or choose an empty slot.');
     const s = run(one, [toSlot(t.defId, t.side, 'placements')]).state;
     expect(s.pages[t.page.id].nodes[placement(s, t.page, t.first).slots!.sideColumn[0]].anchor).toBe('hours');

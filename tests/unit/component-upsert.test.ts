@@ -14,6 +14,7 @@ import { defFile, generateManagedComponent } from '@generator/index';
 import { executeTool, toolDefinitions } from '@agent/tools';
 import { OP_REACH } from '@agent/scope';
 import { ProjectSession } from '../../src/main/project/session';
+import { foundationDesign } from './fixtures/packs';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -478,7 +479,9 @@ describe('component.upsert: building a managed component in one operation (#358)
 
   it('rebuilds only managed designs of the project that it can describe whole', () => {
     const st = createStarterState('blank', 'Expo', false);
-    const theme = Object.values(st.components).find((d) => d.owner === 'theme' && d.kind === 'managed')!;
+    // Foundation's own sections are code; a managed design the theme owns is refused all the same.
+    const theme = foundationDesign({ componentId: 'test.banner', name: 'Banner', properties: {}, parts: {}, build: (b) => b.el('root', 'section', {}, [b.text('title', 'h2', 'Hello')]) });
+    st.components[theme.id] = theme;
     expect(() => applyOperations(st, [pricing({ definitionId: theme.id })])).toThrow(/belongs to the theme/);
     expect(() => applyOperations(st, [pricing({ definitionId: 'proj.nothing-abcde' })])).toThrow(/does not exist/);
     const code = applyOperations(st, [{ type: 'component.createCode', name: 'Code', source: '<p>Hi</p>' }]);

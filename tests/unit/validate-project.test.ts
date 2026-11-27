@@ -6,6 +6,8 @@ import { executeTool, toolDefinitions, toolsForRun, type ToolHost } from '@agent
 import { validateState, type Diagnostic } from '@engine/validate';
 import { makeInstance } from '@engine/install';
 import { compileProject } from '../../src/main/compile';
+import { projectDesign } from './fixtures/packs';
+import { HERO } from './fixtures/appear-designs';
 
 type Shown = { code: string; message: string; owner?: { kind: string; id: string }; nodeId?: string };
 type Result = {
@@ -214,8 +216,8 @@ describe('validate_project narrowing by affected IDs (#756)', () => {
 
   it('pages through the component warnings with their own list, so a ninth is reachable', async () => {
     const s = createStarterState('business', 'Test Studio', false);
-    const hero = structuredClone(catalogueComponent('foundation', 'hero.centered')!);
-    const def = { ...hero, id: 'proj.hero', owner: 'project' as const };
+    // A hero of the project's own design, with ten headings fixed in it rather than bound to its properties.
+    const def = projectDesign(s, HERO);
     const root = def.tree!.rootIds[0];
     for (let i = 0; i < 10; i++) {
       def.tree!.nodes[`fixed${i}`] = { id: `fixed${i}`, kind: 'text', tag: 'h2', text: `Spring offers ${i}` };
@@ -482,20 +484,15 @@ describe('validate_project preview profile (#756)', () => {
       pages: ['vcontact'],
       prepare: (st) => {
         const inst = Object.values(st.pages.pg_vcontact.nodes).find((x) => x.kind === 'instance') as { definitionId: string };
-        const own = structuredClone(st.components[inst.definitionId]);
-        // Its design's root gets an ID of its own: the original's would name both designs.
-        const root = own.tree!.rootIds[0];
-        own.tree!.nodes.only_root = { ...own.tree!.nodes[root], id: 'only_root' };
-        delete own.tree!.nodes[root];
-        own.tree!.rootIds = ['only_root'];
-        st.components['proj.only'] = { ...own, id: 'proj.only', owner: 'project' };
-        inst.definitionId = 'proj.only';
+        // Its design's root has an ID of its own, which no other design names.
+        const own = projectDesign(st, { componentId: 'project.only', name: 'Only here', properties: {}, parts: {}, build: (b) => b.el('only_root', 'section', { name: 'Section' }, [b.text('only_text', 'p', 'Only here')]) });
+        inst.definitionId = own.id;
       }
     });
     const placement = Object.values(f.s.pages.pg_vcontact.nodes).find((x) => x.kind === 'instance') as { id: string; definitionId: string };
     const def = f.s.components[placement.definitionId];
     const designNode = def.tree!.rootIds[0];
-    expect(def.id).toBe('proj.only');
+    expect(def.id).toBe('foundation.project.only');
     (f.host as unknown as { inspectLayout: (p: string, w: number, opts?: { focus?: string[] }) => Promise<unknown> }).inspectLayout = async (p, w, opts) => {
       f.calls.inspected.push([p, w]);
       f.calls.focus.push(opts?.focus);

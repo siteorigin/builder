@@ -13,7 +13,9 @@ import type { AssetRecord, ElementRef, InstanceNode, ListItem, ProjectState } fr
 import { TOOL_ERROR_CODES, type EditOperation } from '@shared/ops';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { createStarterState } from '@catalogue/starters';
-import { header as HEADER_DEF } from '@catalogue/foundation/shell';
+import { catalogueComponent } from '@catalogue/index';
+import { P, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 import { definitionHash } from '@shared/migrations';
 import { applyOperations, sourceHash } from '@engine/apply';
 import { installComponent, makeInstance } from '@engine/install';
@@ -56,12 +58,13 @@ afterEach(() => {
   hooks.outcomes = [];
 });
 
-const HEADER = HEADER_DEF.id;
+const HEADER = catalogueComponent('foundation', 'shell.header')!.id;
 const PHOTO: AssetRecord = { id: 'a_kiln', name: 'Kiln', file: 'static/assets/kiln-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 1200, height: 800, hash: 'h', kind: 'image', createdAt: '2026-01-01T00:00:00.000Z' };
 
 /**
  * The business starter with something for every tool: a library image, a code component, a blog, a table on Home, a
- * header older than the theme's (so it has an update to take) and the Split hero copied to be edited everywhere.
+ * header older than the theme's (so it has an update to take) and a managed Split hero of the project's own, to be
+ * edited everywhere (Foundation's hero is a code component, which the design tools do not edit).
  */
 function project(): { state: ProjectState; note: string; design: string } {
   let s = structuredClone(createStarterState('business', 'Envelope', false));
@@ -74,18 +77,40 @@ function project(): { state: ProjectState; note: string; design: string } {
   const table = makeInstance(s.components[installComponent(s, 'data.table')]);
   home.nodes[table.id] = table;
   home.rootIds.push(table.id);
-  const hero = (home.nodes[home.rootIds[0]] as InstanceNode).definitionId;
+  const design = projectDesign(s, {
+    componentId: 'project.split-hero',
+    name: 'Split hero',
+    properties: {
+      heading: P.str('Heading', 'Thoughtful work'),
+      lead: P.text('Supporting text', 'We help small teams.'),
+      primaryLabel: P.str('Primary button label', 'Start a project'),
+      primaryLink: P.link('Primary button link'),
+      secondaryLabel: P.str('Secondary button label', 'See our work'),
+      secondaryLink: P.link('Secondary button link')
+    },
+    parts: { root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] }, heading: { nodeId: 'heading', label: 'Heading' }, lead: { nodeId: 'lead', label: 'Supporting text' } },
+    variantAxes: { tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background', styles: { root: { base: { background: { token: 'color.surface-alt' } } } } } } } },
+    build: (b) =>
+      b.el('root', 'section', { name: 'Section' }, [
+        b.el('content', 'div', { name: 'Content' }, [
+          b.text('heading', 'h1', prop('heading'), { name: 'Heading', when: prop('heading') }),
+          b.text('lead', 'p', prop('lead'), { name: 'Supporting text', when: prop('lead') }),
+          b.el('actions', 'div', { name: 'Actions', collapseEmpty: true }, [
+            b.link('primary', prop('primaryLink'), prop('primaryLabel'), 'primary', { name: 'Primary button', when: prop('primaryLabel') }),
+            b.link('secondary', prop('secondaryLink'), prop('secondaryLabel'), 'secondary', { name: 'Secondary button', when: prop('secondaryLabel') })
+          ])
+        ])
+      ])
+  }).id;
   const made = applyOperations(s, [
     { type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: {} },
     { type: 'collection.create', collectionId: 'posts' },
     { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio', publishedAt: '2027-03-02', draft: false, body: ['Twenty makers open their doors.'] },
-    { type: 'component.fork', definitionId: hero },
     { type: 'collection.create', collectionId: 'staff', name: 'Staff', kind: 'structured', fields: { role: { type: 'string', label: 'Role' } } },
     { type: 'source.upsert', sourceId: 'team-api', name: 'Team API', adapter: 'rest', collectionId: 'staff', config: { url: 'https://api.example.test/team' } }
   ] as EditOperation[]);
   s = made.state;
   const note = (made.results[0] as { definitionId: string }).definitionId;
-  const design = (made.results[3] as { definitionId: string }).definitionId;
   return { state: s, note, design };
 }
 

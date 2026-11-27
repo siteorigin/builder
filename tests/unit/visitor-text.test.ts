@@ -319,11 +319,13 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
         // The button beside About shows the links under it, indented from the start edge of the page: the right
         // when it runs right to left.
         await page.getByRole('button', { name: submenu, exact: true }).click();
-        const indent = await page.locator('.so-header__sub').evaluate((el) => {
-          const style = (globalThis as unknown as { getComputedStyle: (e: unknown) => { borderLeftWidth: string; borderRightWidth: string } }).getComputedStyle(el);
-          return [style.borderLeftWidth, style.borderRightWidth];
+        const [left, right] = await page.locator('.so-header__sub').evaluate((el) => {
+          const style = (globalThis as unknown as { getComputedStyle: (e: unknown) => { paddingLeft: string; paddingRight: string } }).getComputedStyle(el);
+          return [style.paddingLeft, style.paddingRight];
         });
-        expect(indent).toEqual(dir === 'rtl' ? ['0px', '2px'] : ['2px', '0px']);
+        const [start, end] = dir === 'rtl' ? [right, left] : [left, right];
+        expect([route, end]).toEqual([route, '0px']);
+        expect(parseFloat(start), route).toBeGreaterThan(0);
         await page.locator('.so-header__toggle').click();
         await expect(page.locator('.so-header__menu[open]').count()).resolves.toBe(0);
       }
@@ -376,7 +378,8 @@ describe.skipIf(!browserInstalled)('a site in Arabic, Hebrew and English in a br
       status = 500;
       for (const [name, value] of [['name', 'ليلى'], ['email', 'layla@example.com'], ['message', 'مرة أخرى']]) await form.locator(`[name="${name}"]`).fill(value);
       await page.getByRole('button', { name: ar.formSubmit, exact: true }).click();
-      await expect.poll(() => page.locator('.so-form__status--error').innerText()).toBe(ar.formFailed);
+      // Said as an alert, beside the (then empty) status line.
+      await expect.poll(() => page.locator('.so-form__status--error[role="alert"]').innerText()).toBe(ar.formFailed);
       // An email address is typed left to right, whichever way the page runs.
       await expect(form.locator('[name="email"]').evaluate((el) => (globalThis as unknown as { getComputedStyle: (e: unknown) => { direction: string } }).getComputedStyle(el).direction)).resolves.toBe('ltr');
     } finally {

@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { MEDIA_QUERIES } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
-import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
+import { getTheme } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { STYLES_DIR, generateProject } from '@generator/index';
 
@@ -67,7 +67,7 @@ describe('the default width of a button', () => {
   it('is set by the theme at no specificity, so any width a page sets wins at every size', () => {
     expect(sheets(page().state).theme).toContain(RULE);
     // The base styles have the same rule, ahead of the button's own variants and states.
-    expect(FOUNDATION_BASE_CSS).toContain(RULE);
+    expect(getTheme('foundation').baseCss).toContain(RULE);
   });
 
   it('leaves a freshly inserted button without a width of its own, and writes one only when it is set', () => {
@@ -97,9 +97,11 @@ afterAll(async () => {
 
 /**
  * Server-render the generated Home page the way the exported site renders it: every generated Svelte file compiled
- * for the server, with SvelteKit's `$app/paths` and `$app/navigation` stubbed.
+ * for the server, with SvelteKit's `$app/paths` and `$app/navigation` stubbed. The theme's sections are Svelte
+ * components with styles of their own, which the site's build bundles: here each component's styles come back in the
+ * head, to load after the site's stylesheets.
  */
-async function renderHome(s: ProjectState): Promise<string> {
+async function renderHome(s: ProjectState): Promise<{ head: string; body: string }> {
   mkdirSync(resolve('.tmp'), { recursive: true });
   const dir = mkdtempSync(join(resolve('.tmp'), 'button-width-'));
   roots.push(dir);
@@ -111,7 +113,7 @@ async function renderHome(s: ProjectState): Promise<string> {
     if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
     const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
     mkdirSync(dirname(out), { recursive: true });
-    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
+    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true, css: 'injected' }).js.code : source;
     writeFileSync(
       out,
       code
@@ -121,18 +123,19 @@ async function renderHome(s: ProjectState): Promise<string> {
     );
   }
   const Page = (await import(/* @vite-ignore */ join(dir, 'src/routes/+page.svelte.js'))).default as Component<Record<string, unknown>>;
-  return render(Page, { props: {} }).body.replace(/<!--[\s\S]*?-->/g, '');
+  const { head, body } = render(Page, { props: {} });
+  return { head, body: body.replace(/<!--[\s\S]*?-->/g, '') };
 }
 
 /** `fit` is the element's own max-content width: as wide as its label and padding, in whatever font the system has. */
 type Box = { width: number; left: number; fit: number };
-type Measured = { inner: Box; stack: Box; stackDisplay: string; [label: string]: Box | string };
+type Measured = { inner: Box; innerLayout: string; stack: Box; stackDisplay: string; [label: string]: Box | string };
 const box = (m: Measured, key: string) => m[key] as Box;
 
 describe.runIf(BROWSER)('a button in a browser', () => {
   /** One page for every case: its markup is the same whatever its styles say, so it is written once. */
   const b = page();
-  let html = '';
+  let html = { head: '', body: '' };
   beforeAll(async () => {
     html = await renderHome(b.state);
   }, 60_000);
@@ -141,7 +144,7 @@ describe.runIf(BROWSER)('a button in a browser', () => {
   async function measure(s: ProjectState, viewport: number): Promise<Measured> {
     const tab = await browser!.newPage({ viewport: { width: viewport, height: 800 } });
     try {
-      await tab.setContent(`<!doctype html><html><head><style>${sheets(s).all}</style></head><body>${html}</body></html>`);
+      await tab.setContent(`<!doctype html><html><head><style>${sheets(s).all}</style>${html.head}</head><body>${html.body}</body></html>`);
       // As a string: the Node projects have no DOM types, and the other browser tests read the page the same way.
       return (await tab.evaluate(`(() => {
         const box = (el, within) => {
@@ -153,10 +156,10 @@ describe.runIf(BROWSER)('a button in a browser', () => {
           return { width: Math.round(r.width), left: Math.round(r.left - (within ? within.getBoundingClientRect().left : 0)), fit };
         };
         const find = (text) => [...document.querySelectorAll('a.so-btn')].find((a) => a.textContent.trim() === text);
-        const inner = document.querySelector('.so-foundation-layout-section__inner');
+        const inner = document.querySelector('.section__inner');
         const stacked = find(${JSON.stringify(STACKED)});
         const stack = stacked.parentElement;
-        const out = { inner: box(inner, null), stack: box(stack, inner), stackDisplay: getComputedStyle(stack).display };
+        const out = { inner: box(inner, null), innerLayout: getComputedStyle(inner).display + ' ' + getComputedStyle(inner).flexDirection, stack: box(stack, inner), stackDisplay: getComputedStyle(stack).display };
         out[${JSON.stringify(DIRECT)}] = box(find(${JSON.stringify(DIRECT)}), inner);
         out[${JSON.stringify(STACKED)}] = box(stacked, stack);
         return out;
@@ -168,6 +171,8 @@ describe.runIf(BROWSER)('a button in a browser', () => {
 
   it('is as wide as its label inside a Section or a Stack, not the whole container', async () => {
     const m = await measure(b.state, 1280);
+    // The Section holds its content in a column that stretches what it holds, as its own styles say.
+    expect(m.innerLayout).toBe('flex column');
     expect(m.inner.width).toBeGreaterThan(900);
     for (const label of [DIRECT, STACKED]) {
       expect(box(m, label).width, label).toBeGreaterThan(40);

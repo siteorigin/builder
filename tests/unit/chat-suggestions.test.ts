@@ -12,6 +12,7 @@ import { assetUsages } from '@engine/apply';
 import { chatSuggestions, countChatStarters, type ChatSuggestion, type SuggestionInput } from '../../src/renderer/src/lib/chatSuggestions';
 import type { SeoFinding } from '@shared/seo';
 import { runSeoAudit } from '@engine/seo-audit';
+import { sectionDesign } from './fixtures/unlinked-buttons-designs';
 
 const ALL = { page: true, selection: true };
 
@@ -351,7 +352,8 @@ describe('starters for a selection', () => {
     // An empty section is filled before it is polished.
     section.slots = { content: [] };
     expect(texts(picked(state, onPage(home, section.id)))).toEqual(['Add a heading, some text and a button to the Section', 'Suggest a better layout for the Section']);
-    const def = state.components[section.definitionId];
+    // An element of a design the project made, edited everywhere: Foundation's Section is code, with no element to pick.
+    const def = sectionDesign(state);
     const inComponent: ElementRef = { owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: def.tree!.rootIds[0] };
     expect(texts(picked(state, inComponent))[0]).toMatch(/ wherever it is used$/);
   });
@@ -365,7 +367,8 @@ describe('what the page holds, counted the way the page shows it', () => {
     state.pages[second].rootIds = [];
     state.pages[second].nodes = {};
     const copy = 'Lighthouse keepers wrote their days down in logbooks and left them for the next watch. '.repeat(3);
-    const def = state.components[installComponent(state, 'layout.section')];
+    // A section the project designed, whose own tree can hold copy.
+    const def = sectionDesign(state);
     const inner = def.tree!.nodes.inner as { children: string[] };
     const place = () => {
       const inst = makeInstance(def, {});

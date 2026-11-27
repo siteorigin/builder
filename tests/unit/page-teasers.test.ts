@@ -3,14 +3,19 @@
  * the linked page's title, description and sharing image and follows that page's later edits; typed copy on a card
  * stays. Deleting a listed page takes its card out of the list.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
+import type { Component } from 'svelte';
 import type { AssetRecord, ComponentDefinition, InstanceNode, LinkValue, ListItem, ListProp, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import { P } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR, projectDesign } from './fixtures/packs';
 
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
 import { applyOperations, pageLinkReferences } from '@engine/apply';
 import { pageLinkUses } from '@engine/page-links';
 import { normalizePropSchema } from '@engine/schema';
@@ -66,6 +71,39 @@ const cards = (s: ProjectState, nodeId: string) => {
   const n = instance(s, 'pg_projects', nodeId);
   return resolveInstanceProps(defOf(s, n), n, { state: s }).items as Array<{ pageLink: { href: string } | null; title: string; description: string; image: { src: string | null; alt: string } | null }>;
 };
+
+const roots: string[] = [];
+afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+/**
+ * The body of a generated page, server-rendered as the exported site renders it: every generated Svelte file compiled
+ * for the server, with SvelteKit's `$app/paths` and `$app/navigation` stubbed.
+ */
+async function renderBody(s: ProjectState, pageId: string): Promise<string> {
+  mkdirSync(resolve('.tmp'), { recursive: true });
+  const dir = mkdtempSync(join(resolve('.tmp'), 'page-teasers-'));
+  roots.push(dir);
+  const paths = join(dir, 'app-paths.js');
+  writeFileSync(paths, 'export const resolve = (p) => p; export const asset = (p) => "/" + p; export const base = "";\n');
+  const navigation = join(dir, 'app-navigation.js');
+  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};\n');
+  for (const [path, source] of generateProject(s, { instrument: false })) {
+    if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
+    const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
+    mkdirSync(dirname(out), { recursive: true });
+    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
+    writeFileSync(
+      out,
+      code
+        .replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1')
+        .replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths))
+        .replace(/(["'])\$app\/navigation\1/g, JSON.stringify(navigation))
+        .replace(/^\s*import\s+['"][^'"]+\.css['"];?\s*$/gm, '')
+    );
+  }
+  const Page = (await import(/* @vite-ignore */ join(dir, `${pageFile(s.pages[pageId])}.js`))).default as Component<Record<string, unknown>>;
+  return render(Page, { props: {} }).body.replace(/<!--[\s\S]*?-->/g, '');
+}
 
 describe('page list section', () => {
   it('is found by the words authors search for, before Gallery', () => {
@@ -130,16 +168,19 @@ describe('page list section', () => {
     expect(cards(back, nodeId)[0].image).toMatchObject({ src: '/assets/kitchen.jpg' });
   });
 
-  it('leaves out a card whose page has gone, and a card with nothing to show keeps no empty heading', () => {
+  it('leaves out a card whose page has gone, and a card with nothing to show keeps no empty heading', async () => {
     const { s, nodeId } = portfolio();
-    const n = instance(s, 'pg_projects', nodeId);
     const broken = structuredClone(s);
     (itemsOf(broken, instance(broken, 'pg_projects', nodeId))[0].pageLink as LinkValue).target = 'pg_gone';
     expect(cards(broken, nodeId)[0]).toMatchObject({ pageLink: null, title: '' });
-    // Rendering conditions: the list item needs a link, and the card inside it a title.
-    const nodes = defOf(s, n).tree!.nodes;
-    expect(nodes['card-item']).toMatchObject({ when: { $item: 'pageLink' }, collapseEmpty: true });
-    expect(nodes.card.when).toEqual({ $item: 'title' });
+    // The page visitors get: the Gardens card alone, and no list item or empty link where the Kitchens card was.
+    const body = await renderBody(broken, 'pg_projects');
+    const items = [...body.matchAll(/<li\b[\s\S]*?<\/li>/g)].map((m) => m[0]).filter((li) => li.includes('page-list__'));
+    expect(items).toHaveLength(1);
+    expect(items[0]).toContain('Garden rooms');
+    expect(items[0]).toContain('href="/projects/gardens/"');
+    expect(body).not.toContain('/projects/kitchens/');
+    expect(body).not.toMatch(/<a\b[^>]*>\s*<\/a>/);
   });
 
   it('warns about a page image shown without a description, and not once the library gives it one', () => {
@@ -354,6 +395,15 @@ describe('editing page list cards', () => {
   it('compares an inline edit of a card’s title with the title it shows, so leaving it as it was writes nothing', () => {
     const { s, nodeId } = portfolio();
     const n = instance(s, 'pg_projects', nodeId);
+    // Text is edited where it shows in a design built in the editor: the same cards, shown by one whose card titles
+    // link to their pages.
+    n.definitionId = projectDesign(s, {
+      componentId: 'project.cards',
+      name: 'Project cards',
+      properties: structuredClone(defOf(s, n).properties),
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'ul', {}, [b.repeat('cards', 'items', [b.el('card-item', 'li', {}, [b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain')])])])
+    }).id;
     const [kitchens, gardens] = itemsOf(s, n);
     const title = defOf(s, n).tree!.nodes['card-title'] as { label: unknown };
     const ref = (itemId: string) => ({ owner: page('pg_projects'), instancePath: [nodeId], nodeId: 'card-title', itemPath: [itemId] });

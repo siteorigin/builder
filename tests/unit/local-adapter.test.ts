@@ -7,7 +7,10 @@ import { envelopeSchema, parseEnvelope, partialStatus, signature } from '@agent/
 import { dropEnumTypes, findForbiddenShapes, inlineDefinitions, OPEN_VALUE_KEY, toStrictSchema } from '@agent/strict-schema';
 import { constrainedToolSets } from './fixtures/constrained-tools';
 import { DEFAULT_LOCAL_PROFILE, localModelProfile, modelInfo } from '@agent/models';
-import { toolDefinitions } from '@agent/tools';
+import { toolDefinitions, toolsForRun } from '@agent/tools';
+import { createStarterState } from '@catalogue/starters';
+import { P, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 import { fixComponentSource } from '@agent/fixer';
 import { checkLocalBaseURL, LOCAL_CONTEXT_MAX, LOCAL_CONTEXT_MIN, LOCAL_PRESETS, localContextWindow, localKeyProblem, parseContextSize } from '@shared/local';
 import type { CanonicalModelRequest, ModelEvent, ToolDefinition } from '@agent/types';
@@ -1618,7 +1621,22 @@ describe('compact schemas on the wire (#364)', () => {
 
   describe('reads the same tool call whatever the server enforces', () => {
     const sets = constrainedToolSets();
-    const tools = (label: string) => sets.find((s) => s.label === label)!.tools;
+    // A design run's tools, on a design of the project's own: the starter's sections are Foundation's code, whose
+    // design has no elements for these tools to style or bind.
+    const definitionTools = () => {
+      const state = createStarterState('business', 'Test', false);
+      const def = projectDesign(state, {
+        componentId: 'adapter.panel',
+        name: 'Panel',
+        properties: { heading: P.str('Heading', 'Hi') },
+        parts: { root: { nodeId: 'root', label: 'Panel' }, heading: { nodeId: 'heading', label: 'Heading' } },
+        variantAxes: { tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' } } } },
+        build: (b) => b.el('root', 'section', {}, [b.text('heading', 'h2', prop('heading'))])
+      });
+      const capabilities = { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_000 };
+      return toolsForRun({ state, selection: null, capabilities, codeEnabled: false, definition: true, definitionOps: true, definitionTarget: { definitionId: def.id } }).tools;
+    };
+    const tools = (label: string) => (label === 'definition' ? definitionTools() : sets.find((s) => s.label === label)!.tools);
     // A call per kind of run, with nested objects, lists, nulls, tokens and an encoded open value.
     const calls: Array<[string, string, Record<string, unknown>, Record<string, unknown>]> = [
       ['site', 'upsert_page_with_sections', { slug: 'services', sections: [{ componentId: 'hero.split', variants: { tone: 'muted' }, props: { heading: 'Hi', image: { assetId: null, alt: 'A room' } } }] }, {}],

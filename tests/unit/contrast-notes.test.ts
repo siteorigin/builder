@@ -8,8 +8,7 @@ import { createElement, type FunctionComponent } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { TokenDef } from '@shared/types';
 import type { ContrastPair } from '@shared/contrast';
-import { FOUNDATION_TOKENS } from '../../src/catalogue/foundation/tokens';
-import { FOUNDATION_CONTRAST_PAIRS } from '../../src/catalogue/foundation/contrast';
+import { getTheme } from '@catalogue/index';
 
 /** Renderer code, outside the Node type-check project: loaded by path at run time. */
 const NOTES_PATH = '../../src/renderer/src/panels/ContrastNotes';
@@ -27,7 +26,11 @@ beforeAll(async () => {
   });
 });
 
-const model = (values: Record<string, string>) => buildContrastModel(FOUNDATION_TOKENS.map((t) => (t.id in values ? { ...t, value: values[t.id] } : t)), FOUNDATION_CONTRAST_PAIRS);
+/** Foundation's colours as the app loads them, with the pairs it sets against each other, some recoloured. */
+const model = (values: Record<string, string>) => {
+  const foundation = getTheme('foundation');
+  return buildContrastModel(foundation.tokens.map((t) => (t.id in values ? { ...t, value: values[t.id] } : t)), foundation.contrastPairs ?? []);
+};
 const noop = () => undefined;
 /** The rendered text, tags dropped, as a reader meets it. */
 const text = (html: string) => html.replace(/<[^>]+>/g, '').replace(/&#x27;|’/g, "'");
@@ -62,15 +65,17 @@ describe('the Brand shortcut in Basics', () => {
 
   it('says when brand-coloured links sit on a background that cannot be measured', () => {
     const t = text(renderToStaticMarkup(createElement(BrandContrast, { model: model({ 'color.surface': 'currentColor' }), onUse: noop, onJump: noop })));
-    expect(t).toContain("Links on cards and panels can't be checked until Cards and panels has a plain color.");
+    // Callout boxes are tinted from cards and panels, so their brand-coloured icons cannot be measured either.
+    expect(t).toContain("Links on cards and panels and Brand-colored icons and eyebrows in callout boxes can't be checked until Cards and panels has a plain color.");
   });
 });
 
 describe('the notes under a colour’s row', () => {
   it('flags the worst case in plain words and points a background’s row to the colour that has the fix', () => {
     const m = model({ 'color.text': '#8d8d8d' });
-    expect(text(flags(m, 'color.text'))).toContain('Text on alternate sections is hard to read: 2.89:1, needs 4.5:1. Also low in 2 other places.');
-    expect(text(flags(m, 'color.text'))).toContain('Dark text fixes text on all 3 backgrounds.');
+    // The page, cards and panels, alternate sections and callout boxes.
+    expect(text(flags(m, 'color.text'))).toContain('Text on alternate sections is hard to read: 2.89:1, needs 4.5:1. Also low in 3 other places.');
+    expect(text(flags(m, 'color.text'))).toContain('Dark text fixes text on all 4 backgrounds.');
     expect(text(flags(m, 'color.text'))).toContain('Use dark text for Primary text');
     expect(text(flags(m, 'color.surface-alt'))).toContain('A fix is offered on Primary text.');
   });
@@ -93,7 +98,8 @@ describe('the notes under a colour’s row', () => {
 
   it('is not silent about a colour whose only trouble is a pair that cannot be measured', () => {
     const m = model({ 'color.surface': 'currentColor' });
-    expect(text(flags(m, 'color.muted'))).toContain("Muted text on cards and panels can't be checked until Cards and panels has a plain color.");
+    // Muted text in callout boxes, tinted from cards and panels, is the 1 more.
+    expect(text(flags(m, 'color.muted'))).toContain("Muted text on cards and panels and 1 more can't be checked until Cards and panels has a plain color.");
     expect(flags(model({}), 'color.muted')).toBe('');
   });
 });

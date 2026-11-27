@@ -9,23 +9,66 @@ import { copyEditorOperationProblem } from '@shared/live/copy-editor';
 import { catalogueComponent, listThemes } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
 import { P } from '@catalogue/dsl';
-import { FOUNDATION } from '@catalogue/foundation/pack';
-import { BUILTIN_PACKS } from '@catalogue/builtin';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { applyOperations } from '@engine/apply';
 import { copyEditableLookup, copyEditorBatchProblem } from '@engine/copy-editor';
 import { makeInstance } from '@engine/install';
 import { normalizePropSchema } from '@engine/schema';
+import { FOUNDATION_AUTHOR, ROOT, projectDesign } from './fixtures/packs';
 
-const HERO = 'foundation.hero.split';
 const FORM = 'foundation.contact.form';
-const { managed } = FOUNDATION;
+const { managed } = FOUNDATION_AUTHOR;
+
+/**
+ * A split hero as a managed design of the project's own, the slice of the old managed Foundation hero the copy editor
+ * reads: its eyebrow, heading, lead and picture marked as copy, its heading level, button and tone left to the host.
+ * Foundation's own heroes are code, whose markup the copy editor cannot read (the last test of the next block).
+ */
+const heroDesign = (state: ProjectState) =>
+  projectDesign(state, {
+    componentId: 'test.split-hero',
+    name: 'Split hero',
+    properties: {
+      eyebrow: P.copy(P.str('Eyebrow', 'Independent studio')),
+      heading: P.copy(P.str('Heading', 'Thoughtful work')),
+      headingLevel: P.choice('Heading level', 'h1', [['h1', 'Heading 1'], ['h2', 'Heading 2']]),
+      lead: P.copy(P.text('Supporting text', 'We help small teams.')),
+      primaryLabel: P.str('Primary button label', 'Start a project'),
+      primaryLink: P.link('Primary button link'),
+      image: P.copy(P.image('Image', 'A calm studio'))
+    },
+    parts: {},
+    variantAxes: { tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background', styles: { root: { base: { background: '#f4f1ea' } } } } } } },
+    build: (b) =>
+      b.el('root', 'section', {}, [
+        b.el('content', 'div', {}, [
+          b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { when: { $prop: 'eyebrow' } }),
+          b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { when: { $prop: 'heading' } }),
+          b.text('lead', 'p', { $prop: 'lead' }, { when: { $prop: 'lead' } }),
+          b.link('primary', { $prop: 'primaryLink' }, { $prop: 'primaryLabel' }, 'primary', { when: { $prop: 'primaryLabel' } })
+        ]),
+        b.el('media-wrap', 'figure', {}, [b.image('media', { $prop: 'image' })])
+      ])
+  });
+const HERO = 'foundation.test.split-hero';
+
+/**
+ * A section that shows what is put in it once, as a managed design of the project's own. Foundation's Section is
+ * code, whose slots the copy editor cannot see are shown once (the test after the first below).
+ */
+const sectionDesign = (state: ProjectState) =>
+  projectDesign(state, { componentId: 'test.section', name: 'Section', properties: {}, parts: {}, slots: { content: { label: 'Content' } }, build: (b) => b.el('root', 'section', {}, [b.slot('slot', 'content')]) });
+const SECTION = 'foundation.test.section';
+/** The theme releases the app ships, and the development fixture: one folder each under resources/. */
+const BUNDLED = ['packs', 'packs-dev'].flatMap((dir) => readdirSync(join(ROOT, 'resources', dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name));
 
 const asset = (id: string, kind: AssetRecord['kind']): AssetRecord => ({ id, name: id, file: `${id}.bin`, mime: kind === 'image' ? 'image/png' : 'font/woff2', bytes: 1, hash: id, kind, createdAt: '2026-01-01T00:00:00.000Z' });
 
 /**
- * A blank site whose home page has a split hero, a section holding a paragraph and rich text, and "Promo": a design
- * around a split hero that passes its own properties on to the hero's, placed once. The library has two pictures and
- * a font.
+ * A blank site whose home page has a split hero and a section (the managed designs above), the section holding a
+ * paragraph and rich text, and "Promo": a design around a split hero that passes its own properties on to the hero's,
+ * placed once. The library has two pictures and a font.
  */
 function project() {
   let state = createStarterState('blank', 'Copy', false);
@@ -36,16 +79,17 @@ function project() {
     state = r.state;
     return r.results;
   };
-  const hero = step([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split', props: { image: { assetId: 'pic1', alt: 'The studio' } } }])[0].nodeId as string;
-  const section = step([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }])[0].nodeId as string;
+  expect([heroDesign(state).id, sectionDesign(state).id]).toEqual([HERO, SECTION]);
+  const hero = step([{ type: 'node.insert', owner, parentId: null, definitionId: HERO, props: { image: { assetId: 'pic1', alt: 'The studio' } } }])[0].nodeId as string;
+  const section = step([{ type: 'node.insert', owner, parentId: null, definitionId: SECTION }])[0].nodeId as string;
   const paragraph = step([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Opening hours vary.' }])[0].nodeId as string;
   const rich = step([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'richtext' }])[0].nodeId as string;
   step([{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: 'Call us or [read the FAQ](https://example.com/faq).' }]);
 
   // Promo: a section around a split hero, whose `title` (marked copy) becomes the hero's heading, `tagline` (marked
   // copy) its unmarked primary button label, and `note` (unmarked) its lead.
-  const wrap = step([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }])[0].nodeId as string;
-  step([{ type: 'node.insert', owner, parentId: wrap, slot: 'content', componentId: 'hero.split' }]);
+  const wrap = step([{ type: 'node.insert', owner, parentId: null, definitionId: SECTION }])[0].nodeId as string;
+  step([{ type: 'node.insert', owner, parentId: wrap, slot: 'content', definitionId: HERO }]);
   const promo = step([{ type: 'component.createFromNode', owner, nodeId: wrap, name: 'Promo' }])[0].definitionId as string;
   const inner = Object.values(state.components[promo].tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === HERO)!.id;
   const def: OwnerRef = { kind: 'component', id: promo };
@@ -99,6 +143,21 @@ describe('what a copy editor may change', () => {
     expect(JSON.stringify(text)).toContain('https://example.com/faq');
     expect(node<InstanceNode>(after, owner, hero).props.heading).toBe('Rooms that feel like home');
     expect((node<InstanceNode>(after, owner, hero).props.image as ImageValue).assetId).toBe('pic2');
+  });
+
+  it('rewords a page’s text inside the shipped theme’s Section', () => {
+    let state = createStarterState('blank', 'Copy', false);
+    const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
+    const step = (ops: EditOperation[]) => {
+      const r = applyOperations(state, ops);
+      state = r.state;
+      return r.results;
+    };
+    const section = step([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }])[0].nodeId as string;
+    const paragraph = step([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Opening hours vary.' }])[0].nodeId as string;
+    const { problem, after } = copyEdit(state, [{ type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open every day.' }]);
+    expect(problem).toBeNull();
+    expect(node<TextNode>(after, owner, paragraph).text).toBe('Open every day.');
   });
 
   it('follows a design that passes its marked copy on to a hero’s marked heading', () => {
@@ -243,8 +302,8 @@ describe('what a copy editor may change', () => {
   it('marks the heroes’ copy and the split hero’s picture in every theme', () => {
     const themes = listThemes();
     // Every pack the app ships (and the development fixture) is registered, so the loop below covers them all.
-    expect(themes.map((t) => t.id)).toEqual(expect.arrayContaining(BUILTIN_PACKS.map((p) => p.id)));
-    expect(themes.length).toBeGreaterThan(0);
+    expect(themes.map((t) => t.id)).toEqual(expect.arrayContaining(BUNDLED));
+    expect(BUNDLED.length).toBeGreaterThan(0);
     for (const theme of themes) {
       for (const [componentId, marked] of [
         ['hero.split', ['eyebrow', 'heading', 'lead', 'image']],

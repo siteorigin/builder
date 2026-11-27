@@ -417,7 +417,8 @@ async function renderPages(state: ProjectState): Promise<Array<{ page: PageDoc; 
     if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
     const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
     mkdirSync(dirname(out), { recursive: true });
-    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
+    // A code component's styles are in its own <style>, which the server render puts in the document's head.
+    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', css: 'injected', runes: true }).js.code : source;
     writeFileSync(
       out,
       code
@@ -430,8 +431,8 @@ async function renderPages(state: ProjectState): Promise<Array<{ page: PageDoc; 
   const out: Array<{ page: PageDoc; html: string }> = [];
   for (const page of Object.values(state.pages)) {
     const Page = (await import(/* @vite-ignore */ join(dir, `src/routes${page.route}+page.svelte.js`))).default as Component<Record<string, unknown>>;
-    const body = render(Page, { props: {} }).body;
-    out.push({ page, html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>${css}</style></head><body><main id="main">${body}</main><script type="module" src="/bridge.js"></script></body></html>` });
+    const { head, body } = render(Page, { props: {} });
+    out.push({ page, html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>${css}</style>${head}</head><body><main id="main">${body}</main><script type="module" src="/bridge.js"></script></body></html>` });
   }
   return out;
 }

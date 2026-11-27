@@ -21,7 +21,7 @@ import { developerModeReason } from '@engine/developer-mode';
 import { drafts } from '@engine/draft';
 import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import { styleToCss, validateStyleValue } from '@shared/styles';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { diagnosticKey, validateState } from '@engine/validate';
 import { copyProjectSource } from '../../src/main/export';
 import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
@@ -34,6 +34,7 @@ import { estimateTokens } from '@shared/tokens';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { runSeoAudit } from '@engine/seo-audit';
 import { findingHandoff } from '../../src/renderer/src/lib/seoHandoff';
+import { managedStarter } from './fixtures/agent-designs';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -81,12 +82,14 @@ interface SetupOptions {
   inspectLayout?: (pageId: string, width: number) => Promise<unknown>;
   codeEnabled?: boolean;
   capabilities?: Partial<ReturnType<AgentModelAdapter['capabilities']>>;
+  /** Sections whose managed Foundation design the project holds in place of the release's code (fixtures/agent-designs). */
+  managed?: string[];
 }
 
 async function setup(turns: Turn[], opts: SetupOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'so-agent-'));
   dirs.push(dir);
-  const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
+  const session = await ProjectSession.create(dir, opts.managed ? managedStarter(opts.managed) : createStarterState('business', 'Test', false));
   const adapter = new FakeAdapter(turns, opts.capabilities);
   const events: AiEvent[] = [];
   let busy = false;
@@ -311,7 +314,7 @@ describe('agent orchestrator', () => {
     const before = structuredClone(session.state);
     const hero = byComponent(before, 'hero.split');
     const { runId, result } = await run('Make the hero centered');
-    expect(refused).toMatch(/would drop Eyebrow; Testimonials/);
+    expect(refused).toMatch(/would drop Testimonials: /);
     expect(dropsRefused).toMatch(/does not take allowDrops/);
     expect(result?.status).toBe('completed');
     const now = homeOf(session.state).nodes[hero] as InstanceNode;
@@ -911,7 +914,7 @@ describe('page scope (#513)', () => {
   });
 
   it('refuses a request whose scope does not match what it carries', async () => {
-    const env = await setup([]);
+    const env = await setup([], { managed: ['hero.split'] });
     const home = env.session.state.site.homePageId;
     const sel = { owner: { kind: 'page' as const, id: home }, instancePath: [], nodeId: env.session.state.pages[home].rootIds[0] };
     const unreadable = 'Your message could not be read. Try sending it again.';
@@ -2284,7 +2287,7 @@ describe('tool definitions', () => {
   });
 
   it('offers contract operations to a run selected inside a definition, even without Developer mode', async () => {
-    const env = await setup([() => finish('Nothing to do.')], { codeEnabled: false });
+    const env = await setup([() => finish('Nothing to do.')], { codeEnabled: false, managed: ['hero.split'] });
     const homeId = env.session.state.site.homePageId;
     await env.session.apply({ operations: [{ type: 'component.makeUnique', owner: { kind: 'page', id: homeId }, nodeId: env.session.state.pages[homeId].rootIds[0], name: 'My hero' }] }, { label: 'Make unique', source: 'user' });
     const def = Object.values(env.session.state.components).find((d) => d.name === 'My hero')!;
@@ -2312,7 +2315,7 @@ describe('operation reach', () => {
 
   /** A project-owned copy of the hero, selected on one leaf node inside its definition. */
   function inDefinition() {
-    const base = createStarterState('business', 'Test', false);
+    const base = managedStarter();
     const { state } = applyOperations(base, [{ type: 'component.makeUnique', owner: { kind: 'page', id: base.site.homePageId }, nodeId: homeOf(base).rootIds[0], name: 'My hero' }]);
     const def = Object.values(state.components).find((d) => d.name === 'My hero')!;
     const root = def.tree!.rootIds[0];
@@ -2457,7 +2460,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
           return finish('Added an editable tagline.');
         }
       ],
-      { codeEnabled: false }
+      { codeEnabled: false, managed: ['hero.split'] }
     );
     def = await editEverywhere(env.session);
     const page = structuredClone(env.session.state.pages[env.session.state.site.homePageId]);
@@ -2483,7 +2486,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
   });
 
   it('refuses a request about a component the project no longer has', async () => {
-    const env = await setup([() => finish('Done.')], { codeEnabled: false });
+    const env = await setup([() => finish('Done.')], { codeEnabled: false, managed: ['hero.split'] });
     const r = await env.orch.send('Add a tagline', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: 'proj.gone', name: 'Old hero' }, viewport: 1280 });
     expect(r).toMatchObject({ ok: false, message: expect.stringMatching(/Old hero is no longer in the site/) });
     const def = await editEverywhere(env.session);
@@ -2524,7 +2527,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
           return finish('Renamed the heading field.');
         }
       ],
-      { codeEnabled: false }
+      { codeEnabled: false, managed: ['hero.split'] }
     );
     def = await editEverywhere(env.session);
     const r = await env.orch.send('Rename the heading field to Title', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: { owner: def.owner, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading', viewport: 1280 });
@@ -2539,7 +2542,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
   });
 
   it('limits a whole-component request to that component, all of its top-level nodes and its contract', () => {
-    const base = createStarterState('business', 'Test', false);
+    const base = managedStarter();
     const homeId = base.site.homePageId;
     const hero = base.pages[homeId].nodes[base.pages[homeId].rootIds[0]] as InstanceNode;
     const forked = applyOperations(base, [{ type: 'component.fork', definitionId: hero.definitionId }]);
@@ -2625,7 +2628,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
   });
 
   it('treats copying a code component as code, as the editor does', () => {
-    const state = createStarterState('business', 'Test', false);
+    const state = managedStarter();
     const homeId = state.site.homePageId;
     const hero = state.pages[homeId].nodes[state.pages[homeId].rootIds[0]] as InstanceNode;
     const code = structuredClone(state) as ProjectState;
@@ -2647,7 +2650,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
   });
 
   it('gives a small model its definition tools for a component everywhere, and the general tools once it is widened', () => {
-    const state = createStarterState('business', 'Test', false);
+    const state = managedStarter();
     const small = { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_000 };
     const names = (r: { tools: Array<{ name: string }> }) => r.tools.map((t) => t.name);
     const hero = (state.pages[state.site.homePageId].nodes[state.pages[state.site.homePageId].rootIds[0]] as InstanceNode).definitionId;
@@ -2684,7 +2687,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
           return finish('Kept it to the hero.');
         }
       ],
-      { codeEnabled: false }
+      { codeEnabled: false, managed: ['hero.split'] }
     );
     def = await editEverywhere(env.session);
     const r = await env.orch.send('Use navy for this hero and the brand', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
@@ -2762,7 +2765,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
           return finish('Done.');
         }
       ],
-      { codeEnabled: false, capabilities: { toolCalling: 'constrained-json' } }
+      { codeEnabled: false, capabilities: { toolCalling: 'constrained-json' }, managed: ['hero.split'] }
     );
     def = await editEverywhere(env.session);
     const r = await env.orch.send('Bind the eyebrow to a new tagline field and use navy for the brand', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
@@ -2799,7 +2802,7 @@ describe('Edit everywhere without Developer mode (#191)', () => {
           return finish('Done.');
         }
       ],
-      { codeEnabled: true, capabilities: { toolCalling: 'constrained-json' } }
+      { codeEnabled: true, capabilities: { toolCalling: 'constrained-json' }, managed: ['hero.split'] }
     );
     const def = await editEverywhere(env.session);
     const r = await env.orch.send('Add a countdown as a code component', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
@@ -2827,7 +2830,8 @@ describe('building a new component from Create component (#172)', () => {
       [
         (req) => {
           first = req;
-          return [calls(['s1', 'search_components', { query: 'pricing plans' }], ['s2', 'read_component', { componentId: 'pricing.plans', structure: true }])];
+          // Foundation's sections are code, so the design read for inspiration is a managed one the project holds.
+          return [calls(['s1', 'search_components', { query: 'service cards' }], ['s2', 'read_component', { componentId: 'features.grid', structure: true }])];
         },
         (req) => {
           inspiration = lastTool(req);
@@ -2863,7 +2867,7 @@ describe('building a new component from Create component (#172)', () => {
         },
         () => finish('Made Price tag: its plan name is a property, and it has a dark tone.')
       ],
-      { codeEnabled: false }
+      { codeEnabled: false, managed: ['features.grid'] }
     );
     const before = env.session.historyInfo().entries.length;
     const { runId, result } = await env.run('Create a component called "Price tag": one plan and its price.', task);
@@ -3470,7 +3474,7 @@ describe('Developer mode and code components (#132)', () => {
         () => [call('d5', 'apply_operations', batch([{ type: 'component.duplicate', definitionId: managed().id, name: 'Section copy' }]))],
         () => finish('Copied the section; the header is code, which needs Developer mode.')
       ],
-      { codeEnabled: false }
+      { codeEnabled: false, managed: ['hero.split'] }
     );
     session = env.session;
     const before = codeDefs(session.state);
@@ -3568,7 +3572,7 @@ describe('repair baseline identity (#132)', () => {
   });
 
   it('keeps a broken link the same when another link is added before it in the text, or one of its pages gains the section', () => {
-    const s0 = createStarterState('business', 'Test', false);
+    const s0 = managedStarter();
     const home = s0.site.homePageId;
     const keys = (s: ProjectState) => validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map(diagnosticKey);
     const withText = (body: string) => applyOperations(s0, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'content.text', newNodeId: 'n_text', props: { body } }]).state;
@@ -3587,7 +3591,7 @@ describe('repair baseline identity (#132)', () => {
 });
 
 describe('part scope rules (#132)', () => {
-  const base = () => createStarterState('business', 'Test', false);
+  const base = () => managedStarter(['features.grid', 'content.pages', 'layout.section', 'cta.banner']);
   const placeOn = (state: ProjectState, componentId: string, props: Record<string, unknown> = {}) => {
     const home = state.site.homePageId;
     const { state: next, results } = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId, props }]);
@@ -3775,7 +3779,7 @@ describe('components that are not reusable yet (#363)', () => {
         finishedText = env.events.filter((e) => e.kind === 'message').at(-1)?.message?.text ?? '';
         return finish('Left the line as it is.');
       }
-    ]);
+    ], { managed: ['hero.split'] });
     const { result } = await env.run('Make a hero for the studio with a line about what we do');
     const nodeId = nodeIdOf(inserted);
     // The change that made it says so, with the node to fix.
@@ -3815,7 +3819,7 @@ describe('components that are not reusable yet (#363)', () => {
         ],
         () => finish('Made the line editable in each placement.')
       ],
-      { codeEnabled: false }
+      { codeEnabled: false, managed: ['hero.split'] }
     );
     def = await projectHero(env.session);
     const { result } = await env.run('Add a line about the studio to this hero', everywhere(def));
@@ -3840,7 +3844,7 @@ describe('components that are not reusable yet (#363)', () => {
           return finish('Changed the background.');
         }
       ],
-      { codeEnabled: false }
+      { codeEnabled: false, managed: ['hero.split'] }
     );
     def = await projectHero(env.session);
     // The author's own fixed line, made before this request.
@@ -3863,7 +3867,7 @@ describe('components that are not reusable yet (#363)', () => {
         () => finish('Added a line inside the selected group.'),
         () => finish('Done.')
       ],
-      { codeEnabled: false }
+      { codeEnabled: false, managed: ['hero.split'] }
     );
     def = await projectHero(env.session);
     const r = await env.session.apply({ operations: [{ type: 'node.insert', owner: def.owner, parentId: def.root, primitive: 'stack' }] }, { label: 'Add', source: 'user' });
@@ -3877,7 +3881,7 @@ describe('components that are not reusable yet (#363)', () => {
 
   it('leaves a run near its step limit as it finished', async () => {
     let def: Def = { id: '', owner: { kind: 'component', id: '' }, root: '' };
-    const env = await setup([() => [insertSample(def, 1)], () => finish('Added a line about the studio.'), () => finish('Done.')], { codeEnabled: false });
+    const env = await setup([() => [insertSample(def, 1)], () => finish('Added a line about the studio.'), () => finish('Done.')], { codeEnabled: false, managed: ['hero.split'] });
     def = await projectHero(env.session);
     const turns = LIMITS.modelTurns;
     LIMITS.modelTurns = 3;
@@ -3900,7 +3904,7 @@ describe('components that are not reusable yet (#363)', () => {
       },
       () => finish('Made this hero its own design.'),
       () => finish('Done.')
-    ]);
+    ], { managed: ['hero.split'] });
     // The theme's hero, as this project holds it, has a fixed heading; theme components are never reported.
     // The session holds its project frozen: a hand edit is a changed copy put in its place.
     const changed = structuredClone(env.session.state);
@@ -4692,10 +4696,17 @@ describe('the project diagnostics in the editor context (#757)', () => {
     const caps = { contextWindowKnown: true, maxOutputTokens: 2000 } as const;
     // Long enough that the window below still offers the general tools.
     const text = `Tidy the site. ${'Keep the tone warm, the copy short and every heading plain. '.repeat(4000)}`;
+    // Sent from a blank page, whose sections the request would otherwise shorten first: the list alone decides the fit.
+    const blankPage = async (session: ProjectSession) => {
+      const r = await session.apply({ operations: [{ type: 'page.create', title: 'Notes' }] }, { label: 'Page', source: 'user' });
+      expect(r.ok).toBe(true);
+      return Object.values(session.state.pages).find((p) => p.title === 'Notes')!.id;
+    };
     // Measured once with room to spare.
     const roomy = await setup([() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: 200_000 } });
+    const roomyPage = await blankPage(roomy.session);
     seed(roomy.session, pagesOf(roomy.session), 4);
-    await roomy.run(text, pageCtx(roomy.session.state.site.homePageId, 'Home', { scope: 'site' }));
+    await roomy.run(text, pageCtx(roomyPage, 'Notes', { scope: 'site' }));
     const req = roomy.adapter.requests[0];
     const listed = editorContext(req).diagnostics;
     expect(listed.errors.length).toBeGreaterThan(0);
@@ -4705,8 +4716,9 @@ describe('the project diagnostics in the editor context (#757)', () => {
     // room still does not fit), but which a request with the list would overflow.
     const window = withList + 1024 - Math.floor(listTokens * 0.9);
     const env = await setup([() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: window } });
+    const envPage = await blankPage(env.session);
     seed(env.session, pagesOf(env.session), 4);
-    const { result } = await env.run(text, pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'site' }));
+    const { result } = await env.run(text, pageCtx(envPage, 'Notes', { scope: 'site' }));
     expect(result?.error).toBeUndefined();
     const sent = env.adapter.requests[0];
     expect(sent.tools.map((t) => t.name)).toEqual(req.tools.map((t) => t.name));
@@ -5095,7 +5107,7 @@ describe('the preview check before a changed run finishes (#742)', () => {
         },
         () => finish('Done.')
       ],
-      { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width)) }
+      { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width)), managed: ['intro.page'] }
     );
     const about = aboutOf(env.session);
     const homeId = env.session.state.site.homePageId;
@@ -5117,7 +5129,7 @@ describe('the preview check before a changed run finishes (#742)', () => {
         },
         () => finish('Gave the intro more room.')
       ],
-      { inspectLayout: async (pageId, width) => (inspected.push(pageId), clean(width)) }
+      { inspectLayout: async (pageId, width) => (inspected.push(pageId), clean(width)), managed: ['intro.page'] }
     );
     const about = aboutOf(env.session);
     // A component of its own, placed on About alone.
@@ -5546,7 +5558,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
       },
       () => [call('p1', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: read.revision, expectedHash: read.hash, source: tidied(sourceOf(session.state, id)) })],
       () => finish('Done.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     const before = sourceOf(session.state, id);
@@ -5575,7 +5587,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
       () => [call('p3', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: session.revision, expectedHash: read.hash, source: `${sourceOf(session.state, id)}<!-- again -->\n` })],
       () => [call('p4', 'apply_source_patch', { definitionId: id, scope: site, expectedHash: read.hash, source: `${sourceOf(session.state, id)}<!-- again -->\n` })],
       () => finish('Done.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     const before = sourceOf(session.state, id);
@@ -5662,7 +5674,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
         return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, scope: scope(), source: tidied(sourceOf(session.state, id)) })];
       },
       () => finish('Done.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     const { result, runId } = await env.run('Turn this into code and tidy it', selected(session.state));
     expect(read.revision).toBe(1);
@@ -5686,7 +5698,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
         return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'selection', targetIds: [hero(session.state)] }, source: tidied(sourceOf(session.state, id)) })];
       },
       () => finish('Could not.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     // A second placement of the same code, beside the selected one.
@@ -5710,7 +5722,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
         return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'selection', targetIds: [box] }, source: tidied(sourceOf(session.state, id)) })];
       },
       () => finish('Done.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     const heroId = hero(session.state);
@@ -5774,7 +5786,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
       // The source without the patch tool: no hash, no draft.
       () => [call('p3', 'apply_operations', { expectedRevision: read.revision, operations: [{ type: 'component.updateSource', definitionId: id, source: '<p>raw</p>\n' }] })],
       () => finish('Could not.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     const before = sourceOf(session.state, id);
@@ -5798,7 +5810,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
       },
       () => [call('p2', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'component', targetIds: [id] }, source: tidied(sourceOf(session.state, id)) })],
       () => finish('Done.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     await env.run('Tidy the hero code');
@@ -5808,7 +5820,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
   });
 
   it('lets a selection change code only it shows: never from a part, with another placement, unplaced, or rendered by other code', () => {
-    let state = createStarterState('business', 'Test', false);
+    let state = managedStarter();
     const own = { kind: 'page' as const, id: state.site.homePageId };
     const heroId = hero(state);
     const made = applyOperations(state, [{ type: 'component.convertToCode', owner: own, nodeId: heroId }]);
@@ -5841,7 +5853,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
   });
 
   it('resolves a requested scope within the run’s authority, and refuses one that reaches further', () => {
-    const state = createStarterState('business', 'Test', false);
+    const state = managedStarter();
     const homeId = state.site.homePageId;
     const own = { kind: 'page' as const, id: homeId };
     const [heroId, nextId] = homeOf(state).rootIds;
@@ -5906,7 +5918,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
         return [call('p1', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: read.revision, expectedHash: read.hash, source: attempted })];
       },
       () => finish('That code was refused.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     const before = sourceOf(session.state, id);
@@ -5943,7 +5955,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
         await new Promise((r) => setTimeout(r, 5));
         return [call('r2', 'read_project', {})];
       }
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     orchRef = env.orch;
     id = await heroInCode(session);
@@ -5976,7 +5988,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
         return [call('p2', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: r.revision, expectedHash: r.hash, source: tidied(sourceOf(session.state, id)) })];
       },
       () => finish('Tidied it.')
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     const { result, runId } = await env.run('Tidy the hero code');
@@ -6006,7 +6018,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
         attempted = tidied(sourceOf(session.state, id));
         return [call('p2', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: r.revision, expectedHash: r.hash, source: attempted })];
       }
-    ]);
+    ], { managed: ['hero.split'] });
     session = env.session;
     id = await heroInCode(session);
     const before = sourceOf(session.state, id);
@@ -6367,7 +6379,7 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
     let session: ProjectSession;
     let placed: Awaited<ReturnType<typeof placeTables>>;
     const reading = () => [call('r', 'read_source', { definitionId: placed.theme })];
-    const env = await setup([reading, () => finish('That needs a wider change.'), reading, () => finish('That needs a wider change.'), reading, () => finish('Done.')]);
+    const env = await setup([reading, () => finish('That needs a wider change.'), reading, () => finish('That needs a wider change.'), reading, () => finish('Done.')], { managed: ['hero.split'] });
     session = env.session;
     placed = await placeTables(session);
     await env.run('Add a note under the tables', { scope: 'page' });
@@ -6473,7 +6485,7 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
   });
 
   it('keeps a fork out of a page run, a selected part and a component’s design, and needs Developer mode for one of code', () => {
-    let state = createStarterState('business', 'Test', false);
+    let state = managedStarter();
     const home = state.site.homePageId;
     const placedTable = applyOperations(state, [{ type: 'node.insert', owner: pageOwner(home), index: 0, componentId: 'data.table' }]);
     state = placedTable.state;
@@ -6570,10 +6582,12 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
         fork = resultOf(req).results[0].definitionId;
         return [call('r1', 'read_source', { definitionId: fork })];
       },
-      // Code that marks its note for typing over, with properties that have no note: refused.
+      // Code that marks its note for typing over, with properties that have no note: refused. The table's code already
+      // takes the editor's text marker, so the note's marker is all the patch adds.
       (req) => {
         reads.push(resultOf(req));
-        return [call('p1', 'apply_source_patch', patch(fork, last(), { source: withNote(last().source).replace('<p class="so-table__note">', `<p class="so-table__note" data-so-text={so_text?.('note')}>`).replace("class: className = ''", "class: className = '',\n\t\tso_text") }))];
+        expect(last().source).toContain('\t\tso_text,\n');
+        return [call('p1', 'apply_source_patch', patch(fork, last(), { source: withNote(last().source).replace('<p class="so-table__note">', `<p class="so-table__note" data-so-text={so_text?.('note')}>`) }))];
       },
       // The heading renamed in the properties alone: the code still takes “heading”.
       () => {
@@ -6582,11 +6596,15 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
       },
       // Written against properties that have changed since: refused.
       () => [call('p3', 'apply_source_patch', { ...patch(fork, last(), { properties: { ...last().properties, note: NOTE } }), expectedPropertiesHash: 'stale' })],
-      // The rename with the code that reads the new name: every placement keeps its heading as its title.
+      // The rename with the code that reads the new name, and marks it under that name: every placement keeps its
+      // heading as its title.
       () => {
         const { heading, ...rest } = last().properties;
-        expect(last().source).toContain('\t\theading,\n');
-        return [call('p4', 'apply_source_patch', patch(fork, last(), { source: last().source.replace('\t\theading,\n', '\t\ttitle: heading,\n'), properties: { ...rest, title: heading }, renames: [{ from: 'heading', to: 'title' }] }))];
+        const declared = "\t\theading = 'Workshop timetable',\n";
+        expect(last().source).toContain(declared);
+        expect(last().source).toContain("so_text?.('heading')");
+        const source = last().source.replace(declared, "\t\ttitle: heading = 'Workshop timetable',\n").replace("so_text?.('heading')", "so_text?.('title')");
+        return [call('p4', 'apply_source_patch', patch(fork, last(), { source, properties: { ...rest, title: heading }, renames: [{ from: 'heading', to: 'title' }] }))];
       },
       () => [call('r2', 'read_source', { definitionId: fork })],
       (req) => {
@@ -6599,7 +6617,9 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
     expect((await session.apply({ operations: [{ type: 'instance.setProp', owner: pageOwner(placed.home), nodeId: placed.homeTables[0], prop: 'heading', value: 'Spring timetable' }] }, { label: 'Heading', source: 'user' })).ok).toBe(true);
     await env.run('Call the table heading a title');
     expect(resultOf(env.adapter.requests[3]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/“note” is not/) });
-    expect(resultOf(env.adapter.requests[4]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/takes heading from \$props\(\), which is not one of the component's properties/) });
+    // The table's code marks its heading for typing over, so the rename alone leaves that marker naming a property the
+    // component no longer has.
+    expect(resultOf(env.adapter.requests[4]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/does not fit its new properties: .*“heading” is not one of the component’s properties/) });
     expect(resultOf(env.adapter.requests[5]).error).toMatchObject({ code: 'STALE_REVISION', message: expect.stringMatching(/properties changed/) });
     expect(resultOf(env.adapter.requests[6])).toMatchObject({ ok: true });
     const node = session.state.pages[placed.home].nodes[placed.homeTables[0]] as InstanceNode;

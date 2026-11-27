@@ -45,7 +45,19 @@ export const FOUNDATION_AUTHOR: PackAuthor = createPack(metaOf(getTheme('foundat
 /** The spec of a design, with what a test rarely cares about filled in. */
 export type DesignSpec = Omit<ComponentSpec, 'category' | 'tags' | 'icon' | 'description'> & Partial<Pick<ComponentSpec, 'category' | 'tags' | 'icon' | 'description'>>;
 
-const filled = (spec: DesignSpec): ComponentSpec => ({ category: 'content', tags: [], icon: 'square', description: '', ...spec });
+/** The spec filled in, with its schemas copied, so a test that changes a definition never changes the spec it came from. */
+const filled = (spec: DesignSpec): ComponentSpec => ({
+  category: 'content',
+  tags: [],
+  icon: 'square',
+  description: '',
+  ...spec,
+  properties: structuredClone(spec.properties),
+  parts: structuredClone(spec.parts),
+  ...(spec.slots ? { slots: structuredClone(spec.slots) } : {}),
+  ...(spec.variantAxes ? { variantAxes: structuredClone(spec.variantAxes) } : {}),
+  ...(spec.state ? { state: structuredClone(spec.state) } : {})
+});
 
 /** A managed design stamped as Foundation's, not added anywhere. */
 export function foundationDesign(spec: DesignSpec): ComponentDefinition {

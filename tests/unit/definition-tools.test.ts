@@ -17,6 +17,7 @@ import { Ajv } from 'ajv';
 import { hasOpenSchema } from '@agent/propschema';
 import type { ToolDefinition } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
+import { placeSplitHero } from './fixtures/definition-tools-designs';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -28,11 +29,12 @@ type Schema = { enum?: string[]; anyOf?: Schema[]; properties?: Record<string, S
 const prop = (t: ToolDefinition, ...path: string[]): Schema => path.reduce<Schema>((s, k) => s.properties![k], t.parameters as Schema);
 const MICRO = ['edit_definition_node', 'bind_definition_field', 'manage_component_prop', 'style_definition_element', 'add_definition_variant', 'insert_definition_node', 'remove_definition_node'];
 
-/** A project with the Split hero copied for editing everywhere, as the editor makes one. */
+/** A project with the Split hero (a theme's design) copied for editing everywhere, as the editor makes one. */
 async function hero(prepare?: (s: ProjectState) => void) {
   const dir = mkdtempSync(join(tmpdir(), 'so-def-'));
   dirs.push(dir);
   const initial = createStarterState('business', 'Test', false);
+  placeSplitHero(initial);
   prepare?.(initial);
   const session = await ProjectSession.create(dir, initial);
   const home = session.state.pages[session.state.site.homePageId];
@@ -163,7 +165,8 @@ describe('choosing the definition tools', () => {
     expect(inserted.ok).toBe(true);
     const nested = (inserted.results?.[0] as { nodeId: string }).nodeId;
     const nestedDef = session.state.components[(session.state.components[id].tree!.nodes[nested] as InstanceNode).definitionId];
-    const partId = Object.keys(nestedDef.parts).find((p) => p !== 'root' && nestedDef.parts[p].nodeId !== nestedDef.tree!.rootIds[0])!;
+    // Foundation's Text section is code: a part of it other than its root, by the node its code hooks.
+    const partId = Object.keys(nestedDef.parts).find((p) => p !== 'root' && nestedDef.parts[p].nodeId !== nestedDef.parts.root.nodeId)!;
     const pick: ElementRef = { owner, instancePath: [nested], nodeId: nestedDef.parts[partId].nodeId, partId };
     const authority = authorityOf(session.state, id, pick);
     expect(authority).toMatchObject({ kind: 'selection', part: { partId } });

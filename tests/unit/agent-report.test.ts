@@ -6,6 +6,8 @@ import { fitInspection, serializeResult } from '@agent/tools';
 import { OPERATION_SCHEMAS, type EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { withPublished } from '@shared/published';
+import { P, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 /** A project with a library photo and a second page titled お問い合わせ, as in the original report. */
 function project() {
@@ -155,7 +157,7 @@ describe('change descriptions', () => {
     ]);
     expect(twice.changes.map((c) => c.label)).toEqual([
       'Changed Split hero on Home to “Centered hero”',
-      'Changed Centered hero on Home to “Page introduction”, dropping “Primary button label”, “Primary button link”, “Secondary button label” and “Secondary button link”'
+      'Changed Centered hero on Home to “Page introduction”, dropping “Primary button label”, “Primary button link”, “Secondary button label”, “Secondary button link” and “Note”'
     ]);
     expect((twice.after.pages[home.id].nodes[hero] as { definitionId: string }).definitionId).toBe('foundation.intro.page');
   });
@@ -202,11 +204,14 @@ describe('change descriptions', () => {
 
   it('reads an image bound to a component property from the property, so an alt-only edit says only that', () => {
     let { state } = project();
-    const home = { kind: 'page' as const, id: state.site.homePageId };
-    const hero = state.pages[home.id].rootIds[0];
-    // A project copy of the hero, whose image node shows the "image" property.
-    state = applyOperations(state, [{ type: 'component.makeUnique', owner: home, nodeId: hero, name: 'My hero' }]).state;
-    const def = Object.values(state.components).find((d) => d.name === 'My hero')!;
+    // A hero of the project's own, built in the editor, whose image node shows the "image" property.
+    const def = projectDesign(state, {
+      componentId: 'project.my-hero',
+      name: 'My hero',
+      properties: { image: P.image('Image') },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'section', {}, [b.image('picture', prop('image'))])
+    });
     state = applyOperations(state, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'image', schema: { ...def.properties.image, default: { assetId: 'as_office', alt: 'Old words' } } }]).state;
     const owner = { kind: 'component' as const, id: def.id };
     const image = Object.values(state.components[def.id].tree!.nodes).find((n) => n.kind === 'image')!;

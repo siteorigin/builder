@@ -12,10 +12,24 @@ import { designAppear } from '@engine/tree';
 import { RUNTIME_DIR, STYLES_DIR, defFile, generateProject, pageFile, publishedState } from '@generator/index';
 import { APPEAR_FILE, usesAppear } from '@generator/appear';
 import { compile } from 'svelte/compiler';
+import { projectDesign } from './fixtures/packs';
+import { BANNER, HERO } from './fixtures/appear-designs';
+import { FEATURES } from './fixtures/wrap-designs';
 
-const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const owner = (s: ProjectState): OwnerRef => ({ kind: 'page', id: s.site.homePageId });
+/** A placement of `def` added to the top level of a page, or of the shared footer, at `index` (the end by default). */
+const placeOn = (s: ProjectState, on: OwnerRef, def: { id: string }, index?: number): ProjectState =>
+  applyOperations(s, [{ type: 'node.insert', owner: on, parentId: null, ...(index === undefined ? {} : { index }), definitionId: def.id }]).state;
+/**
+ * The business starter with a managed Hero of the project's own first on Home and a Banner last. The starter's own
+ * sections are Foundation's code components, whose markup is their own, so the entrances the editor writes are tried
+ * on these.
+ */
+function fresh(): ProjectState {
+  const s = createStarterState('business', 'Test Studio', false);
+  return placeOn(placeOn(s, owner(s), projectDesign(s, HERO), 0), owner(s), projectDesign(s, BANNER));
+}
 const section = (s: ProjectState, componentId: string, pageId = s.site.homePageId) => {
   const p = s.pages[pageId];
   return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!;
@@ -25,13 +39,12 @@ const stagger = (o: OwnerRef, nodeId: string, value: unknown): EditOperation => 
 const apply = (s: ProjectState, ops: EditOperation[]) => applyOperations(s, ops).state;
 const runtime = `${RUNTIME_DIR}/${APPEAR_FILE}`;
 
-/** The business starter with Features forked into the project, so its design can be edited. */
+/** The business starter with a Services grid of the project's own placed on Home, so its design can be edited. */
 function withGridDesign() {
   let s = fresh();
-  const grid = section(s, 'features.grid');
-  const fork = applyOperations(s, [{ type: 'component.fork', definitionId: grid.definitionId }]);
-  s = fork.state;
-  return { s, grid: section(s, 'features.grid'), design: { kind: 'component', id: fork.results[0].definitionId as string } as OwnerRef };
+  const def = projectDesign(s, FEATURES);
+  s = placeOn(s, owner(s), def);
+  return { s, grid: section(s, 'project.features'), design: { kind: 'component', id: def.id } as OwnerRef };
 }
 
 /** A blank site with one layout section on Home and a stack (a container) inside it. */
@@ -54,7 +67,21 @@ function compiles(files: Map<string, string>) {
 }
 
 describe('entrance operations', () => {
-  it('sets, changes, turns off and clears a section’s entrance', () => {
+  it('sets, changes, turns off and clears the entrance of a section built in the editor', () => {
+    let s = fresh();
+    const hero = section(s, 'project.hero');
+    s = apply(s, [appear(owner(s), hero.id, 'lift')]);
+    expect((home(s).nodes[hero.id] as InstanceNode).appear).toBe('lift');
+    s = apply(s, [appear(owner(s), hero.id, 'scale-subtle')]);
+    expect((home(s).nodes[hero.id] as InstanceNode).appear).toBe('scale-subtle');
+    // A placement keeps "none": it turns off whatever its design chooses.
+    s = apply(s, [appear(owner(s), hero.id, 'none')]);
+    expect((home(s).nodes[hero.id] as InstanceNode).appear).toBe('none');
+    s = apply(s, [appear(owner(s), hero.id, null)]);
+    expect(Object.hasOwn(home(s).nodes[hero.id], 'appear')).toBe(false);
+  });
+
+  it('sets, changes, turns off and clears the entrance of a section of the shipped theme', () => {
     let s = fresh();
     const hero = section(s, 'hero.split');
     s = apply(s, [appear(owner(s), hero.id, 'lift')]);
@@ -91,7 +118,7 @@ describe('entrance operations', () => {
 
   it('refuses what has no entrance, unknown presets, and code components', () => {
     const { s, design } = withGridDesign();
-    const hero = section(s, 'hero.split');
+    const hero = section(s, 'project.hero');
     expect(() => apply(s, [appear(owner(s), hero.id, 'spin')])).toThrow(/fade, lift, scale-subtle or none/);
     expect(() => apply(s, [appear(owner(s), hero.id, true)])).toThrow(/fade, lift, scale-subtle or none/);
     expect(() => apply(s, [appear(design, 'card-title', 'fade')])).toThrow(/Only sections and containers/);
@@ -115,9 +142,9 @@ describe('entrance operations', () => {
 
   it('writes a converted code copy’s entrance into its source, and nothing for a copy without one', () => {
     let s = fresh();
-    const hero = section(s, 'hero.split');
+    const hero = section(s, 'project.hero');
     // Another section animates, so the site's designs take entrances from their placements while converting.
-    s = apply(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: hero.id, name: 'Hero copy' }, appear(owner(s), section(s, 'cta.banner').id, 'fade')]);
+    s = apply(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: hero.id, name: 'Hero copy' }, appear(owner(s), section(s, 'project.banner').id, 'fade')]);
     const plain = applyOperations(s, [{ type: 'component.convertToCode', owner: owner(s), nodeId: hero.id, name: 'Hero plain' }]);
     expect(plain.state.components[plain.results[0].definitionId as string].source).not.toMatch(/data-appear|so_appear|so_stagger/);
     s = apply(s, [appear(owner(s), hero.id, 'lift')]);
@@ -127,7 +154,7 @@ describe('entrance operations', () => {
     expect(code.source).not.toMatch(/so_appear|so_stagger/);
     expect(Object.hasOwn(home(c.state).nodes[hero.id], 'appear')).toBe(false);
     // The copy alone still turns the observer on.
-    s = apply(c.state, [appear(owner(c.state), section(c.state, 'cta.banner').id, null)]);
+    s = apply(c.state, [appear(owner(c.state), section(c.state, 'project.banner').id, null)]);
     expect(usesAppear(s)).toBe(true);
     expect(generateProject(s).has(runtime)).toBe(true);
   });
@@ -143,7 +170,7 @@ describe('entrance operations', () => {
 
     // A design whose root places another design: the copy passes the entrance on, and the site keeps its observer.
     let t = fresh();
-    const hero = section(t, 'hero.split');
+    const hero = section(t, 'project.hero');
     const wrap = applyOperations(t, [{ type: 'component.createFromNode', owner: owner(t), nodeId: hero.id, name: 'Hero wrap' }]);
     t = wrap.state;
     const placed = wrap.results[0].nodeId as string;
@@ -200,7 +227,7 @@ describe('entrances in the generated site', () => {
 
   it('puts a section’s entrance on its design’s root element and starts the observer from the layout', () => {
     let s = fresh();
-    const hero = section(s, 'hero.split');
+    const hero = section(s, 'project.hero');
     s = apply(s, [appear(owner(s), hero.id, 'lift')]);
     const files = generateProject(s);
     expect(files.get(pageFile(home(s)))).toContain('so_appear={"lift"}');
@@ -225,7 +252,7 @@ describe('entrances in the generated site', () => {
 
   it('writes the editor’s variant of the observer, which waits for Preview', () => {
     let s = fresh();
-    s = apply(s, [appear(owner(s), section(s, 'cta.banner').id, 'fade')]);
+    s = apply(s, [appear(owner(s), section(s, 'project.banner').id, 'fade')]);
     const files = generateProject(s, { instrument: true });
     expect(files.get(runtime)).toContain("document.documentElement.hasAttribute('data-so-editing')");
     // The editor's layout imports onMount once, for its bridge and the observer alike.
@@ -240,7 +267,7 @@ describe('entrances in the generated site', () => {
     s = apply(s, [appear(design, 'root', 'fade'), appear(owner(s), grid.id, 'none')]);
     // Nothing else animates: the site has no entrances, and says none.
     expect(generateProject(s).get(defFile(s.components[design.id]))).not.toContain('data-appear');
-    s = apply(s, [appear(owner(s), section(s, 'cta.banner').id, 'lift')]);
+    s = apply(s, [appear(owner(s), section(s, 'project.banner').id, 'lift')]);
     const files = generateProject(s);
     expect(files.get(pageFile(home(s)))).toContain('so_appear={"none"}');
     expect(files.get(defFile(s.components[design.id]))).toContain(`data-appear={so_appear === 'none' ? undefined : so_appear ?? "fade"}`);
@@ -273,6 +300,7 @@ describe('entrances in the generated site', () => {
   it('leaves the observer out when only a draft, or a component nothing places, has an entrance', () => {
     let s = fresh();
     const about = s.site.pageOrder.find((id) => id !== s.site.homePageId)!;
+    s = placeOn(s, { kind: 'page', id: about }, s.components[section(s, 'project.hero').definitionId], 0);
     const sec = s.pages[about].rootIds[0];
     s = apply(s, [appear({ kind: 'page', id: about }, sec, 'lift'), { type: 'page.update', pageId: about, draft: true }]);
     // The editor still previews the draft with its entrance; the published site has none.
@@ -283,7 +311,7 @@ describe('entrances in the generated site', () => {
 
     // A copy nothing places.
     let t = fresh();
-    const d = applyOperations(t, [{ type: 'component.duplicate', definitionId: section(t, 'cta.banner').definitionId, name: 'Spare banner' }]);
+    const d = applyOperations(t, [{ type: 'component.duplicate', definitionId: section(t, 'project.banner').definitionId, name: 'Spare banner' }]);
     t = d.state;
     const spare = d.results[0].definitionId as string;
     t = apply(t, [appear({ kind: 'component', id: spare }, t.components[spare].tree!.rootIds[0], 'fade')]);
@@ -297,17 +325,19 @@ describe('entrances in the generated site', () => {
 
   it('ignores a hand-edited preset it does not know', () => {
     let s = fresh();
-    (section(s, 'hero.split') as { appear?: string }).appear = 'spin';
+    (section(s, 'project.hero') as { appear?: string }).appear = 'spin';
     expect(usesAppear(s)).toBe(false);
     expect([...generateProject(s).values()].some((c) => c.includes('spin'))).toBe(false);
     // Nor while the site has entrances elsewhere.
-    s = apply(s, [appear(owner(s), section(s, 'cta.banner').id, 'fade')]);
+    s = apply(s, [appear(owner(s), section(s, 'project.banner').id, 'fade')]);
     expect(generateProject(s).get(pageFile(home(s)))).not.toContain('spin');
   });
 
   it('counts the shared footer only while a page shows it, and a design’s entrance only where a placement keeps it', () => {
     let s = fresh();
-    const footer = s.site.shell.footer.rootIds[0];
+    // A banner of the editor's placed in the shared footer, beside the theme's own footer.
+    s = placeOn(s, { kind: 'shell', id: 'footer' }, s.components[section(s, 'project.banner').definitionId]);
+    const footer = s.site.shell.footer.rootIds.at(-1)!;
     s = apply(s, [appear({ kind: 'shell', id: 'footer' }, footer, 'fade')]);
     expect(usesAppear(s)).toBe(true);
     s = apply(s, s.site.pageOrder.map((pageId): EditOperation => ({ type: 'page.update', pageId, showFooter: false })));
@@ -325,7 +355,7 @@ describe('entrances in the generated site', () => {
 
   it('passes a placement’s entrance through a design whose root places another design', () => {
     let s = fresh();
-    const hero = section(s, 'hero.split');
+    const hero = section(s, 'project.hero');
     s = apply(s, [appear(owner(s), hero.id, 'scale-subtle')]);
     const wrap = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: hero.id, name: 'Hero wrap' }]);
     s = wrap.state;

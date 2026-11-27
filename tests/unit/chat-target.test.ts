@@ -8,11 +8,45 @@ import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
 import { chatContextFor, composerScope, editScope, requestTarget, retryView, targetOf, uneditableDesign } from '../../src/renderer/src/lib/chatTarget';
 import { NEW_STUDIO } from '../../src/renderer/src/lib/studio';
 import { continueContext } from '../../src/renderer/src/lib/result';
+import { makeInstance } from '@engine/install';
+import { P, prop } from '@catalogue/dsl';
+import { foundationDesign, type DesignSpec } from './fixtures/packs';
 
-/** A starter project with the home hero and the closing banner each forked, as "Edit everywhere" does. */
+/**
+ * A hero a theme built in the editor: a heading in a content area another design can be placed in. Foundation's own
+ * sections are code, which the AI edits only as source and nothing is placed inside, so the hero edited everywhere
+ * here is this one.
+ */
+const SPLIT_HERO: DesignSpec = {
+  componentId: 'test.split-hero',
+  name: 'Split hero',
+  properties: { heading: P.str('Heading', 'Designed for living in') },
+  parts: { root: { nodeId: 'root', label: 'Section' }, heading: { nodeId: 'heading', label: 'Heading' } },
+  build: (b) => b.el('root', 'section', { name: 'Section' }, [b.el('content', 'div', { name: 'Content' }, [b.text('heading', 'h1', prop('heading'), { name: 'Heading' })])])
+};
+
+/** A banner a theme built in the editor, placed inside the hero's design. */
+const BANNER: DesignSpec = {
+  componentId: 'test.banner',
+  name: 'Banner',
+  properties: { heading: P.str('Heading', 'Get in touch') },
+  parts: { root: { nodeId: 'root', label: 'Banner' } },
+  build: (b) => b.el('root', 'section', { name: 'Banner' }, [b.text('title', 'h2', prop('heading'), { name: 'Heading' })])
+};
+
+/**
+ * A starter project whose home hero is the theme's editor-built Split hero, with it and the closing banner each
+ * forked, as "Edit everywhere" does, and the theme's editor-built Banner placed inside the hero's design.
+ */
 function project() {
   let state = createStarterState('business', 'Test', false);
   const home = state.site.homePageId;
+  const heroDesign = foundationDesign(SPLIT_HERO);
+  const bannerDesign = foundationDesign(BANNER);
+  state.components[heroDesign.id] = heroDesign;
+  state.components[bannerDesign.id] = bannerDesign;
+  const first = state.pages[home].rootIds[0];
+  state.pages[home].nodes[first] = { ...makeInstance(heroDesign), id: first };
   const about = Object.values(state.pages).find((p) => p.route === '/about/')!.id;
   const contact = Object.values(state.pages).find((p) => p.route === '/contact/')!.id;
   const at = (i: number) => state.pages[home].nodes[state.pages[home].rootIds.at(i)!] as InstanceNode;
@@ -25,10 +59,10 @@ function project() {
   const banner = fork(at(-1).definitionId);
   const owner = { kind: 'component' as const, id: hero };
   // A theme component placed inside the hero's design.
-  const nested = applyOperations(state, [{ type: 'node.insert', owner, parentId: 'content', componentId: 'cta.banner' }]);
+  const nested = applyOperations(state, [{ type: 'node.insert', owner, parentId: 'content', definitionId: bannerDesign.id }]);
   state = nested.state;
   const nestedId = (nested.results[0] as { nodeId: string }).nodeId;
-  return { state, home, about, contact, hero, banner, owner, nestedId };
+  return { state, home, about, contact, hero, banner, owner, nestedId, nestedDesign: bannerDesign.id };
 }
 
 const enabled = { page: true, scope: 'selection' as const };
@@ -68,7 +102,7 @@ describe('the composer while a component is edited everywhere (#191)', () => {
   });
 
   it('keeps a part of a component placed in the design, and drops a pick from outside it', () => {
-    const { state, home, about, hero, owner, nestedId } = project();
+    const { state, home, about, hero, owner, nestedId, nestedDesign } = project();
     const nestedDef = state.components[(state.components[hero].tree!.nodes[nestedId] as InstanceNode).definitionId];
     const part: ElementRef = { owner, instancePath: [nestedId], nodeId: nestedDef.tree!.rootIds[0] };
     const dm = { definitionId: hero, returnPageId: home };
@@ -77,7 +111,7 @@ describe('the composer while a component is edited everywhere (#191)', () => {
     const onPage: ElementRef = { owner: { kind: 'page', id: about }, instancePath: [], nodeId: state.pages[about].rootIds[0] };
     expect(composerScope(state, { pageId: home, selection: onPage, definitionMode: dm })).toMatchObject({ component: { id: hero }, selection: null, selectionLabel: null });
     // Nor is a node of another component's design.
-    expect(composerScope(state, { pageId: home, selection: { owner: { kind: 'component', id: 'foundation.cta.banner' }, instancePath: [], nodeId: 'root' }, definitionMode: dm }).selection).toBeNull();
+    expect(composerScope(state, { pageId: home, selection: { owner: { kind: 'component', id: nestedDesign }, instancePath: [], nodeId: 'root' }, definitionMode: dm }).selection).toBeNull();
     // A node the design no longer has is not offered either.
     expect(composerScope(state, { pageId: home, selection: { owner, instancePath: [], nodeId: 'n_gone' }, definitionMode: dm }).selection).toBeNull();
   });

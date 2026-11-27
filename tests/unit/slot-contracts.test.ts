@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { compile } from 'svelte/compiler';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, SlotNode } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
@@ -15,11 +15,18 @@ import { checkSvelteSource } from '../../src/main/codecheck';
 import { addPoints, fitting, offeredAt, quickItems, resolvePoint } from '../../src/renderer/src/lib/inline-insert';
 import { slotRefusal, slotRefuses } from '../../src/renderer/src/lib/insert-at';
 import { removeRendered, serverHtml } from './generated-site';
+import { restorePacks } from './fixtures/packs';
+import { registerManaged } from './fixtures/component-contract-designs';
 
 /**
  * A slot can take components by name (#660): a catalogue contract ID, the same in every compatible theme, or a
  * project definition ID, beside the categories and element kinds it takes.
  */
+
+// A slot's contract and fallback are a design's, so the Section inserted here is the managed design of its contract
+// (fixtures/component-contract-designs), registered as Foundation's.
+beforeAll(() => registerManaged('layout.section'));
+afterAll(() => restorePacks());
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const errors = (s: ProjectState) => validateState(s).filter((d) => d.severity === 'error');
@@ -229,7 +236,7 @@ describe('the Insert panel and the canvas’s Add list inside a slot that names 
     expect(keys).toContain(`c:${card}`);
     expect(keys).not.toContain('s:features.grid');
     // A slot that takes anything offers the theme's blocks (#664), never its sections.
-    expect(offeredAt(open, at, 'element').filter((it) => it.key.startsWith('s:')).map((it) => it.key)).toEqual(['s:block.feature', 's:block.stat', 's:block.testimonial', 's:block.callout', 's:block.signup', 's:block.video']);
+    expect(offeredAt(open, at, 'element').filter((it) => it.key.startsWith('s:')).map((it) => it.key)).toEqual(['s:block.feature', 's:block.stat', 's:block.testimonial', 's:block.callout', 's:block.download', 's:block.facts', 's:block.signup', 's:block.video']);
     // Named by the ID of the theme's design of it, the gallery is offered by its contract all the same; a component of
     // the project's that goes in as a section is offered here too, since the slot names it.
     const galleryDef = getTheme(s.site.themeId).components.find((c) => c.componentId === 'media.gallery')!.id;
@@ -299,6 +306,11 @@ function badged() {
 }
 const tree = (s: ProjectState, id: string) => s.components[id].tree!;
 const EDITOR = /so_editing|data-so-|so-slot-empty|data-so-editor-only/;
+/**
+ * A file's code with the inline text marks a theme's code component writes for the editor's preview left out
+ * (`data-so-text={so_text?.('heading')}`, spec: Inline text): the site never passes the hook, so they render nothing.
+ */
+const unmarked = (src: string) => src.replace(/ data-so-text=\{so_text\?\.\([^)]*\)\}/g, '');
 
 describe('a slot’s fallback content', () => {
   afterAll(removeRendered);
@@ -369,7 +381,7 @@ describe('a slot’s fallback content', () => {
     const design = [...files.values()].find((src) => src.includes('Default badge') && src.includes('slot_aside = undefined'))!;
     expect(design).toMatch(/\{#if slot_aside\}\s*\{@render slot_aside\(\)\}\s*\{:else\}[\s\S]*Default badge[\s\S]*\{\/if\}/);
     expect(design).toContain('slot_aside = undefined');
-    for (const [path, src] of files) expect(src, path).not.toMatch(EDITOR);
+    for (const [path, src] of files) expect(unmarked(src), path).not.toMatch(EDITOR);
     expect(await serverHtml(files, 'slot-fallback-')).toContain('Default badge');
     const filled = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: grid, slot: 'aside', primitive: 'paragraph', text: 'Book now' }]).state;
     const html = await serverHtml(generateProject(filled), 'slot-fallback-');

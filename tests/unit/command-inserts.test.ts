@@ -72,7 +72,11 @@ describe('what the command menu inserts', () => {
       ['ins:e:sidebar', 'Layout', { primitive: 'grid', starter: 'sidebar' }],
       ['ins:e:split', 'Layout', { primitive: 'grid', starter: 'split' }]
     ]);
-    expect(found(choices, 'bento').map((c) => [c.id, c.kind, c.spec])).toEqual([['ins:e:bento', 'Layout', { primitive: 'grid', starter: 'bento' }]]);
+    // Foundation's Feature bento section answers to the word too, after the layout.
+    expect(found(choices, 'bento').map((c) => [c.id, c.kind, c.spec])).toEqual([
+      ['ins:e:bento', 'Layout', { primitive: 'grid', starter: 'bento' }],
+      ['ins:features.bento', 'Section', { componentId: 'features.bento' }]
+    ]);
     expect(found(choices, 'bullet points').map((c) => c.spec)).toEqual([{ primitive: 'richtext', text: '- First item\n- Second item\n- Third item' }]);
     for (const name of ['Heading', 'Paragraph', 'Button', 'Image', 'Grid', 'Stack', 'Container']) expect(found(choices, name).some((c) => c.id.startsWith('ins:e:') && c.name === name)).toBe(true);
   });

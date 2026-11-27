@@ -49,9 +49,15 @@ function exportedSite(components: string[]) {
   return { files, css };
 }
 
-/** Every case's layout and home page as one script that defines `window.mountCase(name)`. */
-async function bundleSites(sites: Record<string, Map<string, string>>): Promise<string> {
+/**
+ * Every case's layout and home page as one script that defines `window.mountCase(name)`, and the components' own
+ * styles, which an exported site's build writes to stylesheets the page loads before it shows anything. Injected by
+ * the script instead, they arrive after the first measurement: the theme's sections are code components, and their
+ * look is in those styles.
+ */
+async function bundleSites(sites: Record<string, Map<string, string>>): Promise<{ script: string; css: string }> {
   const src = new Map<string, string>();
+  const styles = new Map<string, string>();
   for (const [name, files] of Object.entries(sites)) {
     for (const [path, text] of files) src.set(`\0site/${name}/${path}`, text);
     src.set(`\0site/${name}/Entry.svelte`, `<script>import Layout from './src/routes/+layout.svelte'; import Page from './src/routes/+page.svelte';</script><Layout><Page /></Layout>`);
@@ -89,7 +95,10 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
           if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {}; export const snapshot = () => {};';
           const text = src.get(id);
           if (text === undefined) return null;
-          return id.endsWith('.svelte') ? compile(text, { filename: id.slice(1), generate: 'client', css: 'injected' }).js.code : text;
+          if (!id.endsWith('.svelte')) return text;
+          const compiled = compile(text, { filename: id.slice(1), generate: 'client', css: 'external' });
+          if (compiled.css) styles.set(id, compiled.css.code);
+          return compiled.js.code;
         }
       }
     ],
@@ -97,7 +106,7 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
   })) as Rolldown.RolldownOutput | Rolldown.RolldownOutput[];
   const chunk = (Array.isArray(out) ? out[0] : out).output.find((o) => o.type === 'chunk');
   if (!chunk || chunk.type !== 'chunk') throw new Error('The exported site did not bundle');
-  return chunk.code;
+  return { script: chunk.code, css: [...styles.values()].join('\n') };
 }
 
 interface Layout {
@@ -165,6 +174,14 @@ const MEASURE = `(() => {
 })()`;
 
 /**
+ * The sections of the page that holds them all, in order, by the name the focus checks give them. Foundation's
+ * sections are code components, whose markup names no component, so a section is told by its place on the page.
+ */
+const TOGETHER = CASES.together.map((id) => id.replace('.', '-'));
+/** The element of the `together` page's section with this component ID that a selector inside it finds. */
+const inSection = (componentId: string, selector: string) => `main > :nth-child(${CASES.together.indexOf(componentId) + 1}) ${selector}`;
+
+/**
  * The focused element: its text, destination, the section it sits in, where it is on screen, and whether Tab has
  * been here before (marked on the element, so a repeated label elsewhere is not mistaken for wrapping round).
  */
@@ -173,8 +190,9 @@ const FOCUSED = `(() => {
   if (!el || el === document.body) return null;
   const seen = el.hasAttribute('data-test-focused');
   el.setAttribute('data-test-focused', '');
-  const owner = el.closest('[class*="__root"], header');
-  const section = owner?.tagName === 'HEADER' ? 'header' : (owner?.className.match(/so-foundation-([a-z-]+)__root/) || [])[1] || '';
+  const main = document.querySelector('main');
+  const top = [...(main?.children ?? [])].find((c) => c.contains(el));
+  const section = el.closest('header') ? 'header' : el.closest('footer') ? 'shell-footer' : top ? (${JSON.stringify(TOGETHER)}[[...main.children].indexOf(top)] ?? '') : '';
   const b = el.getBoundingClientRect();
   return { seen, section, text: el.textContent.trim(), href: el.getAttribute('href'), left: b.left, right: b.right, top: b.top, bottom: b.bottom, vw: document.documentElement.clientWidth, vh: innerHeight };
 })()`;
@@ -198,6 +216,7 @@ const describeFocus = (f: Focused) => `${f.section}: ${f.text} (${f.href}) at ${
 describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => {
   let browser: Browser;
   let script: string;
+  let componentCss: string;
   const sites = Object.fromEntries(Object.entries(CASES).map(([name, components]) => [name, exportedSite(components)]));
 
   beforeAll(async () => {
@@ -209,7 +228,7 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
     if (launched.status === 'fulfilled') browser = launched.value;
     if (bundled.status === 'rejected') throw bundled.reason;
     if (launched.status === 'rejected') throw launched.reason;
-    script = bundled.value;
+    ({ script, css: componentCss } = bundled.value);
   }, 60_000);
 
   afterAll(async () => {
@@ -229,7 +248,7 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
         if (new URL(route.request().url()).pathname === '/site.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
         return route.fulfill({
           contentType: 'text/html; charset=utf-8',
-          body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sites[name].css}</style></head><body><div id="app" style="display: contents"></div><script src="/site.js"></script><script>mountCase(${JSON.stringify(name)})</script></body></html>`
+          body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sites[name].css}\n${componentCss}</style></head><body><div id="app" style="display: contents"></div><script src="/site.js"></script><script>mountCase(${JSON.stringify(name)})</script></body></html>`
         });
       });
       await page.goto(`${ORIGIN}/`);
@@ -302,16 +321,16 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
         await withPage('together', { width }, fontSize, async (page) => {
           // On phones each text style sits at its minimum, a fixed multiple of the visitor's text size.
           const scale = {
-            '.so-foundation-hero-centered__heading': 2.6,
-            '.so-foundation-hero-split__heading': 2.25,
-            '.so-foundation-hero-centered__lead': 1.08,
-            '.so-foundation-hero-centered__primary': 0.97,
-            '.so-foundation-contact-details__method-value': 1
+            [inSection('hero.centered', '.hero__heading')]: 2.6,
+            [inSection('hero.split', '.hero__heading')]: 2.25,
+            [inSection('hero.centered', '.hero__lead')]: 1.08,
+            [inSection('hero.centered', '.hero__primary')]: 0.97,
+            [inSection('contact.details', '.contact__value')]: 1
           };
           for (const [selector, ratio] of Object.entries(scale)) expect(await fontSizeOf(page, selector), `${selector} at ${width}px`).toBeCloseTo(ratio * fontSize, 0);
-          expect(await page.locator('.so-foundation-hero-centered__heading').innerText()).toBe('Thoughtful work for people who care about the details');
-          expect(await page.locator('.so-foundation-hero-centered__primary').innerText()).toBe('Start a project');
-          expect(await page.locator('.so-foundation-contact-details__method-value').first().innerText()).toBe('hello@example.com');
+          expect(await page.locator(inSection('hero.centered', '.hero__heading')).innerText()).toBe('Designed for living in, not just for photographs');
+          expect(await page.locator(inSection('hero.centered', '.hero__primary')).innerText()).toBe('Book a consultation');
+          expect(await page.locator(inSection('contact.details', '.contact__value')).first().innerText()).toBe('hello@example.com');
         });
     }, 30_000);
 
@@ -329,10 +348,10 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
           // Each one by its section and destination, so a repeated label elsewhere cannot stand in for it.
           const expected = [
             ['header', 'Test Studio', '/'],
-            ['hero-centered', 'Start a project', '/contact/'],
-            ['hero-centered', 'See our work', '/about/'],
-            ['hero-split', 'Start a project', '/contact/'],
-            ['hero-split', 'See our work', '/about/'],
+            ['hero-centered', 'Book a consultation', '/contact/'],
+            ['hero-centered', 'See recent projects', '/about/'],
+            ['hero-split', 'Book a consultation', '/contact/'],
+            ['hero-split', 'See recent projects', '/about/'],
             ['contact-details', 'Email us', 'mailto:hello@example.com'],
             ['contact-details', 'hello@example.com', 'mailto:hello@example.com'],
             ['contact-details', '+1 555 0134', 'tel:+15550134'],
@@ -348,7 +367,7 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
           expect(reached.filter((f) => !onScreen(f)).map(describeFocus)).toEqual([]);
 
           // Enter on a hero action follows its link.
-          await page.locator('.so-foundation-hero-centered__primary').focus();
+          await page.locator(inSection('hero.centered', '.hero__primary')).focus();
           await Promise.all([page.waitForURL(`${ORIGIN}/contact/`), page.keyboard.press('Enter')]);
         });
       }, 30_000);
@@ -367,8 +386,10 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
           for (let i = 0; i < 4; i++) items.push(await tab(page));
           expect(items.map((f) => `${f.section}: ${f.text} ${f.href}`)).toEqual(['header: Home /', 'header: About /about/', 'header: Contact /contact/', 'header: Book a call /contact/']);
           expect(items.filter((f) => !onScreen(f)).map(describeFocus)).toEqual([]);
-          // One column: every item starts at the same edge.
-          expect(new Set(items.map((f) => Math.round(f.left))).size).toBe(1);
+          // One column: each item below the one before it, all on the same centre line (the call to action is a
+          // button inset within the column the links fill).
+          expect(items.filter((f, i) => i > 0 && f.top < items[i - 1].bottom - 0.5).map(describeFocus)).toEqual([]);
+          expect(new Set(items.map((f) => Math.round(f.left + f.right))).size).toBe(1);
           await page.keyboard.press('Escape');
           await expect.poll(expanded).toBe(false);
           await expect.poll(() => page.locator('#so-site-nav').isVisible()).toBe(false);

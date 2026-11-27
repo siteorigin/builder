@@ -3,11 +3,20 @@ import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
 import { repeatProp } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { P } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
+import { withManaged } from './fixtures/component-contract-designs';
 import { clickTargetIn, definitionPick, descOf, listPropFor, placementsOn, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef } from '../../src/renderer/src/lib/model';
+
+/**
+ * The business starter, its Split hero and Services grid the managed designs of their contracts
+ * (fixtures/component-contract-designs): the canvas steps through a design drawn from data, node by node.
+ */
+const starter = () => withManaged(createStarterState('business', 'Test Studio', false), 'hero.split', 'features.grid');
 
 /** A home page with a Section at the top holding two "Feature card" components, each with a heading. */
 function cards() {
-  let s: ProjectState = createStarterState('business', 'Test Studio', false);
+  let s: ProjectState = starter();
   const pageId = s.site.homePageId;
   const owner = { kind: 'page' as const, id: pageId };
   s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' }]).state;
@@ -56,7 +65,7 @@ describe('a click held while a save reaches the page (#755)', () => {
   });
 
   it('is taken through a design’s own containers, and dropped when its repeated item is removed', () => {
-    let s: ProjectState = createStarterState('business', 'Test Studio', false);
+    let s: ProjectState = starter();
     const pageId = s.site.homePageId;
     const owner = { kind: 'page' as const, id: pageId };
     const hero = s.pages[pageId].nodes[s.pages[pageId].rootIds[0]] as InstanceNode;
@@ -109,7 +118,7 @@ describe('canvas selection steps in one level per click', () => {
   });
 
   it('moves between parts of one repeated item at the part level', () => {
-    let s: ProjectState = createStarterState('business', 'Test Studio', false);
+    let s: ProjectState = starter();
     const pageId = Object.keys(s.pages).find((id) => Object.values(s.pages[id].nodes).some((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'features.grid'))!;
     const grid = Object.values(s.pages[pageId].nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'features.grid') as InstanceNode;
     const def = s.components[grid.definitionId];
@@ -123,7 +132,7 @@ describe('canvas selection steps in one level per click', () => {
   });
 
   it('goes from a hero straight to its heading, past the design’s layout containers', () => {
-    const s: ProjectState = createStarterState('business', 'Test Studio', false);
+    const s: ProjectState = starter();
     const pageId = s.site.homePageId;
     const owner = { kind: 'page' as const, id: pageId };
     const hero = s.pages[pageId].nodes[s.pages[pageId].rootIds[0]] as InstanceNode;
@@ -149,7 +158,7 @@ describe('canvas selection steps in one level per click', () => {
   });
 
   it('goes from a component whose root places a hero straight to the hero’s heading', () => {
-    let s: ProjectState = createStarterState('business', 'Test Studio', false);
+    let s: ProjectState = starter();
     const pageId = s.site.homePageId;
     const owner = { kind: 'page' as const, id: pageId };
     const heroId = s.pages[pageId].rootIds[0];
@@ -207,8 +216,20 @@ describe('editing a component everywhere', () => {
   });
 
   it('finds the list a repeated part belongs to, even when two lists share field names', () => {
-    const s = createStarterState('business', 'Test Studio', false);
-    const footer = s.components[(Object.values(s.site.shell.footer.nodes).find((n) => n.kind === 'instance') as InstanceNode).definitionId];
+    const s = starter();
+    // A footer's page links and social links: two lists of the same fields, each repeated in its own column.
+    const fields = { label: P.str('Label', 'Link'), link: P.link('Link') };
+    const footer = projectDesign(s, {
+      componentId: 'project.footer',
+      name: 'Footer',
+      properties: { links: P.list('Links', 'Link', fields, [{ label: 'About' }]), social: P.list('Social links', 'Social link', fields, [{ label: 'Instagram' }]) },
+      parts: {},
+      build: (b) =>
+        b.el('root', 'footer', {}, [
+          b.el('pages', 'ul', {}, [b.repeat('page-links', 'links', [b.link('page-link', { $item: 'link' }, { $item: 'label' }, 'text')])]),
+          b.el('socials', 'ul', {}, [b.repeat('social-links', 'social', [b.link('social-link', { $item: 'link' }, { $item: 'label' }, 'text')])])
+        ])
+    });
     const repeats = Object.values(footer.tree!.nodes).filter((n) => n.kind === 'repeat');
     expect(repeats.length).toBeGreaterThan(1);
     for (const r of repeats) {

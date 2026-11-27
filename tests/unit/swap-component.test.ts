@@ -10,8 +10,9 @@ import { join } from 'node:path';
 import type { ComponentDefinition, InstanceNode, ListItem, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { catalogueComponent } from '@catalogue/index';
-import { formFieldKey } from '@catalogue/foundation/form';
+import { catalogueComponent, listThemes, registerPacks } from '@catalogue/index';
+import { foundationDesign, projectDesign, restorePacks } from './fixtures/packs';
+import { formFieldKey } from '@shared/form-contract';
 import { applyOperations } from '@engine/apply';
 import { planSwap, swapTarget } from '@engine/swap';
 import { validateState } from '@engine/validate';
@@ -33,6 +34,22 @@ function project() {
 const swap = (s: ProjectState, nodeId: string, target: { componentId?: string; definitionId?: string }, allowDrops?: boolean) =>
   applyOperations(s, [{ type: 'instance.swapComponent', owner: owner(s), nodeId, ...target, ...(allowDrops ? { allowDrops } : {}) } as EditOperation]);
 
+/**
+ * A hero built in the editor, as the project's own, with the content properties of `like` (the split hero): its
+ * heading in a section whose root carries `anchor` when given one, and a tone axis that defaults to `tone`.
+ */
+function editorHero(s: ProjectState, componentId: string, name: string, at: { anchor?: string; tone?: string }, like: ComponentDefinition) {
+  return projectDesign(s, {
+    componentId,
+    name,
+    category: 'hero',
+    properties: structuredClone(like.properties),
+    parts: { root: { nodeId: 'root', label: 'Section' } },
+    variantAxes: { tone: { label: 'Tone', default: at.tone ?? 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } } },
+    build: (b) => b.el('root', 'section', { anchor: at.anchor }, [b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' })])
+  });
+}
+
 /** Errors the project has after the change that it did not have before. */
 function newErrors(before: ProjectState, after: ProjectState) {
   const was = new Set(validateState(before).filter((d) => d.severity === 'error').map((d) => `${d.code}:${d.message}`));
@@ -40,11 +57,12 @@ function newErrors(before: ProjectState, after: ProjectState) {
 }
 
 describe('instance.swapComponent', () => {
-  it('changes a split hero to a centered hero in place, keeping its words, links, anchor and tone', () => {
+  // Theme sections are code components, which take no anchor (the anchor moving with a change of design is below,
+  // between designs built in the editor).
+  it('changes a split hero to a centered hero in place, keeping its words, links, name and tone', () => {
     const { s, find } = project();
     const id = find('hero.split');
     const node = inst(s, id);
-    node.anchor = 'welcome';
     node.name = 'Opening';
     node.variants = { tone: 'muted', layout: 'media-start' };
     node.overrides = { root: { base: { paddingBlock: { token: 'space.lg' } } }, media: { base: { radius: { token: 'radius.lg' } } } };
@@ -61,7 +79,7 @@ describe('instance.swapComponent', () => {
     for (const key of ['eyebrow', 'heading', 'headingLevel', 'lead', 'primaryLabel', 'primaryLink', 'secondaryLabel', 'secondaryLink']) expect(now.props[key], key).toEqual(was[key]);
     // A centered hero has no picture: an empty one goes without a word.
     expect(now.props).not.toHaveProperty('image');
-    expect(now).toMatchObject({ anchor: 'welcome', name: 'Opening', variants: { tone: 'muted' }, overrides: { root: { base: { paddingBlock: { token: 'space.lg' } } } } });
+    expect(now).toMatchObject({ name: 'Opening', variants: { tone: 'muted' }, overrides: { root: { base: { paddingBlock: { token: 'space.lg' } } } } });
     // Its layout option has no counterpart in the new design.
     expect(now.variants).toEqual({ tone: 'muted' });
     expect(now.props.headingLevel).toBe('h2');
@@ -83,6 +101,9 @@ describe('instance.swapComponent', () => {
     node.props.body = [{ type: 'p', spans: [{ text: 'We plan every room with you.' }] }];
     node.props.actionLabel = 'Book a visit';
     node.props.actionLink = { type: 'url', target: 'https://example.com/book', newTab: true };
+    // Its points and text link have no place in a hero: left empty, they go without a word.
+    node.props.points = [];
+    node.props.linkLabel = '';
     node.variants = { tone: 'inverse', layout: 'media-end' };
 
     const r = swap(s, id, { componentId: 'hero.split' });
@@ -106,9 +127,10 @@ describe('instance.swapComponent', () => {
     if (def.type === 'string') def.multiline = true;
     inst(s, id).props.lead = 'Two *stars* and a [bracket](here)\n\n- not a list';
     const r = swap(s, id, { componentId: 'content.text' }, true);
-    expect(r.results[0].dropped).toEqual(['Eyebrow', 'Primary button label', 'Primary button link', 'Secondary button label', 'Secondary button link']);
+    expect(r.results[0].dropped).toEqual(['Primary button label', 'Primary button link', 'Secondary button label', 'Secondary button link']);
     const now = inst(r.state, id);
     expect(now.definitionId).toBe('foundation.content.text');
+    expect(now.props.eyebrow).toBe(inst(s, id).props.eyebrow);
     expect(now.props.body).toEqual([
       { type: 'p', spans: [{ text: 'Two *stars* and a [bracket](here)' }] },
       { type: 'p', spans: [{ text: '- not a list' }] }
@@ -124,8 +146,11 @@ describe('instance.swapComponent', () => {
     const r = swap(s, id, { componentId: 'hero.centered' }, true);
     expect(inst(r.state, id).definitionId).toBe('foundation.hero.centered');
     expect(r.results[0].dropped).toEqual(['Image']);
-    // Formatting a plain field cannot keep is named with its reason.
+    // Formatting a plain field cannot keep is named with its reason (its points and text link, which a hero has no
+    // place for either, left empty).
     const media = find('content.media');
+    inst(s, media).props.points = [];
+    inst(s, media).props.linkLabel = '';
     inst(s, media).props.body = [{ type: 'p', spans: [{ text: 'Bold', strong: true }, { text: ' claim' }] }];
     expect(() => swap(s, media, { componentId: 'hero.centered' })).toThrow(/Text \(its formatting/);
     inst(s, media).props.body = [{ type: 'p', spans: [{ text: 'See ' }, { text: 'us', link: { type: 'url', target: 'https://example.com' } }] }];
@@ -182,6 +207,8 @@ describe('instance.swapComponent', () => {
     const centered = swap(copy.state, id, { componentId: 'hero.centered' }).state;
     inst(centered, id).props.heading = 'Edited while centered';
     inst(centered, id).props.secondaryLink = { type: 'url', target: 'https://example.com/tour' };
+    // The centered hero's note has no place in a split hero.
+    inst(centered, id).props.note = '';
     const r = swap(centered, id, { definitionId: defId });
     expect(inst(r.state, id).definitionId).toBe(defId);
     expect(inst(r.state, id).props).toMatchObject({ heading: 'Edited while centered', primaryLink: inst(s, id).props.primaryLink, secondaryLink: { type: 'url', target: 'https://example.com/tour' } });
@@ -218,6 +245,8 @@ describe('instance.swapComponent', () => {
       { type: 'component.duplicate', definitionId: 'foundation.layout.section', name: 'Band' }
     ]);
     const band = st.results[2].definitionId as string;
+    // The centered hero's note has no place in the split hero it becomes below.
+    inst(st.state, 'n_inside').props.note = '';
     const r = swap(st.state, 'n_wrapper', { definitionId: band });
     expect(inst(r.state, 'n_wrapper')).toMatchObject({ definitionId: band, slots: { content: ['n_inside'] } });
     expect(newErrors(st.state, r.state)).toEqual([]);
@@ -230,24 +259,23 @@ describe('instance.swapComponent', () => {
   it('keeps the anchor and the default look its old design gave it, and says when a list the site fills goes', () => {
     const { s, find } = project();
     const id = find('hero.split');
-    const copy = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Studio hero' }]);
-    const defId = copy.results[0].definitionId as string;
-    const def = copy.state.components[defId];
-    def.tree!.nodes[def.tree!.rootIds[0]].anchor = 'studio';
-    def.variantAxes!.tone.default = 'inverse';
-    inst(copy.state, id).definitionId = defId;
-    delete inst(copy.state, id).variants;
-    const r = swap(copy.state, id, { componentId: 'hero.centered' });
-    // Links to #studio still land, and the hero stays dark although the centered hero defaults to light.
+    // Anchors render only in designs built in the editor: the hero shows one whose root carries #studio and which
+    // defaults to dark, and changes to one with neither.
+    const split = s.components[inst(s, id).definitionId];
+    const studio = editorHero(s, 'hero.studio', 'Studio hero', { anchor: 'studio', tone: 'inverse' }, split);
+    const band = editorHero(s, 'hero.band', 'Hero band', {}, split);
+    inst(s, id).definitionId = studio.id;
+    delete inst(s, id).variants;
+    const r = swap(s, id, { definitionId: band.id });
+    // Links to #studio still land, and the hero stays dark although the band defaults to light.
     expect(inst(r.state, id)).toMatchObject({ anchor: 'studio', variants: { tone: 'inverse' } });
-    // A design that can't render it is refused; one that gives its root an anchor of its own would lose it.
-    expect(() => swap(copy.state, id, { componentId: 'media.video' }, true)).toThrow(/can’t take the anchor #studio/);
-    const other = applyOperations(copy.state, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Contact hero' }]);
-    const otherId = other.results[0].definitionId as string;
-    const otherDef = other.state.components[otherId];
-    otherDef.tree!.nodes[otherDef.tree!.rootIds[0]].anchor = 'contact';
-    expect(() => swap(other.state, id, { definitionId: otherId })).toThrow(/would drop Anchor #studio \(the new design gives the section its own anchor, #contact\)/);
-    expect(inst(swap(other.state, id, { definitionId: otherId }, true).state, id).anchor).toBeUndefined();
+    // A design that can't render it (a theme section, which is code) is refused; one that gives its root an anchor of
+    // its own would lose it.
+    expect(() => swap(s, id, { componentId: 'media.video' }, true)).toThrow(/can’t take the anchor #studio/);
+    expect(() => swap(s, id, { componentId: 'hero.centered' }, true)).toThrow(/can’t take the anchor #studio/);
+    const contact = editorHero(s, 'hero.contact', 'Contact hero', { anchor: 'contact' }, split);
+    expect(() => swap(s, id, { definitionId: contact.id })).toThrow(/would drop Anchor #studio \(the new design gives the section its own anchor, #contact\)/);
+    expect(inst(swap(s, id, { definitionId: contact.id }, true).state, id).anchor).toBeUndefined();
     // A news list the site fills from its articles has no place in a services grid.
     const news = applyOperations(s, [{ type: 'node.insert', owner: owner(s), newNodeId: 'n_news', componentId: 'content.news' }]).state;
     expect(() => swap(news, 'n_news', { componentId: 'features.grid' })).toThrow(/would drop Articles \(the new design does not fill it from the site's dated articles\)/);
@@ -326,10 +354,10 @@ describe('instance.swapComponent', () => {
     expect(choices.filter((c) => c.group === 'Similar sections').map((c) => c.def.componentId)).toEqual(expect.arrayContaining(['hero.centered', 'intro.page']));
     expect(choices.findIndex((c) => c.group !== 'Similar sections')).toBeGreaterThan(choices.findLastIndex((c) => c.group === 'Similar sections'));
     expect(choices.find((c) => c.def.componentId === 'hero.centered')?.spec).toEqual({ componentId: 'hero.centered' });
-    // A project component is offered by its definition ID.
-    const copy = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Studio hero' }]);
-    const defId = copy.results[0].definitionId as string;
-    expect(swapChoices(copy.state, hero).find((c) => c.def.id === defId)).toMatchObject({ group: 'Your components', spec: { definitionId: defId } });
+    // A project component (one built in the editor: Insert offers a project's code components only in developer mode)
+    // is offered by its definition ID.
+    const defId = editorHero(s, 'hero.studio', 'Studio hero', {}, s.components[hero.definitionId]).id;
+    expect(swapChoices(s, hero).find((c) => c.def.id === defId)).toMatchObject({ group: 'Your components', spec: { definitionId: defId } });
   });
 
   it('offers a block the theme’s other blocks, similar ones first, and never a section (#664)', () => {
@@ -341,6 +369,8 @@ describe('instance.swapComponent', () => {
       ['Similar blocks', 'block.testimonial'],
       ['Other blocks', 'block.feature'],
       ['Other blocks', 'block.callout'],
+      ['Other blocks', 'block.download'],
+      ['Other blocks', 'block.facts'],
       ['Other blocks', 'block.signup'],
       ['Other blocks', 'block.video']
     ]);
@@ -371,29 +401,38 @@ describe('instance.swapComponent', () => {
 
   it('lets slot content its old design already left out stay left out, and previews designs the theme has yet to install', () => {
     const { s, find } = project();
-    // Two bands that show their content once per row, with no rows here.
-    const made = applyOperations(s, [
-      { type: 'node.insert', owner: owner(s), componentId: 'layout.section' },
-      { type: 'component.duplicate', definitionId: 'foundation.layout.section', name: 'Band' }
-    ]);
-    const band = made.results[1].definitionId as string;
-    const def = made.state.components[band];
-    def.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { title: { type: 'string', label: 'Title', default: '' } }, default: [] };
-    const slotId = Object.values(def.tree!.nodes).find((n) => n.kind === 'slot')!.id;
-    const holder = Object.values(def.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotId)) as { children: string[] };
-    holder.children = holder.children.map((c) => (c === slotId ? 'n_rows' : c));
-    def.tree!.nodes.n_rows = { id: 'n_rows', kind: 'repeat', list: { $prop: 'rows' }, children: [slotId] };
-    const twin = applyOperations(made.state, [
-      { type: 'component.duplicate', definitionId: band, name: 'Band 2' },
-      { type: 'node.insert', owner: owner(s), newNodeId: 'n_band', definitionId: band },
+    // Two bands built in the editor that show their content once per row, with no rows here.
+    const band = (componentId: string, name: string) =>
+      projectDesign(s, {
+        componentId,
+        name,
+        category: 'layout',
+        properties: { rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { title: { type: 'string', label: 'Title', default: '' } }, default: [] } },
+        parts: { root: { nodeId: 'root', label: 'Section' } },
+        slots: { content: { label: 'Content' } },
+        build: (b) => b.el('root', 'section', {}, [b.el('inner', 'div', {}, [b.repeat('n_rows', 'rows', [b.slot('content-slot', 'content')])])])
+      }).id;
+    const first = band('layout.band', 'Band');
+    const second = band('layout.band-2', 'Band 2');
+    const placed = applyOperations(s, [
+      { type: 'node.insert', owner: owner(s), newNodeId: 'n_band', definitionId: first },
       { type: 'node.insert', owner: owner(s), parentId: 'n_band', slot: 'content', newNodeId: 'n_inside', primitive: 'heading', text: 'Inside' }
     ]);
-    const r = swap(twin.state, 'n_band', { definitionId: twin.results[0].definitionId as string });
+    const r = swap(placed.state, 'n_band', { definitionId: second });
     expect(inst(r.state, 'n_band').slots).toEqual({ content: ['n_inside'] });
-    // A theme design whose root places another theme design takes the anchor, though neither is installed yet.
+    // A theme design whose root places another theme design takes the anchor, though neither is installed yet. Both
+    // are built in the editor, as only those render an anchor: the placed one is Foundation's for this test.
     const hero = inst(s, find('hero.split'));
     hero.anchor = 'welcome';
-    const centered = catalogueComponent(s.site.themeId, 'hero.centered')!;
+    const centered = foundationDesign({
+      componentId: 'hero.anchored',
+      name: 'Anchored hero',
+      category: 'hero',
+      properties: structuredClone(s.components[hero.definitionId].properties),
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'section', {}, [b.text('heading', 'h1', { $prop: 'heading' })])
+    });
+    registerPacks(listThemes().map((p) => (p.id === s.site.themeId ? { ...p, components: [...p.components, centered] } : p)));
     const wrap = { ...structuredClone(centered), id: 'foundation.hero.wrapped', componentId: 'hero.wrapped', tree: { rootIds: ['r'], nodes: { r: { id: 'r', kind: 'instance', definitionId: centered.id, props: {} } } } } as ComponentDefinition;
     expect(s.components[centered.id]).toBeUndefined();
     expect(planSwap(s, owner(s), home(s), hero, wrap).problems).toEqual([]);
@@ -402,7 +441,7 @@ describe('instance.swapComponent', () => {
   it('undoes in one step, the component it installed included, and redoes the same change', async () => {
     const { s, find } = project();
     const id = find('hero.split');
-    inst(s, id).anchor = 'welcome';
+    inst(s, id).name = 'Welcome';
     const dir = mkdtempSync(join(tmpdir(), 'so-swap-'));
     dirs.push(dir);
     const session = await ProjectSession.create(dir, s);
@@ -410,7 +449,7 @@ describe('instance.swapComponent', () => {
     const r = await session.apply({ operations: [{ type: 'instance.swapComponent', owner: owner(s), nodeId: id, componentId: 'hero.centered' }] }, { label: 'Change section design' });
     expect(r.ok).toBe(true);
     const swapped = structuredClone(session.state);
-    expect(inst(swapped, id)).toMatchObject({ definitionId: 'foundation.hero.centered', anchor: 'welcome', props: { heading: inst(before, id).props.heading, lead: inst(before, id).props.lead } });
+    expect(inst(swapped, id)).toMatchObject({ definitionId: 'foundation.hero.centered', name: 'Welcome', props: { heading: inst(before, id).props.heading, lead: inst(before, id).props.lead } });
     expect(session.historyInfo().undoLabel).toBe('Change section design');
     await session.undo();
     expect(home(session.state)).toEqual(home(before));
@@ -424,4 +463,7 @@ describe('instance.swapComponent', () => {
 });
 
 const dirs: string[] = [];
-afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+afterEach(async () => {
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+  await restorePacks();
+});

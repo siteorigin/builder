@@ -10,6 +10,7 @@ import type { InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types
 import { VIEWPORT_PRESETS, flattenStyles, validateStyleValue, wideOnlyStyle, type StyleLayer } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { generateComponentsCss, generateSiteCss, nodeClass, overrideClass, variantClass } from '@generator/index';
+import { withManaged } from './fixtures/component-contract-designs';
 import { styleUnder } from '../../src/renderer/src/lib/style-source';
 
 const SIZES = ['phone', 'tablet', 'desktop'] as const;
@@ -101,7 +102,8 @@ describe.skipIf(!installed)('where the browser puts a grid item', () => {
   });
 
   it('composes the same inside a managed component: its design, a look and a placement’s change', async () => {
-    const state: ProjectState = createStarterState('business', 'Test Studio', false);
+    // The starter's Services grid as the managed design of its contract (fixtures/component-contract-designs).
+    const state: ProjectState = withManaged(createStarterState('business', 'Test Studio', false), 'features.grid');
     const def = Object.values(state.components).find((d) => d.componentId === 'features.grid')!;
     const [partId, part] = Object.entries(def.parts).find(([id]) => id !== 'root')!;
     const nodeId = part.nodeId;

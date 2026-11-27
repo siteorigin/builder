@@ -1,6 +1,7 @@
 /**
- * The theme folders under src/catalogue/ hold themes only, so one can move to its own repository without taking the
- * app's code with it (#995): what the app itself reads lives in src/shared/ or in the pack format.
+ * Themes live in their own repository and reach the app only as releases (#995, #998): src/catalogue/ holds the pack
+ * format, the registry, the starters and the authoring helpers, and no theme folder, and no app or script module
+ * names one, Foundation's old folder included. What the app itself reads lives in src/shared/ or in the pack format.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, posix, resolve } from 'node:path';
@@ -9,10 +10,12 @@ import ts from 'typescript';
 
 const ROOT = resolve(__dirname, '../..');
 const CORE = ['src/agent', 'src/engine', 'src/generator', 'src/main', 'src/preload', 'src/renderer', 'src/runtime', 'src/shared', 'scripts'];
-/** Every folder of the catalogue is a theme; the files beside them are the pack format and what assembles the packs. */
-const THEMES = readdirSync(join(ROOT, 'src/catalogue'), { withFileTypes: true })
+/** Every folder of the catalogue would be a theme; the files there are the pack format and what assembles the packs. */
+const FOLDERS = readdirSync(join(ROOT, 'src/catalogue'), { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => `src/catalogue/${entry.name}`);
+/** The folders no module may name: any theme folder, and the one Foundation was authored in before it moved out. */
+const THEMES = [...new Set([...FOLDERS, 'src/catalogue/foundation'])];
 
 const sources = (dir: string): string[] =>
   readdirSync(join(ROOT, dir), { recursive: true, encoding: 'utf8' })
@@ -48,11 +51,15 @@ function imported(file: string, text: string): string[] {
 }
 
 describe('theme folders', () => {
+  it('are gone from the catalogue, where Foundation ships only as its committed release', () => {
+    expect(FOLDERS).toEqual([]);
+    expect(readdirSync(join(ROOT, 'resources/packs/foundation'))).toContain('pack.json');
+  });
+
   it('are imported by no app or script module', () => {
     const files = CORE.flatMap(sources);
     // A scan that found nothing to read would pass whatever the imports are.
     expect(files.length).toBeGreaterThan(100);
-    expect(THEMES).toContain('src/catalogue/foundation');
     const found = files.flatMap((file) =>
       imported(file, readFileSync(join(ROOT, file), 'utf8'))
         .filter((specifier) => inTheme(target(file, specifier)))

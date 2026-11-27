@@ -261,7 +261,9 @@ describe('table edits by ID', () => {
 
 describe('the Data table section', () => {
   it('is found in Insert search by "table", "timetable" and "comparison"', () => {
-    for (const q of ['table', 'timetable', 'comparison']) expect(searchCatalogue('foundation', q)[0]?.componentId, q).toBe('data.table');
+    for (const q of ['table', 'timetable']) expect(searchCatalogue('foundation', q)[0]?.componentId, q).toBe('data.table');
+    // Named for it, the Pricing comparison comes first; the Data table is next.
+    expect(searchCatalogue('foundation', 'comparison').slice(0, 2).map((e) => e.componentId)).toEqual(['pricing.compare', 'data.table']);
   });
 
   it('has the same contract in every theme', () => {
@@ -281,7 +283,7 @@ describe('the Data table section', () => {
     const s = applyOperations(s0, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_workshop', value: 'Raku firing' })]).state;
     const files = generateProject(s);
     const def = s.components[(s.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId];
-    expect(files.get(defFile(def))).toContain('<th scope="col">');
+    expect(files.get(defFile(def))).toMatch(/<th [^>]*scope="col"/);
     const page = files.get('src/routes/about/+page.svelte')!;
     expect(page).toContain('"col_workshop"');
     expect(page).toContain('Raku firing');

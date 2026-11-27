@@ -291,10 +291,34 @@ describe('Copy and Paste in the menus', () => {
 });
 
 describe('Paste in a component edited everywhere', () => {
-  /** A project copy of the hero, as Edit everywhere makes one, entered from Home. */
+  /**
+   * A hero of the project's own design, built in the editor and placed at the top of Home, to edit everywhere: a text
+   * column ("content") and a media column ("media-wrap") in a grid inside its root. (Foundation's hero is code, which
+   * has no design to paste into.)
+   */
   async function editEverywhere() {
-    const hero = Object.values(session.state.pages[homeId()].nodes).find((n): n is InstanceNode => n.kind === 'instance' && session.state.components[n.definitionId]?.componentId === 'hero.split')!;
-    const r = await bridge.project.apply({ operations: [{ type: 'component.fork', definitionId: hero.definitionId }] }, { label: 'Fork' });
+    const r = await bridge.project.apply(
+      {
+        operations: [
+          {
+            type: 'component.upsert',
+            newDefinitionId: 'proj.hero-a1b2c',
+            name: 'Hero',
+            properties: {},
+            nodes: [
+              { kind: 'element', id: 'root', tag: 'section', children: ['grid'] },
+              { kind: 'element', id: 'grid', tag: 'div', children: ['content', 'media-wrap'] },
+              { kind: 'element', id: 'content', tag: 'div', children: ['heading'] },
+              { kind: 'text', id: 'heading', tag: 'h1', text: 'Calm, considered spaces' },
+              { kind: 'element', id: 'media-wrap', tag: 'div', children: ['caption'] },
+              { kind: 'text', id: 'caption', tag: 'p', text: 'A bright living room' }
+            ]
+          },
+          { type: 'node.insert', owner: home(), parentId: null, index: 0, definitionId: 'proj.hero-a1b2c' }
+        ]
+      },
+      { label: 'Make a hero' }
+    );
     expect(r.ok).toBe(true);
     const definitionId = r.results![0].definitionId as string;
     const owner: OwnerRef = { kind: 'component', id: definitionId };

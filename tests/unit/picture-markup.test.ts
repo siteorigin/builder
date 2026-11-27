@@ -12,6 +12,9 @@ import type { Component } from 'svelte';
 import type { AssetRecord, ImageValue, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { generateEntry, generateProject, pageFile, pictureSets, resolveImage } from '@generator/index';
+import { P, item } from '@catalogue/dsl';
+import { makeInstance } from '@engine/install';
+import { projectDesign } from './fixtures/packs';
 import { run, seoSite } from './fixtures/seo-site';
 
 const roots: string[] = [];
@@ -47,6 +50,18 @@ function site(asset: AssetRecord | null): ProjectState {
 }
 
 const homeOf = (s: ProjectState) => s.pages[s.site.homePageId];
+
+/**
+ * The site with the hero's picture also placed straight on the home page, first: a picture whose markup the page
+ * writes itself. (Foundation's hero is a code component, which loads its picture eagerly but whose markup the head's
+ * preload cannot read: see the first test of the preloads.)
+ */
+function ownPicture(s: ProjectState): ProjectState {
+  const page = homeOf(s);
+  page.nodes.pic = { id: 'pic', kind: 'image', image: { assetId: 'a_hero', alt: 'Ours' } };
+  page.rootIds = ['pic', ...page.rootIds];
+  return s;
+}
 
 /** The home page as the website renders it, under /studio: its head and body. */
 async function renderHome(s: ProjectState): Promise<{ head: string; body: string }> {
@@ -185,23 +200,24 @@ describe('the hero’s preload', () => {
 
   it('asks for the <img>’s own set, untyped, for an image with copies in its own format only, and its file for one with none', async () => {
     const old: AssetRecord = { ...picture('old'), variants: [480, 960].map((w) => ({ width: w, file: `static/assets/old-1a2b3c4d-${w}w.jpg` })) };
-    const { head, body } = await renderHome(site(old));
-    const img = attrs(body.match(/<img\b[^>]*hero[^>]*>|<img\b[^>]*old-1a2b3c4d[^>]*>/)![0]);
+    const { head, body } = await renderHome(ownPicture(site(old)));
+    const img = attrs(body.match(/<img\b[^>]*old-1a2b3c4d[^>]*>/)![0]);
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', imagesrcset: img.srcset, imagesizes: img.sizes }]);
     const single: AssetRecord = { ...picture('single'), variants: undefined };
-    expect(preloads((await renderHome(site(single))).head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', href: '/studio/assets/single-1a2b3c4d.jpg' }]);
+    expect(preloads((await renderHome(ownPicture(site(single)))).head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', href: '/studio/assets/single-1a2b3c4d.jpg' }]);
   });
 
   it('asks for nothing when the first section shows no picture, or shows it only further down the page', async () => {
-    // A hero still waiting for its picture.
-    const empty = site(null);
+    // A picture still waiting for its library image.
+    const empty = ownPicture(site(null));
+    (homeOf(empty).nodes.pic as { image: ImageValue }).image = { assetId: null, alt: '' };
     expect(preloads((await renderHome(empty)).head)).toEqual([]);
-    // The hero's picture placed in the second section instead.
-    const lower = site(picture('hero'));
+    // The picture placed in the second section instead, after the hero, which shows none of the page's own.
+    const lower = ownPicture(site(picture('hero')));
     const home = homeOf(lower);
     const [first, second] = home.rootIds;
     home.rootIds = [second, first, ...home.rootIds.slice(2)];
-    expect((home.nodes[second] as InstanceNode).props.image).toBeUndefined();
+    expect(home.nodes[first].kind).toBe('image');
     expect(preloads((await renderHome(lower)).head)).toEqual([]);
   });
 
@@ -224,13 +240,18 @@ describe('the hero’s preload', () => {
   it('asks for nothing for a picture in a list, which loads lazily, and follows a page’s own literal image', async () => {
     const s = site(picture('hero'));
     const home = homeOf(s);
-    // The gallery (a list of pictures) first: its pictures are list items, never eager.
-    const gallery = home.rootIds.find((id) => (home.nodes[id] as InstanceNode).definitionId === Object.values(s.components).find((d) => d.componentId === 'media.gallery')!.id)!;
-    for (const it of (home.nodes[gallery] as InstanceNode).props.images as Array<{ image: ImageValue }>) it.image = { assetId: 'a_hero', alt: '' };
-    // Nothing on its photos opens them, so only being in a list keeps them out.
-    const def = s.components[(home.nodes[gallery] as InstanceNode).definitionId];
-    for (const n of Object.values(def.tree!.nodes)) if (n.kind === 'element') delete (n as { action?: unknown }).action;
-    home.rootIds = [gallery, ...home.rootIds.filter((id) => id !== gallery)];
+    // A gallery (a design showing a list of pictures) first: its pictures are list items, never eager. Nothing on its
+    // photos opens them, so only being in a list keeps them out.
+    const def = projectDesign(s, {
+      componentId: 'test.gallery',
+      name: 'Gallery',
+      properties: { images: P.list('Images', 'Image', { image: P.image('Image') }, []) },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.repeat('each', 'images', [b.el('photo', 'figure', {}, [b.image('media', item('image'))])])])
+    });
+    const gallery = makeInstance(def, { images: [1, 2, 3].map((i) => ({ id: `g${i}`, image: { assetId: 'a_hero', alt: '' } as ImageValue })) });
+    home.nodes[gallery.id] = gallery;
+    home.rootIds = [gallery.id, ...home.rootIds];
     const listed = await renderHome(s);
     expect(listed.body).toContain('hero-1a2b3c4d.jpg');
     expect(listed.body).not.toContain('fetchpriority="high"');
@@ -328,7 +349,7 @@ describe('the hero’s preload', () => {
   });
 
   it('is written into the page’s own file, which imports the address helper only then', () => {
-    const files = generateProject(site(picture('hero')));
+    const files = generateProject(ownPicture(site(picture('hero'))));
     const page = files.get(pageFile(homeOf(site(null))))!;
     expect(page).toContain(`import { asset as so_asset } from '$app/paths';`);
     // Straight after the title.
