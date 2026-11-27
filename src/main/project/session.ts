@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent } from 'node:fs';
+import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
@@ -58,6 +58,9 @@ import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf,
 
 export { statTrusted };
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
+import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
+import { captureSnapshotInventory, foldName } from './snapshot-inventory';
+import { GitError, type FileInput } from '../git/protocol';
 
 export const LOCAL_DIR = '.siteorigin';
 
@@ -195,6 +198,20 @@ function namesFile(text: string, file: string): boolean {
 
 /** A restore stopped before its documents were saved: the files it put back are put back as they were. */
 class RestoreStopped extends Error {}
+
+/** A version could not be saved to Git because the project's version history is damaged. */
+class HistoryDamaged extends Error {}
+
+/** Whether a part of project path `rel` that is there is a link: looked at from the top down; a part not there ends it. */
+async function linkOnTheWay(root: string, rel: string): Promise<boolean> {
+  let at = root;
+  for (const part of rel.split('/')) {
+    const st = await fs.lstat((at = join(at, part))).catch(() => null);
+    if (!st) return false;
+    if (st.isSymbolicLink()) return true;
+  }
+  return false;
+}
 
 /** The name of the version saved before restoring the one named `name`, kept short however often restores nest. */
 function backupName(name: string): string {
@@ -704,7 +721,7 @@ export class ProjectSession extends EventEmitter {
 
   constructor(public readonly dir: string) {
     super();
-    this.versions = new VersionStore(this.local('versions'));
+    this.versions = new VersionStore(this.local('versions'), dir);
   }
 
   local(...parts: string[]): string {
@@ -3892,7 +3909,7 @@ export class ProjectSession extends EventEmitter {
       media,
       kept,
       history: { steps: h.entries.length, bytes: sum(h.entries.flatMap(entryBlobs)) },
-      versions: { count: this.versions.versions.length, bytes: this.versions.totalBytes() },
+      versions: { count: this.versions.versions.length, bytes: this.versions.totalBytes(), ...(this.versions.historyBytes() ? { historyBytes: this.versions.historyBytes() } : {}) },
       reclaim: null,
       blocked: this.reclaimBlocked()
     };
@@ -4019,6 +4036,7 @@ export class ProjectSession extends EventEmitter {
         missing: Object.keys(v.media).filter((p) => v.media[p] === null)
       })),
       bytes: store.totalBytes(),
+      ...(store.historyBytes() ? { historyBytes: store.historyBytes() } : {}),
       ...(store.problem ? { problem: store.problem } : {})
     };
     timing();
@@ -4090,7 +4108,11 @@ export class ProjectSession extends EventEmitter {
    * something else in), as a version not yet in the list. A file that is not there, or is a link, is kept as missing;
    * one that could not be read stops the save.
    */
-  private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
+  private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string>; plain?: boolean } = {}): Promise<SavedVersion> {
+    await this.versions.checkFolders();
+    // Asked once per version: the same Git decides and stores it. `plain` keeps it to this store whatever the setting.
+    const git = opts.plain ? null : versionsGit();
+    if (git && (await git.enabled())) return this.captureGitVersion(git, name, opts);
     const docs: Record<string, string> = {};
     // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
     // Nor what has been published: a restore never takes back what the website was exported with.
@@ -4118,6 +4140,99 @@ export class ProjectSession extends EventEmitter {
   }
 
   /**
+   * captureVersion with Git snapshots on (#1153): the whole site (snapshot-inventory.ts) written as a tree and a commit
+   * of it on the versions branch's tip, the branch not moved yet (VersionStore.add moves it). The documents are the
+   * loaded ones, as for any version, so what the row records is what the tree holds; external sources' settings and
+   * converters are objects of the list's store instead, never in Git, as is a file the site names that a snapshot
+   * leaves out (a private name, a file of a nested repository). The media a restore puts back are recorded as ever, by
+   * their SHA-256, and the worker stores each file only while it still holds the bytes hashed.
+   */
+  private async captureGitVersion(git: VersionsGit, name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> }): Promise<SavedVersion> {
+    const id = newVersionId();
+    const time = new Date().toISOString();
+    const docs: Record<string, string> = {};
+    const files: FileInput[] = [];
+    const inline = new Set<string>();
+    for (const [path, content] of this.docs) {
+      if (path === BRIEF_FILE || path === PUBLISHED_FILE) continue;
+      if (keptOutOfGit(path)) docs[path] = await this.versions.putText(content);
+      else {
+        const bytes = Buffer.from(content, 'utf8');
+        docs[path] = sha(bytes);
+        files.push({ path, bytes });
+        inline.add(path);
+      }
+    }
+    let inventory: Awaited<ReturnType<typeof captureSnapshotInventory>>;
+    try {
+      inventory = await captureSnapshotInventory(this.dir, { settleMs: this.settleMs });
+    } catch (e) {
+      throw new Error(`${(e as Error).message} Nothing was saved.`);
+    }
+    // Every other file of the site, as it is on disk (the record of what was published, and code no component claims,
+    // included); the documents on disk are the loaded ones, checked before saving.
+    const hashed = new Map<string, string>();
+    // A document loaded under another spelling of a file's name is that file, where the disk ignores case: the same
+    // file under both names. Two files whose names differ only so are two, and the worker refuses the clash.
+    const folded = (p: string) => p.split('/').map(foldName).join('/');
+    const inlineNames = new Map([...inline].map((p) => [folded(p), p]));
+    const sameFile = async (a: string, b: string) => {
+      const [x, y] = await Promise.all([a, b].map((p) => fs.stat(join(this.dir, p), { bigint: true }).catch(() => null)));
+      return !!x && !!y && x.dev === y.dev && x.ino === y.ino;
+    };
+    for (const f of inventory.tree) {
+      const loaded = inlineNames.get(folded(f.path));
+      if (loaded === f.path || (loaded !== undefined && (await sameFile(loaded, f.path)))) continue;
+      hashed.set(f.path, f.sha256);
+      files.push({ path: f.path, source: f.path, sha256: f.sha256, mode: f.mode });
+    }
+    const outside: string[] = [];
+    const media: Record<string, string | null> = {};
+    for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
+      let abs: string;
+      try {
+        abs = safeJoin(this.dir, rel);
+      } catch {
+        media[rel] = null;
+        continue;
+      }
+      let st: Stats;
+      try {
+        st = await fs.lstat(abs);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`${rel} could not be read, so nothing was saved: ${(e as Error).message}`);
+        media[rel] = null;
+        continue;
+      }
+      if (!st.isFile()) {
+        media[rel] = null;
+        continue;
+      }
+      const h = hashed.get(rel);
+      if (h) {
+        media[rel] = h;
+        continue;
+      }
+      // A file the site names that a snapshot leaves out (a private name, a nested repository's, another spelling of a
+      // file on a disk that ignores case): held as it always was, an object beside the list, and never in history.
+      media[rel] = await this.versions.putFile(abs);
+      outside.push(rel);
+    }
+    let stored: { commit: string; tree: string };
+    try {
+      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, !!opts.auto);
+    } catch (e) {
+      if (e instanceof GitError && e.code === 'corrupt') throw new HistoryDamaged(gitSaveProblem(e));
+      throw new Error(gitSaveProblem(e));
+    } finally {
+      // Whatever was written counts from now, whether this version is listed or not.
+      await this.versions.measureGit();
+    }
+    const filled = opts.filled && Object.keys(opts.filled).length ? { filled: opts.filled } : {};
+    return { id, name, time, revision: this.revision, schemaVersion: SCHEMA_VERSION, ...(opts.auto ? { auto: true } : {}), docs, media, ...filled, git: { ...stored, ...(outside.length ? { outside: outside.sort() } : {}) } };
+  }
+
+  /**
    * Save the site as it is now as a named version, kept until the author deletes it. A file its documents name that
    * is missing from the folder does not stop the save: it is listed in `missing`, and the version records it as such.
    */
@@ -4139,7 +4254,7 @@ export class ProjectSession extends EventEmitter {
         const late = await this.unloadedEdit(new Set());
         if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
         if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
-        await this.versions.publish([...this.versions.versions, v]);
+        v = await this.versions.add(v);
       } catch (e) {
         return { ok: false, message: (e as Error).message };
       }
@@ -4159,7 +4274,7 @@ export class ProjectSession extends EventEmitter {
     const stored = new Map<string, string>();
     try {
       // A version never holds the brief; one that does (saved before that was so) is restored without it.
-      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) stored.set(path, (await this.versions.read(h)).toString('utf8'));
+      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) stored.set(path, (await this.versions.readFile(v, path, h)).toString('utf8'));
     } catch (e) {
       return refuse((e as Error).message);
     }
@@ -4199,8 +4314,10 @@ export class ProjectSession extends EventEmitter {
       const st = await fs.lstat(abs).catch(() => null);
       if (st && !st.isFile()) return refuse(`${path} is not a file, so “${v.name}” can’t put back its own.`);
       if (st && sha(await fs.readFile(abs)) === h) continue;
+      // Never through a link inside the project, which could lead into its own `.git` or `.siteorigin`.
+      if (await linkOnTheWay(this.dir, path)) return refuse(`${path} is reached through a link, so “${v.name}” can’t put it back.`);
       try {
-        await this.versions.read(h);
+        await this.versions.readFile(v, path, h);
       } catch (e) {
         return refuse((e as Error).message);
       }
@@ -4309,12 +4426,24 @@ export class ProjectSession extends EventEmitter {
       const filled = Object.fromEntries(plan.files.filter((f) => !prior.get(f.path)).map((f) => [f.path, f.hash]));
       let backup: SavedVersion;
       try {
-        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled });
-        const kept = this.versions.versions.find((x) => sameContents(x, now));
-        backup = kept ?? now;
-        if (!kept) {
+        // With the version history damaged, the way back is saved in the plain store instead: a restore still has one.
+        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled }).catch((e: unknown) =>
+          e instanceof HistoryDamaged ? this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled, plain: true }) : Promise.reject(e)
+        );
+        // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
+        // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
+        let kept: SavedVersion | undefined;
+        for (const x of this.versions.versions) {
+          if (!sameContents(x, now) || (now.git ? x.git?.tree !== now.git.tree : !!x.git)) continue;
+          // A version in Git is the way back only while its commit is there to read: otherwise this one is saved.
+          if (now.git && !(await this.versions.holdsTree(x, now.git.tree))) continue;
+          kept = x;
+          break;
+        }
+        if (kept) backup = kept;
+        else {
           if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
-          await this.versions.publish([...this.versions.versions, now]);
+          backup = await this.versions.add(now);
         }
       } catch (e) {
         return { ok: false, message: `Your current work could not be saved first, so nothing was restored. ${(e as Error).message}` };
@@ -4339,9 +4468,9 @@ export class ProjectSession extends EventEmitter {
             if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
             const abs = safeJoin(this.dir, f.path);
             // Read before the file is checked, so as little time as possible passes between the check and the write.
-            const bytes = await this.versions.read(f.hash);
+            const bytes = await this.versions.readFile(v, f.path, f.hash);
             const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
-            if (now !== before) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
+            if (now !== before || (await linkOnTheWay(this.dir, f.path))) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
             // Noted before writing: a write that lands but fails to report so is still undone.
             written.push({ path: f.path, hash: f.hash, prior: before });
             await atomicWrite(abs, bytes);

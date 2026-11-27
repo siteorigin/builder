@@ -27,6 +27,7 @@ const DEFAULTS: SettingsFile = {
   settings: {
     appearance: 'system',
     developerMode: false,
+    gitSnapshots: false,
     liveRelayUrl: null,
     shortcuts: DEFAULT_SHORTCUTS,
     ai: {
@@ -123,6 +124,8 @@ export async function loadSettings(): Promise<SettingsFile> {
     // A relay address that is not text is none. Text that is not a usable address is kept, so starting a live session
     // reports it rather than quietly using the production relay.
     if (typeof cache.settings.liveRelayUrl !== 'string' || !cache.settings.liveRelayUrl.trim()) cache.settings.liveRelayUrl = null;
+    // Only a hand-edited true turns Git snapshots on: anything else is the default, off.
+    cache.settings.gitSnapshots = cache.settings.gitSnapshots === true;
   } catch (e) {
     unread = (e as NodeJS.ErrnoException).code !== 'ENOENT';
     // Kept in the main process's log (main-log.ts): settings that could not be read start from the defaults.
@@ -176,6 +179,11 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
     const cleared = asked === null || (typeof asked === 'string' && !asked.trim());
     const relay = cleared ? null : checkRelayUrl(asked);
     patch = relay === null ? { ...rest, liveRelayUrl: null } : relay.ok ? { ...rest, liveRelayUrl: relay.url } : rest;
+  }
+  // Git snapshots are on or off: any other value is refused, keeping the one in use.
+  if ('gitSnapshots' in patch && typeof patch.gitSnapshots !== 'boolean') {
+    const { gitSnapshots: _refused, ...rest } = patch;
+    patch = rest;
   }
   const prev = s.settings.ai;
   const local = { ...prev.local, ...(patch.ai?.local ?? {}), modelsByServer: { ...prev.local.modelsByServer } };

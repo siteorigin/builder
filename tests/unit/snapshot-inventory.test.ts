@@ -275,6 +275,35 @@ describe('capturing a project', () => {
     expect(mode(SNAPSHOT_SYNC_SCRIPT)).toBe(posix ? '100755' : '100644');
   });
 
+  it('reads nothing of a nested repository’s work, a submodule or a checkout inside the project (#1153)', async () => {
+    const root = smallProject();
+    // A submodule's worktree, marked by its `.git` file, and a nested checkout with a `.git` folder.
+    write(root, 'src/vendor/lib/.git', 'gitdir: ../../../.git/modules/lib');
+    write(root, 'src/vendor/lib/index.js', 'export const lib = 1;');
+    write(root, 'static/kit/.git/HEAD', 'ref: refs/heads/main\n');
+    write(root, 'static/kit/logo.svg', '<svg/>');
+    // However its marker is spelled: a case-insensitive disk takes `.GIT` for `.git`.
+    write(root, 'static/kit2/.GIT', 'gitdir: elsewhere');
+    write(root, 'static/kit2/icon.svg', '<svg/>');
+    write(root, 'src/vendor/own.js', 'export const own = 1;');
+    // A bare repository kept in the project, with no `.git` of its own.
+    write(root, 'src/vendor/kept.git/HEAD', 'ref: refs/heads/main\n');
+    write(root, 'src/vendor/kept.git/objects/ab/cdef', 'an old object');
+    write(root, 'src/vendor/kept.git/refs/heads/main', '0'.repeat(40));
+    // The project's own repository leaves the project as it is.
+    write(root, '.git/HEAD', 'ref: refs/heads/main\n');
+    const paths = (await captureSnapshotInventory(root, { settleMs: 0 })).tree.map((f) => f.path);
+    expect(paths).toContain('src/vendor/own.js');
+    expect(paths).toContain('src/routes/+page.svelte');
+    expect(paths.filter((p) => p.startsWith('src/vendor/lib') || p.startsWith('src/vendor/kept.git') || p.startsWith('static/kit'))).toEqual([]);
+    expect(paths).toContain('static/assets/photo-1234abcd.jpg');
+    // A site folder that merely has entries of those names is the site's own.
+    write(root, 'static/docs/HEAD', 'Heading notes');
+    write(root, 'static/docs/objects/list.txt', 'a list');
+    write(root, 'static/docs/refs/index.txt', 'references');
+    expect((await captureSnapshotInventory(root, { settleMs: 0 })).tree.map((f) => f.path)).toEqual(expect.arrayContaining(['static/docs/HEAD', 'static/docs/objects/list.txt', 'static/docs/refs/index.txt']));
+  });
+
   it('refuses a project that is not a folder', async () => {
     const root = temp();
     write(root, 'file', 'x');

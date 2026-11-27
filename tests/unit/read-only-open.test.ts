@@ -6,12 +6,22 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
 import { Orchestrator } from '@agent/orchestrator';
 import { ProjectLockedError, ProjectSession } from '../../src/main/project/session';
 import { newestStoredVersion, ProjectFormatError } from '../../src/main/project/documents';
+import { inProcessGit, useTestGit } from './fixtures/git-in-process';
+
+// Versions in Git (#1153) are read as the app reads them; a test turns saving to Git on when it needs a populated one.
+const git = inProcessGit();
+let stopGit: () => void = () => undefined;
+beforeAll(() => {
+  stopGit = useTestGit(git);
+  git.enabled = false;
+});
+afterAll(() => stopGit());
 
 type Tree = Record<string, { kind: string; size: number; mtimeMs: number; hash?: string; link?: string }>;
 
@@ -142,6 +152,74 @@ describe('read-only opens leave the project byte-identical', () => {
       expect(existsSync(join(dir, CHAT))).toBe(chat);
     });
   }
+});
+
+describe('read-only opens leave saved versions in Git as they are (#1153)', () => {
+  it('of a project with no .siteorigin folder at all, Git snapshots on', async () => {
+    const dir = await makeProject(false);
+    rmSync(join(dir, '.siteorigin'), { recursive: true });
+    makeNewer(dir);
+    git.enabled = true;
+    try {
+      const calls = git.calls.length;
+      const before = snapshotTree(dir);
+      const err = await ProjectSession.open(dir, 'me').catch((e) => e);
+      expect(err).toBeInstanceOf(ProjectFormatError);
+      const session = await openReadOnly(dir);
+      expect(session.versionsInfo()).toEqual({ list: [], bytes: 0 });
+      expect((await session.saveVersion('Nope')).ok).toBe(false);
+      await exercise(session, false);
+      expect(snapshotTree(dir)).toEqual(before);
+      expect(existsSync(join(dir, '.siteorigin'))).toBe(false);
+      expect(git.calls.length).toBe(calls);
+    } finally {
+      git.enabled = false;
+    }
+  });
+
+  it('of a project whose versions are in Git, with a restore that stopped part way, through list, review and close', async () => {
+    const dir = await makeProject(false);
+    git.enabled = true;
+    try {
+      const s = await ProjectSession.open(dir, 'me');
+      const first = await s.saveVersion('First');
+      expect(first.ok).toBe(true);
+      expect((await s.apply({ operations: [{ type: 'site.update', description: 'Later' }] }, { label: 'Later' })).ok).toBe(true);
+      const restored = await s.restoreVersion(first.id!, s.revision);
+      expect(restored.ok).toBe(true);
+      await s.close();
+    } finally {
+      git.enabled = false;
+    }
+    expect(existsSync(join(dir, '.siteorigin/versions.git'))).toBe(true);
+    writeFileSync(join(dir, '.siteorigin/versions/restoring.json'), JSON.stringify({ version: 'First', backup: 'Before restoring “First”', time: new Date().toISOString() }));
+    lockByAnother(dir);
+    const before = snapshotTree(dir);
+    const calls = git.calls.length;
+    const session = await openReadOnly(dir);
+    const listed = session.versionsInfo().list;
+    expect(listed.map((v) => [v.name, v.bytes])).toEqual([
+      ['Before restoring “First”', null],
+      ['First', null]
+    ]);
+    // Listing reads the list alone; reviewing reads each version from Git, and finds what each would change.
+    expect(git.calls.length).toBe(calls);
+    const reviews = [];
+    for (const v of listed) {
+      const r = await session.reviewVersion(v.id);
+      expect(r.ok).toBe(true);
+      expect(r.review!.problem).toBeUndefined();
+      reviews.push(r.review!);
+    }
+    expect(reviews.map((r) => r.site)).toEqual([true, false]);
+    expect(git.calls.slice(calls)).toContain('readBlob');
+    expect((await session.restoreVersion(listed[1].id, session.revision)).ok).toBe(false);
+    expect((await session.deleteVersion(listed[1].id)).ok).toBe(false);
+    await exercise(session, false);
+    expect(snapshotTree(dir)).toEqual(before);
+    // Nothing that writes was ever asked of Git: not even making the repository.
+    expect(git.calls.slice(calls).filter((op) => ['init', 'writeBlob', 'writeFiles', 'writeCommit', 'advanceRef'].includes(op))).toEqual([]);
+  });
 });
 
 describe('a newer format is found even behind a broken document', () => {

@@ -1,7 +1,7 @@
 import './SettingsModal.css';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
-import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
+import type { AppSettings, GitRuntimeInfo, SettingsPatch, ProviderId } from '@shared/api';
 import { api, setState, useStore, confirmDialog, refreshProviders, saveSettings, setProviders } from '../store';
 import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } from './LocalModelSettings';
@@ -655,6 +655,15 @@ export function SettingsModal() {
                     <div className="settings-row">
                       <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte. Code is checked before it’s saved." />
                     </div>
+                    <div className="settings-row">
+                      <SwitchRow
+                        checked={settings.gitSnapshots}
+                        onChange={(v) => void update({ gitSnapshots: v })}
+                        label="Git snapshots"
+                        hint="Saved versions keep a snapshot of the whole site in a Git repository inside the project, made with the Git built into SiteOrigin Builder. Versions saved before stay listed and can still be restored."
+                      />
+                      {settings.gitSnapshots && <GitStatus />}
+                    </div>
                   </div>
                   <div className="settings-group-title">Keyboard shortcuts</div>
                   <div className="settings-group">
@@ -716,5 +725,41 @@ export function SettingsModal() {
         />
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Which Git saved versions use while Git snapshots are on (#1153): the one built in, which needs nothing installed, and
+ * the computer's own Git when it has one. Asked only while shown: asking starts the built-in Git.
+ */
+function GitStatus() {
+  const [status, setStatus] = useState<GitRuntimeInfo | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api.app.gitRuntime().then(
+      (s) => live && setStatus(s),
+      () => live && setFailed(true)
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (failed) return <span className="field-error">SiteOrigin Builder couldn’t check its built-in Git.</span>;
+  if (!status)
+    return (
+      <span className="field-hint settings-git-status" role="status">
+        <Spinner decorative /> Checking Git…
+      </span>
+    );
+  const system = status.system;
+  return (
+    <span className="field-hint settings-git-status" role="status" data-testid="git-status">
+      {status.bundled.ready ? <Check aria-hidden="true" /> : <CircleAlert aria-hidden="true" />}
+      <span>
+        {status.bundled.ready ? `Built-in Git ${status.bundled.version} is ready. ` : `The built-in Git couldn’t start, so versions can’t be saved until it can: ${status.bundled.reason} `}
+        {system.status === 'present' ? `Git ${system.version} is also installed on this computer.` : system.status === 'unusable' ? 'A Git found on this computer couldn’t be used.' : 'No other Git is needed.'}
+      </span>
+    </span>
   );
 }
