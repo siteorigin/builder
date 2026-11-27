@@ -114,7 +114,8 @@ class AssetChanged extends Error {}
 /** Project health's missing-file entries; a project from a newer version may not follow this version's shapes. */
 function safeMissingDiagnostics(s: ProjectSession) {
   try {
-    return missingFileDiagnostics(s.state, s.missingAssets);
+    // The uses the snapshot shows, worked out once per state.
+    return missingFileDiagnostics(s.state, s.missingAssets, () => s.assetUsages());
   } catch {
     return [];
   }
@@ -476,7 +477,8 @@ export class Controller {
   snapshot(): ProjectSnapshot | null {
     const s = this.session;
     if (!s) return null;
-    return {
+    const timing = perf.span('controller.snapshot', { revision: s.revision });
+    const snap: ProjectSnapshot = {
       dir: s.dir,
       state: s.state,
       revision: s.revision,
@@ -499,6 +501,8 @@ export class Controller {
       recentExports: this.recentExports,
       saveFailure: s.saveFailure
     };
+    timing();
+    return snap;
   }
 
   broadcast() {

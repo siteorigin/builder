@@ -8,15 +8,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectState } from '@shared/types';
 
+// The whole check (the one diagnostics shows) is its core and its advice, each worked out for a state.
 const checked: ProjectState[] = [];
+const advised: ProjectState[] = [];
 vi.mock('@engine/validate', async (load) => {
   const real = await load<typeof import('@engine/validate')>();
   return {
     ...real,
-    validateState: (state: ProjectState, ...rest: unknown[]) => {
-      // Only the whole check (the one diagnostics shows): the saving checks pass options of their own.
-      if (!rest.length) checked.push(state);
-      return (real.validateState as (...a: unknown[]) => ReturnType<typeof real.validateState>)(state, ...rest);
+    coreValidation: (state: ProjectState) => {
+      checked.push(state);
+      return real.coreValidation(state);
+    },
+    adviceValidation: (state: ProjectState) => {
+      advised.push(state);
+      return real.adviceValidation(state);
     }
   };
 });
@@ -33,11 +38,13 @@ describe('opening a project (#959)', () => {
     dirs.push(dir);
     await (await ProjectSession.create(dir, createStarterState('business', 'Checks', false))).close();
     checked.length = 0;
+    advised.length = 0;
     const s = await ProjectSession.open(dir, 'me');
     try {
       const shown = s.diagnostics();
       expect(s.diagnostics()).toBe(shown);
       expect(checked.filter((st) => st === s.state)).toHaveLength(1);
+      expect(advised.filter((st) => st === s.state)).toHaveLength(1);
     } finally {
       await s.close();
     }

@@ -327,6 +327,8 @@ describe('edit metrics', () => {
       [
         r('scenario.start', 9000, { attrs: { scenario: 'edit' }, c: { 'react.commits': 100 } }),
         m('scenario.start', 9000, { attrs: { scenario: 'edit' } }),
+        // Before the edit: none of its checks.
+        span('session.check', 9500, 99, { attrs: { check: 'updates' } }),
         r('edit.requested', 10_000, { attrs: { revision: base, operations: 1 }, c: { 'react.commits': 110 } }),
         // Another revision's records inside the window: never taken for this edit.
         r('canvas.revisionApplied', 10_002, { attrs: { revision: base } }),
@@ -334,7 +336,15 @@ describe('edit metrics', () => {
         m('controller.snapshotSent', 10_004, { attrs: { revision: base, bytes: 5 } }),
         span('controller.apply', 10_005, 4, { attrs: { revision: base }, dc: { 'fs.durableWrites': 99 } }),
         span('session.validateOperations', 10_010, 1),
+        // The batch's checks once it is applied, and the item styles swept after each operation.
+        span('apply.itemStyles', 10_010.5, 0.25),
+        span('apply.syncedEntries', 10_011, 0.25),
+        span('apply.itemStates', 10_011.25, 0.25),
+        span('apply.collectionSources', 10_011.5, 0.25),
+        span('apply.dependencies', 10_011.75, 0.25),
+        span('apply.batchChecks', 10_011.75, 1),
         span('session.applyOperations', 10_012, 2),
+        span('session.check', 10_019, 4, { attrs: { check: 'saving' } }),
         span('session.validateState', 10_020, 5),
         span('session.generate', 10_030, 4, { attrs: { variant: 'clean' } }),
         m('session.generateCheck', 10_030, { attrs: { variant: 'clean', ms: 1.5, files: 40 } }),
@@ -347,6 +357,12 @@ describe('edit metrics', () => {
         span('session.sweep', 10_099, 12),
         span('session.persist', 10_100, 70),
         m('session.changed', 10_101, { attrs: { revision: target } }),
+        // The snapshot's checks and values of the new state.
+        span('session.check', 10_103, 6, { attrs: { check: 'diagnostics' } }),
+        span('session.check', 10_103.5, 2, { attrs: { check: 'usages' } }),
+        span('session.check', 10_104, 3, { attrs: { check: 'updates' } }),
+        span('session.versionsInfo', 10_104.5, 1, { attrs: { versions: 0 } }),
+        span('controller.snapshot', 10_104.75, 12, { attrs: { revision: target } }),
         m('controller.snapshotSent', 10_105, { attrs: { revision: target, bytes: 120_000 } }),
         span('session.apply', 10_106, 95, { attrs: { revision: target } }),
         span('controller.apply', 10_107, 105, { attrs: { revision: target }, dc: { 'fs.durableWrites': 9, 'fs.fsyncs': 19, 'fs.writes': 11, 'fs.syncCalls': 450, 'files.stats': 130, 'files.hashedBytes': 60_000, 'apply.docsCopied': 20, 'docs.serialized': 20 } }),
@@ -356,6 +372,9 @@ describe('edit metrics', () => {
         span('main.stall', 10_120, 70),
         r('canvas.revisionApplied', 10_140, { attrs: { revision: target } }),
         m('session.reloadFromDisk', 10_500),
+        // A later snapshot of the same state: its checks are kept, its version sizes worked out again.
+        span('session.versionsInfo', 10_599, 1, { attrs: { versions: 0 } }),
+        span('controller.snapshot', 10_599.5, 2, { attrs: { revision: target } }),
         m('controller.snapshotSent', 10_600, { attrs: { revision: target, bytes: 1000 } }),
         // One run after the acknowledgement: counted as a sweep, not as one the edit waited on.
         span('session.sweep', 10_700, 5),
@@ -363,6 +382,7 @@ describe('edit metrics', () => {
         r('scenario.end', 11_641, { attrs: { scenario: 'edit' }, c: { 'react.commits': 160 } }),
         // After the scenario: none of its counts.
         m('session.reloadFromDisk', 12_000),
+        span('session.check', 12_000.5, 50, { attrs: { check: 'diagnostics' } }),
         m('controller.snapshotSent', 12_001, { attrs: { revision: target, bytes: 7 } }),
         span('main.stall', 12_002, 900),
         span('session.sweep', 12_003, 40)
@@ -414,8 +434,39 @@ describe('edit metrics', () => {
       'edit.snapshotBytes': '121005 bytes',
       'edit.reloadFromDisk': '1 count',
       'edit.rendererCommits': '50 count',
-      'edit.mainStallMax': '70 ms'
+      'edit.mainStallMax': '70 ms',
+      'edit.batchChecks': '1 ms',
+      'edit.batchSyncedEntries': '0.25 ms',
+      'edit.batchItemStates': '0.25 ms',
+      'edit.batchCollectionSources': '0.25 ms',
+      'edit.batchDependencies': '0.25 ms',
+      'edit.itemStyles': '0.25 ms',
+      'edit.itemStylesRuns': '1 count',
+      'edit.saveCheck': '4 ms',
+      'edit.saveCheckRuns': '1 count',
+      'edit.diagnostics': '6 ms',
+      'edit.diagnosticsRuns': '1 count',
+      'edit.assetUsages': '2 ms',
+      'edit.assetUsagesRuns': '1 count',
+      'edit.themeUpdates': '3 ms',
+      'edit.themeUpdatesRuns': '1 count',
+      'edit.versionsInfo': '2 ms',
+      'edit.versionsInfoRuns': '2 count',
+      'edit.checks': '18.25 ms',
+      'edit.snapshotBuild': '14 ms',
+      'edit.snapshotBuilds': '2 count'
     });
+  });
+
+  it('count a check the edit no longer works out as none, never missing, and need the batch’s checks', () => {
+    const kept = edit.measure(trace((x) => x.name === 'session.check' && x.attrs?.check === 'updates'), facts);
+    expect(kept.missing).toEqual([]);
+    expect(kept.metrics['edit.themeUpdates']).toEqual({ unit: 'ms', value: 0 });
+    expect(kept.metrics['edit.themeUpdatesRuns']).toEqual({ unit: 'count', value: 0 });
+    expect(kept.metrics['edit.checks'].value).toBe(15.25);
+    const unchecked = edit.measure(trace((x) => x.name === 'apply.batchChecks'), facts);
+    expect(unchecked.missing).toEqual(['apply.batchChecks']);
+    expect(unchecked.metrics['edit.batchChecks']).toBeUndefined();
   });
 
   it('name a mark that is missing instead of reporting a time without it', () => {

@@ -483,6 +483,7 @@ describe('publishing only what an edit changes (#183)', () => {
     expect(s.diagnostics()).not.toBe(diagnostics);
     expect(s.diagnostics()).toEqual(diagnostics);
     expect(s.assetUsages()).not.toBe(usages);
-    expect(s.themeUpdates()).not.toBe(updates);
+    // With no theme update to offer, an edit that changed only a page keeps the answer it had (#966).
+    expect(s.themeUpdates()).toBe(updates);
   });
 });

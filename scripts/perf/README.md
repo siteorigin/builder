@@ -105,7 +105,14 @@ stats and bytes hashed in the edit; the publication's files read, hashed and wri
 fsyncs, synchronous filesystem calls and path stats (`publish…`); `project:changed` sends and bytes, `reloadFromDisk`
 calls and React commits until the scenario ends; the sweeps of history blobs and unused assets (`session.sweep`) the
 edit waited on before `changed` (`sweepsAwaited`, their time `sweepAwaited`) and all of them until the scenario ends
-(`sweeps`), so a sweep moved later is still seen; the longest main-process stall.
+(`sweeps`), so a sweep moved later is still seen; the longest main-process stall. What the edit spends checking and
+deriving from the whole project: the batch's checks once it is applied (`batchChecks`, a span, and its parts
+`batchSyncedEntries`, `batchItemStates`, `batchCollectionSources`, `batchDependencies`), and, each as a time and how many
+times it was worked out (`…Runs`), the sweep of departed item styles after every operation (`itemStyles`), the save
+gate's check of the new state (`saveCheck`), the snapshot's problems for Project Health (`diagnostics`), asset usage
+(`assetUsages`), theme updates (`themeUpdates`) and saved versions' sizes (`versionsInfo`), from the edit to the
+scenario's end (a check no longer worked out is 0 of both); `checks`, all of these added up; and the snapshots built
+(`snapshotBuilds`, their time `snapshotBuild`).
 
 **`editFullHistory`**: as `edit`, once History holds its limit of 100 steps, so the edit lets the oldest go. Before the
 scenario starts (untimed), 100 edits of the hero's Heading are made through the editor's API, each a step of its own.

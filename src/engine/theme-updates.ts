@@ -241,11 +241,11 @@ function cardsLostTo(state: ProjectState, def: ComponentDefinition, next: Compon
 }
 
 /** Catalogue definitions never change while the app runs, and this is asked on every project update. */
-const catalogueHashes = new WeakMap<ComponentDefinition, string>();
-function catalogueHash(def: ComponentDefinition): string {
-  let h = catalogueHashes.get(def);
-  if (!h) catalogueHashes.set(def, (h = definitionHash(def)));
-  return h;
+const catalogueTexts = new WeakMap<ComponentDefinition, string>();
+function catalogueText(def: ComponentDefinition): string {
+  let t = catalogueTexts.get(def);
+  if (t === undefined) catalogueTexts.set(def, (t = JSON.stringify(def)));
+  return t;
 }
 
 export function themeUpdates(state: ProjectState): ThemeUpdates {
@@ -254,7 +254,8 @@ export function themeUpdates(state: ProjectState): ThemeUpdates {
   // A definition retained from a previous theme has no current version here.
   const outdated = Object.values(state.components).filter((d) => {
     const next = d.owner === 'theme' ? catalogue.get(d.id) : undefined;
-    return !!next && catalogueHash(next) !== definitionHash(d);
+    // A definition's hash is of this text (definitionHash), so the same text is the same version, without hashing either.
+    return !!next && catalogueText(next) !== JSON.stringify(d);
   });
   if (!outdated.length) return out;
   const pinned = pinnedByProject(state);
