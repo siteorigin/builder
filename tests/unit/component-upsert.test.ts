@@ -487,6 +487,7 @@ describe('component.upsert: building a managed component in one operation (#358)
     const made = applyOperations(st, [{ type: 'component.create', name: 'Holder' }]);
     const { definitionId, rootNodeId } = made.results[0] as { definitionId: string; rootNodeId: string };
     const nested = applyOperations(made.state, [{ type: 'node.insert', owner: { kind: 'component', id: definitionId }, parentId: rootNodeId, componentId: 'content.text' }]).state;
+    expect(Object.values(nested.components[definitionId].tree!.nodes).some((n) => n.kind === 'instance')).toBe(true);
     expect(applyOperations(nested, [pricing({ definitionId })]).state.components[definitionId].tree!.nodes.root.kind).toBe('element');
     expect(() => applyOperations(st, [pricing({ definitionId, newDefinitionId: projectDefinitionId('X') })])).toThrow(/not both/);
     // A design whose buttons change its UI state, or whose elements read it.
@@ -792,6 +793,26 @@ describe('component.upsert: components placed in a design (#1146)', () => {
     const shell = Object.values(st.components).find((d) => d.category === 'shell')!;
     expect(() => applyOperations(a.state, [holder('C', { x: shell.id })])).toThrow(/header and footer/);
     expect(() => applyOperations(a.state, [holder('C', { x: a.id }, { nodes: [{ kind: 'element', id: 'root', children: ['x'] }, { kind: 'instance', id: 'x', definitionId: a.id, anchor: 'here' }] })])).toThrow(/anchors can be set on/);
+    // A code component places the design's classes and anchor only where its source says: never the root.
+    const code = applyOperations(a.state, [{ type: 'component.createCode', name: 'Code', source: '<p>Hi</p>' }]);
+    const codeId = code.results[0].definitionId as string;
+    expect(() => applyOperations(code.state, [{ type: 'component.upsert', name: 'D', properties: {}, nodes: [{ kind: 'instance', id: 'root', definitionId: codeId }] }])).toThrow(/is a code component, which cannot carry/);
+    expect(made(code.state, holder('D', { c: codeId })).state.components).toBeDefined();
+  });
+
+  it("gives a placed form's fields keys of their own, and keeps the keys of the fields a rebuild keeps", () => {
+    const blank = createStarterState('blank', 'Expo', false);
+    const st = applyOperations(blank, [{ type: 'node.insert', owner: { kind: 'page', id: blank.site.homePageId }, parentId: null, componentId: 'contact.form' }]).state;
+    const form = Object.values(st.components).find((d) => d.componentId === 'contact.form')!;
+    const keys = (s: ProjectState, id: string) => ((s.components[id].tree!.nodes.form as InstanceNode).props.fields as ListItem[]).map((f) => f.name);
+    const withFields = (fields: unknown[], extra: Partial<Upsert> = {}) => holder('Enquiry', { form: form.id }, { nodes: [{ kind: 'element', id: 'root', children: ['form'] }, { kind: 'instance', id: 'form', definitionId: form.id, props: { fields } }], ...extra });
+    const a = made(st, withFields([{ label: 'Work email', type: 'email' }, { label: 'Work-email', type: 'email' }]));
+    const first = keys(a.state, a.id);
+    expect(new Set(first).size).toBe(2);
+    // The second field relabelled on a rebuild keeps the key its answers arrive under.
+    const items = (a.state.components[a.id].tree!.nodes.form as InstanceNode).props.fields as ListItem[];
+    const b = applyOperations(a.state, [withFields([items[0], { ...items[1], label: 'Billing email' }], { definitionId: a.id })]).state;
+    expect(keys(b, a.id)).toEqual(first);
   });
 
   it('refuses a design that would place itself, directly, through one component or through two, changing nothing', () => {

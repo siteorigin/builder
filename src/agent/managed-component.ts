@@ -205,7 +205,7 @@ const NODE = z.discriminatedUnion('kind', [
         .array(z.object({ axis: z.string(), option: z.string() }).strict())
         .max(8)
         .optional()
-        .describe('The option it shows on its variant axes; an axis left out uses its default.'),
+        .describe('The option it shows on its variant axes. An axis left out uses its default; a rebuild keeps the option the placement shows.'),
       styles: STYLES.describe('Styles of the placement as a whole.'),
       ...CONDITIONS
     })
@@ -808,7 +808,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
       if (!p && !Object.hasOwn(properties, n.list)) issues.push({ field: `${at}.list`, message: `"${n.list}" is not one of the properties. Add a list property for the items` });
       else if (p && p.type !== 'list') issues.push({ field: `${at}.list`, message: `"${n.list}" is a ${p.type} property, not a list` });
     }
-    if (n.kind === 'instance') placedComponent(state, args, n, at, out, (b, field) => checkBinding(b, field, n.id), issues);
+    if (n.kind === 'instance') placedComponent(state, args, n, at, out, prev, (b, field) => checkBinding(b, field, n.id), issues);
     if (n.kind === 'slot') {
       if (!(args.slots ?? []).some((s) => s.name === n.slot)) issues.push({ field: `${at}.slot`, message: `"${n.slot}" is not one of the slots. Declare it in slots` });
       else if (slotsShown.has(n.slot)) issues.push({ field: `${at}.slot`, message: `the slot "${n.slot}" is already shown by "${slotsShown.get(n.slot)}". Each slot is shown once` });
@@ -915,6 +915,7 @@ function placedComponent(
   n: Extract<NodeArgs, { kind: 'instance' }>,
   at: string,
   out: Record<string, unknown>,
+  prev: Record<string, unknown> | undefined,
   checkBinding: (b: { $prop: string; field?: string } | { $item: string }, field: string) => unknown,
   issues: FieldIssue[]
 ) {
@@ -938,8 +939,10 @@ function placedComponent(
     const schema = def && Object.hasOwn(def.properties, r.name) ? def.properties[r.name] : undefined;
     if (def && !schema) issues.push({ field: `${rat}.name`, message: `"${def.name}" has no property "${r.name}". Properties: ${Object.keys(def.properties).join(', ') || 'none'}` });
     if (isBindingValue(r.value)) checkBinding(r.value, `${rat}.value`);
-    // A token property names its token as { token } in the operation.
-    props[r.name] = schema?.type === 'token' && typeof r.value === 'string' ? { token: r.value } : r.value;
+    // A token property names its token as { token } in the operation; a text a read shortened is the whole text it
+    // stands for, while the placement is the same component's.
+    const stored = prev?.kind === 'instance' && prev.definitionId === n.definitionId && isRecord(prev.props) ? prev.props[r.name] : undefined;
+    props[r.name] = schema?.type === 'token' && typeof r.value === 'string' ? { token: r.value } : unclip(r.value, stored);
   });
   const variants: Record<string, string> = {};
   (n.variants ?? []).forEach((r, j) => {

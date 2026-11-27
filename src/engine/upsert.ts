@@ -7,7 +7,7 @@
  * contract can no longer take.
  */
 import { isBackgroundImageValue } from '@shared/background-image';
-import type { Binding, ComponentDefinition, DividerNode, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListProp, NodeTree, ObjectProp, OverlayMode, PartDef, ProjectState, PropSchema, SlotDef, StateAction, StyleValue, TextNode, UiStateSchema, VariantAxis } from '@shared/types';
+import type { Binding, ComponentDefinition, DividerNode, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListItem, ListProp, NodeTree, ObjectProp, OverlayMode, PartDef, ProjectState, PropSchema, SlotDef, StateAction, StyleValue, TextNode, UiStateSchema, VariantAxis } from '@shared/types';
 import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isCollectionLoop, isAppearPreset, isBinding, isStateRef, parseStyleScopeKey } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, partStyleControls, styleSetFor } from '@shared/styles';
@@ -21,6 +21,8 @@ import { isCarouselTrack } from '@generator/card-links';
 import { ICONS } from '@shared/icons';
 import { EngineError, RESERVED_ANCHORS, enclosingRepeatProp, fail, getTree, instancesOf } from './tree';
 import { clone, makeInstance } from './install';
+import { formDefaults, settleFormKeys } from './form-keys';
+import { namesFormFields } from '@shared/form-contract';
 import { normalizeImage, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { tagKindProblem } from './semantic-tags';
 import { slotDeclProblem } from './slots';
@@ -312,6 +314,8 @@ function designTree(state: ProjectState, specs: DesignNode[], ctx: DesignContext
   if (roots.length > 1) fail(`The design has ${roots.length} top-level nodes (${roots.map((r) => quoted(r.id)).join(', ')}). Put them inside one root element, which carries the component.`);
   const root = roots[0] ?? fail('Every node of the design is inside another, so it has no root. Leave the root out of every node\'s children.');
   if (root.kind === 'repeat' || root.kind === 'slot') fail(`The root "${root.id}" is a ${root.kind}, which shows no element of its own to carry the component. Put it inside a container.`);
+  // Code places the component's classes and anchor only where its source says, so it never carries a design.
+  if (root.kind === 'instance' && own(state.components, root.definitionId)?.kind === 'code') fail(`The root "${root.id}" is a code component, which cannot carry the component. Put it inside a container.`);
   // Each node has one parent and the root none, so a node the root never reaches sits inside itself.
   const reached = new Set<string>();
   const stack = [root.id];
@@ -478,8 +482,8 @@ function designNode(state: ProjectState, s: DesignNode, ctx: DesignContext): Gra
  * A component the design places, as node.insert places one: an installed component other than the shared header or
  * footer, which never renders the design it is placed in. Its values are checked against its properties and its
  * options against its axes; bindings to the design's own properties are checked with the finished component. A rebuild
- * that names a placement again, of the same component, keeps what the description cannot say about it (its parts'
- * styles, its single-item styles, its entrance, its list connections) and the values it leaves out.
+ * that names a placement again, of the same component, keeps what the description cannot say about it (its styles,
+ * its single-item styles, its entrance, its list connections) and the values and options it leaves out.
  */
 function placedComponent(state: ProjectState, s: Extract<DesignNode, { kind: 'instance' }>, base: Partial<GraphNode>, ctx: DesignContext, bound: (v: unknown) => v is Binding, refuse: (message: string) => never): InstanceNode {
   const childId = s.definitionId;
@@ -493,19 +497,25 @@ function placedComponent(state: ProjectState, s: Extract<DesignNode, { kind: 'in
     // Content placed in its slots lives in the design around it, which the description replaces whole.
     const filled = Object.entries(kept.slots ?? {}).find(([, ids]) => Array.isArray(ids) && ids.length);
     if (filled) refuse(`it holds content in the "${filled[0]}" slot of ${quoted(def.name)}, which component.upsert cannot describe yet. Change the design with the node operations instead.`);
-    // Its own styles are the description's, as every node's are; its parts' styles are what it cannot say.
-    if (kept.overrides) {
-      delete kept.overrides.root;
-      if (!Object.keys(kept.overrides).length) delete kept.overrides;
-    }
+    // Its styles stay: a read shows them as the placement's overrides, never as styles to send again, so the styles
+    // the description gives are set over them.
     for (const k of ['name', 'when', 'unless'] as const) delete kept[k];
   }
+  // A form's fields as it sends them now, so a field it keeps keeps the key its answers arrive under.
+  const formBefore = namesFormFields(def) ? (kept && Array.isArray(kept.props.fields) ? (kept.props.fields as ListItem[]) : defaultFields(def)) : undefined;
   const node: InstanceNode = { ...(kept ?? makeInstance(def)), ...base, kind: 'instance', definitionId: childId } as InstanceNode;
   for (const [prop, v] of Object.entries(s.props ?? {})) {
     if (isProtoKey(prop)) refuse(`"${prop}" cannot be a property name.`);
     const schema = own(def.properties, prop) ?? refuse(`${quoted(def.name)} has no property "${prop}". Properties: ${Object.keys(def.properties).join(', ') || 'none'}.`);
-    node.props[prop] = bound(v) ? clone(v) : normalizeProp(schema, v, state, `${def.name} → ${schema.label}`, own(kept?.props, prop));
+    try {
+      node.props[prop] = bound(v) ? clone(v) : normalizeProp(schema, v, state, `${def.name} → ${schema.label}`, own(kept?.props, prop));
+    } catch (e) {
+      // Named by the node, so the call that sent it can point at the row.
+      if (e instanceof EngineError) refuse(e.message);
+      throw e;
+    }
   }
+  if (formBefore && Object.hasOwn(s.props ?? {}, 'fields') && Array.isArray(node.props.fields)) node.props.fields = settleFormKeys(kept ? formBefore : [], node.props.fields as ListItem[], new Set(), formDefaults(def));
   for (const [axis, option] of Object.entries(s.variants ?? {})) {
     if (isProtoKey(axis)) refuse(`"${axis}" cannot be a variant axis.`);
     const found = findVariant(def, option, axis);
@@ -513,6 +523,12 @@ function placedComponent(state: ProjectState, s: Extract<DesignNode, { kind: 'in
     (node.variants ??= {})[found.axis] = found.id;
   }
   return node;
+}
+
+/** The fields a form's placements send until they are given their own. */
+function defaultFields(def: ComponentDefinition): ListItem[] {
+  const schema = own(def.properties, 'fields');
+  return schema?.type === 'list' && Array.isArray(schema.default) ? schema.default : [];
 }
 
 /** A literal tag of the node's kind. */
@@ -546,7 +562,8 @@ function designParts(state: ProjectState, op: UpsertOp, tree: NodeTree, was: Com
       controls = [...new Set(p.styleControls)];
     } else {
       // The controls it offered stay while it is the same element; another element offers what its kind takes.
-      const same = prev && prev.nodeId === p.nodeId && own(was?.tree?.nodes, prev.nodeId)?.kind === node.kind;
+      const before = own(was?.tree?.nodes, prev?.nodeId ?? '');
+      const same = prev && prev.nodeId === p.nodeId && before?.kind === node.kind && (node.kind !== 'instance' || (before as InstanceNode).definitionId === node.definitionId);
       // A placed component offers what its own root offers, as a component made from a placement does.
       const placed = node.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
       controls = same ? prev.styleControls : placed ? partStyleControls(placed, 'root') : styleSetFor(node);
