@@ -3,7 +3,9 @@
    * Picture first: ordinary photos fill a square; logos, banners and extreme shapes are shown whole, and a
    * picture that may be transparent sits on a neutral checker. Usage lives in a filter and in the details,
    * never as a tag on every tile; large files carry a neutral size chip, never amber (amber means site-wide).
-   * Files can be dropped anywhere on the panel; the whole panel lights up while they are dragged over it. */
+   * Files can be dropped anywhere on the panel; the whole panel lights up while they are dragged over it.
+   * Type: text is 12px or larger, row text on whole-pixel lines; the one exception is a chip (a short semibold word or number
+   * in a filled chip, like the size chip), at the badge's 11px (primitives.css). */
   .asset-host { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .panel-head .asset-add { flex: none; margin-left: auto; }
   /* Images, Fonts and Documents, each its own view: a long grid never buries the other two. */
@@ -55,7 +57,7 @@
      where the repair is (the details); the tile's tooltip and spoken name say which repair. */
   .asset-thumb-gone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: var(--panel-2); }
   .asset-thumb-gone svg { width: 22px; height: 22px; color: var(--text-3); }
-  .asset-thumb-repair { padding: 0 6px; font-size: 12px; font-weight: 500; line-height: 1.3; text-align: center; color: var(--text-2); }
+  .asset-thumb-repair { padding: 0 6px; font-size: 12px; font-weight: 500; line-height: 16px; text-align: center; color: var(--text-2); }
   .asset-tile:hover .asset-thumb-repair { color: var(--text); }
   /* Behind a loaded picture that may be transparent: a mid-light checker in light, a mid grey in dark, so dark
      and white artwork both stay visible. It sits on the picture's own box, so opaque photos hide it. */
@@ -76,9 +78,10 @@
   .asset-tile.blocked:hover .asset-thumb::after { box-shadow: inset 0 0 0 1px var(--border); }
   .asset-tile.picked::before { background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
   .asset-tile.picked .asset-name { color: var(--text); font-weight: 600; }
+  .asset-tile.picked .asset-tile-id { color: var(--text-2); }
   .asset-picked { position: absolute; top: 5px; left: 5px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-sm); background: var(--accent-fill); color: var(--on-accent); box-shadow: 0 0 0 2px var(--raised); pointer-events: none; }
   .asset-picked svg { width: 13px; height: 13px; stroke-width: 2.5; }
-  .asset-name { font-size: 12px; line-height: 1.3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+  .asset-name { font-size: 12px; line-height: 16px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
   /* A chip on a picture: an opaque raised face, so its words never depend on the photo behind them, and a 3:1 keyline,
      so its edge holds against a light photo where the face alone would not. The size chip is neutral; the missing chip
      is the gallery picker's red chip (--red-soft, --red-ink) laid on that same opaque face. One line, never cut: a
@@ -118,7 +121,7 @@
    * The family carries what is shared (its name, whether the site uses it and where); each file carries what
    * tells it apart (style and alphabet, drawn in itself) and the corrections that apply to it alone. */
   .font-list { margin: 10px 10px 16px; container-type: inline-size; }
-  .font-list-note { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .font-list-note { margin: 0 0 10px; font-size: 12px; line-height: 18px; color: var(--text-2); }
   .font-families, .font-faces { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
   .font-families { gap: 10px; }
   .font-family { border-radius: var(--r-sm); background: var(--panel-2); }
@@ -135,7 +138,7 @@
   .font-family-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
   @media (prefers-reduced-motion: reduce) { .font-family-toggle svg { transition: none; } }
   .font-family-title .badge { flex: none; position: relative; pointer-events: none; }
-  .font-family-meta { margin: 0 0 0 18px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .font-family-meta { margin: 0 0 0 18px; font-size: 12px; line-height: 16px; color: var(--text-2); }
   .font-family-body[hidden] { display: none; }
   .font-family-name { padding: 0 10px 12px; }
   .font-family-name .field-hint { line-height: 1.4; }
@@ -147,7 +150,7 @@
   .font-face-title > span { white-space: nowrap; }
   .font-face-size { font-weight: 400; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .font-face-head .font-remove { flex: none; margin-right: -4px; }
-  .font-face-file { font-family: var(--mono); font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; }
+  .font-face-file { font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--text-2); overflow-wrap: anywhere; }
   .font-face-sample { font-size: 22px; line-height: 1.3; color: var(--text); overflow-wrap: anywhere; }
   .font-face-sample.muted { font-size: 12px; line-height: 1.6; color: var(--text-3); }
   /* Weight takes the wider share: "400 Regular" is longer than "Upright". */
@@ -178,7 +181,7 @@
   .font-remove-replacement:not(:has(.font-remove-sample)) { padding-right: 54px; }
   .font-remove-sample { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); font-size: 22px; line-height: 1; color: var(--text); }
   .doc-list { margin: 10px 10px 16px; }
-  .doc-list-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .doc-list-note { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
   .doc-list > .doc-list-note { margin: 2px 4px; }
   .doc-list > ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
   .doc-item { border-radius: var(--r-sm); background: var(--panel-2); }
@@ -188,11 +191,15 @@
   .doc-toggle .doc-warn { color: var(--red); }
   .doc-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
   .doc-title b { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-  .doc-meta { font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; }
-  .doc-state { font-size: 11px; font-weight: 500; color: var(--text-2); }
+  /* The details wrap part by part; a part that starts a line drops its "·" (the clipped band at the start). */
+  .doc-meta { display: flex; flex-wrap: wrap; margin-left: -11px; clip-path: inset(0 0 0 11px); font-size: 12px; line-height: 16px; color: var(--text-2); }
+  .doc-meta > span { position: relative; min-width: 0; margin-left: 11px; overflow-wrap: anywhere; }
+  .doc-meta > span + span { white-space: nowrap; }
+  .doc-meta > span + span::before { content: '·'; position: absolute; left: -7px; }
+  .doc-state { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-2); }
   .doc-state.gone { color: var(--red); }
   .doc-body { display: flex; flex-direction: column; gap: 8px; padding: 0 8px 10px 8px; }
-  .doc-missing { margin: 0; font-size: 12px; line-height: 1.45; color: var(--red); }
+  .doc-missing { margin: 0; font-size: 12px; line-height: 18px; color: var(--red); }
   .doc-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .doc-actions .select { max-width: 100%; }
   .doc-move { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; max-width: 100%; }
@@ -205,7 +212,7 @@
   .asset-drop-icon { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent-text); }
   .asset-drop-icon svg { width: 20px; height: 20px; }
   .asset-drop b { color: var(--text); font-size: 13px; font-weight: 600; }
-  .asset-drop small { margin-top: 8px; color: var(--text-3); font-size: 11px; }
+  .asset-drop small { margin-top: 8px; color: var(--text-3); font-size: 12px; line-height: 16px; }
   .asset-drop:hover:not(:disabled), .asset-drop.over { border-color: var(--accent); background: var(--accent-soft); }
   /* Covers the whole panel body (search, grid and scrollbar), with the drop frame inset inside it. */
   .asset-drop-overlay { position: absolute; inset: 0; z-index: 2; display: flex; padding: 2px 10px 10px; background: var(--panel); pointer-events: none; }
@@ -214,7 +221,7 @@
   .asset-drop-overlay b { color: var(--text); font-size: 13px; font-weight: 600; }
   .asset-importing { display: flex; align-items: center; gap: 8px; margin: 0 10px 10px; padding: 7px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text-2); }
   .asset-cleanup { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); }
-  .asset-cleanup p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .asset-cleanup p { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
   .asset-nomatch { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 6px 14px; }
   .asset-nomatch p { margin: 0; font-size: 12px; color: var(--text-2); }
   /* What the project's media take, and what removed files kept for Undo take (issue #253). Pinned under every tab,
@@ -234,10 +241,10 @@
   .asset-storage-details { display: flex; flex-direction: column; gap: 4px; }
   .asset-storage-details[hidden] { display: none; }
   .asset-storage dl { display: flex; flex-direction: column; gap: 1px; width: 100%; margin: 0; }
-  .asset-storage dl > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.45; }
+  .asset-storage dl > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; line-height: 16px; }
   .asset-storage dt { min-width: 0; color: var(--text-2); }
   .asset-storage dd { flex: none; white-space: nowrap; margin: 0; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
-  .asset-storage-note { margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-3); }
+  .asset-storage-note { margin: 2px 0 0; font-size: 12px; line-height: 16px; color: var(--text-3); }
   @media (max-height: 640px) { .asset-storage { padding-block: 6px; } }
   @media (prefers-reduced-motion: reduce) { .asset-storage-toggle svg { transition: none; } }
 
@@ -282,7 +289,7 @@
   .storage-final svg { width: 15px; height: 15px; flex: none; color: var(--red); }
 
 
-  .uses-toggle { align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; min-height: 22px; border: 0; border-radius: var(--r-xs); background: none; padding: 0 4px 0 0; font-size: 11px; color: var(--text-2); text-align: left; }
+  .uses-toggle { align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; min-height: 24px; border: 0; border-radius: var(--r-xs); background: none; padding: 0 4px 0 0; font-size: 12px; line-height: 16px; color: var(--text-2); text-align: left; }
   .uses-toggle:hover { color: var(--text); }
   .uses-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
 
@@ -307,7 +314,7 @@
   .asset-original { overflow-wrap: anywhere; }
   .asset-original span { white-space: pre-wrap; user-select: text; }
   /* A note's icon sits beside its words; its buttons take the note's full width under them. */
-  .asset-note { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; margin: 10px 0 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .asset-note { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; margin: 10px 0 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 18px; color: var(--text-2); }
   .asset-note > div { display: contents; }
   .asset-note > svg { width: 14px; height: 14px; margin-top: 2px; }
   .asset-note .asset-note-actions, .asset-note .asset-missing-actions { grid-column: 1 / -1; }
@@ -322,7 +329,7 @@
   .asset-alt-review .asset-use :is(.where, .what) { overflow-wrap: anywhere; white-space: normal; }
   .asset-alt-review .asset-use .where { flex: 0 1 auto; min-width: 0; max-width: 45%; }
   .asset-alt-review .asset-alt-text { display: block; padding: 0 6px 4px 25px; overflow-wrap: anywhere; color: var(--text-2); }
-  .asset-tile-id { margin-top: -4px; font-size: 12px; line-height: 1.3; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .asset-tile-id { margin-top: -4px; font-size: 12px; line-height: 16px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .asset-uses { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
   .asset-uses h5 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
@@ -334,26 +341,26 @@
   .asset-use .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .asset-use .times { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
   .asset-use.static { flex-wrap: wrap; }
-  .asset-use-hint { flex-basis: 100%; padding-left: 19px; font-size: 11px; color: var(--text-2); }
+  .asset-use-hint { flex-basis: 100%; padding-left: 19px; font-size: 12px; line-height: 16px; color: var(--text-2); }
   .asset-use svg.go { margin-left: auto; color: var(--text-3); }
   button.asset-use:hover svg.go { color: var(--text); }
   .asset-fields { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--border); }
   .asset-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
   .asset-place { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 14px; }
   .asset-place b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
-  .asset-why { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .asset-why { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
   .asset-replace { display: flex; flex-direction: column; padding-bottom: 8px; }
   .asset-replace-top { flex: none; }
   .asset-replace-top .asset-detail-top { margin-left: 1px; }
   .asset-replace-head { display: flex; align-items: flex-start; gap: 10px; padding: 0 10px 10px; }
   .asset-replace-head .asset-thumb { width: 48px; }
   .asset-replace-head h4 { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-  .asset-replace-head p { margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .asset-replace-head p { margin: 2px 0 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
   .asset-replace-head b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
   .asset-actions .asset-to-chat { margin: 4px 0 0 -8px; }
   .asset-replace { padding-top: 10px; }
   .asset-replace-add { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 0 10px 10px; }
-  .asset-replace-add p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-3); }
+  .asset-replace-add p { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-3); }
   .asset-uses .asset-more { margin: 2px 0 0; }
   .asset-replace-head .asset-choose-open { margin-top: 4px; font-size: 12px; }
   /* Replacing in some places: each use ticked or not, with Show beside it, then what the change will do. */
@@ -387,9 +394,9 @@
   /* What the change will do and the button that makes it, under the images while one is picked from them: a sibling of
      the scrolling body, not inside it, so a focused tile or button is never scrolled behind it. */
   .asset-choose-foot { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--border); background: var(--panel); }
-  .asset-choose-sum { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
+  .asset-choose-sum { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); overflow-wrap: anywhere; }
   .asset-choose-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   /* Why some tiles below can't be picked, said once on screen rather than only in each tile's tooltip. */
-  .asset-blocked-note { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; margin: 0 10px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .asset-blocked-note { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; margin: 0 10px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 18px; color: var(--text-2); }
   .asset-blocked-note svg { width: 14px; height: 14px; margin-top: 2px; color: var(--red); }
 }

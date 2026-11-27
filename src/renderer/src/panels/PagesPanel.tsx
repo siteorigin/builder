@@ -151,6 +151,28 @@ function sectionFor(st: ProjectState, order: string[], id: string): string | und
 }
 
 /**
+ * Marks the page's own segment `cut` while it is wider than its room, so it gives way from its start behind a "…" of
+ * its own: the end is what tells a page from its neighbours, and the text keeps to the column (a browser's start-side
+ * ellipsis drops whole glyphs and leaves the slack on the column side).
+ */
+function useCutStart(deps: unknown[]) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const text = el?.firstElementChild as HTMLElement | null;
+    if (!el || !text) return;
+    // Inline while it fits (its box is its width), clipped by itself once cut (its scroll width is its width).
+    const check = () => el.classList.toggle('cut', Math.max(text.scrollWidth, text.getBoundingClientRect().width) > el.clientWidth + 1);
+    check();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, deps);
+  return ref;
+}
+
+/**
  * A page's address. A long one shortens its parent folders from their start and keeps the page's own segment with
  * its slash ("…tfolio/kowhai-street-apartment/"). A page drawn under its section shows the address from there on
  * ("…/kowhai-street-apartment/"): the section's own row, just above, says the rest. While finding, matches are
@@ -162,25 +184,36 @@ function RouteText({ route, words, within }: { route: string; words: string[]; w
   const hit = found(shown, words);
   const cut = chars.length > 1 ? chars.lastIndexOf('/', chars.length - 2) : 0;
   const folderOnly = hit.some(Boolean) && !hit.slice(cut).some(Boolean);
+  // Re-measured when the text or its split changes; the observer covers the room it is given.
+  const leaf = useCutStart([shown, cut, folderOnly]);
   // A relative address ("…/team/") has no folders of its own to shorten.
   if (cut <= (shown.startsWith('…') ? 1 : 0) || folderOnly)
     return (
       <span className="page-route">
-        <span className="page-route-leaf">
-          <Runs chars={chars} hit={hit} />
+        <span className="page-route-leaf" ref={leaf}>
+          <span className="page-route-text">
+            <bdi dir="ltr">
+              <Runs chars={chars} hit={hit} />
+            </bdi>
+          </span>
         </span>
       </span>
     );
   return (
-    <span className="page-route">
+    // The folders' length is on the pair, so the page's own segment leaves the same room the folders keep.
+    <span className="page-route" style={{ '--dir-ch': cut } as React.CSSProperties}>
       {/* Shortened from its start, so what stays is the part next to the page's own segment. */}
-      <span className="page-route-dir" style={{ '--dir-ch': cut } as React.CSSProperties}>
+      <span className="page-route-dir">
         {'\u200e'}
         <Runs chars={chars} hit={hit} to={cut} />
         {'\u200e'}
       </span>
-      <span className="page-route-leaf">
-        <Runs chars={chars} hit={hit} from={cut} />
+      <span className="page-route-leaf" ref={leaf}>
+        <span className="page-route-text">
+          <bdi dir="ltr">
+            <Runs chars={chars} hit={hit} from={cut} />
+          </bdi>
+        </span>
       </span>
     </span>
   );
@@ -456,7 +489,7 @@ export function PagesPanel() {
   /** Keyboard focus on a row whose title or address is cut short shows them whole in a card under it. */
   const showPeek = (row: HTMLElement | null) => {
     const wrap = wrapRef.current?.getBoundingClientRect();
-    const clipped = [...(row?.querySelectorAll<HTMLElement>('.page-title, .page-route-dir, .page-route-leaf') ?? [])].some((el) => el.scrollWidth > el.clientWidth + 1);
+    const clipped = [...(row?.querySelectorAll<HTMLElement>('.page-title, .page-route-dir, .page-route-leaf, .page-route-text') ?? [])].some((el) => el.scrollWidth > el.clientWidth + 1);
     if (!row || !wrap || !clipped || !row.matches(':focus-visible') || renaming || dragId) return setPeek(null);
     const r = row.getBoundingClientRect();
     // Placed under the row first; once the card is drawn it is measured and moved over the row if it does not fit.
@@ -1359,7 +1392,9 @@ function CollectionRow({ state, id, open }: { state: ProjectState; id: string; o
       <div className="pages-collection-body">
         <span className="pages-collection-name">{name}</span>
         <span className="pages-collection-meta">
-          {n} {n === 1 ? 'entry' : 'entries'}
+          <span>
+            {n} {n === 1 ? 'entry' : 'entries'}
+          </span>
           {/* The address an index lives at; with no index it is only where the entries' own pages go. */}
           {paged && c.settings.route ? (
             <span className="pages-collection-route">
