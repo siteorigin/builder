@@ -20,6 +20,7 @@ import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { ShareControl } from './SharePopover';
 import { RemoteSessionControl } from './RemoteSession';
+import { NotesControl } from './NotesPopover';
 import { confirmLeaveLive, isRemoteShell } from '../lib/remote-session';
 
 export function Toolbar() {
@@ -478,6 +479,8 @@ export function Toolbar() {
             <Settings />
           </button>
         )}
+        {/* The shown project's pinned notes (#770), the host's own or, in the remote shell, the host's. */}
+        <NotesControl compact={tier !== 'full'} />
         {remoteShell ? (
           // Another computer's live session this app is a guest in (#766): how it is connected, and Leave.
           <RemoteSessionControl compact={tier !== 'full'} />
