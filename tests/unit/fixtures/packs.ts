@@ -10,11 +10,16 @@
  * - `FOUNDATION_AUTHOR` stamps one as Foundation's (`foundation.<componentId>`), for a test of a theme-owned design;
  * - `testPack` and `registerBeside` make a small pack of the test's own designs and register it beside the releases,
  *   for a test that needs one in the catalogue (Insert, installing by component ID, a theme switch).
+ *
+ * A test of the release that fails because Builder, or the release itself, does not yet do something it promises is
+ * written as `it.fails`, under a `// Release gap: …` comment naming what is missing, with only that promise in it: the
+ * rest of what the test checked stays in a test that must pass. Once the gap is closed the test fails, and goes back
+ * to `it`.
  */
 import { resolve } from 'node:path';
 import type { ComponentDefinition, ProjectState } from '@shared/types';
 import { createPack, type ComponentSpec, type PackAuthor } from '@catalogue/dsl';
-import { getTheme, listThemes, registerPacks } from '@catalogue/index';
+import { findTheme, listThemes, registerPacks } from '@catalogue/index';
 import type { AuthoredPack, PackMeta, ThemePack } from '@catalogue/pack';
 import { buildPack, fileSource } from '../../../src/main/packs/build';
 import { registerPackFiles } from '../../../src/main/packs/files';
@@ -40,7 +45,14 @@ export function metaOf(pack: ThemePack, over: Partial<PackMeta> = {}): PackMeta 
 }
 
 /** Writes managed designs as Foundation's own, on the loaded release's tokens. */
-export const FOUNDATION_AUTHOR: PackAuthor = createPack(metaOf(getTheme('foundation')));
+export const FOUNDATION_AUTHOR: PackAuthor = createPack(metaOf(foundation()));
+
+/** The loaded Foundation itself, never the default theme standing in for it. */
+function foundation(): ThemePack {
+  const pack = findTheme('foundation');
+  if (!pack) throw new Error('Foundation is not registered: tests/unit/setup.ts loads it before any test module.');
+  return pack;
+}
 
 /** The spec of a design, with what a test rarely cares about filled in. */
 export type DesignSpec = Omit<ComponentSpec, 'category' | 'tags' | 'icon' | 'description'> & Partial<Pick<ComponentSpec, 'category' | 'tags' | 'icon' | 'description'>>;
@@ -73,13 +85,13 @@ export function projectDesign(state: ProjectState, spec: DesignSpec): ComponentD
 
 /** An author for a small pack of a test's own, on Foundation's tokens under its own identity. */
 export function testPack(id: string, over: Partial<PackMeta> = {}): PackAuthor {
-  return createPack(metaOf(getTheme('foundation'), { id, name: id, description: `The ${id} test pack.`, version: '1.0.0', devOnly: undefined, ...over }));
+  return createPack(metaOf(foundation(), { id, name: id, description: `The ${id} test pack.`, version: '1.0.0', devOnly: undefined, ...over }));
 }
 
 /** Register these authored packs after the ones already loaded, with their files; returns them as registered. */
 export function registerBeside(...authored: AuthoredPack[]): ThemePack[] {
-  const built = authored.map((a) => buildPack(a, ROOT));
+  const built = authored.map((a) => buildPack(a, ROOT)).map(({ pack, files }) => ({ pack, files: new Map([...files].map(([k, abs]) => [k, fileSource(abs)])) }));
   registerPacks([...listThemes(), ...built.map((b) => b.pack)]);
-  for (const { pack, files } of built) registerPackFiles(pack.id, new Map([...files].map(([k, abs]) => [k, fileSource(abs)])));
+  for (const { pack, files } of built) registerPackFiles(pack.id, files);
   return built.map((b) => b.pack);
 }

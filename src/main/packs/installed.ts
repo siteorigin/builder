@@ -5,6 +5,7 @@
  */
 import { join } from 'node:path';
 import { registerPacks, type ThemePack } from '@catalogue/index';
+import { BUNDLED_PACK_IDS } from '@catalogue/pack';
 import type { PackCatalogue } from '@shared/api';
 import { clearPackFiles, packFileInfo, readPackFile, registerPackFiles } from './files';
 import { loadPacks, type LoadedPack, type PackRoot } from './loader';
@@ -57,6 +58,8 @@ export async function loadBundledPacks(resources: string): Promise<ThemePack[]> 
   const { packs, refused } = await loadPacks(bundledPackRoots(resources));
   if (refused.length) throw new Error(`The bundled theme packs do not load: ${refused.map((r) => `${r.dir}: ${r.reason}`).join(' ')}`);
   if (!packs.some((p) => !p.pack.devOnly)) throw new Error(`No bundled theme pack is under ${join(resources, 'resources', 'packs')}.`);
+  const missing = BUNDLED_PACK_IDS.filter((id) => !packs.some((p) => p.pack.id === id));
+  if (missing.length) throw new Error(`The bundled theme packs ${missing.join(', ')} are missing from ${join(resources, 'resources')}.`);
   register(packs);
   catalogue = { packs: packs.map((p) => p.pack), refused: [], userDir: '' };
   return packs.map((p) => p.pack);

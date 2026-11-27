@@ -5,11 +5,11 @@
  * build it the same way.
  */
 import { build } from 'esbuild';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ThemePack } from '@catalogue/pack';
-import { loadPacks } from '../src/main/packs/loader';
+import type { PackManifest, ThemePack } from '@catalogue/pack';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -21,16 +21,22 @@ export const SYNC_CLI_BANNER = [
 ].join('\n');
 
 /**
- * The themes the script checks a sync against (registerSyncPacks in standalone.ts): the releases the app ships, loaded
- * as the app loads them, with what a check reads of them (tokens, components, which fonts they have) and none of their
- * files, which the exported project does not have.
+ * The themes the script checks a sync against (registerSyncPacks in standalone.ts): the releases the app ships, with
+ * what a check reads of them (tokens, components, which fonts they have) and none of their files, which the exported
+ * project does not have. Only Foundation ships (a project on a development fixture is checked against it). Read from
+ * the committed manifests rather than through the app's loader, which this file cannot import: Electron's build loads
+ * it from its config, before the app's module aliases exist. The build checks those releases against their lock
+ * first (`npm run build:packs -- --committed`), and the unit tests load them as the app does.
  */
-export async function syncPacks(): Promise<ThemePack[]> {
-  const { packs, refused } = await loadPacks([{ dir: resolve(root, 'resources', 'packs'), source: 'bundled' }]);
-  if (refused.length || !packs.length) throw new Error(`The sync script needs the shipped theme releases: ${refused.map((r) => r.reason).join(' ') || 'there are none'}.`);
-  return packs.map(({ pack: { previews: _previews, fonts, ...pack } }) => {
-    void _previews;
-    return { ...pack, fonts: fonts.map((f) => ({ ...f, notice: '', faces: [] })) };
+export function syncPacks(): ThemePack[] {
+  const dir = resolve(root, 'resources', 'packs');
+  const ids = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name).sort();
+  if (!ids.length) throw new Error(`The sync script needs the shipped theme releases, and ${dir} has none.`);
+  return ids.map((id) => {
+    const raw = readFileSync(join(dir, id, 'pack.json'));
+    const { format: _format, schemaVersion: _schema, files: _files, previews: _previews, fonts, ...pack } = JSON.parse(raw.toString('utf8')) as PackManifest;
+    void [_format, _schema, _files, _previews];
+    return { ...pack, fonts: fonts.map((f) => ({ ...f, notice: '', faces: [] })), digest: createHash('sha256').update(raw).digest('hex'), source: 'bundled' as const };
   });
 }
 
@@ -46,7 +52,7 @@ export async function buildSyncCli(): Promise<string> {
     write: false,
     tsconfig: resolve(root, 'tsconfig.node.json'),
     // Nothing of the app's own build is read by the sync: a commit stamp, say, is never there.
-    define: { __BUILD_COMMIT__: '""', __BUILD_DATE__: '""', __SYNC_PACKS__: JSON.stringify(await syncPacks()) },
+    define: { __BUILD_COMMIT__: '""', __BUILD_DATE__: '""', __SYNC_PACKS__: JSON.stringify(syncPacks()) },
     banner: { js: SYNC_CLI_BANNER },
     legalComments: 'none',
     metafile: true,

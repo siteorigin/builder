@@ -12,6 +12,8 @@ import { defaultTheme, findTheme } from '@catalogue/index';
 import { loadPackDir } from '../../src/main/packs/loader';
 import { loadBundledPacks, loadInstalledPacks, packPreview, packRoots } from '../../src/main/packs/installed';
 import { sha } from '../../src/main/project/fsutil';
+import { packFileInfo } from '../../src/main/packs/files';
+import { restorePacks } from './fixtures/packs';
 import { CHECKOUT_ENV, LOCKED_RELEASES, LOCK_FILE, committedReleaseProblems, findCheckout, lockJson, missingPreviews, readLock } from '../../scripts/packs/locked-releases';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
@@ -71,18 +73,32 @@ describe('the committed theme releases', () => {
   it('are the themes tests and scripts load, which refuse a release that does not load rather than go without it', async () => {
     const root = committedCopy();
     const lock = readLock(ROOT);
-    expect((await loadBundledPacks(root)).map((p) => [p.id, p.digest])).toEqual([
-      ['foundation', lock.packs.foundation.digest],
-      ['foundation-alt', lock.packs['foundation-alt'].digest]
-    ]);
-    expect(defaultTheme().id).toBe('foundation');
-    // A damaged font file: the app would start without the theme and say so; a test or a script stops.
-    const fonts = join(root, 'resources', 'packs', 'foundation', 'fonts');
-    const [font] = readdirSync(fonts);
-    writeFileSync(join(fonts, font), 'not a font');
-    await expect(loadBundledPacks(root)).rejects.toThrow(/^The bundled theme packs do not load: .*foundation: .*fonts\//);
-    rmSync(join(root, 'resources', 'packs'), { recursive: true });
-    await expect(loadBundledPacks(root)).rejects.toThrow(/No bundled theme pack is under/);
+    try {
+      const loaded = await loadBundledPacks(root);
+      expect(loaded.map((p) => [p.id, p.digest])).toEqual([
+        ['foundation', lock.packs.foundation.digest],
+        ['foundation-alt', lock.packs['foundation-alt'].digest]
+      ]);
+      // They are what every lookup now reads, with their files read from this copy.
+      expect(findTheme('foundation')).toBe(loaded[0]);
+      expect(findTheme('foundation-alt')).toBe(loaded[1]);
+      expect(defaultTheme()).toBe(loaded[0]);
+      const face = loaded[0].fonts[0].faces[0].file;
+      expect(packFileInfo('foundation', face)?.abs).toBe(join(root, 'resources', 'packs', 'foundation', ...face.split('/')));
+      // A damaged font file: the app would start without the theme and say so; a test or a script stops.
+      const fonts = join(root, 'resources', 'packs', 'foundation', 'fonts');
+      const [font] = readdirSync(fonts);
+      writeFileSync(join(fonts, font), 'not a font');
+      await expect(loadBundledPacks(root)).rejects.toThrow(/^The bundled theme packs do not load: .*foundation: .*fonts\//);
+      // The development fixture missing is an error too, never Foundation standing in for it.
+      const other = committedCopy();
+      rmSync(join(other, 'resources', 'packs-dev'), { recursive: true });
+      await expect(loadBundledPacks(other)).rejects.toThrow(/^The bundled theme packs foundation-alt are missing from /);
+      rmSync(join(root, 'resources', 'packs'), { recursive: true });
+      await expect(loadBundledPacks(root)).rejects.toThrow(/No bundled theme pack is under/);
+    } finally {
+      await restorePacks();
+    }
   });
 
   it('match the lock in this checkout, thumbnails and all', async () => {

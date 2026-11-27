@@ -37,10 +37,13 @@ function secondTheme(): { pack: ThemePack; files: Map<string, PackFileSource> } 
   );
   const { fonts: _fonts, ...authored } = author.define(foundation.components.map((c) => author.adopt(c)));
   void _fonts;
-  // The extra font borrows Inter's files, which Foundation ships and so does this theme.
+  // The extra font is Inter's bytes under file names of its own, which only this theme ships: a font read from the
+  // wrong theme's files is a missing file, not the same bytes.
   const inter = foundation.fonts.find((f) => f.name === 'Inter')!;
-  const mono = { ...inter, ...SECOND_THEME_FONT, category: 'monospace' as const, stack: `'${SECOND_THEME_FONT.family}', ui-monospace, monospace` };
+  const own = (file: string) => file.replace(/^fonts\/inter-/, 'fonts/test-mono-');
+  const mono = { ...inter, ...SECOND_THEME_FONT, category: 'monospace' as const, stack: `'${SECOND_THEME_FONT.family}', ui-monospace, monospace`, faces: inter.faces.map((f) => ({ ...f, file: own(f.file) })) };
   const files = new Map(foundation.fonts.flatMap((f) => f.faces).map((face) => [face.file, packFileInfo(foundation.id, face.file)!]));
+  for (const face of inter.faces) files.set(own(face.file), packFileInfo(foundation.id, face.file)!);
   return { pack: { ...authored, fonts: [...foundation.fonts, mono], source: 'bundled' }, files };
 }
 

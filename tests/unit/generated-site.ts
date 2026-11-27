@@ -88,7 +88,9 @@ export async function bundle(clean: Map<string, string>, dev: Map<string, string
           const path = id.slice(GEN.length);
           const source = files.get(path);
           if (source === undefined) throw new Error(`Not generated: ${path}`);
-          const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'client', runes: true }).js.code : source;
+          // Compiled under the file's own name, as the server render is, so Svelte's scoped class names match the
+          // markup the page hydrates; with the component's styles injected, as the exported site's stylesheets carry them.
+          const code = path.endsWith('.svelte') ? compile(source, { filename: path.replace(/^(clean|dev)\//, ''), generate: 'client', runes: true, css: 'injected' }).js.code : source;
           return { code, moduleType: 'js' };
         }
       }

@@ -341,7 +341,7 @@ describe('an exported project with sources', () => {
   }
 
   it('checks a sync against the shipped Foundation release, carried in the script without its files', async () => {
-    const [foundation, ...others] = await syncPacks();
+    const [foundation, ...others] = syncPacks();
     expect(others).toEqual([]);
     const shipped = getTheme('foundation');
     expect([foundation.id, foundation.digest, foundation.devOnly]).toEqual(['foundation', shipped.digest, undefined]);
@@ -351,6 +351,13 @@ describe('an exported project with sources', () => {
     expect(foundation.fonts.map((f) => f.name)).toEqual(shipped.fonts.map((f) => f.name));
     expect(foundation.fonts.every((f) => f.faces.length === 0 && f.notice === '')).toBe(true);
     expect(foundation.previews).toBeUndefined();
+    // The built script carries exactly that, and no preview or font file of it.
+    const cli = await buildSyncCli();
+    expect(cli).toContain(shipped.digest!);
+    expect(cli).toContain(shipped.components[0].id);
+    expect(cli).not.toMatch(/previews\/[\w.-]+\.webp/);
+    expect(cli).not.toMatch(/fonts\/[\w.-]+\.woff2/);
+    expect(cli).not.toContain('SIL OPEN FONT LICENSE');
   });
 
   it('syncs with npm run sync, needing nothing installed, and says so in its README', async () => {
