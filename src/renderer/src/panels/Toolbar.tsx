@@ -1,6 +1,6 @@
 import './Toolbar.css';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Search, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle, LayoutTemplate } from 'lucide-react';
+import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, SearchCheck, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle, LayoutTemplate } from 'lucide-react';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
@@ -318,7 +318,7 @@ export function Toolbar() {
             <span className={`page${defName ? ' def' : ''}`}>
               {/* The house names the home page, unless the page's own name already says so. */}
               {seo ? (
-                <Search aria-hidden="true" />
+                <SearchCheck aria-hidden="true" />
               ) : defName ? (
                 <Component role="img" aria-label="Component" />
               ) : layoutName ? (

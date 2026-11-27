@@ -1,7 +1,7 @@
 import './SeoPreview.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import { ArrowRight, Globe, Search } from 'lucide-react';
+import { ArrowRight, Globe, Search, SearchCheck } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
@@ -441,7 +441,7 @@ export function SeoInlineActions({ subject, overlay, typed }: { subject: SeoSubj
   return (
     <div className="seo-inline-actions" ref={ref}>
       <button type="button" className="btn btn-sm" onClick={open}>
-        <Search aria-hidden /> Open in SEO view
+        <SearchCheck aria-hidden /> Open in SEO view
       </button>
       <SeoAiAction subject={subject} overlay={overlay} typed={typed} from="inline" />
     </div>
