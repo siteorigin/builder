@@ -33,7 +33,7 @@ describe('checking a code component against its manifest', () => {
   });
 
   it('reports a prop the code takes that no property declares, on its line, apart from the editor’s own', async () => {
-    const source = `<script>\n\tlet {\n\t\ttitle,\n\t\tsubtitle = '',\n\t\tclass: className = '',\n\t\tso_o,\n\t\tso_id,\n\t\tchildren,\n\t\tslot_content,\n\t\tpalette = 'light'\n\t} = $props();\n</script>\n<p id={so_id} class={[className, so_o?.root, palette]}>{title}{subtitle}{@render slot_content?.()}{@render children?.()}</p>\n`;
+    const source = `<script>\n\tlet {\n\t\ttitle,\n\t\tsubtitle = '',\n\t\tclass: className = '',\n\t\tso_o,\n\t\tso_id,\n\t\tso_text,\n\t\tchildren,\n\t\tslot_content,\n\t\tpalette = 'light'\n\t} = $props();\n</script>\n<p id={so_id} class={[className, so_o?.root, palette]}>{title}{subtitle}{@render slot_content?.()}{@render children?.()}</p>\n`;
     const tone = { tone: { label: 'Tone', prop: 'palette', default: 'light', options: { light: { label: 'Light' }, dark: { label: 'Dark' } } } };
     const found = await codeManifestProblems(source, props({ title: str('Title') }, tone), true);
     expect(found).toEqual([{ severity: 'error', message: "The code takes subtitle from $props(), which is not one of the component's properties: declare it, or stop reading it, as no placement can set it.", line: 4 }]);
