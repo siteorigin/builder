@@ -21,6 +21,13 @@ export function activeWorkspace(s: { leftTab: string | null; postView: 'write' |
 export const canvasCovered = (w: Workspace): boolean => w === 'seo' || w === 'write';
 
 /**
+ * Whether the rail's Site styles button, pressed now, puts Site styles away: only while they show beside the page.
+ * Beside a workspace over the canvas, it brings the page back instead (see openSiteStyles).
+ */
+export const stylesShortcutCloses = (s: Parameters<typeof activeWorkspace>[0] & { dockOpen: boolean; rightTab: string }): boolean =>
+  s.dockOpen && s.rightTab === 'styles' && !canvasCovered(activeWorkspace(s));
+
+/**
  * Whether a change asked of the AI now has nothing to be about: the SEO view is in front with no page or post chosen
  * (or the one chosen has gone), or the writer with no post open (#895), so it would reach the page out of sight under
  * the view. A question changes nothing.

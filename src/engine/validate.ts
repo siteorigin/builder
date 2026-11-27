@@ -26,7 +26,6 @@ import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
 import { emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
-import { entryInstanceProps } from '@generator/entry-template';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
 import { collectionSourceProblems, loopMembers } from './collection-sources';
@@ -34,7 +33,7 @@ import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
-import { FORM_SERVICES, formConnectionProblem, formNoun, isFormContract, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
+import { formConnectionProblem, formNoun, isFormContract, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -692,22 +691,19 @@ export function formNameDiagnostics(state: ProjectState): Diagnostic[] {
   });
 }
 
-/** A contact form's settings that decide where it sends: its service, and the setting each service needs. */
-const FORM_CONNECTION_PROPS = new Set(['provider', ...Object.values(FORM_SERVICES).map((s) => s.prop)]);
-
 /**
  * Project health's finding for a placed contact form that visitors cannot send (no form service, or not the setting it
  * needs), or undefined when it can send or is not a contact form. A form in a component's own design is judged where
- * the component is placed, so a component owner has none. A layout's form that takes its service or setting from each
- * entry is judged as each entry's page is built, and named by the entry that cannot send.
+ * the component is placed, so a component owner has none. Its service and setting are never an entry's (#1127,
+ * engine/collection-sources.ts), so a layout's form is judged once, by its own settings.
  */
 export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, label: string, node: GraphNode): Diagnostic | undefined {
   if (owner.kind === 'component' || node.kind !== 'instance') return undefined;
   const def = state.components[node.definitionId];
   if (!def || !isFormContract(def.componentId) || def.kind !== 'code') return undefined;
   const what = formNoun(def);
-  const found = (problem: string | undefined, where = ''): Diagnostic | undefined =>
-    problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the ${what} is not connected to a form service${where}, so visitors cannot send it${where ? ' there' : ''}. ${problem}`, owner, nodeId: node.id } : undefined;
+  const found = (problem: string | undefined): Diagnostic | undefined =>
+    problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the ${what} is not connected to a form service, so visitors cannot send it. ${problem}`, owner, nodeId: node.id } : undefined;
   // A setting written by hand that cannot be read as text is not this check's to report, and must not stop the others.
   const problemOf = (props: () => Record<string, unknown>) => {
     try {
@@ -716,18 +712,8 @@ export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, l
       return undefined;
     }
   };
-  const collection = owner.kind === 'template' && Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
-  if (collection && Object.entries(node.props).some(([k, v]) => FORM_CONNECTION_PROPS.has(k) && isEntryBinding(v))) {
-    const failing = siteEntries(state)
-      .filter((e) => e.collection === collection)
-      .flatMap((e) => {
-        const problem = problemOf(() => entryInstanceProps(state, collection, e.entry, node));
-        const title = typeof e.entry.title === 'string' && e.entry.title.trim() ? `the “${e.entry.title.trim()}” entry` : 'an untitled entry';
-        return problem ? [{ title, problem }] : [];
-      });
-    return failing.length ? found(failing[0].problem, failing.length === 1 ? ` on ${failing[0].title}` : ` on ${failing.length} entries`) : undefined;
-  }
-  // A binding outside a component has nothing to bind to and is exported empty, so the default decides.
+  // A binding outside a component has nothing to bind to and is exported empty, so the default decides. One to an entry
+  // is refused (COLLECTION_SOURCE) and keeps the site from being exported, so the form is judged without it.
   return found(problemOf(() => Object.fromEntries(Object.entries(node.props).filter(([, v]) => !isBinding(v)))));
 }
 

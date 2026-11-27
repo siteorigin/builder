@@ -9,7 +9,7 @@ import { pageShowing } from '@shared/page-shell';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, confirmDialog, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
-import { activeWorkspace, canvasCovered } from './workspace';
+import { activeWorkspace, canvasCovered, panelAfterSeo } from './workspace';
 import { sameSubject, seoDocument } from './seo-view';
 import { postAt, postWorkspace } from './posts';
 import { withTypedSeo, type TypedSeo } from './seo-preview';
@@ -1345,8 +1345,6 @@ export function takeUnscrolled(ref: ElementRef | null): boolean {
   return quiet;
 }
 
-/** Open Site styles. Site styles are site-wide, so this leaves component editing first: the plum band
- *  must never sit over site-wide controls. */
 /** Show one library image in Assets, closing the dialog that asked for it (Project health, an export). */
 export function openAsset(assetId: string) {
   setState({ modal: null });
@@ -1367,9 +1365,24 @@ export function openOutline(pageId?: string | null) {
   requestAnimationFrame(() => requestAnimationFrame(() => (document.querySelector<HTMLElement>('.outline-view .outline-row') ?? document.querySelector<HTMLElement>('.outline-view'))?.focus()));
 }
 
+/** Open Site styles. Site styles are site-wide, so this leaves component editing first: the plum band
+ *  must never sit over site-wide controls. A change to them is watched on the page, so a workspace over the canvas
+ *  (the SEO view, the post writer) gives way too (#1108). */
 export function openSiteStyles() {
-  const dm = getState().definitionMode;
-  setState(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null, rightTab: 'styles', dockOpen: true } : { rightTab: 'styles', dockOpen: true });
+  // A Preview still waiting on the writer's save never began. It goes first, so the page is never seen as previewed.
+  const asked = getState();
+  if (activeWorkspace(asked) === 'write' && asked.mode === 'preview') setMode('edit');
+  const s = getState();
+  const dm = s.definitionMode;
+  const uncover = canvasCovered(activeWorkspace(s)) ? { leftTab: panelShowingCanvas(s) } : {};
+  setState({ ...(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null } : {}), ...uncover, rightTab: 'styles', dockOpen: true });
+}
+
+/** The sidebar panel that leaves a covering workspace: the one the SEO view replaced, else Pages. */
+function panelShowingCanvas(s: State): State['leftTab'] {
+  if (s.leftTab !== 'seo') return 'pages';
+  const back = panelAfterSeo() as State['leftTab'];
+  return canvasCovered(activeWorkspace({ ...s, leftTab: back })) ? 'pages' : back;
 }
 
 /**

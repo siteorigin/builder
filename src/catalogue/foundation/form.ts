@@ -1013,6 +1013,12 @@ export function readsFormServices(def: ComponentDefinition | undefined): def is 
 }
 
 /**
+ * Whether a definition is the theme's contact form, or a copy of it, going by the code it runs rather than the name it
+ * gives itself: whatever a package calls it, form code that reads the service settings sends visitors' messages.
+ */
+export const sendsFormMessages = (def: ComponentDefinition | undefined): boolean => !!def && def.kind === 'code' && readsFormServices({ ...def, componentId: 'contact.form' });
+
+/**
  * The value a placed form is exported with: its own, else the schema default (a stored null included). A value the
  * schema does not declare is not exported at all.
  */

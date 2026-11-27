@@ -6,7 +6,7 @@
 import type { StepChange } from '@shared/api';
 import type { GraphNode, NodeTree, ProjectState, SiteDoc } from '@shared/types';
 import { displayName } from '@engine/tree';
-import { codeImports } from '@engine/definitions';
+import { codeImports } from '@engine/code-imports';
 import { publicUrl } from '@shared/public-url';
 import { BRIEF_FILE } from '@shared/brief';
 import { CUSTOM_SOURCE_RE, DOC_DIR, MANIFEST_FILE, collectionDocPath, collectionPathOf, componentDocPath, entryDocPath, sourcePathOf } from './documents';

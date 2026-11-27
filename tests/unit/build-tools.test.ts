@@ -60,6 +60,24 @@ function tree(dir: string): Record<string, string> {
 }
 
 const ino = (p: string) => lstatSync(p).ino;
+/**
+ * The files the build's copy wrote while `step` ran (copyFresh copies each one with fs.copyFile). A new inode cannot
+ * show a copy made again: the stale copy is removed just before, and ext4 hands the new file the inode it freed.
+ */
+async function copiedBy(step: () => Promise<unknown>): Promise<string[]> {
+  const to: string[] = [];
+  const copyFile = fsp.copyFile.bind(fsp);
+  const spy = vi.spyOn(fsp, 'copyFile').mockImplementation(async (from, dest, mode) => {
+    to.push(String(dest));
+    return copyFile(from, dest, mode);
+  });
+  try {
+    await step();
+  } finally {
+    spy.mockRestore();
+  }
+  return to;
+}
 /** Every file is settled (statTrusted with no settle interval) once a few milliseconds have passed. */
 const settled = () => new Promise((r) => setTimeout(r, 30));
 /** One app's kept copy, in a slot of its own, taken with every file settled unless the test says otherwise. */
@@ -161,13 +179,14 @@ describe('the build’s copy of the website tools', () => {
 
   it('copies again next time a file that had only just changed when it was copied', async () => {
     const p = project();
-    const { slot, take } = oneApp();
+    const { take } = oneApp();
     // Nothing has settled for an hour: no stamp can stand for the bytes copied.
     await (await take(p, staging(), 3_600_000)).keep();
-    const kept = ino(join(slot, 'node_modules/vite/dist/node/index.js'));
     const second = staging();
-    await take(p, second, 3_600_000);
-    expect(ino(join(second, 'node_modules/vite/dist/node/index.js'))).not.toBe(kept);
+    const copied = await copiedBy(() => take(p, second, 3_600_000));
+    // The kept copy is the one brought up to date, and the file is copied into it again.
+    expect(readdirSync(join(dirname(second), 'tools'))).toEqual([]);
+    expect(copied).toContain(join(second, 'node_modules/vite/dist/node/index.js'));
     // A link has no bytes to vouch for: it is kept as it is when it still says the same.
     expect(readlinkSync(join(second, 'node_modules/.bin/vite'))).toBe('../vite/bin/vite.js');
   });
@@ -259,7 +278,7 @@ describe('the build’s copy of the website tools', () => {
   it('keeps no stamp from a copy made while a folder of the tools changed (a package swapped in and back)', async () => {
     const p = project();
     const nm = join(p, 'node_modules');
-    const { slot, take } = oneApp();
+    const { take } = oneApp();
     await settled();
     const copyFile = fsp.copyFile.bind(fsp);
     let swapped = false;
@@ -273,10 +292,10 @@ describe('the build’s copy of the website tools', () => {
     });
     await (await take(p, staging())).keep();
     spy.mockRestore();
-    const was = ino(join(slot, 'node_modules/vite/package.json'));
     const second = staging();
-    await take(p, second);
-    expect(ino(join(second, 'node_modules/vite/package.json'))).not.toBe(was);
+    const copied = await copiedBy(() => take(p, second));
+    expect(readdirSync(join(dirname(second), 'tools'))).toEqual([]);
+    expect(copied).toContain(join(second, 'node_modules/vite/package.json'));
   });
 
   it('brings a kept copy up to date whatever a build did to its folders’ modes, even with nothing to keep', async () => {

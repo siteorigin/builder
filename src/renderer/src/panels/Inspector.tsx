@@ -101,7 +101,7 @@ import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel
 import { enclosingGroup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
 import { canDuplicate } from '../lib/duplicate-component';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
-import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, openSiteStyles, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
 import { isLanguageCode, linkClash, linkedGroup, pageLanguage, sameLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { languageCodeFor } from './site-details';
@@ -3454,7 +3454,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           </p>
         </Section>
       )}
-      <button className="insp-goto" onClick={() => setState({ rightTab: 'styles' })}>
+      <button className="insp-goto" onClick={() => openSiteStyles()}>
         <span className="insp-kind local" aria-hidden="true">
           <Palette />
         </span>
