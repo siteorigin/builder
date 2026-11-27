@@ -101,6 +101,7 @@ const JUMPS = [
   { id: 'tok-custom', label: 'Yours' },
   { id: 'site-settings', label: 'Site' }
 ];
+const JUMP_IDS = JUMPS.map((j) => j.id);
 
 /**
  * Says a change out loud in the panel's status region (WCAG 2.2 SC 4.1.3): a reset happens away from where focus
@@ -1136,7 +1137,7 @@ export function SiteStyles() {
   const [said, setSaid] = useState('');
   // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings; a jump link's
   // own section stays marked through the scroll it starts (lib/use-jump-mark).
-  const { here, jump, panel } = useJumpMark(JUMPS.length, '.ss-head');
+  const { here, jump, panel } = useJumpMark(JUMP_IDS, '.ss-head');
   // Layout groups whose sizes are shown as CSS, switched from the group's heading.
   const [cssGroups, setCssGroups] = useState<Set<string>>(() => new Set());
   const say = useCallback((text: string) => setSaid((prev) => (prev === text ? `${text} ` : text)), []);
@@ -1834,7 +1835,7 @@ export function SiteStyles() {
         </div>
         <nav className="insp-jump" aria-label="Jump to section">
           {JUMPS.map((j, i) => (
-            <button key={j.id} aria-current={here === i ? 'location' : undefined} onClick={() => jump(i, j.id)}>
+            <button key={j.id} aria-current={here === i ? 'location' : undefined} onClick={() => jump(i)}>
               {j.label}
             </button>
           ))}

@@ -91,11 +91,12 @@ const ENTRY = [
   `import { Section, openSection } from ${renderer('components/ui')};`,
   `const JUMPS = ${JSON.stringify(labels.map((label, i) => ({ id: ids[i], label })))};`,
   'const HEIGHTS = [700, 700, 700, 60, 60, 60];',
+  'const IDS = JUMPS.map((j) => j.id);',
   'function Panel() {',
-  "  const { here, jump, panel } = useJumpMark(JUMPS.length, '.ss-head');",
+  "  const { here, jump, panel } = useJumpMark(IDS, '.ss-head');",
   '  return h("div", { className: "panel-body ss", id: "box", style: { height: "400px", overflow: "auto" }, ...panel },',
   '    h("div", { className: "insp-head ss-head", style: { position: "sticky", top: 0, zIndex: 2, padding: "12px 14px", background: "white" } },',
-  '      h("nav", { className: "insp-jump" }, JUMPS.map((j, i) => h("button", { key: j.id, id: "j" + i, "aria-current": here === i ? "location" : undefined, onClick: () => jump(i, j.id) }, j.label)))),',
+  '      h("nav", { className: "insp-jump" }, JUMPS.map((j, i) => h("button", { key: j.id, id: "j" + i, "aria-current": here === i ? "location" : undefined, onClick: () => jump(i) }, j.label)))),',
   '    JUMPS.map((j, i) => h(Section, { key: j.id, id: j.id, title: j.label, remember: false }, h("div", { style: { height: HEIGHTS[i] + "px" } }, h("input", { id: "f" + i, "aria-label": j.label })))));',
   '}',
   "createRoot(document.getElementById('root')).render(h(Panel));",
@@ -271,6 +272,18 @@ describe.skipIf(!browserInstalled)('the jump links in a browser', { timeout: 30_
     // Shown again, a measure (a resize, a stray scroll event) still finds the jump's section held.
     await page.evaluate(`document.getElementById('box').dispatchEvent(new Event('scroll'))`);
     expect(await marked()).toEqual(['Yours']);
+  });
+
+  it('marks what a reveal of its own section brings into view, though the reveal came while it was hidden', async () => {
+    await page.click('#j4');
+    await settled();
+    // Another tab's link opens Site details here a few frames before this panel shows again.
+    const frames = `new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r))))`;
+    await page.evaluate(`document.getElementById('box').style.display = 'none'; openSection('site')`);
+    await page.evaluate(frames);
+    await page.evaluate(`document.getElementById('box').style.display = ''`);
+    await page.evaluate(frames);
+    expect(await marked()).toEqual(['Site']);
   });
 
   const look = (id: string) =>
