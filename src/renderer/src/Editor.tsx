@@ -712,9 +712,16 @@ export function Editor() {
   const defInfo = defName ? { name: defName, uses: defUses, places: defPlaces } : null;
   // Component Studio shows the component on its own (see lib/studio); a project component edited on a page can open there.
   const studio = useStore((s) => !!s.definitionMode?.studio);
+  const doneRef = useRef<HTMLButtonElement>(null);
   const studied = useStore((s) => (s.definitionMode && s.snapshot && Object.hasOwn(s.snapshot.state.components, s.definitionMode.definitionId) ? s.snapshot.state.components[s.definitionMode.definitionId] : undefined));
   // Entering and leaving the mode is announced from a region that is always mounted, so it is heard.
-  const modeAnnouncement = useTransitionAnnouncement(defName, (prev, next) => (next ? `Editing ${next} everywhere. Layout and style changes apply wherever it is used.` : prev ? `Finished editing ${prev} everywhere` : null));
+  // Keyed on the view too, so opening the same component in Component Studio is heard.
+  const modeKey = defName ? `${studio ? 'studio' : 'everywhere'}\u0000${defName}` : null;
+  const modeAnnouncement = useTransitionAnnouncement(modeKey, (prev, next) => {
+    const [view, name] = (next ?? prev ?? '').split('\u0000');
+    if (next) return view === 'studio' ? `${name} in Component Studio. Design changes apply everywhere; the preview choices change only what you see.` : `Editing ${name} everywhere. Design changes apply wherever it is used.`;
+    return prev ? `Finished editing ${name} everywhere` : null;
+  });
   const dockViews: Record<RightTab, { label: ReactNode; icon: ReactNode; extra?: ReactNode; panel: () => ReactNode }> = {
     chat: { label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => timedPanel('chat', <Chat />) },
     inspect: {
@@ -747,31 +754,38 @@ export function Editor() {
     <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}${leftTab ? '' : ' no-sidebar'}`} inert={leaving || undefined}>
       <Toolbar />
       {defining && defInfo && (
-        <div className={`mode-band${studio ? ' studio' : ''}`} role="region" aria-label={studio ? 'Component Studio' : 'Editing a component everywhere'}>
-          {studio ? <SquareDashed aria-hidden="true" /> : <Component aria-hidden="true" />}
+        <div className={`mode-band${studio ? ' studio' : ''}`} role="region" aria-label={studio ? `${defInfo.name} in Component Studio` : `Editing ${defInfo.name} everywhere`}>
           <p className="mode-band-text">
+            <Component aria-hidden="true" />
             <strong>{studio ? `${defInfo.name} in Component Studio` : `Editing ${defInfo.name} everywhere`}</strong>
+            {/* Design changes reach every placement; only the text a placement fills in (its properties) stays its own. */}
             <span>
-              {studio
-                ? `${defInfo.uses === 0 ? 'Not placed anywhere yet.' : defInfo.uses === 1 ? `Used on ${defInfo.places}.` : `Used ${defInfo.uses} times, on ${defInfo.places}.`} Changes apply everywhere; the look and content shown here are only for trying it.`
-                : defInfo.uses === 0
-                  ? 'Layout and style changes apply wherever you add it.'
-                  : defInfo.uses === 1
-                    ? `Layout and style changes apply to this component on ${defInfo.places}. Its text stays the same.`
-                    : `Layout and style changes apply to all ${defInfo.uses} uses, on ${defInfo.places}. Each keeps its own text.`}
+              {defInfo.uses === 0
+                ? 'Not placed anywhere yet. Design changes reach wherever you add it.'
+                : defInfo.uses === 1
+                  ? `Design changes reach its one placement, on ${defInfo.places}. It keeps its own text.`
+                  : `Design changes reach all ${defInfo.uses} placements, on ${defInfo.places}. Each keeps its own text.`}
             </span>
           </p>
-          {studio && studied && <StudioControls def={studied} />}
           {!studio && studied?.owner === 'project' && (
-            <button className="btn btn-sm mode-band-studio" title="Show the component on its own, to try its variants, long or empty content and widths" onClick={() => openComponentStudio(studied.id)}>
+            <button
+              className="btn btn-sm mode-band-studio"
+              title="Show the component on its own, to try its variants, long or empty content and widths"
+              onClick={() => {
+                // This button goes once Studio opens; the way out, which stays, takes focus rather than the page.
+                if (openComponentStudio(studied.id)) requestAnimationFrame(() => doneRef.current?.focus());
+              }}
+            >
               <SquareDashed aria-hidden="true" />
               Open in Component Studio
             </button>
           )}
-          <button className="btn btn-sm mode-band-done" title="Finish editing everywhere. Esc also finishes once nothing is selected." onClick={leaveDefinitionMode}>
+          <button ref={doneRef} className="btn btn-sm mode-band-done" title="Finish editing everywhere. Esc also finishes once nothing is selected." aria-keyshortcuts="Escape" onClick={leaveDefinitionMode}>
             <Check aria-hidden="true" />
             Done editing
           </button>
+          {/* Studio's preview choices take a row of their own under the name and the way out. */}
+          {studio && studied && <StudioControls def={studied} />}
         </div>
       )}
       <span className="sr-only" role="status">

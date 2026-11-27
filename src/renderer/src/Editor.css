@@ -1,21 +1,50 @@
 @layer components {
-  /* ---------- Mode band (component definition editing) ---------- */
-  .mode-band { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 10px 6px 16px; background: color-mix(in srgb, var(--plum) 11%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--plum) 40%, transparent); color: var(--text); font-size: 13px; }
-  .mode-band > svg { width: 16px; height: 16px; color: var(--plum); flex: none; }
-  .mode-band-text { flex: 1; min-width: 0; margin: 0; display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 10px; row-gap: 2px; }
+  /* ---------- Component band (a component edited everywhere, or in Component Studio) ----------
+     One row: the component's icon and name, what its design changes reach, then the way out. Component Studio adds a
+     second row of preview choices under it, so the name, the scope and Done editing never share space with them. */
+  .mode-band { display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; row-gap: 6px; min-height: 40px; padding: 6px 10px 6px 14px; background: color-mix(in srgb, var(--plum) 11%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--plum) 40%, transparent); color: var(--text); font-size: 13px; }
+  .mode-band-text { flex: 1 1 320px; min-width: 0; margin: 0; padding-left: 24px; display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 10px; row-gap: 2px; }
+  /* The icon hangs in the text's indent on the name's line, so a sentence that wraps lines up under the name. */
+  .mode-band-text > svg { align-self: center; width: 16px; height: 16px; margin: 0 -2px 0 -24px; color: var(--plum); flex: none; }
   .mode-band-text strong { font-weight: 600; color: var(--plum); }
   .mode-band-text span { color: var(--text-2); }
-  .mode-band-done { flex: none; border-color: var(--plum); color: var(--plum); font-weight: 600; }
-  .mode-band-done:hover:not(:disabled) { background: color-mix(in srgb, var(--plum) 12%, var(--raised)); }
+  /* --border-control is set for neutral panels; on the band's tint it falls under 3:1, so the band's neutral controls
+     take an edge a step toward the ink (3.7:1 light, 3.4:1 dark). */
+  .mode-band :is(.select, .mode-band-studio) { border-color: color-mix(in srgb, var(--border-control) 70%, var(--text-2)); }
   .mode-band-studio { flex: none; }
   .mode-band-studio svg { width: 14px; height: 14px; }
-  /* Component Studio's toolbar: what the preview shows (each variant axis, the sample content), beside its name. */
-  .studio-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; flex: 0 1 auto; min-width: 0; }
+  /* The way out: outlined in the mode's colour, never filled (plum is the mode's meaning, not a second primary).
+     Under the pointer the edge doubles and the face takes a plum tint, so it strengthens rather than fading into the band. */
+  .mode-band-done { flex: none; border-color: var(--plum); color: var(--plum); font-weight: 600; }
+  .mode-band-done:hover:not(:disabled) { background: color-mix(in srgb, var(--plum) 16%, var(--raised)); border-color: var(--plum); box-shadow: inset 0 0 0 1px var(--plum); }
+
+  /* Component Studio's preview choices: a full-width second row led by what they are, grouped by kind (sample content,
+     variants, UI states). Groups wrap whole, so a narrow window splits the row between kinds, not inside one. */
+  .studio-controls { flex: 0 0 calc(100% - 24px); margin-left: 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; min-width: 0; overflow: clip; overflow-clip-margin: 4px; }
+  /* A quiet row heading: semibold is kept for a changed choice's name. */
+  .studio-caption { font-size: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; }
+  .studio-group { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  /* A hairline between kinds, in the gap before a group. A group that wraps to the start of a line has its hairline
+     outside the row, where the clip (wide enough for focus rings) hides it, so no line starts with a stray rule. After
+     a group it sits a little past the middle, so it stays clear of a reset dot in the group's last slot. */
+  :is(.studio-caption, .studio-group) + .studio-group::before { content: ''; position: absolute; left: -14px; top: 4px; bottom: 4px; width: 1px; background: var(--border-strong); }
+  .studio-caption + .studio-group::before { left: -11px; }
   .studio-control { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+  /* A choice away from the design's own: its name in full ink and weight, and, as every changed value in the editor
+     has, a reset dot (plum while defining). The name reserves its bold width and the dot its slot, so nothing moves. */
+  .studio-control > label { display: inline-grid; }
+  .studio-control > label::after { content: attr(data-label); height: 0; overflow: hidden; visibility: hidden; font-weight: 600; }
+  .studio-control.changed > label { color: var(--text); font-weight: 600; }
   .studio-control .select { width: auto; max-width: 180px; }
+  .studio-reset-slot { display: inline-flex; width: 16px; margin-left: -4px; }
+  .studio-reset-slot .reset-dot { margin: -4px; }
+  /* The shared dot's hover is the accent's tint; on the band it takes the mode's, like Done editing. */
+  .studio-reset-slot .reset-dot:hover { background: color-mix(in srgb, var(--plum) 16%, transparent); }
+
   .editor.defining { grid-template-rows: var(--toolbar-h) auto 1fr 28px; }
   /* While editing a component everywhere, selection, the selected layer and set values use plum, so every
-     cue agrees with the band. The page frame stays neutral: only the component is being edited. */
+     cue agrees with the band. The page frame stays neutral: only the component is being edited. The canvas colour is
+     the light plum in both themes, as --select always is, because it is drawn on the user's page, not the app. */
   .editor.defining { --select: #6a45c8; }
   .editor.defining .list-item.selected { background: var(--plum-soft); color: var(--plum); box-shadow: inset 0 0 0 1px var(--plum); }
   :where(:root[data-appearance='dark']) { .mode-band { background: color-mix(in srgb, var(--plum) 22%, var(--panel)); } }
