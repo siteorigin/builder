@@ -59,7 +59,7 @@ step('an error with no edit before it offers no Revert, and Open source opens th
 await settle();
 await bridge('runtimeError', { message: 'Cannot read properties of undefined (reading "title")', file: `http://127.0.0.1:5173/src/lib/siteorigin/generated/${defKey}.svelte?t=1`, revision: s0.revision });
 await issue.getByRole('button', { name: 'Open source' }).waitFor();
-assert.deepEqual(await buttons(), ['Try again', 'Open source', 'Details'], 'nothing was changed since the page last worked');
+assert.deepEqual(await buttons(), ['Project health', 'Open source', 'Try again'], 'nothing was changed since the page last worked');
 await issue.getByRole('button', { name: 'Open source' }).click();
 const source = win.getByRole('textbox', { name: `${heroDef.name} Svelte source, read only` });
 await source.waitFor({ timeout: 10000 });
@@ -70,7 +70,7 @@ await win.locator('.modal').waitFor({ state: 'detached' });
 step('an error with nothing to trace offers only what it did before, and the change it happened on does not clear it');
 await bridge('runtimeError', { message: 'Something else went wrong', revision: s0.revision });
 await eventually(async () => assert.match(await issue.innerText(), /Something on this page/));
-await eventually(async () => assert.deepEqual(await buttons(), ['Try again', 'Details']));
+await eventually(async () => assert.deepEqual(await buttons(), ['Project health', 'Try again']));
 await bridge('revisionApplied', { revision: s0.revision });
 await win.waitForTimeout(400);
 assert.equal(await issue.isVisible(), true, 'showing the same change again does not mend the page');
@@ -82,7 +82,7 @@ await settle();
 await apply(keptProp, 'Kept edit', 'Keep this edit');
 const second = await apply(brokenProp, 'Second edit', 'Another edit');
 await bridge('runtimeError', { message: 'Two changes ago', revision: second.revision });
-await eventually(async () => assert.deepEqual(await buttons(), ['Try again', 'Details']));
+await eventually(async () => assert.deepEqual(await buttons(), ['Project health', 'Try again']));
 // Undo the second, and let the page work again with the first in place.
 assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true);
 await bridge('revisionApplied', {});
@@ -96,7 +96,7 @@ await bridge('runtimeError', { message: 'Cannot read properties of undefined (re
 await bridge('revisionApplied', { revision: r.revision });
 const revert = issue.getByRole('button', { name: 'Revert “Break the hero”' });
 await revert.waitFor({ timeout: 10000 });
-assert.deepEqual(await buttons(), ['Revert “Break the hero”', 'Try again', 'Open source', 'Details']);
+assert.deepEqual(await buttons(), ['Project health', 'Open source', 'Revert “Break the hero”', 'Try again']);
 const sessionBefore = await (await frame()).evaluate(() => window.name);
 await revert.click();
 await issue.waitFor({ state: 'detached', timeout: 60000 });
@@ -117,7 +117,7 @@ assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true)
 const undone = await snapshot();
 assert.equal(undone.history.canUndo, true, 'there is still a change to undo');
 await bridge('runtimeError', { message: 'Still broken', revision: undone.revision });
-await eventually(async () => assert.deepEqual(await buttons(), ['Try again', 'Details']), 8000);
+await eventually(async () => assert.deepEqual(await buttons(), ['Project health', 'Try again']), 8000);
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

@@ -1,7 +1,7 @@
 import './Canvas.css';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
+import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Plus, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
@@ -45,7 +45,9 @@ import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/sav
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
-import { AppMark } from '../components/AppMark';
+import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement } from './PreviewStatus';
+import { newPostOps } from '../lib/posts';
+import { entryNounLower } from '../lib/content';
 import { runPhase } from '../lib/savestate';
 import { focusInspector } from '../lib/inspector-focus';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
@@ -531,9 +533,10 @@ export function Canvas() {
 
   // While editing, a page that never says it has opened (no reply, no error) is reported as a problem after a while,
   // so the canvas offers Try again instead of saying "Opening…" for ever with the page closed to picks. A restart
-  // (Try again) gets the same deadline, and its expiry hands Try again back. Preview keeps its own recovery.
+  // (Try again) gets the same deadline, and its expiry hands Try again back, in Preview too. Otherwise Preview keeps its
+  // own recovery: a visitor's own navigation is never timed.
   useEffect(() => {
-    if (!url || frameReady || runtime.state !== 'ready' || mode !== 'edit' || !(retrying || !frameError)) return;
+    if (!url || frameReady || runtime.state !== 'ready' || (mode !== 'edit' && !retrying) || !(retrying || !frameError)) return;
     const t = setTimeout(() => {
       if (getState().frameReady) return;
       setRetrying(false);
@@ -2874,73 +2877,14 @@ export function Canvas() {
 
   if (!snapshot) return <div className="canvas" />;
 
-  const runtimeCard = (() => {
-    if (runtime.state === 'ready') return null;
-    if (runtime.state === 'unavailable')
-      return (
-        <div className="canvas-card" role="status">
-          <AppMark size={40} />
-          <h3>Preview unavailable</h3>
-          <p style={{ maxWidth: 360 }}>{runtime.message}</p>
-          <p>Your work is safe. You can keep editing in Layers and the Inspector.</p>
-          <button
-            className="btn"
-            onClick={() => {
-              setState({ leftTab: 'layers' });
-              // Focus follows into Layers, so the keyboard carries on there.
-              requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is([role="tree"] [tabindex="0"], button)')?.focus());
-            }}
-          >
-            <Layers /> Open Layers
-          </button>
-        </div>
-      );
-    if (runtime.state === 'error')
-      return (
-        <div className="canvas-card" role="alert">
-          <TriangleAlert size={26} color="var(--red)" />
-          <h3>{runtime.message}</h3>
-          <p>Your work is safe. You can keep editing in Layers and the Inspector while the preview is stopped.</p>
-          {runtime.detail && devMode && <pre>{runtime.detail}</pre>}
-          <div className="row">
-            <button className="btn btn-primary" onClick={() => void api.project.retryPreview()}>
-              <RefreshCcw /> Try again
-            </button>
-            <button className="btn" onClick={() => setState({ modal: { kind: 'health' } })}>
-              Open project health
-            </button>
-          </div>
-        </div>
-      );
-    if (runtime.state !== 'preparing' && runtime.state !== 'starting')
-      return (
-        <div className="canvas-card" role="status">
-          <AppMark size={40} />
-          <h3>Preview is paused</h3>
-          <p>Your work is safe. Start the preview to see and edit your site on the page.</p>
-          <button className="btn btn-primary" onClick={() => void api.project.retryPreview()}>
-            <Play /> Start preview
-          </button>
-        </div>
-      );
-    return (
-      <div className="canvas-card" role="status">
-        <span className="starting-mark">
-          <AppMark size={40} />
-          <Spinner large />
-        </span>
-        <h3>{runtime.state === 'preparing' ? 'Setting up website tools' : 'Starting preview'}</h3>
-        <p style={{ maxWidth: 360 }}>{runtime.state === 'preparing' ? runtime.message : 'Opening your site. This usually takes a few seconds.'}</p>
-      </div>
-    );
-  })();
-
   // The frame shows a page the editor has not confirmed (one leaving, or one that never arrived): it takes no picks,
   // nothing is drawn on it, and it steps back. "Opening" is that, before anything has been reported wrong.
-  const staleFrame = !runtimeCard && !!url && !frameReady && mode === 'edit';
+  const staleFrame = runtime.state === 'ready' && !!url && !frameReady && mode === 'edit';
+  // A layout with no entry to show it on: the page left behind is covered, and out of the tab order with it.
+  const noEntries = !!templateMode && !!state && !view?.route;
   const opening = staleFrame && !frameError;
-  // While editing, a page that is showing but threw is not "couldn't be previewed": something on it went wrong.
-  // Preview's own wording is left as it is.
+  // A page that is showing but threw is not "couldn't be previewed", while editing or in Preview: something on it went
+  // wrong. Only while editing does a page that never opened say how long it was waited for.
   // What the page's error can be put down to, while it still holds: the same error, the change still History's newest
   // and undoable (not while the AI works), the component still in the project.
   const cause = issueCause && issueCause.message === frameError && !slowPage ? issueCause : null;
@@ -2972,7 +2916,7 @@ export function Canvas() {
       }
     );
   };
-  const issueText = mode !== 'edit' ? 'This page couldn’t be previewed.' : slowPage && frameError ? frameError : frameReady ? 'Something on this page didn’t work.' : 'This page couldn’t be previewed.';
+  const issueText = mode === 'edit' && slowPage && frameError ? frameError : frameReady ? 'Something on this page didn’t work.' : 'This page couldn’t be previewed.';
   const z = zoom;
   const frameW = viewport * z;
   // Edges land on device pixels, so a 1px keyline at a fractional zoom is one crisp pixel, not two faint ones.
@@ -3078,7 +3022,8 @@ export function Canvas() {
   // The same goes for what the strip says on its left (a page opening, a section moving), which never takes more
   // room than leaves the width itself.
   const chipEnd = chipShown && !reorder && !resizing && !imageDrop && firstSel ? chipLeft(firstSel.left, chipW, frameW, chipTaken) + chipW + 12 : 0;
-  const leftEnd = chipEnd || (stripLeftW ? stripLeftW + 12 : 0);
+  // A collection layout's own strip (its entry picker and Done) is on the left too, and comes first.
+  const leftEnd = chipEnd || Math.max(stripLeftW ? stripLeftW + 12 : 0, templateStripW ? templateStripW + 12 : 0);
   const labelMode = resizing || leftEnd + labelW.full <= frameW ? 'full' : scalePct !== 100 && leftEnd + labelW.mid <= frameW ? 'mid' : leftEnd + labelW.short <= frameW ? 'short' : 'gone';
   const stripRoom = Math.max(80, frameW - labelW.short - 12);
   // Where the card goes, in page pixels: at the top of the empty page's room, below a header that covers its start.
@@ -3121,7 +3066,11 @@ export function Canvas() {
       data-selected-ref={selection ? JSON.stringify(selection) : undefined}
       data-selection={selection ? (spaceDesc ? JSON.stringify(spaceDesc) : '') : undefined}
     >
-      {runtimeCard && <div className="canvas-state">{runtimeCard}</div>}
+      {runtime.state !== 'ready' && (
+        <div className="canvas-state">
+          <PreviewStatus runtime={runtime} />
+        </div>
+      )}
       {/* Said in the strip above the page (see frame-status below), and here for screen readers. */}
       <p className="sr-only" role="status">
         {opening ? `Opening ${view?.title ?? 'the page'}…` : ''}
@@ -3166,43 +3115,48 @@ export function Canvas() {
       {/* Mounted before they have anything to say, so both are announced. The problem clears during a restart, so a
           restart that fails is announced again. */}
       <p className="sr-only" role="alert">
-        {issueShown && !retrying ? `${issueText} Your work is safe.` : ''}
+        {issueShown && !retrying ? `${issueText} Your work is safe.` : stoppedAnnouncement(runtime)}
       </p>
       <p className="sr-only" role="status">
-        {issueShown && retrying ? 'Restarting preview…' : ''}
+        {issueShown && retrying ? 'Reloading the page…' : ''}
       </p>
       {issueShown && (
         // Bottom bars stack: preview pill, then the AI run, then a page problem, each one step up. It comes right after
         // the pill in the tab order, ahead of the form panel and the page, so recovery is close at hand.
         <div ref={issueRef} className={`ai-veil issue${retrying ? ' retrying' : ''}`} style={{ bottom: issueBottom }} role="group" aria-label="Page problem">
           {retrying ? <Spinner decorative /> : <TriangleAlert size={15} aria-hidden="true" />}
-          <span>
-            <strong>{retrying ? 'Restarting preview…' : issueText}</strong> Your work is safe.
+          <span className="issue-text">
+            <strong>{retrying ? 'Reloading the page…' : issueText}</strong> <span className="issue-safe">Your work is safe.</span>
           </span>
-          {/* Not natively disabled, so focus stays here while the page restarts. */}
-          {revertOffered && (
-            <button className="btn btn-sm" aria-disabled={retrying || reverting || undefined} aria-label={`Revert “${revertOffered.label}”`} title={`Undo “${revertOffered.label}”, the change made before this problem started`} onClick={revertIssue}>
-              Revert
+          {/* Help first, then the way back, with the one filled button last. Try again is the primary because it keeps
+              the work as it is; Revert, when there is a change to put down to, undoes it. The group wraps below the
+              words as one row when the canvas is narrow. Not natively disabled, so focus stays here while the page
+              reloads. */}
+          <div className="issue-actions">
+            <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'health' } })}>
+              Project health
             </button>
-          )}
-          <button
-            className="btn btn-sm"
-            aria-disabled={retrying || reverting || undefined}
-            onClick={() => {
-              if (retrying) return;
-              restartPreview();
-            }}
-          >
-            Try again
-          </button>
-          {sourceOffered && (
-            <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'source', definitionId: sourceOffered } })}>
-              Open source
+            {sourceOffered && (
+              <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'source', definitionId: sourceOffered } })}>
+                Open source
+              </button>
+            )}
+            {revertOffered && (
+              <button className="btn btn-sm" aria-disabled={retrying || reverting || undefined} aria-label={`Revert “${revertOffered.label}”`} title={`Undo “${revertOffered.label}”, the change made before this problem started`} onClick={revertIssue}>
+                Revert
+              </button>
+            )}
+            <button
+              className="btn btn-sm btn-primary"
+              aria-disabled={retrying || reverting || undefined}
+              onClick={() => {
+                if (retrying) return;
+                restartPreview();
+              }}
+            >
+              Try again
             </button>
-          )}
-          <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'health' } })}>
-            Details
-          </button>
+          </div>
         </div>
       )}
       {/* Said once when a page with forms opens, for an author whose focus stays in the page and never meets the panel. */}
@@ -3267,7 +3221,7 @@ export function Canvas() {
             )}
             {/* Stays while another entry opens, so the entry picker keeps focus as the author steps through entries. */}
             {templateMode && mode === 'edit' && state && !resizing && !insertDrop && !imageDrop && !reorder && <TemplateStrip state={state} mode={templateMode} maxWidth={stripRoom} opening={opening} />}
-            {templateMode && state && !view?.route && <TemplateNoEntries state={state} mode={templateMode} />}
+            {noEntries && state && templateMode && <TemplateNoEntries state={state} mode={templateMode} readOnly={!!snapshot?.readOnly} />}
             <div className={`frame-width-label${labelMode === 'gone' ? ' gone' : ''}${resizing ? ' live' : ''}`} title={scalePct !== 100 ? `${viewport} px wide, shown at ${scalePct}%` : `${viewport} px wide, shown at actual size`}>
               <b>{viewport}</b>&nbsp;px
               {labelMode === 'mid' && (
@@ -3352,7 +3306,7 @@ export function Canvas() {
                 sandbox="allow-scripts allow-same-origin allow-forms"
                 // While a drag runs, and while another page is on its way, picks on the page would act on what is leaving.
                 style={{ pointerEvents: dragging || staleFrame ? 'none' : undefined, colorScheme: frameScheme }}
-                tabIndex={staleFrame ? -1 : undefined}
+                tabIndex={staleFrame || noEntries ? -1 : undefined}
               />
             </div>
             <div className="overlay-layer">
@@ -3866,7 +3820,9 @@ function TemplateStrip({ state, mode, maxWidth, opening }: { state: ProjectState
   return (
     <div className="frame-status template-strip" style={{ maxWidth }} role="group" aria-label={`${collection.settings.name} layout`} aria-busy={opening || undefined} data-testid="template-strip">
       {opening ? <Spinner decorative /> : <LayoutTemplate aria-hidden="true" />}
-      <span className="template-strip-name">{collection.settings.name} {mode.archive ? 'index layout' : 'layout'}</span>
+      <span className="template-strip-name" title={`${collection.settings.name} ${mode.archive ? 'index layout' : 'layout'}`}>
+        {collection.settings.name} {mode.archive ? 'index layout' : 'layout'}
+      </span>
       {samples.length > 0 && !mode.archive && (
         <label className="template-strip-sample">
           <span>shown on</span>
@@ -3893,18 +3849,56 @@ function TemplateStrip({ state, mode, maxWidth, opening }: { state: ProjectState
   );
 }
 
-/** A layout with no entry to show it on: it says so over the page, which stays the one that was open. */
-function TemplateNoEntries({ state, mode }: { state: ProjectState; mode: TemplateMode }) {
-  const name = state.collections[mode.collectionId]?.settings.name ?? 'This collection';
+/**
+ * A layout with no entry to show it on: it says so over the page, which stays the one that was open, and offers the
+ * first entry. A new one is an untitled draft, and the layout is shown on it at once; Layers is already open (openLayout).
+ */
+function TemplateNoEntries({ state, mode, readOnly }: { state: ProjectState; mode: TemplateMode; readOnly: boolean }) {
+  const collection = state.collections[mode.collectionId];
+  const name = collection?.settings.name ?? 'This collection';
+  const noun = entryNounLower(collection);
+  const [adding, setAdding] = useState(false);
+  const addRef = useRef<HTMLButtonElement>(null);
+  const add = async () => {
+    const s = getState().snapshot;
+    if (adding || !s || !Object.hasOwn(s.state.collections, mode.collectionId)) return;
+    setAdding(true);
+    const { ops, ref } = newPostOps(s.state, mode.collectionId, `Untitled ${noun}`);
+    // The button goes with the card, so focus that was on it moves to the picker naming the new entry.
+    const focused = addRef.current === document.activeElement;
+    const r = await commitOps(ops, `New ${noun}`);
+    setAdding(false);
+    // Shown on the new entry, unless another layout or the page was chosen meanwhile.
+    if (!r || getState().templateMode?.collectionId !== mode.collectionId) return;
+    setState({ templateMode: { collectionId: mode.collectionId, entryId: ref.entryId } });
+    if (focused) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="template-sample"]')?.focus());
+  };
   return (
-    <div className="template-no-entries" data-testid="template-no-entries">
-      <div className="canvas-card" role="group" aria-labelledby="template-empty-title">
-        <h3 id="template-empty-title">{name} has no entries yet</h3>
-        <p>Its layout is shown on one of its entries. Add an entry to see it here; its layers can be edited in Layers now.</p>
-        <button className="btn btn-sm" onClick={() => setState({ templateMode: null, selection: null })}>
-          Done
-        </button>
-      </div>
+    <div className="template-no-entries">
+      <StatusCard
+        testId="template-no-entries"
+        mark={<LayoutTemplate className="status-card-icon" aria-hidden="true" />}
+        title={`${name} has no entries yet`}
+        actions={
+          readOnly ? (
+            <button className="btn btn-sm btn-primary" onClick={openLayers}>
+              <Layers aria-hidden="true" /> Open Layers
+            </button>
+          ) : (
+            <>
+              <button className="btn btn-sm" onClick={openLayers}>
+                <Layers aria-hidden="true" /> Edit in Layers
+              </button>
+              <button ref={addRef} className="btn btn-sm btn-primary" aria-disabled={adding || undefined} onClick={() => void add()}>
+                <Plus aria-hidden="true" /> Add {/^[aeiou]/i.test(noun) ? 'an' : 'a'} {noun}
+              </button>
+            </>
+          )
+        }
+      >
+        {/* Read-only, nothing can be added: the layout can still be looked through in Layers. */}
+        <p>{readOnly ? 'A layout is shown on one of the collection’s entries, and it has none yet. You can look through the layout in Layers.' : 'A layout is shown on one of the collection’s entries. Add the first one to see it here, or edit the layout in Layers now.'}</p>
+      </StatusCard>
     </div>
   );
 }

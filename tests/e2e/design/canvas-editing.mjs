@@ -350,20 +350,20 @@ await shot('page-problem', '.ai-veil.issue', { themes: LIGHT });
 // ---- The preview's own states, pushed through the app's runtime status broadcast ----
 const status = (s) => app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].webContents.send('runtime:status', s), s);
 await status({ state: 'starting' });
-await win.locator('.canvas-state .canvas-card').waitFor({ timeout: 8000 });
+await win.locator('.canvas-state .status-card').waitFor({ timeout: 8000 });
 await shot('runtime-starting', '.canvas-state .starting-mark');
 await status({ state: 'preparing', message: 'Installing the website tools. The first run takes about a minute.' });
 await pause(200);
 await shot('runtime-preparing', '.canvas-state .starting-mark', { themes: LIGHT });
 await status({ state: 'error', message: 'The preview could not start', detail: 'vite: failed to bind port 5174' });
 await pause(200);
-await shot('runtime-error', '.canvas-state [role="alert"]');
+await shot('runtime-error', '.canvas-state [data-testid="preview-stopped"]');
 await status({ state: 'idle' });
 await pause(200);
-await shot('runtime-paused', '.canvas-state .canvas-card', { themes: LIGHT });
+await shot('runtime-paused', '.canvas-state .status-card', { themes: LIGHT });
 await status({ state: 'unavailable', message: 'The website tools are not available on this computer.' });
 await pause(200);
-await shot('runtime-unavailable', '.canvas-state [role="status"]', { themes: LIGHT });
+await shot('runtime-unavailable', '.canvas-state [data-testid="preview-unavailable"]', { themes: LIGHT });
 
 await app.close();
 rmSync(WORK, { recursive: true, force: true });
