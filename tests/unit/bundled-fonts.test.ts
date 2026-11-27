@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import type { ProjectState, TextStyleValue } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme, listThemes, registerPacks } from '@catalogue/index';
@@ -8,7 +8,7 @@ import { applyOperations } from '@engine/apply';
 import { FONTS_DIR, generateProject, packFileCopies } from '@generator/index';
 import { parseFontFaces } from '../../src/main/packs/build';
 import { buildFont } from '../../src/main/packs/build';
-import { builtinFont } from '@catalogue/builtin-fonts';
+import { BUILTIN_FONTS, builtinFont } from '@catalogue/builtin-fonts';
 import { SHARED_BASE_CSS } from '@catalogue/foundation/base.css';
 
 const fresh = () => createStarterState('business', 'Test', false);
@@ -31,6 +31,44 @@ describe('Signal fonts', () => {
     const files = [...buildFont(builtinFont('JetBrains Mono'), process.cwd()).files.keys()];
     expect(files.length).toBeGreaterThan(0);
     for (const f of files) expect(f).toMatch(/-latin(-ext)?-wght/);
+  });
+});
+
+describe('italic faces', () => {
+  const WITH_ITALIC = ['Inter', 'Fraunces', 'Plus Jakarta Sans', 'DM Sans', 'Playfair Display', 'Lora', 'JetBrains Mono'];
+
+  it('ship beside the upright faces of every built-in font whose family has an italic, subset the same way', () => {
+    for (const source of BUILTIN_FONTS) {
+      const { font: built } = buildFont(source, process.cwd());
+      const upright = built.faces.filter((f) => f.style === 'normal');
+      const italic = built.faces.filter((f) => f.style === 'italic');
+      expect(upright.length, source.name).toBeGreaterThan(0);
+      if (!WITH_ITALIC.includes(source.name)) {
+        expect(italic, source.name).toEqual([]);
+        continue;
+      }
+      // One italic face for each upright one: the same weights and the same scripts, from the italic file.
+      expect(italic.map((f) => [f.file.replace('-italic.', '-normal.'), f.weight, f.unicodeRange, f.format]), source.name).toEqual(upright.map((f) => [f.file, f.weight, f.unicodeRange, f.format]));
+    }
+    expect(BUILTIN_FONTS.filter((f) => f.italicCss).map((f) => f.name)).toEqual(WITH_ITALIC);
+  });
+
+  it('are declared with font-style: italic in the site stylesheet, from files copied into the project', () => {
+    const s = setFont(fresh(), font('Lora').stack, 'font.display');
+    const css = tokensCss(s);
+    expect(css).toContain("@font-face {\n\tfont-family: 'Lora Variable';\n\tfont-style: italic;\n\tfont-display: swap;\n\tfont-weight: 400 700;\n\tsrc: url('../fonts/lora-latin-wght-italic.woff2') format('woff2-variations');\n\tunicode-range: U+0000-00FF,");
+    expect(packFileCopies(s).map((c) => c.path)).toContain(`${FONTS_DIR}/lora-latin-wght-italic.woff2`);
+    // A family with no italic gets none, and the browser slants its upright face as before.
+    const grotesk = tokensCss(setFont(fresh(), font('Space Grotesk').stack, 'font.display'));
+    expect(grotesk).toContain("font-family: 'Space Grotesk Variable';\n\tfont-style: normal;");
+    expect(grotesk).not.toContain("font-family: 'Space Grotesk Variable';\n\tfont-style: italic;");
+  });
+
+  it('come only from the stylesheet named for them, so a sheet of the wrong style is refused', () => {
+    const lora = builtinFont('Lora');
+    expect(() => buildFont({ ...lora, css: lora.italicCss! }, process.cwd())).toThrow(/wght-italic\.css declares a font-style: italic face, but it is the font's upright stylesheet/);
+    expect(() => buildFont({ ...lora, italicCss: lora.css }, process.cwd())).toThrow(/index\.css declares a font-style: normal face, but it is the font's italic stylesheet/);
+    expect(() => buildFont({ ...lora, italicCss: '@fontsource-variable/lora/missing.css' }, process.cwd())).toThrow(/is not installed/);
   });
 });
 
@@ -59,10 +97,11 @@ describe('bundled fonts', () => {
     }
   });
 
-  it('carry every face of the stylesheets they come from, with an open licence', () => {
+  it('carry every face of the stylesheets they come from, upright then italic, with an open licence', () => {
     expect(BUNDLED_FONTS().length).toBeGreaterThanOrEqual(6);
     for (const [i, f] of BUNDLED_FONTS().entries()) {
-      const css = parseFontFaces(readFileSync(`node_modules/${PACKAGES[i]}/index.css`, 'utf8'));
+      const sheets = ['index.css', 'wght-italic.css'].map((n) => `node_modules/${PACKAGES[i]}/${n}`).filter((p) => existsSync(p));
+      const css = sheets.flatMap((p) => parseFontFaces(readFileSync(p, 'utf8')));
       expect(f.faces.map((x) => [x.file.replace('fonts/', './files/'), x.weight, x.style, x.unicodeRange, x.format]), f.name).toEqual(css.map((c) => [c.url, c.weight, c.style, c.unicodeRange, c.format]));
       expect(f.license).toBe('OFL-1.1');
       expect(f.notice).toMatch(/SIL Open Font License/);

@@ -97,11 +97,14 @@ export type PackMeta = Omit<ThemePack, 'components' | 'previews' | 'digest' | 's
 
 /**
  * A font as a pack author declares it: the faces come from a stylesheet of @font-face rules whose `src` names
- * local .woff2 files (a Fontsource package's `index.css`, for example), read when the pack is built.
+ * local .woff2 files (a Fontsource package's `index.css`, for example), and from a second stylesheet of its italic
+ * faces when the family has them (`wght-italic.css`), read when the pack is built.
  */
 export interface PackFontSource extends Omit<PackFont, 'faces' | 'notice'> {
-  /** Module path of the stylesheet, such as `@fontsource-variable/inter/index.css`. */
+  /** Module path of the stylesheet of upright faces, such as `@fontsource-variable/inter/index.css`. */
   css: string;
+  /** Module path of the stylesheet of italic faces beside it, such as `@fontsource-variable/inter/wght-italic.css`, when the family has an italic. */
+  italicCss?: string;
   /** Module path of the licence file shipped beside it. */
   noticeFile: string;
   /** The script subsets to ship (`latin`, `latin-ext`, ...), by the name in each file (`inter-latin-wght-normal.woff2`); all of them when absent. */
