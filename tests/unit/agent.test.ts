@@ -6091,6 +6091,21 @@ describe('a change to where a contact form sends (#1128)', () => {
     expect(env.session.revision).toBe(1);
   });
 
+  it('lands nothing when the user allows it after the project moved on, and tells the model so (#1129)', async () => {
+    // The session gives no grant for a review filed at a revision the project has left.
+    const granting = vi.spyOn(ProjectSession.prototype, 'grantFormRouting').mockReturnValue(null);
+    try {
+      const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[1]));
+      expect(asked).toBeDefined();
+      expect(granting).toHaveBeenCalledTimes(1);
+      expect(told.error?.code).toBe('STALE_REVISION');
+      expect(told.error?.message).toMatch(/The project changed while the user was asked/);
+      expect(node.props.endpoint).toBe(SALES);
+    } finally {
+      granting.mockRestore();
+    }
+  });
+
   it('asks nothing for an ordinary edit to the form', async () => {
     const { asked, told, node } = await editForm('heading', 'Write to us', () => {
       throw new Error('Nothing should be asked.');

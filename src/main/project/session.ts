@@ -26,7 +26,8 @@ import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
 import { syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
-import { formRoutingChanges, formRoutingGranted, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
+import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
+import { admits, FormRoutingGrants } from './form-routing-grants';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
@@ -696,6 +697,8 @@ export class ProjectSession extends EventEmitter {
   activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>>; hashes: Map<string, { text: string; hash: string }> } | null = null;
   private writing: Promise<unknown> = Promise.resolve();
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
+  /** What the user allowed of AI batches that change where a contact form sends, and what they may yet be asked (#1129). */
+  private routingGrants = new FormRoutingGrants();
   /** The documents were read in an older format and the update has not been stored yet. */
   private migrationDue = false;
   /** Publishing an update failed and may have left its journal, which only reopening the project can finish. */
@@ -3088,7 +3091,8 @@ export class ProjectSession extends EventEmitter {
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
    * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant), and
    * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts).
-   * `formRouting` is what the user allowed of an AI batch that changes where a contact form sends (engine/form-routing).
+   * `formRouting` is the grant `grantFormRouting` gave when the user allowed an AI batch that changes where a contact
+   * form sends: used up by this call, whatever it does.
    * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
    */
   apply(
@@ -3097,6 +3101,8 @@ export class ProjectSession extends EventEmitter {
   ): Promise<ApplyResult> {
     // An edit's own work, once it is its turn (src/shared/perf.ts): the wait for that is the rest of controller.apply.
     return this.serialize(timed('session.apply', async (): Promise<ApplyResult> => {
+      // A form routing grant is good for one call at most, whichever way it goes.
+      const routingGrant = opts.formRouting ? this.routingGrants.take(opts.formRouting) : null;
       const refused = opts.guard?.(null);
       if (refused) return { ok: false, revision: this.revision, error: refused };
       const fingerprint = sha(JSON.stringify(batch.operations));
@@ -3310,11 +3316,12 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       // Where a contact form sends visitors' messages is the user's to change (#1128), however a batch of the assistant's
       // gets there: it lands only with the user's say for exactly the changes it makes, given when the app asked them
-      // (agent/orchestrator.ts). Asked last, so the user is never asked about a batch that could not land anyway.
+      // (agent/orchestrator.ts), at the revision it was asked at (#1129). Asked last, so the user is never asked about a
+      // batch that could not land anyway.
       if (ai) {
         const routing = formRoutingChanges(this.state, next);
-        if (!formRoutingGranted(routing, fingerprint, opts.formRouting)) {
-          const review: FormRoutingReview = { operations: fingerprint, changes: routing };
+        if (!admits(routingGrant, this.revision, fingerprint, routing)) {
+          const review: FormRoutingReview = this.routingGrants.review(this.revision, fingerprint, routing);
           return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: formRoutingRefusal(routing), recoverable: true, details: { formRouting: review } } };
         }
       }
@@ -3334,6 +3341,15 @@ export class ProjectSession extends EventEmitter {
       if (opts.idempotencyKey) this.idempotency.set(opts.idempotencyKey, { fingerprint, result });
       return result;
     }, (r) => ({ ok: r?.ok ?? false, revision: this.revision })));
+  }
+
+  /**
+   * The grant for a form routing review this session filed (`apply`'s refusal), once the user allowed it when the app
+   * asked them: the app's own call, never the model's (agent/orchestrator.ts). Null when the review is not one this
+   * session filed, was already granted, or the project changed since: what the user saw is no longer what would land.
+   */
+  grantFormRouting(reviewId: string): FormRoutingGrant | null {
+    return this.routingGrants.grant(reviewId, this.revision);
   }
 
   /** The definitions a batch's `component.import` brought or kept from the theme, as they are in `next`. */

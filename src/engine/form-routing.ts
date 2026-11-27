@@ -29,21 +29,28 @@ export interface FormRoutingChange {
   prop?: string;
   label?: string;
   value?: unknown;
-  /** The change itself, as a grant names it: the same change made again (new IDs and all) has the same key. */
+  /**
+   * The change itself, as a grant names it: the placement it reaches (its page, layout or design, and the node when it
+   * was there before), and the value whole. The same change made again (new IDs and all) has the same key.
+   */
   key: string;
 }
 
 /**
- * What the user allowed when the app asked them (agent/orchestrator.ts): exactly the batch they were asked about,
- * as session.apply fingerprints it, making exactly those changes. Only the main process gives one.
+ * What the user allowed when the app asked them (agent/orchestrator.ts): a token the main process made up for the one
+ * review they were shown (main/project/form-routing-grants.ts), good once, for exactly that batch at the revision it was
+ * refused at. Nothing in it says what it allows, so nothing outside the session can write one that does.
  */
 export interface FormRoutingGrant {
-  operations: string;
-  changes: string[];
+  token: string;
 }
 
-/** What a batch refused for its form changes asks the user about: the batch, as session.apply fingerprints it, and its changes. */
+/**
+ * What a batch refused for its form changes asks the user about: the review the session filed (`id`), the batch as
+ * session.apply fingerprints it, and its changes.
+ */
 export interface FormRoutingReview {
+  id: string;
   operations: string;
   changes: FormRoutingChange[];
 }
@@ -52,19 +59,8 @@ export interface FormRoutingReview {
 export function formRoutingReview(error: { code?: string; details?: unknown } | undefined): FormRoutingReview | null {
   const r = error?.code === 'SCOPE_MISMATCH' && error.details && typeof error.details === 'object' ? (error.details as { formRouting?: unknown }).formRouting : undefined;
   if (!r || typeof r !== 'object') return null;
-  const { operations, changes } = r as Partial<FormRoutingReview>;
-  return typeof operations === 'string' && Array.isArray(changes) && changes.length > 0 ? { operations, changes } : null;
-}
-
-/** What allowing the changes a review names grants: that batch, making exactly those changes. */
-export const formRoutingGrant = (review: FormRoutingReview): FormRoutingGrant => ({ operations: review.operations, changes: review.changes.map((c) => c.key) });
-
-/** Whether `changes` are all ones `grant` allows, for the batch `operations` fingerprints. */
-export function formRoutingGranted(changes: readonly FormRoutingChange[], operations: string, grant: FormRoutingGrant | undefined): boolean {
-  if (!changes.length) return true;
-  if (!grant || grant.operations !== operations) return false;
-  const allowed = new Set(grant.changes);
-  return changes.every((c) => allowed.has(c.key));
+  const { id, operations, changes } = r as Partial<FormRoutingReview>;
+  return typeof id === 'string' && typeof operations === 'string' && Array.isArray(changes) && changes.length > 0 ? { id, operations, changes } : null;
 }
 
 /**
@@ -183,8 +179,8 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   // A design the batch makes (a copy made unique, say) has a new ID each time the batch is made: it is named by what
   // it is called instead, so the same batch sent again once allowed makes the same changes.
   const known = (id: string) => (Object.hasOwn(before.components, id) ? id : `\u0001new\u0000${after.components[id]?.name ?? ''}`);
-  const add = (c: Omit<FormRoutingChange, 'key'>, value: string) => {
-    const key = [c.kind, known(c.definitionId), c.prop ?? '', value].join('\u0000');
+  const add = (c: Omit<FormRoutingChange, 'key'>, value: string, placement = '') => {
+    const key = [c.kind, known(c.definitionId), placement, c.prop ?? '', value].join('\u0000');
     if (seen.has(`${key}\u0000${c.where ?? ''}`)) return;
     seen.add(`${key}\u0000${c.where ?? ''}`);
     out.push({ ...c, key });
@@ -274,15 +270,18 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       // taking another's place, as switching themes swaps the theme's form for the new theme's, keeps where it sends,
       // as long as every setting reads as it did.
       const ps = props(n.definitionId);
+      // A placement that was there before is named by its node; a new one, whose ID is new each time the batch is made,
+      // by where it is.
+      const placement = prior ? `${scope}:${n.id}` : `${scope}:\u0001new`;
       // Named, for a grant, without its list items' IDs: the batch sent again gives new items new IDs.
-      const report = (p: string) => add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p) }, valueOf(after, tree, scope, n, p, true));
+      const report = (p: string) => add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p) }, valueOf(after, tree, scope, n, p, true), placement);
       if (prior && prior.definitionId !== n.definitionId) {
         if (!bears().before.has(prior.definitionId) && !bears().after.has(n.definitionId)) continue;
         const had_ = (p: string) => valueOf(before, had!.tree, scope, prior, p);
         const settings = new Set([...(was.get(prior.definitionId) ?? []), ...(is.get(n.definitionId) ?? [])]);
         const carried = isShipped(def(before, prior.definitionId)) && isShipped(def(after, n.definitionId)) && [...settings].every((p) => valueOf(after, tree, scope, n, p) === had_(p));
         if (carried) continue;
-        add({ kind: 'design', definitionId: n.definitionId, name, where, value: nameOf(before, prior.definitionId) }, prior.definitionId);
+        add({ kind: 'design', definitionId: n.definitionId, name, where, value: nameOf(before, prior.definitionId) }, prior.definitionId, placement);
         // And what it sends with, where that is not what the placement had: the user sees every address it would use.
         for (const p of ps) if (!EMPTY_ROUTING.has(valueOf(after, tree, scope, n, p)) && valueOf(after, tree, scope, n, p) !== had_(p)) report(p);
         continue;
