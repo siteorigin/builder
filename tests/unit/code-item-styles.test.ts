@@ -21,6 +21,7 @@ import { authorityFor, checkAuthority } from '@agent/scope';
 import { generateProject } from '@generator/index';
 import { checkSvelteSource, codeContractNames } from '../../src/main/codecheck';
 import { descOf, isCodePart, itemStep, refExists, selectionFromChain } from '../../src/renderer/src/lib/model';
+import { chainOf } from '../../src/renderer/src/lib/payload';
 
 const SOURCE = `<script>
 \tlet { heading = 'Plans', plans = [], class: className = '', so_o = undefined, so_oi = undefined } = $props();
@@ -219,7 +220,9 @@ describe('the canvas picks one card of a code component', () => {
     const desc = descOf(s, card);
     expect(desc).toEqual({ ctx: `page:${owner.id}`, node: list, items: '', part: 'card', partItem: 'p_plus' });
     const placement = descOf(s, { owner, instancePath: [], nodeId: list });
-    const chain = [{ ...desc, tag: 'li' }, { ...placement, code: true }];
+    // As the editor reads the page's message: the card's item comes through.
+    const chain = chainOf([{ ...desc, tag: 'li' }, { ...placement, code: true }]);
+    expect(chain[0].partItem).toBe('p_plus');
     const first = selectionFromChain(s, chain, null, false);
     expect(selectionFromChain(s, chain, first, false)).toEqual(card);
     // Previous and Next step through the cards.
