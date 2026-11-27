@@ -271,15 +271,18 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
 export function classifyZip(entries: ZipEntry[]): ZipContents {
   // Another project's state at the archive's top (a repository beside the project's folder) or anywhere in it says
   // nothing about what the archive holds, and is never extracted.
-  const kept = entries.filter((e) => !e.special && !isSystemClutter(e.path) && !isLocalState(e.path));
+  const listed = entries.filter((e) => !e.special && !isSystemClutter(e.path) && !isLocalState(e.path));
+  const tops = new Set(listed.map((e) => e.path.split('/')[0]));
+  // The archive's one folder, if everything in it is in one folder.
+  const top = tops.size === 1 ? [...tops][0] : null;
+  const wrapper = top !== null && !listed.some((e) => !e.directory && e.path === top) ? `${top}/` : null;
+  // Nor does that folder's own: its local state holds no project or website of the archive's.
+  const kept = wrapper === null ? listed : listed.filter((e) => !isLocalState(e.path.slice(wrapper.length)));
   const files = kept.filter((e) => !e.directory);
   const has = (path: string) => files.some((e) => e.path === path);
-  const tops = new Set(kept.map((e) => e.path.split('/')[0]));
-  // The archive's one folder, if everything in it is in one folder.
-  const wrapper = tops.size === 1 && !has([...tops][0]) ? `${[...tops][0]}/` : null;
   const roots = wrapper === null ? [''] : ['', wrapper];
   for (const root of roots) {
-    if (has(`${root}${MANIFEST}`)) return { kind: 'project', root, entries: kept.filter((e) => e.path.startsWith(root) && !isLocalState(e.path.slice(root.length))) };
+    if (has(`${root}${MANIFEST}`)) return { kind: 'project', root, entries: kept.filter((e) => e.path.startsWith(root)) };
   }
   if (files.some((e) => e.path.endsWith(`/${MANIFEST}`))) return { kind: 'other' };
   for (const root of roots) {

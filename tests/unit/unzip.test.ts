@@ -187,6 +187,8 @@ describe('telling ZIP files apart', () => {
     expect(await kind([{ name: '.git/siteorigin.project.json', data: '{}' }])).toBe('other');
     expect(await kind([{ name: '.siteorigin/versions/siteorigin.project.json', data: '{}' }, { name: 'notes.txt', data: '' }])).toBe('other');
     expect(await kind([{ name: 'cafe/.siteorigin/siteorigin.project.json', data: '{}' }])).toBe('other');
+    // Nor does one there stop a website being recognized as one.
+    expect(await kind([{ name: 'cafe/index.html', data: '' }, { name: 'cafe/_app/x.js', data: '' }, { name: 'cafe/.siteorigin/siteorigin.project.json', data: '{}' }])).toBe('website');
   });
 
   it('reads names older Windows tools write in code page 437, and Info-ZIP’s Unicode names', async () => {
