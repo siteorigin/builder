@@ -154,7 +154,7 @@ export function placedFeedRows(
 }
 
 /** What a layout's placement `nodeId` chose, as the layout is shown on entry `entryId`: its reads of the entry read for it. */
-function sampleQuery(state: ProjectState, collectionId: string, entryId: string, nodeId: string, properties: Record<string, PropSchema>) {
+export function sampleQuery(state: ProjectState, collectionId: string, entryId: string, nodeId: string, properties: Record<string, PropSchema>) {
   const collection = own(state.collections ?? {}, collectionId);
   const entry = collection ? own(collection.entries, entryId) : undefined;
   if (!collection || !entry) return undefined;

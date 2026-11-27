@@ -857,7 +857,7 @@ const fieldsProp = (items: Array<Record<string, unknown>>) =>
         ['checkbox', 'Checkbox']
       ]),
       options: P.choices('Choices', {
-        description: 'The answers a visitor picks one of. Each is sent as the label it was first given, so renaming it keeps its answers together.'
+        description: 'Visitors see these from top to bottom. A renamed answer is still sent as its first label, so earlier answers stay together.'
       }),
       required: P.bool('Required', false),
       placeholder: P.str('Placeholder', '')
