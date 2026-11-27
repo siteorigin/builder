@@ -53,6 +53,7 @@ const api: BuilderApi = {
     resync: invoke('project:resync'),
     reloadFromDisk: invoke('project:reloadFromDisk'),
     apply: invoke('project:apply'),
+    saveWhileAsking: invoke('project:saveWhileAsking'),
     copy: invoke('project:copy'),
     undo: invoke('project:undo'),
     undoEntry: invoke('project:undoEntry'),

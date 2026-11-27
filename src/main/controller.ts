@@ -18,6 +18,7 @@ import { slugify } from '@shared/routes';
 import { applyOperations, sourceHash } from '@engine/apply';
 import { websiteFormNotes, type Diagnostic } from '@engine/validate';
 import { exportedCounts } from '../renderer/src/lib/export-summary';
+import { heldSummary } from '../renderer/src/lib/held';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
 import { archivePages } from '@shared/archives';
 import { NOT_FOUND_FILE } from '@shared/not-found';
@@ -616,6 +617,11 @@ export class Controller {
   /** Saves of the open project landing their files now, and those waiting for none to be (startRuntimeChecked). */
   private savesLanding = 0;
   private landingIdle: Array<() => void> = [];
+  /**
+   * Admits a save of the author's held edit while AI request `runId` waits for their answer (Orchestrator.admitSave):
+   * null when it does not. `done` tells the request what was saved, or null for nothing.
+   */
+  admitSave = (_runId: string): { done: (edit: string | null) => void } | null => null;
   /** The editor is sent each change against the copy it was sent before (#967), while it is the same page's. */
   private feed = new ProjectFeed();
   private feedTo: WebContents | null = null;
@@ -2810,6 +2816,35 @@ export class Controller {
     // An edit belongs to the project it was made in: one closing, closed or switched meanwhile never receives it.
     if (this.session !== session || this.closing) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
     return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user', codeAllowed });
+  }
+
+  /**
+   * Save the author's held edit while AI request `runId` waits for their answer, without stopping it (#1281): see
+   * ProjectSession.apply's `asking`. Admitted before anything is awaited, so an answer given after this waits for the
+   * save, and the request hears what it changed with the answer; one given before it refuses the save.
+   */
+  async saveWhileAsking(batch: EditBatch, opts: { runId?: unknown; base?: unknown; label?: string; opening?: string } = {}): Promise<ApplyResult> {
+    const session = this.session;
+    if (!session) return { ok: false, revision: 0, error: { code: 'INVALID_ARGUMENT', message: 'No project is open.', recoverable: false } };
+    const closed: ApplyResult = { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
+    if (opts.opening !== undefined && opts.opening !== this.workspaceKey) return closed;
+    const { runId, base } = opts;
+    if (typeof runId !== 'string' || !Array.isArray(base) || !Array.isArray(batch?.operations))
+      return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: 'A held edit is saved with the request it waits on and what its fields held.', recoverable: false } };
+    const admitted = this.admitSave(runId);
+    if (!admitted) return { ok: false, revision: session.revision, error: { code: 'BUSY', message: 'The AI is no longer waiting for your answer.', recoverable: true } };
+    let saved: string | null = null;
+    try {
+      const codeAllowed = (await loadSettings()).settings.developerMode;
+      if (this.session !== session || this.closing) return closed;
+      const label = typeof opts.label === 'string' && opts.label ? opts.label : (batch.label ?? 'Edit');
+      const before = session.state;
+      const r = await session.apply({ operations: batch.operations }, { label, source: 'user', codeAllowed, asking: { runId, base } });
+      if (r.ok) saved = heldSummary(before, batch.operations, label);
+      return r;
+    } finally {
+      admitted.done(saved);
+    }
   }
 
   /**

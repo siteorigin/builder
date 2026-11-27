@@ -188,3 +188,13 @@ export function serializeResult(result: ToolResult, tool = '', applied = false):
   const { ok, revision } = result;
   return JSON.stringify({ ok, revision, ...(result.ok ? {} : { error: head.error }), truncated: true, leftOut: ['everything else'], note: note(0) });
 }
+
+/** What the model is told when the author saved edits of their own while it waited for their answer (#1281). */
+export const AUTHOR_EDITS_NOTE =
+  'While you waited for this answer, the author saved edits of their own (authorEdits), so the project has changed since you last read it. Keep their edits: read what they changed again before you change anything there.';
+
+/** A question's answer, with what the author saved while it waited (ToolHost.authorEdits in tools.ts), if anything. */
+export function answered(answer: string, host: { authorEdits?(): string[] }): { answer: string; authorEdits?: string[]; note?: string } {
+  const edits = host.authorEdits?.() ?? [];
+  return edits.length ? { answer, authorEdits: edits, note: AUTHOR_EDITS_NOTE } : { answer };
+}

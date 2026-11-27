@@ -1,0 +1,262 @@
+/**
+ * Save now (#1281) end to end in the main process: the controller saves the author's held edit while the request waits
+ * for their answer, the request keeps waiting, and the model hears of the edit with the answer.
+ */
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AiEvent, ChatContext } from '@shared/api';
+import type { EditOperation } from '@shared/ops';
+import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agent/types';
+
+const env = vi.hoisted(() => ({ userData: '' }));
+vi.mock('electron', () => ({
+  app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
+  BrowserWindow: class {},
+  shell: { showItemInFolder: () => undefined },
+  nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
+  dialog: {},
+  utilityProcess: {}
+}));
+
+const { Controller } = await import('../../src/main/controller');
+const { ProjectSession } = await import('../../src/main/project/session');
+const { Orchestrator } = await import('@agent/orchestrator');
+const { createStarterState } = await import('@catalogue/starters');
+const { readFields } = await import('../../src/renderer/src/lib/held');
+
+type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
+/** Replays scripted turns, keeping each request. */
+class FakeAdapter implements AgentModelAdapter {
+  requests: CanonicalModelRequest[] = [];
+  constructor(private turns: Turn[]) {}
+  capabilities() {
+    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 } as ReturnType<AgentModelAdapter['capabilities']>;
+  }
+  async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+    this.requests.push(structuredClone(req));
+    const turn = this.turns.shift();
+    if (!turn) {
+      yield { type: 'done', stopReason: 'end', text: 'Done.', toolCalls: [] };
+      return;
+    }
+    for (const ev of await turn(req)) {
+      if (signal.aborted) {
+        yield { type: 'error', code: 'cancelled', message: 'Canceled' };
+        return;
+      }
+      yield ev;
+    }
+  }
+}
+const calls = (...list: Array<[string, string, unknown]>): ModelEvent[] => [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: list.map(([id, name, args]) => ({ id, name, arguments: JSON.stringify(args) })) }];
+const finish = (text: string): ModelEvent[] => [{ type: 'text', delta: text }, { type: 'done', stopReason: 'end', text, toolCalls: [] }];
+/** The result the model was sent for call `id`, in the request it was sent with. */
+const resultOf = (req: CanonicalModelRequest | undefined, id: string) => {
+  const item = req?.items.find((i) => i.kind === 'tool_result' && (i as { callId?: string }).callId === id) as { content: string } | undefined;
+  return item ? (JSON.parse(item.content) as Record<string, unknown>) : undefined;
+};
+
+const dirs: string[] = [];
+const closing: Array<() => Promise<unknown>> = [];
+const temp = (name: string) => {
+  const d = realpathSync(mkdtempSync(join(tmpdir(), `so-asking-${name}-`)));
+  dirs.push(d);
+  return d;
+};
+beforeEach(() => {
+  env.userData = temp('userdata');
+});
+afterEach(async () => {
+  for (const c of closing.splice(0)) await c().catch(() => undefined);
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+});
+
+type Attaching = { attach(s: unknown, workspace: object, runtime: object): Promise<void> };
+const URL = 'https://example.com/builder';
+const urlEdit: EditOperation[] = [{ type: 'site.update', baseUrl: URL }];
+const seen = (state: Parameters<typeof readFields>[0], ops: EditOperation[]) => readFields(state, ops)!.map((r) => (r.found ? r.value : undefined));
+
+/** A project open in a controller, with the assistant wired to it as the app wires it (src/main/index.ts). */
+async function setup(turns: Turn[]) {
+  const dir = join(temp('project'), 'site');
+  await (await ProjectSession.create(dir, createStarterState('business', 'Persist', false))).close();
+  const session = await ProjectSession.open(dir, 'this-window');
+  const c = new Controller(() => null);
+  closing.push(() => c.close());
+  c.send = () => undefined;
+  await (c as unknown as Attaching).attach(session, {}, { state: 'error', message: 'No preview in this test.' });
+  await c.startingVersion;
+  const adapter = new FakeAdapter(turns);
+  const events: AiEvent[] = [];
+  const orch = new Orchestrator({
+    session: () => session,
+    adapter: async () => ({ adapter, model: 'fake', provider: 'openai' }),
+    emit: (e) => events.push(e),
+    compileAll: async () => [],
+    inspectLayout: async () => ({ issues: [] }),
+    onBusyChange: () => undefined
+  });
+  c.aiBusy = () => orch.editing;
+  c.aiRunId = () => (orch.editing ? orch.runId : null);
+  c.admitSave = (runId) => orch.admitSave(runId);
+  const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
+  const send = async (text: string) => {
+    const r = await orch.send(text, ctx);
+    expect(r.ok).toBe(true);
+    return r.runId!;
+  };
+  const lastStatus = () => [...events].reverse().find((e) => e.kind === 'status');
+  /** Wait until the request waits for its `n`th answer: that question. */
+  const asked = async (n = 1) => {
+    const q = () => [...events].reverse().find((e) => e.message?.questions?.length === n && !e.message.questions[n - 1].answered)?.message?.questions?.[n - 1];
+    for (let i = 0; i < 500 && !(q() && lastStatus()?.status === 'awaiting-input'); i++) await new Promise((res) => setTimeout(res, 10));
+    expect(q()).toBeDefined();
+    return q()!;
+  };
+  const ended = async () => {
+    while (orch.busy) await new Promise((res) => setTimeout(res, 10));
+    return [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message?.result;
+  };
+  return { dir, c, session, orch, adapter, events, send, asked, ended, lastStatus };
+}
+
+/** The AI renames the site, then asks a question. */
+const renameThenAsk = (s: () => InstanceType<typeof ProjectSession>): Turn[] => [
+  () => calls(['a1', 'apply_operations', { expectedRevision: s().revision, operations: [{ type: 'site.update', name: 'AI name' }] }]),
+  () => calls(['q1', 'request_clarification', { question: 'Which tone should the site take?', choices: ['Warm', 'Brisk'] }])
+];
+
+describe('Save now while the AI waits for an answer (#1281)', () => {
+  it('saves the Public URL, keeps the AI waiting, and tells the model of the edit with the answer', async () => {
+    let told: Record<string, unknown> | undefined;
+    const env: Awaited<ReturnType<typeof setup>> = await setup([
+      ...renameThenAsk(() => env.session),
+      (req) => {
+        told = resultOf(req, 'q1');
+        return finish('Done.');
+      }
+    ]);
+    const typed = seen(env.session.state, urlEdit);
+    const runId = await env.send('Rename the site');
+    const q = await env.asked();
+    expect(env.lastStatus()).toMatchObject({ status: 'awaiting-input', saveable: true });
+    const r = await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings', opening: (env.c as unknown as { workspaceKey: string }).workspaceKey });
+    expect(r.ok).toBe(true);
+    // Saved, and the request still waits for the answer.
+    expect(env.session.state.site).toMatchObject({ name: 'AI name', baseUrl: URL });
+    expect(env.orch.runId).toBe(runId);
+    expect(env.lastStatus()).toMatchObject({ status: 'awaiting-input' });
+    expect(env.orch.answer(runId, q.id!, 'Warm')).toBe(true);
+    const result = await env.ended();
+    expect(result?.status).toBe('completed');
+    // The answer names what the author changed, so the model reads it before writing there.
+    expect(told).toMatchObject({ ok: true, answer: 'Warm', authorEdits: ['Update site settings in Site settings (site.update: baseUrl)'] });
+    expect(told?.note).toMatch(/read what they changed again/);
+    // Two steps: the author's, then the AI's, which never holds the URL.
+    expect(env.session.historyInfo().entries.slice(-2).map((e) => e.source)).toEqual(['user', 'ai']);
+    expect((await env.session.undo()).ok).toBe(true);
+    expect(env.session.state.site).toMatchObject({ name: 'Persist', baseUrl: URL });
+  });
+
+  it('keeps the saved URL when the request is stopped afterwards, and undoes the AI’s change', async () => {
+    const env: Awaited<ReturnType<typeof setup>> = await setup(renameThenAsk(() => env.session));
+    const typed = seen(env.session.state, urlEdit);
+    const runId = await env.send('Rename the site');
+    await env.asked();
+    expect((await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' })).ok).toBe(true);
+    expect(await env.orch.stopRun(runId)).toMatchObject({ stopped: true, status: 'cancelled' });
+    expect(env.session.state.site).toMatchObject({ name: 'Persist', baseUrl: URL });
+  });
+
+  it('gives the model the edit even when the answer comes while it is being saved', async () => {
+    let told: Record<string, unknown> | undefined;
+    const env: Awaited<ReturnType<typeof setup>> = await setup([
+      ...renameThenAsk(() => env.session),
+      (req) => {
+        told = resultOf(req, 'q1');
+        return finish('Done.');
+      }
+    ]);
+    const typed = seen(env.session.state, urlEdit);
+    const runId = await env.send('Rename the site');
+    const q = await env.asked();
+    const saving = env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' });
+    // Answered before the save has answered: the model hears the answer once the save is in.
+    expect(env.orch.answer(runId, q.id!, 'Brisk')).toBe(true);
+    expect((await saving).ok).toBe(true);
+    await env.ended();
+    expect(told).toMatchObject({ answer: 'Brisk', authorEdits: [expect.stringContaining('baseUrl')] });
+  });
+
+  it('refuses once the question is answered, and the next question hears nothing of an earlier one’s edit', async () => {
+    let second: Record<string, unknown> | undefined;
+    const env: Awaited<ReturnType<typeof setup>> = await setup([
+      ...renameThenAsk(() => env.session),
+      () => calls(['q2', 'request_clarification', { question: 'And the colours?', choices: ['Bright', 'Muted'] }]),
+      (req) => {
+        second = resultOf(req, 'q2');
+        return finish('Done.');
+      }
+    ]);
+    const typed = seen(env.session.state, urlEdit);
+    const runId = await env.send('Rename the site');
+    const q = await env.asked();
+    expect((await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' })).ok).toBe(true);
+    expect(env.orch.answer(runId, q.id!, 'Warm')).toBe(true);
+    // Answered: the request may be working again, so an edit waits for it as before.
+    expect(await env.c.saveWhileAsking({ operations: [{ type: 'site.update', baseUrl: 'https://late.example' }] }, { runId, base: seen(env.session.state, urlEdit), label: 'Update site settings' })).toMatchObject({ ok: false, error: { code: 'BUSY' } });
+    const q2 = await env.asked(2);
+    expect(env.orch.answer(runId, q2.id!, 'Muted')).toBe(true);
+    await env.ended();
+    expect(second).toEqual(expect.objectContaining({ answer: 'Muted' }));
+    expect(second).not.toHaveProperty('authorEdits');
+    expect(env.session.state.site.baseUrl).toBe(URL);
+  });
+
+  it('skips a change the model queued after the question, which was planned before it knew of the edit', async () => {
+    let skipped: Record<string, unknown> | undefined;
+    const env: Awaited<ReturnType<typeof setup>> = await setup([
+      () =>
+        calls(
+          ['q1', 'request_clarification', { question: 'Which tone?', choices: ['Warm', 'Brisk'] }],
+          // A tool that writes at the project's current revision, which no stale revision would turn away.
+          ['a1', 'update_site_seo', { baseUrl: 'https://ai.example' }]
+        ),
+      (req) => {
+        skipped = resultOf(req, 'a1');
+        return finish('Done.');
+      }
+    ]);
+    const typed = seen(env.session.state, urlEdit);
+    const runId = await env.send('Set the address');
+    const q = await env.asked();
+    expect((await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' })).ok).toBe(true);
+    expect(env.orch.answer(runId, q.id!, 'Warm')).toBe(true);
+    await env.ended();
+    expect(skipped).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
+    expect(env.session.state.site.baseUrl).toBe(URL);
+  });
+
+  it('stays off the app’s own question about where a form sends, whose grant the save would void (#1130)', async () => {
+    const EVIL = 'https://evil.example/f';
+    const env: Awaited<ReturnType<typeof setup>> = await setup([() => calls(['f1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL }] }]), () => finish('Done.')]);
+    const owner = { kind: 'page' as const, id: env.session.state.site.homePageId };
+    const placed = await env.session.apply({ operations: [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: 'https://forms.example.com/sales' } }] }, { label: 'Add a form' });
+    const form = placed.results![0].nodeId as string;
+    const typed = seen(env.session.state, urlEdit);
+    const runId = await env.send('Change the form');
+    const q = await env.asked();
+    expect(q.formRouting).toBeDefined();
+    expect(env.lastStatus()).toMatchObject({ status: 'awaiting-input' });
+    expect(env.lastStatus()).not.toHaveProperty('saveable');
+    const before = env.session.revision;
+    expect(await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' })).toMatchObject({ ok: false, error: { code: 'BUSY' } });
+    expect(env.session.revision).toBe(before);
+    // The author's Allow still lands the change it was asked about.
+    expect(env.orch.answer(runId, q.id!, q.choices[1])).toBe(true);
+    await env.ended();
+    expect((env.session.state.pages[owner.id].nodes[form] as { props: Record<string, unknown> }).props.endpoint).toBe(EVIL);
+  });
+});

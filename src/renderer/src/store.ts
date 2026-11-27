@@ -98,6 +98,11 @@ export interface HeldEdit {
   cause?: 'elsewhere';
   /** For a page rename: the labels to offer once it is saved (see renamePage). Discarding the edit drops them. */
   rename?: PendingRename;
+  /**
+   * Save now was refused (#1281): the AI request changed a field it writes, or made what it is for, so it waits for the
+   * request to end, as an edit made while the AI works does. `note` says why.
+   */
+  waitsForEnd?: boolean;
 }
 
 /**
@@ -306,6 +311,11 @@ export interface State {
    * holds the app whichever thread it is in; '' once its project closed and it belongs to none.
    */
   runConversationId: string | null;
+  /**
+   * The running request waits for an answer its held edits can be saved beside, without stopping it (#1281): a
+   * question the AI asked, not the app's own about where forms send.
+   */
+  runSaveable: boolean;
   /** Unsent messages per conversation of the open project (see lib/chatDrafts). */
   chatDrafts: ChatDrafts;
   /** Library images attached to those unsent messages, by asset ID (see lib/chatDrafts). */
@@ -463,6 +473,7 @@ const live = create<State>((set) => ({
   activeRunId: null,
   runMode: null,
   runConversationId: null,
+  runSaveable: false,
   chatDrafts: {},
   chatImages: {},
   chatRequest: null,
@@ -1289,6 +1300,44 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
   }
 }
 
+/**
+ * Save a held edit now, while the AI waits for the author's answer, without stopping it (#1281). It lands only while
+ * every field it writes holds what the author edited, both in the project and where the request started: refused, the
+ * edit stays held, saying why, and one the request changed waits for it to end.
+ */
+export async function saveHeldNow(id: number): Promise<void> {
+  const held = heldById(id);
+  const s = getState();
+  const runId = s.activeRunId;
+  if (!held || held.phase !== 'waiting' || held.cause === 'elsewhere' || held.waitsForEnd || !runId || !s.runSaveable) return;
+  const attempt = ++attemptSeq;
+  patchHeld(id, { phase: 'applying', attempt, stopping: false, writing: true, note: undefined });
+  const live = () => {
+    const h = heldById(id);
+    return h && h.attempt === attempt ? h : null;
+  };
+  setState({ pendingSave: getState().pendingSave + 1 });
+  // Sent as the author made it, with what its fields held then: main checks it against both versions of the project.
+  sendPicksAhead();
+  const writing = api.project.saveWhileAsking({ operations: held.operations }, { runId, base: held.base, label: held.label, opening: held.workspace }).catch((e: Error) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: e.message } }));
+  // Followed like any change on its way, so saving or leaving the project waits for it.
+  trackApply(writing.then((x) => ({ ok: x.ok, message: x.error?.message })));
+  const r = await writing;
+  const pendingSave = Math.max(0, getState().pendingSave - 1);
+  // The project closed while the save was on its way.
+  if (!live()) return setState({ pendingSave });
+  if (r.ok) {
+    setState({ pendingSave, heldEdits: removeHeld(id), ...landedRename(id, r.revision, shownField(held.operations[0], held.base[0])) });
+    toast('Your edit is saved. The AI is still waiting for your answer.', 'success');
+    return;
+  }
+  setState({ pendingSave });
+  // The request changed what the edit writes, or made what it is for: saved now, stopping the request would lose its
+  // changes to it, so the edit waits for the request to end. Answered or stopped meanwhile, it just waits again.
+  const why = (r.error?.details as { held?: unknown } | undefined)?.held;
+  patchHeld(id, { phase: 'waiting', attempt: undefined, writing: false, ...(why ? { waitsForEnd: true, note: r.error?.message } : r.error?.code === 'BUSY' || r.error?.code === 'CANCELLED' ? {} : { note: r.error?.message }) });
+}
+
 /** A rename held while the AI worked is saved now: its offer shows. */
 function landedRename(heldId: number, revision: number, replaced: unknown): Partial<State> {
   const rename = heldById(heldId)?.rename;
@@ -1570,8 +1619,8 @@ export function applyAiEvent(e: AiEvent) {
     const detached = e.conversationId === '' || (s.activeRunId === e.runId && s.runConversationId === '');
     setState(
       terminal
-        ? { runStatus: null, activeRunId: null, runMode: null, runConversationId: null, ...(ask || detached ? {} : { aiOutcome: { run: e.status!, runId: e.runId } }) }
-        : { runStatus: e.status!, activeRunId: e.runId, runMode: ask ? 'ask' : 'edit', runConversationId: detached ? '' : e.conversationId }
+        ? { runStatus: null, activeRunId: null, runMode: null, runConversationId: null, runSaveable: false, ...(ask || detached ? {} : { aiOutcome: { run: e.status!, runId: e.runId } }) }
+        : { runStatus: e.status!, activeRunId: e.runId, runMode: ask ? 'ask' : 'edit', runConversationId: detached ? '' : e.conversationId, runSaveable: !ask && e.status === 'awaiting-input' && !!e.saveable }
     );
     // What the request learned about a local server (it answered, or it is down) is what Chat shows next.
     if (terminal && getState().settings?.ai.provider === 'local') void refreshProviders();
@@ -1653,7 +1702,7 @@ export async function showConversation(fallback: Conversation, opening: string, 
   // and where it is answered and stopped (#1125).
   const run = read?.conversation.id === id ? read.run : null;
   // A status that arrived while it was read is newer than the one read (the run may have ended meanwhile).
-  const status = run && statusSeen === seen ? { runStatus: run.status, activeRunId: run.runId, runMode: run.mode, runConversationId: run.conversationId } : {};
+  const status = run && statusSeen === seen ? { runStatus: run.status, activeRunId: run.runId, runMode: run.mode, runConversationId: run.conversationId, runSaveable: run.mode !== 'ask' && run.status === 'awaiting-input' && !!run.saveable } : {};
   if (run && statusSeen === seen && run.mode !== 'ask') aiEpoch++;
   setState({ conversation: read?.conversation.id === id ? read.conversation : fallback, ...extra(), ...status });
   if (mine.missed) catchUpConversation(id, opening);
