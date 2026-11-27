@@ -79,24 +79,12 @@ interface RemoteHttp extends HttpClient {
   close(): void;
 }
 
-/** The most of a refusal's body kept (a 401's sign-in page): the rest is never read, and its connection is let go at once. */
-const MAX_REFUSAL_BYTES = 64 * 1024;
-
-/** The body of a response that is not the Git data asked for, read now and let go, so its connection holds nothing up. */
-async function settledBody(res: IncomingMessage): Promise<Uint8Array[]> {
-  const kept: Uint8Array[] = [];
-  let n = 0;
-  try {
-    for await (const chunk of res as AsyncIterable<Buffer>) {
-      n += chunk.byteLength;
-      if (n > MAX_REFUSAL_BYTES) break;
-      kept.push(chunk);
-    }
-  } catch {
-    // What it says is never shown: an answer cut short is as good as one read.
-  }
+/**
+ * Let go of a response that is not the Git data asked for (a 401's sign-in page), unread: what a host says is never
+ * shown, and a body it never finishes would otherwise hold its connection, and the push, up.
+ */
+function letGo(res: IncomingMessage): void {
   res.destroy();
-  return kept;
 }
 
 const basic = (auth: RemoteAuth) => `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;
@@ -132,7 +120,7 @@ function remoteHttp(endpoint: string, opts: { ca?: string; signal: AbortSignal; 
       let { req, res } = await send(url, method, headers, body);
       // A push is sent whole (an array of its parts), so it can be sent again once the host has said who may send it.
       if (method === 'POST' && res.statusCode === 401 && opts.auth && !hasAuthorization(headers) && Array.isArray(body)) {
-        await settledBody(res);
+        letGo(res);
         ({ req, res } = await send(url, method, { ...headers, Authorization: basic(opts.auth) }, body));
       }
       const status = res.statusCode ?? 0;
@@ -142,8 +130,8 @@ function remoteHttp(endpoint: string, opts: { ca?: string; signal: AbortSignal; 
       }
       const reply = { url, method, statusCode: status, statusMessage: res.statusMessage ?? '', headers: flatHeaders(res) };
       if (status !== 200) {
-        const kept = await settledBody(res);
-        return { ...reply, body: (async function* () { yield* kept; })() };
+        letGo(res);
+        return { ...reply, body: (async function* (): AsyncGenerator<Uint8Array> {})() };
       }
       return { ...reply, body: bounded(res) };
     },
@@ -234,7 +222,7 @@ const MAX_LINEAGE = 200_000;
  * the app (PUBLISH_EMAIL), as no saved version is: so a publication branch pointed at a saved version some other way
  * (a stock Git moving it) never sends that version's history, drafts and all. Throws `invalid` when one is not.
  */
-async function checkLineage(fs: PromiseFsClient, gitdir: string, commit: Oid, until: Oid | null): Promise<void> {
+async function checkLineage(fs: PromiseFsClient, gitdir: string, commit: Oid, until: Oid | null, cache: object): Promise<Oid[]> {
   const seen = new Set<Oid>();
   const queue = [commit];
   while (queue.length) {
@@ -242,17 +230,65 @@ async function checkLineage(fs: PromiseFsClient, gitdir: string, commit: Oid, un
     if (oid === until || seen.has(oid)) continue;
     seen.add(oid);
     if (seen.size > MAX_LINEAGE) throw new GitError('too-large', 'The publication’s history is too long to push.');
-    const { commit: c } = await git.readCommit({ fs, gitdir, oid });
+    const { commit: c } = await git.readCommit({ fs, gitdir, oid, cache });
     if (c.author.email !== PUBLISH_EMAIL || c.committer.email !== PUBLISH_EMAIL)
       throw new GitError('invalid', 'The publication branch holds a commit that is not a publication’s, so nothing was pushed. Prepare the publication again.');
     queue.push(...c.parent);
   }
+  return [...seen];
+}
+
+/** How far into a file Git looks for a NUL to call it binary. */
+const TEXT_SAMPLE = 8000;
+
+/**
+ * Whether what is about to be sent (`commits`, less what the host's commit `previous` already holds, when it is here)
+ * carries `token`: in a file's text (a file with a NUL in its first 8 KB is binary, as Git tells them), a name in its
+ * trees, or a commit's message, as written or as an address escapes it. A publication is searched for the credentials
+ * saved when it was prepared (#1154); one saved later (signing in to a host for the first time) is looked for here.
+ */
+async function carriesToken(fs: PromiseFsClient, gitdir: string, commits: readonly Oid[], previous: Oid | null, token: string, cache: object): Promise<boolean> {
+  const forms = [...new Set([token, encodeURIComponent(token)])].map((f) => Buffer.from(f, 'utf8'));
+  const holds = (b: Uint8Array) => {
+    const buf = Buffer.from(b.buffer, b.byteOffset, b.byteLength);
+    return forms.some((f) => buf.includes(f));
+  };
+  const seen = new Set<Oid>();
+  /** Mark everything in a tree of the host's as seen (trees only are read); true when a tree of ours carries the token. */
+  const walk = async (tree: Oid, theirs: boolean): Promise<boolean> => {
+    if (seen.has(tree)) return false;
+    seen.add(tree);
+    for (const e of (await git.readTree({ fs, gitdir, oid: tree, cache })).tree) {
+      if (!theirs && holds(Buffer.from(e.path, 'utf8'))) return true;
+      if (e.type === 'tree') {
+        if (await walk(e.oid, theirs)) return true;
+      } else if (e.type === 'blob' && !seen.has(e.oid)) {
+        seen.add(e.oid);
+        if (theirs) continue;
+        const { blob } = await git.readBlob({ fs, gitdir, oid: e.oid, cache });
+        if (!blob.subarray(0, TEXT_SAMPLE).includes(0) && holds(blob)) return true;
+      }
+    }
+    return false;
+  };
+  if (previous) {
+    try {
+      await walk((await git.readCommit({ fs, gitdir, oid: previous, cache })).commit.tree, true);
+    } catch {
+      // Not here (another's commit): everything is looked at.
+    }
+  }
+  for (const oid of commits) {
+    const { commit } = await git.readCommit({ fs, gitdir, oid, cache });
+    if (holds(Buffer.from(commit.message, 'utf8')) || (await walk(commit.tree, false))) return true;
+  }
+  return false;
 }
 
 /** Whether `ancestor` is in the history of `commit` here (false when it is not, or is not here at all). */
-async function follows(fs: PromiseFsClient, gitdir: string, commit: Oid, ancestor: Oid): Promise<boolean> {
+async function follows(fs: PromiseFsClient, gitdir: string, commit: Oid, ancestor: Oid, cache: object): Promise<boolean> {
   try {
-    return await git.isDescendent({ fs, gitdir, oid: commit, ancestor, depth: -1 });
+    return await git.isDescendent({ fs, gitdir, oid: commit, ancestor, depth: -1, cache });
   } catch {
     return false;
   }
@@ -292,9 +328,12 @@ export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, co
   let held = false;
   const http = remoteHttp(t.url, { ca: opts.ca, signal, auth: t.auth, posting: () => (posted = true) });
   const view = readOnly(gitdir, files);
+  // One cache of the bundled Git's for the whole push, so a packed history is read once, not once a commit.
+  const cache = {};
   try {
     await git.push({
       fs: view,
+      cache,
       http,
       gitdir,
       url: t.url,
@@ -309,8 +348,11 @@ export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, co
         if (localRef.oid !== commit || remoteRef.ref !== PUBLISH_BRANCH || !OID_RE.test(remoteRef.oid)) throw new GitError('invalid', 'The host’s branches are not what a push to it needs.');
         previous = remoteRef.oid === NONE ? null : remoteRef.oid;
         held = previous === commit;
-        if (!held) await checkLineage(view, gitdir, commit, previous);
-        return !held;
+        if (held) return false;
+        const sent = await checkLineage(view, gitdir, commit, previous, cache);
+        if (t.auth && (await carriesToken(view, gitdir, sent, previous, t.auth.password, cache)))
+          throw new GitError('invalid', 'The publication holds the token this host is signed in to with, so nothing was pushed. Take it out of the website, then prepare the publication again.');
+        return true;
       }
     });
     return { previous: previous ?? null, uploaded: true };
@@ -323,7 +365,7 @@ export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, co
       const now = await remoteTip(t, signal, opts).catch(() => undefined);
       if (now === commit) return { previous: previous ?? null, uploaded: true };
       if (now === undefined || now === (previous ?? null)) throw new GitError('rejected', 'The host refused the update to its publication branch.');
-      if (now === null || (await follows(view, gitdir, commit, now))) throw new GitError('conflict', 'The host’s publication branch changed while the push was sent, so it was not moved. Push again.', now);
+      if (now === null || (await follows(view, gitdir, commit, now, cache))) throw new GitError('conflict', 'The host’s publication branch changed while the push was sent, so it was not moved. Push again.', now);
       throw new GitError('diverged', 'The host’s publication branch moved while the push was sent, to a commit this publication does not follow, so it was left as it is.', now);
     }
     throw remoteFailure(e, { posted, signal, previous });

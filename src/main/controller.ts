@@ -47,7 +47,7 @@ import { commitPublication, credentialProblem, projectPublication, publishedTree
 import { redactSecrets } from './sources/redact';
 import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
 import { createAgentSources } from './sources/agent';
-import { MIN_SECRET_LENGTH, sourceFingerprint } from '@shared/sources';
+import { sourceFingerprint } from '@shared/sources';
 import type { SourceToolHost } from '@agent/source-tools';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
@@ -393,6 +393,9 @@ const READ_ONLY_NOTES = 'This project is open read-only, so its notes can’t be
  * What a push or a change to where the project is published says when it stops (#1157): the app's own words, which
  * name no credential (`secrets` are taken out of them all the same), and for a divergence the commit the host has.
  */
+/** The shortest token looked for in the address and site name a binding keeps. */
+const TOKEN_IN_ADDRESS_MIN = 8;
+
 /** `v` with its address escapes undone, or as it is when they are not valid. */
 function decodeURIComponentSafe(v: string): string {
   try {
@@ -4251,7 +4254,8 @@ export class Controller {
       if (site !== null && !opaqueOk(site)) return { ok: false, code: 'invalid', message: 'That is not a site name the app can keep.' };
       // The project keeps the address and the site's name: neither may carry the token, as it is or as an address spells it.
       const token = typeof opts.token === 'string' ? opts.token.trim() : '';
-      if (token.length >= MIN_SECRET_LENGTH && [url, site ?? ''].some((v) => redactSecrets(v, [token]) !== v || decodeURIComponentSafe(v).includes(token)))
+      // A token short enough to be part of an ordinary address (`site`) is not looked for in it.
+      if (token.length >= TOKEN_IN_ADDRESS_MIN && [url, site ?? ''].some((v) => redactSecrets(v, [token]) !== v || decodeURIComponentSafe(v).includes(token)))
         return { ok: false, code: 'invalid', message: 'The repository address or site name holds the token. Give the token on its own.' };
       const state: RemoteState = { binding: { id: `rb_${randomBytes(12).toString('hex')}`, provider: 'https-git', url, site }, content: null, acknowledged: null, receipt: null };
       const owner = this.credentialOwner(s, url);

@@ -321,6 +321,39 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     await expect(git.push(root, target(h), after)).rejects.toMatchObject({ code: 'invalid' });
     expect(pushes(h)).toEqual([]);
     expect(h.git(['count-objects', '-v'])).toMatch(/^count: 0$/m);
+    // A commit made by a publication's author but committed as a saved version is not one either.
+    const repo2 = openRepo(root);
+    const mixed = await repo2.writeCommit({ tree, parents: [], author: APP, committer: SAVED, message: 'Publish the website\n' });
+    await repo2.advanceRef(PUBLISH_BRANCH, mixed, after);
+    await expect(git.push(root, target(h), mixed)).rejects.toMatchObject({ code: 'invalid' });
+    expect(pushes(h)).toEqual([]);
+  });
+
+  it('never sends the token it signs in with, in the publication sent or anywhere in its history', async () => {
+    const h = await host();
+    const git = client(h.ca);
+    // Prepared before the host's credential was saved, so preparing could not look for it.
+    const leaky = await publish({ 'index.html': `<p>deploy key ${TOKEN}</p>`, 'static/photo.bin': '\0binary' }, null);
+    await expect(git.push(root, target(h), leaky)).rejects.toMatchObject({ code: 'invalid', message: expect.not.stringContaining(TOKEN) });
+    const clean = await publish({ 'index.html': '<p>hello</p>' }, leaky);
+    await expect(git.push(root, target(h), clean), 'the history sent still holds it').rejects.toMatchObject({ code: 'invalid' });
+    expect(pushes(h)).toEqual([]);
+    // As an address escapes it, and in a file's name.
+    rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
+    const odd = { username: USER, password: 'tok/with+plus=1234' };
+    const oddHost = await startGitHost({ username: USER, password: odd.password, certs: h.certs });
+    hosts.push(oddHost);
+    const escaped = await publish({ 'index.html': `<a href="https://x.example/?k=${encodeURIComponent(odd.password)}">x</a>` }, null);
+    await expect(git.push(root, target(oddHost, odd), escaped)).rejects.toMatchObject({ code: 'invalid' });
+    expect(pushes(oddHost)).toEqual([]);
+    rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
+    const named = await publish({ [`static/${TOKEN}.txt`]: 'x' }, null);
+    await expect(git.push(root, target(h), named)).rejects.toMatchObject({ code: 'invalid' });
+    expect(pushes(h)).toEqual([]);
+    // A binary file is not searched (a photo's bytes can hold anything), and a clean publication goes.
+    rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
+    const photo = await publish({ 'static/photo.bin': `\0${TOKEN}`, 'index.html': 'ok' }, null);
+    expect(await git.push(root, target(h), photo)).toEqual({ previous: null, uploaded: true });
   });
 });
 

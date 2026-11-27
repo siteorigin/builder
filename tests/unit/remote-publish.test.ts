@@ -247,8 +247,12 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     }
     expect(isPrivateFileName('remote-credentials-guide.json')).toBe(false);
     // A token in the address or the site's name would be kept in the project: refused.
-    for (const opts of [{ url: `${h.url}/${TOKEN}` }, { url: `${h.url}/${encodeURIComponent(TOKEN)}x` }, { url: h.url, site: TOKEN }])
+    for (const opts of [{ url: `${h.url}/${TOKEN}` }, { url: h.url, site: TOKEN }])
       expect(await c.bindRemote({ username: USER, token: TOKEN, ...opts })).toMatchObject({ ok: false, code: 'invalid' });
+    // Escaped as an address escapes it, too; and a short token is no reason to refuse an ordinary address.
+    expect(await c.bindRemote({ username: USER, token: 'tok/with+plus=1234', url: `${h.url}/${encodeURIComponent('tok/with+plus=1234')}` })).toMatchObject({ ok: false, code: 'invalid' });
+    expect(await c.bindRemote({ username: USER, token: 'site', url: h.url })).toMatchObject({ ok: true });
+    expect(await c.bindRemote({ username: USER, token: TOKEN, url: h.url })).toMatchObject({ ok: true });
     expect(holds(dir, TOKEN)).toEqual([]);
     // A publication that carries the token is refused.
     writeFileSync(join(dir, 'static/notes.txt'), `deploy with ${TOKEN}\n`);
