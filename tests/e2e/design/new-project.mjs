@@ -151,6 +151,29 @@ await win.keyboard.press('ArrowRight');
 await pause(150);
 await shot('new-blank', '.starter-card[aria-checked="true"]:focus-visible', { themes: LIGHT, text: 'Blank' });
 
+// Each theme the dialog offers, so switching one for another can be judged from the previews and the line about it.
+await fresh({ recents: RECENTS });
+await openNew();
+await nameIt();
+for (const id of ['foundation', 'signal', 'editorial']) {
+  await win.selectOption('#new-project-theme', id);
+  await pause(200);
+  await shot(`new-theme-${id}`, `.starter-art[data-theme="${id}"]`, { themes: id === 'signal' ? BOTH : LIGHT, ready: ART });
+}
+
+// Shorter windows, where the previews have the least room, down to the window's minimum size.
+for (const [label, width, height] of [['short', 1280, 800], ['shorter', 1280, 730], ['minimum', 1100, 700]]) {
+  await fresh({ recents: RECENTS }, { width, height });
+  await openNew();
+  await nameIt();
+  await win.selectOption('#new-project-theme', 'signal');
+  await pause(200);
+  await shot(`new-${label}`, '.starter-art[data-theme="signal"]', { themes: LIGHT, full: true, ready: ART });
+  // The previews take the room the window can spare, never more: the ordinary form fits without scrolling.
+  const over = await win.locator('.modal-body').evaluate((b) => b.scrollHeight - b.clientHeight);
+  if (over > 1) throw new Error(`the form scrolls in a ${width}x${height} window (${over}px over)`);
+}
+
 // A long name: the destination folder and everything that repeats the name.
 await fresh({ recents: RECENTS });
 await openNew();
@@ -203,6 +226,24 @@ if (!(await win.locator('#new-project-tools-note').isVisible())) throw new Error
 const overflow = await win.locator('.modal-body').evaluate((b) => b.scrollHeight - b.clientHeight);
 if (overflow > 1) throw new Error(`the tallest form scrolls in the smallest window (${overflow}px over)`);
 
+// A long name wraps its folder onto a second line, which the previews give back: the form still fits, ordinary or
+// with a failure and the offline note.
+for (const [label, viewport, fixture] of [
+  ['new-long-short', { width: 1280, height: 800 }, {}],
+  ['new-long-smallest', SMALLEST, { tools: 'download', create: { ok: false, message: NO_PERMISSION } }]
+]) {
+  await fresh({ recents: RECENTS, ...fixture }, viewport);
+  await openNew();
+  await nameIt(LONG_NAME);
+  if (fixture.create) {
+    await create();
+    await pause(250);
+  }
+  await shot(label, '.starter-grid', { themes: LIGHT, full: true, ready: ART });
+  const over = await win.locator('.modal-body').evaluate((b) => b.scrollHeight - b.clientHeight);
+  if (over > 1) throw new Error(`${label}: the form scrolls with a wrapped folder (${over}px over)`);
+}
+
 // ---- Setup progress ----
 await fresh({ recents: RECENTS });
 await openNew();
@@ -239,32 +280,35 @@ await step('dependencies', 'Setting up website tools…', 'Installing the tools 
 await step('preview', 'Opening the project…', 'The website tools could not be downloaded, so the preview waits until you are back online.');
 await shot('progress-offline', '.progress-steps', { themes: LIGHT });
 
-// ---- Trust this project ----
-await fresh({ recents: RECENTS, open: { ok: false, needsTrust: TRUST } });
-await win.locator('.welcome-action', { hasText: 'Open project' }).click();
-await win.waitForSelector('.trust-path');
-await pause(150);
-await shot('trust', '.trust-path', { text: 'harbour-lane-studio' });
-await win.getByRole('button', { name: 'Trust and open' }).click();
-await pause(150);
-await shot('trust-opening', '.modal', { themes: LIGHT, text: 'Opening' });
+// DESIGN_CAPTURE_ONLY=new stops after New project and setup, for reviewing those alone.
+if (process.env.DESIGN_CAPTURE_ONLY !== 'new') {
+  // ---- Trust this project ----
+  await fresh({ recents: RECENTS, open: { ok: false, needsTrust: TRUST } });
+  await win.locator('.welcome-action', { hasText: 'Open project' }).click();
+  await win.waitForSelector('.trust-path');
+  await pause(150);
+  await shot('trust', '.trust-path', { text: 'harbour-lane-studio' });
+  await win.getByRole('button', { name: 'Trust and open' }).click();
+  await pause(150);
+  await shot('trust-opening', '.modal', { themes: LIGHT, text: 'Opening' });
 
-await fresh({ recents: RECENTS, open: { ok: false, needsTrust: TRUST_LONG } });
-await win.locator('.welcome-action', { hasText: 'Open project' }).click();
-await win.waitForSelector('.trust-path');
-await pause(150);
-await shot('trust-long', '.trust-path', { themes: LIGHT, text: 'greater-wellington' });
+  await fresh({ recents: RECENTS, open: { ok: false, needsTrust: TRUST_LONG } });
+  await win.locator('.welcome-action', { hasText: 'Open project' }).click();
+  await win.waitForSelector('.trust-path');
+  await pause(150);
+  await shot('trust-long', '.trust-path', { themes: LIGHT, text: 'greater-wellington' });
 
-// ---- Unpacking a project ZIP file ----
-await fresh({ recents: RECENTS });
-await send('projects:unpacking', { name: 'Harbour Lane Studio', dir: '/Users/alex/Websites/harbour-lane-studio' });
-await win.waitForSelector('.modal .trust-path');
-await pause(150);
-await shot('unpacking', '.modal', { text: 'Unpacking' });
-await win.locator('.modal').getByRole('button', { name: 'Cancel' }).click();
-await pause(150);
-await shot('unpacking-cancelling', '.modal', { themes: LIGHT, text: 'Canceling' });
-await send('projects:unpacking', null);
+  // ---- Unpacking a project ZIP file ----
+  await fresh({ recents: RECENTS });
+  await send('projects:unpacking', { name: 'Harbour Lane Studio', dir: '/Users/alex/Websites/harbour-lane-studio' });
+  await win.waitForSelector('.modal .trust-path');
+  await pause(150);
+  await shot('unpacking', '.modal', { text: 'Unpacking' });
+  await win.locator('.modal').getByRole('button', { name: 'Cancel' }).click();
+  await pause(150);
+  await shot('unpacking-cancelling', '.modal', { themes: LIGHT, text: 'Canceling' });
+  await send('projects:unpacking', null);
+}
 
 await app.close();
 cleanup();
