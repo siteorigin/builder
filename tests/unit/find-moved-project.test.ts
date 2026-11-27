@@ -139,7 +139,7 @@ describe('finding a moved project from its missing recent entry (#217)', () => {
     expect(await listed(root)).toEqual([expect.objectContaining({ dir: old, name: 'Mill Road', missing: true })]);
 
     // The report: Open project on the moved folder lists it beside the missing entry, which stays.
-    expect((await c.open(moved)).needsTrust).toEqual({ dir: moved, name: 'Mill Road' });
+    expect((await c.open(moved)).needsTrust).toEqual({ dir: moved, name: 'Mill Road', reason: 'new' });
     expect((await c.trustAndOpen(moved)).ok).toBe(true);
     await c.close();
     expect((await listed(root)).map((r) => [r.dir, r.missing])).toEqual([
@@ -174,7 +174,7 @@ describe('finding a moved project from its missing recent entry (#217)', () => {
     expect((await listed(root)).map((r) => r.dir)).toEqual([old]);
     // The moved folder is not trusted at its new place: the open stops at the trust prompt, and Cancel ends it there.
     pick(moved);
-    expect(await c.open(undefined, { folder: true, replaces: old })).toEqual({ ok: false, needsTrust: { dir: moved, name: 'Mill Road' } });
+    expect(await c.open(undefined, { folder: true, replaces: old })).toEqual({ ok: false, needsTrust: { dir: moved, name: 'Mill Road', reason: 'new' } });
     expect((await listed(root)).map((r) => r.dir)).toEqual([old]);
     // Trust and open, asked for the same entry: the moved folder takes its place.
     expect(await c.trustAndOpen(moved, { replaces: old })).toEqual({ ok: true });

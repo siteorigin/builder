@@ -146,7 +146,7 @@ await findFolder({ paths: [moved] });
 await trustPrompt().waitFor();
 assert.match(await trustPrompt().innerText(), /Mill Road/);
 // Made on this computer and only moved: the reason covers a new folder, not only another computer (#809).
-assert.match(await trustPrompt().innerText(), /no record of trusting it in this folder with these setup files\. It may have been made on another computer, moved or copied here,/);
+assert.match(await trustPrompt().innerText(), /hasn’t opened this project from this folder before\. It may have come from another computer, or been moved or copied here\./);
 await trustPrompt().getByRole('button', { name: 'Cancel' }).click();
 await trustPrompt().waitFor({ state: 'detached' });
 assert.equal(await win.locator('.welcome').count(), 1, 'Welcome is still shown');

@@ -47,8 +47,8 @@ const DENSE = Array.from({ length: 20 }, (_, i) => {
 // Two copies of one project side by side: only their folder names tell them apart.
 DENSE[18] = { ...DENSE[18], name: 'Marlow Dental', dir: `${home}/marlow-dental` };
 DENSE[19] = { ...DENSE[18], dir: `${home}/marlow-dental-copy` };
-const TRUST = { name: 'Harbour Lane Studio', dir: '/Users/alex/Downloads/harbour-lane-studio' };
-const TRUST_LONG = { name: 'Kōwhai Garden Supplies & Landscaping Co-operative of the Greater Wellington Region', dir: '/Users/alex/Downloads/from-client/2026/final-handover/kowhai-garden-supplies-and-landscaping-co-operative-of-the-greater-wellington-region' };
+const TRUST = { name: 'Harbour Lane Studio', dir: '/Users/alex/Downloads/harbour-lane-studio', reason: 'new' };
+const TRUST_LONG = { name: 'Kōwhai Garden Supplies & Landscaping Co-operative of the Greater Wellington Region', dir: '/Users/alex/Downloads/from-client/2026/final-handover/kowhai-garden-supplies-and-landscaping-co-operative-of-the-greater-wellington-region', reason: 'unpacked' };
 const CREATE_ERROR = 'Could not create the project: a folder called harbour-lane-studio already exists in ~/Websites. Choose another name or location.';
 
 // The renderer's seam: every channel it reads for this flow answers from a fixture the script controls.
@@ -251,8 +251,8 @@ await shot('trust-long', '.trust-path', LIGHT, 'greater-wellington');
 
 // ---- Unpacking a project ZIP file ----
 await fresh({ recents: RECENTS });
-await send('projects:unpacking', { name: 'Harbour Lane Studio', dir: '/Users/alex/Websites' });
-await win.waitForSelector('.modal .trust-path');
+await send('projects:unpacking', { name: 'Harbour Lane Studio', dir: '/Users/alex/Websites', folder: 'harbour-lane-studio', done: 112, total: 486 });
+await win.waitForSelector('.modal .unpack-body');
 await pause(150);
 await shot('unpacking', '.modal', BOTH, 'Unpacking');
 await win.locator('.modal').getByRole('button', { name: 'Cancel' }).click();

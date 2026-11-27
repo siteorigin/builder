@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
-import type { SavedCopy, SourceSettingsDraft } from '@shared/api';
+import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { createStarterState, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
@@ -24,7 +24,7 @@ import { placeholderImageCount } from '@generator/checks';
 import { redirectHost } from '@generator/host-redirects';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
-import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
+import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
@@ -59,7 +59,7 @@ import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/compo
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
-import { addRecent, isTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
+import { addRecent, isTrusted, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
 import { LIVE_BATCH_LABEL_MAX, type LiveEditBatch } from '@shared/live/capabilities';
@@ -183,7 +183,7 @@ async function configHash(dir: string): Promise<string> {
   return sha(parts.map((p) => p ?? '').join('\n--\n'));
 }
 
-type OpenResult = { ok: boolean; message?: string; needsTrust?: { dir: string; name: string } };
+type OpenResult = { ok: boolean; message?: string; needsTrust?: TrustRequest };
 
 /**
  * A preview server started while its project was still opening (prepareRuntime), until its start takes it over:
@@ -232,6 +232,22 @@ async function isZipFile(path: string): Promise<boolean> {
 
 /** A failure message that says which project folder it is about. */
 const inFolder = (message: string, dir: string) => `${message} Project folder: "${dir}".`;
+
+/** A file system failure a person can act on, by its cause; null for any other, which is reported as it is. */
+function actionable(e: unknown): 'full' | 'denied' | null {
+  const code = (e as NodeJS.ErrnoException | null)?.code;
+  if (code === 'ENOSPC') return 'full';
+  if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return 'denied';
+  return null;
+}
+
+/** Why a project could not be opened, in plain words and with what to do, when the cause is one a person can fix. */
+function openFailure(e: unknown, dir?: string): string | null {
+  const cause = actionable(e);
+  if (cause === 'full') return 'Your disk is full. Free up some space, then open the project again.';
+  if (cause === 'denied') return `SiteOrigin Builder does not have permission to open the files in ${dir || 'that folder'}. Move the project folder somewhere you own, such as your Documents folder, then open it again.`;
+  return null;
+}
 
 /**
  * One operation's result as a live-session guest is given it: the IDs of what it made (`nodeId`, `pageId`,
@@ -929,7 +945,7 @@ export class Controller {
     try {
       return await this.openChosen(dirArg, opts.folder === true, abort, opts.replaces);
     } catch (e) {
-      return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
+      return { ok: false, message: openFailure(e, dirArg) ?? `Could not open the project: ${(e as Error).message}` };
     } finally {
       this.openAborts.delete(abort);
     }
@@ -957,7 +973,7 @@ export class Controller {
       // The trust prompt names the project, so a manifest that cannot be read (a truncated copy, say) stops here.
       const manifest = await readManifestSummary(dir);
       if (!manifest.ok) return { ok: false, message: manifest.message };
-      return { ok: false, needsTrust: { dir, name: manifest.name } };
+      return { ok: false, needsTrust: { dir, name: manifest.name, reason: (await wasTrusted(dir)) ? 'changed' : 'new' } };
     }
     return this.openTrusted(dir, { replaces });
   }
@@ -982,6 +998,7 @@ export class Controller {
       project = await readProjectZip(file);
     } catch (e) {
       if (e instanceof ZipError) return { ok: false, message: e.message };
+      if (actionable(e) === 'denied') return { ok: false, message: `SiteOrigin Builder does not have permission to read ${basename(file)}. Copy it into your Documents folder, then open the copy.` };
       return { ok: false, message: `Could not read the ZIP file: ${(e as Error).message}` };
     }
     // Its window went while the ZIP file was read: no picker is shown over whatever replaced it.
@@ -1001,11 +1018,22 @@ export class Controller {
     const parent = canonicalDir(r.filePaths[0]);
     if (this.session && isInside(this.session.dir, parent)) return { ok: false, message: 'Choose a location outside the open project’s folder.' };
     // A trust given to an earlier folder of the same name (since deleted) never carries over to this one.
-    const run = unpackProject(file, project, parent, slugify(name) || 'website', { signal: abort.signal, beforePublish: (dir) => untrust(canonicalDir(dir)) });
+    const slug = slugify(name) || 'website';
+    // The dialog names the folder it will be in, a number added already when a folder by its name is there.
+    const folder = expectedFolder(parent, slug);
+    // The dialog counts the files as they are written, a few times a second at most.
+    let sent = 0;
+    const progress = (done: number, total: number) => {
+      const now = Date.now();
+      if (done !== 0 && done !== total && now - sent < 150) return;
+      sent = now;
+      this.send('projects:unpacking', { name, dir: parent, folder, done, total } satisfies Unpacking);
+    };
+    const run = unpackProject(file, project, parent, slug, { signal: abort.signal, beforePublish: (dir) => untrust(canonicalDir(dir)), onProgress: progress });
     // Quitting calls it off and waits for it, as for a new project being made.
     this.creations.set(run, abort);
     this.unpacking = abort;
-    this.send('projects:unpacking', { name, dir: parent });
+    progress(0, filesToWrite(project.entries, project.root));
     let dir: string;
     try {
       dir = await run;
@@ -1013,13 +1041,16 @@ export class Controller {
       // A damaged file, or files a cancelled unpacking could not remove, are explained; a cancel alone is not.
       if (e instanceof ZipError) return { ok: false, message: e.message };
       if (abort.signal.aborted) return { ok: false };
+      const cause = actionable(e);
+      if (cause === 'full') return { ok: false, message: `There is not enough space to unpack ${name} in ${parent}. Free up some space, or open the ZIP file again and choose a folder on another drive.` };
+      if (cause === 'denied') return { ok: false, message: `SiteOrigin Builder does not have permission to write to ${parent}. Open the ZIP file again and choose another folder, such as your Documents folder.` };
       return { ok: false, message: `Could not unpack ${name} into ${parent}: ${(e as Error).message}` };
     } finally {
       this.creations.delete(run);
       if (this.unpacking === abort) this.unpacking = null;
       this.send('projects:unpacking', null);
     }
-    return { ok: false, needsTrust: { dir: canonicalDir(dir), name } };
+    return { ok: false, needsTrust: { dir: canonicalDir(dir), name, reason: 'unpacked' } };
   }
 
   /** The unpacking dialog's Cancel: call off the ZIP file being unpacked (any other open waiting goes on). */
@@ -1038,7 +1069,7 @@ export class Controller {
       await trust(dir, await configHash(dir));
       return await this.openTrusted(dir, { replaces: opts.replaces });
     } catch (e) {
-      return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
+      return { ok: false, message: openFailure(e, opened) ?? `Could not open the project: ${(e as Error).message}` };
     }
   }
 
@@ -1075,7 +1106,7 @@ export class Controller {
           return { ok: false, message: inFolder(e.message, dir) };
         }
       } else if (e instanceof ProjectFormatError) return { ok: false, message: inFolder(e.message, dir) };
-      else return { ok: false, message: inFolder(`Could not open the project: ${(e as Error).message}`, dir) };
+      else return { ok: false, message: openFailure(e, dir) ?? inFolder(`Could not open the project: ${(e as Error).message}`, dir) };
     }
     // Workspace layout and recents are conveniences: a broken file or a failed save never blocks opening.
     let workspace: LocalWorkspaceState = {};
@@ -2031,9 +2062,13 @@ export class Controller {
     if (name.length > MAX_COPY_NAME) return { ok: false, field: 'name', message: `Use a name of up to ${MAX_COPY_NAME} characters.` };
     if (typeof opts.parentDir !== 'string' || !isAbsolute(opts.parentDir)) return { ok: false, field: 'location', message: 'Choose a folder for the copy.' };
     const dest = join(opts.parentDir, projectFolderName(name));
-    // The copy would land inside the folder it copies, and write into a project that may be read-only here.
-    if (isInside(s.dir, dest)) return { ok: false, field: 'location', message: 'Choose a folder outside the project folder.' };
-    const taken = { ok: false as const, field: 'location' as const, message: `A folder named “${basename(dest)}” is already there. Choose another name or folder.` };
+    // The copy would land inside the folder it copies, and write into a project that may be read-only here. Named after
+    // the project's own folder, beside it, it is that folder: a folder by that name is already there, which another
+    // name answers, as for any other.
+    const original = existsSync(dest) && canonicalDir(dest) === s.dir;
+    if (!original && isInside(s.dir, dest)) return { ok: false, field: 'location', message: 'Choose a folder outside the project folder.' };
+    // A folder by the copy's name: another name answers it as well as another folder does.
+    const taken = { ok: false as const, field: 'name' as const, message: `A folder named “${basename(dest)}” is already there. Choose another name or folder.` };
     // Claimed in the folder the author chose, which must still be there: a folder renamed or removed meanwhile is not
     // made again under its old name.
     try {
