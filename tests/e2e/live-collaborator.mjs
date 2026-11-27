@@ -76,6 +76,9 @@ try {
   const heroId = homePage.rootIds.find((id) => homePage.nodes[id].kind === 'instance' && first.state.components[homePage.nodes[id].definitionId]?.name === 'Split hero');
   assert.ok(heroId, 'the Business Home page has a Split hero');
   const savedHeading = () => JSON.parse(readFileSync(join(dir, 'siteorigin', 'pages', `${homeId}.json`), 'utf8')).nodes[heroId].props.heading;
+  const heroHeading = homePage.nodes[heroId].props.heading;
+  assert.equal(typeof heroHeading, 'string', 'the Split hero has a heading');
+  assert.equal(savedHeading(), heroHeading, 'the host’s page file holds the hero’s heading');
   const hostState = () => hw.evaluate(() => window.builder.live.state());
   const roster = async () => (await hostState()).participants ?? [];
   const remoteState = () => gw.evaluate(() => window.builder.remote.state());
@@ -117,6 +120,7 @@ try {
   step('the host admits it and makes it a Collaborator');
   await notice.getByRole('group', { name: 'Answer Ann' }).getByRole('button', { name: 'Admit as viewer' }).click();
   await eventually(async () => assert.equal((await remoteState()).phase, 'admitted'), 15000);
+  assert.equal((await remoteState()).role, 'viewer', 'Admit lets the second app in to watch; editing is given in the roster');
   const ann = (await roster()).find((p) => p.displayName === 'Ann');
   assert.ok(ann, 'Ann is in the host’s roster');
   dialog = await openShare();
@@ -134,7 +138,7 @@ try {
   // The remote shell shows the host's project, its preview served from the host through the relay.
   await gw.locator('.toolbar .remote-pill').waitFor();
   const guestFrame = gw.frameLocator('.frame-box iframe');
-  await guestFrame.locator('h1').first().waitFor({ timeout: 60000 });
+  await guestFrame.locator('h1', { hasText: heroHeading }).first().waitFor({ timeout: 60000 });
   await guestFrame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 30000 });
   assert.equal((await gw.evaluate(() => window.builder.project.snapshot())) ?? null, null, 'the second app opened no project of its own');
 
@@ -177,7 +181,7 @@ try {
     const s = await hostSnap();
     const added = s.history.entries.filter((e) => !beforeIds.has(e.id));
     assert.equal(added.length, 1, `one History step for the edit: ${added.map((e) => e.label).join(' | ')}`);
-    return { entry: added[0], revision: s.revision };
+    return { entry: added[0] };
   });
   assert.equal(made.entry.guestName, 'Ann', 'the History step is the collaborator’s');
   assert.equal(made.entry.source, 'user');
@@ -197,7 +201,8 @@ try {
   await hw.locator('[role="menu"] [role^="menuitem"]', { hasText: 'History…' }).click();
   const history = hw.getByRole('dialog', { name: 'History' });
   await history.waitFor();
-  const row = history.locator('.history-step', { has: hw.locator('.grow', { hasText: made.entry.label }) });
+  const row = history.locator('.history-step', { has: hw.locator(`[id="history-meta-${made.entry.id}"]`) });
+  assert.equal(await row.locator('.grow').innerText(), made.entry.label);
   await eventually(async () => assert.match(await row.locator('.history-step-meta').innerText(), /Ann \(guest\)/, 'the History row says the collaborator made it'));
   assert.match(await row.locator('.sr-only').innerText(), /^By Ann, a guest/);
   await hw.screenshot({ path: join(SHOTS, 'live-collaborator-history.png') });
@@ -233,8 +238,10 @@ try {
   await gw.keyboard.press('Escape');
   await eventually(async () => assert.equal(await gw.locator('.toolbar .notes-btn').getAttribute('aria-expanded'), 'false'));
 
-  step('the host refuses the collaborator’s code edit, and an export never reaches it');
+  step('the host refuses the collaborator’s code edit, and the remote shell blocks Export');
   const untouched = await hostSnap();
+  // Sent through the second app's own route to the host, past what its editor offers: the relay passes on project.apply,
+  // and the host refuses the code component in it.
   const code = await gw.evaluate(
     (id) => window.builder.remote.apply(id, { operations: [{ type: 'component.createCode', name: 'Guest widget', source: '<p>guest</p>' }] }),
     joinId
@@ -244,7 +251,8 @@ try {
   assert.equal(code.error.recoverable, false);
   assert.equal(code.error.operationIndex, 0, 'the host names the operation it refused');
   assert.match(code.error.message, /component\.createCode/);
-  // The remote shell never offers Export over the host's project: the command says to leave the session first.
+  // Export is not a call any guest can make (the relay turns away every method roles.ts does not list), and the remote
+  // shell never offers it over the host's project: the command says to leave the session first.
   await gw.evaluate(() => window.dispatchEvent(new CustomEvent('builder-command', { detail: 'export' })));
   await gw.locator('.toast', { hasText: 'Leave the live session first' }).waitFor();
   assert.equal(await gw.getByRole('dialog', { name: /Export/ }).count(), 0, 'no export dialog opens over the host’s project');
@@ -255,12 +263,13 @@ try {
     untouched.history.entries.map((e) => e.id)
   );
   assert.deepEqual(Object.keys(after.state.components).sort(), Object.keys(untouched.state.components).sort(), 'no component was made');
-  assert.deepEqual(after.recentExports ?? null, untouched.recentExports ?? null, 'the host exported nothing');
 
   step('made a Viewer, the collaborator’s next edit is refused at once');
   dialog = await openShare();
   await dialog.getByLabel('Role for Ann').selectOption('viewer');
-  // Sent as soon as the host has decided, whether or not the second app has heard yet: either it or the host refuses.
+  // Sent as soon as the host's roster has Ann as a viewer (the host narrows her access as it tells the relay, and the
+  // roster follows the relay's word), whether or not the second app has heard yet: whichever hop it reaches refuses it.
+  await eventually(async () => assert.equal((await roster()).find((p) => p.guestId === ann.guestId)?.role, 'viewer', 'the host’s roster has Ann as a viewer'));
   const demoted = await gw.evaluate(
     ({ id, heroId, homeId }) =>
       window.builder.remote.apply(id, { operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId }, nodeId: heroId, prop: 'heading', value: 'Not allowed any more' }] }),
@@ -288,8 +297,9 @@ try {
   assert.deepEqual(guest.errors, [], 'no uncaught errors in the second app’s editor');
 } finally {
   viewer?.close();
-  await guest?.app.close().catch(() => undefined);
-  await host?.app.close().catch(() => undefined);
+  // Each is let go in turn, and one that hangs does not keep the others running.
+  await withTimeout(guest?.app.close() ?? Promise.resolve(), 30000, 'Closing the second app').catch(() => guest?.app.process().kill('SIGKILL'));
+  await withTimeout(host?.app.close() ?? Promise.resolve(), 30000, 'Closing the host').catch(() => host?.app.process().kill('SIGKILL'));
   await relay?.dispose().catch(() => undefined);
 }
 // Once the apps have let go of their files.
