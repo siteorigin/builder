@@ -107,21 +107,30 @@ function repeatAround(tree: NodeTree, nodeId: string): string {
   return '';
 }
 
-/** A list's items without their IDs, which a copy makes anew: the same items in the same order are the same list. */
+/** Whether a value reads a property or an item's field (`key`), anywhere in it: a whole binding, a list item's, a field's. */
+function reads(value: unknown, key: '$prop' | '$item'): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (!Array.isArray(value) && Object.hasOwn(value, key)) return true;
+  return Object.values(value).some((v) => reads(v, key));
+}
+
+/** A list's items without their IDs, which a copy makes anew: a copy of the same items in the same order is the same list. */
 const unlisted = (value: unknown): unknown =>
   Array.isArray(value) ? value.map((item) => (item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).filter(([k]) => k !== 'id')) : item)) : value;
 
 /**
  * A placement's setting as text to compare: its own value or its design's default; for a binding, the design (or
  * page) it is read in, whose own property or item it reads, and for an item's field the list it repeats in; and the
- * collection a list is connected to, whose entries then stand in for its items.
+ * collection a list is connected to, whose entries then stand in for its items. A `copy` is compared without its
+ * list items' IDs, which copying makes anew; a placement that stays keeps them, as code may read them.
  */
-function valueOf(state: ProjectState, tree: NodeTree, scope: string, n: Instance, prop: string): string {
+function valueOf(state: ProjectState, tree: NodeTree, scope: string, n: Instance, prop: string, copy = false): string {
   const own = n.props && Object.hasOwn(n.props, prop) ? n.props[prop] : undefined;
   const value = own ?? propDefault(Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined, prop);
-  const text = routingText(unlisted(value));
-  const bound = text.includes('"$prop"') || text.includes('"$item"') ? `${text}\u0000${scope}` : text;
-  const read = text.includes('"$item"') ? `${bound}\u0000${repeatAround(tree, n.id)}` : bound;
+  const text = routingText(copy ? unlisted(value) : value);
+  const item = reads(value, '$item');
+  const bound = item || reads(value, '$prop') ? `${text}\u0000${scope}` : text;
+  const read = item ? `${bound}\u0000${repeatAround(tree, n.id)}` : bound;
   const source = n.listSources && Object.hasOwn(n.listSources, prop) ? n.listSources[prop] : undefined;
   return source === undefined ? read : `${read}\u0000${JSON.stringify(source)}`;
 }
@@ -144,9 +153,6 @@ function formBearing(state: ProjectState, protectedProps: Map<string, Set<string
   }
   return out;
 }
-
-/** Two settings' texts that send to the same place: the same, or both empty. */
-const same = (a: string, b: string) => a === b || (EMPTY_ROUTING.has(a) && EMPTY_ROUTING.has(b));
 
 const codeOf = (d: ComponentDefinition | undefined) => (d?.kind === 'code' ? `${d.source ?? ''}\u0000${JSON.stringify(d.dependencies ?? [])}` : null);
 
@@ -194,9 +200,11 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   const rewritten = Object.values(after.components).filter((d) => codeOf(d) !== null && codeOf(d) !== codeOf(def(before, d.id)) && !isShipped(d));
   for (const d of rewritten) if (bears().after.has(d.id) || bears().before.has(d.id)) add({ kind: 'code', definitionId: d.id, name: d.name }, codeOf(d)!);
 
-  // What a new placement may start as, by design: a copy of one placement before, setting for setting, or its
-  // design's defaults (as they were, or as the app ships them) with any setting left empty.
-  const copies = new Map<string, Set<string>>();
+  // What a new placement may start as, by design: a copy of one placement before, setting for setting, on the same
+  // page or in the same design (or anywhere, for a page or design the batch makes: a duplicated page), or its design's
+  // defaults (as they were, or as the app ships them) with any setting left empty. A form removed and another put in
+  // its place sends only where one there already did.
+  const copies = new Map<string, Map<string, Set<string>>>();
   const defaults = new Map<string, Map<string, Set<string>>>();
   const placed = new Map<string, { n: Instance; tree: NodeTree }>();
   for (const { owner, tree } of allTrees(before)) {
@@ -206,8 +214,10 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       placed.set(`${scope}:${n.id}`, { n, tree });
       const ps = props(n.definitionId);
       if (!ps.length) continue;
-      const set = copies.get(n.definitionId) ?? new Set<string>();
-      copies.set(n.definitionId, set.add(ps.map((p) => valueOf(before, tree, scope, n, p)).join('\u0001')));
+      const tuples = copies.get(n.definitionId) ?? new Map<string, Set<string>>();
+      const tuple = ps.map((p) => valueOf(before, tree, scope, n, p, true)).join('\u0001');
+      tuples.set(tuple, (tuples.get(tuple) ?? new Set<string>()).add(scope));
+      copies.set(n.definitionId, tuples);
     }
   }
   for (const [id] of is) {
@@ -224,7 +234,8 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   // The same goes for where a binding is read: a page or design the batch makes is named by what it is called.
   const owners = new Set(allTrees(before).map(({ owner }) => `${owner.kind}:${owner.id}`));
   for (const { owner, tree, label } of allTrees(after)) {
-    const scope = owners.has(`${owner.kind}:${owner.id}`) ? `${owner.kind}:${owner.id}` : `${owner.kind}:\u0001new\u0000${label}`;
+    const made = !owners.has(`${owner.kind}:${owner.id}`);
+    const scope = made ? `${owner.kind}:\u0001new\u0000${label}` : `${owner.kind}:${owner.id}`;
     const where = owner.kind === 'page' ? `on “${label}”` : owner.kind === 'shell' ? `in the ${label.toLowerCase()}` : owner.kind === 'component' ? `in the “${label}” design` : `in “${label}”`;
     for (const n of Object.values(tree.nodes)) {
       if (n.kind !== 'instance') continue;
@@ -235,22 +246,27 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       // set inside it): what the new design does with what carries over is its own. Only one of the app's own designs
       // taking another's place, as switching themes swaps the theme's form for the new theme's, keeps where it sends,
       // as long as every setting reads as it did.
+      const ps = props(n.definitionId);
+      const report = (p: string) => add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p) }, valueOf(after, tree, scope, n, p));
       if (prior && prior.definitionId !== n.definitionId) {
         if (!bears().before.has(prior.definitionId) && !bears().after.has(n.definitionId)) continue;
+        const had_ = (p: string) => valueOf(before, had!.tree, scope, prior, p);
         const settings = new Set([...(was.get(prior.definitionId) ?? []), ...(is.get(n.definitionId) ?? [])]);
-        const carried = isShipped(def(before, prior.definitionId)) && isShipped(def(after, n.definitionId)) && [...settings].every((p) => same(valueOf(after, tree, scope, n, p), valueOf(before, had!.tree, scope, prior, p)));
-        if (!carried) add({ kind: 'design', definitionId: n.definitionId, name, where, value: nameOf(before, prior.definitionId) }, prior.definitionId);
+        const carried = isShipped(def(before, prior.definitionId)) && isShipped(def(after, n.definitionId)) && [...settings].every((p) => valueOf(after, tree, scope, n, p) === had_(p));
+        if (carried) continue;
+        add({ kind: 'design', definitionId: n.definitionId, name, where, value: nameOf(before, prior.definitionId) }, prior.definitionId);
+        // And what it sends with, where that is not what the placement had: the user sees every address it would use.
+        for (const p of ps) if (!EMPTY_ROUTING.has(valueOf(after, tree, scope, n, p)) && valueOf(after, tree, scope, n, p) !== had_(p)) report(p);
         continue;
       }
-      const ps = props(n.definitionId);
       if (!ps.length) continue;
-      const now = ps.map((p) => valueOf(after, tree, scope, n, p));
-      const report = (p: string) => add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p) }, valueOf(after, tree, scope, n, p));
       if (prior) {
-        ps.forEach((p, i) => !same(now[i], valueOf(before, had!.tree, scope, prior, p)) && report(p));
+        for (const p of ps) if (valueOf(after, tree, scope, n, p) !== valueOf(before, had!.tree, scope, prior, p)) report(p);
         continue;
       }
-      if (copies.get(n.definitionId)?.has(now.join('\u0001'))) continue;
+      const now = ps.map((p) => valueOf(after, tree, scope, n, p, true));
+      const copied = copies.get(n.definitionId)?.get(now.join('\u0001'));
+      if (copied && (made || copied.has(scope))) continue;
       const fresh = defaults.get(n.definitionId);
       const off = ps.filter((p, i) => !EMPTY_ROUTING.has(now[i]) && !fresh?.get(p)?.has(now[i]));
       off.forEach(report);
@@ -265,7 +281,7 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
     for (const p of props(id)) {
       const value = propDefault(now, p);
       const text = routingText(unlisted(value));
-      if (prev ? same(text, routingText(unlisted(propDefault(prev, p)))) : EMPTY_ROUTING.has(text)) continue;
+      if (prev ? text === routingText(unlisted(propDefault(prev, p))) : EMPTY_ROUTING.has(text)) continue;
       add({ kind: 'default', definitionId: id, name: now.name, prop: p, label: labelOf(id, p), value }, text);
     }
   }

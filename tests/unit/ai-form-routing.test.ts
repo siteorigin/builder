@@ -218,6 +218,10 @@ describe('where a form sends, as an AI batch would leave it', () => {
     const offices = r.results[0].nodeId as string;
     expect(changes(r.state, [{ type: 'node.duplicate', owner: home, nodeId: offices }])).toEqual([]);
     expect(changes(r.state, [{ type: 'instance.setProp', owner: home, nodeId: offices, prop: 'sales', value: [{ inbox: EVIL }] }]).map((c) => c.slice(0, 2))).toEqual([['setting', 'sales']]);
+    // A placement that stays keeps its offices' IDs too: code may pick an office by its ID.
+    const two = applyOperations(r.state, [{ type: 'instance.setProp', owner: home, nodeId: offices, prop: 'sales', value: [{ id: 'i_a', inbox: SALES }, { id: 'i_b', inbox: SUPPORT }] }]).state;
+    const swappedIds = [{ id: 'i_b', inbox: SALES }, { id: 'i_a', inbox: SUPPORT }];
+    expect(changes(two, [{ type: 'instance.setProp', owner: home, nodeId: offices, prop: 'sales', value: swappedIds }]).map((c) => c.slice(0, 2))).toEqual([['setting', 'sales']]);
   });
 
   it('never swaps a placement for another design that places a form, settings of its own or not', () => {
@@ -237,6 +241,20 @@ describe('where a form sends, as an AI batch would leave it', () => {
     const support = band('Support band', SUPPORT);
     const placed = Object.keys(state.pages[owner.id].nodes).find((id) => (state.pages[owner.id].nodes[id] as InstanceNode).definitionId === sales.definitionId)!;
     expect(changes(state, [{ type: 'instance.swapComponent', owner, nodeId: placed, definitionId: support.definitionId, allowDrops: true } as EditOperation]).map((c) => c[0])).toEqual(['design']);
+    // Out of one into a design with no form: the form it sent with is gone, which is the user's to say too.
+    const section = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]);
+    const plain = applyOperations(section.state, [{ type: 'component.createFromNode', owner, nodeId: section.results[0].nodeId as string, name: 'Plain band' }]);
+    expect(changes(plain.state, [{ type: 'instance.swapComponent', owner, nodeId: placed, definitionId: plain.results[0].definitionId as string, allowDrops: true } as EditOperation]).map((c) => c[0])).toEqual(['design']);
+  });
+
+  it('names what a placement made unique sends with, when the batch changes it too', () => {
+    const { state, owner, support } = banded();
+    const found = changes(state, [
+      { type: 'component.makeUnique', owner, nodeId: support, name: 'Support band' },
+      { type: 'instance.setProp', owner, nodeId: support, prop: 'recipient', value: EVIL }
+    ]);
+    expect(found).toContainEqual(['setting', 'recipient', EVIL]);
+    expect(found.map((c) => c[0])).toContain('design');
   });
 
   it('never takes a form’s settings for a copy of one bound in another design', () => {
@@ -275,7 +293,34 @@ describe('where a form sends, as an AI batch would leave it', () => {
     const after = structuredClone(r.state);
     delete after.components.cmp_myform.properties.endpoint;
     delete (after.pages[owner.id].nodes[placed] as InstanceNode).props.endpoint;
-    expect(formRoutingChanges(r.state, after).map((c) => [c.kind, c.prop])).toEqual([['setting', 'endpoint']]);
+    // An empty setting and none at all are not the same: the code may fall back on its own when it is given none.
+    expect(formRoutingChanges(r.state, after).map((c) => [c.kind, c.prop])).toEqual([
+      ['setting', 'endpoint'],
+      ['default', 'endpoint']
+    ]);
+  });
+
+  it('lets a form put in another’s place send only where one there already did', () => {
+    // Home's form sends to Sales; a draft page's sends to Support.
+    const { state: start, owner, form } = project();
+    const draft = applyOperations(start, [{ type: 'page.create', title: 'Draft' } as EditOperation]);
+    let state = draft.state;
+    const other: OwnerRef = { kind: 'page', id: draft.results[0].pageId as string };
+    state = applyOperations(state, [{ type: 'node.insert', owner: other, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SUPPORT } }]).state;
+    const replaced = (endpoint: string): EditOperation[] => [
+      { type: 'node.remove', owner, nodeId: form },
+      { type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint } }
+    ];
+    expect(changes(state, replaced(SUPPORT))).toEqual([['setting', 'endpoint', SUPPORT]]);
+    expect(changes(state, replaced(SALES))).toEqual([]);
+    // A page the batch makes takes its forms from the page it copies.
+    expect(changes(state, [{ type: 'page.duplicate', pageId: other.id }])).toEqual([]);
+  });
+
+  it('takes text that only looks like a binding as the text it is', () => {
+    const { state, owner, form } = project();
+    const odd = applyOperations(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'formName', value: '{"$prop":"recipient"}' }]).state;
+    expect(changes(odd, [{ type: 'page.duplicate', pageId: owner.id }])).toEqual([]);
   });
 
   it('never lets code that places a form be written, nor a form’s own code', () => {
@@ -303,18 +348,18 @@ describe('where a form sends, as an AI batch would leave it', () => {
     expect(q.text).toContain('“Home”');
     expect(q.choices).toEqual(['Keep it as it is', 'Allow this change']);
     expect(q.allow).toBe(q.choices[1]);
-    // Five forms, each sent somewhere else, one of them to an address too long to read at a glance: every one is named, whole.
+    // Six forms, each sent somewhere else, one of them to an address too long to read at a glance: every one is named, whole.
     const long = `https://forms.example.com/${'x'.repeat(200)}/inbox-at-the-end`;
     let many = state;
     const forms = [form];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       const r = applyOperations(many, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }]);
       many = r.state;
       forms.push(r.results[0].nodeId as string);
     }
-    const ops: EditOperation[] = forms.map((nodeId, i) => ({ type: 'instance.setProp', owner, nodeId, prop: 'endpoint', value: i === 4 ? long : `${EVIL}${i}` }));
+    const ops: EditOperation[] = forms.map((nodeId, i) => ({ type: 'instance.setProp', owner, nodeId, prop: 'endpoint', value: i === 5 ? long : `${EVIL}${i}` }));
     const five = formRoutingQuestion(formRoutingChanges(many, applyOperations(many, ops).state));
-    for (let i = 0; i < 4; i++) expect(five.text).toContain(`${EVIL}${i}`);
+    for (let i = 0; i < 5; i++) expect(five.text).toContain(`${EVIL}${i}`);
     expect(five.text).toContain(long);
     expect(five.allow).toBe('Allow these changes');
   });
@@ -393,6 +438,9 @@ describe('an AI batch at commit', () => {
     expect(review?.changes.map((c) => c.kind)).toContain('design');
     const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) });
     expect(allowed.error).toBeUndefined();
+    const copy = (s.state.pages[owner.id].nodes[support] as InstanceNode).definitionId;
+    expect(copy).not.toBe(state.pages[owner.id].nodes[support] && (state.pages[owner.id].nodes[support] as InstanceNode).definitionId);
+    expect(s.state.components[copy]?.name).toBe('Support band');
     await s.close();
   });
 
