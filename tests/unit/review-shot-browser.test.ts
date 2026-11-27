@@ -15,7 +15,7 @@ import { shootReviewPage, type CdpPage } from '../../src/main/review-shot';
 import { routeUrl } from '../../src/shared/routes';
 
 const browserInstalled = existsSync(chromium.executablePath());
-const FONT = 'node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2';
+const FONT = 'node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2';
 
 let root = '';
 let server = '';

@@ -10,6 +10,7 @@ import { catalogueComponent, listThemes } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
 import { P } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
+import { BUILTIN_PACKS } from '@catalogue/builtin';
 import { applyOperations } from '@engine/apply';
 import { copyEditableLookup, copyEditorBatchProblem } from '@engine/copy-editor';
 import { makeInstance } from '@engine/install';
@@ -241,7 +242,9 @@ describe('what a copy editor may change', () => {
 
   it('marks the heroes’ copy and the split hero’s picture in every theme', () => {
     const themes = listThemes();
-    expect(themes.length).toBeGreaterThanOrEqual(4);
+    // Every pack the app ships (and the development fixture) is registered, so the loop below covers them all.
+    expect(themes.map((t) => t.id)).toEqual(expect.arrayContaining(BUILTIN_PACKS.map((p) => p.id)));
+    expect(themes.length).toBeGreaterThan(0);
     for (const theme of themes) {
       for (const [componentId, marked] of [
         ['hero.split', ['eyebrow', 'heading', 'lead', 'image']],

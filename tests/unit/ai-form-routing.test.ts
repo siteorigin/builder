@@ -18,6 +18,8 @@ const { applyOperations } = await import('@engine/apply');
 const { makeInstance } = await import('@engine/install');
 const { formRoutingChanges, formRoutingGrant, formRoutingQuestion, formRoutingReview } = await import('@engine/form-routing');
 const { ProjectSession } = await import('../../src/main/project/session');
+const { registerSecondTheme, SECOND_THEME_ID } = await import('./second-theme');
+registerSecondTheme();
 
 const FORM = 'foundation.contact.form';
 const SALES = 'https://forms.example.com/sales';
@@ -187,9 +189,9 @@ describe('where a form sends, as an AI batch would leave it', () => {
     const { state: start, owner } = project();
     const state = applyOperations(start, [{ type: 'theme.apply', themeId: 'foundation' } as EditOperation]).state;
     // Each theme ships its own form: switching swaps the placement for it, with its settings as they were.
-    expect(changes(state, [{ type: 'theme.apply', themeId: 'editorial' } as EditOperation])).toEqual([]);
-    const editorial = applyOperations(state, [{ type: 'theme.apply', themeId: 'editorial' } as EditOperation]).state;
-    expect(changes(editorial, [{ type: 'theme.apply', themeId: 'signal' } as EditOperation])).toEqual([]);
+    expect(changes(state, [{ type: 'theme.apply', themeId: SECOND_THEME_ID } as EditOperation])).toEqual([]);
+    const second = applyOperations(state, [{ type: 'theme.apply', themeId: SECOND_THEME_ID } as EditOperation]).state;
+    expect(changes(second, [{ type: 'theme.apply', themeId: 'foundation' } as EditOperation])).toEqual([]);
     // Swapped by hand into a design of the project's own, or out of one into the theme's, nothing says the two send
     // what carries over to the same place.
     const placed = Object.keys(state.pages[owner.id].nodes).find((id) => (state.pages[owner.id].nodes[id] as InstanceNode).definitionId === FORM)!;
