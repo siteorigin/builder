@@ -143,8 +143,9 @@ describe.skipIf(!browserInstalled)('a review page pictured in Chromium', () => {
   it('marks only the width whose layout lost a background picture unavailable', async () => {
     const desktop = await shoot('phone/', 1440);
     expect(desktop.ok).toBe(true);
-    // The picture is of the desktop layout, not of the one Chromium lays out for a moment while taking it.
-    if (desktop.ok) expect(await pixel(desktop.png, 10, 10)).toEqual([255, 255, 255]);
+    // The picture is of the desktop layout, not of the one Chromium lays out for a moment while taking it (read
+    // inside the hero, clear of its text, whose glyphs each system draws its own way).
+    if (desktop.ok) expect(await pixel(desktop.png, 700, 150)).toEqual([255, 255, 255]);
     expect(await shoot('phone/', 390)).toMatchObject({ ok: false, reason: 'assets', detail: expect.stringContaining('/client/missing-hero.png (404)') });
   });
 
