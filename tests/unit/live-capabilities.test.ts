@@ -128,9 +128,20 @@ const HOST_ONLY_METHODS = [
 
 describe('role methods', () => {
   it('lets a viewer read the project, and a copy editor and a collaborator also edit it', () => {
-    expect(VIEWER_METHODS).toEqual(['project.snapshot']);
-    expect(COPY_EDITOR_METHODS).toEqual(['project.snapshot', 'project.apply']);
-    expect(COLLABORATOR_METHODS).toEqual(['project.snapshot', 'project.apply', 'ai.send', 'ai.stop', 'ai.answer']);
+    expect(VIEWER_METHODS).toEqual(['project.snapshot', 'notes.list', 'notes.add']);
+    expect(COPY_EDITOR_METHODS).toEqual(['project.snapshot', 'notes.list', 'notes.add', 'project.apply']);
+    expect(COLLABORATOR_METHODS).toEqual(['project.snapshot', 'notes.list', 'notes.add', 'project.apply', 'notes.resolve', 'notes.delete', 'ai.send', 'ai.stop', 'ai.answer']);
+    for (const role of ['viewer', 'copy-editor', 'collaborator'] as const) {
+      expect(canCall(role, 'notes.list')).toBe(true);
+      expect(canCall(role, 'notes.add')).toBe(true);
+    }
+    // Resolving and deleting notes stays with the host and collaborators.
+    for (const role of ['viewer', 'copy-editor'] as const) {
+      expect(canCall(role, 'notes.resolve')).toBe(false);
+      expect(canCall(role, 'notes.delete')).toBe(false);
+    }
+    expect(canCall('collaborator', 'notes.resolve')).toBe(true);
+    expect(canCall('collaborator', 'notes.delete')).toBe(true);
     expect(canCall('viewer', 'project.snapshot')).toBe(true);
     expect(canCall('viewer', 'project.apply')).toBe(false);
     for (const role of ['copy-editor', 'collaborator'] as const) {
