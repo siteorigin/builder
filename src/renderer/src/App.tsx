@@ -382,9 +382,10 @@ async function restoreConversation(seq: number, remembered: string | undefined) 
     let conversation = active;
     if (!current()) return;
     if (plan.kind === 'open') conversation = await api.ai.openConversation(plan.id).catch(() => active);
-    // A new conversation left with a draft was never saved: a new one takes its place, and its draft. While a request
-    // runs in the active one (a window reloaded mid-request), none can be started: that request's thread is shown, so a
-    // question it waits on is seen, and the draft stays with the unsent conversations, to be picked up later.
+    // A new conversation left with a draft was never saved: a new one takes its place, and its draft. A request running
+    // in the active one (a window reloaded mid-request) goes on in its own thread, answered and stopped from there
+    // (#1125). One that cannot be started (the history is being cleared) leaves the active thread shown, and the draft
+    // stays with the unsent conversations, to be picked up later.
     else if (plan.kind === 'fresh' && active.messages.length) conversation = await api.ai.newConversation().catch(() => active);
     if (!current()) return;
     const id = conversation.id;
