@@ -133,7 +133,10 @@ export function StatusBar() {
   // Problems = document errors plus file conflicts and a failed save, so this never says "No problems" while the toolbar
   // shows either.
   // The project's diagnostics already list each conflict (code CONFLICT); count each one once.
-  const { dot, label, broken, phase } = runtimeInfo(runtime, pageIssue, frameReady);
+  // The project's first page on its way: a start, never a pause; said here only while the canvas is out of sight
+  // (the SEO view or the post writer over it), since the outline on it says so otherwise.
+  const info = runtimeInfo(runtime, pageIssue, frameReady);
+  const { dot, label, broken, phase } = openingPage ? { ...info, dot: 'busy', label: info.phase === 'opening' ? 'Opening page' : 'Starting preview', phase: 'starting' as const } : info;
   const errors = snap.diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0) + (snap.saveFailure ? 1 : 0);
   const warnings = snap.diagnostics.filter((d) => d.severity === 'warning').length;
   // While editing a component everywhere, the path starts at the component (plum), never at a page: its
@@ -170,7 +173,7 @@ export function StatusBar() {
   const actionable = phase === 'broken' || phase === 'stopped' || phase === 'unavailable';
   return (
     <footer className="status-bar">
-      {openingPage ? null : actionable ? (
+      {openingPage && !covered ? null : actionable ? (
         <button
           className={`row preview-status${broken ? ' error' : ''}`}
           title={`${label}: open Project health`}
