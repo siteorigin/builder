@@ -6,7 +6,7 @@ import { openDialogs, Spinner } from './components/ui';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { recentGroups, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
-import { AppMark, MARK_COLORS } from './components/AppMark';
+import { AppMark } from './components/AppMark';
 import { switchScheme, useEditorScheme } from './lib/appearance';
 import { perfMark, perfMarkOnce } from './lib/perf';
 import { loadEditor } from './lib/editor-module';
@@ -685,12 +685,15 @@ export function Welcome() {
   );
 }
 
+/** The sketch's palette: the editor's sky and ink (tokens.css --sky-1, --sky-2, --ink), with a mid sky for leaves. */
+const SKETCH_COLORS = { tileTop: '#CDEBFF', tileBottom: '#86C5FF', ground: '#5FA6EA', ink: '#23304F' };
+
 /**
  * A website taking shape, drawn in the New project dialog's sketch vocabulary: a page in a window, its headline
  * selected the way the canvas selects things. Decorative; the copy beside it says the same in words.
  */
 function SiteSketch() {
-  const mark = MARK_COLORS;
+  const mark = SKETCH_COLORS;
   return (
     <div className="hero-art" aria-hidden="true">
       <div className="sketch-window">

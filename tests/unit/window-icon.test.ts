@@ -4,7 +4,7 @@ import { windowIcon } from '../../src/main/window-icon';
 
 const here = join('/app', 'out', 'main');
 const resourcesPath = join('/opt', 'SiteOrigin Builder', 'resources');
-const devIcon = join('/app', 'build', 'icon.png');
+const devIcon = join('/app', 'build', 'icon-flat.png');
 const shippedIcon = join(resourcesPath, 'icon.png');
 const all = () => true;
 
@@ -28,6 +28,6 @@ describe('the window icon', () => {
   });
 
   it('finds the icon in this checkout for a development run', () => {
-    expect(windowIcon({ platform: 'linux', packaged: false, here: join(process.cwd(), 'out', 'main'), resourcesPath })).toBe(join(process.cwd(), 'build', 'icon.png'));
+    expect(windowIcon({ platform: 'linux', packaged: false, here: join(process.cwd(), 'out', 'main'), resourcesPath })).toBe(join(process.cwd(), 'build', 'icon-flat.png'));
   });
 });
