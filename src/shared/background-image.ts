@@ -7,8 +7,10 @@
 import { formatFocus, parseFocus } from './focus';
 import type { AssetRecord, BackgroundImageValue, StyleValue } from './types';
 
-export const BACKGROUND_SIZES = ['cover', 'contain'] as const;
-const KEYS = new Set(['assetId', 'size', 'position', 'scrim']);
+export const BACKGROUND_SIZES = ['cover', 'contain', 'tile'] as const;
+/** How wide one tile may be set, in CSS pixels. */
+export const TILE_SIZE = { min: 1, max: 4000 } as const;
+const KEYS = new Set(['assetId', 'size', 'tileSize', 'position', 'scrim']);
 const MAX_ASSET_ID = 200;
 const MAX_SCRIM = 400;
 
@@ -19,16 +21,18 @@ export function isBackgroundImageValue(v: unknown): v is BackgroundImageValue {
 
 /**
  * Why a value is not a background image this property takes, or null when it is: exactly an `assetId`, with an
- * optional `size` (cover or contain), `position` (a focus keyword or "X% Y%") and `scrim` (checked by `scrimOk`:
+ * optional `size` (cover, contain or tile), `tileSize` (one tile's width in whole CSS pixels), `position` (a focus keyword or "X% Y%") and `scrim` (checked by `scrimOk`:
  * a colour or one gradient). Whether the asset is a library image is checked against the project elsewhere.
  */
 export function backgroundImageError(v: unknown, scrimOk: (s: string) => boolean): string | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return 'Background image must be { "assetId": "..." } naming a library image, with optional size, position and scrim.';
   const extra = Object.keys(v).find((k) => !KEYS.has(k));
-  if (extra !== undefined) return `Background image holds assetId, size, position and scrim only, not "${extra.slice(0, 40)}".`;
+  if (extra !== undefined) return `Background image holds assetId, size, tileSize, position and scrim only, not "${extra.slice(0, 40)}".`;
   const b = v as Record<string, unknown>;
   if (typeof b.assetId !== 'string' || !b.assetId.trim() || b.assetId.length > MAX_ASSET_ID) return 'Background image needs the assetId of a library image.';
-  if (b.size !== undefined && !(BACKGROUND_SIZES as readonly unknown[]).includes(b.size)) return 'Background image size must be "cover" (fill the box, cropping) or "contain" (show the whole picture).';
+  if (b.size !== undefined && !(BACKGROUND_SIZES as readonly unknown[]).includes(b.size)) return 'Background image size must be "cover" (fill the box, cropping), "contain" (show the whole picture) or "tile" (repeat it).';
+  if (b.tileSize !== undefined && !(Number.isInteger(b.tileSize) && (b.tileSize as number) >= TILE_SIZE.min && (b.tileSize as number) <= TILE_SIZE.max))
+    return `Background image tileSize is the width of one tile: a whole number of CSS pixels from ${TILE_SIZE.min} to ${TILE_SIZE.max}.`;
   if (b.position !== undefined && parseFocus(b.position) === null) return 'Background image position must be center, top, bottom, left, right, or two percentages across and down such as "50% 20%".';
   if (b.scrim !== undefined && (typeof b.scrim !== 'string' || b.scrim.trim().length > MAX_SCRIM || (b.scrim.trim() !== '' && !scrimOk(b.scrim.trim()))))
     return 'Background image scrim must be a color such as rgba(0, 0, 0, 0.55) or #0008, or one linear-gradient() or radial-gradient() of such colors.';
@@ -41,7 +45,9 @@ export function backgroundImageError(v: unknown, scrimOk: (s: string) => boolean
  */
 export function canonicalBackgroundImage(v: BackgroundImageValue): BackgroundImageValue {
   const out: BackgroundImageValue = { assetId: v.assetId };
-  if (v.size === 'contain') out.size = 'contain';
+  if (v.size === 'contain' || v.size === 'tile') out.size = v.size;
+  // Kept while the picture is not tiled, for when it is again, as the focus is while nothing is cropped.
+  if (v.tileSize !== undefined) out.tileSize = v.tileSize;
   const focus = v.position === undefined ? null : parseFocus(v.position);
   const position = focus ? formatFocus(focus) : undefined;
   if (position && position !== '50% 50%') out.position = position;

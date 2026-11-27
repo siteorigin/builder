@@ -746,9 +746,10 @@ describe('what a constrained local run sends first (#364)', () => {
   /**
    * Tracked background images (#354) are another: a run that styles its selection takes backgroundImage in its
    * grammar (the property name and the image value's branch) and its signature, and its brief says to put a scrim
-   * under text, 374 bytes measured on the section and part runs. Their budgets make room for it the same way.
+   * under text, 374 bytes measured on the section and part runs. Tiling it (#1137) adds the tile fill and tileSize to
+   * the same grammar and signature, 82 bytes more on those runs. Their budgets make room for it the same way.
    */
-  const BACKGROUND_BYTES = 390;
+  const BACKGROUND_BYTES = 480;
   /**
    * Switching the theme from the brand tool (#391) is another: a site run's update_site_brand takes a `theme` among the
    * other shipped themes in its grammar and signature, and its brief says it switches the whole design and keeps the

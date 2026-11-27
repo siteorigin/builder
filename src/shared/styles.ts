@@ -165,7 +165,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   ] },
   { id: 'color', label: 'Text color', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'background', label: 'Background', description: 'A color, or a linear-, radial- or conic-gradient(). A Site styles color can be made see-through.', group: 'appearance', kind: 'color', tokenGroup: 'color' },
-  { id: 'backgroundImage', label: 'Background image', group: 'appearance', kind: 'media', description: 'A picture from the library behind the content: filling the box, cropped around its focus, or shown whole. A scrim (a color or gradient over the picture) keeps text on top readable. The background color shows wherever the picture does not reach.' },
+  { id: 'backgroundImage', label: 'Background image', group: 'appearance', kind: 'media', description: 'A picture from the library behind the content: filling the box, cropped around its focus, shown whole, or repeated as a tile. A scrim (a color or gradient over the picture) keeps text on top readable. The background color shows wherever the picture does not reach.' },
   { id: 'border', label: 'Border', group: 'appearance', kind: 'border', tokenGroup: 'border' },
   edge('borderBlockStart', 'Border top', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderBlockEnd', 'Border bottom', 'appearance', 'border', 'border', '1px solid #ddd'),

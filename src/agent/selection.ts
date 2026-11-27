@@ -7,6 +7,7 @@ import { variantOptions } from '@shared/variants';
 import { z } from 'zod';
 import { DIVIDER_ICON, DIVIDER_SHAPES, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, isBinding, isGroupStyleState, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import { BACKGROUND_IMAGE, STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
+import { TILE_SIZE } from '@shared/background-image';
 import { CONTAINER_SCOPE_HELP, STATE_STYLE_WORDS, STYLE_PROPS, isStateStyleProp, placementStyleControls, stateStyleError, styleOptionWords } from '@shared/styles';
 import { codeTakesOverrides, getTree } from '@engine/tree';
 import { TABLE_ACTIONS, TABLE_LIMITS, type TableAction } from '@engine/table';
@@ -185,7 +186,8 @@ export const STYLE_VALUE: JsonSchema = {
       type: 'object',
       properties: {
         assetId: { type: 'string', description: 'backgroundImage only: the ID of a library image (search_assets finds one).' },
-        size: { type: 'string', enum: ['cover', 'contain'], description: 'cover (the default) fills the box and crops; contain shows the whole picture.' },
+        size: { type: 'string', enum: ['cover', 'contain', 'tile'], description: 'cover (the default) fills the box and crops; contain shows the whole picture; tile repeats it, for a pattern or grain.' },
+        tileSize: { type: 'integer', minimum: TILE_SIZE.min, maximum: TILE_SIZE.max, description: 'tile only: the width of one tile in CSS pixels. Without it the picture keeps its own size.' },
         position: { type: 'string', description: 'The focus kept in view when cropped: "X% Y%" across and down, such as "50% 30%". Defaults to the center.' },
         scrim: { type: 'string', description: 'A color such as "rgba(0, 0, 0, 0.55)" or one linear-gradient() painted over the picture, so text on top stays readable.' }
       },

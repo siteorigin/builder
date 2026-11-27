@@ -21,6 +21,7 @@ import { defFile, generateComponentsCss, generateProject, generateSiteCss, nodeC
 import { fileVar } from '@generator/background';
 import { captureStyle, planStylePaste } from '../../src/renderer/src/lib/style-copy';
 import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
+import { imageInfo } from '../../src/main/project/media';
 
 const HERO: AssetRecord = {
   id: 'a_hero',
@@ -188,6 +189,87 @@ describe('the backgroundImage value', () => {
     expect(partStyleControls(def, 'lead')).toEqual(['color', 'background']);
     def.parts.root.styleControls = ['paddingBlock', 'color'];
     expect(partStyleControls(def, 'root')).toEqual(['paddingBlock', 'color']);
+  });
+});
+
+describe('a tiled background image', () => {
+  const GRAIN: AssetRecord = { ...OTHER, id: 'a_grain', name: 'Paper grain', file: 'static/assets/grain-11112222.png', mime: 'image/png', hash: 'h-grain', width: 128, height: 128 };
+  const DOTS: AssetRecord = { ...OTHER, id: 'a_dots', name: 'Dot grid', file: 'static/assets/dots-33334444.svg', mime: 'image/svg+xml', hash: 'h-dots', width: 24, height: 24 };
+  const tiles = () => {
+    const s = studio();
+    s.assets.assets.a_grain = structuredClone(GRAIN);
+    s.assets.assets.a_dots = structuredClone(DOTS);
+    return s;
+  };
+  const band = `.${pageNodeClass('n_band')}`;
+  const declared = (css: string, name: string) => new RegExp(`${band.replace('.', '\\.')} \\{\\n(?:\\t[^\\n]*\\n)*?\\t${name}: ([^;]*);`).exec(css)?.[1];
+  const geometry = (s: ProjectState) => {
+    const css = generateSiteCss(s);
+    return ['size', 'position', 'repeat'].map((n) => declared(css, `--so-bg-${n}`));
+  };
+
+  it('takes a tile width in whole pixels, kept while the picture is not tiled', () => {
+    for (const tileSize of [1, 24, 4000]) expect(validateStyleValue('backgroundImage', { assetId: 'a_hero', size: 'tile', tileSize })).toBeNull();
+    for (const tileSize of [0, -4, 1.5, 4001, NaN, Infinity, '24px'])
+      expect(validateStyleValue('backgroundImage', { assetId: 'a_hero', size: 'tile', tileSize } as never), String(tileSize)).toMatch(/tileSize/);
+    expect(canonicalStyleValue({ tileSize: 24, size: 'tile', assetId: 'a_hero' })).toEqual({ assetId: 'a_hero', size: 'tile', tileSize: 24 });
+    expect(canonicalStyleValue({ assetId: 'a_hero', size: 'cover', tileSize: 24 })).toEqual({ assetId: 'a_hero', tileSize: 24 });
+    expect(validateOperation({ type: 'node.setStyle', owner: owner(studio()), nodeId: 'n_band', scope: 'base', property: 'backgroundImage', value: { assetId: 'a_hero', size: 'tile', tileSize: 24 } }).ok).toBe(true);
+    expect(() => setBg(studio(), { assetId: 'a_hero', size: 'tile', tileSize: 0 })).toThrow(/tileSize/);
+  });
+
+  it('repeats only the picture, from the top left, under a scrim drawn once over the whole box', () => {
+    const scrim = 'linear-gradient(to bottom, rgba(0, 0, 0, 0), #000000cc)';
+    const s = setBg(tiles(), { assetId: 'a_grain', size: 'tile', tileSize: 96, position: '30% 20%', scrim });
+    expect(generateSiteCss(s)).toContain(`--so-bg-image: ${scrim}, url("/assets/grain-11112222.png");`);
+    expect(geometry(s)).toEqual(['100% 100%, 96px auto', 'center, 0% 0%', 'no-repeat, repeat']);
+    expect(geometry(setBg(s, { assetId: 'a_grain', size: 'tile', tileSize: 96 }))).toEqual(['96px auto', '0% 0%', 'repeat']);
+    // Back to filling the box: the focus returns, nothing repeats, and the width waits for the next tiling.
+    const covered = setBg(s, { assetId: 'a_grain', tileSize: 96, position: '30% 20%', scrim });
+    expect(geometry(covered)).toEqual(['100% 100%, cover', 'center, 30% 20%', 'no-repeat, no-repeat']);
+    expect(generateSiteCss(covered)).not.toContain('96px');
+  });
+
+  it('sizes a tile with no width set by the picture itself, and an SVG by the width on record', () => {
+    expect(geometry(setBg(tiles(), { assetId: 'a_grain', size: 'tile' }))[0]).toBe('auto');
+    // A viewBox-only SVG has no size of its own: "auto" would stretch one tile over the box.
+    expect(geometry(setBg(tiles(), { assetId: 'a_dots', size: 'tile' }))[0]).toBe('24px auto');
+    const s = tiles();
+    delete s.assets.assets.a_dots.width;
+    expect(geometry(setBg(s, { assetId: 'a_dots', size: 'tile' }))[0]).toBe('auto');
+    // The width on record comes from the viewBox alone, so an SVG without one has only its own width and height.
+    expect(imageInfo(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"></svg>'), 'image/svg+xml')).toBeNull();
+    expect(imageInfo(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"></svg>'), 'image/svg+xml')).toMatchObject({ width: 24, height: 24 });
+  });
+
+  it('keeps its width and scrim when the picture is replaced, and takes the new one’s own size without a width', () => {
+    const replace = (s: ProjectState) => apply(s, [{ type: 'asset.replace', assetId: 'a_dots', withAssetId: 'a_grain' }]).state;
+    const sized = replace(setBg(tiles(), { assetId: 'a_dots', size: 'tile', tileSize: 48, scrim: '#0008' }));
+    expect(home(sized).nodes.n_band.styles?.base?.backgroundImage).toEqual({ assetId: 'a_grain', size: 'tile', tileSize: 48, scrim: '#0008' });
+    expect(geometry(sized)).toEqual(['100% 100%, 48px auto', 'center, 0% 0%', 'no-repeat, repeat']);
+    expect(generateSiteCss(sized)).not.toContain('dots-33334444');
+    expect(geometry(replace(setBg(tiles(), { assetId: 'a_dots', size: 'tile' })))[0]).toBe('auto');
+  });
+
+  it('tiles the original at every screen size, never a copy that would change the tile', () => {
+    const css = generateSiteCss(setBg(tiles(), { assetId: 'a_hero', size: 'tile' }));
+    expect(css).not.toContain('image-set(');
+    expect(css).not.toContain('-960w');
+    // Each size still names the picture in its own rule, so it keeps winning over a weaker cropped one.
+    expect(css).toMatch(/@media \(max-width: 767\.98px\) \{\n\t\.so-n-n_band \{\n\t\t--so-bg-image: url\("\/assets\/harbour-1a2b3c4d\.jpg"\);/);
+  });
+
+  it('never shares a design’s file variable between a tiled and a cropped use of one picture', () => {
+    const s = studio();
+    const def = toned(s);
+    def.variantAxes!.tone.options.light.styles = { root: { base: { backgroundImage: { assetId: 'a_hero', size: 'tile' } } } };
+    const shared = generateComponentsCss(s);
+    const own = generateProject(s).get(defFile(def))!;
+    const tiled = shared.slice(shared.indexOf('@media (max-width: 767.98px)'));
+    expect(tiled).toContain(`.${variantClass(def, 'tone', 'light')}.${nodeClass(def, 'root')} {\n\t\t--so-bg-image: var(${fileVar('a_hero')});`);
+    expect(tiled).toContain(`var(${fileVar('a_hero', 768)});`);
+    expect(own).toContain(`${fileVar('a_hero')}: url("/assets/harbour-1a2b3c4d.jpg");`);
+    expect(own).toContain(`${fileVar('a_hero', 768)}: image-set(`);
   });
 });
 

@@ -61,7 +61,7 @@ const FONT_FACE = z.object({
 /** A style's token link: `{ token }`, or a colour token at part strength, `{ token, alpha }` (checked by validateStyleValue). */
 export const STYLE_TOKEN_REF = z.object({ token: z.string(), alpha: z.number().optional() }).strict();
 /** backgroundImage's value: a library image by asset ID, how it fills the box, its focus and a scrim (checked by validateStyleValue). */
-export const BACKGROUND_IMAGE = z.object({ assetId: z.string(), size: z.enum(['cover', 'contain']).optional(), position: z.string().optional(), scrim: z.string().optional() }).strict();
+export const BACKGROUND_IMAGE = z.object({ assetId: z.string(), size: z.enum(['cover', 'contain', 'tile']).optional(), tileSize: z.number().optional(), position: z.string().optional(), scrim: z.string().optional() }).strict();
 /** Any style property's value: a literal, a token link, or (backgroundImage only) a library image. */
 export const STYLE_VALUE = z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE]);
 const styleValue = STYLE_VALUE;
@@ -497,7 +497,7 @@ export const OPERATION_SCHEMAS = {
     scope,
     state: styleState.optional(),
     property: z.string().describe('Style property ID, e.g. paddingBlock, background, textStyle, gap, columns.'),
-    value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. color and background also take a color token at part strength, {"token": "color.surface", "alpha": 0.7} for 70%, for a see-through surface (with backdropBlur, frosted glass); a plain {"token"} sets it back to full strength. objectPosition also takes a focal point "X% Y%" (each 0 to 100). backgroundImage (containers and sections) takes a library image: {"assetId": "...", "size": "cover" or "contain", "position": "50% 30%", "scrim": "rgba(0, 0, 0, 0.55)" or one linear-gradient()}; size, position and scrim are optional, and a scrim keeps text over the picture readable. gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem" or "repeat(auto-fit, minmax(18rem, 1fr))"; rowSpan 1 to 6. On a grid, gridAutoFlow "dense" fills holes with later items, and gridAutoRows takes one row size such as "minmax(12rem, auto)" or "1fr". null removes the override.')
+    value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. color and background also take a color token at part strength, {"token": "color.surface", "alpha": 0.7} for 70%, for a see-through surface (with backdropBlur, frosted glass); a plain {"token"} sets it back to full strength. objectPosition also takes a focal point "X% Y%" (each 0 to 100). backgroundImage (containers and sections) takes a library image: {"assetId": "...", "size": "cover", "contain" or "tile" (repeat it, for a pattern or grain), "tileSize": 24, "position": "50% 30%", "scrim": "rgba(0, 0, 0, 0.55)" or one linear-gradient()}; size, tileSize (one tile\'s width in whole CSS pixels, only used by "tile"; without it the picture keeps its own size), position and scrim are optional, and a scrim keeps text over the picture readable. gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem" or "repeat(auto-fit, minmax(18rem, 1fr))"; rowSpan 1 to 6. On a grid, gridAutoFlow "dense" fills holes with later items, and gridAutoRows takes one row size such as "minmax(12rem, auto)" or "1fr". null removes the override.')
   }),
   'node.resetStyles': z.object({
     type: z.literal('node.resetStyles'),

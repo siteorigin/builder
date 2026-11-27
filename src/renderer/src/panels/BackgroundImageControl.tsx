@@ -1,11 +1,12 @@
 import { useId, useState, type CSSProperties } from 'react';
 import type { BackgroundImageValue, ResponsiveScope, StyleValue } from '@shared/types';
-import { canonicalBackgroundImage, isBackgroundImageValue } from '@shared/background-image';
+import { BACKGROUND_SIZES, TILE_SIZE, canonicalBackgroundImage, isBackgroundImageValue } from '@shared/background-image';
 import { isScrim } from '@shared/styles';
 import { ColorTextInput } from '../components/ColorTextInput';
 import { normalizeColorText } from '@shared/color-names';
 import { assetUrl } from '../lib/model';
 import { selectedRatio, useOverlay, useStore } from '../store';
+import { DraftInput } from '../components/ui';
 import { FocusEditor } from './FocusEditor';
 import { ImageEditor } from './PropEditors';
 
@@ -13,6 +14,45 @@ type Size = Exclude<ResponsiveScope, 'base'>;
 
 /** Why an overlay typed can't be used: it is drawn over the picture, so only colours and gradients spelled out in full. */
 const OVERLAY_REFUSED = 'An overlay is a color, such as #00000080, black or rgba(0, 0, 0, 0.5), or a linear-gradient() or radial-gradient() of such colors.';
+
+/** A typed tile width, with or without "px": undefined for an empty field, NaN for anything but a whole number. */
+const readTileWidth = (text: string) => {
+  const t = text.trim();
+  return t === '' ? undefined : /^\d+(\s*px)?$/i.test(t) ? parseInt(t, 10) : NaN;
+};
+
+/** Why a typed tile width can't be saved, or null when it can. */
+function tileWidthProblem(text: string): { message: string } | null {
+  const n = readTileWidth(text);
+  return n === undefined || (n >= TILE_SIZE.min && n <= TILE_SIZE.max) ? null : { message: `A tile width is a whole number of pixels from ${TILE_SIZE.min} to ${TILE_SIZE.max}, or empty for Automatic.` };
+}
+
+/** One tile's width, typed: emptied, the tile takes its own size again. Refused text stays, with the reason under it. */
+function TileWidthInput({ id, className, value, ariaLabel, onSave }: { id: string; className: string; value: number | undefined; ariaLabel: string; onSave: (width: number | undefined) => unknown }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const problemId = useId();
+  return (
+    <div className="style-media-field">
+      <DraftInput
+        id={id}
+        className={className}
+        value={value === undefined ? '' : String(value)}
+        placeholder="Automatic"
+        ariaLabel={ariaLabel}
+        aria-invalid={problem ? true : undefined}
+        aria-describedby={problem ? problemId : undefined}
+        check={tileWidthProblem}
+        onProblem={(p) => setProblem(p?.message ?? null)}
+        onCommit={(t) => (tileWidthProblem(t) ? false : onSave(readTileWidth(t)))}
+      />
+      {problem && (
+        <div className="field-error style-media-error" id={problemId} role="alert">
+          {problem} <span className="field-saved">Not saved.</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Overlays to start from: a colour or gradient over the picture, so text on top stays readable. Stored as its `scrim`. */
 export const SCRIM_PRESETS: Array<{ value: string; label: string }> = [
@@ -27,7 +67,8 @@ export const SCRIM_PRESETS: Array<{ value: string; label: string }> = [
 export function describeBackgroundImage(v: StyleValue | undefined): string {
   if (!isBackgroundImageValue(v)) return '';
   const preset = SCRIM_PRESETS.find((p) => p.value === v.scrim);
-  return ['Picture', v.size === 'contain' ? 'whole' : 'filling', v.scrim ? (preset ? preset.label.toLowerCase() : 'with an overlay') : 'no overlay'].join(' · ');
+  const fill = v.size === 'contain' ? 'whole' : v.size === 'tile' ? (v.tileSize === undefined ? 'tiled' : `tiled at ${v.tileSize}px`) : 'filling';
+  return ['Picture', fill, v.scrim ? (preset ? preset.label.toLowerCase() : 'with an overlay') : 'no overlay'].join(' · ');
 }
 
 /** An overlay as a background layer: a gradient as it is, a colour as a flat gradient, so it can sit over another layer. */
@@ -35,7 +76,7 @@ const overlayLayer = (scrim: string) => (/gradient\(/i.test(scrim) ? scrim : `li
 
 /**
  * The Background image control, across the whole row: the picture, chosen from the library as a site image is (no
- * description: it is decoration), with its overlay drawn over the thumbnail; then how it fills the box, the overlay,
+ * description: it is decoration), with its overlay drawn over the thumbnail; then how it fills the box (a tile's width while it repeats), the overlay,
  * and, while it fills the box, the point kept in view, chosen on the picture as an image's focus is. A picture showing
  * through from elsewhere shows here with its settings, and changing any of them makes this value its own copy. Each
  * change is one edit of the whole value; None removes it here, so what the design or All sizes sets shows through.
@@ -70,7 +111,7 @@ export function BackgroundImageControl({
   const state = useStore((s) => s.snapshot?.state);
   const runtime = useStore((s) => s.runtime);
   const boxRatio = useOverlay(selectedRatio);
-  const ids = { fit: useId(), scrim: useId(), scrimText: useId(), focus: useId() };
+  const ids = { fit: useId(), tile: useId(), scrim: useId(), scrimText: useId(), focus: useId() };
   // Custom just chosen: the field shows, seeded with the overlay there is, until a colour is saved or another is picked.
   const [drafting, setDrafting] = useState(false);
   const value = isBackgroundImageValue(raw) ? raw : undefined;
@@ -85,7 +126,8 @@ export function BackgroundImageControl({
   const preset = drafting ? 'custom' : SCRIM_PRESETS.some((p) => p.value === scrim) ? scrim : scrim ? 'custom' : '';
   const asset = shown && Object.hasOwn(state.assets.assets, shown.assetId) ? state.assets.assets[shown.assetId] : undefined;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
-  const contain = shown?.size === 'contain';
+  // Only a picture filling the box is cropped, so only it has a point to keep in view.
+  const cropped = !shown?.size || shown.size === 'cover';
   // The box the picture fills, measured on the canvas where it shows this size.
   const ratio = previewed ? boxRatio : null;
   const swatch = scrim && isScrim(scrim) ? ({ '--overlay': overlayLayer(scrim) } as CSSProperties) : undefined;
@@ -107,10 +149,23 @@ export function BackgroundImageControl({
       {shown && (
         <div className="style-media-options">
           <label htmlFor={ids.fit}>Fill</label>
-          <select id={ids.fit} className={`select sm grow style-select${mark(!!value?.size)}`} value={shown.size ?? 'cover'} onChange={(e) => write({ ...shown, size: e.target.value === 'contain' ? 'contain' : undefined })}>
+          <select id={ids.fit} className={`select sm grow style-select${mark(!!value?.size)}`} value={shown.size ?? 'cover'} onChange={(e) => write({ ...shown, size: BACKGROUND_SIZES.find((s) => s === e.target.value) })}>
             <option value="cover">Fill the box (crop)</option>
             <option value="contain">Show the whole picture</option>
+            <option value="tile">Tile (repeat)</option>
           </select>
+          {shown.size === 'tile' && (
+            <>
+              <label htmlFor={ids.tile}>Tile width (px)</label>
+              <TileWidthInput
+                id={ids.tile}
+                className={`input sm style-input${mark(value?.tileSize !== undefined)}`}
+                value={shown.tileSize}
+                ariaLabel={`${label}: tile width in pixels`}
+                onSave={(tileSize) => write({ ...shown, tileSize })}
+              />
+            </>
+          )}
           <label htmlFor={ids.scrim}>Overlay</label>
           <span className={`style-field${swatch && !drafting ? ' has-lead' : ''}`}>
             {swatch && !drafting && <span className="color-chip style-lead style-overlay-swatch" aria-hidden="true" />}
@@ -158,8 +213,8 @@ export function BackgroundImageControl({
               />
             </div>
           )}
-          {/* Nothing is cropped while the whole picture shows: the point is kept for when it fills the box again. */}
-          {!contain && (
+          {/* Nothing is cropped while the picture shows whole or tiled: the point is kept for when it fills the box again. */}
+          {cropped && (
             <div className="style-media-focus" role="group" aria-labelledby={ids.focus}>
               <span className="style-media-label" id={ids.focus}>
                 Focus
