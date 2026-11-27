@@ -167,8 +167,8 @@ try {
   await win.keyboard.press('Escape');
   await blur();
 
-  // ---- Description near its limit, being typed: the count takes its line under the field ----
-  await shot('near-limit', ['textarea:focus', '.field-count'], {
+  // ---- Description near its limit, being typed: the count in the box's corner, the hint under the box ----
+  await shot('near-limit', ['textarea:focus', '.field-frame:has(textarea:focus) > .field-count'], {
     before: async () => {
       const field = brief.locator('textarea').first();
       await field.click();

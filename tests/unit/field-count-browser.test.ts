@@ -192,6 +192,23 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     expect(hint.top - lg.box.bottom).toBeLessThanOrEqual(6);
   });
 
+  it('resizes the box by the grip at its corner, the count staying inside it', async () => {
+    const box = field('Default description');
+    const before = await geometry(box);
+    // The grip is the frame's bottom-right corner.
+    await page.mouse.move(before.box.right - 3, before.box.bottom - 3);
+    await page.mouse.down();
+    await page.mouse.move(before.box.right - 3, before.box.bottom + 57, { steps: 4 });
+    await page.mouse.up();
+    const after = await geometry(box);
+    expect(after.box.bottom - before.box.bottom).toBeGreaterThan(40);
+    // The text takes the new height, and the count keeps its corner below it.
+    expect(after.text.bottom - before.text.bottom).toBeGreaterThan(40);
+    const c = await rect(await countOf(box));
+    expect(inside(c, after.box)).toBe(true);
+    expect(after.box.bottom - c.bottom).toBeLessThan(10);
+  });
+
   it('shows a quiet count inside its field while it is being typed in', async () => {
     const name = field('Name');
     const count = await countOf(name);
@@ -218,6 +235,16 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     expect(c.left).toBeLessThanOrEqual(g.box.left + 1);
     const hint = await rect(hintOf(box));
     expect(hint.top).toBeGreaterThanOrEqual(c.bottom);
+    // The box, not the borderless text inside it, takes the red edge.
+    const edge = (sel: string) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).borderTopColor);
+    const red = await page.evaluate(() => {
+      const probe = document.body.appendChild(document.createElement('i'));
+      probe.style.color = 'var(--red)';
+      const c = getComputedStyle(probe).color;
+      probe.remove();
+      return c;
+    });
+    await expect.poll(() => edge('.field-frame:has(textarea[aria-invalid="true"])')).toBe(red);
     // Back under the limit, the count goes back inside, with focus still in the field.
     await box.fill('x'.repeat(150));
     await expect.poll(() => count.getAttribute('class')).not.toContain('field-error');
