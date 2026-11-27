@@ -356,10 +356,13 @@ export function Canvas() {
   /** While dragging to reorder: the insertion line in page pixels (null where the drop would change nothing) and
    *  the name of what is moving. */
   const [reorder, setReorder] = useState<{ line: Rect | null; name: string; clip?: EdgeView | null } | null>(null);
-  /** While a tile from Insert, or the selection by its grip (`moving`), is dragged onto the page: where the pointer is,
-   *  and what dropping there does (in page pixels, the gap's line and the outline of the container it goes into;
-   *  `refused` says why it can't go there). */
-  const [insertDrop, setInsertDrop] = useState<{ name: string; moving?: boolean; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[]; clip?: EdgeView | null } | null>(null);
+  /** While a tile from Insert, or the selection by its grip (`moving`), is dragged onto the page: what dropping where
+   *  the pointer is does (in page pixels, the gap's line and the outline of the container it goes into; `refused` says
+   *  why it can't go there). It changes only when what it draws does: the pointer itself is `insertPoint`. */
+  const [insertDrop, setInsertDrop] = useState<{ name: string; moving?: boolean; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[]; clip?: EdgeView | null } | null>(null);
+  /** Where the pointer of a drag onto the page is, for what it carries beside the pointer (DragGhost), which follows it
+   *  without the canvas rendering again. */
+  const insertPoint = useRef<DragPoint>({ x: 0, y: 0, moved: null });
   /** The drag onto the page that is running (see startCanvasDrop); `source`: the selection a move drags. */
   const insertDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void; source?: string } | null>(null);
   /** What the page measured the selected and hovered boxes for, so an Add button is drawn only on the box of what it
@@ -2192,7 +2195,10 @@ export function Canvas() {
     let released = false;
     // Where a release would put it now: the place, or why it can't go there, and whether the pointer is on the page.
     let aim: { at: A | null; refused: string | null; over: boolean } = { at: null, refused: null, over: false };
+    /** What the canvas last drew for the drag: it renders again only when that changes, never for the pointer alone. */
+    let drawn = '';
     const show = () => {
+      perfCount('canvas.dropShows');
       const wrap = wrapRef.current?.getBoundingClientRect();
       const view = canvasRef.current?.querySelector('.canvas-scroll')?.getBoundingClientRect();
       const inBox = (b: DOMRect | undefined) => !!b && point.x >= b.left && point.x <= b.right && point.y >= b.top && point.y <= b.bottom;
@@ -2212,7 +2218,17 @@ export function Canvas() {
           label = t.label ?? label;
         }
       }
-      setInsertDrop({ name: d.name, ...(d.moving ? { moving: true } : {}), x: point.x, y: point.y, over, line, outline, label, refused: aim.refused, surfaces: lists ? surfaces : [], clip: shownFrame()?.clip ?? null });
+      const clip = shownFrame()?.clip ?? null;
+      // What it carries moves only once the page's boxes have been read: moved first, it would make the reads lay the window out again.
+      const p = insertPoint.current;
+      p.x = point.x;
+      p.y = point.y;
+      p.moved?.();
+      const shown = { name: d.name, ...(d.moving ? { moving: true } : {}), over, line, outline, label, refused: aim.refused, surfaces: lists ? surfaces : [], clip };
+      const key = JSON.stringify(shown);
+      if (key === drawn) return;
+      drawn = key;
+      setInsertDrop(shown);
     };
     const requests: string[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2290,8 +2306,12 @@ export function Canvas() {
       const ids = measureIds(specs);
       // Measured on a page a save has not reached yet: where a drop would go is read from the page before the save.
       const behind = pageBehind();
+      const asked = perfOn ? performance.now() : 0;
+      perfCount('canvas.dropMeasures');
+      perfCount('canvas.dropMeasured', ids.length);
       void measureDescs(listDescs(owner, ids), requests).then((rects) => {
         measuring = false;
+        if (perfOn) perfMark('canvas.dropMeasure', { ms: performance.now() - asked, lists: ids.length });
         if (done) return;
         const take = () => {
           listsBehind = behind;
@@ -2327,6 +2347,7 @@ export function Canvas() {
         post('scrollBy', { y: rest / (shown.wrap.width / getState().viewport) });
         measure(true);
       }
+      perfCount('canvas.dropScrolls');
       show();
     };
     const tick = (now: number) => {
@@ -3504,13 +3525,44 @@ export function Canvas() {
       {/* What a drag from Insert carries, beside the pointer wherever it is in the window. */}
       {insertDrop &&
         createPortal(
-          <div className={`insert-ghost${insertDrop.refused ? ' refused' : ''}`} style={{ left: insertDrop.x + 14, top: insertDrop.y + 12 }} aria-hidden="true">
+          <DragGhost point={insertPoint} className={`insert-ghost${insertDrop.refused ? ' refused' : ''}`}>
             {insertDrop.moving ? <GripVertical /> : <Plus />}
             <span>{insertDrop.name}</span>
-          </div>,
+          </DragGhost>,
           document.body
         )}
     </main>
+  );
+}
+
+/** Where a drag's pointer is, and what moves with it (DragGhost's own placing, while it is shown). */
+interface DragPoint {
+  x: number;
+  y: number;
+  moved: (() => void) | null;
+}
+
+/** What a drag carries, 14 px right of and 12 px below the pointer, placed on every move of it (`point.moved`) without
+ *  a render: a pointer move that changes nothing else the drag shows renders nothing. */
+function DragGhost({ point, className, children }: { point: React.MutableRefObject<DragPoint>; className: string; children: React.ReactNode }) {
+  const el = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const p = point.current;
+    const place = () => {
+      if (!el.current) return;
+      el.current.style.left = `${p.x + 14}px`;
+      el.current.style.top = `${p.y + 12}px`;
+    };
+    place();
+    p.moved = place;
+    return () => {
+      if (p.moved === place) p.moved = null;
+    };
+  }, [point]);
+  return (
+    <div ref={el} className={className} aria-hidden="true">
+      {children}
+    </div>
   );
 }
 

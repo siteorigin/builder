@@ -284,6 +284,35 @@ read and hashed, sample images imported, npm runs, the npm dependency trees work
 dialog's check `dialogIdealTrees`) and checks of the tools; the longest main-process stall. Run them on `small` alone:
 the project made is the same whatever the fixture.
 
+**`drag`** (after `open`): with the home hero selected by a click on it and the page at its top, press its chip's grip and
+drag it: 10 moves down the canvas, 15 into the band along its bottom edge (28 px inside it, about 440 px a second),
+120 held there a pixel either way while the page scrolls under the pointer, and 15 back up to the middle of the
+canvas, one move every 16 ms; 400 ms later, let it go. Checks: the page scrolled at least 300 px while the pointer was
+held in the band, a drop line showed inside the part of the page the canvas shows, the drag said "Split hero after …"
+as it was let go, and the release moved the hero, as one revision, at least two sections down, after the section the
+drag named, with the page's other sections in the order they were. Done again when the preview loaded a page or the
+project was read from disk before the release (an undo puts back a drop that landed first), as `canvas`'s windows
+are; an attempt that fails holding the grip lets it go with Escape. Over the
+window from the press to the release: `drag.ms`, `canvasRenders`, `dropShows` (the drag worked out where a drop would
+go: a pointer move, a scroll step, a measure landing), `measures` and `listsMeasured` (the page asked where its lists
+are, and how many), `scrollSteps` (steps of the edge scroll), `measureMs` (median time for the page to answer a
+measure), `rendererCommits`, `renders`, and from the frame watch `frames`, `droppedFrames`, `frameMs` (the window's
+length over its frames), `longestFrameMs`, `longTasks` and `longTaskMs`; the frame period at rest,
+`drag.framePeriodMs`.
+
+**`colour`** (after `open`): in Site styles, the Brand color's native picker (the first row of Basics) dragged around the
+hue circle: 60 steps 5° apart, an `input` event every 16 ms as the native picker sends them, then `change` as it is let
+go; until the project, the picker and the preview's primary button show the last color picked, every save has landed
+and the revision has stopped moving. Checks: the project, the picker and `tokens.json` on disk hold the last color
+picked, the drag made one step in History, and one undo puts the color back, in the project and the preview; the main
+process began at least one of the edits before the picker was let go (the page follows a drag). Run once: a reload
+the drag's own saves set off is the drag's. From the drag's first step to settled: `colour.dragMs` (first step to release), `applies` (edits
+the main process took in, `controller.apply`), `appliesPerSecond` (those begun during the drag, over its length),
+`queueDeepest` (the most edits in the main process at once, waiting or running), `durableWrites`, `fsyncs` and
+`fileWrites` (in those edits), `lastSaveMs` (release to the last edit's answer), `settleMs` (release to the preview
+showing the settled revision), `previewUpdates`, `snapshotsSent` and `snapshotBytes`, `rendererCommits`, and the
+longest main-process stall.
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -434,7 +463,8 @@ dependency trees worked out to check what they need, `src/main/runtime/manager.t
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes
 React renders before and after the panel), `chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model
 text read into blocks), `canvas.renders`, `canvas.rectReports`, `canvas.rectReportsSame` and `canvas.hoverReports` (the
-`canvas` scenario's) (renderer). The main process also
+`canvas` scenario's), `canvas.dropShows`, `canvas.dropMeasures`, `canvas.dropMeasured` and `canvas.dropScrolls` (a drag
+onto the page, `drag`'s) (renderer). The main process also
 watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
 lateness (a block shorter than about 70 ms can go unseen).
 

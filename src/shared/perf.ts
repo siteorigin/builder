@@ -52,7 +52,8 @@ export type PerfSent = Pick<PerfRecord, 't' | 'name' | 'ms' | 'attrs' | 'c'> & {
 
 const NAME = /^[a-z][a-zA-Z0-9._:-]{0,99}$/;
 const MAX_ATTRS = 16;
-const MAX_COUNTERS = 32;
+/** The editor alone counts some 30 (two for each of its timed panels): room for every scenario's own. */
+const MAX_COUNTERS = 64;
 
 /** A mark or counter name: lowercase first, then letters, digits and `._:-`, at most 100 characters. */
 export const perfName = (name: unknown): name is string => typeof name === 'string' && NAME.test(name);
