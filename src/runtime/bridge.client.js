@@ -6,6 +6,12 @@ const sessionId = window.name || '';
 const parentWin = window.parent;
 let mode = 'edit';
 let revision = 0;
+/**
+ * The editor measures this page in a frame of its own (a page check, a component preview), named so from its first
+ * load and through any reload (MEASURING_SESSION_PREFIX in the editor): it never speaks for the canvas, so it
+ * acknowledges no update the preview server waits on before the next save replaces files.
+ */
+const measuring = sessionId.startsWith('so-measure-');
 let selected = null; // descriptor
 let hovered = null;
 // The empty slots of the selected placement the editor draws Add buttons in (#657): measured with each outline.
@@ -2926,7 +2932,12 @@ function atWidth(width, deadline) {
   });
 }
 
+/**
+ * Waits for the page's images, then its web fonts, then any finite animation under way and a frame; says how long each
+ * took (ms: `frame` is the last two), for the editor's timing marks.
+ */
 async function settled(deadline) {
+  const t0 = performance.now();
   // Asked for first: the browser can hold this until the page has loaded, which waits for its images.
   const fonts = document.fonts ? document.fonts.ready : Promise.resolve();
   // Hydration or an update can replace images while earlier ones load, so look again until none is pending.
@@ -2939,9 +2950,22 @@ async function settled(deadline) {
     if (!pending.length) break;
     await until(deadline, Promise.all(pending.map(imageDone)));
   }
+  const t1 = performance.now();
   await until(deadline, fonts);
-  // The final layout, once what changes it has arrived.
-  await until(deadline, new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const t2 = performance.now();
+  // The final layout, once what changes it has arrived: two frames, then any entrance or transition under way is let
+  // end where the page comes to rest (measured part way, a box sliding in would read as overflow), and two frames more,
+  // in which a step one sets off as it ends has started, and so on. One that never ends (a spinner) or waits to be
+  // started (an entrance below the screen) is not waited for.
+  const frames = () => until(deadline, new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  for (let round = 0; round < 4; round++) {
+    await frames();
+    const ending = typeof document.getAnimations === 'function' ? document.getAnimations().filter((a) => a.playState === 'running' && Number.isFinite(a.effect?.getComputedTiming?.().endTime)) : [];
+    if (!ending.length || Date.now() >= deadline) break;
+    await until(deadline, Promise.all(ending.map((a) => a.finished.catch(() => undefined))));
+  }
+  const t3 = performance.now();
+  return { images: Math.round(t1 - t0), fonts: Math.round(t2 - t1), frame: Math.round(t3 - t2) };
 }
 
 /**
@@ -5127,7 +5151,7 @@ window.addEventListener('message', async (e) => {
       try {
         // A frame the editor sized for this measurement (a component shown on its own) is measured at that width.
         await atWidth(m.payload.width, started + 2500);
-        await settled(started + 4000);
+        const waited = await settled(started + 4000);
         // The page's sections, as the editor lists them, when it asks for the notes on their rhythm.
         const ids = Array.isArray(m.payload.rootIds) ? m.payload.rootIds.filter((id) => typeof id === 'string') : null;
         const page = typeof m.payload.pageId === 'string' && ids ? { pageId: m.payload.pageId, rootIds: ids } : null;
@@ -5136,6 +5160,8 @@ window.addEventListener('message', async (e) => {
         // Element IDs whose findings alone are listed (validate_project narrowed to them).
         const focus = Array.isArray(m.payload.focus) ? m.payload.focus.filter((id) => typeof id === 'string') : undefined;
         report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000, { readability: m.payload.readability === true, gaps: m.payload.gaps === true, page, ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) });
+        // How long the page took to settle, when the editor asks (a page check, for its timing marks).
+        if (m.payload.timing === true && report && typeof report === 'object') report.settled = waited;
       } catch (err) {
         // A failed measurement is answered as one, never left for the editor to time out on.
         report = { error: `The page could not be measured: ${String((err && err.message) || err).slice(0, 200)}` };
@@ -5290,8 +5316,9 @@ if (import.meta.hot) {
       requestAnimationFrame(() => {
         settleDrafts();
         send('revisionApplied', { revision: applied });
-        // The preview server waits for this before the editor replaces the files of the next save.
-        import.meta.hot.send('siteorigin:applied', { revision: applied, batch });
+        // The preview server waits for this before the editor replaces the files of the next save: the canvas's, not a
+        // measuring frame's, which may take an update long before the canvas has.
+        if (!measuring) import.meta.hot.send('siteorigin:applied', { revision: applied, batch });
       })
     );
   });

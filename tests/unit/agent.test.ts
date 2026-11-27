@@ -10,7 +10,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
-import { findingsOf, introducedProblems, requestedWidths } from '@agent/preview-check';
+import { findingsOf, inTurns, introducedProblems, MEASURE_AT_ONCE, requestedWidths } from '@agent/preview-check';
 import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, requestAuthority, requestedAuthority, widenChoices, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
@@ -4998,6 +4998,140 @@ describe('the preview check before a changed run finishes (#742)', () => {
     expect(result?.status).toBe('cancelled');
     expect(env.session.revision).toBe(0);
     expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
+  });
+});
+
+describe('page checks and reads that do not wait on each other (#976)', () => {
+  const clean = (width: number) => ({ viewportWidth: width, documentWidth: width, issues: [] });
+  /** A preview whose answers take a moment, counting how many page checks are under way at once and at what revision. */
+  const slowPreview = (session: () => ProjectSession, ms = 20) => {
+    const seen = { now: 0, most: 0, calls: [] as Array<[string, number, number]> };
+    const inspectLayout = async (pageId: string, width: number) => {
+      seen.calls.push([pageId, width, session().revision]);
+      seen.most = Math.max(seen.most, ++seen.now);
+      await new Promise((r) => setTimeout(r, ms));
+      seen.now--;
+      return clean(width);
+    };
+    return { seen, inspectLayout };
+  };
+
+  it('measures the pages a batch reaches, and the finish its pages, a few at a time, all before the batch lands', async () => {
+    let preview!: ReturnType<typeof slowPreview>;
+    const env = await setup(
+      [
+        () => [
+          call('s1', 'apply_operations', {
+            expectedRevision: 0,
+            operations: env.session.state.site.pageOrder.map((pageId) => ({ type: 'node.setStyle', owner: { kind: 'page', id: pageId }, nodeId: env.session.state.pages[pageId].rootIds[0], scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } }))
+          })
+        ],
+        () => finish('Gave every page more room.')
+      ],
+      { inspectLayout: (pageId, width) => preview.inspectLayout(pageId, width) }
+    );
+    preview = slowPreview(() => env.session);
+    const pages = env.session.state.site.pageOrder;
+    expect(pages.length).toBeGreaterThanOrEqual(3);
+    const { result } = await env.run('Give every page more room');
+    expect(result?.status).toBe('completed');
+    const before = preview.seen.calls.filter(([, , r]) => r === 0);
+    const after = preview.seen.calls.filter(([, , r]) => r === 1);
+    // Each page at the preview's width, then each at phone width, all as they were; then each as the run left it.
+    expect(before).toEqual([...pages.map((p) => [p, 1280, 0]), ...pages.map((p) => [p, 390, 0])]);
+    expect(after.map(([p, w]) => [p, w]).sort()).toEqual(pages.map((p) => [p, 1280]).sort());
+    expect(preview.seen.most).toBe(MEASURE_AT_ONCE);
+    expect(result!.checks?.filter((c) => /Fits the screen at desktop width on/.test(c.text))).toHaveLength(pages.length);
+  });
+
+  it('runs the reads and page checks one response asks for together, and reports each in its turn', async () => {
+    let preview!: ReturnType<typeof slowPreview>;
+    let results: Array<{ callId: string; content: string }> = [];
+    const env = await setup(
+      [
+        () => {
+          const [home, about] = env.session.state.site.pageOrder;
+          return [
+            calls(
+              ['i1', 'inspect_layout', { pageId: home, viewport: 'desktop' }],
+              ['r1', 'read_page', { pageId: home }],
+              ['i2', 'inspect_layout', { pageId: about, viewport: 'phone' }]
+            )
+          ];
+        },
+        (req) => {
+          results = req.items.filter((i) => i.kind === 'tool_result') as never;
+          return finish('Both pages fit.');
+        }
+      ],
+      { inspectLayout: (pageId, width) => preview.inspectLayout(pageId, width) }
+    );
+    preview = slowPreview(() => env.session, 40);
+    const { result } = await env.run('Do the home and about pages fit?');
+    expect(result?.status).toBe('no-changes');
+    expect(preview.seen.most).toBe(2);
+    expect(results.map((r) => r.callId)).toEqual(['i1', 'r1', 'i2']);
+    expect(JSON.parse(results[0].content)).toMatchObject({ ok: true, viewport: 'desktop' });
+    expect(JSON.parse(results[2].content)).toMatchObject({ ok: true, viewport: 'phone' });
+  });
+
+  it('runs no more page checks at once than the preview check does, however many one response asks for', async () => {
+    let preview!: ReturnType<typeof slowPreview>;
+    let order: string[] = [];
+    const env = await setup(
+      [
+        () => {
+          const pages = env.session.state.site.pageOrder;
+          const views = ['phone', 'tablet', 'desktop'] as const;
+          return [calls(...Array.from({ length: 7 }, (_, i): [string, string, unknown] => [`i${i}`, 'inspect_layout', { pageId: pages[i % pages.length], viewport: views[i % 3] }]))];
+        },
+        (req) => {
+          order = req.items.filter((i) => i.kind === 'tool_result').map((i) => (i as { callId: string }).callId);
+          return finish('Checked them.');
+        }
+      ],
+      { inspectLayout: (pageId, width) => preview.inspectLayout(pageId, width) }
+    );
+    preview = slowPreview(() => env.session, 30);
+    const { result } = await env.run('Check the pages at every width');
+    expect(result?.status).toBe('no-changes');
+    expect(preview.seen.calls).toHaveLength(7);
+    expect(preview.seen.most).toBe(MEASURE_AT_ONCE);
+    expect(order).toEqual(['i0', 'i1', 'i2', 'i3', 'i4', 'i5', 'i6']);
+  });
+
+  it('starts no read before a change the same response makes ahead of it: it reads what the change left', async () => {
+    let read = '';
+    const env = await setup([
+      () => {
+        const home = env.session.state.site.homePageId;
+        return [calls(['a1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'page.update', pageId: home, title: 'Start here' }] }], ['r1', 'read_page', { pageId: home }])];
+      },
+      (req) => {
+        read = (req.items.filter((i) => i.kind === 'tool_result').at(-1) as { content: string }).content;
+        return finish('Renamed it.');
+      }
+    ]);
+    const { result } = await env.run('Rename the home page to Start here');
+    expect(result?.status).toBe('completed');
+    expect(read).toContain('Start here');
+  });
+
+  it('runs work a few at a time, started in order, and gives the results in that order', async () => {
+    const started: number[] = [];
+    let now = 0;
+    let most = 0;
+    const out = await inTurns([5, 1, 4, 2, 3, 0], 2, async (ms) => {
+      started.push(ms);
+      most = Math.max(most, ++now);
+      await new Promise((r) => setTimeout(r, ms * 5));
+      now--;
+      return ms * 10;
+    });
+    expect(out).toEqual([50, 10, 40, 20, 30, 0]);
+    expect(started).toEqual([5, 1, 4, 2, 3, 0]);
+    expect(most).toBe(2);
+    expect(await inTurns([], 3, async () => 1)).toEqual([]);
   });
 });
 

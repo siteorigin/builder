@@ -18,7 +18,7 @@ import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import { generateProject } from '../../src/generator/index';
 import type { ChatMessage, Conversation } from '../../src/shared/api';
-import { envelopeReply, MockOpenAIServer, textReply } from '../../tests/unit/mock-openai-server';
+import { DONE, envelopeReply, MockOpenAIServer, sseChunk, textReply, toolCallReply, type MockReply } from '../../tests/unit/mock-openai-server';
 import { createStarterState, STARTER_ASSETS } from '../../src/catalogue/starters';
 import { projectFolderName } from '../../src/shared/project-name';
 import type { FixtureSpec } from './fixtures';
@@ -2763,7 +2763,319 @@ export const editFullHistory: Scenario = {
   measure: (trace) => measureEdit(trace, 'editFullHistory')
 };
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, panels, chat, aiEdit, canvas, drag, colour, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
+// ---------------------------------------------------------------------------
+// ai
+// ---------------------------------------------------------------------------
+
+/** Pages the scripted run changes directly (the first that have a placement with a Heading), and pages its request names besides. */
+export const AI_EDITED_PAGES = 3;
+export const AI_NAMED_PAGES = 4;
+/** The brand colour the run sets: a change every page shows. */
+export const AI_BRAND = '#1f3a8a';
+export const aiHeading = (heading: string) => `${heading} (sharper)`;
+const AI_RUN_MS = 240_000;
+
+export interface AiPlan {
+  /** The pages it edits: each's first section repeated (so a page loaded before the change is missing a section) and its first Heading changed. */
+  edited: Array<{ pageId: string; title: string; nodeId: string; heading: string; firstRoot: string }>;
+  /** The pages the request names, which the preview check samples for the brand colour. */
+  named: Array<{ pageId: string; title: string }>;
+  request: string;
+  operations: unknown[];
+}
+
+/** What the scripted run asks for and does, from the project as it is before the request. */
+export function aiPlan(state: ProjectState): AiPlan {
+  const order = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id));
+  const edited = order
+    .map((pageId) => ({ pageId, page: state.pages[pageId], hero: findHeading(state.pages[pageId]) }))
+    .filter((p) => p.hero && p.page.rootIds.length)
+    .slice(0, AI_EDITED_PAGES)
+    .map(({ pageId, page, hero }) => ({ pageId, title: page.title, nodeId: hero!.id, heading: hero!.heading, firstRoot: page.rootIds[0] }));
+  const named = order
+    .filter((id) => !edited.some((e) => e.pageId === id))
+    .slice(0, AI_NAMED_PAGES)
+    .map((pageId) => ({ pageId, title: state.pages[pageId].title }));
+  const list = (xs: string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
+  const request = `Give the site a deeper brand colour, and on ${list(edited.map((e) => e.title))} repeat the opening section and sharpen its heading.${named.length ? ` Check that ${list(named.map((n) => n.title))} still look right.` : ''}`;
+  const operations = [
+    { type: 'token.set', tokenId: 'color.brand', value: AI_BRAND },
+    ...edited.flatMap((e) => [
+      { type: 'node.duplicate', owner: { kind: 'page', id: e.pageId }, nodeId: e.firstRoot },
+      { type: 'instance.setProp', owner: { kind: 'page', id: e.pageId }, nodeId: e.nodeId, prop: 'heading', value: aiHeading(e.heading) }
+    ])
+  ];
+  return { edited, named, request, operations };
+}
+
+/** One reply carrying several native tool calls, as a model asking for independent reads at once sends them. */
+export function toolCallsReply(calls: Array<{ id: string; name: string; args: unknown }>): MockReply {
+  return {
+    frames: [
+      sseChunk({ role: 'assistant', content: null }),
+      ...calls.flatMap((c, index) => [sseChunk({ tool_calls: [{ index, id: c.id, type: 'function', function: { name: c.name, arguments: '' } }] }), sseChunk({ tool_calls: [{ index, function: { arguments: JSON.stringify(c.args) } }] })]),
+      sseChunk({}, 'tool_calls'),
+      DONE
+    ]
+  };
+}
+
+/** A measurement of a page for the assistant: main's request and answer, and the editor's loads of the page for it. */
+export interface AiMeasurement {
+  start: number;
+  end: number;
+  ok: boolean;
+  /** The project revision the page was checked at, as main asked. */
+  revision: number;
+  /** When the page answered its last load. */
+  answered: number;
+  /** Before the first load: getting the request to the editor and any wait for the preview. */
+  settleMs: number;
+  /** Each load's frame set going until the page said it was ready, added up. */
+  loadMs: number;
+  /** Each ready page until it answered (or its deadline), added up. */
+  measureMs: number;
+  /** Of that, what the page waited for before measuring (each load's, added up): its images, its web fonts, then a frame. */
+  waitImagesMs: number;
+  waitFontsMs: number;
+  waitFrameMs: number;
+  /** A second load because the first looked behind, and the wait before it. */
+  retried: boolean;
+  retryWaitMs: number;
+}
+
+/** Every measurement main asked the editor for in [from, to], each with the editor's loads for it; null when a load's marks are missing. */
+export function aiMeasurements(trace: Trace, from: number, to: number): AiMeasurement[] | null {
+  const out: AiMeasurement[] = [];
+  for (const r of trace.all('ai.inspect', inProc('main'), from, to)) {
+    const req = r.attrs?.req;
+    const start = r.t - (r.ms ?? NaN);
+    const mine = (name: string) => trace.all(name, (x) => x.proc === 'renderer' && x.attrs?.req === req);
+    const loads = mine('inspect.load');
+    const ready = mine('inspect.ready');
+    const done = mine('inspect.done');
+    if (!loads.length || done.length !== loads.length || loads.length > 2) return null;
+    const at = (xs: PerfRecord[], attempt: number) => xs.find((x) => x.attrs?.attempt === attempt);
+    let loadMs = 0;
+    let measureMs = 0;
+    const waits = { images: 0, fonts: 0, frame: 0 };
+    for (const l of loads) {
+      const attempt = l.attrs?.attempt as number;
+      const d = at(done, attempt);
+      const rd = at(ready, attempt);
+      if (!d) return null;
+      // A page that never said it was ready spent its whole time loading.
+      loadMs += (rd ?? d).t - l.t;
+      measureMs += rd ? d.t - rd.t : 0;
+      // A page that answered nothing of its waits (an error) waited for none of them.
+      for (const k of ['images', 'fonts', 'frame'] as const) if (typeof d.attrs?.[k] === 'number') waits[k] += d.attrs[k] as number;
+    }
+    const first = at(loads, 1);
+    const second = at(loads, 2);
+    if (!first) return null;
+    out.push({ start, end: r.t, ok: r.attrs?.ok === true, revision: typeof r.attrs?.revision === 'number' ? r.attrs.revision : NaN, answered: at(done, loads.length)?.t ?? NaN, settleMs: first.t - start, loadMs, measureMs, waitImagesMs: waits.images, waitFontsMs: waits.fonts, waitFrameMs: waits.frame, retried: !!second, retryWaitMs: second ? second.t - (at(done, 1)?.t ?? NaN) : 0 });
+  }
+  return out;
+}
+
+/** A run's measurements, and those made by its page checks the model asked for, before its batch landed and at its finish. */
+export function aiPhases(trace: Trace, run: PerfRecord): { all: AiMeasurement[]; tool: AiMeasurement[]; baseline: AiMeasurement[]; final: AiMeasurement[]; baselines: PerfRecord[]; finals: PerfRecord[] } | null {
+  const from = run.t - (run.ms ?? NaN);
+  const all = aiMeasurements(trace, from, run.t);
+  if (!all) return null;
+  const within = (spans: PerfRecord[]) => (x: AiMeasurement) => spans.some((s) => x.start >= s.t - (s.ms ?? 0) && x.end <= s.t);
+  const baselines = trace.all('ai.baselines', inProc('main'), from, run.t);
+  const finals = trace.all('ai.finalCheck', inProc('main'), from, run.t);
+  const inspectTools = trace.all('ai.tool', (r) => r.proc === 'main' && r.attrs?.tool === 'inspect_layout', from, run.t);
+  return { all, tool: all.filter(within(inspectTools)), baseline: all.filter(within(baselines)), final: all.filter(within(finals)), baselines, finals };
+}
+
+/** How long at least one of these stretches was under way: overlapping ones count once. */
+export function coveredMs(stretches: Array<{ start: number; end: number }>): number {
+  let total = 0;
+  let reach = -Infinity;
+  for (const s of [...stretches].sort((a, b) => a.start - b.start)) {
+    if (s.end <= reach) continue;
+    total += s.end - Math.max(s.start, reach);
+    reach = s.end;
+  }
+  return total;
+}
+
+/** The latest conversation saved for this project that holds `request`, with its last message. */
+function savedRun(chatDir: string, request: string): ChatMessage | null {
+  if (!existsSync(chatDir)) return null;
+  for (const f of readdirSync(chatDir).filter((n) => n.endsWith('.json'))) {
+    const conv = JSON.parse(readFileSync(join(chatDir, f), 'utf8')) as Conversation;
+    const i = conv.messages.findIndex((m) => m.role === 'user' && m.text === request);
+    if (i >= 0) return conv.messages.at(-1) ?? null;
+  }
+  return null;
+}
+
+export const ai: Scenario = {
+  name: 'ai',
+  after: 'open',
+  description: 'Ask the assistant (a scripted model) for a site-wide change: one turn of reads and page checks together, one batch of changes, and the preview check before it finishes.',
+  deadlineMs: AI_RUN_MS + 60_000,
+  async run(ctx) {
+    const { win } = ctx;
+    const server = await new MockOpenAIServer().start();
+    try {
+      // The scripted model in native tool mode, which may ask for several calls at once; set untimed, as the reload is.
+      await win.evaluate((url) => (globalThis as unknown as EditorPage).builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL: url, allowRemote: false, toolMode: 'native', contextWindow: 131_072 } } } as never), server.baseURL);
+      await win.reload();
+      await win.locator('.editor').waitFor({ timeout: 60_000 });
+      await preview(win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
+      await win.locator('.dock-tab', { hasText: 'AI' }).first().click();
+      await composer(win).waitFor({ timeout: 15_000 });
+      // An edit of the whole site, as a person picks it in the composer.
+      const ask = win.getByRole('button', { name: /^What your next message does: Ask/ });
+      if (await ask.count()) {
+        await ask.first().click();
+        await win.getByRole('menuitemradio', { name: /^Edit/ }).click();
+      }
+      await win.getByRole('button', { name: /^What the AI may change:/ }).first().click();
+      await win.getByRole('menuitemradio', { name: /^Whole site/ }).or(win.getByRole('menuitem', { name: /^Whole site/ })).first().click();
+      await expectChip(win);
+      const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+      expect(before, 'no project is open');
+      const plan = aiPlan(before.state);
+      expect(plan.edited.length > 0, 'the fixture has no page with a Heading to change');
+      await composer(win).fill(plan.request);
+      // Choosing the mode and scope saves the workspace 300 ms later: that lands before the request is sent.
+      await sleep(WORKSPACE_SAVE_WAIT_MS);
+      // Reads and page checks in one response, then one batch of changes, then the answer.
+      server.script(
+        toolCallsReply([...plan.edited.map((e, i) => ({ id: `call_read${i}`, name: 'read_page', args: { pageId: e.pageId } })), ...plan.edited.map((e, i) => ({ id: `call_inspect${i}`, name: 'inspect_layout', args: { pageId: e.pageId, viewport: 'desktop' } }))]),
+        toolCallReply('apply_operations', { expectedRevision: before.revision, operations: plan.operations }, { id: 'call_apply' }),
+        textReply('The brand colour is deeper, and those pages open with their first section twice and a sharper heading.')
+      );
+      // Anything the app asks the model after that (a nudge to finish) is answered as done.
+      server.respond = () => textReply('Done.');
+      await ctx.mark('scenario.start', { scenario: 'ai' });
+      await ctx.mark('ai.requested');
+      await win.keyboard.press('Enter');
+      await win.waitForFunction(() => !!(globalThis as unknown as DomPage).document.querySelector('.run-strip'), undefined, { timeout: 30_000 });
+      await win.waitForFunction(() => !(globalThis as unknown as DomPage).document.querySelector('.run-strip'), undefined, { timeout: AI_RUN_MS, polling: 100 });
+      await ctx.mark('ai.finished');
+      // The run did its job: finished, its batch landed whole, in the project, on disk and in the preview.
+      const chatDir = join(ctx.projectDir, '.siteorigin', 'sessions', 'chat');
+      const end = Date.now() + 15_000;
+      let result = savedRun(chatDir, plan.request)?.result;
+      while (!result && Date.now() < end) {
+        await sleep(100);
+        result = savedRun(chatDir, plan.request)?.result;
+      }
+      expect(result, 'the run’s result was not saved with its conversation');
+      expect(result.status === 'completed', `the run ended ${result.status}: ${result.summary}`);
+      // The scripted three steps and nothing more: a run that took a repair turn, or stopped short, is another run.
+      const asked = server.requests.filter((q) => q.method === 'POST').length;
+      expect(asked === 3, `the run asked the model ${asked} times, not 3`);
+      const unchecked = (result.checks ?? []).filter((c) => /could not|couldn.t|not caught up/i.test(c.text));
+      expect(!unchecked.length, `the preview check did not run on every page: ${unchecked.map((c) => c.text).join(' ')}`);
+      const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+      expect(after && after.revision === before.revision + 1, `the run left the project at revision ${after?.revision}, not ${before.revision + 1}`);
+      expect((after.state.tokens.overrides as Record<string, unknown>)['color.brand'] === AI_BRAND, 'the project does not hold the new brand colour');
+      const tokensDoc = join(ctx.projectDir, 'siteorigin', 'tokens.json');
+      expect(existsSync(tokensDoc) && readFileSync(tokensDoc, 'utf8').includes(AI_BRAND), 'the tokens document on disk does not hold the new brand colour');
+      for (const e of plan.edited) {
+        const page = after.state.pages[e.pageId];
+        expect(page.rootIds.length === before.state.pages[e.pageId].rootIds.length + 1, `${e.title} does not have its first section twice`);
+        expect(findHeading(page, e.nodeId)?.heading === aiHeading(e.heading), `${e.title} does not hold its new heading`);
+        const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${e.pageId}.json`);
+        const saved = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
+        expect(findHeading(saved, e.nodeId)?.heading === aiHeading(e.heading), `${e.title}’s document on disk does not hold its new heading`);
+      }
+      const home = plan.edited.find((e) => e.pageId === before.state.site.homePageId);
+      if (home) await preview(win).getByText(aiHeading(home.heading), { exact: true }).first().waitFor({ timeout: 30_000 });
+      // Every page the run checked, this run's (not an earlier one's in the same launch): its reads' turn checked the
+      // pages it edits at desktop width; before the batch landed, each page it reaches as it was, at phone width (and
+      // desktop for those its reads had not); the finish every page it changed or the request named; each answered.
+      const requested = (t: Trace) => t.first('ai.requested', inProc('main'));
+      const runOf = (t: Trace) => t.first('ai.run', inProc('main'), requested(t)?.t ?? Infinity);
+      const t = await ctx.waitTrace((t) => !!runOf(t), 15_000);
+      const run = runOf(t);
+      expect(run, 'the run’s span is not in the trace');
+      const phases = aiPhases(t, run);
+      expect(phases, 'a measurement’s loads are missing from the trace');
+      const failed = phases.all.filter((m) => !m.ok).length;
+      expect(!failed, `${failed} of ${phases.all.length} measurements of the preview did not answer`);
+      const [edited, named] = [plan.edited.length, plan.named.length];
+      const want = { tool: edited, baseline: edited + 2 * named, final: edited + named };
+      for (const k of ['tool', 'baseline', 'final'] as const) expect(phases[k].length === want[k], `the run made ${phases[k].length} ${k} measurements, not ${want[k]}`);
+      // No page checked after the change answered before the preview had it: a check that read the page from before
+      // the edit and came back at once would be fast and wrong.
+      const landed = before.revision + 1;
+      const published = t.first('runtime.published', (r) => r.proc === 'main' && typeof r.attrs?.revision === 'number' && r.attrs.revision >= landed, run.t - (run.ms ?? 0));
+      const early = phases.all.filter((m) => m.revision >= landed && !(published && m.answered >= published.t));
+      expect(!early.length, `${early.length} measurements after the change answered before the preview published it`);
+      await sleep(ctx.settleMs);
+      await ctx.mark('scenario.end', { scenario: 'ai' });
+      await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('ai', 'renderer')) && !!t.first('scenario.end', forScenario('ai', 'main')));
+    } finally {
+      await server.stop();
+    }
+  },
+  measure(trace) {
+    const m = new Collector();
+    const req = m.need('ai.requested (main)', trace.first('ai.requested', inProc('main')));
+    const run = m.need('ai.run', trace.first('ai.run', inProc('main'), req?.t ?? Infinity));
+    if (!req || !run) return m;
+    const from = run.t - (run.ms ?? NaN);
+    m.span('ai.runMs', run);
+    m.since('ai.replyMs', req, run);
+    const phases = aiPhases(trace, run);
+    if (!phases) {
+      m.need('inspect.load / inspect.done (a measurement’s loads)', undefined);
+      return m;
+    }
+    const { all, baselines, finals } = phases;
+    m.need('ai.baselines', baselines[0]);
+    m.need('ai.finalCheck', finals[0]);
+    m.count('ai.measurements', all.length);
+    m.count('ai.toolMeasurements', phases.tool.length);
+    m.count('ai.baselineMeasurements', phases.baseline.length);
+    m.count('ai.finalMeasurements', phases.final.length);
+    m.count('ai.retries', all.filter((x) => x.retried).length);
+    const sum = (f: (x: AiMeasurement) => number) => all.reduce((n, x) => n + f(x), 0);
+    m.ms('ai.measureMsSum', sum((x) => x.end - x.start));
+    const wall = coveredMs(all);
+    m.ms('ai.measureWallMs', wall);
+    if (typeof run.ms === 'number' && run.ms > 0) m.share('ai.measureShare', wall / run.ms);
+    m.ms('ai.settleMs', median(all.map((x) => x.settleMs)));
+    m.ms('ai.loadMs', median(all.map((x) => x.loadMs)));
+    m.ms('ai.measureMs', median(all.map((x) => x.measureMs)));
+    m.ms('ai.waitImagesMs', median(all.map((x) => x.waitImagesMs)));
+    m.ms('ai.waitFontsMs', median(all.map((x) => x.waitFontsMs)));
+    m.ms('ai.waitFrameMs', median(all.map((x) => x.waitFrameMs)));
+    m.ms('ai.settleMsTotal', sum((x) => x.settleMs));
+    m.ms('ai.loadMsTotal', sum((x) => x.loadMs));
+    m.ms('ai.measureMsTotal', sum((x) => x.measureMs));
+    m.ms('ai.retryWaitMsTotal', sum((x) => x.retryWaitMs));
+    m.ms('ai.baselinesMs', baselines.reduce((n, s) => n + (s.ms ?? NaN), 0));
+    m.ms('ai.finalCheckMs', finals.reduce((n, s) => n + (s.ms ?? NaN), 0));
+    // The turn whose response asked for several reads and page checks at once: how long it took, and its calls added up.
+    const turn = m.need('ai.turnTools (the turn of reads)', trace.all('ai.turnTools', inProc('main'), from, run.t).find((r) => typeof r.attrs?.reads === 'number' && r.attrs.reads > 1));
+    if (turn) {
+      m.span('ai.readTurnMs', turn);
+      const calls = trace.all('ai.tool', (r) => r.proc === 'main' && r.attrs?.turn === turn.attrs?.turn, from, run.t);
+      m.count('ai.readTurnCalls', calls.length);
+      m.ms('ai.readTurnCallMsSum', calls.reduce((n, c) => n + (c.ms ?? NaN), 0));
+    }
+    m.ms('ai.mainStallMax', stallMax(trace, req, run));
+    return m;
+  }
+};
+
+/** The composer's chip says the next edit may change the whole site. */
+async function expectChip(win: Page) {
+  const chip = win.getByRole('button', { name: /^What the AI may change: Whole site/ });
+  await chip.first().waitFor({ timeout: 5_000 }).catch(() => undefined);
+  expect(await chip.count(), 'the composer does not say the request may change the whole site');
+}
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, panels, chat, aiEdit, ai, canvas, drag, colour, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

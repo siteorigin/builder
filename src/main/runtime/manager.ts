@@ -300,7 +300,7 @@ export class DevServer {
   status: RuntimeStatus = { state: 'idle' };
   private restarts = 0;
   private listeners = new Set<(s: RuntimeStatus) => void>();
-  private publishedListeners = new Set<(revision: number) => void>();
+  private publishedListeners = new Set<(revision: number, ticket: number) => void>();
   private goneListeners = new Set<() => void>();
   /** Holds asked for and not yet released: a save's files are landing. */
   private activeHolds = 0;
@@ -325,9 +325,9 @@ export class DevServer {
 
   /**
    * Called each time a revision told to the preview (notifyRevision) has reached Vite: its files' updates have gone, so
-   * a page loaded from here on is that revision.
+   * a page loaded from here on is that revision. `ticket` is the notification's own, given back.
    */
-  onPublished(fn: (revision: number) => void) {
+  onPublished(fn: (revision: number, ticket: number) => void) {
     this.publishedListeners.add(fn);
     return () => this.publishedListeners.delete(fn);
   }
@@ -389,7 +389,7 @@ export class DevServer {
         clearTimeout(timer);
         resolve();
       };
-      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string; revision?: number; name?: unknown; at?: unknown }) => {
+      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string; revision?: number; ticket?: unknown; name?: unknown; at?: unknown }) => {
         // The worker's own timing marks, taken at the time it gives (src/runtime/worker.ts; sent only while marks are on).
         if (m.type === 'perf') {
           if (typeof m.name === 'string' && m.name.startsWith('runtime.') && typeof m.at === 'number' && Number.isFinite(m.at)) perf.mark(m.name, { worker }, m.at);
@@ -400,7 +400,7 @@ export class DevServer {
         if (m.type === 'held') this.holdAcks.get(String(m.id))?.();
         else if (m.type === 'published') {
           perf.mark('runtime.published', { revision: Number(m.revision) });
-          for (const fn of this.publishedListeners) fn(Number(m.revision));
+          for (const fn of this.publishedListeners) fn(Number(m.revision), Number.isSafeInteger(m.ticket) ? (m.ticket as number) : 0);
         } else if (m.type === 'ready') {
           perf.mark('runtime.ready', { worker });
           clearTimeout(timer);
@@ -444,8 +444,9 @@ export class DevServer {
     });
   }
 
-  notifyRevision(revision: number) {
-    this.proc?.postMessage({ type: 'revision', revision });
+  /** `ticket` numbers this notification: the preview gives it back once it has published the revision (onPublished). */
+  notifyRevision(revision: number, ticket = 0) {
+    this.proc?.postMessage({ type: 'revision', revision, ticket });
   }
 
   /**

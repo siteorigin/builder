@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { AI_EDIT_CASES, aiEdit, canvas, chainFor, colour, COLOUR_STEPS, colourPath, deepest, drag, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, create, createAgain, edit, editFullHistory, EDITS, edits, expect as check, expectedCopies, exportAgain, exportSite, findHeading, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, panels, PANELS, runChain, SHOWN_PANELS, switchProject, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, toolCallsReply } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -32,6 +32,7 @@ describe('the scenario chain', () => {
     // Last of those that follow open: the others measure the fixture's own copy, which switch leaves.
     expect(chainFor(['switch', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'switch']);
     expect(chainFor(['canvas']).map((s) => s.name)).toEqual(['launch', 'open', 'canvas']);
+    expect(chainFor(['ai']).map((s) => s.name)).toEqual(['launch', 'open', 'ai']);
     expect(chainFor(['import']).map((s) => s.name)).toEqual(['launch', 'open', 'import']);
     expect(chainFor(['switch', 'import']).map((s) => s.name)).toEqual(['launch', 'open', 'import', 'switch']);
     // Made from Welcome after launch, and the second project after the first.
@@ -790,6 +791,90 @@ describe('aiEdit metrics', () => {
     expect(AI_EDIT_CASES.map((c) => c.key)).toEqual(['first', 'second']);
     expect(new Set(AI_EDIT_CASES.map((c) => c.heading)).size).toBe(AI_EDIT_CASES.length);
     expect(AI_EDIT_CASES.every((c) => c.heading !== facts.heading)).toBe(true);
+  });
+});
+
+describe('ai metrics', () => {
+  /** One measurement: main's span from `start` to `end`, the editor's loads of the page for it (each [load, ready, done]). */
+  const inspect = (req: string, start: number, end: number, loads: Array<[number, number | null, number]>, ok = true): PerfRecord[] => [
+    span('ai.inspect', end, end - start, { attrs: { req, width: 1280, revision: 4, ok } }),
+    ...loads.flatMap(([load, ready, done], i) => [
+      r('inspect.load', load, { attrs: { req, attempt: i + 1 } }),
+      ...(ready === null ? [] : [r('inspect.ready', ready, { attrs: { req, attempt: i + 1 } })]),
+      r('inspect.done', done, { attrs: { req, attempt: i + 1, images: 10, fonts: 20, frame: 300 } })
+    ])
+  ];
+  /**
+   * A run from 1000 to 9000: a turn of two reads and two page checks (1100–3100), a batch's baselines (3200–5200) and
+   * the finish's check (6000–8000), with a measurement just outside the run as a decoy.
+   */
+  const trace = (o: { retried?: boolean; failed?: boolean; noLoad?: boolean } = {}) =>
+    new Trace([
+      ...inspect('decoy', 500, 900, [[600, 700, 800]]),
+      m('ai.requested', 950),
+      r('ai.requested', 950),
+      span('ai.turnTools', 3100, 2000, { attrs: { turn: 1, calls: 4, reads: 4 } }),
+      span('ai.tool', 1200, 100, { attrs: { tool: 'read_page', turn: 1 } }),
+      span('ai.tool', 1300, 100, { attrs: { tool: 'read_page', turn: 1 } }),
+      span('ai.tool', 2300, 1000, { attrs: { tool: 'inspect_layout', turn: 1 } }),
+      span('ai.tool', 3100, 800, { attrs: { tool: 'inspect_layout', turn: 1 } }),
+      ...inspect('t1', 1310, 2290, [[1710, 1910, 2280]]),
+      ...inspect('t2', 2310, 3090, [[2710, 2910, 3080]]),
+      span('ai.turnTools', 5900, 2600, { attrs: { turn: 2, calls: 1, reads: 0 } }),
+      span('ai.tool', 5900, 2600, { attrs: { tool: 'apply_operations', turn: 2 } }),
+      span('ai.baselines', 5200, 2000),
+      ...inspect('b1', 3200, 4200, [[3600, 3800, 4190]]),
+      ...(o.noLoad ? [span('ai.inspect', 5200, 1000, { attrs: { req: 'b2', ok: true } })] : inspect('b2', 4200, 5200, o.retried ? [[4300, 4400, 4500], [4600, null, 5190]] : [[4600, 4800, 5190]])),
+      span('ai.finalCheck', 8000, 2000, { attrs: { targets: 2 } }),
+      ...inspect('f1', 6000, 7000, [[6400, 6600, 6990]], !o.failed),
+      ...inspect('f2', 7000, 8000, [[7400, 7600, 7990]]),
+      span('ai.run', 9000, 8000, { attrs: { status: 'completed' } }),
+      ...inspect('decoy2', 9100, 9500, [[9200, 9300, 9400]])
+    ]);
+
+  it('count the run’s measurements by where they were made, split each into settle, load and measure, and time the turn of reads', () => {
+    const got = ai.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    expect([v('ai.runMs'), v('ai.replyMs')]).toEqual([8000, 8050]);
+    expect([v('ai.measurements'), v('ai.toolMeasurements'), v('ai.baselineMeasurements'), v('ai.finalMeasurements'), v('ai.retries')]).toEqual([6, 2, 2, 2, 0]);
+    // Each one 400 ms before its load, 200 loading and the rest measuring (less the 10 ms of its answer).
+    expect([v('ai.settleMs'), v('ai.loadMs'), v('ai.measureMs')]).toEqual([400, 200, 390]);
+    expect([v('ai.waitImagesMs'), v('ai.waitFontsMs'), v('ai.waitFrameMs')]).toEqual([10, 20, 300]);
+    expect([v('ai.settleMsTotal'), v('ai.loadMsTotal'), v('ai.measureMsTotal'), v('ai.retryWaitMsTotal')]).toEqual([2400, 1200, 370 + 170 + 4 * 390, 0]);
+    expect([v('ai.measureMsSum'), v('ai.measureWallMs')]).toEqual([980 + 780 + 1000 + 1000 + 1000 + 1000, 980 + 780 + 2000 + 2000]);
+    expect(got.metrics['ai.measureShare']).toEqual({ unit: 'share', value: 5760 / 8000 });
+    expect([v('ai.baselinesMs'), v('ai.finalCheckMs')]).toEqual([2000, 2000]);
+    expect([v('ai.readTurnMs'), v('ai.readTurnCalls'), v('ai.readTurnCallMsSum')]).toEqual([2000, 4, 2000]);
+  });
+
+  it('count a second load of a page that looked behind, with the wait before it, and time a page that never said it was ready as loading', () => {
+    const got = ai.measure(trace({ retried: true }), facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    expect([v('ai.retries'), v('ai.retryWaitMsTotal')]).toEqual([1, 100]);
+    expect(v('ai.loadMsTotal')).toBe(1000 + 100 + 590);
+  });
+
+  it('name a measurement whose loads are missing, and the run’s span, instead of reporting less work', () => {
+    expect(ai.measure(trace({ noLoad: true }), facts).missing).toEqual(['inspect.load / inspect.done (a measurement’s loads)']);
+    const noRun = new Trace(trace().records.filter((x) => x.name !== 'ai.run'));
+    expect(ai.measure(noRun, facts).missing).toEqual(['ai.run']);
+    const noCheck = new Trace(trace().records.filter((x) => x.name !== 'ai.finalCheck'));
+    expect(ai.measure(noCheck, facts).missing).toEqual(['ai.finalCheck']);
+  });
+
+  it('say which measurements did not answer, and add up overlapping ones once', () => {
+    const got = aiMeasurements(trace({ failed: true }), 1000, 9000)!;
+    expect(got.filter((x) => !x.ok)).toHaveLength(1);
+    expect(coveredMs([{ start: 0, end: 10 }, { start: 5, end: 12 }, { start: 20, end: 25 }, { start: 21, end: 22 }])).toBe(17);
+  });
+
+  it('send several tool calls in one response, each with its own index and ID', () => {
+    const reply = toolCallsReply([{ id: 'a', name: 'read_page', args: { pageId: 'p1' } }, { id: 'b', name: 'inspect_layout', args: { pageId: 'p1', viewport: 'desktop' } }]);
+    const calls = (reply.frames as Array<{ choices?: Array<{ delta?: { tool_calls?: Array<{ index: number; id?: string; function: { name?: string; arguments: string } }> } }> }>).flatMap((f) => (typeof f === 'object' ? (f.choices?.[0]?.delta?.tool_calls ?? []) : []));
+    expect(calls.filter((c) => c.id).map((c) => [c.index, c.id, c.function.name])).toEqual([[0, 'a', 'read_page'], [1, 'b', 'inspect_layout']]);
+    expect(calls.filter((c) => c.index === 1).map((c) => c.function.arguments).join('')).toBe('{"pageId":"p1","viewport":"desktop"}');
   });
 });
 

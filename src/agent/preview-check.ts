@@ -17,6 +17,43 @@ import type { Viewport } from './report';
 /** Most pages a change every page shows is checked on besides the pages the run changed; the card says the rest were not. */
 export const MAX_SAMPLED_PAGES = 4;
 
+/**
+ * How many page checks run at once. Each loads its page in its own frame, so loads and the preview server's work
+ * overlap; past a few they only compete for the editor's and the server's time.
+ */
+export const MEASURE_AT_ONCE = 3;
+
+/** A gate that lets at most `limit` pieces of work run at once, the rest starting in the order they asked. */
+export function slots(limit: number): <T>(work: () => Promise<T>) => Promise<T> {
+  let free = Math.max(1, limit);
+  const waiting: Array<() => void> = [];
+  return async (work) => {
+    if (free > 0) free--;
+    else await new Promise<void>((r) => waiting.push(r));
+    try {
+      return await work();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else free++;
+    }
+  };
+}
+
+/** `work` on each item, at most `limit` at a time, started in order; the results in the items' order. */
+export async function inTurns<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await work(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, lane));
+  return out;
+}
+
 const WIDTH_ORDER: Viewport[] = ['phone', 'tablet', 'desktop'];
 
 /**
@@ -488,6 +525,7 @@ export class PreviewCheck {
     // Every page at the widths the run needs first, so a slow preview spends the time left on them; phone last.
     const needed = this.widths(this.phone || reach.phone);
     const order = [...needed, ...(needed.includes('phone') ? [] : (['phone'] as const))];
+    const todo: CheckTarget[] = [];
     for (const [pageId, viewport] of order.flatMap((w) => [...pages].map((p) => [p, w] as const))) {
       if (!Object.hasOwn(state.pages, pageId)) continue;
       const key = keyOf(pageId, viewport);
@@ -502,9 +540,12 @@ export class PreviewCheck {
         continue;
       }
       const prior = seen(pageId, viewport);
-      const m = prior?.ok ? prior : await measure(pageId, viewport);
-      this.baselines.set(key, m.ok ? { findings: findingsOf(m.report) } : 'unknown');
+      if (prior?.ok) this.baselines.set(key, { findings: findingsOf(prior.report) });
+      else todo.push({ pageId, viewport });
     }
+    // Nothing has changed them yet, so the pages are measured together, in that order, a few at a time.
+    const measured = await inTurns(todo, MEASURE_AT_ONCE, (t) => measure(t.pageId, t.viewport));
+    todo.forEach((t, i) => this.baselines.set(keyOf(t.pageId, t.viewport), measured[i].ok ? { findings: findingsOf(measured[i].report) } : 'unknown'));
   }
 
   /** A batch landed, taking the project from `before` to `after`. */

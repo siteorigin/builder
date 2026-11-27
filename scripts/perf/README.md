@@ -184,6 +184,28 @@ starting build's Svelte files and compiles (`startFiles`, `startCompiled`), the 
 (`checkCompile`, `checkCompiled`), the build checks in all (`compiles`), the model turns, `runMs` (to the run ending,
 `ai.runEnd`) and the longest main-process stall in the run.
 
+**`ai`** (after `open`): in the AI panel, in Edit mode with Whole site chosen, ask the scripted model server (native tool
+mode: no live provider) for a site-wide change. Its first response asks for `read_page` and `inspect_layout` (desktop)
+of each page it edits at once; its second is one `apply_operations` batch: the brand colour (`token.set`, which every
+page shows) and, on each of the first three pages with a Heading, its first section repeated and that Heading changed;
+its third is the answer. The request names up to four more pages, which the preview check samples for the colour: on
+`small` the three starter pages are all edited and none named, on `large` three are edited and four named. Checks: the
+run completed, its result names no check that could not run, the model was asked exactly three times, the project
+moved one revision, holds the colour and each new heading, and so does each document on disk, the canvas preview shows
+the home page's new heading, every measurement the run made answered, each phase made the measurements it should (the
+reads' turn each edited page at desktop width, the baselines each edited page at phone width and each named page at
+both, the finish every page edited or named), and none made after the change answered before the preview published it
+(`runtime.published`). A page loaded before the change is missing the repeated section, which the editor's own check
+of a measured page catches. Times from the run's span (`ai.run`): `runMs`, `replyMs` (from the request). Per measurement (main's
+`ai.inspect` span, matched to the editor's loads by request): `measurements`, split by where they were made
+(`toolMeasurements`, `baselineMeasurements` before the batch landed, `finalMeasurements` in the finish), `retries`
+(a second load of a page that looked behind); `settleMs` (to the first load: the request reaching the editor and any wait
+for the preview), `loadMs` (the frame set going to the page saying it is ready), `measureMs` (ready to answered), and in
+that the page's waits for its images, fonts and a frame (`waitImagesMs`, `waitFontsMs`, `waitFrameMs`), each a median,
+and their totals; `measureMsSum` (the measurements added up), `measureWallMs` (the time at least one was under way) and
+`measureShare` (that, as a share of `runMs`); `baselinesMs` and `finalCheckMs` (spans); and the turn of reads:
+`readTurnMs` (its span), `readTurnCalls` and `readTurnCallMsSum` (its calls added up); the longest main-process stall.
+
 **`export`**: export the website as a folder from the Export dialog: open it, choose Website files, pick a folder (the
 chooser answered through the driver), until the dialog says what it exported. **`exportAgain`** follows it and does the
 same once more with nothing changed, into a second folder. Checks: the dialog says it exported the fixture's pages and
@@ -325,7 +347,8 @@ differently (`--cold` against warm, or another `--settle`), notes results from d
 not compare; their counts do) or website tools installed from a different template, and prints, per metric,
 before and after medians, the difference, the change in percent and a verdict: `same`, `changed`, or `noise` for a
 duration whose difference is within the **noise band**: three times the larger MAD of the two runs, and never under 10%
-of the before median or 1 ms. Two full runs of the same build on a quiet M4 Max kept every duration inside it (with
+of the before median or 1 ms. A share (unit `share`, one duration as a fraction of another, shown as a percentage) has the same band, its
+floor one percentage point. Two full runs of the same build on a quiet M4 Max kept every duration inside it (with
 3 × MAD alone, 4 of 86 fell outside, by 5–8%), and every count identical. Counts and sizes have no band: any difference
 is `changed`. A duration that moves by less than the band is not shown to have moved; one that moves by more still
 needs the `optimize` skill's interleaved arms before it is a headline. A result compared with itself is exactly zero everywhere.

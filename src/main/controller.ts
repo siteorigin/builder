@@ -414,6 +414,15 @@ export class Controller {
   onRemoteState: (() => void) | null = null;
   /** The latest revision the running preview has published (a page loaded from it now shows it), or null before one. */
   private publishedRevision: number | null = null;
+  /** Waits for the preview to publish a revision (previewPublished), each looking again when the preview moves on. */
+  private publishWaits = new Set<() => void>();
+  /**
+   * The running preview server's notifications of a revision, numbered: the last one given, and the last one it has
+   * published. A revision number alone does not say a change has been published: a file put back can be published at
+   * the revision the project already had, and a server that starts during a save serves the revision before its files.
+   */
+  private noticeTicket = 0;
+  private publishedTicket = 0;
   /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
   private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
   /**
@@ -1136,7 +1145,7 @@ export class Controller {
       }
       this.filesChangedAt = Date.now();
       if (this.stage) this.syncStage(session);
-      else this.dev?.notifyRevision(ev.revision);
+      else this.notifyPreview(ev.revision);
       this.broadcast();
       // An import, a relink, an undo or an outside edit of the library may name files that are, or are not, there.
       if (ev.changedDocs.includes('siteorigin/assets.json')) void this.checkAssetFiles(session);
@@ -1325,6 +1334,8 @@ export class Controller {
     this.dev = dev;
     // A new preview server has published nothing yet.
     this.publishedRevision = null;
+    this.noticeTicket = 0;
+    this.publishedTicket = 0;
     this.stage = stage;
     this.stagedRevision = -1;
     this.pendingStatus = null;
@@ -1338,7 +1349,10 @@ export class Controller {
       if (s.state === 'ready' && this.session) {
         const serves = this.stage ? this.stagedRevision : this.session.revision;
         if (serves >= 0) this.publishedRevision = Math.max(this.publishedRevision ?? 0, serves);
+        // Notified before it could publish anything: it serves the files as they are now.
+        this.publishedTicket = this.noticeTicket;
       }
+      this.publishMoved();
       this.send('runtime:status', s);
       this.live.previewChanged();
       this.broadcast();
@@ -1346,9 +1360,11 @@ export class Controller {
     dev.onStatus(onStatus);
     // A live session's guests reload once a change has reached the preview: its files are in Vite's hands, so what
     // they load is the new revision (the project's own folder, or the private copy once it has the change).
-    dev.onPublished((revision) => {
+    dev.onPublished((revision, ticket) => {
       if (this.dev !== dev) return;
       this.publishedRevision = Math.max(this.publishedRevision ?? 0, revision);
+      this.publishedTicket = Math.max(this.publishedTicket, ticket);
+      this.publishMoved();
       this.live.projectChanged(revision);
     });
     // Guests' requests to a server stopping or gone are stopped at once, and the relay told why.
@@ -1407,6 +1423,41 @@ export class Controller {
   }
 
   /**
+   * Resolves once the running preview has published `revision` and every change it was told of before now, so a page
+   * loaded from it shows them (their files are in Vite's hands: see onPublished): true at once when it already has, or
+   * when no preview is up and running (a page check then says so, as it would have); false when `capMs` pass first, and
+   * a page loaded then could show the project from before. A page measured for the assistant waits for this, rather
+   * than a fixed time, before it is loaded.
+   */
+  previewPublished(revision: number, capMs: number): Promise<boolean> {
+    const ticket = this.noticeTicket;
+    const done = () => !this.dev || this.dev.status.state !== 'ready' || (this.publishedRevision !== null && this.publishedRevision >= revision && this.publishedTicket >= ticket);
+    if (done()) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const look = () => {
+        if (done()) finish(true);
+      };
+      const finish = (published: boolean) => {
+        clearTimeout(timer);
+        this.publishWaits.delete(look);
+        resolve(published);
+      };
+      const timer = setTimeout(() => finish(false), capMs);
+      this.publishWaits.add(look);
+    });
+  }
+
+  /** Tell the running preview server of a revision, numbered so its publication can be told apart (previewPublished). */
+  private notifyPreview(revision: number) {
+    if (this.dev) this.dev.notifyRevision(revision, ++this.noticeTicket);
+  }
+
+  /** The preview published a revision, or started or stopped: waits for one look again. */
+  private publishMoved() {
+    for (const look of [...this.publishWaits]) look();
+  }
+
+  /**
    * Project health's entries for library files missing from the project folder, from a look at the folder now. Nothing
    * is kept or published: Project health keeps its own look, which the folder watch refreshes.
    */
@@ -1445,7 +1496,7 @@ export class Controller {
         this.filesChangedAt = Date.now();
         if (this.stage === stage) {
           this.stagedRevision = revision;
-          this.dev?.notifyRevision(revision);
+          this.notifyPreview(revision);
         }
       })
       .catch(() => {
@@ -1519,6 +1570,7 @@ export class Controller {
     await dev?.stop();
     if (this.dev === dev) this.dev = null;
     if (this.stage === stage) this.stage = null;
+    this.publishMoved();
     this.live.previewChanged();
     // One prepared while the server stopped is gone with it too.
     await this.dropComponentPreviews();
