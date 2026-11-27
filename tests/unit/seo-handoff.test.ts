@@ -337,8 +337,8 @@ describe('opening the chat with the request', () => {
     expect(s.toasts.map((t) => t.text)).toEqual(['The AI is working. You can try again once it finishes.', 'The AI conversation is still loading. Try again in a moment.']);
   });
 
-  it('opens once the last request has ended, though the chat still names that run', async () => {
-    // A finished run's last message sets its ID again after its status has cleared (store's applyAiEvent).
+  it('opens once the last request has ended, whatever run ID the chat still holds', async () => {
+    // Whether a request runs is its status's to say alone: a run ID with no status holds nothing.
     store.setState({ activeRunId: 'run_1', runStatus: null });
     expect(await actions.openSeoChat(toAbout)).toBe(true);
     expect(store.getState().chatDrafts).toEqual({ c_1: toAbout.text });

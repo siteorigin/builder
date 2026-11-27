@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, showConversation, toast, transport, useStore, whenThemesReady } from './store';
+import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, showConversation, toast, transport, useStore, whenThemesReady } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
@@ -114,7 +114,8 @@ export function App() {
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
         // Notices (an error stays until dismissed) belong to the project that closed.
-        setState({ toasts: [], screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
+        // A request still ending holds the app until it ends, but is filed in no thread of the project opened next.
+        setState({ toasts: [], screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -274,7 +275,11 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
   const pageId = local.pageId && Object.hasOwn(snap.state.pages, local.pageId) ? local.pageId : snap.state.site.homePageId;
   // Each page's place is this opening's own; the page opens where the author left it, brought into view (see Canvas).
   const pagePlaces = readPlaces(snap.state, local.pagePlaces);
+  // Another opening's request (still ending) is in none of this one's threads. A status that arrived while this window
+  // was starting is this opening's, and is kept.
+  const was = getState().snapshot?.workspaceKey;
   setState({
+    ...(was && was !== snap.workspaceKey ? detachedRun() : {}),
     // A notice from the project that was open (or from the welcome screen) is not this project's.
     toasts: [],
     screen: 'editor',

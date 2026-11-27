@@ -121,12 +121,17 @@ async function shot(state, check, { themes = BOTH, area = 'canvas', keepFocus = 
 }
 
 /** A run status, sent to the renderer exactly as the main process sends it. */
+/** Each run its own ID, as main gives it: a run that ended never runs again. */
+let runs = 0;
 async function emit(status, mode = 'edit') {
-  await app.evaluate(({ BrowserWindow }, ev) => BrowserWindow.getAllWindows()[0].webContents.send('ai:event', ev), { runId: `r_${mode}`, conversationId: 'c_capture', kind: 'status', status, mode });
+  // Filed in the conversation the chat shows, so its question is answered there.
+  const conversationId = await win.evaluate(() => window.builder.ai.conversations().then((c) => c.active.id));
+  await app.evaluate(({ BrowserWindow }, ev) => BrowserWindow.getAllWindows()[0].webContents.send('ai:event', ev), { runId: `r_${mode}_${runs}`, conversationId, kind: 'status', status, mode });
   await pause(300);
 }
 async function endRun(mode = 'edit') {
   await emit('cancelled', mode);
+  runs++;
   await win.locator(RUN).waitFor({ state: 'detached', timeout: 8000 });
   await pause(300);
 }
