@@ -284,10 +284,10 @@ await win.setViewportSize({ width: 1440, height: 900 });
 await pause(300);
 await bridge('forms', { forms: [MANY[0]] });
 await pause(300);
-await win.getByRole('button', { name: 'Phone', exact: true }).click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).click();
 await pause(900);
 await shot('form-phone', shows(panel), { area: 'all' });
-await win.getByRole('button', { name: 'Desktop', exact: true }).click().catch(() => undefined);
+await win.getByRole('radio', { name: 'Desktop', exact: true }).click().catch(() => undefined);
 await pause(500);
 
 // A form that is not connected to anything: no live test to offer.

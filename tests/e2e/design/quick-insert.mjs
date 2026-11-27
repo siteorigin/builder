@@ -110,7 +110,7 @@ const sites = join(WORK, 'sites');
 await win.evaluate((dir) => window.builder.projects.create({ name: 'Harbour Lane Studio', parentDir: dir, starter: 'blank', sampleImages: false }), sites);
 await win.waitForSelector('.editor');
 await frame.locator('body *').first().waitFor({ timeout: 90000 });
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 const home = async () => (await snapshot()).pages[pageId];

@@ -50,7 +50,7 @@ async function setBackground(color) {
 
 step('select a Services card from the canvas');
 // The phone preview is shown at full scale, so a click lands where Playwright aims it.
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
 await card.scrollIntoViewIfNeeded();
 // Alt-click picks the element itself, not its section; its padding is the card's own.
@@ -93,10 +93,10 @@ await stateRadio('Hover').click();
 await eventually(async () => assert.equal(await bg(card), RED, 'hovered again'));
 
 step('Preview shows the page as visitors find it');
-await win.locator('.toolbar').getByRole('button', { name: 'Preview', exact: true }).click();
+await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true }).click();
 await eventually(async () => assert.equal(await forcedOnPage(), 0, 'nothing is held in a state in Preview'));
 assert.equal(await bg(card), resting);
-await win.locator('.toolbar').getByRole('button', { name: 'Edit', exact: true }).click();
+await win.locator('.toolbar').getByRole('radio', { name: 'Edit', exact: true }).click();
 // Preview let go of the selection, and with it the state: back in Edit, the card is edited at rest.
 await eventually(async () => assert.equal(await stateRadio('Default').getAttribute('aria-checked'), 'true', 'Default is chosen again'), 15000);
 assert.equal(await forcedOnPage(), 0);

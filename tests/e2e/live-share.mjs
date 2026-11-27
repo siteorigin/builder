@@ -119,7 +119,7 @@ try {
   assert.equal(follows.presence.previewPath, '/');
   assert.equal(follows.presence.viewportWidth, 1280);
   ann.guest.discard('presence:changed');
-  await win.getByRole('button', { name: 'Phone' }).click();
+  await win.getByRole('radio', { name: 'Phone' }).click();
   await eventually(async () => assert.ok(ann.guest.take('presence:changed', (f) => f.participant.kind === 'host' && f.presence.viewportWidth === 390 && f.presence.previewPath === '/'), 'the new width reaches the guest'));
   const about = Object.values((await win.evaluate(() => window.builder.project.snapshot())).state.pages).find((p) => p.route === '/about/');
   await win.locator('.pages-panel').getByText('About', { exact: true }).first().click();

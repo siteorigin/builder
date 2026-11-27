@@ -106,7 +106,7 @@ await shot('footer-rest', '[data-testid="asset-storage"]');
 // A saved version, then every unused image removed: their files are kept for Undo.
 const saved = await win.evaluate(async () => window.builder.project.saveVersion('Before the spring refresh', (await window.builder.project.snapshot()).workspaceKey));
 if (!saved.ok) throw new Error(`saving a version failed: ${saved.message}`);
-await win.getByRole('button', { name: /^Unused/ }).click();
+await win.getByRole('radio', { name: /^Unused/ }).click();
 await pause(300);
 await win.locator('.asset-cleanup .btn-danger').click();
 await storage.getByText('Kept for Undo').waitFor({ timeout: 30000 });

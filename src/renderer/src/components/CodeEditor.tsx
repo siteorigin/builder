@@ -546,7 +546,7 @@ export function CodeEditor({
             )}
           </span>
         )}
-        <button type="button" className="code-status-item code-status-toggle" aria-pressed={wrap} onClick={toggleWrap} title={wrap ? 'Stop wrapping long lines' : 'Wrap long lines'}>
+        <button type="button" className="code-status-item code-status-toggle" aria-pressed={wrap} onClick={toggleWrap} title="Wrap long lines">
           <WrapText aria-hidden="true" /> Wrap
         </button>
         <span className="code-status-pos">

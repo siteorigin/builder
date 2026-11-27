@@ -1846,6 +1846,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 Apply to<span className="sr-only">: style which {partName}s</span>
               </div>
               <Segmented
+                radio
                 full
                 labelledBy={reachId}
                 value={reach}

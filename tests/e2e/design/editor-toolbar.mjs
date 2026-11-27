@@ -202,18 +202,18 @@ await shot('tb-width-error', '.width-error', { area: 'top-center', keepPointer: 
 await width.press('Escape');
 await pause(300);
 // The tablet preset.
-await win.getByRole('button', { name: 'Tablet', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Tablet', exact: true }).first().click();
 await pause(700);
 await shot('tb-tablet', '.segmented [aria-label="Tablet"][aria-pressed="true"]', { themes: ['light'], area: 'toolbar' });
 await win.locator('.zoom-btn').click();
 await win.getByRole('menuitemradio', { name: /Fit/ }).click();
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 await pause(700);
 
 // Preview mode.
 await win.getByRole('button', { name: /Preview/ }).first().click();
 await pause(500);
-await shot('tb-preview', '.segmented [aria-pressed="true"]', { themes: ['light'], area: 'toolbar' });
+await shot('tb-preview', '.segmented [aria-checked="true"]', { themes: ['light'], area: 'toolbar' });
 await win.getByRole('button', { name: /Edit/ }).first().click();
 await pause(300);
 

@@ -15,8 +15,6 @@
   .new-project-form .scope-note { font-size: 12px; }
   .new-project-form .scope-note > svg { margin-top: 2px; }
   .new-project-form .scope-note > span, .progress-detail { text-wrap: pretty; }
-  /* The shared switch is 20px tall; here its target reaches the 24px floor without changing how it looks. */
-  .new-project-form .switch::before { content: ''; position: absolute; inset: -2px 0; }
 
   /* A whole path, selectable: the folders it sits in quiet, the folder it names in full ink. */
   /* Duplicate project (#176): the copy's name, a line on what it is for, and its folder. */

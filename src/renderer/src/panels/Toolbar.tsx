@@ -5,7 +5,7 @@ import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
 import { api, editRunStatus, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
-import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
+import { Segmented, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
 import { pageChoices } from '../lib/page-switch';
@@ -357,25 +357,21 @@ export function Toolbar() {
       <div className="toolbar-center">
         {/* A click leaves focus in an inspector text field, so text being typed there stays in its field while the page
             is checked at another width. Anywhere else a click moves focus as usual; Tab still reaches the buttons. */}
-        <div
-          className="segmented"
-          role="group"
-          aria-label="Preview width"
+        <Segmented
+          radio
+          label="Preview width"
+          value={preset}
+          onChange={(v) => setViewport(VIEWPORT_PRESETS[v])}
           onMouseDown={(e) => {
             const at = document.activeElement;
             if (e.button === 0 && e.target !== e.currentTarget && (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) && at.closest('#dock-panel-inspect')) e.preventDefault();
           }}
-        >
-          <button aria-pressed={preset === 'desktop'} disabled={covered} title={covered ? widthCovered : 'Desktop, 1280 px'} aria-label="Desktop" onClick={() => setViewport(VIEWPORT_PRESETS.desktop)}>
-            <Monitor />
-          </button>
-          <button aria-pressed={preset === 'tablet'} disabled={covered} title={covered ? widthCovered : 'Tablet, 834 px'} aria-label="Tablet" onClick={() => setViewport(VIEWPORT_PRESETS.tablet)}>
-            <Tablet />
-          </button>
-          <button aria-pressed={preset === 'phone'} disabled={covered} title={covered ? widthCovered : 'Phone, 390 px'} aria-label="Phone" onClick={() => setViewport(VIEWPORT_PRESETS.phone)}>
-            <Smartphone />
-          </button>
-        </div>
+          options={[
+            { value: 'desktop', icon: <Monitor />, name: 'Desktop', title: covered ? widthCovered : 'Desktop, 1280 px', disabled: covered },
+            { value: 'tablet', icon: <Tablet />, name: 'Tablet', title: covered ? widthCovered : 'Tablet, 834 px', disabled: covered },
+            { value: 'phone', icon: <Smartphone />, name: 'Phone', title: covered ? widthCovered : 'Phone, 390 px', disabled: covered }
+          ]}
+        />
         <label className="width-field" title={covered ? widthCovered : `Preview width, from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} px`}>
           <input
             className="width-input"
@@ -440,16 +436,16 @@ export function Toolbar() {
         )}
         <div className="toolbar-divider" role="presentation" />
         {/* Named by aria-label, so the buttons keep their names when a narrow window shows only the icons. */}
-        <div className="segmented" role="group" aria-label="Mode">
-          <button aria-pressed={mode === 'edit'} disabled={seo} onClick={() => setMode('edit')} title={seo ? modeCovered : 'Edit: click things on the page to select and change them'} aria-label="Edit">
-            <MousePointer2 aria-hidden="true" />
-            {tier === 'full' && 'Edit'}
-          </button>
-          <button aria-pressed={mode === 'preview'} disabled={seo} onClick={() => setMode('preview')} title={seo ? modeCovered : 'Preview: use the site as a visitor would'} aria-label="Preview">
-            <Eye aria-hidden="true" />
-            {tier === 'full' && 'Preview'}
-          </button>
-        </div>
+        <Segmented
+          radio
+          label="Mode"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'edit', icon: <MousePointer2 aria-hidden="true" />, label: tier === 'full' ? 'Edit' : undefined, name: 'Edit', title: seo ? modeCovered : 'Edit: click things on the page to select and change them', disabled: seo },
+            { value: 'preview', icon: <Eye aria-hidden="true" />, label: tier === 'full' ? 'Preview' : undefined, name: 'Preview', title: seo ? modeCovered : 'Preview: use the site as a visitor would', disabled: seo }
+          ]}
+        />
       </div>
 
       <div className="toolbar-end">

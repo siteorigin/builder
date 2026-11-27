@@ -113,7 +113,7 @@ await text.press('Enter');
 await eventually(async () => assert.match(await bar.innerText(), /Back on Saturday\./, 'the canvas shows the new wording'), 30000);
 
 step('at phone width the notice wraps above the menu button, and the open menu sits below both');
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await win.locator('button[title^="Preview:"]').click();
 const phone = async () =>
   frame.locator('html').evaluate(() => {
@@ -198,7 +198,7 @@ await frame.locator('html').evaluate(() => window.scrollTo(0, 0));
 assert.ok((await setNotice(REWORDED)).ok);
 await eventually(async () => assert.match(await bar.innerText(), /Back on Saturday\./, 'the notice is back to its wording'), 30000);
 await win.locator('button[title^="Edit:"]').click();
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 
 const exportStatic = async (name) => {
   const out = join(WORK, name);

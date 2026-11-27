@@ -93,12 +93,12 @@ try {
   await eventually(async () => assert.equal(await track.locator('li[data-so-items="s5"] figcaption').innerText(), 'Fitting day', 'the typed caption shows on the slide'));
   await caption.press('Escape');
   await eventually(async () => assert.equal(await track.locator('li[data-so-items="s5"] figcaption').innerText(), 'Slide 5', 'Escape gives the slide its saved caption back'));
-  await win.getByRole('button', { name: 'Phone', exact: true }).click();
+  await win.getByRole('radio', { name: 'Phone', exact: true }).click();
   await eventually(async () => assert.equal(await track.evaluate(() => innerWidth), 390, 'the canvas is a phone’s width'), 15000);
   await eventually(async () => assert.equal((await slideShows('s5')).inList, true, 'at phone width the fifth slide is brought back into its list'), 15000);
   await rows.nth(0).click();
   await eventually(async () => assert.equal((await slideShows('s1')).inList, true, 'opening the first slide scrolls its list back'), 15000);
-  await win.getByRole('button', { name: 'Desktop', exact: true }).click();
+  await win.getByRole('radio', { name: 'Desktop', exact: true }).click();
 
   step('export the source and the website');
   const exportsDir = join(WORK, 'exports');

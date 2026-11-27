@@ -101,7 +101,7 @@ const arrival = () =>
   });
 
 step('Artist profiles: two sections, the first holding a grid with one Exhibitor card');
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 const home = async () => (await snapshot()).pages[pageId];

@@ -126,11 +126,11 @@ await shot('component-phone', ['.style-row.set']);
 await scope('All sizes');
 
 // The canvas at phone width while editing All sizes offers a shortcut to phone-only changes.
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await pause(1200);
 await openStyle('style');
 await shot('component-all-sizes-at-phone', ['.style-row'], { themes: ['light'] });
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 await pause(900);
 
 // Keyboard focus on the scope control.

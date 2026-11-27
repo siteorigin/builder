@@ -177,7 +177,7 @@ try {
   const exportSourceZip = async () => {
     await ok('menu.invoke', { path: ['File', 'Export…'] });
     await modal.waitFor();
-    await modal.getByRole('button', { name: 'ZIP file', exact: true }).click();
+    await modal.getByRole('radio', { name: 'ZIP file', exact: true }).click();
     await modal.getByRole('button', { name: /Editable project, for a developer/ }).click();
   };
   const zip = join(paths.exports, 'harbour-bakery-source.zip');

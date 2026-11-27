@@ -44,7 +44,7 @@ async function selectedIs(i, { part = title, inspector = true } = {}) {
 
 step('pick the first card’s title on the page');
 // The phone preview stacks the cards, so one card can be scrolled out of sight while another is selected.
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
 const before = await cards();
 await title(0).scrollIntoViewIfNeeded();

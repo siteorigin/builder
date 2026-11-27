@@ -46,14 +46,14 @@ assert.ok(!read('src/routes/contact/+page.svelte').includes(typed), 'nothing is 
 const inField = () => win.evaluate(() => document.activeElement?.tagName === 'TEXTAREA' && document.activeElement.closest('[data-list="items"]') !== null);
 const tall = () => answerOnPage.evaluate((el) => el.getBoundingClientRect().height);
 const atDesktop = await tall();
-await win.getByRole('button', { name: 'Phone', exact: true }).click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).click();
 await eventually(async () => assert.ok((await tall()) > atDesktop, 'the typed answer wraps onto more lines at phone width'));
 assert.equal(await inField(), true, 'the caret stays in Answer after choosing Phone');
 assert.equal(await answerOnPage.innerText(), typed, 'the typed answer still shows at phone width');
 await win.keyboard.type(' Ask us.');
 await eventually(async () => assert.equal(await answerOnPage.innerText(), `${typed} Ask us.`, 'typing carries on in the field'));
 const atPhone = await tall();
-await win.getByRole('button', { name: 'Desktop', exact: true }).click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).click();
 await eventually(async () => assert.ok((await tall()) < atPhone, 'back at desktop width, the answer takes fewer lines'));
 assert.equal(await inField(), true, 'the caret stays in Answer after choosing Desktop');
 

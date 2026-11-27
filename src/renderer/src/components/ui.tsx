@@ -768,38 +768,79 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
   );
 }
 
+/** One option of a Segmented control. */
+export interface SegmentedOption<T extends string> {
+  value: T;
+  label?: ReactNode;
+  icon?: ReactNode;
+  /** The tooltip: what the option does, or why it is unavailable. */
+  title?: string;
+  /** The accessible name when the label is not shown (icon-only); defaults to the title. */
+  name?: string;
+  /** Unavailable: shown, skipped by the arrow keys. */
+  disabled?: boolean;
+  /** As tabs: the ID of the element the option shows. */
+  controls?: string;
+}
+
 /**
- * A row of mutually exclusive options. With `radio` it is exposed as a radio group (WAI-ARIA APG): one tab
- * stop, and the arrow keys move and select. `labelledBy` and `describedBy` name it from visible text.
+ * A row of mutually exclusive options in one tray. It is a radio group (WAI-ARIA APG): one tab stop, and the arrow
+ * keys (and Home and End) move and choose. With `tabs` it switches the view below it and is a tab list instead (APG
+ * Tabs): Left, Right, Home and End, `aria-selected`, and each option names the panel it shows (`controls`, which also
+ * gives the tab the ID `{controls}-tab` for that panel's label). `labelledBy` and `describedBy` name it from visible
+ * text; `label` names it otherwise. An unavailable option with a title (its reason) stays focusable, marked
+ * aria-disabled, so the reason can be read from the keyboard; it is skipped by the arrow keys either way.
  */
-export function Segmented<T extends string>({ value, options, onChange, full, label, radio, labelledBy, describedBy }: { value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string; /** Unavailable: shown, skipped by the arrow keys. */ disabled?: boolean }>; onChange: (v: T) => void; full?: boolean; label?: string; radio?: boolean; labelledBy?: string; describedBy?: string }) {
+export function Segmented<T extends string>({ value, options, onChange, full, label, tabs, labelledBy, describedBy, onMouseDown }: { value: T | null; options: Array<SegmentedOption<T>>; onChange: (v: T) => void; full?: boolean; label?: string; /** A radio group: the default, said for readers of the call. */ radio?: boolean; tabs?: boolean; labelledBy?: string; describedBy?: string; onMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void }) {
   const chosen = options.findIndex((o) => o.value === value);
+  const firstOn = options.findIndex((o) => !o.disabled);
   // The tab stop: the chosen option, or the first available one when the chosen one is unavailable (or none is chosen).
-  const current = chosen >= 0 && !options[chosen].disabled ? chosen : Math.max(0, options.findIndex((o) => !o.disabled));
+  // With none available, the chosen one (its reason is in its title), or the first.
+  const current = chosen >= 0 && !options[chosen].disabled ? chosen : firstOn >= 0 ? firstOn : Math.max(0, chosen);
   const move = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
-    if (!step || !options.length) return;
-    e.preventDefault();
-    // From the focused option, since a saved value can lag behind quick presses.
     const buttons = [...e.currentTarget.querySelectorAll('button')];
+    // From the focused option, since a saved value can lag behind quick presses.
     const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    let next = from < 0 ? current : from;
-    for (let n = 0; n < options.length; n++) {
-      next = (next + step + options.length) % options.length;
-      if (!options[next].disabled) break;
+    const start = from < 0 ? current : from;
+    let next: number;
+    if (e.key === 'Home' || e.key === 'End') {
+      const order = options.map((_, i) => i);
+      next = (e.key === 'Home' ? order : order.reverse()).find((i) => !options[i].disabled) ?? -1;
+    } else {
+      // A horizontal tab list leaves Up and Down to the page.
+      const step = e.key === 'ArrowRight' || (!tabs && e.key === 'ArrowDown') ? 1 : e.key === 'ArrowLeft' || (!tabs && e.key === 'ArrowUp') ? -1 : 0;
+      if (!step || !options.length) return;
+      next = start;
+      for (let n = 0; n < options.length; n++) {
+        next = (next + step + options.length) % options.length;
+        if (!options[next].disabled) break;
+      }
     }
-    if (options[next].disabled) return;
+    e.preventDefault();
+    if (next < 0 || options[next].disabled) return;
     onChange(options[next].value);
     buttons[next]?.focus();
   };
   return (
-    <div className={`segmented${full ? ' full' : ''}`} role={radio ? 'radiogroup' : 'group'} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onKeyDown={radio ? move : undefined}>
-      {options.map((o, i) => (
-        <button key={o.value} type="button" {...(radio ? { role: 'radio', 'aria-checked': value === o.value, tabIndex: i === current ? 0 : -1 } : { 'aria-pressed': value === o.value })} disabled={o.disabled} onClick={() => onChange(o.value)} title={o.title} aria-label={o.label ? undefined : o.title}>
-          {o.icon}
-          {o.label}
-        </button>
-      ))}
+    <div className={`segmented${full ? ' full' : ''}`} role={tabs ? 'tablist' : 'radiogroup'} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onKeyDown={move} onMouseDown={onMouseDown}>
+      {options.map((o, i) => {
+        const on = value === o.value;
+        const state = tabs ? { role: 'tab', id: o.controls && `${o.controls}-tab`, 'aria-selected': on, 'aria-controls': o.controls } : { role: 'radio', 'aria-checked': on };
+        const off = o.disabled ? (o.title ? { 'aria-disabled': true } : { disabled: true }) : {};
+        return (
+          <button key={o.value} type="button" {...state} {...off} tabIndex={i === current ? 0 : -1} onClick={() => !on && !o.disabled && onChange(o.value)} title={o.title} aria-label={o.name ?? (o.label ? undefined : o.title)}>
+            {o.icon}
+            {/* A text label reserves its chosen (bold) width, so choosing an option never moves its neighbours. */}
+            {typeof o.label === 'string' ? (
+              <span className="seg-label" data-label={o.label}>
+                {o.label}
+              </span>
+            ) : (
+              o.label
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -809,7 +850,7 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
  * radio group, so one tab stop and the arrow keys) and the hint describes it. Use it wherever a Segmented answers a
  * question the surrounding form does not already ask.
  */
-export function ChoiceField<T extends string>({ label, hint, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string; /** Unavailable: shown, skipped by the arrow keys. */ disabled?: boolean }>; onChange: (v: T) => void; full?: boolean }) {
+export function ChoiceField<T extends string>({ label, hint, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; value: T; options: Array<SegmentedOption<T>>; onChange: (v: T) => void; full?: boolean }) {
   const id = useId();
   return (
     <div className="field">
@@ -843,23 +884,26 @@ export function Switch({ checked, onChange, label, id, labelledBy, describedBy, 
   return <button id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange(!checked)} />;
 }
 
-/** A switch with its visible label and optional hint, all clickable and wired together. */
+/**
+ * A switch with its visible title and optional hint. Both are one label for the switch, so a click anywhere on the
+ * words toggles it; the switch is named by the title alone and described by the hint.
+ */
 export function SwitchRow({ checked, onChange, label, hint, id: explicitId, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; id?: string; disabled?: boolean }) {
   const generated = useId();
   // A switch a destination focuses has an ID of its own (see open-destination).
   const id = explicitId ?? generated;
   return (
     <div className="switch-row">
-      <div className="grow">
-        <label htmlFor={id} id={`${id}-l`}>
+      <label className="grow" htmlFor={id}>
+        <span className="switch-row-title" id={`${id}-l`}>
           {label}
-        </label>
+        </span>
         {hint && (
-          <div className="field-hint" id={`${id}-h`}>
+          <span className="field-hint" id={`${id}-h`}>
             {hint}
-          </div>
+          </span>
         )}
-      </div>
+      </label>
       <Switch id={id} checked={checked} onChange={onChange} labelledBy={`${id}-l`} describedBy={hint ? `${id}-h` : undefined} disabled={disabled} />
     </div>
   );

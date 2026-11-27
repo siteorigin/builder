@@ -69,7 +69,7 @@ const urlInput = win.locator('#settings-local-url');
 const STATUS = '.settings-status';
 const PROBLEM = '.settings-status.problem';
 const statusSays = (text) => win.locator(STATUS, { hasText: text }).first().waitFor({ timeout: 20000 });
-const button = (name) => win.locator('.modal').last().locator('button, [role="radio"]').filter({ hasText: new RegExp(`^\\s*${name}\\s*$`) }).first();
+const button = (name) => win.locator('.modal').last().locator('button, [role="radio"], [role="tab"]').filter({ hasText: new RegExp(`^\\s*${name}\\s*$`) }).first();
 const testButton = win.locator('.modal button').filter({ hasText: /^\s*Test/ }).first();
 
 async function setTheme(theme) {

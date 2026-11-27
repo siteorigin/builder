@@ -95,7 +95,7 @@ async function resizeDock(width) {
 
 // ---- The card itself: the group, so only its own states ----
 // The phone preview is shown at full scale, so a click lands where it is aimed.
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await pause(800);
 const card = frame.locator('li', { hasText: 'Planning & layout' }).first();
 await card.scrollIntoViewIfNeeded();

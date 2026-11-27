@@ -202,7 +202,7 @@ step('phone-only padding override on selected section');
 const phoneRule = /@media \(max-width: 767\.98px\)[\s\S]*padding-block: var\(--so-space-lg\)/;
 const siteCss = () => read('src/lib/siteorigin/styles/site.css');
 assert.doesNotMatch(siteCss(), phoneRule, 'no phone padding rule before the edit');
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
 await win.getByRole('button', { name: 'Style', exact: true }).last().click();
 await win.getByRole('radiogroup', { name: 'Edit styles for' }).getByRole('radio', { name: 'Phone', exact: true }).click();
@@ -230,7 +230,7 @@ const selectPlan = (i) =>
     await reach.waitFor({ timeout: 3000 });
   });
 await selectPlan(1);
-assert.equal(await reach.getByRole('button', { name: /^All 3 plan cards$/ }).getAttribute('aria-pressed'), 'true', 'all cards is the default');
+assert.equal(await reach.getByRole('radio', { name: /^All 3 plan cards$/ }).getAttribute('aria-checked'), 'true', 'all cards is the default');
 await reach.getByRole('button', { name: 'This plan card' }).click();
 await win.locator('#dock-panel-inspect .style-row', { hasText: 'Background' }).first().locator('select').selectOption('token:color.brand');
 const onlyDesign = async () => {
@@ -444,7 +444,7 @@ assert.equal(await homeSections(), sectionsBefore, 'and its section with it');
 await eventually(async () => assert.equal(await previewReading.count(), shownBefore, 'the preview shows only the Gallery’s copy again'));
 
 step('drag to reorder: canvas grip and layers');
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 await win.waitForTimeout(800);
 const order = async () =>
   (
@@ -930,7 +930,7 @@ await eventually(async () => {
   assert.equal(fit.focusable, 0, 'the scrolling region takes keyboard focus');
 });
 await win.screenshot({ path: join(OUT, '16-table-phone.png') });
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 
 step('lists and links from buttons alone, in Insert, the Inspector and on the canvas (issue #43)');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();

@@ -22,17 +22,27 @@
   .btn-lg { height: 38px; padding: 0 18px; font-size: 15px; }
   /* Unavailable, natively or kept focusable with aria-disabled (so its reason can be read): one neutral face for
      every variant, with no lift and no hover, so it reads as off rather than as a faded action. Every variant but
-     ghost keeps a complete edge, so it still reads as a button where the fill is faint (dark). Focus still shows
+     ghost keeps a complete edge, so it still reads as a button where the fill is faint (dark); ghost keeps the fill
+     alone, like an unavailable icon button. Focus still shows
      the house outline. */
   .btn:is(:disabled, [aria-disabled='true']) { background: var(--disabled-fill); border-color: var(--border-strong); color: var(--disabled-ink); box-shadow: none; }
-  .btn-ghost:is(:disabled, [aria-disabled='true']) { background: transparent; border-color: transparent; }
+  .btn-ghost:is(:disabled, [aria-disabled='true']) { border-color: transparent; }
   .icon-btn {
     display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: var(--r-sm);
     border: 0; background: transparent; color: var(--text-2); transition: background 120ms, color 120ms;
   }
-  .icon-btn:hover:not(:disabled, [aria-disabled='true']) { background: var(--hover); color: var(--text); }
-  .icon-btn:is(:disabled, [aria-disabled='true']) { color: var(--disabled-ink); }
-  .icon-btn:is([aria-pressed='true'], .active):not(:disabled, [aria-disabled='true']) { background: var(--accent-soft); color: var(--accent-text); }
+  /* Hover is a step darker than the unavailable tile in light (10% ink against its 6%), so a live button under the
+     pointer never takes an off button's face; dark keeps --hover, which lightens while off darkens. */
+  .icon-btn:hover:not(:disabled, [aria-disabled='true']) { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+  :where(:root[data-appearance='dark']) .icon-btn:hover:not(:disabled, [aria-disabled='true']) { background: var(--hover); }
+  /* Unavailable is drawn, not faded (tokens.css): the neutral --disabled-fill under --disabled-ink, no edge, so an
+     unavailable icon button keeps its shape and reads as off rather than as a quiet live one. */
+  .icon-btn:is(:disabled, [aria-disabled='true']) { background: var(--disabled-fill); color: var(--disabled-ink); cursor: default; }
+  /* Pressed (a toggle that is on) is the one selected face the app uses, the same as a chosen segment's: raised, with
+     the 3:1 --border-control ring, never a tint alone. The left rail's view buttons are the one exception (layout.css):
+     they mark where you are, not a setting. A ghost button that toggles takes the same face. */
+  :is(.icon-btn, .btn-ghost)[aria-pressed='true']:not(:disabled, [aria-disabled='true']) { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+  :is(.icon-btn, .btn-ghost)[aria-pressed='true']:hover:not(:disabled, [aria-disabled='true']) { background: color-mix(in srgb, var(--text) 5%, var(--raised)); }
   .icon-btn svg { width: 16px; height: 16px; }
   .icon-btn.sm { width: 24px; height: 24px; }
   .icon-btn.sm svg { width: 14px; height: 14px; }
@@ -110,20 +120,42 @@
   :is(.input, .textarea):not(:focus) + .field-count.quiet { display: none; }
 
   /* ---------- Segmented, Switch, Badge, Kbd, Spinner ---------- */
-  /* Segmented: a --r-sm tray with --r-xs options (concentric across its 2px padding). The selected option takes
-     the raised face in both of Segmented's modes, toggle buttons (aria-pressed) and radios (aria-checked). */
-  .segmented { display: inline-flex; align-self: flex-start; padding: 2px; border-radius: var(--r-sm); background: var(--track); gap: 2px; }
-  .segmented button { height: 24px; padding: 0 9px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text-2); font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; gap: 5px; }
-  .segmented button svg { width: 14px; height: 14px; }
-  .segmented button:hover:not(:disabled, [aria-disabled='true']) { color: var(--text); }
+  /* Segmented: a --r-sm tray with --r-xs options (concentric across its edge and 2px padding). The tray takes the
+     3:1 --border-control edge every form control has, over a quiet fill (opaque --panel-2 in light, so the chosen
+     option's ring holds 3:1 against it on any surface; the sunken --track in dark). The chosen option (a radio's
+     aria-checked, a tab's aria-selected, or aria-pressed in a tray built by hand) takes the raised face and the same
+     ring. Chosen but unavailable keeps its
+     knob, drawn off: --disabled-fill, a --disabled-ink ring and ink. A tray with nothing available takes the
+     --border-strong edge of an unavailable control. Options are 22px tall; each one's hit area covers the tray's
+     padding, so the target is the tray's full 28px (a tray that wraps keeps 6px between rows, so rows' targets
+     never overlap). A label reserves its bold width, so choosing never shifts it. */
+  .segmented { display: inline-flex; align-self: flex-start; padding: 2px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--panel-2); gap: 6px 2px; }
+  :where(:root[data-appearance='dark']) .segmented { background: var(--track); }
+  .segmented:not(:has(button:not(:disabled, [aria-disabled='true']))) { border-color: var(--border-strong); }
+  .segmented button { position: relative; height: 22px; padding: 0 9px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text-2); font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+  .segmented button::before { content: ''; position: absolute; inset: -3px -1px; }
+  .segmented button svg { width: 14px; height: 14px; flex: none; }
+  .segmented .seg-label { display: inline-flex; flex-direction: column; align-items: center; }
+  .segmented .seg-label::after { content: attr(data-label); height: 0; overflow: hidden; visibility: hidden; font-weight: 600; }
+  .segmented button:hover:not(:disabled, [aria-disabled='true'], [aria-checked='true'], [aria-selected='true'], [aria-pressed='true']) { background: var(--hover); color: var(--text); }
   .segmented button:is(:disabled, [aria-disabled='true']) { color: var(--disabled-ink); }
-  .segmented button:is([aria-pressed='true'], [aria-checked='true']):is(:disabled, [aria-disabled='true']) { background: transparent; box-shadow: inset 0 0 0 1px var(--border-strong); }
-  .segmented button:is([aria-pressed='true'], [aria-checked='true']):not(:disabled, [aria-disabled='true']) { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+  .segmented button:is([aria-checked='true'], [aria-selected='true'], [aria-pressed='true']):not(:disabled, [aria-disabled='true']) { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+  .segmented button:is([aria-checked='true'], [aria-selected='true'], [aria-pressed='true']):is(:disabled, [aria-disabled='true']) { background: var(--disabled-fill); font-weight: 600; box-shadow: inset 0 0 0 1px var(--disabled-ink); }
   .segmented.full { display: flex; align-self: stretch; }
-  .segmented.full button { flex: 1; justify-content: center; }
+  .segmented.full button { flex: 1; }
+  /* Forced colours drop fills and shadows: the chosen option and a pressed toggle take the system's selected colours
+     (as specific as the rules they replace, so they win), and a chosen but unavailable one a GrayText edge. */
+  @media (forced-colors: active) {
+    .segmented button:is([aria-checked='true'], [aria-selected='true'], [aria-pressed='true']):not(:disabled, [aria-disabled='true']),
+    :is(.icon-btn, .btn-ghost)[aria-pressed='true']:not(:disabled, [aria-disabled='true']),
+    :is(.icon-btn, .btn-ghost)[aria-pressed='true']:hover:not(:disabled, [aria-disabled='true']) { forced-color-adjust: none; background: SelectedItem; color: SelectedItemText; box-shadow: none; }
+    .segmented button:is([aria-checked='true'], [aria-selected='true'], [aria-pressed='true']):is(:disabled, [aria-disabled='true']) { border: 1px solid GrayText; }
+  }
 
   .switch { position: relative; width: 32px; height: 20px; border-radius: 99px; background: var(--border-control); border: 0; transition: background 150ms; flex: none; }
   .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 150ms; }
+  /* The track is 20px; the hit area reaches the 24px minimum target. */
+  .switch::before { content: ''; position: absolute; inset: -2px 0; }
   .switch[aria-checked='true'] { background: var(--accent-fill); }
   :where(:root[data-appearance='dark']) { .switch::after { background: #f4f7fb; } .switch[aria-checked='true']::after { background: var(--ink); } }
   .switch[aria-checked='true']::after { transform: translateX(12px); }
@@ -131,6 +163,15 @@
      setting can still be read. */
   .switch:disabled { background: var(--disabled-fill); box-shadow: inset 0 0 0 1px var(--border-strong); cursor: not-allowed; }
   .switch:disabled::after, :where(:root[data-appearance='dark']) .switch[aria-checked='true']:disabled::after { background: var(--disabled-ink); box-shadow: none; }
+  /* Forced colours drop the track's fill and the thumb's: both are drawn in system colours instead. */
+  @media (forced-colors: active) {
+    .switch { forced-color-adjust: none; background: Canvas; box-shadow: inset 0 0 0 1px CanvasText; }
+    .switch::after { background: CanvasText; box-shadow: none; }
+    .switch[aria-checked='true'] { background: SelectedItem; box-shadow: none; }
+    .switch[aria-checked='true']::after { background: SelectedItemText; }
+    .switch:disabled { background: Canvas; box-shadow: inset 0 0 0 1px GrayText; }
+    .switch:disabled::after, .switch[aria-checked='true']:disabled::after { background: GrayText; }
+  }
 
   .badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--active); color: var(--text-2); white-space: nowrap; }
   .badge.accent { background: var(--accent-soft); color: var(--accent-text); }
@@ -410,7 +451,11 @@
   .overlay-backdrop.light { background: color-mix(in srgb, var(--scrim) 55%, transparent); }
   .modal-foot .spacer { flex: 1; }
   .switch-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
-  .switch-row label { font-weight: 400; color: var(--text); }
+  /* The title and hint are one label for the switch (named by the title, described by the hint), so a click
+     anywhere on the words toggles it. */
+  .switch-row > label { display: block; cursor: default; }
+  .switch-row .switch-row-title { display: block; font-weight: 400; color: var(--text); }
+  .switch-row .field-hint { display: block; }
   .switch-row .switch { margin-top: 1px; }
   .code-view { margin: 0; padding: 14px 16px; height: 60vh; overflow: auto; background: var(--panel-2); border-radius: var(--r-md); border: 1px solid var(--border); font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre; tab-size: 2; user-select: text; color: var(--text); }
   textarea.code-view { width: 100%; resize: none; outline: none; }

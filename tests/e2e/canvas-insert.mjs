@@ -67,7 +67,7 @@ const selectIn = async (locator, name) => {
 };
 
 step('Home: two sections, the first holding a Row with a Paragraph');
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 const home = async () => (await snapshot()).pages[pageId];
@@ -224,14 +224,14 @@ assert.deepEqual((await home()).nodes[row].children, rowBefore, 'and added nothi
 
 step('Preview shows no Add buttons');
 await inside.waitFor();
-await win.locator('.toolbar').getByRole('button', { name: 'Preview', exact: true }).click();
+await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true }).click();
 await frame.locator('html:not([data-so-editing])').waitFor({ state: 'attached' });
 const hoverAt = await pointIn(frame.locator('#first'), 0.85, 0.75);
 await win.mouse.move(hoverAt.x, hoverAt.y);
 await win.waitForTimeout(400);
 assert.equal(await allAdds.count(), 0, 'no + in Preview');
 assert.equal(await list.count(), 0, 'and no list');
-await win.locator('.toolbar').getByRole('button', { name: 'Edit', exact: true }).click();
+await win.locator('.toolbar').getByRole('radio', { name: 'Edit', exact: true }).click();
 await frame.locator('html[data-so-editing]').waitFor({ state: 'attached' });
 
 assert.deepEqual(errors, [], 'no page errors');

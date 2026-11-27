@@ -41,7 +41,7 @@ async function drag(from, to) {
 
 step('a landscape photo cropped square for every size');
 // The phone preview is shown at full scale, so a click lands where Playwright aims it.
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
 const studio = frame.locator('img[src*="studio"]').first();
 await selectPart(studio, 'Content with image');

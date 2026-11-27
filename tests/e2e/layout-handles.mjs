@@ -208,7 +208,7 @@ try {
   assert.ok(Math.abs(r / l - 2) < 0.02, `the saved sizes show on their own: ${[l, r]}`);
 
   step('on a phone the columns stack as before, with no divider to drag');
-  await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+  await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
   await eventually(async () => assert.equal((await tracks()).length, 1, 'one column on a phone'), 15000);
   assert.equal(await divider.count(), 0, 'no divider on a phone');
 

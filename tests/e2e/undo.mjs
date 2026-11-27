@@ -136,7 +136,7 @@ const formName = async () => {
 
 step('a visitor’s typing in Preview keeps its own history');
 await win.locator('button[title^="Preview:"]').click();
-await eventually(async () => assert.equal(await win.locator('button[title^="Preview:"]').getAttribute('aria-pressed'), 'true', 'Preview is on'));
+await eventually(async () => assert.equal(await win.locator('button[title^="Preview:"]').getAttribute('aria-checked'), 'true', 'Preview is on'));
 // The preview is scaled to fit, so focus the field directly rather than aiming a click at it.
 await nameField.focus();
 await eventually(async () => assert.equal(await focusedTag(), 'IFRAME', 'the preview frame has focus'));

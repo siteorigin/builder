@@ -8,7 +8,7 @@ import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
 import { aiActivity, api, applyOps, commitDraft, getState, markDraft, selectSlot, setState, showLayer, toast, useStore } from '../store';
-import { MenuTriggers, rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
+import { MenuTriggers, rovingKeys, Segmented, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { openInsertSearch } from '../lib/insert-focus';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
@@ -750,24 +750,27 @@ export function LayersPanel() {
   return (
     <>
       <div className="panel-head">
-        <h3>{outline ? 'Page outline' : 'Layers'}</h3>
+        <h3>{outline ? 'Headings' : 'Layers'}</h3>
         <span className="context ellipsis" title={defOwner ? `Layers of the ${st.components[defOwner.id]?.name} component` : layout ? `Layers of the ${layout.name}` : `${outline ? 'Headings' : 'Layers'} on ${page.title}`}>
           {defOwner ? st.components[defOwner.id]?.name : layout ? layout.name : page.title}
         </span>
       </div>
       {!defOwner && !layout && (
         <div className="layers-views">
-          <div className="segmented full" role="group" aria-label="Show">
-            <button aria-pressed={!outline} onClick={() => setState({ layersView: 'layers' })}>
-              Layers
-            </button>
-            <button aria-pressed={outline} title="The headings this page shows, in the order screen readers list them" onClick={() => setState({ layersView: 'outline' })}>
-              Headings
-            </button>
-          </div>
+          <Segmented
+            tabs
+            full
+            label="Show"
+            value={outline ? 'outline' : 'layers'}
+            onChange={(v) => setState({ layersView: v })}
+            options={[
+              { value: 'layers', label: 'Layers', controls: 'layers-view-tree' },
+              { value: 'outline', label: 'Headings', title: 'The headings this page shows, in the order screen readers list them', controls: outline ? 'layers-view-outline' : undefined }
+            ]}
+          />
         </div>
       )}
-      {outline && visible && <OutlinePanel pageId={pageId} />}
+      {outline && visible && <OutlinePanel pageId={pageId} id="layers-view-outline" />}
       {/* Layers selected together: how many, their commands (Shift+F10 on one of them has the same menu), and the
           pointer's way back to one layer (Esc from the keyboard). */}
       {picked && !outline && (
@@ -809,7 +812,7 @@ export function LayersPanel() {
       {/* The tree stays mounted while the outline shows, so its single tab stop is kept for when it returns. */}
       <Picked.Provider value={picked}>
       <MenuTriggers.Provider value={menu.triggerProps}>
-      <div className="panel-body layers-tree" role="tree" aria-label="Layers" aria-multiselectable="true" ref={treeRef} onKeyDown={onTreeKey} onPointerDown={(e) => e.currentTarget.removeAttribute('data-keys')} hidden={outline}>
+      <div id="layers-view-tree" className="panel-body layers-tree" role="tree" aria-label="Layers" aria-multiselectable="true" ref={treeRef} onKeyDown={onTreeKey} onPointerDown={(e) => e.currentTarget.removeAttribute('data-keys')} hidden={outline}>
         {defOwner && defTree ? (
           <>
             <SectionLabel id="layers-sec-component" icon={<Component />} label="Component layers" />

@@ -59,14 +59,14 @@ const still = async () => {
 const row = win.locator('[role="tree"] [role="treeitem"][data-name="Gallery"]').first();
 
 step('Gallery picked in Layers shows at desktop width');
-await win.getByRole('button', { name: 'Desktop', exact: true }).click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).click();
 await win.locator('.rail [aria-label="Layers"]').click();
 await row.click();
 await eventually(async () => assert.equal(await topShows(), true, 'Gallery’s top is in view once it is picked'));
 await still();
 
 step('switching to Phone keeps Gallery in view, and so does switching back to Desktop');
-await win.getByRole('button', { name: 'Phone', exact: true }).click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).click();
 await eventually(async () => assert.ok((await where()).width < 500, 'the preview is at phone width'));
 await eventually(async () => assert.equal(await topShows(), true, 'Gallery’s top is still in view at phone width'));
 await still();
@@ -82,7 +82,7 @@ await win.keyboard.press('Enter');
 await eventually(async () => assert.equal(await topShows(), true, 'Enter on the selected row shows Gallery too'));
 await still();
 
-await win.getByRole('button', { name: 'Desktop', exact: true }).click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).click();
 await eventually(async () => assert.ok((await where()).width > 1000, 'the preview is back at desktop width'));
 await eventually(async () => assert.equal(await topShows(), true, 'Gallery’s top is in view back at desktop width'));
 await still();
