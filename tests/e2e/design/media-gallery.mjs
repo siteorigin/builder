@@ -350,8 +350,8 @@ await shot('free-space', '[data-testid="free-space-dialog"]', { window: true });
 await win.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
 await win.getByTestId('free-space-dialog').waitFor({ state: 'detached', timeout: 5000 });
 if (!(await win.evaluate(() => window.builder.project.undo())).ok) throw new Error('could not undo the clean-up');
-await win.locator('[data-asset]').nth(12).waitFor({ timeout: 20000 });
 await scrollBody(0);
+await win.locator('[data-asset]').nth(12).waitFor({ timeout: 20000 });
 await pause(400);
 
 // Files gone from the project folder, on placed images listed first: every file of one, only the original of
