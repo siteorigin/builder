@@ -177,6 +177,21 @@ interface ActiveRun {
   reached: boolean;
   /** The model the composer named for this message; a run that would go to another one sends nothing. */
   recipient: Recipient | null;
+  /** Where the run's turn is saved when it ends, however it ends: taken when it was admitted (see RunTranscript). */
+  transcript: RunTranscript;
+}
+
+/**
+ * The transcript a request was admitted into: the project opening, session and folder it was sent in, and the
+ * conversation object holding its messages. The run saves there and nowhere else, whichever thread is open by then.
+ */
+interface RunTranscript {
+  opening: object;
+  session: RunSession;
+  dir: string;
+  conv: Conversation;
+  deleted: Set<string>;
+  names: Map<string, string>;
 }
 
 
@@ -637,6 +652,8 @@ export class Orchestrator {
    * rename (whatever copy of the conversation it holds) writes this name, never the one it replaced.
    */
   private names = new Map<string, string>();
+  /** This opening of the project, replaced when another begins: a request admitted in an earlier one saves nothing. */
+  private opening: object = {};
   /** Settles once the current run has ended: rolled back or committed, and the app told it is idle. */
   private runEnded: Promise<void> = Promise.resolve();
   conversation: Conversation | null = null;
@@ -882,22 +899,25 @@ export class Orchestrator {
   }
 
   /**
-   * The write of the open conversation as it is now: its folder, identity and bytes are taken at once, so a
-   * conversation switch before the write runs cannot change what is written or where.
+   * The write of a conversation as it is now: the open one, or the transcript a request was admitted into. Its
+   * folder, identity and bytes are taken at once, so a conversation switch before the write runs cannot change what
+   * is written or where.
    */
-  private transcriptWrite(): (() => Promise<void>) | null {
-    const session = this.deps.session();
+  private transcriptWrite(to?: RunTranscript): (() => Promise<void>) | null {
+    // A request admitted in an earlier opening of the project saves nothing: its session may be closing, its lock gone.
+    if (to && to.opening !== this.opening) return null;
+    const session = to ? to.session : this.deps.session();
     // Also covers a run that ends after another app took the project over.
     if (!session || session.readOnly) return null;
-    const dir = this.chatDir();
-    const conv = this.conversation;
+    const dir = to ? to.dir : this.chatDir();
+    const conv = to ? to.conv : this.conversation;
     if (!dir || !conv || !conv.messages.length || !/^c_[a-z0-9]+$/.test(conv.id)) return null;
     const saved = JSON.parse(JSON.stringify(conv)) as Conversation;
-    const { deleted, names } = this;
+    const { deleted, names, opening } = to ?? this;
     return async () => {
-      // Checked again when the write's turn comes: the project may have been taken over, or the conversation
-      // deleted (by a delete that finished: one that failed leaves it to be saved as usual), meanwhile.
-      if (session.readOnly || deleted.has(conv.id)) return;
+      // Checked again when the write's turn comes: the project may have been taken over or closed, or the
+      // conversation deleted (by a delete that finished: one that failed leaves it to be saved as usual), meanwhile.
+      if (opening !== this.opening || session.readOnly || deleted.has(conv.id)) return;
       // The messages as they were when the write was asked for; the name as it is now, so a rename that landed
       // after this write was queued is never written over, whichever conversation is open by then.
       const renamed = names.get(conv.id);
@@ -933,9 +953,9 @@ export class Orchestrator {
     return done;
   }
 
-  /** Save the transcript after any save already under way, so the newest bytes are always the last written. */
-  private queueSave(): Promise<void> {
-    const write = this.transcriptWrite();
+  /** Save a request's transcript after any save already under way, so the newest bytes are always the last written. */
+  private queueSave(to: RunTranscript): Promise<void> {
+    const write = this.transcriptWrite(to);
     this.saving = this.saving.then(() => write?.()).catch(() => undefined);
     return this.saving;
   }
@@ -947,6 +967,7 @@ export class Orchestrator {
     this.deleted = new Set();
     this.removing = new Set();
     this.names = new Map();
+    this.opening = {};
     if (this.run) this.run.conversationId = '';
     // Another project never waits on this one's transcript write.
     this.saving = Promise.resolve();
@@ -1090,7 +1111,8 @@ export class Orchestrator {
     const titled = conv.named || conv.messages.some((m) => m.role === 'user' && typeof m.text === 'string' && m.text.trim());
     conv.messages.push(userMsg, assistant);
     if (!titled && text.trim()) conv.title = autoTitle(text);
-    const active: ActiveRun = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended };
+    const transcript: RunTranscript = { opening: this.opening, session, dir: session.local('sessions', 'chat'), conv, deleted: this.deleted, names: this.names };
+    const active: ActiveRun = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended, transcript };
     this.run = active;
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
@@ -1108,7 +1130,7 @@ export class Orchestrator {
         this.run = null;
         this.deps.onBusyChange(false);
         // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
-        await this.queueSave();
+        await this.queueSave(active.transcript);
       });
     return { ok: true, runId };
   }

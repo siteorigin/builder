@@ -156,6 +156,8 @@ describe('how the list words a conversation', () => {
 /** Each model turn answers at once, unless the test holds it at its gate. */
 class Adapter implements AgentModelAdapter {
   hold = false;
+  /** A held turn that fails, once released, the way a provider that refuses the key does. */
+  fail = false;
   /** Turns answered as written, before any default one. */
   script: ModelEvent[][] = [];
   private gates: Array<() => void> = [];
@@ -173,6 +175,7 @@ class Adapter implements AgentModelAdapter {
     if (scripted) return yield* scripted;
     yield { type: 'text', delta: 'Done.' };
     if (this.hold) await new Promise<void>((r) => this.gates.push(r));
+    if (this.fail) return yield { type: 'error', code: 'auth', message: 'The API key was refused.' };
     yield { type: 'done', stopReason: 'end', text: 'Done.', toolCalls: [] };
   }
 }
@@ -624,5 +627,57 @@ describe('managing conversations (#235)', () => {
     expect(env.session.historyInfo()).toEqual(steps);
     expect((await env.session.undo()).ok).toBe(true);
     expect(env.session.state.site.name).toBe('Studio');
+  });
+});
+
+describe('a run saves the conversation it was sent in (#1122)', () => {
+  /** Another thread made the open one while a request in `first` runs, the way a thread switch mid-run would. */
+  const switchMidRun = (env: Awaited<ReturnType<typeof setup>>) => {
+    const other = thread('c_other', [['Plan the gallery page', '2026-11-20T09:00:00.000Z']]);
+    env.write(other);
+    const before = readFileSync(env.file(other.id), 'utf8');
+    (env.orch as unknown as { conversation: Conversation }).conversation = structuredClone(other);
+    return { id: other.id, before };
+  };
+
+  for (const end of ['finishes', 'is stopped', 'fails'] as const) {
+    it(`a request that ${end} after the open thread changed saves its turn in its own transcript, and no other`, async () => {
+      const env = await setup();
+      const first = await env.ask('Write an About page');
+      env.adapter.hold = true;
+      env.adapter.fail = end === 'fails';
+      const r = await env.orch.send('And a footer', env.ctx, first);
+      expect(r.ok).toBe(true);
+      await until(() => env.adapter.waiting, 'the request to stream');
+      const other = switchMidRun(env);
+      if (end === 'is stopped') {
+        const stopping = env.orch.stopRun(r.runId!);
+        env.adapter.release();
+        await stopping;
+      } else env.adapter.release();
+      await until(() => !env.orch.busy, 'the request to finish');
+      // A list read waits its turn behind the request's own save.
+      await env.orch.loadConversations();
+      const saved = env.stored(first);
+      expect(saved.messages.map((m) => m.text).slice(0, 3)).toEqual(['Write an About page', 'Done.', 'And a footer']);
+      expect(saved.messages).toHaveLength(4);
+      expect(saved.messages[3]).toMatchObject({ role: 'assistant', runId: r.runId, result: { status: { finishes: 'no-changes', 'is stopped': 'cancelled', fails: 'failed' }[end] } });
+      expect(readFileSync(env.file(other.id), 'utf8')).toBe(other.before);
+    });
+  }
+
+  it('a request still ending when its project closes writes nothing, into that project or the next', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    const before = readFileSync(env.file(first), 'utf8');
+    env.adapter.hold = true;
+    expect((await env.orch.send('And a footer', env.ctx, first)).ok).toBe(true);
+    await until(() => env.adapter.waiting, 'the request to stream');
+    env.orch.reset();
+    env.adapter.release();
+    await until(() => !env.orch.busy, 'the request to finish');
+    await env.orch.loadConversations();
+    expect(readFileSync(env.file(first), 'utf8')).toBe(before);
+    expect(readdirSync(env.chatDir).filter((f) => f.endsWith('.json'))).toEqual([`${first}.json`]);
   });
 });
