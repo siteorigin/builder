@@ -17,7 +17,7 @@ export const CREDENTIAL_STEMS: readonly string[] = ['source-secrets', 'api-keys'
  * long on a hostile name. Before `.json` is the file's name and nothing but what a copy adds (spaces, hyphens,
  * underscores, numbers, brackets, "copy"); after it, anything an editor adds (`~`, `#`, `.swp`, `.bak`).
  */
-function isCredentialFile(name: string): boolean {
+export function isCredentialFile(name: string): boolean {
   let n = name.toLowerCase().replace(/^[.#]+/, '');
   if (n.startsWith('copy of ')) n = n.slice('copy of '.length);
   const at = n.indexOf('.json');

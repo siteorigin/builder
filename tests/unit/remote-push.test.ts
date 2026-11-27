@@ -6,7 +6,7 @@
  *
  * Skipped where stock Git or openssl is missing, except on CI, where both must be there.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -14,6 +14,8 @@ import { createGitClient, type GitWorkerHandle } from '../../src/main/git/client
 import { createGitService } from '../../src/main/git/service';
 import { openRepo } from '../../src/main/git/repo';
 import { GitError, PUBLISH_BRANCH, VERSIONS_BRANCH, type FileInput, type Identity, type RemoteTarget } from '../../src/main/git/protocol';
+import { httpsGitTransport, type PushRequest, type RemoteGit } from '../../src/main/remote/transport';
+import { createRemoteCredentialStore } from '../../src/main/remote/credentials';
 import { HOST_AVAILABLE, startGitHost, type GitHost } from './https-git-server';
 
 const APP: Identity = { name: 'SiteOrigin Builder', email: 'publish@siteorigin.invalid', timestamp: 1_790_000_000, timezoneOffset: 0 };
@@ -196,5 +198,90 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
       await expect(git.push(root, { url, ref: PUBLISH_BRANCH, auth: null }, commit)).rejects.toMatchObject({ code: 'invalid' });
     await expect(git.push(root, { url: h.url, ref: VERSIONS_BRANCH as typeof PUBLISH_BRANCH, auth: null }, commit)).rejects.toMatchObject({ code: 'invalid' });
     expect(h.requests).toEqual([]);
+  });
+});
+
+describe('settling a push whose reply was lost (#1157)', () => {
+  const PINNED = 'a'.repeat(40);
+  const OLD = 'b'.repeat(40);
+  const request = (over: Partial<PushRequest> = {}): PushRequest => ({
+    endpoint: 'https://git.example/site.git',
+    binding: 'rb_0123456789abcdef01234567',
+    ref: PUBLISH_BRANCH,
+    commit: PINNED,
+    credentials: async () => ({ username: USER, token: TOKEN }),
+    ...over
+  });
+  const lostPush = (tip: () => Promise<string | null>) => {
+    const looks: unknown[] = [];
+    const git: RemoteGit = {
+      push: async () => Promise.reject(new GitError('outcome-unknown', 'lost')),
+      remoteTip: async (target, opts) => (looks.push({ target, opts }), tip())
+    };
+    return { git, looks };
+  };
+
+  it('takes the push as landed only when the host’s branch is at the pinned commit', async () => {
+    const landed = lostPush(async () => PINNED);
+    expect(await httpsGitTransport(landed.git, { lookupMs: 50 }).push(root, request())).toEqual({ commit: PINNED, uploaded: true, reconciled: true, receipt: null });
+    expect(landed.looks).toEqual([{ target: { url: 'https://git.example/site.git', ref: PUBLISH_BRANCH, auth: { username: USER, password: TOKEN } }, opts: { timeoutMs: 50 } }]);
+    // Still where it was, at none, or no answer: the host may yet take it.
+    for (const tip of [async () => OLD, async () => null, async () => Promise.reject(new GitError('unreachable', 'down'))])
+      await expect(httpsGitTransport(lostPush(tip).git).push(root, request())).rejects.toMatchObject({ code: 'outcome-unknown' });
+  });
+
+  it('does not look once the caller stopped the push, and never looks after a failure that moved nothing', async () => {
+    const stopped = lostPush(async () => PINNED);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(httpsGitTransport(stopped.git).push(root, request({ signal: controller.signal }))).rejects.toMatchObject({ code: 'outcome-unknown' });
+    expect(stopped.looks).toEqual([]);
+    const looks: unknown[] = [];
+    const refused: RemoteGit = { push: async () => Promise.reject(new GitError('auth-rejected', 'no')), remoteTip: async () => (looks.push(1), PINNED) };
+    await expect(httpsGitTransport(refused).push(root, request())).rejects.toMatchObject({ code: 'auth-rejected' });
+    expect(looks).toEqual([]);
+  });
+
+  it('asks for the credential only for the approved address, and refuses any other branch or address first', async () => {
+    const asked: string[] = [];
+    const git: RemoteGit = { push: async () => ({ previous: null, uploaded: true }), remoteTip: async () => null };
+    const t = httpsGitTransport(git);
+    await t.push(root, request({ credentials: async (url) => (asked.push(url), null) }));
+    expect(asked).toEqual(['https://git.example/site.git']);
+    await expect(t.push(root, request({ endpoint: 'https://git.example/site.git/' }))).rejects.toMatchObject({ code: 'invalid' });
+    await expect(t.push(root, request({ ref: VERSIONS_BRANCH as typeof PUBLISH_BRANCH }))).rejects.toMatchObject({ code: 'invalid' });
+    await expect(t.push(root, request({ commit: 'HEAD' }))).rejects.toMatchObject({ code: 'invalid' });
+    expect(asked).toHaveLength(1);
+  });
+});
+
+describe('the publishing credential store (#1157)', () => {
+  const ID = 'rb_0123456789abcdef01234567';
+  const owner = () => ({ projectId: 'p_abc', dir: root, url: 'https://git.example/site.git' });
+
+  it('gives a credential out only for the binding, project, folder and address it was kept for, from a file only the user reads', async () => {
+    const file = join(root, 'remote-credentials.json');
+    const store = createRemoteCredentialStore(() => file);
+    await store.set(ID, owner(), { username: ` ${USER} `, token: `${TOKEN}\n` });
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(await store.resolve(ID, owner())).toEqual({ username: USER, token: TOKEN });
+    for (const other of [{ projectId: 'p_other' }, { dir: join(root, 'copy') }, { url: 'https://git.example/other.git' }]) expect(await store.resolve(ID, { ...owner(), ...other })).toBeNull();
+    expect(await store.resolve('rb_ffffffffffffffffffffffff', owner())).toBeNull();
+    expect(await store.values()).toEqual([TOKEN]);
+    await expect(store.set(ID, owner(), { username: 'a:b', token: TOKEN })).rejects.toThrow();
+    await expect(store.set(ID, { ...owner(), url: 'http://git.example/site.git' }, { username: USER, token: TOKEN })).rejects.toThrow();
+    await expect(store.set('p_abc', owner(), { username: USER, token: TOKEN })).rejects.toThrow();
+    await store.forget(ID);
+    expect(await store.resolve(ID, owner())).toBeNull();
+  });
+
+  it('leaves a damaged file as it is rather than writing over every other credential', async () => {
+    const file = join(root, 'remote-credentials.json');
+    writeFileSync(file, '{"rb_0123456789abcdef01234567":{"token":1}}');
+    const store = createRemoteCredentialStore(() => file);
+    await expect(store.resolve(ID, owner())).rejects.toThrow(/damaged/);
+    await expect(store.set(ID, owner(), { username: USER, token: TOKEN })).rejects.toThrow(/damaged/);
+    await expect(store.values()).rejects.toThrow(/damaged/);
+    expect(readFileSync(file, 'utf8')).toBe('{"rb_0123456789abcdef01234567":{"token":1}}');
   });
 });

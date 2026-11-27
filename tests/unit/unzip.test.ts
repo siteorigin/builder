@@ -459,6 +459,29 @@ describe('unpacking a project into a new folder', () => {
     for (const at of [dest, raw]) for (const gone of ['.git', '.siteorigin', '.\u017Fiteorigin', 'src/lib/vendor/.git', 'static/old']) expect(existsSync(join(at, gone)), gone).toBe(false);
   });
 
+  it('never writes a copy of the app’s own credential files, wherever it is in the archive (#1157)', async () => {
+    const zip = zipFile([
+      { name: 'Cafe/' },
+      { name: 'Cafe/siteorigin.project.json', data: '{"name":"Cafe"}' },
+      { name: 'Cafe/siteorigin/pages/home.json', data: '{}' },
+      // Put together by hand: someone's publishing tokens, and copies of their other credential files.
+      { name: 'Cafe/remote-credentials.json', data: '{"rb_0123456789abcdef01234567":{"token":"tok_theirs"}}' },
+      { name: 'Cafe/static/Remote-Credentials (1).json', data: '{}' },
+      { name: 'Cafe/src/lib/.remote-credentials.json.swp', data: '{}' },
+      { name: 'Cafe/src/lib/api-keys.json~', data: '{}' },
+      // Named after one, and no copy of one.
+      { name: 'Cafe/static/remote-credentials-guide.txt', data: 'kept' }
+    ]);
+    const contents = await project(zip);
+    const kept = ['siteorigin.project.json', 'siteorigin/pages/home.json', 'static/remote-credentials-guide.txt'];
+    expect(filesToWrite(contents.entries, contents.root)).toBe(kept.length);
+    const dest = await unpackProject(zip, contents, temp(), 'cafe');
+    expect(tree(dest)).toEqual(kept);
+    const raw = temp();
+    expect(await extractEntries(zip, await readZipEntries(zip), 'Cafe/', raw)).toBe(kept.length);
+    expect(tree(raw)).toEqual(kept);
+  });
+
   it('never writes a project from inside another project’s state, even when told to extract from there', async () => {
     for (const root of ['.git/', '.SiteOrigin/']) {
       const zip = zipFile([{ name: `${root}siteorigin.project.json`, data: '{}' }, { name: `${root}static/a.png`, data: 'x' }]);
