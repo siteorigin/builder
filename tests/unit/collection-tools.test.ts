@@ -246,7 +246,7 @@ describe('collection tools for every model', () => {
       expect(r.content, altered).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/body\[1\]: this picture line does not match/) } });
     }
     // Nor is one retyped, given text around it, or sent inside a longer element written as text in the picture's place.
-    for (const altered of [`![Kiln](asset:a_kiln 'Before')`, '![Kiln](asset:a_kiln "Before") and more', '- ![Kiln](asset:a_kiln "Before")', '![A [new] kiln](<asset:a_kiln>)', 'Between.\n\n![Kiln](asset:a_kiln "Before")']) {
+    for (const altered of [`![Kiln](asset:a_kiln 'Before')`, '![Kiln](asset:a_kiln "Before") and more', '- ![Kiln](asset:a_kiln "Before")', '![A [new] kiln](<asset:a_kiln>)', '![Kiln](< asset:a_kiln > "During")', '![Kiln](\nasset:a_kiln "During")', '![A new\ndescription](asset:a_kiln "Before")', 'Between.\n\n![Kiln](asset:a_kiln "Before")']) {
       const r = await write(['![Kiln](asset:a_kiln "After")', altered]);
       expect(r.content, altered).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/body\[1\]: this picture line does not match/) } });
     }
@@ -256,7 +256,7 @@ describe('collection tools for every model', () => {
     expect(grants).toEqual([]);
     expect(now()).toEqual(s);
     const [before, , after] = entry(s, 'en_winter').body;
-    expect((await write(['![Kiln](asset:a_kiln "After")', '![Kiln](asset:a_kiln "Before")'])).ok).toBe(true);
+    expect((await write(['  ![Kiln](asset:a_kiln "After") ', '![Kiln](asset:a_kiln "Before")'])).ok).toBe(true);
     expect(entry(now(), 'en_winter').body).toEqual([after, before]);
     expect((await write(['![Kiln](asset:a_kiln "Before")'])).ok).toBe(true);
     expect(entry(now(), 'en_winter').body).toEqual([before]);

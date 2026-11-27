@@ -276,13 +276,13 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
 }
 
 /**
- * The asset a line of text places as a picture, or null where it places none. Looser than a read writes it, so a line
+ * The asset an element of the text places as a picture, or null where it places none. Looser than a read writes it, so a line
  * retyped with other quotes, text around it or a block marker is still caught. A read escapes the brackets of literal
  * text, so its own words never match.
  */
-function pictureIn(line: string): string | null {
-  const open = line.indexOf('![');
-  const m = open < 0 ? null : /\]\(\s*<?asset:([^\s)"'>]*)/.exec(line.slice(open + 2));
+function pictureIn(text: string): string | null {
+  const open = text.indexOf('![');
+  const m = open < 0 ? null : /\]\(\s*<?\s*asset:([^\s)"'>]*)/.exec(text.slice(open + 2));
   return m ? m[1] : null;
 }
 
@@ -303,9 +303,9 @@ function bodyValue(lines: string[], current: RichText, pages: ProjectState['page
       used.add(at);
       return structuredClone(pictures[at]);
     }
-    // Every line of it: the engine reads one string of several lines as several blocks.
-    const assetId = raw.split('\n').map(pictureIn).find((id) => id !== null);
-    if (assetId === undefined) return raw;
+    // The whole element, however its lines fall: the engine would write any of it as text.
+    const assetId = pictureIn(raw);
+    if (assetId === null) return raw;
     issues.push({
       field: `body[${i}]`,
       message: pictures.some((p) => p.assetId === assetId)
