@@ -10,6 +10,8 @@ import { shootReviewPage, type CdpPage, type ReviewShot } from './review-shot';
 
 /** The windows' own session: in memory, shared with nothing else. */
 const PARTITION = 'siteorigin-review-capture';
+/** How long a new window gets to open its blank page. */
+const OPEN_MS = 10000;
 
 let guarded = false;
 function guardSession() {
@@ -34,6 +36,9 @@ export function createReviewShooter(): ReviewShooter {
 
   const shoot = async (url: string, width: number, signal?: AbortSignal): Promise<ReviewShot> => {
     if (signal?.aborted) return { ok: false, reason: 'failed', detail: 'The capture was stopped.' };
+    const ses = guardSession();
+    // Each picture starts as a first visit: nothing a page stored, and no worker it registered, at another width.
+    await ses.clearStorageData().catch(() => undefined);
     const w = new BrowserWindow({
       show: false,
       focusable: false,
@@ -43,7 +48,7 @@ export function createReviewShooter(): ReviewShooter {
       height: 900,
       paintWhenInitiallyHidden: true,
       webPreferences: {
-        session: guardSession(),
+        session: ses,
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
@@ -61,15 +66,28 @@ export function createReviewShooter(): ReviewShooter {
     // Only the capture opens the page; the page itself goes nowhere and opens nothing.
     wc.on('will-navigate', (e) => e.preventDefault());
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+    // The window lost (its renderer, the window itself, or its DevTools session) ends the picture at once.
     const gone = new AbortController();
     wc.on('render-process-gone', () => gone.abort());
+    wc.once('destroyed', () => gone.abort());
+    wc.debugger.on('detach', () => gone.abort());
     const stop = () => gone.abort();
-    signal?.addEventListener('abort', stop, { once: true });
+    // Called off while the window was being made: an abort listened for only now would never be heard.
+    if (signal?.aborted) stop();
+    else signal?.addEventListener('abort', stop, { once: true });
     const listeners = new Set<(method: string, params: Record<string, unknown>) => void>();
     const onMessage = (_e: unknown, method: string, params: Record<string, unknown>) => listeners.forEach((l) => l(method, params));
     try {
       // A window that has loaded nothing has no page to speak to yet: its DevTools session would never answer.
-      await wc.loadURL('about:blank');
+      let ready: ReturnType<typeof setTimeout> | undefined;
+      const opened = await Promise.race([
+        wc.loadURL('about:blank').then(() => true, () => false),
+        new Promise<false>((resolve) => {
+          ready = setTimeout(() => resolve(false), OPEN_MS);
+          gone.signal.addEventListener('abort', () => resolve(false), { once: true });
+        })
+      ]).finally(() => clearTimeout(ready));
+      if (!opened) return { ok: false, reason: gone.signal.aborted ? 'failed' : 'timeout', detail: signal?.aborted ? 'The capture was stopped.' : 'The capture window did not open.' };
       wc.debugger.attach('1.3');
       wc.debugger.on('message', onMessage);
       const page: CdpPage = {

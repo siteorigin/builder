@@ -5,7 +5,7 @@
  * picture that could not be taken is recorded as unavailable at its width; nothing is kept when the capture is called
  * off. The pictures here are made up by a stand-in for the hidden window, which reads the page it is sent to.
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -88,7 +88,7 @@ function fakePng(width: number, height: number, what: string): Buffer {
  * The hidden window's stand-in: reads the page it is sent to over HTTP and pictures what it served (a picture of the
  * page's own HTML), or reports the page unavailable at the widths `unavailable` names for its address.
  */
-function fakeShooter(opts: { unavailable?: Record<string, number[]>; hold?: Promise<void>; holdAt?: number } = {}) {
+function fakeShooter(opts: { unavailable?: Record<string, number[]>; throws?: Record<string, number[]>; hold?: Promise<void>; holdAt?: number; mark?: string } = {}) {
   const seen: Array<{ url: string; width: number; status: number; body: string }> = [];
   /** Every picture asked for, whether or not its page could be read. */
   const asked: string[] = [];
@@ -100,7 +100,8 @@ function fakeShooter(opts: { unavailable?: Record<string, number[]>; hold?: Prom
     if (opts.hold && seen.length === opts.holdAt) await opts.hold;
     const path = new URL(url).pathname;
     if (opts.unavailable?.[path]?.includes(width)) return { ok: false, reason: 'fonts', detail: 'Some fonts failed to load: Brand Sans.' };
-    return { ok: true, png: fakePng(width, 1000, `${width}:${body}`), height: 1000 };
+    if (opts.throws?.[path]?.includes(width)) throw new Error('the window went away');
+    return { ok: true, png: fakePng(width, 1000, `${width}:${body}${opts.mark ?? ''}`), height: 1000 };
   };
   return { shoot, seen, asked };
 }
@@ -162,6 +163,7 @@ describe('capturing a review edition', () => {
       { label: 'Phone', width: 390 }
     ]);
     expect(m.basePath).toBe('/client');
+    expect(m.revision).toBe(c.snapshot()!.revision);
     // Each page was opened where the website serves it, under its base path, and answered with that page.
     expect(seen.map((s) => [new URL(s.url).pathname, s.width, s.status])).toEqual([
       ['/client/', 1440, 200],
@@ -199,12 +201,13 @@ describe('capturing a review edition', () => {
 
   it('records a page that could not be pictured at a width as unavailable there and keeps the rest', async () => {
     const { c, dir } = await bookshop();
-    c.reviewShoot = fakeShooter({ unavailable: { '/about/': [390] } }).shoot;
+    c.reviewShoot = fakeShooter({ unavailable: { '/about/': [390] }, throws: { '/': [390] } }).shoot;
     const r = await c.captureReviewEdition({ routes: ['/', '/about/'] });
-    expect(r).toMatchObject({ ok: true, message: 'Captured 3 of 4 pictures; 1 could not be taken.' });
+    expect(r).toMatchObject({ ok: true, message: 'Captured 2 of 4 pictures; 2 could not be taken.' });
     if (!r.ok) return;
+    expect(r.edition.captures[1]).toEqual({ route: '/', width: 390, status: 'unavailable', reason: 'failed', detail: 'The page could not be captured: the window went away' });
     expect(r.edition.captures[3]).toEqual({ route: '/about/', width: 390, status: 'unavailable', reason: 'fonts', detail: 'Some fonts failed to load: Brand Sans.' });
-    expect(filesIn(r.path)).toEqual(['images/001-1440.png', 'images/001-390.png', 'images/002-1440.png', 'manifest.json']);
+    expect(filesIn(r.path)).toEqual(['images/001-1440.png', 'images/002-1440.png', 'manifest.json']);
     expect(r.edition.basePath).toBe('');
     expect(r.path.startsWith(join(dir, REVIEWS_DIR))).toBe(true);
   });
@@ -213,12 +216,12 @@ describe('capturing a review edition', () => {
     const { c } = await bookshop();
     const { shoot, seen } = fakeShooter();
     c.reviewShoot = shoot;
-    const r = await c.captureReviewEdition({ routes: ['/about/'], widths: [{ label: ' Tablet ', width: 768 }, { label: 'Wide', width: 1920 }] });
+    const r = await c.captureReviewEdition({ routes: ['/about/'], widths: [{ label: 'Wide', width: 1920 }, { label: ' Tablet ', width: 768 }] });
     expect(r.ok && r.edition.widths).toEqual([
-      { label: 'Tablet', width: 768 },
-      { label: 'Wide', width: 1920 }
+      { label: 'Wide', width: 1920 },
+      { label: 'Tablet', width: 768 }
     ]);
-    expect(seen.map((s) => s.width)).toEqual([768, 1920]);
+    expect(seen.map((s) => s.width)).toEqual([1920, 768]);
   });
 
   it('names each page by its title in the build, whatever it was renamed to meanwhile', async () => {
@@ -242,6 +245,9 @@ describe('capturing a review edition', () => {
     expect(await c.captureReviewEdition({ routes: [] })).toEqual({ ok: false, message: 'Choose at least one page to capture.' });
     expect(await c.captureReviewEdition({ routes: ['/', '/'] })).toEqual({ ok: false, message: '/ is asked for twice.' });
     expect(await c.captureReviewEdition({ routes: ['/'], widths: [{ label: 'Tiny', width: 100 }] })).toEqual({ ok: false, message: 'Each width must be a whole number of pixels from 320 to 2560.' });
+    expect(await c.captureReviewEdition({ routes: ['/'], widths: [{ label: 'Huge', width: 2561 }] })).toEqual({ ok: false, message: 'Each width must be a whole number of pixels from 320 to 2560.' });
+    expect(await c.captureReviewEdition({ routes: ['/'], widths: [{ label: 'Half', width: 800.5 }] })).toEqual({ ok: false, message: 'Each width must be a whole number of pixels from 320 to 2560.' });
+    expect(await c.captureReviewEdition({ routes: ['/'], widths: Array.from({ length: 9 }, (_, i) => ({ label: `W${i}`, width: 400 + i })) })).toEqual({ ok: false, message: 'Choose at most 8 widths to capture.' });
     expect(await c.captureReviewEdition({ routes: ['/'], widths: [{ label: 'A', width: 800 }, { label: 'B', width: 800 }] })).toEqual({ ok: false, message: '800 px is asked for twice.' });
     expect(await c.captureReviewEdition({ routes: ['/'], widths: [{ label: '  ', width: 800 }] })).toEqual({ ok: false, message: 'Each width needs a name of up to 64 characters.' });
     expect(env.builds).toBe(0);
@@ -258,14 +264,46 @@ describe('capturing a review edition', () => {
     await vi.waitFor(() => expect(seen.length).toBe(2));
     const server = new URL(seen[0].url).origin;
     await c.closeProject();
+    // The same folder opened again meanwhile is another opening: the first capture keeps nothing in it either.
+    const again = await open(dir);
     release();
     expect(await capturing).toEqual({ ok: false, message: 'The project was closed before the review edition was captured.' });
+    expect(await again.reviewEditions()).toEqual([]);
     // Nothing more was pictured, nothing kept, the review server stopped and the build removed.
     expect(asked.length).toBe(2);
     expect(await listReviewEditions(dir)).toEqual([]);
     expect(filesIn(join(dir, REVIEWS_DIR))).toEqual([]);
     await expect(fetch(server)).rejects.toThrow();
     expect(stagingLeft()).toEqual([]);
+  });
+
+  it('keeps nothing when the capture is called off because the editor closed', async () => {
+    const { c, dir } = await bookshop();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const { shoot, asked } = fakeShooter({ hold: held, holdAt: 1 });
+    c.reviewShoot = shoot;
+    const capturing = c.captureReviewEdition({ routes: ['/', '/about/'] });
+    await vi.waitFor(() => expect(asked.length).toBe(1));
+    c.cancelReviewCapture();
+    release();
+    expect((await capturing).ok).toBe(false);
+    expect(asked.length).toBe(1);
+    expect(await listReviewEditions(dir)).toEqual([]);
+    expect(stagingLeft()).toEqual([]);
+  });
+
+  it('says why when the build cannot be staged, rather than failing', async () => {
+    const { c } = await bookshop();
+    c.reviewShoot = fakeShooter().shoot;
+    // The app's own folder cannot hold the staging folder (a file is in its place).
+    writeFileSync(join(env.userData, 'build-staging'), 'not a folder');
+    const r = await c.captureReviewEdition({ routes: ['/'] });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.message).toMatch(/^The review edition could not be saved: /);
+    // Nothing is held up by it.
+    rmSync(join(env.userData, 'build-staging'));
+    expect((await c.captureReviewEdition({ routes: ['/'] })).ok).toBe(true);
   });
 
   it('captures one edition at a time', async () => {
@@ -335,6 +373,10 @@ describe('writing a review edition', () => {
       const c = await write(s, project, new Date('2026-11-27T12:00:00.000Z'));
       expect(c.manifest.siteDigest).not.toBe(a.manifest.siteDigest);
       expect(c.manifest.contentDigest).not.toBe(a.manifest.contentDigest);
+      // The same build pictured differently: another edition of the same site.
+      const e = await write(s, project, new Date('2026-11-27T12:30:00.000Z'), { shoot: fakeShooter({ mark: '!' }).shoot });
+      expect(e.manifest.siteDigest).toBe(c.manifest.siteDigest);
+      expect(e.manifest.contentDigest).not.toBe(c.manifest.contentDigest);
       // A title changed, with the same pictures: another edition.
       const d = await write(s, project, new Date('2026-11-27T13:00:00.000Z'), { pages: [{ route: '/', title: 'Start' }, { route: '/über/', title: 'Über uns' }] });
       expect(d.manifest.contentDigest).not.toBe(c.manifest.contentDigest);
@@ -350,9 +392,20 @@ describe('writing a review edition', () => {
       await expect(write(s, project, new Date(), { beforeCommit: async () => Promise.reject(new Error('closed')) })).rejects.toThrow('closed');
       expect(readdirSync(join(project, REVIEWS_DIR))).toEqual([]);
       // Folders that are not editions, and an edition folder without a manifest, are not listed.
-      mkdirSync(join(project, REVIEWS_DIR, 'notes'));
-      mkdirSync(join(project, REVIEWS_DIR, '2026-11-27T10-00-00Z-0badc0de'));
       const kept = await write(s, project, new Date());
+      const whole = readFileSync(join(kept.dir, 'manifest.json'), 'utf8');
+      // A folder not named as an edition is not one, whatever it holds.
+      mkdirSync(join(project, REVIEWS_DIR, 'notes'));
+      writeFileSync(join(project, REVIEWS_DIR, 'notes', 'manifest.json'), whole.replace(kept.manifest.editionId, 'notes'));
+      // Nor is a manifest that names its edition and says nothing else.
+      const bare = '2026-11-27T10-00-00Z-0badc0de';
+      mkdirSync(join(project, REVIEWS_DIR, bare));
+      writeFileSync(join(project, REVIEWS_DIR, bare, 'manifest.json'), JSON.stringify({ editionId: bare }));
+      // Nor a link to an edition kept elsewhere.
+      const elsewhere = temp('elsewhere');
+      const linked = '2026-11-27T09-00-00Z-1badc0de';
+      writeFileSync(join(elsewhere, 'manifest.json'), whole.split(kept.manifest.editionId).join(linked));
+      symlinkSync(elsewhere, join(project, REVIEWS_DIR, linked));
       expect((await listReviewEditions(project)).map((m: Manifest) => m.editionId)).toEqual([kept.manifest.editionId]);
     } finally {
       s.stop();

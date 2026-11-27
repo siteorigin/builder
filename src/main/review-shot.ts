@@ -63,13 +63,34 @@ const SETTLE = (fontMs: number) => `(async () => {
   return true;
 })()`;
 
-/** Run in the page just before the picture: what has not settled or did not arrive, and how tall the page is. */
+/**
+ * Run in the page just before the picture, and again after it: the images it shows that cannot be drawn (a picture
+ * element's chosen source, and every background a shown element or its ::before or ::after paints, which never
+ * appear among the page's images), the fonts that failed, and whether every font has settled.
+ */
 const CHECK = `(async () => {
   const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
   const broken = [];
+  const decodes = (img) => img.decode().then(() => true, () => false);
   for (const img of document.images) {
-    if (!img.currentSrc) continue;
-    if (!(await img.decode().then(() => true, () => false))) broken.push(img.currentSrc);
+    const src = img.currentSrc;
+    if (!src) continue;
+    // A source changed while it was decoded (a carousel moving on) is decoded again as it is now.
+    if (!(await decodes(img)) && (img.currentSrc === src || !(await decodes(img)))) broken.push(img.currentSrc || src);
+  }
+  const backgrounds = new Set();
+  for (const el of document.querySelectorAll('*')) {
+    if (!el.getClientRects().length) continue;
+    for (const pseudo of [null, '::before', '::after']) {
+      const bg = getComputedStyle(el, pseudo).backgroundImage;
+      if (!bg || bg === 'none') continue;
+      for (const m of bg.matchAll(/url\\(\\s*(['"]?)(.*?)\\1\\s*\\)/g)) backgrounds.add(new URL(m[2], document.baseURI).href);
+    }
+  }
+  for (const src of backgrounds) {
+    const img = new Image();
+    img.src = src;
+    if (!(await decodes(img))) broken.push(src);
   }
   const fontErrors = [...document.fonts].filter((f) => f.status === 'error').map((f) => f.family);
   await frame();
@@ -127,28 +148,35 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
   };
 
   const stopListening = page.listen((method, p) => {
+    const id = String(p.requestId);
+    const needed = NEEDED.has(String(p.type));
     switch (method) {
       case 'Network.requestWillBeSent': {
-        if (capturing) ignored.add(String(p.requestId));
-        if (!NEEDED.has(String(p.type)) || capturing) break;
-        pending.set(String(p.requestId), String((p.request as { url?: string })?.url ?? ''));
+        // A redirect is the same request going on: one under way before the picture stays watched.
+        if (pending.has(id)) {
+          pending.set(id, String((p.request as { url?: string })?.url ?? ''));
+          break;
+        }
+        if (capturing) ignored.add(id);
+        if (!needed || capturing) return;
+        pending.set(id, String((p.request as { url?: string })?.url ?? ''));
         break;
       }
       case 'Network.responseReceived': {
-        if (ignored.has(String(p.requestId))) break;
+        if (ignored.has(id) || !needed) return;
         const response = p.response as { status: number; url: string };
         if (p.type === 'Document' && p.frameId === mainFrame) document = { status: response.status, url: response.url };
-        else if (NEEDED.has(String(p.type)) && response.status >= 400) failed.push(`${shortUrl(response.url, origin)} (${response.status})`);
+        else if (response.status >= 400) failed.push(`${shortUrl(response.url, origin)} (${response.status})`);
         break;
       }
       case 'Network.loadingFinished':
-        pending.delete(String(p.requestId));
+        if (!pending.delete(id)) return;
         break;
       case 'Network.loadingFailed': {
-        const at = pending.get(String(p.requestId));
-        pending.delete(String(p.requestId));
+        const at = pending.get(id);
+        if (!pending.delete(id)) return;
         // A request the page called off itself (a responsive image it chose another size of) took nothing away.
-        if (p.canceled === true || !NEEDED.has(String(p.type)) || ignored.has(String(p.requestId))) break;
+        if (p.canceled === true) break;
         const what = `${shortUrl(at ?? '', origin)} (${String(p.errorText ?? 'failed')})`;
         if (p.type === 'Document' && !document) documentFailed = what;
         else failed.push(what);
@@ -160,6 +188,7 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
       default:
         return;
     }
+    // Only what the picture waits for moves its clock: a page polling for something else still settles.
     poke();
   });
 
@@ -196,6 +225,13 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
     if (r.exceptionDetails) throw new Stop('failed', `The page could not be measured: ${r.exceptionDetails.text ?? 'it threw an error'}.`);
     return r.result?.value as T;
   };
+  /** Whether everything the page shows can be drawn and its fonts have settled (CHECK). */
+  const shown = async () => {
+    const check = await evaluate<{ broken: string[]; fontErrors: string[]; fonts: string }>(CHECK);
+    if (check.broken.length) throw new Stop('assets', `Some images could not be shown: ${check.broken.slice(0, 5).map((u) => shortUrl(u, origin)).join(', ')}.`);
+    if (check.fontErrors.length) throw new Stop('fonts', `Some fonts failed to load: ${[...new Set(check.fontErrors)].join(', ')}.`);
+    if (check.fonts !== 'loaded') throw new Stop('fonts', 'The page’s fonts had not finished loading.');
+  };
   const assetsOk = () => {
     if (failed.length) throw new Stop('assets', `Not everything on the page loaded: ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? ` and ${failed.length - 5} more` : ''}.`);
   };
@@ -219,10 +255,7 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
     await evaluate<boolean>(SETTLE(opts.fontMs ?? FONT_MS));
     await until(() => pending.size === 0 && Date.now() - lastActivity >= QUIET_MS);
     assetsOk();
-    const check = await evaluate<{ broken: string[]; fontErrors: string[]; fonts: string }>(CHECK);
-    if (check.broken.length) throw new Stop('assets', `Some images could not be shown: ${check.broken.slice(0, 5).map((u) => shortUrl(u, origin)).join(', ')}.`);
-    if (check.fontErrors.length) throw new Stop('fonts', `Some fonts failed to load: ${[...new Set(check.fontErrors)].join(', ')}.`);
-    if (check.fonts !== 'loaded') throw new Stop('fonts', 'The page’s fonts had not finished loading.');
+    await shown();
     assetsOk();
     const metrics = (await race(page.send('Page.getLayoutMetrics'))) as { cssContentSize?: { height: number }; contentSize: { height: number } };
     const height = Math.ceil((metrics.cssContentSize ?? metrics.contentSize).height);
@@ -233,7 +266,10 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
     const png = Buffer.from(shot.data, 'base64');
     const size = pngSize(png);
     if (!size || size.width !== width || size.height !== height) throw new Stop('failed', `The picture came out ${size ? `${size.width} × ${size.height}` : 'unreadable'} instead of ${width} × ${height}.`);
-    // A request of the page's own that failed while the picture was being taken is missing from it.
+    // A request of the page's own that failed while the picture was being taken is missing from it, and so is an
+    // image the page put in place meanwhile (a timer of its own) that cannot be drawn.
+    assetsOk();
+    await shown();
     assetsOk();
     return { ok: true, png, height };
   } catch (e) {

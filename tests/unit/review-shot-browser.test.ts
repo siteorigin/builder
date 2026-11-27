@@ -12,6 +12,7 @@ import { chromium, type Browser, type CDPSession } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { StaticPreviews } from '../../src/main/static-preview';
 import { shootReviewPage, type CdpPage } from '../../src/main/review-shot';
+import { routeUrl } from '../../src/shared/routes';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const FONT = 'node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2';
@@ -46,6 +47,11 @@ beforeAll(async () => {
   put('missing-font/index.html', page('Missing font', "@font-face{font-family:Gone;src:url(/client/fonts/gone.woff2) format('woff2');font-display:block}body{font-family:Gone}", '<p>Never settles</p>'));
   // The phone layout shows a background picture the folder does not have; the desktop layout shows none.
   put('phone/index.html', page('Phone', '.hero{height:200px;background:#fff}@media (max-width: 600px){.hero{background:url(/client/missing-hero.png) #0f0}}', '<div class="hero">Hero</div>'));
+  // A font file the server delivers whole that is no font: no request fails, the face does.
+  put('bad-font/index.html', page('Bad font', "@font-face{font-family:Bad;src:url(/client/corrupt.png) format('woff2');font-display:block}body{font-family:Bad}", '<p>Bad type</p>'));
+  // A background the server delivers whole that cannot be drawn: never among the page's images, nor a failed request.
+  put('bad-background/index.html', page('Bad background', '.hero{height:200px;background:url(/client/corrupt.png) #ccc}', '<div class="hero">Hero</div>'));
+  put('über/index.html', page('Über', '', '<p>Über uns</p>'));
   put('broken/index.html', page('Broken', '', '<img src="/client/corrupt.png" width="40" height="40">'));
   put('lazy/index.html', page('Lazy', '', `${tall(3000)}<img id="late" loading="lazy" src="/client/blue.png" width="40" height="40" style="display:block">`));
   server = await previews.serve(root, '/client');
@@ -136,6 +142,18 @@ describe.skipIf(!browserInstalled)('a review page pictured in Chromium', () => {
     expect(await shoot('phone/', 390)).toMatchObject({ ok: false, reason: 'assets', detail: expect.stringContaining('/client/missing-hero.png (404)') });
   });
 
+  it('marks a page whose font arrived but cannot be used unavailable, for its font', async () => {
+    expect(await shoot('bad-font/', 800)).toMatchObject({ ok: false, reason: 'fonts', detail: 'Some fonts failed to load: Bad.' });
+  });
+
+  it('marks a page whose background picture arrived but cannot be drawn unavailable', async () => {
+    expect(await shoot('bad-background/', 800)).toMatchObject({ ok: false, reason: 'assets', detail: expect.stringContaining('/client/corrupt.png') });
+  });
+
+  it('pictures a page at an address of any script, under the base path', async () => {
+    expect(await shoot(routeUrl('/über/').slice(1), 800)).toMatchObject({ ok: true });
+  });
+
   it('marks a page with a picture that arrived but cannot be shown unavailable', async () => {
     expect(await shoot('broken/', 800)).toMatchObject({ ok: false, reason: 'assets', detail: expect.stringContaining('/client/corrupt.png') });
   });
@@ -145,8 +163,6 @@ describe.skipIf(!browserInstalled)('a review page pictured in Chromium', () => {
   });
 
   it('gives up on a page that never settles in time', async () => {
-    // The font never arrives in the time given: its request is still under way, or it has failed; never a picture.
-    const shot = await shoot('missing-font/', 800, { timeoutMs: 1, fontMs: 1 });
-    expect(shot.ok).toBe(false);
+    expect(await shoot('./', 800, { timeoutMs: 1 })).toMatchObject({ ok: false, reason: 'timeout' });
   });
 });

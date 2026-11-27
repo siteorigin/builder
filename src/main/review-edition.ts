@@ -71,6 +71,8 @@ export interface ReviewEditionInput {
   signal?: AbortSignal;
   /** The last chance to call it off, just before the edition is put in place (the project must still be the one open). */
   beforeCommit?: () => Promise<void>;
+  /** Runs the step that puts the edition in place (holding the project's ownership while it runs). */
+  commit?: (publish: () => Promise<void>) => Promise<void>;
   now?: () => Date;
 }
 
@@ -104,10 +106,12 @@ export async function writeReviewEdition(input: ReviewEditionInput): Promise<{ m
   await fs.writeFile(join(assembled, REVIEW_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
   const reviews = await reviewsFolder(input.projectDir, true);
   const dir = join(reviews, editionId);
-  await publishFolder(assembled, dir, async () => {
-    signal?.throwIfAborted();
-    await input.beforeCommit?.();
-  }, { move: true });
+  const publish = () =>
+    publishFolder(assembled, dir, async () => {
+      signal?.throwIfAborted();
+      await input.beforeCommit?.();
+    }, { move: true });
+  await (input.commit ? input.commit(publish) : publish());
   return { manifest, dir };
 }
 
@@ -141,11 +145,36 @@ export async function listReviewEditions(projectDir: string): Promise<ReviewEdit
   for (const name of await fs.readdir(reviews).catch(() => [] as string[])) {
     if (!isReviewEditionId(name)) continue;
     try {
-      const m = JSON.parse(await fs.readFile(join(reviews, name, REVIEW_MANIFEST), 'utf8')) as ReviewEditionManifest;
-      if (m?.editionId === name) out.push(m);
+      // The edition's own folder and manifest, never a link to somewhere else.
+      if (!(await fs.lstat(join(reviews, name))).isDirectory() || !(await fs.lstat(join(reviews, name, REVIEW_MANIFEST))).isFile()) continue;
+      const m = JSON.parse(await fs.readFile(join(reviews, name, REVIEW_MANIFEST), 'utf8')) as unknown;
+      if (isManifest(m, name)) out.push(m);
     } catch {
       // A folder without a readable manifest is not an edition.
     }
   }
   return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.editionId < b.editionId ? 1 : -1));
+}
+
+/** Whether `m` is a whole manifest of the edition `id`: every field there, each capture naming a picture in its folder. */
+function isManifest(m: unknown, id: string): m is ReviewEditionManifest {
+  const o = m as Partial<ReviewEditionManifest> | null;
+  const text = (v: unknown) => typeof v === 'string';
+  const hex = (v: unknown) => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+  return (
+    !!o &&
+    typeof o === 'object' &&
+    o.editionId === id &&
+    text(o.createdAt) &&
+    typeof o.revision === 'number' &&
+    text(o.basePath) &&
+    hex(o.siteDigest) &&
+    hex(o.contentDigest) &&
+    Array.isArray(o.routes) &&
+    o.routes.every((p) => text(p?.route) && text(p?.title)) &&
+    Array.isArray(o.widths) &&
+    o.widths.every((w) => text(w?.label) && typeof w?.width === 'number') &&
+    Array.isArray(o.captures) &&
+    o.captures.every((c) => text(c?.route) && typeof c?.width === 'number' && (c.status === 'captured' ? /^images\/\d{3}-\d+\.png$/.test(c.file) && hex(c.sha256) && typeof c.height === 'number' : c?.status === 'unavailable' && text(c.reason) && text(c.detail)))
+  );
 }

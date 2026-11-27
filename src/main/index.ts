@@ -1166,6 +1166,8 @@ async function createWindow() {
     // The thumbnails' hidden window goes with the editor: it must never keep the app running, or stand in for the
     // editor when macOS asks whether a window is left to show.
     thumbCapturer.dispose();
+    // A review edition being captured is called off first: pictures the closed editor could not take are not kept.
+    controller.cancelReviewCapture();
     reviewShooter.dispose();
     menuCommands.closed(self);
     leaveGate.editorGone();

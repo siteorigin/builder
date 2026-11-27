@@ -3731,16 +3731,20 @@ export class Controller {
     // Asked for against the project as it is now, so a mistake is said before the build; and again against the build.
     const asked = pickReviewPages(reviewPages(publishedState(s.state)), routes);
     if ('error' in asked) return { ok: false, message: asked.error };
-    if (this.reviewCapture) return { ok: false, message: 'A review edition is already being captured. Wait for it to finish.' };
+    // One capture at a time; one called off (its project closed) is on its way out and holds nothing up.
+    if (this.reviewCapture && !this.reviewCapture.signal.aborted) return { ok: false, message: 'A review edition is already being captured. Wait for it to finish.' };
     const job = new AbortController();
     this.reviewCapture = job;
     const closed = 'The project was closed before the review edition was captured.';
+    const gone = () => job.signal.aborted || this.session !== s;
     try {
       return await this.withStaging(async (staging): Promise<ReviewEditionResult> => {
+        // The staging folder took a moment: the build is of this project, or of nothing.
+        if (gone()) return { ok: false, message: closed };
         const site = join(staging, 'site');
         const built = await this.stageReviewBuild(site);
+        if (gone()) return { ok: false, message: closed };
         if (!built.ok) return { ok: false, message: built.message, ...(built.details ? { details: built.details } : {}) };
-        if (job.signal.aborted || this.session !== s) return { ok: false, message: closed };
         const pages = pickReviewPages(built.pages ?? [], routes);
         if ('error' in pages) return { ok: false, message: pages.error };
         const base = built.basePath ?? '';
@@ -3748,7 +3752,7 @@ export class Controller {
         try {
           server = await this.previews.serve(site, base);
         } catch {
-          return { ok: false, message: job.signal.aborted ? closed : 'The review build could not be served to be captured.' };
+          return { ok: false, message: gone() ? closed : 'The review build could not be served to be captured.' };
         }
         try {
           const { manifest, dir } = await writeReviewEdition({
@@ -3762,24 +3766,33 @@ export class Controller {
             shoot: (url, width) => shoot(url, width, job.signal),
             work: join(staging, 'edition'),
             signal: job.signal,
+            // Written only while this app owns the project, holding its claim throughout, so no takeover lands meanwhile;
+            // and only while it is still the project open, looked at just before the edition is moved into place.
+            commit: async (publish) => {
+              if (!(await s.whileOwner(publish))) throw new Error(s.readOnly?.reason ?? READ_ONLY);
+            },
             beforeCommit: async () => {
-              if (this.session !== s) throw new Error(closed);
-              if (!(await s.stillOwner())) throw new Error(s.readOnly?.reason ?? READ_ONLY);
+              if (gone()) throw new Error(closed);
             }
           });
           const missing = manifest.captures.filter((c) => c.status !== 'captured').length;
           const shots = manifest.captures.length;
           return { ok: true, edition: manifest, path: dir, message: missing ? `Captured ${shots - missing} of ${shots} pictures; ${missing} could not be taken.` : `Captured ${shots} ${shots === 1 ? 'picture' : 'pictures'}.` };
-        } catch (e) {
-          if (job.signal.aborted || this.session !== s) return { ok: false, message: closed };
-          return { ok: false, message: `The review edition could not be saved: ${e instanceof Error ? e.message : String(e)}` };
         } finally {
           this.previews.stop(server);
         }
       });
+    } catch (e) {
+      if (gone()) return { ok: false, message: closed };
+      return { ok: false, message: `The review edition could not be saved: ${e instanceof Error ? e.message : String(e)}` };
     } finally {
       if (this.reviewCapture === job) this.reviewCapture = null;
     }
+  }
+
+  /** Call off the review edition being captured, if any: nothing of it is kept (the editor closed, so nobody waits for it). */
+  cancelReviewCapture() {
+    this.reviewCapture?.abort();
   }
 
   /** The open project's review editions, newest first. */
