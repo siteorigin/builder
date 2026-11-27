@@ -987,19 +987,20 @@ await eventually(async () => assert.deepEqual(words(await listText()), ['Second 
 await eventually(async () => assert.match(await listField.inputValue(), /^- Second item\n- First item\n- Third item$/));
 await selectInField('Third item', true);
 await tools.getByRole('button', { name: 'Link', exact: true }).click();
-await insp.getByRole('textbox', { name: 'Link destination' }).fill('/about/');
-await insp.getByRole('textbox', { name: 'Link destination' }).press('Enter');
+// It offers the project's pages, so it is a combobox.
+await insp.getByRole('combobox', { name: /^Link destination/ }).fill('/about/');
+await insp.getByRole('combobox', { name: /^Link destination/ }).press('Enter');
 await eventually(async () => {
   const blocks = await listText();
   const about = await win.evaluate(async () => Object.values((await window.builder.project.snapshot()).state.pages).find((p) => p.title === 'About').id);
   assert.deepEqual(blocks[0].items[2], [{ text: 'Third item', link: { type: 'page', target: about } }], 'the words link to the About page by its ID');
 });
-// From the keyboard: Tab reaches the buttons, the arrow keys move along them, and Enter makes the list numbered.
+// From the keyboard: Shift+Tab reaches the buttons above the text, the arrow keys move along them, and Enter makes
+// the list numbered.
 await selectInField('First item', false);
-await win.keyboard.press('Tab');
+await win.keyboard.press('Shift+Tab');
 await win.keyboard.press('Home');
-await win.keyboard.press('ArrowRight');
-await win.keyboard.press('ArrowRight');
+for (let i = 0; i < 4; i++) await win.keyboard.press('ArrowRight');
 await eventually(async () => assert.equal(await activeLabel(), 'Numbered list', 'the arrow keys move along the toolbar'));
 await win.keyboard.press('Enter');
 await eventually(async () => assert.equal((await listText())[0].type, 'ol', 'the list is numbered'));
