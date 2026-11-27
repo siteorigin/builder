@@ -729,6 +729,12 @@ export class Orchestrator {
    * rename (whatever copy of the conversation it holds) writes this name, never the one it replaced.
    */
   private names = new Map<string, string>();
+  /**
+   * The threads of requests that ended in this opening and are not saved yet: their write is queued, failed, or was
+   * skipped (a project read-only here saves none). Each is held as it is, so it can be opened, read and listed again
+   * once switched away from (#1125), until its write lands.
+   */
+  private unsaved = new Map<string, Conversation>();
   /** This opening of the project, replaced when another begins: a request admitted in an earlier one saves nothing. */
   private opening: object = {};
   /** The project is closing (see close): no request may start, or it would run on past the close unstopped. */
@@ -810,9 +816,11 @@ export class Orchestrator {
     // running request's, which may have none yet (a new conversation is saved when its first request ends): each is
     // listed as it is in memory.
     const open = this.conversation;
-    const running = (this.run && this.run.transcript.opening === this.opening ? this.run.transcript.conv : null) ?? (opening === this.opening ? asked : null);
-    const live = (c: Conversation) => (open?.id === c.id ? open : running?.id === c.id ? running : c);
-    if (running && !kept.some((c) => c.id === running.id) && !this.gone(running.id)) kept.push(running);
+    const resident = new Map<string, Conversation>();
+    const running = this.run && this.run.transcript.opening === this.opening ? this.run.transcript.conv : null;
+    for (const c of [opening === this.opening ? asked : null, ...this.unsaved.values(), running]) if (c) resident.set(c.id, c);
+    for (const c of resident.values()) if (!kept.some((k) => k.id === c.id) && !this.gone(c.id)) kept.push(c);
+    const live = (c: Conversation) => (open?.id === c.id ? open : (resident.get(c.id) ?? c));
     const summaries = kept.map((c) => summarize(live(c))).sort(byRecentActivity);
     // Listing never replaces the open conversation: a new one is not on disk until its first message, and one
     // mid-run is saved only when the run ends. Swapping it would send the next message to another thread.
@@ -827,23 +835,19 @@ export class Orchestrator {
   }
 
   /**
-   * The running request's conversation `id`, as it is in memory: newer than its file, which the request writes only
-   * when it ends (a new conversation has none before that). Its own object, so opening it again sends the next
-   * message to the very thread the request adds to.
+   * Conversation `id` as a request of this opening holds it in memory: the running one's (newer than its file, which
+   * the request writes only when it ends; a new conversation has none before that), or one that ended and is not saved
+   * yet (see unsaved). Its own object, so opening it again sends the next message to the very thread the request added to.
    */
   private runThread(id: string): Conversation | null {
     const run = this.run;
-    return run && run.transcript.opening === this.opening && run.transcript.conv.id === id ? run.transcript.conv : null;
+    if (run && run.transcript.opening === this.opening && run.transcript.conv.id === id) return run.transcript.conv;
+    return this.unsaved.get(id) ?? null;
   }
 
-  /**
-   * A request whose thread is never saved (a question in a project read-only here) keeps its thread open until it
-   * ends: once switched away from, its answer could not be read again. Opening that thread itself is always allowed.
-   */
-  private notUnsaved(id?: string) {
-    const run = this.run;
-    if (run && run.transcript.opening === this.opening && run.transcript.session.readOnly && run.transcript.conv.id !== id)
-      throw new Error('Wait for the AI to answer before switching conversations: this project is read-only here, so the answer is not saved.');
+  /** Clear history replaces the open conversation when it is done: nothing else is opened meanwhile. */
+  private notClearing() {
+    if (this.clearingAll) throw new Error('The conversation history is being cleared. Try again in a moment.');
   }
 
   /** A read that finished after its project closed must not set the next project's conversation. */
@@ -871,7 +875,7 @@ export class Orchestrator {
 
   /** A request running in the open conversation goes on in the background: it adds to, and saves, its own thread. */
   async newConversation(): Promise<Conversation> {
-    this.notUnsaved();
+    this.notClearing();
     this.picks++;
     this.conversation = this.freshConversation();
     return this.conversation;
@@ -884,11 +888,11 @@ export class Orchestrator {
     if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id) || this.gone(id)) throw new Error('Unknown conversation.');
     // The open conversation is newer than its file, which a finished request may still be writing; a running
     // request's is newer still (see runThread). A request elsewhere goes on in the background: it saves only its own.
+    this.notClearing();
     const pick = ++this.picks;
     if (this.conversation?.id === id) return this.conversation;
     const running = this.runThread(id);
     if (running) return (this.conversation = running);
-    this.notUnsaved(id);
     // Read in turn with the writes, renames and deletes queued before it, so it reads what they left (a request that
     // ended meanwhile queued its save ahead of this read).
     const c = await this.queueFileChange(() => this.readStoredConversation(dir, id));
@@ -896,9 +900,7 @@ export class Orchestrator {
     // Checked after the read too: a delete may have been asked for, or the request in it started, while it was loading.
     if (this.gone(id)) throw new Error('That conversation was deleted.');
     if (pick !== this.picks) throw new Error('Another conversation was opened meanwhile.');
-    const now = this.runThread(id);
-    if (!now) this.notUnsaved(id);
-    this.conversation = now ?? c;
+    this.conversation = this.runThread(id) ?? c;
     return this.conversation;
   }
 
@@ -1030,10 +1032,8 @@ export class Orchestrator {
       if (open) this.clearing--;
     }
     this.sameSession(session);
-    if (this.conversation?.id === id) {
-      this.picks++;
-      this.conversation = this.freshConversation();
-    }
+    if (deleted === this.deleted) this.unsaved.delete(id);
+    if (this.conversation?.id === id) this.conversation = this.freshConversation();
     return this.conversation ?? (await this.loadConversations()).active;
   }
 
@@ -1055,6 +1055,7 @@ export class Orchestrator {
       this.clearingAll--;
     }
     this.sameSession(session);
+    this.unsaved.clear();
     this.picks++;
     this.conversation = this.freshConversation();
     return this.conversation;
@@ -1065,7 +1066,7 @@ export class Orchestrator {
    * taken at once, and where they go was taken with `to`, so a conversation switch before the write runs cannot
    * change what is written or where.
    */
-  private transcriptWrite(to: RunTranscript): (() => Promise<void>) | null {
+  private transcriptWrite(to: RunTranscript): (() => Promise<boolean>) | null {
     const { opening, session, dir, conv, deleted, names } = to;
     // An earlier opening of the project saves nothing: its session may be closing, its lock gone. Also covers a run
     // that ends after another app took the project over.
@@ -1075,7 +1076,7 @@ export class Orchestrator {
     return async () => {
       // Checked again when the write's turn comes: the project may have been taken over or closed, or the
       // conversation deleted (by a delete that finished: one that failed leaves it to be saved as usual), meanwhile.
-      if (opening !== this.opening || session.readOnly || deleted.has(conv.id)) return;
+      if (opening !== this.opening || session.readOnly || deleted.has(conv.id)) return false;
       // The messages as they were when the write was asked for; the name as it is now, so a rename that landed
       // after this write was queued is never written over, whichever conversation is open by then.
       const renamed = names.get(conv.id);
@@ -1083,6 +1084,7 @@ export class Orchestrator {
       if (renamed !== undefined || conv.named) saved.named = true;
       else delete saved.named;
       await this.writeConversation(dir, saved, opening);
+      return true;
     };
   }
 
@@ -1115,10 +1117,18 @@ export class Orchestrator {
     return done;
   }
 
-  /** Save a request's transcript after any save already under way, so the newest bytes are always the last written. */
+  /**
+   * Save a request's transcript after any save already under way, so the newest bytes are always the last written. Its
+   * thread is held in memory until the write lands (see unsaved): one that is skipped or fails stays there.
+   */
   private queueSave(to: RunTranscript): Promise<void> {
+    if (to.opening === this.opening && !to.deleted.has(to.conv.id)) this.unsaved.set(to.conv.id, to.conv);
     const write = this.transcriptWrite(to);
-    this.saving = this.saving.then(() => write?.()).catch(() => undefined);
+    this.saving = this.saving
+      .then(async () => {
+        if ((await write?.()) && this.unsaved.get(to.conv.id) === to.conv) this.unsaved.delete(to.conv.id);
+      })
+      .catch(() => undefined);
     return this.saving;
   }
 
@@ -1149,6 +1159,7 @@ export class Orchestrator {
     this.deleted = new Set();
     this.removing = new Set();
     this.names = new Map();
+    this.unsaved = new Map();
     this.opening = {};
     if (this.run) this.run.conversationId = '';
     // Another project never waits on this one's transcript write.

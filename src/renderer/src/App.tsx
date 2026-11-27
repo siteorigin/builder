@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, showConversation, toast, transport, useStore, whenThemesReady } from './store';
+import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, showConversation, claimNavigation, toast, transport, useStore, whenThemesReady } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
@@ -371,13 +371,16 @@ let lastMenuCommand = 0;
 
 /** Show the conversation that was open when the project was last used, with its unsent draft. */
 async function restoreConversation(seq: number, remembered: string | undefined) {
-  const current = () => seq === opened;
+  // A move between conversations made while this reads (Answer in chat, for a request in another thread) is newer.
+  const latest = claimNavigation();
+  const current = () => seq === opened && latest();
   try {
     const { active, list } = await api.ai.conversations();
     if (!current()) return;
     const saved = list.map((c) => c.id);
     const plan = restorePlan(remembered, active.id, saved, getState().chatDrafts, getState().chatImages);
     let conversation = active;
+    if (!current()) return;
     if (plan.kind === 'open') conversation = await api.ai.openConversation(plan.id).catch(() => active);
     // A new conversation left with a draft was never saved: a new one takes its place, and its draft. While a request
     // runs in the active one (a window reloaded mid-request), none can be started: that request's thread is shown, so a

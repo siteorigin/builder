@@ -5,7 +5,7 @@ import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, ty
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
-import { api, getState, refreshProviders, saveLocal, saveSettings, sendPicksAhead, setState, shownRun, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest, openThread, openRunThread } from '../store';
+import { api, getState, refreshProviders, saveLocal, saveSettings, sendPicksAhead, setState, shownRun, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest, openThread, openRunThread, replaceThread } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { importIntoChat, isFileDrag, retargetDrops } from '../lib/chat-drop';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
@@ -442,10 +442,10 @@ export function Chat() {
   /** ...and it is this thread's. */
   const runHere = !!runStatus;
   /**
-   * Another thread is read, or a new one started, while a request goes on in its own (#1125), unless that request's
-   * thread is never saved (a question in a project read-only here): switched away from, its answer would be lost.
+   * Another thread is read, or a new one started, while a request goes on in its own (#1125); never while Clear history
+   * is under way, whose fresh conversation is the one open after it.
    */
-  const switchHeld = running && !!snap?.readOnly;
+  const [clearingHistory, setClearingHistory] = useState(false);
   const waiting = runStatus === 'awaiting-input';
   // While the AI waits on a question, the composer answers it from its own box; the unsent message stays put.
   // The same object until the question, the run or its status changes: every message is given it, and an answer typed
@@ -1242,10 +1242,30 @@ export function Chat() {
         ...(list.length ? [{ label: 'Find, rename or delete…', icon: <Search />, onSelect: () => stillOpen() && setManaging({ opening, list }) }] : []),
         // Unsent drafts belong to the conversations being removed, so they go with them.
         // A request saves its own thread when it ends, which would bring a cleared conversation back.
-        { label: 'Clear history…', icon: <Trash2 />, danger: true, disabled: !!getState().runStatus, ...(getState().runStatus ? { description: 'Available when the AI finishes.' } : {}), onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && !getState().runStatus && show(api.ai.clearHistory(opening), () => (retargetDrops(null, null), { chatDrafts: {}, chatImages: {} }))) }
+        { label: 'Clear history…', icon: <Trash2 />, danger: true, disabled: !!getState().runStatus, ...(getState().runStatus ? { description: 'Available when the AI finishes.' } : {}), onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && !getState().runStatus && clearHistory()) }
       ],
       'Conversations'
     );
+  };
+
+  /**
+   * Every conversation goes, with the unsent drafts that belong to them; nothing is opened meanwhile, and what it leaves
+   * open is shown over any switch still under way.
+   */
+  const clearHistory = () => {
+    setClearingHistory(true);
+    void api.ai
+      .clearHistory(opening)
+      .then(
+        (c) => {
+          if (!stillOpen()) return;
+          retargetDrops(null, null);
+          replaceThread(c, { chatDrafts: {}, chatImages: {} });
+          focusComposer();
+        },
+        (e: Error) => stillOpen() && toast(e.message || 'Could not clear the history.', 'error')
+      )
+      .finally(() => setClearingHistory(false));
   };
 
   /** A new conversation that takes the unsent message (and its images) along, so nothing earlier goes with it. */
@@ -1292,12 +1312,12 @@ export function Chat() {
           <span className="chat-title" title={title}>
             {title}
           </span>
-          {/* Switching waits for the project's own conversation to load, and for a message being sent. A request goes
-              on in its own thread meanwhile (switchHeld). */}
-          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" {...menu.triggerProps()} onClick={(e) => void openHistory(e.currentTarget)} disabled={switchHeld || sending || !conversation}>
+          {/* Switching waits for the project's own conversation to load, for a message being sent, and for Clear
+              history. A request goes on in its own thread meanwhile. */}
+          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" {...menu.triggerProps()} onClick={(e) => void openHistory(e.currentTarget)} disabled={clearingHistory || sending || !conversation}>
             <History />
           </button>
-          <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={switchHeld || sending || !conversation || msgs.length === 0 || !configured} onClick={() => show(api.ai.newConversation())}>
+          <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={clearingHistory || sending || !conversation || msgs.length === 0 || !configured} onClick={() => show(api.ai.newConversation())}>
             <Plus />
           </button>
         </div>
@@ -1550,7 +1570,7 @@ export function Chat() {
           {notice.leavesComputer ? <TriangleAlert /> : <Info />}
           <span>
             <span id={noticeId}>{switchNoticeText(notice)}</span>{' '}
-            <button className="link" disabled={switchHeld || sending} title="Start a new conversation with your unsent message, without the earlier ones" onClick={startFresh}>
+            <button className="link" disabled={clearingHistory || sending} title="Start a new conversation with your unsent message, without the earlier ones" onClick={startFresh}>
               Start fresh
             </button>
           </span>
@@ -1576,7 +1596,7 @@ export function Chat() {
                   !notice && (
                     <>
                       {' '}
-                      <button className="link" disabled={switchHeld || sending} title="Start a new conversation with your unsent message, without the earlier ones" onClick={startFresh}>
+                      <button className="link" disabled={clearingHistory || sending} title="Start a new conversation with your unsent message, without the earlier ones" onClick={startFresh}>
                         Start fresh
                       </button>
                     </>

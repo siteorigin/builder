@@ -48,7 +48,7 @@ const ENTRY = [
   'window.so = {',
   // The editor's counters as they stand, read from a mark (they travel on every one).
   "  renders: () => { window.__siteoriginPerf.mark('probe'); return window.perfRecords.at(-1).c['chat.messageRenders'] ?? 0; },",
-  "  draft: () => useStore.getState().chatDrafts['c_r'] ?? '',",
+  "  draft: (id = 'c_r') => useStore.getState().chatDrafts[id] ?? '',",
   "  stream: (text, at) => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'text', text, ...(at === undefined ? {} : { at }) })),",
   "  done: () => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: '', kind: 'status', status: 'no-changes', mode: 'ask' })),",
   // The run asks the author a question and waits for the answer.
@@ -58,6 +58,9 @@ const ENTRY = [
   '  }),',
   // Another thread on screen while the running request, filed in this one, asks its question here.
   "  elsewhere: () => flushSync(() => {",
+  // Main's copy of the run's thread, as opening it answers: its turn asks its question.
+  "    const live = useStore.getState().conversation;",
+  "    if (live.id === 'c_r') window.liveConv = { ...live, messages: [...live.messages.slice(0, -1), { ...live.messages.at(-1), questions: [{ id: 'q1', text: 'Which page should it go on?', choices: [] }] }] };",
   "    useStore.setState({ conversation: { id: 'c_other', title: 'Other', createdAt: time, messages: [] } });",
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
   '  }),',
@@ -76,7 +79,7 @@ const BRIDGE = `
   const answers = { 'ai.localContext': { server: 'http://127.0.0.1:9/v1', reportedWindow: null }, 'ai.localModels': { ok: true, models: ['test-model'] }, 'ai.providers': ${PROVIDERS} };
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : key === 'platform' ? 'darwin' : any(path ? path + '.' + key : key)),
-    apply: (_, __, args) => (window.calls.push([path, args]), path === 'on' ? () => {} : Promise.resolve(answers[path]))
+    apply: (_, __, args) => (window.calls.push([path, args]), path === 'on' ? () => {} : Promise.resolve(path === 'ai.openConversation' ? structuredClone(window.liveConv) : answers[path]))
   });
   window.builder = any('');
 `;
@@ -223,13 +226,22 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     // Other conversations can be read meanwhile; this one is empty, so a new one has nothing to leave behind.
     expect(await page.getByRole('button', { name: 'Earlier conversations' }).isDisabled()).toBe(false);
     expect(await page.getByRole('button', { name: 'New conversation' }).isDisabled()).toBe(true);
-    // Answer goes back to the thread that asked; Stop stops that request by its ID and goes back to it too.
+    // Answer goes back to the thread that asked, to its question and the answer box; the message written in the other
+    // thread stays there.
     await strip.getByRole('button', { name: 'Answer' }).click();
     expect(await page.evaluate("so.calls('ai.openConversation')")).toEqual([['c_r']]);
-    await strip.getByRole('button', { name: /Stop/ }).click();
+    const answer = page.getByRole('textbox', { name: 'Your answer', exact: true });
+    await answer.waitFor();
+    expect(await page.locator('.question-card').innerText()).toContain('Which page should it go on?');
+    await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Your answer');
+    expect(await page.locator('.run-strip.elsewhere').count()).toBe(0);
+    expect(await page.evaluate("so.draft('c_other')")).toBe('Next, the footer');
+    // Stop, from another thread again, stops that request by its ID and goes back to it too.
+    await page.evaluate('so.elsewhere()');
+    await page.locator('.run-strip.elsewhere').getByRole('button', { name: /Stop/ }).click();
     expect(await page.evaluate("so.calls('ai.stop')")).toEqual([['run_live'], ['run_live']]);
     expect(await page.evaluate("so.calls('ai.openConversation')")).toEqual([['c_r'], ['c_r']]);
-    expect(await page.evaluate('so.draft()')).toBe('');
+    await page.locator('.run-strip[data-run-id="run_live"]').waitFor();
   });
 
   it('renders no message while an answer to the AI’s question is typed', async () => {

@@ -282,10 +282,15 @@ describe('conversations in the assistant', () => {
     await expect(slow).rejects.toThrow(/Another conversation was opened meanwhile/);
     // The thread a message goes to is the one asked for last.
     expect(orch.conversation).toBe(fresh);
+    // Asking for the conversation already open is a pick too: an earlier one still reading gives way to it.
+    const again = orch.openConversation(earlier);
+    expect(await orch.openConversation(fresh.id)).toBe(fresh);
+    await expect(again).rejects.toThrow(/Another conversation was opened meanwhile/);
+    expect(orch.conversation).toBe(fresh);
   });
 
-  it('keeps a question’s thread open while it runs in a project read-only here, whose answer is never saved', async () => {
-    const { orch, ctx, adapter } = await setup();
+  it('a thread left while its request runs in a project read-only here keeps its answer, though it is never saved', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
     await orch.send('Earlier request', ctx);
     adapter.release();
     for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
@@ -295,15 +300,35 @@ describe('conversations in the assistant', () => {
     const asking = await orch.newConversation();
     const session = (orch as unknown as { deps: { session: () => ProjectSession } }).deps.session();
     (session as unknown as { readOnly: unknown }).readOnly = { reason: 'Another app is editing this project.', canUnlock: true };
-    expect((await orch.send('What does the footer say?', { ...ctx, mode: 'ask' }, asking.id)).ok).toBe(true);
-    await expect(orch.openConversation(earlier)).rejects.toThrow(/read-only here/);
-    await expect(orch.newConversation()).rejects.toThrow(/read-only here/);
-    expect(orch.conversation).toBe(asking);
-    // Its own thread opens, as ever.
-    expect(await orch.openConversation(asking.id)).toBe(asking);
-    fresh.release();
-    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
-    (session as unknown as { readOnly: unknown }).readOnly = null;
+    try {
+      expect((await orch.send('What does the footer say?', { ...ctx, mode: 'ask' }, asking.id)).ok).toBe(true);
+      // Switched away while it answers, and the answer lands with nothing written.
+      expect((await orch.openConversation(earlier)).id).toBe(earlier);
+      fresh.release();
+      for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+      await orch.loadConversations();
+      expect(existsSync(join(chatDir, `${asking.id}.json`))).toBe(false);
+      // Still listed, read and opened as it is in memory, its answer in it.
+      expect((await orch.loadConversations()).list.map((c) => c.id)).toContain(asking.id);
+      expect((await orch.readConversation(asking.id)).conversation.messages.at(-1)).toMatchObject({ role: 'assistant', text: 'Done.', result: { status: 'no-changes' } });
+      const back = await orch.openConversation(asking.id);
+      expect(back).toBe(asking);
+      expect(back.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    } finally {
+      (session as unknown as { readOnly: unknown }).readOnly = null;
+    }
+  });
+
+  it('opens nothing while the history is being cleared, so the fresh conversation it leaves is the one open', async () => {
+    const { orch, ctx, settle } = await setup();
+    await orch.send('Earlier request', ctx);
+    await settle();
+    const earlier = orch.conversation!.id;
+    const clearing = orch.clearHistory();
+    await expect(orch.newConversation()).rejects.toThrow(/being cleared/);
+    await expect(orch.openConversation(earlier)).rejects.toThrow(/being cleared/);
+    const left = await clearing;
+    expect(orch.conversation).toBe(left);
   });
 
   it('clearing history right after a request finishes does not bring its transcript back', async () => {

@@ -651,6 +651,46 @@ describe('conversations switch while a request goes on in its own (#1125)', () =
     await env.finish();
   });
 
+  it('a read for the thread on screen that a switch overtook never replaces what the switch showed', async () => {
+    const time = '2026-11-27T00:00:00.000Z';
+    const user: ChatMessage = { id: 'm_cq', role: 'user', text: 'Hi', time };
+    const reply = (text: string, more: Partial<ChatMessage> = {}): ChatMessage => ({ id: 'm_cr', role: 'assistant', text, time, runId: 'r_cu', ...more });
+    const a = (m: ChatMessage): Conversation => ({ id: 'c_a', title: 'A', createdAt: time, messages: [user, m] });
+    const b: Conversation = { id: 'c_b', title: 'B', createdAt: time, messages: [] };
+    const answers: Array<(s: ConversationState) => void> = [];
+    w().builder.ai = { readConversation: vi.fn(() => new Promise<ConversationState>((resolve) => answers.push(resolve))) };
+    store.setState({ conversation: a(reply('Hel')), snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    // A piece that does not follow what is shown: main's copy is read for.
+    store.applyAiEvent({ runId: 'r_cu', conversationId: 'c_a', kind: 'text', text: 'xx', at: 9 });
+    await until(() => answers.length === 1, 'the read');
+    // Left for B and back, the request having ended meanwhile: its final turn shows.
+    const final = a(reply('Hello.', { result: { status: 'no-changes', summary: 'Hello.', changes: [], validation: [], canUndo: false } }));
+    expect(await store.openThread(Promise.resolve(b), 'w1')).toBe(true);
+    expect(await store.openThread(Promise.resolve(final), 'w1')).toBe(true);
+    // The read from before the switch answers with the turn mid-reply: it is older, and is dropped.
+    answers[0]({ conversation: a(reply('Hel lo')), run: null });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello.']);
+  });
+
+  it('the way back to the run’s thread is a switch of its own, even while that thread is on screen', async () => {
+    const time = '2026-11-27T00:00:00.000Z';
+    const a: Conversation = { id: 'c_a', title: 'A', createdAt: time, messages: [] };
+    const b: Conversation = { id: 'c_b', title: 'B', createdAt: time, messages: [] };
+    let answerB!: (c: Conversation) => void;
+    const openConversation = vi.fn((id: string) => (id === 'c_b' ? new Promise<Conversation>((r) => (answerB = r)) : Promise.resolve(a)));
+    w().builder.ai = { openConversation };
+    store.setState({ conversation: a, runStatus: 'awaiting-input', activeRunId: 'r_way', runMode: 'edit', runConversationId: 'c_a', snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    // B is still loading when Answer asks for the run's thread, which is the one on screen.
+    const toB = store.openThread(openConversation('c_b'), 'w1');
+    expect(await store.openRunThread()).toBe(true);
+    expect(openConversation.mock.calls.map((c) => c[0])).toEqual(['c_b', 'c_a']);
+    answerB(b);
+    expect(await toB).toBe(false);
+    expect(store.getState().conversation?.id).toBe('c_a');
+    store.setState({ runStatus: null, activeRunId: null, runMode: null, runConversationId: null });
+  });
+
   it('shows only the latest switch: one answered after it, or after the project changed, shows nothing', async () => {
     const time = '2026-11-27T00:00:00.000Z';
     const a: Conversation = { id: 'c_a', title: 'A', createdAt: time, messages: [] };
