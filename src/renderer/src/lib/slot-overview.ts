@@ -25,6 +25,8 @@ export interface SlotOverview {
   children: string[];
   /** How many items it shows, as its limit counts them. */
   count: number;
+  /** The most it holds (0 when it takes nothing), or undefined when it has no limit. */
+  max: number | undefined;
   /** Why nothing more can be added to it (its contract, or a placement that does not show it), or null. */
   closed: string | null;
   /** What a hand edit damaged, in a sentence: its declaration (it then has no contract), or what it holds; or null. */
@@ -46,7 +48,7 @@ const contractWords = (state: ProjectState, d: SlotDef): string => (d.max === 0 
 
 function closedWords(state: ProjectState, d: SlotDef, count: number): string | null {
   if (d.max === 0 || slotAccepts(d, state) === 'nothing') return 'This slot takes no content.';
-  if (d.max !== undefined && count >= d.max) return `Full: it holds at most ${items(d.max)}. Take something out to add more.`;
+  if (d.max !== undefined && count >= d.max) return 'Full. Take something out to add more.';
   return null;
 }
 
@@ -62,12 +64,12 @@ export function slotOverviews(state: ProjectState, owner: OwnerRef, node: Instan
     const children = slotChildren(node, slot).filter((id) => Object.hasOwn(tree.nodes, id));
     const shared = heldAlone(tree, children) ? null : SHARED;
     const problem = slotDeclProblem(decl);
-    if (problem) return { slot, label: slot, description: '', contract: '', children, count: children.length, closed: null, damaged: `The slot “${slot}” ${problem}.`, shared };
+    if (problem) return { slot, label: slot, description: '', contract: '', children, count: children.length, max: undefined, closed: null, damaged: `The slot “${slot}” ${problem}.`, shared };
     const count = slotFill(state, tree, children, decl).count;
     // A value that is no list shows nothing, and adding to it would write over it.
     const damaged = node.slots && Object.hasOwn(node.slots, slot) && !Array.isArray(node.slots[slot]) ? `What “${decl.label}” holds is damaged.` : null;
     const closed = closedWords(state, decl, count) ?? (shown && !shown.has(slot) ? 'This component doesn’t show this slot here, so nothing added to it would appear.' : null);
-    return { slot, label: decl.label, description: decl.description ?? '', contract: contractWords(state, decl), children, count, closed, damaged, shared };
+    return { slot, label: decl.label, description: decl.description ?? '', contract: contractWords(state, decl), children, count, max: decl.max, closed, damaged, shared };
   });
 }
 
@@ -99,6 +101,9 @@ function heldAlone(tree: NodeTree, ids: readonly string[]): boolean {
 
 /** "Empty", "1 item", "3 items". A slot that can show any number says so. */
 export const slotCountWords = (count: number): string => (!Number.isFinite(count) ? 'Any number of items' : count === 0 ? 'Empty' : items(count));
+
+/** What a slot holds against its limit, as its name's tally says it: "Empty", "1 of 2", "3 items". */
+export const slotTally = (count: number, max: number | undefined): string => (count === 0 || !Number.isFinite(count) || max === undefined || max <= 0 ? slotCountWords(count) : `${count} of ${max}`);
 
 /**
  * Why a slot's content can't be moved out of a placement in `owner`, or null. The editor neither moves nor deletes

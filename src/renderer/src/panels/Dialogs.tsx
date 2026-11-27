@@ -210,11 +210,14 @@ export function FormStatus({ text }: { text?: string }) {
   );
 }
 
-/** Why a dialog can no longer do what it was opened for. It replaces the form, so nothing dead stays editable. */
-export function GoneNotice({ children }: { children: React.ReactNode }) {
+/**
+ * Why a dialog can no longer do what it was opened for. It replaces the form, so nothing dead stays editable. A subject
+ * that is still there but can't take the change (`refused`) is said in the info face: a refusal is not a fault.
+ */
+export function GoneNotice({ refused, children }: { refused?: boolean; children: React.ReactNode }) {
   return (
-    <div id={GONE_ID} className="scope-note danger authoring-gone" role="alert">
-      <CircleAlert />
+    <div id={GONE_ID} className={`scope-note ${refused ? 'info' : 'danger'} authoring-gone`} data-refused={refused || undefined} role="alert">
+      {refused ? <Info /> : <CircleAlert />}
       <span>{children}</span>
     </div>
   );

@@ -106,14 +106,14 @@ await selectCard();
 
 step('the card lists its slots in the order it declares them, with what each takes and holds');
 assert.deepEqual(await inspector.locator('[data-instance-slot]').evaluateAll((els) => els.map((el) => el.dataset.instanceSlot)), ['media', 'actions', 'body', 'quiet']);
-assert.deepEqual(await inspector.locator('[data-slot-contract]').allInnerTexts(), ['Takes images · At most 1', 'Takes buttons and text · At most 2', 'Takes anything · No limit', 'Takes nothing']);
-assert.deepEqual(await inspector.locator('[data-slot-count]').allInnerTexts(), ['Empty', 'Empty', 'Empty', 'Empty']);
+assert.deepEqual(await inspector.locator('[data-slot-contract]').allInnerTexts(), ['Takes images · At most 1', 'Takes buttons and text · At most 2', 'Takes anything · No limit']);
+assert.deepEqual(await inspector.locator('[data-slot-count]').allInnerTexts(), ['Empty', 'Empty', 'Empty'], 'a slot that takes nothing says only that');
 assert.match(await row('media').innerText(), /A picture above the words\./);
 assert.equal(await addTo('Quiet').isDisabled(), true, 'a slot that takes nothing has no Add');
 const describedBy = async (button) => win.locator(`[id="${await button.getAttribute('aria-describedby')}"]`).innerText();
 assert.match(await row('quiet').innerText(), /This slot takes no content\./);
 assert.equal(await describedBy(addTo('Quiet')), 'This slot takes no content.');
-assert.equal(await inspector.getByRole('button', { name: 'Clear Actions', exact: true }).count(), 0, 'nothing to clear while empty');
+assert.equal(await inspector.getByRole('button', { name: /^Clear (all in )?Actions$/ }).count(), 0, 'nothing to clear while empty');
 
 step('Add on Actions offers only what Actions takes, and inserts into it alone, in one change');
 await addTo('Actions').click();
@@ -152,9 +152,9 @@ const [, words] = await held('actions');
 // The add selects the paragraph as its reply arrives: gone back only after that.
 await arrived(words);
 await selectCard();
-await eventually(async () => assert.equal(await row('actions').locator('[data-slot-count]').innerText(), '2 items'));
+await eventually(async () => assert.equal(await row('actions').locator('[data-slot-count]').innerText(), '2 of 2'));
 assert.equal(await addTo('Actions').isDisabled(), true);
-assert.equal(await describedBy(addTo('Actions')), 'Full: it holds at most 2 items. Take something out to add more.');
+assert.equal(await describedBy(addTo('Actions')), 'Full. Take something out to add more.');
 await win.screenshot({ path: join(SHOTS, 'placed-slots.png') });
 
 step('an open list goes when the project changes under it, adding nothing, and focus returns to its Add');
@@ -200,7 +200,7 @@ step('Move out puts what Actions holds just after the card, in one Undo');
 await selectCard();
 const filled = await home();
 at = (await snapshot()).revision;
-await inspector.getByRole('button', { name: 'Move Actions content out', exact: true }).click();
+await inspector.getByRole('button', { name: /^Move (all )?out of Actions$/ }).click();
 await saved(at, (nodes) => {
   assert.deepEqual(nodes[section].slots.content, [card, button, words, plain]);
   assert.deepEqual(nodes[card].slots, { actions: [], media: [picture], body: [heading] });
@@ -213,7 +213,7 @@ await eventually(async () => assert.deepEqual((await home()).nodes, filled.nodes
 step('Clear deletes what Actions holds, in one Undo');
 await selectCard();
 at = (await snapshot()).revision;
-await inspector.getByRole('button', { name: 'Clear Actions', exact: true }).click();
+await inspector.getByRole('button', { name: /^Clear (all in )?Actions$/ }).click();
 await saved(at, (nodes) => {
   assert.deepEqual(nodes[card].slots, { actions: [], media: [picture], body: [heading] });
   assert.equal(button in nodes || words in nodes, false, 'both are gone');

@@ -166,10 +166,10 @@ await win.screenshot({ path: join(SHOTS, 'component-library-menu.png'), clip: { 
 const revision = () => win.evaluate(async () => (await window.builder.project.snapshot()).revision);
 const reviewing = await revision();
 await menu.getByRole('menuitem', { name: /Delete component/ }).click();
-const removal = win.locator('.modal[role="dialog"]', { hasText: 'Delete Exhibitor card?' });
+const removal = win.locator('.modal[role="dialog"]', { hasText: 'Exhibitor card is still in use' });
 await removal.waitFor();
 assert.equal(await revision(), reviewing, 'opening the review changes nothing');
-assert.match(await removal.innerText(), /It is still in use\./, 'the review says why it stays');
+assert.match(await removal.innerText(), /Delete or replace each placement, then delete the component\./, 'the review says why it stays');
 assert.equal(await removal.getByRole('button', { name: /^Go to placement/ }).count(), 2, 'it lists both placements');
 assert.equal(await removal.getByRole('button', { name: 'Delete component' }).count(), 0, 'and offers no deletion while they stay');
 await removal.getByRole('button', { name: 'Go to placement: Floor plan' }).click();

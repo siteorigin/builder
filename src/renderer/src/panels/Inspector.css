@@ -91,8 +91,9 @@
   .insp-mini svg { width: 12px !important; height: 12px !important; margin: 0 !important; color: inherit !important; }
   .insp-mini:hover { background: var(--accent-soft); }
   /* Open, it is pressed in like every menu button (primitives.css), not tinted as if chosen. */
-  .insp-mini[aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
-  :where(:root[data-appearance='dark']) .insp-mini[aria-expanded='true'] { background: var(--bg); }
+  /* The house open face for a button that owns a popover (Toolbar.css): a link-button's, and a slot's Add…. */
+  :is(.insp-mini, .placed-slot .btn)[aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+  :where(:root[data-appearance='dark']) :is(.insp-mini, .placed-slot .btn)[aria-expanded='true'] { background: var(--bg); }
   .insp-check { display: flex; align-items: flex-start; gap: 5px; color: var(--text-2); }
   .insp-check svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--amber); }
   .insp-part-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 280px; }
@@ -137,11 +138,15 @@
   .contract-preview { overflow: hidden; max-width: 100%; }
   /* A slot's contract: the kinds it takes, as two columns of checkboxes. */
   .slot-name { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
-  /* A placement's slots: what each holds, one way to each item, its name cut short rather than pushing the row wide. */
+  /* A placement's slots: what each holds, one way to each item, its name cut short rather than pushing the row wide.
+     The name carries the tally (Empty, 1 of 2, 3 items), the one fact that changes; what the slot is for reads in
+     secondary ink and what it takes in tertiary, one line each. */
   .placed-slot .contract-row { gap: 8px; }
-  /* Add… while its list is open: the house open state for a button that owns a popover, as in the toolbar. */
-  .placed-slot .btn[aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
-  :where(:root[data-appearance='dark']) { .placed-slot .btn[aria-expanded='true'] { background: var(--bg); } }
+  .slot-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-height: 26px; padding-top: 4px; }
+  .slot-tally { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .slot-desc { font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; }
+  /* Clear deletes at once (Undo is in its toast): red ink, at the far end from Move out. */
+  .placed-slot .contract-actions > .btn-danger { margin-left: auto; }
   .slot-content { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; margin: 0 0 0 -6px; padding: 0; list-style: none; }
   .slot-content > li { max-width: 100%; min-width: 0; }
   .slot-content .insp-mini { max-width: 100%; min-width: 0; }
