@@ -94,13 +94,13 @@ describe.skipIf(!browserInstalled)('Toolbar place name (#1110)', { timeout: 60_0
     expect(errors).toEqual([]);
   });
 
-  const set = (patch: Record<string, unknown>) => page.evaluate((p) => (window as unknown as { set: (p: unknown) => void }).set(p), patch);
+  const set = (patch: Record<string, unknown>) => page.evaluate((p) => (globalThis as unknown as { set: (p: unknown) => void }).set(p), patch);
   const place = () => page.locator('.project-title .page').innerText();
   const homeGlyphs = () => page.locator('.project-title .page .lucide-house').count();
 
   it.each([
     ['entry layout', { collectionId: 'posts', entryId: 'en_one' }, `${name} layout`],
-    ['entry layout with no entry to show it on', { collectionId: 'posts', entryId: null }, `${name} layout`],
+    ['entry layout shown on no entry', { collectionId: 'posts', entryId: null }, `${name} layout`],
     ['index layout', { collectionId: 'posts', entryId: null, archive: true }, `${name} index layout`]
   ])('names the open %s, then the page again on leaving it', async (_, templateMode, title) => {
     expect(await place()).toBe(home);
