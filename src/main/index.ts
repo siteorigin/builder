@@ -1,8 +1,8 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu, utilityProcess } from 'electron';
 import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { release } from 'node:os';
+import { availableParallelism, release } from 'node:os';
 import { mkdir } from 'node:fs/promises';
 // First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
 import { perf } from './perf';
@@ -26,7 +26,8 @@ import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, lo
 import { Orchestrator } from '@agent/orchestrator';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
-import { compileProject } from './compile';
+import { CompileCache, compileProject } from './compile';
+import { createCompilePool } from './compile-client';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
 import { setSiteIconRenderer } from './project/site-icons';
@@ -319,18 +320,73 @@ const orchestratorDeps = {
   }
 } as { adapter: (signal?: AbortSignal) => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId; auto?: boolean } | { error: string; repair?: 'settings' | 'key' }> };
 
+/**
+ * The adapter a request uses, with `ai.adapterReady` once it is prepared and `ai.modelRequest` as each model turn is
+ * asked for, while marks are on (scripts/perf/README.md, the `aiEdit` scenario); the adapter itself when they are off.
+ */
+const markedAdapter = (open: (typeof orchestratorDeps)['adapter']): (typeof orchestratorDeps)['adapter'] =>
+  perf.on
+    ? async (signal) => {
+        const made = await open(signal);
+        perf.mark('ai.adapterReady');
+        if ('error' in made) return made;
+        const { adapter } = made;
+        const stream = adapter.streamTurn.bind(adapter);
+        adapter.streamTurn = (req, sig) => {
+          perf.mark('ai.modelRequest');
+          return stream(req, sig);
+        };
+        return made;
+      }
+    : open;
+
+/**
+ * Build checks compile in utility processes, a few at once and never on the main process, which keeps answering the
+ * editor meanwhile. The workers are only the editor's own code compiling generated files: they get no secrets (the map
+ * is never empty, because Electron passes the whole environment on when it is).
+ */
+const compileWorkers = createCompilePool(
+  () => {
+    const env: Record<string, string> = { SITEORIGIN_COMPILE_WORKER: '1' };
+    for (const k of ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR']) if (process.env[k]) env[k] = process.env[k]!;
+    return utilityProcess.fork(join(here, 'compile-worker.js'), [], { serviceName: 'SiteOrigin build check', env });
+  },
+  // One core is the main process's.
+  { size: Math.max(1, Math.min(4, availableParallelism() - 1)) }
+);
+
+/** Each open project's build-check outcomes, kept while its session lives, so unchanged files are not compiled again. */
+const compileCaches = new WeakMap<object, CompileCache>();
+const compileCacheFor = (session: object): CompileCache => {
+  let cache = compileCaches.get(session);
+  if (!cache) compileCaches.set(session, (cache = new CompileCache()));
+  return cache;
+};
+
 const orchestrator = new Orchestrator({
   session: () => controller.session,
-  adapter: orchestratorDeps.adapter,
+  adapter: markedAdapter(orchestratorDeps.adapter),
   emit: (e) => {
     aiJournal?.record(e);
     controller.send('ai:event', e);
   },
-  compileAll: async (): Promise<Diagnostic[]> => (controller.session ? compileProject(controller.session.state) : []),
+  compileAll: async (): Promise<Diagnostic[]> => {
+    const session = controller.session;
+    if (!session) return [];
+    const end = perf.span('ai.compile');
+    try {
+      return await compileProject(session.state, session.websiteFiles(), { cache: compileCacheFor(session), offload: (files) => compileWorkers.compile(files) });
+    } finally {
+      end();
+    }
+  },
   inspectLayout,
   fileDiagnostics: () => controller.fileDiagnostics(),
   inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
-  onBusyChange: () => controller.broadcast(),
+  onBusyChange: (busy) => {
+    perf.mark(busy ? 'ai.runStart' : 'ai.runEnd');
+    controller.broadcast();
+  },
   codeEnabled: async () => (await loadSettings()).settings.developerMode
 });
 // Only a request that may change the site holds it: a read-only question leaves the author editing, exporting
@@ -755,6 +811,7 @@ function registerIpc() {
   });
   // A question may be asked of a project another app is editing; the orchestrator decides (it writes nothing).
   handle('ai:send', async (text: string, ctx, conversationId?: string, recipient?: unknown) => {
+    perf.mark('ai.send', { mode: (ctx as { mode?: unknown } | null)?.mode === 'ask' ? 'ask' : 'edit' });
     if (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock)) return { ok: false, message: readOnlyReason() };
     // A test may cap the requests the assistant starts (ai-journal.ts): one past the cap never reaches a model.
     if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
@@ -1232,6 +1289,7 @@ app.on('will-quit', () => {
   perf.stop();
   controller.remote.dispose();
   stopMediaWorker();
+  compileWorkers.stop();
   stopPhotoDecoders();
   stopPostReads();
   stopSourceSyncs();
