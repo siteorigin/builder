@@ -282,6 +282,9 @@ describe('capturing a project', () => {
     write(root, 'src/vendor/lib/index.js', 'export const lib = 1;');
     write(root, 'static/kit/.git/HEAD', 'ref: refs/heads/main\n');
     write(root, 'static/kit/logo.svg', '<svg/>');
+    // However its marker is spelled: a case-insensitive disk takes `.GIT` for `.git`.
+    write(root, 'static/kit2/.GIT', 'gitdir: elsewhere');
+    write(root, 'static/kit2/icon.svg', '<svg/>');
     write(root, 'src/vendor/own.js', 'export const own = 1;');
     // The project's own repository leaves the project as it is.
     write(root, '.git/HEAD', 'ref: refs/heads/main\n');
@@ -289,6 +292,7 @@ describe('capturing a project', () => {
     expect(paths).toContain('src/vendor/own.js');
     expect(paths).toContain('src/routes/+page.svelte');
     expect(paths.filter((p) => p.startsWith('src/vendor/lib') || p.startsWith('static/kit'))).toEqual([]);
+    expect(paths).toContain('static/assets/photo-1234abcd.jpg');
   });
 
   it('refuses a project that is not a folder', async () => {

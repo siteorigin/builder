@@ -59,7 +59,7 @@ import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf,
 export { statTrusted };
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
-import { captureSnapshotInventory } from './snapshot-inventory';
+import { captureSnapshotInventory, foldName } from './snapshot-inventory';
 import type { FileInput } from '../git/protocol';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -4149,8 +4149,11 @@ export class ProjectSession extends EventEmitter {
     // Every other file of the site, as it is on disk (the record of what was published, and code no component claims,
     // included); the documents on disk are the loaded ones, checked before saving.
     const hashed = new Map<string, string>();
+    // By the name a case-insensitive disk would give it: a document loaded under another spelling is that file.
+    const folded = (p: string) => p.split('/').map(foldName).join('/');
+    const inlineNames = new Set([...inline].map(folded));
     for (const f of inventory.tree) {
-      if (inline.has(f.path)) continue;
+      if (inlineNames.has(folded(f.path))) continue;
       hashed.set(f.path, f.sha256);
       files.push({ path: f.path, source: f.path, sha256: f.sha256, mode: f.mode });
     }
@@ -4394,7 +4397,14 @@ export class ProjectSession extends EventEmitter {
         const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled });
         // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
         // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
-        const kept = this.versions.versions.find((x) => sameContents(x, now) && (now.git ? x.git?.tree === now.git.tree : !x.git));
+        let kept: SavedVersion | undefined;
+        for (const x of this.versions.versions) {
+          if (!sameContents(x, now) || (now.git ? x.git?.tree !== now.git.tree : !!x.git)) continue;
+          // A version in Git is the way back only while its commit is there to read: otherwise this one is saved.
+          if (now.git && !(await this.versions.holdsTree(x, now.git.tree))) continue;
+          kept = x;
+          break;
+        }
         if (kept) backup = kept;
         else {
           if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };

@@ -574,6 +574,22 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
           oids[index] = await blob(bytes);
           if (opts.fault) await opts.fault('file-written', f.path);
         }
+        /**
+         * A tree of these entries. One already there as a loose object is reused only once it has been read back whole
+         * as this tree (once per worker), as a blob is: a copy cut short or damaged is removed and written again.
+         */
+        const writeTree = async (entries: TreeEntry[]): Promise<Oid> => {
+          const oid = await git.writeTree({ fs: gfs, gitdir, tree: entries });
+          const path = objectPath(oid);
+          if (gfs.staged(path) || intact.has(oid)) return oid;
+          // Not loose (a stock Git packed it): read whole when a version is read, as ever.
+          if (!(await looseExists(oid)) || (await holds(path, oid))) {
+            intact.add(oid);
+            return oid;
+          }
+          await fs.rm(path, { force: true });
+          return git.writeTree({ fs: gfs, gitdir, tree: entries });
+        };
         const writeDir = async (dir: Dir): Promise<Oid> => {
           const entries: TreeEntry[] = [];
           for (const child of dir.children.values()) {
@@ -581,7 +597,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
             if (child.kind === 'file') entries.push({ mode: files[child.index].mode ?? '100644', path: child.name, oid: oids[child.index], type: 'blob' });
             else entries.push({ mode: '040000', path: child.name, oid: await writeDir(child), type: 'tree' });
           }
-          return git.writeTree({ fs: gfs, gitdir, tree: entries });
+          return writeTree(entries);
         };
         return writeDir(top);
       }),

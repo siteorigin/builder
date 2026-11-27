@@ -57,7 +57,7 @@ export function gitSaveProblem(e: unknown): string {
     case 'changed':
     case 'too-large':
     case 'invalid':
-      return /repository/i.test(e.message) ? (e.code === 'too-large' ? 'The site’s files are too large together for one version.' : 'The version could not be saved to the project’s version history.') : e.message;
+      return /versions repository/i.test(e.message) ? (e.code === 'too-large' ? 'The site’s files are too large together for one version.' : 'The version could not be saved to the project’s version history.') : e.message;
     case 'locked':
     case 'conflict':
       return 'Another copy of SiteOrigin Builder is saving a version of this project. Try again in a moment.';

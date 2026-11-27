@@ -238,6 +238,16 @@ export class VersionStore {
     return buf;
   }
 
+  /** Whether `v`, a version in Git, reads back as holding `tree`: its commit there, whole, and naming that tree. */
+  async holdsTree(v: SavedVersion, tree: string): Promise<boolean> {
+    if (!v.git) return false;
+    try {
+      return (await this.repository().readCommit(v.git.commit)).tree === tree;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Add `v` to the list. A version in Git is put at the tip of the versions branch first (its commit is written by the
    * capture, the branch moved only now), so the list never names a commit that history does not hold. A move refused or

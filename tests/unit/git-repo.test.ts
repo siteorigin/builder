@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepo, type RepoOptions } from '../../src/main/git/repo';
 import { GitError, VERSIONS_BRANCH, type FileInput, type Identity } from '../../src/main/git/protocol';
@@ -234,6 +235,28 @@ describe('writing and reading versions', () => {
       ['run.sh', '100755']
     ]);
     await expect(again.writeFiles([{ path: 'x', bytes: text('x'), mode: '120000' as '100644' }])).rejects.toMatchObject({ code: 'invalid' });
+    // Whole, but other content under its name (it inflates, and is still not this object): written again too.
+    writeFileSync(path, deflateSync(Buffer.from('blob 5\0other')));
+    expect(await openRepo(root).writeFiles([{ path: 'static/photo.jpg', bytes }])).toBe(tree);
+    expect(Buffer.from(await openRepo(root).readBlob(tree, 'static/photo.jpg')).equals(Buffer.from(bytes))).toBe(true);
+  });
+
+  it('writes again a folder’s tree it would reuse when the copy there is damaged (#1153)', async () => {
+    const repo = openRepo(root);
+    await repo.init();
+    const files: FileInput[] = [
+      { path: 'siteorigin/pages/home.json', bytes: text('{"title":"Home"}') },
+      { path: 'siteorigin/site.json', bytes: text('{"name":"Site"}') }
+    ];
+    const top = await repo.writeFiles(files);
+    const siteorigin = (await repo.readTree(top)).find((e) => e.path === 'siteorigin')!.oid;
+    const pages = (await repo.readTree(siteorigin)).find((e) => e.path === 'pages')!.oid;
+    const path = join(gitdir(), 'objects', pages.slice(0, 2), pages.slice(2));
+    writeFileSync(path, readFileSync(path).subarray(0, 4));
+    // Another save of the same pages, by a fresh worker: the tree is whole again, and every page reads back.
+    const again = openRepo(root);
+    expect(await again.writeFiles(files)).toBe(top);
+    expect(decode(await openRepo(root).readBlob(top, 'siteorigin/pages/home.json'))).toBe('{"title":"Home"}');
   });
 
   it('publishes commits to a branch, lists them newest first, and keeps a second history with its own root', async () => {

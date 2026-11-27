@@ -1055,6 +1055,27 @@ describe('saved versions in Git (#1153)', () => {
     expect(again.ok).toBe(true);
   });
 
+  it('saves the work a restore replaces anew when the version that held it can no longer be read', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    await describe1(s, 'One', 'One');
+    const one = await ok(s.saveVersion('One'));
+    await describe1(s, 'Two', 'Two');
+    const two = await ok(s.saveVersion('Two'));
+    await describe1(s, 'Three', 'Three');
+    await ok(s.saveVersion('Three'));
+    // Back to the site Two holds; Two's commit, no longer the branch's tip, is gone (its tree is not).
+    await describe1(s, 'Two', 'Two again');
+    const commit = catalogue(dir).find((v) => v.id === two.id)!.git!.commit;
+    rmSync(join(gitdir(dir), 'objects', commit.slice(0, 2), commit.slice(2)));
+    const r = await ok(s.restoreVersion(one.id!, s.revision));
+    expect(r.backup!.id).not.toBe(two.id);
+    const back = await ok(s.reviewVersion(r.backup!.id));
+    expect(back.review!.problem).toBeUndefined();
+    await ok(s.restoreVersion(r.backup!.id, back.review!.revision));
+    expect(s.state.site.description).toBe('Two');
+  });
+
   it('passes the hash a source file was read under through to the worker, which refuses other bytes', async () => {
     const { dir } = await make();
     writeFileSync(join(dir, 'static', 'notes.txt'), 'these bytes');
