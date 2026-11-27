@@ -1,3 +1,4 @@
+import type { ReviewPage } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
@@ -533,6 +534,8 @@ export interface ExportResult {
   assetId?: string;
   /** A review build's base path (the site's subfolder, or ''), from the snapshot it was built from: where to serve it. */
   basePath?: string;
+  /** A review build's pages, with their titles, from the snapshot it was built from: what a review edition can capture. */
+  pages?: ReviewPage[];
 }
 
 /** An export the open project made since it was opened, so the author can find and compare what they handed off. */

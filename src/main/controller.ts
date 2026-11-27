@@ -26,6 +26,9 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
+import { listReviewEditions, reviewPages, writeReviewEdition } from './review-edition';
+import type { ReviewShot } from './review-shot';
+import { pickReviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult } from '@shared/review-edition';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -3703,6 +3706,87 @@ export class Controller {
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, 'folder', undefined, { review: true }));
   }
 
+  /** Photographs one page of a served review build at one width; set by the app (main/review-capture). */
+  reviewShoot: ((url: string, width: number, signal: AbortSignal) => Promise<ReviewShot>) | null = null;
+  /** The review edition being captured, called off when its project closes. */
+  private reviewCapture: AbortController | null = null;
+
+  /**
+   * Capture a review edition (#1133): build the site for review (stageReviewBuild), serve it over loopback, photograph
+   * each of `request.routes` at each of `request.widths` (a desktop and a phone width when none are given), and keep
+   * the pictures and their manifest as a new edition in the project's private reviews folder. A page that could not
+   * be pictured faithfully at a width is recorded as unavailable there; the edition is kept all the same. Nothing is
+   * kept when the build fails, the project closes or changes hands, or the edition cannot be written.
+   */
+  async captureReviewEdition(request: { routes: unknown; widths?: unknown }): Promise<ReviewEditionResult> {
+    const shoot = this.reviewShoot;
+    if (!shoot) return { ok: false, message: 'Review pages cannot be captured here.' };
+    const blocked = this.exportBlocked();
+    if (blocked) return { ok: false, message: blocked.message };
+    const s = this.session!;
+    const widths = reviewWidths(request.widths);
+    if ('error' in widths) return { ok: false, message: widths.error };
+    const routes = reviewRoutes(request.routes);
+    if ('error' in routes) return { ok: false, message: routes.error };
+    // Asked for against the project as it is now, so a mistake is said before the build; and again against the build.
+    const asked = pickReviewPages(reviewPages(publishedState(s.state)), routes);
+    if ('error' in asked) return { ok: false, message: asked.error };
+    if (this.reviewCapture) return { ok: false, message: 'A review edition is already being captured. Wait for it to finish.' };
+    const job = new AbortController();
+    this.reviewCapture = job;
+    const closed = 'The project was closed before the review edition was captured.';
+    try {
+      return await this.withStaging(async (staging): Promise<ReviewEditionResult> => {
+        const site = join(staging, 'site');
+        const built = await this.stageReviewBuild(site);
+        if (!built.ok) return { ok: false, message: built.message, ...(built.details ? { details: built.details } : {}) };
+        if (job.signal.aborted || this.session !== s) return { ok: false, message: closed };
+        const pages = pickReviewPages(built.pages ?? [], routes);
+        if ('error' in pages) return { ok: false, message: pages.error };
+        const base = built.basePath ?? '';
+        let server: string;
+        try {
+          server = await this.previews.serve(site, base);
+        } catch {
+          return { ok: false, message: job.signal.aborted ? closed : 'The review build could not be served to be captured.' };
+        }
+        try {
+          const { manifest, dir } = await writeReviewEdition({
+            projectDir: s.dir,
+            site,
+            server,
+            basePath: base,
+            revision: built.revision ?? s.revision,
+            pages,
+            widths,
+            shoot: (url, width) => shoot(url, width, job.signal),
+            work: join(staging, 'edition'),
+            signal: job.signal,
+            beforeCommit: async () => {
+              if (this.session !== s) throw new Error(closed);
+              if (!(await s.stillOwner())) throw new Error(s.readOnly?.reason ?? READ_ONLY);
+            }
+          });
+          const missing = manifest.captures.filter((c) => c.status !== 'captured').length;
+          const shots = manifest.captures.length;
+          return { ok: true, edition: manifest, path: dir, message: missing ? `Captured ${shots - missing} of ${shots} pictures; ${missing} could not be taken.` : `Captured ${shots} ${shots === 1 ? 'picture' : 'pictures'}.` };
+        } catch (e) {
+          if (job.signal.aborted || this.session !== s) return { ok: false, message: closed };
+          return { ok: false, message: `The review edition could not be saved: ${e instanceof Error ? e.message : String(e)}` };
+        } finally {
+          this.previews.stop(server);
+        }
+      });
+    } finally {
+      if (this.reviewCapture === job) this.reviewCapture = null;
+    }
+  }
+
+  /** The open project's review editions, newest first. */
+  async reviewEditions(): Promise<ReviewEditionManifest[]> {
+    return this.session ? listReviewEditions(this.session.dir) : [];
+  }
+
   /** Each open project's file hashes from its last export's fingerprints, by the stamps they stand for (projectInventory). */
   private exportHashes = new WeakMap<ProjectSession, ExportHashes>();
 
@@ -3722,7 +3806,7 @@ export class Controller {
     return join(app.getPath('userData'), 'build-staging');
   }
 
-  private async withStaging(fn: (staging: string) => Promise<ExportResult>): Promise<ExportResult> {
+  private async withStaging<T>(fn: (staging: string) => Promise<T>): Promise<T> {
     const stagingRoot = this.stagingRoot();
     const sweeping = perf.span('export.sweep');
     await fs.mkdir(stagingRoot, { recursive: true });
@@ -3990,7 +4074,7 @@ export class Controller {
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();
     if (problem) return { ok: false, message: problem, warnings: warnings() };
     // A review build is put in place and nothing more: no address it holds was delivered to visitors.
-    if (opts.review) return { ok: true, path: dest, message: `Built ${exported} for review.`, warnings: warnings(), notes, revision, basePath: basePath(state) };
+    if (opts.review) return { ok: true, path: dest, message: `Built ${exported} for review.`, warnings: warnings(), notes, revision, basePath: basePath(state), pages: reviewPages(live) };
     // How the host shows the not-found page is guidance, not a warning: it goes beside the notes, never among them.
     const hosting = notFoundHostNote(basePath(state), redirectHost(live.site));
     const exportedAt = new Date().toISOString();
@@ -4049,6 +4133,8 @@ export class Controller {
 
   /** Stop every exported-website preview and forget the exports: they belonged to the project that made them. */
   private endExports() {
+    // A review edition being captured belongs to the project too: it is called off, and nothing of it is kept.
+    this.reviewCapture?.abort();
     this.previews.stopAll();
     this.recentExports = [];
   }

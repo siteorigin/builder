@@ -53,6 +53,9 @@ export interface ReviewEditionManifest {
   contentDigest: string;
 }
 
+/** What capturing an edition came to: the edition kept and where, or why there is none. */
+export type ReviewEditionResult = { ok: true; edition: ReviewEditionManifest; path: string; message: string } | { ok: false; message: string; details?: string };
+
 /** The widths captured when none are asked for: a desktop browser and a phone. */
 export const DEFAULT_REVIEW_WIDTHS: readonly ReviewWidth[] = [
   { label: 'Desktop', width: 1440 },

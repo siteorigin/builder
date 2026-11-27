@@ -1,0 +1,361 @@
+/**
+ * Review editions (#1133): the selected pages of a review build (#1132), served as the website is, pictured at each
+ * requested width and kept as a dated edition in the project's private reviews folder, with a manifest naming the
+ * edition, when it was made, the pages and their titles in the build, the widths and a digest of what it holds. A
+ * picture that could not be taken is recorded as unavailable at its width; nothing is kept when the capture is called
+ * off. The pictures here are made up by a stand-in for the hidden window, which reads the page it is sent to.
+ */
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const env = vi.hoisted(() => ({ userData: '', builds: 0, duringBuild: null as null | (() => Promise<void>) }));
+vi.mock('electron', () => ({
+  app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
+  BrowserWindow: class {},
+  shell: { showItemInFolder: () => undefined },
+  nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
+  dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+  utilityProcess: { fork: () => undefined }
+}));
+
+/** Every file under `dir`, as forward-slash paths relative to it. */
+const filesIn = (dir: string): string[] =>
+  existsSync(dir) ? readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => relative(dir, join(e.parentPath, e.name)).split('\\').join('/')).sort() : [];
+
+// The website build without SvelteKit, as in review-build.test.ts: each page module becomes the HTML file a static
+// host serves at its address.
+vi.mock('../../src/main/runtime/manager', async (original) => ({
+  ...(await original<typeof import('../../src/main/runtime/manager')>()),
+  buildProject: async (dir: string) => {
+    env.builds++;
+    await env.duringBuild?.();
+    const out = join(dir, 'build');
+    if (existsSync(join(dir, 'static'))) cpSync(join(dir, 'static'), out, { recursive: true });
+    for (const f of filesIn(join(dir, 'src/routes')).filter((f) => f.endsWith('+page.svelte'))) {
+      const html = dirname(f).endsWith('.html') ? join(out, dirname(f)) : join(out, dirname(f), 'index.html');
+      mkdirSync(dirname(html), { recursive: true });
+      writeFileSync(html, readFileSync(join(dir, 'src/routes', f), 'utf8'));
+    }
+    return { ok: true, logs: [] };
+  }
+}));
+vi.mock('../../src/main/runtime/stage', async (original) => ({ ...(await original<typeof import('../../src/main/runtime/stage')>()), KeptTools: class { take = async () => ({ keep: async () => undefined }); } }));
+
+const { Controller } = await import('../../src/main/controller');
+const { ProjectSession } = await import('../../src/main/project/session');
+const { createStarterState } = await import('@catalogue/starters');
+const { applyOperations } = await import('@engine/apply');
+const { withPublished } = await import('@shared/published');
+const { REVIEWS_DIR, reviewDigestInput, isReviewEditionId } = await import('@shared/review-edition');
+const { listReviewEditions, reviewSiteDigest, writeReviewEdition } = await import('../../src/main/review-edition');
+const { StaticPreviews } = await import('../../src/main/static-preview');
+type ReviewShot = import('../../src/main/review-shot').ReviewShot;
+type Manifest = import('@shared/review-edition').ReviewEditionManifest;
+
+const dirs: string[] = [];
+const controllers: Array<InstanceType<typeof Controller>> = [];
+const temp = (name: string) => {
+  const d = realpathSync(mkdtempSync(join(tmpdir(), `so-edition-${name}-`)));
+  dirs.push(d);
+  return d;
+};
+beforeEach(() => {
+  env.userData = temp('userdata');
+  env.builds = 0;
+  env.duringBuild = null;
+});
+afterEach(async () => {
+  for (const c of controllers.splice(0)) await c.close();
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+});
+
+const sha = (data: Buffer | string) => createHash('sha256').update(data).digest('hex');
+
+/** A PNG header for a picture `width` × `height`, followed by what was pictured, so each picture's bytes differ. */
+function fakePng(width: number, height: number, what: string): Buffer {
+  const head = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(head, 0);
+  head.write('IHDR', 12, 'latin1');
+  head.writeUInt32BE(width, 16);
+  head.writeUInt32BE(height, 20);
+  return Buffer.concat([head, Buffer.from(what)]);
+}
+
+/**
+ * The hidden window's stand-in: reads the page it is sent to over HTTP and pictures what it served (a picture of the
+ * page's own HTML), or reports the page unavailable at the widths `unavailable` names for its address.
+ */
+function fakeShooter(opts: { unavailable?: Record<string, number[]>; hold?: Promise<void>; holdAt?: number } = {}) {
+  const seen: Array<{ url: string; width: number; status: number; body: string }> = [];
+  /** Every picture asked for, whether or not its page could be read. */
+  const asked: string[] = [];
+  const shoot = async (url: string, width: number): Promise<ReviewShot> => {
+    asked.push(`${url} ${width}`);
+    const res = await fetch(url, { redirect: 'manual' });
+    const body = await res.text();
+    seen.push({ url, width, status: res.status, body });
+    if (opts.hold && seen.length === opts.holdAt) await opts.hold;
+    const path = new URL(url).pathname;
+    if (opts.unavailable?.[path]?.includes(width)) return { ok: false, reason: 'fonts', detail: 'Some fonts failed to load: Brand Sans.' };
+    return { ok: true, png: fakePng(width, 1000, `${width}:${body}`), height: 1000 };
+  };
+  return { shoot, seen, asked };
+}
+
+async function open(dir: string) {
+  const c = new Controller(() => null);
+  c.send = () => undefined;
+  c.startRuntime = async () => undefined;
+  controllers.push(c);
+  expect((await c.trustAndOpen(dir)).ok).toBe(true);
+  await vi.waitFor(() => expect(c.snapshot()).not.toBeNull());
+  return c;
+}
+
+/** A bookshop exported once, published under /client on its public address, with a draft page kept back. */
+async function bookshop(opts: { base?: string } = {}) {
+  const dir = temp('project');
+  let state = createStarterState('business', 'Bookshop', false);
+  state.site.baseUrl = `https://books.example${opts.base ?? ''}`;
+  state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_draft', title: 'Secret plans' }]).state;
+  state.pages.pg_draft.draft = true;
+  state.published = withPublished(undefined, state);
+  const s = await ProjectSession.create(dir, state);
+  await s.close();
+  return { c: await open(dir), dir };
+}
+
+const hash = (file: string) => sha(readFileSync(file));
+/** The project's canonical documents and private records (revision, versions, History), by their bytes' hash. */
+const recordFiles = (dir: string): Record<string, string> => ({
+  '.siteorigin/state.json': hash(join(dir, '.siteorigin/state.json')),
+  ...Object.fromEntries(['siteorigin', '.siteorigin/versions', '.siteorigin/history'].flatMap((root) => filesIn(join(dir, root)).map((f) => [`${root}/${f}`, hash(join(dir, root, f))])))
+});
+
+const stagingLeft = () => (existsSync(join(env.userData, 'build-staging')) ? readdirSync(join(env.userData, 'build-staging')).filter((n) => n.startsWith('export-')) : []);
+
+describe('capturing a review edition', () => {
+  it('pictures each page at the desktop and phone widths and keeps them with a manifest in the project’s reviews folder', async () => {
+    const { c, dir } = await bookshop({ base: '/client' });
+    const { shoot, seen } = fakeShooter();
+    c.reviewShoot = shoot;
+    const records = recordFiles(dir);
+    const before = Date.now();
+    const r = await c.captureReviewEdition({ routes: ['/', '/about/'] });
+    expect(r).toMatchObject({ ok: true, message: 'Captured 4 pictures.' });
+    if (!r.ok) return;
+    const m = r.edition;
+    // A dated edition of its own, in the project's private folder.
+    expect(isReviewEditionId(m.editionId)).toBe(true);
+    expect(r.path).toBe(join(dir, REVIEWS_DIR, m.editionId));
+    expect(Date.parse(m.createdAt)).toBeGreaterThanOrEqual(before - 1000);
+    expect(m.editionId.slice(0, 19)).toBe(m.createdAt.slice(0, 19).replace(/:/g, '-'));
+    expect(m.routes).toEqual([
+      { route: '/', title: 'Home' },
+      { route: '/about/', title: 'About' }
+    ]);
+    expect(m.widths).toEqual([
+      { label: 'Desktop', width: 1440 },
+      { label: 'Phone', width: 390 }
+    ]);
+    expect(m.basePath).toBe('/client');
+    // Each page was opened where the website serves it, under its base path, and answered with that page.
+    expect(seen.map((s) => [new URL(s.url).pathname, s.width, s.status])).toEqual([
+      ['/client/', 1440, 200],
+      ['/client/', 390, 200],
+      ['/client/about/', 1440, 200],
+      ['/client/about/', 390, 200]
+    ]);
+    expect(seen[0].body).not.toBe(seen[2].body);
+    // Every picture is in the folder, as the manifest names it and with the digest it gives.
+    expect(m.captures.map((x) => [x.route, x.width, x.status])).toEqual([
+      ['/', 1440, 'captured'],
+      ['/', 390, 'captured'],
+      ['/about/', 1440, 'captured'],
+      ['/about/', 390, 'captured']
+    ]);
+    for (const x of m.captures) {
+      if (x.status !== 'captured') continue;
+      const bytes = readFileSync(join(r.path, x.file));
+      expect(x.sha256).toBe(sha(bytes));
+      expect(bytes.subarray(24).toString()).toBe(`${x.width}:${seen.find((s) => new URL(s.url).pathname === `/client${x.route}` && s.width === x.width)!.body}`);
+    }
+    expect(filesIn(r.path)).toEqual(['images/001-1440.png', 'images/001-390.png', 'images/002-1440.png', 'images/002-390.png', 'manifest.json']);
+    expect(JSON.parse(readFileSync(join(r.path, 'manifest.json'), 'utf8'))).toEqual(m);
+    expect(m.contentDigest).toBe(sha(reviewDigestInput(m)));
+    expect(m.siteDigest).toMatch(/^[0-9a-f]{64}$/);
+    // Capturing is not publishing: the project's records are as they were, and the build is gone.
+    expect(recordFiles(dir)).toEqual(records);
+    expect(stagingLeft()).toEqual([]);
+    expect(await c.reviewEditions()).toEqual([m]);
+    // The edition is the project's private record: a later review build does not carry it.
+    const next = join(temp('out'), 'review');
+    expect((await c.stageReviewBuild(next)).ok).toBe(true);
+    expect(filesIn(next).filter((f) => f.includes('reviews') || f.endsWith('.png'))).toEqual([]);
+  });
+
+  it('records a page that could not be pictured at a width as unavailable there and keeps the rest', async () => {
+    const { c, dir } = await bookshop();
+    c.reviewShoot = fakeShooter({ unavailable: { '/about/': [390] } }).shoot;
+    const r = await c.captureReviewEdition({ routes: ['/', '/about/'] });
+    expect(r).toMatchObject({ ok: true, message: 'Captured 3 of 4 pictures; 1 could not be taken.' });
+    if (!r.ok) return;
+    expect(r.edition.captures[3]).toEqual({ route: '/about/', width: 390, status: 'unavailable', reason: 'fonts', detail: 'Some fonts failed to load: Brand Sans.' });
+    expect(filesIn(r.path)).toEqual(['images/001-1440.png', 'images/001-390.png', 'images/002-1440.png', 'manifest.json']);
+    expect(r.edition.basePath).toBe('');
+    expect(r.path.startsWith(join(dir, REVIEWS_DIR))).toBe(true);
+  });
+
+  it('captures the widths asked for, in their order, under their names', async () => {
+    const { c } = await bookshop();
+    const { shoot, seen } = fakeShooter();
+    c.reviewShoot = shoot;
+    const r = await c.captureReviewEdition({ routes: ['/about/'], widths: [{ label: ' Tablet ', width: 768 }, { label: 'Wide', width: 1920 }] });
+    expect(r.ok && r.edition.widths).toEqual([
+      { label: 'Tablet', width: 768 },
+      { label: 'Wide', width: 1920 }
+    ]);
+    expect(seen.map((s) => s.width)).toEqual([768, 1920]);
+  });
+
+  it('names each page by its title in the build, whatever it was renamed to meanwhile', async () => {
+    const { c } = await bookshop();
+    c.reviewShoot = fakeShooter().shoot;
+    const about = Object.values(c.snapshot()!.state.pages).find((p) => p.route === '/about/')!.id;
+    env.duringBuild = async () => {
+      env.duringBuild = null;
+      expect((await c.apply({ operations: [{ type: 'page.update', pageId: about, title: 'About us' }] })).ok).toBe(true);
+    };
+    const r = await c.captureReviewEdition({ routes: ['/about/'] });
+    expect(c.snapshot()!.state.pages[about].title).toBe('About us');
+    expect(r.ok && r.edition.routes).toEqual([{ route: '/about/', title: 'About' }]);
+  });
+
+  it('refuses pages the website does not have and widths it cannot capture, before building anything', async () => {
+    const { c } = await bookshop();
+    c.reviewShoot = fakeShooter().shoot;
+    expect(await c.captureReviewEdition({ routes: ['/secret-plans/'] })).toEqual({ ok: false, message: 'The website has no page at /secret-plans/ to capture.' });
+    expect(await c.captureReviewEdition({ routes: ['/nowhere/'] })).toEqual({ ok: false, message: 'The website has no page at /nowhere/ to capture.' });
+    expect(await c.captureReviewEdition({ routes: [] })).toEqual({ ok: false, message: 'Choose at least one page to capture.' });
+    expect(await c.captureReviewEdition({ routes: ['/', '/'] })).toEqual({ ok: false, message: '/ is asked for twice.' });
+    expect(await c.captureReviewEdition({ routes: ['/'], widths: [{ label: 'Tiny', width: 100 }] })).toEqual({ ok: false, message: 'Each width must be a whole number of pixels from 320 to 2560.' });
+    expect(await c.captureReviewEdition({ routes: ['/'], widths: [{ label: 'A', width: 800 }, { label: 'B', width: 800 }] })).toEqual({ ok: false, message: '800 px is asked for twice.' });
+    expect(await c.captureReviewEdition({ routes: ['/'], widths: [{ label: '  ', width: 800 }] })).toEqual({ ok: false, message: 'Each width needs a name of up to 64 characters.' });
+    expect(env.builds).toBe(0);
+    expect(await c.reviewEditions()).toEqual([]);
+  });
+
+  it('keeps nothing when the project closes while the pages are being pictured', async () => {
+    const { c, dir } = await bookshop();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const { shoot, seen, asked } = fakeShooter({ hold: held, holdAt: 2 });
+    c.reviewShoot = shoot;
+    const capturing = c.captureReviewEdition({ routes: ['/', '/about/'] });
+    await vi.waitFor(() => expect(seen.length).toBe(2));
+    const server = new URL(seen[0].url).origin;
+    await c.closeProject();
+    release();
+    expect(await capturing).toEqual({ ok: false, message: 'The project was closed before the review edition was captured.' });
+    // Nothing more was pictured, nothing kept, the review server stopped and the build removed.
+    expect(asked.length).toBe(2);
+    expect(await listReviewEditions(dir)).toEqual([]);
+    expect(filesIn(join(dir, REVIEWS_DIR))).toEqual([]);
+    await expect(fetch(server)).rejects.toThrow();
+    expect(stagingLeft()).toEqual([]);
+  });
+
+  it('captures one edition at a time', async () => {
+    const { c } = await bookshop();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const { shoot, seen } = fakeShooter({ hold: held, holdAt: 1 });
+    c.reviewShoot = shoot;
+    const first = c.captureReviewEdition({ routes: ['/'] });
+    await vi.waitFor(() => expect(seen.length).toBe(1));
+    expect(await c.captureReviewEdition({ routes: ['/'] })).toEqual({ ok: false, message: 'A review edition is already being captured. Wait for it to finish.' });
+    release();
+    expect((await first).ok).toBe(true);
+    expect((await c.captureReviewEdition({ routes: ['/'] })).ok).toBe(true);
+    expect((await c.reviewEditions()).length).toBe(2);
+  });
+});
+
+describe('writing a review edition', () => {
+  /** A tiny website folder, served as the review server serves it. */
+  async function site(pages: Record<string, string>) {
+    const root = temp('site');
+    for (const [rel, html] of Object.entries(pages)) {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), html);
+    }
+    const previews = new StaticPreviews();
+    const server = await previews.serve(root, '');
+    return { root, server, stop: () => previews.stopAll() };
+  }
+
+  const write = async (s: { root: string; server: string }, project: string, at: Date, extra: Partial<Parameters<typeof writeReviewEdition>[0]> = {}) =>
+    writeReviewEdition({
+      projectDir: project,
+      site: s.root,
+      server: s.server,
+      basePath: '',
+      revision: 3,
+      pages: [
+        { route: '/', title: 'Home' },
+        { route: '/über/', title: 'Über uns' }
+      ],
+      widths: [{ label: 'Desktop', width: 1440 }],
+      shoot: fakeShooter().shoot,
+      work: temp('work'),
+      now: () => at,
+      ...extra
+    });
+
+  it('gives the same content digest to the same pictures of the same build, and another to any change', async () => {
+    const s = await site({ 'index.html': '<h1>Home</h1>', 'über/index.html': '<h1>Über</h1>' });
+    try {
+      const project = temp('project');
+      const a = await write(s, project, new Date('2026-11-27T10:00:00.000Z'));
+      const b = await write(s, project, new Date('2026-11-27T11:00:00.000Z'));
+      // Two editions, each of its own, saying the same: the address the server had is not part of what they hold.
+      expect(a.manifest.editionId).not.toBe(b.manifest.editionId);
+      expect(a.manifest.contentDigest).toBe(b.manifest.contentDigest);
+      expect(a.manifest.siteDigest).toBe(await reviewSiteDigest(s.root));
+      // A route of any characters is pictured under a plain file name, and was opened at its escaped address.
+      expect(a.manifest.captures.map((c) => c.status === 'captured' && c.file)).toEqual(['images/001-1440.png', 'images/002-1440.png']);
+      expect(readFileSync(join(a.dir, 'images/002-1440.png')).subarray(24).toString()).toBe('1440:<h1>Über</h1>');
+      // Newest first.
+      expect((await listReviewEditions(project)).map((m) => m.editionId)).toEqual([b.manifest.editionId, a.manifest.editionId]);
+      // One byte of the website changed: another site, and another edition.
+      writeFileSync(join(s.root, 'index.html'), '<h1>Home!</h1>');
+      const c = await write(s, project, new Date('2026-11-27T12:00:00.000Z'));
+      expect(c.manifest.siteDigest).not.toBe(a.manifest.siteDigest);
+      expect(c.manifest.contentDigest).not.toBe(a.manifest.contentDigest);
+      // A title changed, with the same pictures: another edition.
+      const d = await write(s, project, new Date('2026-11-27T13:00:00.000Z'), { pages: [{ route: '/', title: 'Start' }, { route: '/über/', title: 'Über uns' }] });
+      expect(d.manifest.contentDigest).not.toBe(c.manifest.contentDigest);
+    } finally {
+      s.stop();
+    }
+  });
+
+  it('puts nothing in place when it is called off at the last moment, and lists only whole editions', async () => {
+    const s = await site({ 'index.html': '<h1>Home</h1>', 'über/index.html': '<h1>Über</h1>' });
+    try {
+      const project = temp('project');
+      await expect(write(s, project, new Date(), { beforeCommit: async () => Promise.reject(new Error('closed')) })).rejects.toThrow('closed');
+      expect(readdirSync(join(project, REVIEWS_DIR))).toEqual([]);
+      // Folders that are not editions, and an edition folder without a manifest, are not listed.
+      mkdirSync(join(project, REVIEWS_DIR, 'notes'));
+      mkdirSync(join(project, REVIEWS_DIR, '2026-11-27T10-00-00Z-0badc0de'));
+      const kept = await write(s, project, new Date());
+      expect((await listReviewEditions(project)).map((m: Manifest) => m.editionId)).toEqual([kept.manifest.editionId]);
+    } finally {
+      s.stop();
+    }
+  });
+});
