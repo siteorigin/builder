@@ -22,7 +22,7 @@ import { basePath, generateManagedComponent, generatePage, defFile, liveRedirect
 import { archivePages } from '@shared/archives';
 import { NOT_FOUND_FILE } from '@shared/not-found';
 import { placeholderImageCount } from '@generator/checks';
-import { redirectHost } from '@generator/host-redirects';
+import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
@@ -32,7 +32,7 @@ import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
-import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
+import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError, type ExportedVersion } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
@@ -99,6 +99,37 @@ const PRIVATE_FILES_LEFT_OUT = 'Private files such as .env, keys and credentials
 const INSTANCE_ID = randomUUID();
 
 const READ_ONLY = 'This project is read-only.';
+
+/** The automatic versions a delivered export is listed as (#1156). */
+const EXPORTED_SITE = 'Exported website';
+const EXPORTED_SOURCE = 'Exported source project';
+
+interface SnapshotOptions {
+  forBuild?: boolean;
+  /** Files at the project's top the fingerprints cover too (projectInventory). */
+  roots?: readonly string[];
+  /** The name of the version the export is listed as once delivered; its capture's release goes in `held`. */
+  milestone?: string;
+  held?: Array<() => void>;
+}
+type SourceSnapshot = { ok: true; revision: number; state: ProjectState; milestone?: ExportedVersion; unsaved?: string } | { ok: false; message: string };
+
+/** Fingerprinted by projectInventory before and after an export's copy: any change there stops the export already. */
+const FINGERPRINTED = new Set(['src', 'static', 'siteorigin']);
+
+/**
+ * Whether every file of the project a milestone holds by its hash that the export fingerprints don't cover (its setup
+ * files, at the top of the folder) was copied into `dest` with those very bytes, before anything rewrote the copy. A
+ * file the copy leaves out is not looked at.
+ */
+async function copiedAsCaptured(dest: string, files: Map<string, string>): Promise<boolean> {
+  for (const [rel, hash] of files) {
+    if (FINGERPRINTED.has(rel.split('/')[0]) || rel === VERCEL_CONFIG_FILE) continue;
+    const bytes = await fs.readFile(join(dest, rel)).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+    if (bytes && sha(bytes) !== hash) return false;
+  }
+  return true;
+}
 
 /** Remove an export's staging folder as far as can be done now; what cannot be removed yet is swept later. */
 const removeStaging = (dir: string) => fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined);
@@ -1524,11 +1555,17 @@ export class Controller {
     void session.refreshSiteIcons().catch(() => null);
     // Copies a quit or a crash left unmade (#979).
     this.copyPending(session);
+    // A project that has never had a version saved gets its starting version (#1156): queued now, ahead of any edit the
+    // editor can send once it has this snapshot, and after the opening's own publication, which holds the queue.
+    if (!session.readOnly) this.startingVersion = session.recordStartingVersion().catch(() => false);
     this.broadcast();
     // Project health lists missing image files a moment after the project shows: the look at every original and copy
     // in the library is not waited for.
     void this.firstAssetCheck(session);
   }
+
+  /** The open project's starting version being saved, if one is (see attachShown): whether it was. */
+  startingVersion: Promise<boolean> | null = null;
 
   /** The opening's look for missing image files, shown once it finds any. */
   private async firstAssetCheck(session: ProjectSession): Promise<void> {
@@ -3803,10 +3840,12 @@ export class Controller {
     // What the export says about what it delivered, in order, with where to fix what the editor can fix.
     const notes: ExportNote[] = [];
     const warn = (...messages: string[]) => void notes.push(...messages.map((message) => ({ message })));
+    const held: Array<() => void> = [];
     return this.withStaging(async (staging) => {
       const folder = join(staging, 'project');
-      const snap = await this.snapshotSource(s, folder);
+      const snap = await this.snapshotSource(s, folder, { milestone: EXPORTED_SOURCE, held });
       if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+      if (snap.unsaved) warn(snap.unsaved);
       await settleServerHook(folder, publishedState(snap.state));
       // The exported source is the published site; its drafts are kept to edit but not built.
       const live = publishedState(snap.state);
@@ -3832,9 +3871,24 @@ export class Controller {
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
       await this.notePublished(s, live, warn);
+      await this.listExported(s, snap.milestone, warn);
       this.recordExport(s, { kind: 'source', format, path: dest, revision: snap.revision, exportedAt: new Date().toISOString(), notes });
       return { ok: true, path: dest, message: `${format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.'} ${PRIVATE_FILES_LEFT_OUT}`, warnings: notes.map((n) => n.message), notes, revision: snap.revision };
-    });
+    }).finally(() => held.forEach((release) => release()));
+  }
+
+  /**
+   * Once an export is delivered, list the version of the project it was staged from as its milestone (#1156). The export
+   * is done whatever happens here: a milestone that can't be listed is said among its notes.
+   */
+  private async listExported(s: ProjectSession, milestone: ExportedVersion | undefined, warn: (...messages: string[]) => void) {
+    if (!milestone) return;
+    try {
+      if (this.session !== s) throw new Error('The project was closed.');
+      await s.listExported(milestone.version);
+    } catch (e) {
+      warn(`The export is complete, but it couldn’t be added to Saved versions as “${milestone.version.name}”: ${(e as Error).message}`);
+    }
   }
 
   /**
@@ -3851,7 +3905,8 @@ export class Controller {
     await this.copiesMade();
     if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     // Build an isolated snapshot so the running preview and later edits cannot mix into the output.
-    return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published));
+    const held: Array<() => void> = [];
+    return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published, { held })).finally(() => held.forEach((release) => release()));
   }
 
   /**
@@ -4182,11 +4237,11 @@ export class Controller {
    * build configuration the user trusted, because the build runs the copy. The state returned is the one the
    * files were copied from, so everything said about the export describes this snapshot.
    */
-  private snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean; roots?: readonly string[] } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+  private snapshotSource(s: ProjectSession, dest: string, opts: SnapshotOptions = {}): Promise<SourceSnapshot> {
     return timed('export.stage', () => this.snapshotSourceNow(s, dest, opts), (r) => ({ ok: r?.ok ?? false, forBuild: !!opts.forBuild }))();
   }
 
-  private async snapshotSourceNow(s: ProjectSession, dest: string, opts: { forBuild?: boolean; roots?: readonly string[] }): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+  private async snapshotSourceNow(s: ProjectSession, dest: string, opts: SnapshotOptions): Promise<SourceSnapshot> {
     const stop = (message: string) => ({ ok: false as const, message });
     // The website's icons follow a favicon file changed with no document changing (put back by Locate, replaced in the
     // folder), so the export never carries icons of another picture than its favicon. They are drawn without holding
@@ -4223,7 +4278,21 @@ export class Controller {
       // A source's settings go out as the project holds them, and only when the folder holds them so too.
       const sources = opts.forBuild ? null : await this.sourcesCopyProblem(s);
       if (sources) return stop(sources);
+      // The export's milestone (#1156): the project as this export copies it, listed once it is delivered. One that
+      // can't be saved doesn't stop the export, which says so.
+      let milestone: ExportedVersion | undefined;
+      let unsaved: string | undefined;
+      if (opts.milestone && opts.held) {
+        try {
+          milestone = await timed('export.milestone', () => s.captureExported(opts.milestone!))();
+          opts.held.push(milestone.release);
+        } catch (e) {
+          unsaved = `This export couldn’t be saved in Saved versions as “${opts.milestone}”: ${(e as Error).message}`;
+        }
+      }
       await timed('export.copySource', () => copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) }))();
+      // The files the fingerprints don't cover (the project's own setup files) are copied as the milestone holds them.
+      if (milestone && !(await copiedAsCaptured(dest, milestone.files))) return stop('The project changed on disk while it was being exported. Export again.');
       await writeExportedSources(dest, s.state, { keep: !opts.forBuild });
       // The icons go out with the favicon they were made from: one replaced since would go out beside icons of the
       // picture it replaced. Only while icons cannot be made at all do those the project has go out as they are.
@@ -4243,7 +4312,7 @@ export class Controller {
       } else await finishExportedSource(dest, s.state, starterNotice(), await syncCliText(s.state));
       if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs, roots: opts.roots }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
-      return { ok: true as const, revision: s.revision, state: structuredClone(s.state) };
+      return { ok: true as const, revision: s.revision, state: structuredClone(s.state), ...(milestone ? { milestone } : {}), ...(unsaved ? { unsaved } : {}) };
     }));
   }
 
@@ -4270,9 +4339,10 @@ export class Controller {
     };
   }
 
-  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[], opts: { review?: boolean } = {}): Promise<ExportResult> {
+  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[], opts: { review?: boolean; held?: Array<() => void> } = {}): Promise<ExportResult> {
     const project = join(staging, 'project');
-    const snap = await this.snapshotSource(s, project, { forBuild: true });
+    // A review delivers nothing to visitors, so it saves no version either.
+    const snap = await this.snapshotSource(s, project, { forBuild: true, ...(opts.review || !opts.held ? {} : { milestone: EXPORTED_SITE, held: opts.held }) });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
     await settleServerHook(project, publishedState(snap.state));
     const { revision, state } = snap;
@@ -4322,6 +4392,7 @@ export class Controller {
     const notes: ExportNote[] = [];
     const warn = (...messages: string[]) => void notes.push(...messages.map((message) => ({ message })));
     const warnings = () => notes.map((n) => n.message);
+    if (snap.unsaved) warn(snap.unsaved);
     // Every built file is read once, as it is cleaned (the images the build brought in from somewhere other than the
     // cleaned sources: a package, generated code). What the checks below need of each is noted then, from the file as
     // the build wrote it; they still decide in their own order, and read what the pass did not see.
@@ -4430,6 +4501,7 @@ export class Controller {
     const exportedAt = new Date().toISOString();
     this.exportPaths.add(dest);
     await this.notePublished(s, live, warn);
+    await this.listExported(s, snap.milestone, warn);
     if (format === 'zip') {
       this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt, notes });
       return { ok: true, path: dest, message: `Exported ${exported} as a ZIP file.`, warnings: warnings(), notes, revision, hosting };
