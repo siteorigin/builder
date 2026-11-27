@@ -8,7 +8,9 @@ export const INTERNAL_HEADERS = {
   target: 'x-relay-target',
   secure: 'x-relay-secure',
   /** On a room's answer to a preview request: the room itself turned the guest away (never set on the host's own). */
-  refused: 'x-relay-refused'
+  refused: 'x-relay-refused',
+  /** On a room's own answer to a preview request: the page a browser opening it is shown (pages.ts, RefusalKind). */
+  page: 'x-relay-page'
 } as const;
 
 /** A request from the Worker to a room's object, at one of the object's own paths. */
@@ -24,9 +26,19 @@ export function roomRequest(path: '/create' | '/connect' | '/admission' | '/prev
   });
 }
 
-/** A short plain-text answer that no cache keeps. */
+/** The answers textResponse made, so the Worker can tell its own refusals from a host's pages passing through. */
+const refusals = new WeakSet<Response>();
+
+/** A short plain-text answer that no cache keeps. A browser opening it in a tab is shown a page instead (pages.ts). */
 export function textResponse(status: number, message: string, headers: Record<string, string> = {}): Response {
-  return new Response(`${message}\n`, { status, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', ...headers } });
+  const response = new Response(`${message}\n`, { status, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', ...headers } });
+  refusals.add(response);
+  return response;
+}
+
+/** Whether a response is a refusal textResponse made in this isolate. */
+export function isRefusal(response: Response): boolean {
+  return refusals.has(response);
 }
 
 /** The request body as text, or null when it is longer than `max` bytes; reading stops as soon as it is. */

@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { existsSync, lstatSync, promises as fs, type BigIntStats } from 'node:fs';
 import { extname, isAbsolute, join, normalize, relative } from 'node:path';
 import { DOCUMENT_FORMATS } from '@shared/document-files';
+import { statusPage } from '@shared/status-page';
 
 /** The downloadable documents a site can link to, as the exported website's preview serves them. */
 const documentTypes = Object.fromEntries(Object.entries(DOCUMENT_FORMATS).map(([ext, f]) => [`.${ext}`, f.mime]));
@@ -29,7 +30,7 @@ export class StaticPreviews {
     const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon', '.txt': 'text/plain', '.xml': 'application/xml', '.gif': 'image/gif', '.avif': 'image/avif', ...documentTypes, '.md': 'text/markdown; charset=utf-8', '.webmanifest': 'application/manifest+json' };
     const server = createServer(async (req, res) => {
       if (!(await sameFolder(root, exported))) {
-        res.writeHead(410, { 'content-type': 'text/html; charset=utf-8' });
+        res.writeHead(410, PAGE_HEADERS);
         return res.end(MOVED);
       }
       try {
@@ -64,8 +65,12 @@ export class StaticPreviews {
       } catch {
         const nfPath = join(root, '404.html');
         const nf = existsSync(nfPath) && !lstatSync(nfPath).isSymbolicLink() ? await fs.readFile(nfPath).catch(() => null) : null;
-        res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
-        res.end(nf ?? 'Not found');
+        if (nf) {
+          res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
+          return res.end(nf);
+        }
+        res.writeHead(404, PAGE_HEADERS);
+        res.end(notFound(req.url ?? '/', base, existsSync(join(root, 'index.html'))));
       }
     });
     await new Promise<void>((resolve, reject) => {
@@ -104,7 +109,44 @@ export class StaticPreviews {
   }
 }
 
-const MOVED = '<!doctype html><meta charset="utf-8"><title>Export moved</title><p>This exported website is no longer in the folder it was saved to, so its preview has stopped. Open a current preview from the Export dialog in SiteOrigin Builder.</p>';
+/**
+ * The preview's own pages (src/shared/status-page.ts), for when it has nothing of the site's to show. Each says it is
+ * the export preview speaking, so the fallback 404 is never taken for the site's own design.
+ */
+const PAGE_HEADERS = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+const BRAND = { label: 'Export preview' };
+
+const MOVED = statusPage({
+  title: 'Preview stopped',
+  heading: 'This preview has stopped',
+  text: 'This exported website is no longer in the folder it was saved to.',
+  next: 'Open a current preview from the Export dialog in SiteOrigin Builder.',
+  icon: 'unlink',
+  tone: 'amber',
+  brand: BRAND
+});
+
+/** A page the export does not have, when it has no 404.html of its own: with the way back to its home page. */
+function notFound(requested: string, base: string, hasHome: boolean): string {
+  let path = requested.split(/[?#]/)[0];
+  try {
+    path = decodeURIComponent(new URL(requested, 'http://x').pathname);
+  } catch {
+    // An address that does not parse, or is not valid UTF-8, is shown as it was asked for.
+  }
+  const home = `${base}/`;
+  const atHome = path === home || path === base;
+  return statusPage({
+    title: 'Page not found',
+    heading: 'Page not found',
+    text: atHome ? 'This exported website has no home page.' : ['This exported website has no page at ', { code: path }, '.'],
+    // Without a home page there is nowhere in the export to send the author, only back to the app.
+    next: !hasHome ? 'Export the website again from SiteOrigin Builder, then open its preview.' : 'It has no 404 page of its own, so its preview shows this one.',
+    action: hasHome && !atHome ? { label: 'Go to the home page', href: home } : undefined,
+    icon: 'unlink',
+    brand: BRAND
+  });
+}
 
 /**
  * Is the folder at `root` still the one that was exported there? By file ID alone: the device number changes when a
