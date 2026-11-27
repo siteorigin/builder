@@ -180,6 +180,27 @@ line two</pre><iframe src="https://example.com"></iframe><a href="so-link:{&quot
     expect(page.html).toBe('<p>keep</p>');
   });
 
+  it('joins the list items a selection ran across when words are pasted over it', async () => {
+    const { html } = await paste('<ul><li>Alpha</li><li>Bravo</li></ul>', '<p><em>X</em></p>', 2, 7);
+    expect(html).toBe('<ul><li>Al<em>X</em>avo</li></ul>');
+  });
+
+  it('keeps a space the copy ends with at the end of a block', async () => {
+    await paste('<p>Very</p>', '<p><em>late</em> </p>', 4, undefined, 'late ');
+    await page.keyboard.type('x');
+    expect((await page.evaluate<string>(`document.getElementById('body').textContent`)).replace(/\u00a0/g, ' ')).toBe('Verylate x');
+  });
+
+  it('pastes nothing as blocks from a copy with far more elements than a post holds', async () => {
+    expect((await paste('<p>keep</p>', `<ul><li>a</li></ul><ul>${'<li>b</li>'.repeat(70_000)}</ul>`, 4)).ok).toBe(false);
+  });
+
+  it('deletes nothing when the paste cannot go where the selection is', async () => {
+    const { ok, html } = await paste('abCD', '<h2>X</h2><p>y</p>', 1, 3);
+    expect(ok).toBe(false);
+    expect(html).toBe('abCD');
+  });
+
   it('leaves words outside any block to the browser', async () => {
     const { ok, html } = await paste('abCD', '<h2>X</h2><p>y</p>', 2);
     expect(ok).toBe(false);

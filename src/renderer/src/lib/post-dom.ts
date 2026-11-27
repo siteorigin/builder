@@ -314,6 +314,9 @@ function pastedLinks(state: ProjectState): ArticleRead {
   };
 }
 
+/** The most elements a copy may hold to be pasted as blocks: plenty for a post's most blocks with their marks. */
+const MAX_PASTED_ELEMENTS = 60_000;
+
 /**
  * Copied HTML as the blocks of an article's text: paragraphs, section headings (h2 to h4), quotes, lists, bold, italic,
  * line breaks and links to anywhere the writer can link to, read with the rules the writer reads its own text with.
@@ -326,6 +329,8 @@ export function pastedArticle(html: string, state: ProjectState, preview: string
   // Parsed inert (nothing runs or loads), from inside a body: what comes before the copy's own body (comments, Word's
   // conditional blocks) lands there too.
   const body = new DOMParser().parseFromString(`<body>${html}`, 'text/html').body;
+  // Far more elements than a post's blocks need is more than it can hold, and too many to read in one go.
+  if (body.getElementsByTagName('*').length > MAX_PASTED_ELEMENTS) return [];
   const nodes = [...body.childNodes].flatMap((c) => pastedNodes(c, false, preview));
   const blocks = blocksFromDom(nodes, state.pages, pastedLinks(state)).blocks.filter((b) => !isImageBlock(b));
   const chars = blocks.reduce((n, b) => n + (isListBlock(b) ? b.items.flat() : (b as RichTextBlock).spans).reduce((m, sp) => m + sp.text.length, 0), 0);
@@ -401,13 +406,24 @@ export function pasteArticle(root: HTMLElement, pasted: RichText, state: Project
     const words = doc.createElement('div');
     // A space the copy starts or ends with stays, as the plain text of it shows: it parts the words from those at the caret.
     const spans = only.spans.map((sp) => ({ ...sp }));
-    if (/^[ \t]/.test(plain) && !spans[0].text.startsWith(' ')) spans.unshift({ text: ' ' });
-    if (/[ \t]$/.test(plain) && !spans[spans.length - 1].text.endsWith(' ')) spans.push({ text: ' ' });
+    // Non-breaking, so the browser keeps one at the end of a block too (the text reads it back as a space).
+    if (/^[ \t]/.test(plain) && !spans[0].text.startsWith(' ')) spans.unshift({ text: '\u00a0' });
+    if (/[ \t]$/.test(plain) && !spans[spans.length - 1].text.endsWith(' ')) spans.push({ text: '\u00a0' });
     appendSpans(words, spans, state);
     // The break that holds a block's last line open is the block's, not the words'.
     if (spans.at(-1)?.text.endsWith('\n')) words.lastChild?.remove();
+    // What is selected goes first, so the blocks or list items it ran across join, as typing over it joins them.
+    if (!sel.isCollapsed) doc.execCommand('delete');
     return doc.execCommand('insertHTML', false, words.innerHTML);
   }
+  // Nothing is deleted for a paste that cannot go there: both ends of the selection are in blocks it can split (or pictures).
+  const r = sel.getRangeAt(0);
+  const topOf = (n: Node) => {
+    while (n.parentNode && n.parentNode !== root) n = n.parentNode;
+    return n;
+  };
+  const splits = (n: Node) => n === root || (n instanceof HTMLElement && (SPLITS.has(n.tagName) || n.tagName === 'FIGURE'));
+  if (!splits(topOf(r.startContainer)) || !splits(topOf(r.endContainer))) return false;
   // What is selected goes first, as typing over it would take it: the blocks it ran across join, as the browser joins them.
   if (!sel.isCollapsed) doc.execCommand('delete');
   if (!sel.rangeCount || !root.contains(sel.anchorNode)) return false;
