@@ -18,7 +18,7 @@ import { createVariantClient, MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type We
 import type { SiteIconRenderer } from './site-icons';
 
 export { WEB_EDGE, webCopySize };
-import { addCredits, cleanPhoto, hasCredits, sniffImageType, textCreditsAsTiff } from './photo-metadata';
+import { addCredits, cleanPhoto, hasCredits, sniffImageType, textCreditsAsTiff, type PhotoCredits, type PhotoMetadata } from './photo-metadata';
 import type { PhotoDecoder } from './photo-convert';
 
 export { imageSize } from './media';
@@ -254,8 +254,9 @@ export interface ImportOptions {
 }
 
 /** A web-sized copy as a file for the library, carrying the source's credits (author, copyright) and nothing else. */
-function preparedCopy(sourcePath: string, source: Buffer, copy: { data: Buffer; mime: 'image/jpeg' | 'image/png' }): PreparedFile {
-  let credits = cleanPhoto(source)?.credits;
+function preparedCopy(sourcePath: string, sourceCredits: PhotoCredits | undefined, copy: { data: Buffer; mime: 'image/jpeg' | 'image/png' }): PreparedFile {
+  // The source's credits, as cleanPhoto reads them.
+  let credits = sourceCredits;
   // A PNG's author and copyright text has no place in a JPEG but its EXIF, merged field by field with what is there.
   if (credits?.text?.length && copy.mime === 'image/jpeg') credits = { ...credits, tiff: textCreditsAsTiff(credits.text, credits.tiff) ?? credits.tiff };
   const buf = credits && hasCredits(credits) ? addCredits(copy.data, credits) : copy.data;
@@ -351,12 +352,12 @@ async function prepareImport(sourcePath: string, refuse: Refusal, opts: ImportOp
       if (result.unreadable) throw refuse(unusableReason('damaged', c.mime));
       return keep('a web-sized copy could not be made.');
     }
-    const p = preparedCopy(sourcePath, buf, result.copy);
+    const p = preparedCopy(sourcePath, cleanPhoto(buf)?.credits, result.copy);
     if (p.buf.length >= buf.length) return keep('a web-sized copy would be no smaller.');
     if (p.buf.length > MAX_BYTES) throw refuse('even a web-sized copy of it is larger than 25 MB.');
     return p;
   }
-  const p = preparedCopy(sourcePath, buf, result.copy);
+  const p = preparedCopy(sourcePath, cleanPhoto(buf)?.credits, result.copy);
   if (p.buf.length > MAX_BYTES) throw refuse('even a web-sized copy of it is larger than 25 MB.');
   return p;
 }
@@ -811,7 +812,7 @@ export async function locateAssetFile(projectDir: string, record: AssetRecord, s
  * mostly lose detail.
  */
 export const LIGHTER_SHARE = 2 / 3;
-const worthwhile = (copy: Buffer, original: Buffer) => copy.length <= original.length * LIGHTER_SHARE;
+const worthwhile = (copy: Buffer, originalBytes: number) => copy.length <= originalBytes * LIGHTER_SHARE;
 
 /**
  * Plans measured or being measured, by the original's content: opening the same picture again, or going back to it
@@ -825,15 +826,16 @@ const MEASURED_MAX = 32;
  * What a web-sized copy of a library image (its original's bytes) would be, found by making it and weighing it as it
  * would be stored. A copy that could not be made this time is not remembered, so it is tried again next time.
  */
-export async function libraryWebCopyPlan(record: AssetRecord, buf: Buffer): Promise<WebCopyPlan> {
+export async function libraryWebCopyPlan(record: AssetRecord, buf: Buffer, read?: { hash: string; credits: PhotoCredits | undefined }): Promise<WebCopyPlan> {
   if (record.kind !== 'image' || (record.mime !== 'image/jpeg' && record.mime !== 'image/png')) return null;
   if (record.mime === 'image/png' && isAnimatedPng(buf)) return null;
   const info = imageInfo(buf, record.mime);
   if (!info || imageProblem(buf, record.mime) || info.width * info.height > MAX_VARIANT_PIXELS) return null;
-  const key = `${sha(buf)}:${record.mime}`;
+  // `read` is what the caller already found in these very bytes: their SHA-256 and credits.
+  const key = `${read?.hash ?? sha(buf)}:${record.mime}`;
   const known = measured.get(key);
   if (known) return known.plan;
-  const entry = { plan: measureWebCopy(record, buf).catch(() => null), done: false };
+  const entry = { plan: measureWebCopy(record, buf, read).catch(() => null), done: false };
   measured.set(key, entry);
   trimMeasured();
   void entry.plan.then((p) => {
@@ -844,6 +846,16 @@ export async function libraryWebCopyPlan(record: AssetRecord, buf: Buffer): Prom
   return entry.plan;
 }
 
+/**
+ * The plan measured (or being measured) for a library image whose bytes hash to `hash`, without its bytes; undefined
+ * when there is none. Only bytes that passed libraryWebCopyPlan's checks under the record's type have one, so it is
+ * the answer libraryWebCopyPlan gives for them.
+ */
+export function measuredWebCopyPlan(record: AssetRecord, hash: string): Promise<WebCopyPlan> | undefined {
+  if (record.kind !== 'image' || (record.mime !== 'image/jpeg' && record.mime !== 'image/png')) return undefined;
+  return measured.get(`${hash}:${record.mime}`)?.plan;
+}
+
 /** Lets go of the oldest answers already in until the map is back to its size. */
 function trimMeasured() {
   for (const [k, e] of measured) {
@@ -852,13 +864,63 @@ function trimMeasured() {
   }
 }
 
-async function measureWebCopy(record: AssetRecord, buf: Buffer): Promise<WebCopyPlan> {
+async function measureWebCopy(record: AssetRecord, buf: Buffer, read?: { credits: PhotoCredits | undefined }): Promise<WebCopyPlan> {
   const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE, record.width && record.height ? record.width * record.height : undefined);
   if (!result.ok) return null;
-  const p = preparedCopy(record.file, buf, result.copy);
+  return weighCopy(record, buf.length, result.copy, read ? read.credits : cleanPhoto(buf)?.credits);
+}
+
+/** What a web-sized copy made of a library image's bytes (`sourceBytes` long, carrying `credits`) would be, as stored. */
+function weighCopy(record: AssetRecord, sourceBytes: number, copy: { data: Buffer; mime: 'image/jpeg' | 'image/png'; width: number; height: number }, credits: PhotoCredits | undefined): WebCopyPlan {
+  const p = preparedCopy(record.file, credits, copy);
   // Checked in the order making the copy checks them, so the two always agree.
-  if (!worthwhile(p.buf, buf)) return { lighter: false };
-  return p.buf.length > MAX_BYTES ? null : { format: p.mime === 'image/png' ? 'PNG' : 'JPEG', width: result.copy.width, height: result.copy.height };
+  if (!worthwhile(p.buf, sourceBytes)) return { lighter: false };
+  return p.buf.length > MAX_BYTES ? null : { format: p.mime === 'image/png' ? 'PNG' : 'JPEG', width: copy.width, height: copy.height };
+}
+
+/**
+ * A large library photo read and looked at in the media worker, so the editor's main process never holds it (#1046):
+ * what its bytes are and say, the stat of the file they were read from, and with `plan` what a web-sized copy of it
+ * would be, exactly as libraryWebCopyPlan answers for those bytes (null when they are not the picture the record names).
+ * A copy already weighed for the same bytes is not made again. Null when the file could not be read or the worker failed.
+ * `early` is told what the bytes say as soon as the worker has read them, before their copy is made.
+ */
+export async function inspectLibraryImage(
+  path: string,
+  record: AssetRecord,
+  plan: boolean,
+  early?: (facts: { hash: string; metadata: PhotoMetadata | null; credits: PhotoCredits | undefined }, stamp: string) => void
+): Promise<{ facts: { hash: string; metadata: PhotoMetadata | null; credits: PhotoCredits | undefined }; stamp: string; plan: WebCopyPlan } | null> {
+  const weighs = plan && record.kind === 'image' && (record.mime === 'image/jpeg' || record.mime === 'image/png');
+  const pixels = record.width && record.height ? record.width * record.height : undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // The bytes whose copies have been weighed under this type: the worker makes no copy of those.
+    const known = weighs && attempt === 0 ? [...measured.keys()].filter((k) => k.endsWith(`:${record.mime}`)).map((k) => k.slice(0, k.indexOf(':'))) : [];
+    const r = await mediaWorker.library(path, record.mime, { expect: record.hash, plan: weighs, known }, WEB_EDGE, pixels, early && ((f) => early({ hash: f.hash, metadata: f.metadata, credits: f.credits }, f.stamp)));
+    if (!r) return null;
+    const facts = { hash: r.found.hash, metadata: r.found.metadata, credits: r.found.credits };
+    const answer = (p: WebCopyPlan) => ({ facts, stamp: r.found.stamp, plan: p });
+    if (!weighs || r.found.hash !== record.hash || !r.found.checked) return answer(null);
+    const key = `${r.found.hash}:${record.mime}`;
+    const was = measured.get(key);
+    if (was) {
+      // What the bytes say is not held up by a copy of them still being weighed for another look.
+      early?.(facts, r.found.stamp);
+      return answer(await was.plan);
+    }
+    if (r.copy) {
+      const p = weighCopy(record, r.found.bytes, r.copy, r.found.credits);
+      // As libraryWebCopyPlan keeps them: a copy that could not be made this time is not remembered.
+      if (p !== null) {
+        measured.set(key, { plan: Promise.resolve(p), done: true });
+        trimMeasured();
+      }
+      return answer(p);
+    }
+    // No copy: it could not be made, or one weighed meanwhile has been let go since (asked again, without it).
+    if (!known.includes(r.found.hash)) return answer(null);
+  }
+  return null;
 }
 
 /**
@@ -880,8 +942,8 @@ export async function storeLibraryWebCopy(
   if (sha(buf) !== record.hash) throw refuse('its file is not the picture the library recorded. Locate the original first.');
   const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE, record.width && record.height ? record.width * record.height : undefined);
   if (!result.ok) throw refuse(result.unreadable ? unusableReason('damaged', record.mime) : 'the web-sized copy could not be made. Try again.');
-  const p = { ...preparedCopy(`${name} web`, buf, result.copy), stem: `${name} web` };
-  if (!worthwhile(p.buf, buf)) return { lighter: false };
+  const p = { ...preparedCopy(`${name} web`, cleanPhoto(buf)?.credits, result.copy), stem: `${name} web` };
+  if (!worthwhile(p.buf, buf.length)) return { lighter: false };
   if (p.buf.length > MAX_BYTES) throw refuse('even its web-sized copy is larger than 25 MB.');
   const dup = existing.find((a) => a.hash === p.hash);
   if (dup) {

@@ -10,6 +10,7 @@
  */
 import type { Variant, VariantTarget, WebCopy } from './image-variants';
 import type { CopyMime } from '@shared/picture-formats';
+import type { PhotoCredits, PhotoMetadata } from './photo-metadata';
 
 /**
  * Decoding allocates by pixel count, which a small file can inflate: larger pictures keep only the original.
@@ -35,7 +36,7 @@ export interface VariantRequest {
    * What the worker is asked for: responsive copies (the default), a web-sized copy, whether it is opaque, or the
    * website's square PNG icons (see site-icons.ts).
    */
-  kind?: 'variants' | 'web' | 'opaque' | 'icons';
+  kind?: 'variants' | 'web' | 'opaque' | 'icons' | 'library';
   data: Uint8Array;
   mime: string;
   width: number;
@@ -43,8 +44,16 @@ export interface VariantRequest {
   check?: boolean;
   /** Exactly these copies (width and format), instead of the usual ones for the picture's width. */
   targets?: VariantTarget[];
-  /** For a web-sized copy: read the picture from this file (a decoded photo too large to send) instead of `data`. */
+  /**
+   * For a web-sized copy: read the picture from this file (a decoded photo too large to send) instead of `data`. For a
+   * library image: its file, read here so the editor's main process never holds it.
+   */
   path?: string;
+  /**
+   * For a library image: what its SHA-256 should be (its record's), whether a web-sized copy is to be weighed, and the
+   * SHA-256s of pictures whose copy has been weighed already (none is made again for those).
+   */
+  library?: { expect: string; plan: boolean; known: string[] };
   /** For a web-sized copy: its longest side. */
   maxEdge?: number;
   /** For icons: each one's square size, and the opaque colour behind it when it has one. */
@@ -96,8 +105,23 @@ export interface IconSpec {
 /** The website's icons the worker made, in the order asked for, or why there are none: `unreadable` only when the decoder refused the picture. */
 export type IconsResult = { ok: true; icons: Buffer[] } | { ok: false; unreadable: boolean };
 
+/** What the worker found in a library image's file (VariantRequest `library`). */
+export interface LibraryReply {
+  /** The SHA-256 and length of the bytes it read, and the stat of the file it read them from (stampOf). */
+  hash: string;
+  bytes: number;
+  stamp: string;
+  /** What private metadata they carry, and their credits, as cleanPhoto reads them; null metadata when it could not. */
+  metadata: PhotoMetadata | null;
+  credits?: PhotoCredits;
+  /** The picture passed libraryWebCopyPlan's checks, so a web-sized copy of it can be weighed. */
+  checked: boolean;
+  /** The decoder refused it when its copy was made. */
+  unreadable?: boolean;
+}
+
 export type VariantReply = (
-  | { id: number; ok: true; variants: Array<{ width: number; mime: CopyMime; data: Uint8Array }>; web?: { data: Uint8Array; mime: 'image/jpeg' | 'image/png'; width: number; height: number }; opaque?: boolean; icons?: Uint8Array[] }
+  | { id: number; ok: true; variants: Array<{ width: number; mime: CopyMime; data: Uint8Array }>; web?: { data: Uint8Array; mime: 'image/jpeg' | 'image/png'; width: number; height: number }; opaque?: boolean; icons?: Uint8Array[]; library?: LibraryReply; /** Sent ahead of the reply: what a library image says, before its copy is made. */ early?: true }
   | { id: number; ok: false; error: string; unreadable?: boolean }
 ) & { stats?: MediaStats };
 
@@ -139,6 +163,12 @@ export interface VariantClient {
    * the picture the author asked for, so a worker that fails says so rather than giving nothing. Never rejects.
    */
   webCopy(source: { data: Buffer; mime: string } | { path: string }, maxEdge: number, pixels?: number): Promise<WebCopyResult>;
+  /**
+   * A library image read and looked at in the worker (`path`, typed `mime`): its hash, metadata and credits, and with
+   * `ask.plan` its web-sized copy, made when its hash is `ask.expect` and not among `ask.known`. Null when the file could
+   * not be read or the worker failed. Never rejects.
+   */
+  library(path: string, mime: string, ask: { expect: string; plan: boolean; known: string[] }, maxEdge: number, pixels?: number, early?: (found: LibraryReply) => void): Promise<{ found: LibraryReply; copy: WebCopy | null } | null>;
   /** Whether every pixel of a picture with an alpha channel is opaque; null when the worker could not tell. Never rejects. */
   opaque(buf: Buffer, mime: string, pixels?: number): Promise<boolean | null>;
   /** Square PNG icons of a picture, one for each of `icons`, or why there are none. Never rejects. */
@@ -180,7 +210,7 @@ export function createVariantClient(
   let worker: WorkerHandle | null = null;
   // The requests in flight, by id: each settles with the worker's reply, or null when the worker failed, crashed or
   // took too long, or LOST when it went down while this request shared it with others, which may not be this one's doing.
-  const inFlight = new Map<number, { resolve: (v: VariantReply | null | typeof LOST) => void; timer: ReturnType<typeof setTimeout> }>();
+  const inFlight = new Map<number, { resolve: (v: VariantReply | null | typeof LOST) => void; timer: ReturnType<typeof setTimeout>; early?: (m: VariantReply) => void }>();
   let idle: ReturnType<typeof setTimeout> | null = null;
   // Requests waiting their turn, first come first served (one asked again first of all), and those let through: how
   // many, their pixels, and whether one has the worker to itself.
@@ -238,6 +268,15 @@ export function createVariantClient(
     // Messages and exits from a worker that has been replaced belong to no request.
     w.on('message', (m) => {
       if (worker !== w) return;
+      // A part of the answer sent ahead of it: the request is still in flight.
+      if (m.ok && m.early) {
+        try {
+          inFlight.get(m.id)?.early?.(m);
+        } catch {
+          // Whoever was told failing changes nothing: the reply still settles the request.
+        }
+        return;
+      }
       settle(m.id, m);
     });
     w.on('exit', () => {
@@ -254,7 +293,7 @@ export function createVariantClient(
     return w;
   };
   type Ask = Omit<VariantRequest, 'id'>;
-  const run = (ask: Ask) =>
+  const run = (ask: Ask, early?: (m: VariantReply) => void) =>
     new Promise<VariantReply | null | typeof LOST>((resolve) => {
       if (idle) clearTimeout(idle);
       idle = null;
@@ -264,7 +303,7 @@ export function createVariantClient(
       // The worker's account of the request, with the time it took from here (its wait for the worker to start included).
       const answer = opts.onStats ? (r: VariantReply | null | typeof LOST) => (r !== LOST && r?.stats && opts.onStats!(ask.kind ?? 'variants', r.stats, performance.now() - posted), resolve(r)) : resolve;
       // One that takes too long has the worker stopped: it may be stuck, and the others in flight go with it.
-      inFlight.set(id, { resolve: answer, timer: setTimeout(() => (kill(), lose(id)), ask.kind === 'web' ? webTimeoutMs : !ask.kind || ask.kind === 'variants' ? copiesTimeoutMs : timeoutMs) });
+      inFlight.set(id, { resolve: answer, timer: setTimeout(() => (kill(), lose(id)), ask.kind === 'web' || ask.kind === 'library' ? webTimeoutMs : !ask.kind || ask.kind === 'variants' ? copiesTimeoutMs : timeoutMs), ...(early ? { early } : {}) });
       try {
         ensure().postMessage({ id, ...ask, ...(opts.onStats ? { stats: true } : {}) });
       } catch {
@@ -274,7 +313,7 @@ export function createVariantClient(
     });
 
   /** One go at a request once it is let through: `alone` with the worker to itself, first in line. */
-  const attempt = async (ask: Ask, weight: number, alone: boolean) => {
+  const attempt = async (ask: Ask, weight: number, alone: boolean, early?: (m: VariantReply) => void) => {
     await new Promise<void>((go) => {
       const turn = { pixels: weight, alone, go };
       if (alone) waiting.unshift(turn);
@@ -282,7 +321,7 @@ export function createVariantClient(
       admit();
     });
     try {
-      return await run(ask);
+      return await run(ask, early);
     } finally {
       admitted--;
       admittedPixels -= weight;
@@ -290,18 +329,18 @@ export function createVariantClient(
       admit();
     }
   };
-  const request = async (ask: Ask, pixels?: number): Promise<VariantReply | null> => {
+  const request = async (ask: Ask, pixels?: number, early?: (m: VariantReply) => void): Promise<VariantReply | null> => {
     pending++;
     // Someone wants the worker again: it keeps its usual idle time.
     releasing = false;
     const weight = !Number.isFinite(pixelBudget) ? 0 : pixels !== undefined && Number.isFinite(pixels) && pixels >= 0 ? Math.min(pixels, pixelBudget) : pixelBudget / parallel;
     try {
-      const r = await attempt(ask, weight, false);
+      const r = await attempt(ask, weight, false, early);
       // Lost with a worker that went down for another request, or for one of those it had: asked once more with the
       // worker to itself, so it is never left without its copies by another picture, and a picture that brings the
       // worker down again does so alone.
       if (r !== LOST) return r;
-      const again = await attempt(ask, weight, true);
+      const again = await attempt(ask, weight, true, early);
       return again === LOST ? null : again;
     } finally {
       pending--;
@@ -328,6 +367,17 @@ export function createVariantClient(
       request({ kind: 'web', maxEdge, width: 0, ...('path' in source ? { path: source.path, data: new Uint8Array(0), mime: '' } : { data: bytes(source.data), mime: source.mime }) }, pixels).then((r): WebCopyResult =>
         r?.ok && r.web ? { ok: true, copy: { ...r.web, data: toBuffer(r.web.data) } } : { ok: false, unreadable: !!(r && !r.ok && r.unreadable) }
       ),
+    library: (path, mime, ask, maxEdge, pixels, early) => {
+      // Buffers arrive as plain byte arrays.
+      const found = (l: LibraryReply): LibraryReply => {
+        const c = l.credits;
+        const credits = c && { ...(c.tiff ? { tiff: toBuffer(c.tiff) } : {}), ...(c.xmp ? { xmp: toBuffer(c.xmp) } : {}), ...(c.iptc ? { iptc: toBuffer(c.iptc) } : {}), ...(c.text ? { text: c.text.map(toBuffer) } : {}) };
+        return { ...l, ...(credits ? { credits } : {}) };
+      };
+      return request({ kind: 'library', path, data: new Uint8Array(0), mime, width: 0, maxEdge, library: ask }, pixels, early && ((m) => m.ok && m.library && early(found(m.library)))).then((r) =>
+        r?.ok && r.library ? { found: found(r.library), copy: r.web ? { ...r.web, data: toBuffer(r.web.data) } : null } : null
+      );
+    },
     opaque: (buf, mime, pixels) => request({ kind: 'opaque', data: bytes(buf), mime, width: 0 }, pixels).then((r) => (r?.ok && typeof r.opaque === 'boolean' ? r.opaque : null)),
     icons: (buf, mime, icons, opts) =>
       request({ kind: 'icons', data: bytes(buf), mime, width: 0, icons, ...(opts?.untrusted ? { untrusted: true } : {}) }).then((r): IconsResult =>
