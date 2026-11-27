@@ -15,7 +15,8 @@ import { createStarterState } from '@catalogue/starters';
 type Handler = (payload: unknown) => void;
 const handlers = new Map<string, Set<Handler>>();
 const emit = (channel: string, payload: unknown) => handlers.get(channel)?.forEach((h) => h(payload));
-const calls = { localApply: 0, remoteApply: [] as unknown[], closes: 0, joins: [] as unknown[], leaves: 0, snapshots: [] as string[], presence: [] as unknown[] };
+const calls = { localApply: 0, remoteApply: [] as unknown[], closes: 0, joins: [] as unknown[], leaves: 0, snapshots: [] as string[], presence: [] as unknown[], notes: [] as unknown[], localNotes: 0 };
+const NOTES = { notes: [{ id: 'n1', text: 'Swap this photo', authorName: 'Ann', authorRole: 'viewer', createdAt: 1, pageId: 'p_home', target: null, resolved: false }], guestNotes: true };
 let closeAnswer = { ok: true };
 /** What the main process says the join is, when the editor asks. */
 let remoteStateAnswer: RemoteState = { phase: 'idle', ended: null };
@@ -61,7 +62,8 @@ const PATHS = {
   view: '../../src/renderer/src/lib/remote-view',
   transports: '../../src/renderer/src/lib/transport',
   liveHost: '../../src/renderer/src/lib/live-host',
-  remoteChat: '../../src/renderer/src/panels/RemoteChat'
+  remoteChat: '../../src/renderer/src/panels/RemoteChat',
+  notesFeed: '../../src/renderer/src/lib/notes-feed'
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Loaded = any;
@@ -71,6 +73,7 @@ let snapshots: Loaded;
 let view: Loaded;
 let transports: Loaded;
 let liveHost: Loaded;
+let notesFeed: Loaded;
 
 beforeAll(async () => {
   // Leaving settles what is being typed (lib/leave.ts), which looks for the focused field.
@@ -106,7 +109,33 @@ beforeAll(async () => {
       },
       ai: { conversations: async () => ({ active: { id: 'local', messages: [] }, list: [] }), providers: async () => [] },
       live: { state: async () => ({ phase: 'idle', lastError: null }) },
+      notes: {
+        list: async () => {
+          calls.localNotes++;
+          return null;
+        },
+        add: async () => {
+          calls.localNotes++;
+          return { ok: true };
+        }
+      },
       remote: {
+        notes: async (joinId: string) => {
+          calls.notes.push(['list', joinId]);
+          return NOTES;
+        },
+        addNote: async (joinId: string, draft: unknown) => {
+          calls.notes.push(['add', joinId, draft]);
+          return { ok: true, notes: NOTES };
+        },
+        resolveNote: async (joinId: string, id: string, resolved: boolean) => {
+          calls.notes.push(['resolve', joinId, id, resolved]);
+          return { ok: true };
+        },
+        deleteNote: async (joinId: string, id: string) => {
+          calls.notes.push(['delete', joinId, id]);
+          return { ok: true };
+        },
         join: async (opts: unknown) => {
           calls.joins.push(opts);
           return { ok: true, state: { phase: 'waiting' } };
@@ -135,6 +164,7 @@ beforeAll(async () => {
   view = await import(/* @vite-ignore */ PATHS.view);
   transports = await import(/* @vite-ignore */ PATHS.transports);
   liveHost = await import(/* @vite-ignore */ PATHS.liveHost);
+  notesFeed = await import(/* @vite-ignore */ PATHS.notesFeed);
 });
 
 const offs: Array<() => void> = [];
@@ -144,12 +174,13 @@ afterEach(() => {
   offs.splice(0).forEach((off) => off());
   handlers.clear();
   calls.localApply = calls.closes = calls.leaves = 0;
-  calls.remoteApply.length = calls.joins.length = calls.snapshots.length = calls.presence.length = 0;
+  calls.remoteApply.length = calls.joins.length = calls.snapshots.length = calls.presence.length = calls.notes.length = 0;
+  calls.localNotes = 0;
   closeAnswer = { ok: true };
   remoteSnapshot = null;
   remoteStateAnswer = { phase: 'idle', ended: null };
   remoteApplyAnswer = APPLIED;
-  store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, remoteAi: null, selection: null, pageId: null });
+  store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, remoteAi: null, selection: null, pageId: null, notes: null });
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -222,6 +253,40 @@ describe('the transport', () => {
     fire('project:changed', 'local 2');
     expect(got).toEqual(['local 1', 'remote 1', 'local 2']);
     expect(menus).toEqual(['menu while remote']);
+  });
+});
+
+describe('pinned notes in the remote shell (#770)', () => {
+  it('reads and changes the host’s notes, never this computer’s, and follows the host’s changes for the join shown', async () => {
+    await shown();
+    offs.push(...session.followRemote());
+    offs.push(notesFeed.followNotes());
+    await flush();
+    // The shown project's notes are the host's, read for the join shown.
+    expect(calls.notes).toContainEqual(['list', 'join-1']);
+    expect(store.getState().notes).toEqual({ ...NOTES, opening: 'remote:join-1' });
+    expect(await store.api.notes.add('remote:join-1', { text: 'Hi', pageId: home })).toMatchObject({ ok: true });
+    expect(await store.api.notes.resolve('remote:join-1', 'n1', true)).toEqual({ ok: true });
+    expect(await store.api.notes.delete('remote:join-1', 'n1')).toEqual({ ok: true });
+    expect(calls.notes.slice(-3)).toEqual([
+      ['add', 'join-1', { text: 'Hi', pageId: home }],
+      ['resolve', 'join-1', 'n1', true],
+      ['delete', 'join-1', 'n1']
+    ]);
+    // A call made for another opening reaches nobody.
+    expect(await store.api.notes.add('/sites/acme#1', { text: 'Hi', pageId: home })).toMatchObject({ ok: false });
+    expect(calls.localNotes).toBe(0);
+    // The host's changes reach the editor as the shown project's; another join's, or this computer's own, do not.
+    const later = { notes: [], guestNotes: false };
+    emit('remote:notes', { joinId: 'join-0', notes: { notes: [], guestNotes: true } });
+    emit('notes:changed', { notes: [], guestNotes: true });
+    expect(store.getState().notes).toEqual({ ...NOTES, opening: 'remote:join-1' });
+    emit('remote:notes', { joinId: 'join-1', notes: later });
+    expect(store.getState().notes).toEqual({ ...later, opening: 'remote:join-1' });
+    // Leaving the session leaves no notes of the host's shown.
+    session.applyRemoteState({ phase: 'idle', ended: null });
+    store.setState({ snapshot: null });
+    expect(store.getState().notes).toBeNull();
   });
 });
 

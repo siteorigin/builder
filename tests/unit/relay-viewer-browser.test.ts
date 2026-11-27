@@ -120,6 +120,15 @@ async function preview(s: Scene): Promise<Frame> {
   throw new Error('No preview frame');
 }
 
+/** Wait for `check`, asked from here: the viewer's policy refuses the eval a page-side wait needs. */
+async function poll(check: () => Promise<boolean>, what: string) {
+  for (let i = 0; i < 200; i++) {
+    if (await check()) return;
+    await wait(25);
+  }
+  throw new Error(`Timed out waiting for ${what}`);
+}
+
 const heading = async (s: Scene) => (await preview(s)).textContent('h1');
 const frameCount = (s: Scene) => s.tab.locator('iframe').count();
 
@@ -462,6 +471,67 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       expect(await s.tab.inputValue('#handoff-link')).toBe(`${origin}/s/${s.room.roomId}`);
       await s.tab.click('#handoff-copy');
       expect(await s.tab.evaluate<string>(`navigator.clipboard.readText()`)).toBe(`${origin}/s/${s.room.roomId}`);
+    } finally {
+      await s.done();
+    }
+  });
+
+  it('lists the host’s notes and leaves one on the page the guest is on, as text, until the host turns notes off (#770)', async () => {
+    const s = await scene();
+    try {
+      const guestId = await ask(s);
+      const note = (id: string, text: string) => ({ id, text, authorName: 'Bo', authorRole: 'collaborator', createdAt: Date.now() - 120_000, pageId: 'p_home', target: null, resolved: false });
+      const answer = (requestId: string, method: string, result: unknown) => s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId, method: method as never, ok: true, result });
+      let frame = await admit(s, guestId);
+      // Let in, the viewer reads the notes once.
+      const list = await s.host.next('rpc:request');
+      expect(list).toMatchObject({ guestId, method: 'notes.list', args: [] });
+      answer(list.requestId, 'notes.list', { notes: [note('n1', '<b>Check</b> the price'), { ...note('n2', 'Done already'), resolved: true }], guestNotes: true });
+      await s.tab.waitForSelector('#notes-count:not([hidden])');
+      expect(await s.tab.textContent('#notes-count')).toBe('1');
+      await s.tab.click('#notes-button');
+      await s.tab.waitForSelector('#notes:not([hidden])');
+      // Other people's words are shown as they wrote them, never as markup; only open notes are listed.
+      expect(await s.tab.locator('#note-list li').count()).toBe(1);
+      expect(await s.tab.textContent('#note-list .note-text')).toBe('<b>Check</b> the price');
+      expect(await s.tab.locator('#note-list b').count()).toBe(0);
+      expect(await s.tab.textContent('#note-list .note-meta')).toBe('Bo · 2 min ago');
+
+      // On another page of the site, the guest writes a note: it is pinned to that page.
+      await frame.click('a[href="/about/"]');
+      frame = await preview(s);
+      await frame.waitForFunction(`document.querySelector('h1')?.textContent === 'About'`);
+      // Going into the site put the panel away, as for any panel over it; it opens again on the page now shown.
+      expect(await s.tab.isVisible('#notes')).toBe(false);
+      await s.tab.click('#notes-button');
+      await poll(async () => !!(await s.tab.textContent('#note-where'))?.includes('/about/'), 'the note pinned to the page shown');
+      await s.tab.fill('#note-text', '  Swap   this hero photo ');
+      expect(await s.tab.textContent('#note-length')).toBe('20/280');
+      await s.tab.click('#note-send');
+      const add = await s.host.next('rpc:request');
+      expect(add).toMatchObject({ guestId, method: 'notes.add', args: [{ text: 'Swap this hero photo', previewPath: '/about/' }] });
+      answer(add.requestId, 'notes.add', { kept: true });
+      await poll(async () => (await s.tab.inputValue('#note-text')) === '', 'the note sent');
+      const again = await s.host.next('rpc:request');
+      expect(again.method).toBe('notes.list');
+      answer(again.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo'), note('n1', '<b>Check</b> the price')], guestNotes: true });
+      await poll(async () => (await s.tab.locator('#note-list li').count()) === 2, 'the notes read again');
+
+      // Too long a note is never sent.
+      await s.tab.fill('#note-text', 'x'.repeat(281));
+      expect(await s.tab.isDisabled('#note-send')).toBe(true);
+      await s.tab.fill('#note-text', '');
+
+      // The host says the notes changed, turning guest notes off: the form goes, the list stays.
+      s.host.send('host-to-relay', { type: 'rpc:event', event: 'notes:changed', payload: { kind: 'notes' } });
+      const changed = await s.host.next('rpc:request');
+      expect(changed.method).toBe('notes.list');
+      answer(changed.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo')], guestNotes: false });
+      await s.tab.waitForSelector('#notes-off:not([hidden])');
+      expect(await s.tab.isVisible('#note-form')).toBe(false);
+      expect(await s.tab.locator('#note-list li').count()).toBe(1);
+      await s.tab.keyboard.press('Escape');
+      expect(await s.tab.isVisible('#notes')).toBe(false);
     } finally {
       await s.done();
     }
