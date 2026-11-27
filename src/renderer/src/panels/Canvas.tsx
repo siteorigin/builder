@@ -44,7 +44,7 @@ import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, drop
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
-import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
+import { notePointerInput, openMenus, Spinner, useMenu, type MenuTriggerProps } from '../components/ui';
 import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement } from './PreviewStatus';
 import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
@@ -3466,6 +3466,7 @@ export function Canvas() {
                   onWidth={setChipW}
                   onLostFocus={() => canvasRef.current?.focus({ preventScroll: true })}
                   onMore={(el, focusLast) => openContextMenu(0, 0, selection, el, focusLast)}
+                  more={menu.triggerProps('chip')}
                   onGrip={onGrip}
                   canMove={canMoveSelection}
                   editing={editing}
@@ -3582,7 +3583,7 @@ function stepKey(s: ReturnType<typeof getState>): string {
  * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
-function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; taken: number; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
+function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, more, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; taken: number; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; more: MenuTriggerProps; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
   const askKeys = useAskAiKeys();
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
@@ -3620,9 +3621,6 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
     const keep = Math.min(current.current, list.length - 1);
     list.forEach((b, i) => (b.tabIndex = i === keep ? 0 : -1));
     if (orphaned()) list[keep]?.focus();
-    // The menu button starts closed; useMenu owns aria-expanded from then on.
-    const more = ref.current?.querySelector('[aria-haspopup="menu"]');
-    if (more && !more.hasAttribute('aria-expanded')) more.setAttribute('aria-expanded', 'false');
   });
   // When the chip itself goes (the selection was deleted or cleared) while it had focus, the canvas keeps it.
   useEffect(
@@ -3792,7 +3790,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
         className="icon-btn more"
         title="More actions"
         aria-label="More actions"
-        aria-haspopup="menu"
+        {...more}
         onClick={(e) => onMore(e.currentTarget)}
         onKeyDown={(e) => {
           // APG menu button: Down opens on the first item, Up on the last. Modified arrows stay shortcuts

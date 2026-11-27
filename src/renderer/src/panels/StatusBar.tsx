@@ -18,7 +18,7 @@ import { findingHandoff } from '../lib/seoHandoff';
 import { conflictPanes, sameVersions, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
 import { AiHandoffButton } from '../components/AiHandoff';
 import { HeldStyle } from './StylePaste';
-import { Modal, Spinner, useMenu } from '../components/ui';
+import { Modal, Spinner, useMenu, type MenuItem } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { GENERATED_DIR, defFile } from '@generator/index';
 import { auditForHealth, needsFixing, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES, type SeoAuditResult, type SeoPillarFilter, type SeoSeverityFilter } from '../lib/seo-health';
@@ -109,6 +109,9 @@ export function StatusBar() {
   const covered = useStore((s) => canvasCovered(activeWorkspace(s)));
   const frameReady = useStore((s) => s.frameReady);
   const menu = useMenu();
+  /** The parent elements the open menu offers, as of this render, and the path it was opened from. */
+  const parentRows = useRef<MenuItem[]>([]);
+  const parentsNav = useRef<HTMLElement | null>(null);
   // The toolbar says when a conflict appears or clears.
   const announce = useHealthAnnouncement(() => true);
   // The preview's button becomes text once it recovers: if it had focus, the Project health count takes it.
@@ -151,6 +154,9 @@ export function StatusBar() {
       (nav.querySelector<HTMLElement>('[aria-current]') ?? document.querySelector<HTMLElement>('main.canvas'))?.focus();
     });
   };
+  // The open parent-elements menu reads this each render, so it offers the path as it is now, never an element an
+  // edit has since moved or removed; when the path no longer needs the menu, its button goes and the menu closes.
+  parentRows.current = hidden.map((h, i): MenuItem => ({ id: h.ref ? refKey(h.ref) : String(i), label: h.label, icon: h.component ? <Component /> : undefined, hint: h.component === 'custom' ? 'Custom' : undefined, onSelect: () => select(h.ref, parentsNav.current) }));
   // Several layers selected together in Layers: the path is the selection's, and the count says the rest come too.
   const picked = crumbs.length ? liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode }) : null;
   const openHealth = () => setState({ modal: { kind: 'health' } });
@@ -217,13 +223,12 @@ export function StatusBar() {
                 ) : (
                   <button
                     className="more"
-                    aria-haspopup="menu"
-                    aria-expanded={false}
+                    {...menu.triggerProps()}
                     aria-label={`${hidden.length} more parent elements`}
                     title={hidden.map((h) => h.label).join(' › ')}
                     onClick={(e) => {
-                      const nav = e.currentTarget.closest('nav');
-                      menu.openAt(e.currentTarget, hidden.map((h) => ({ label: h.label, icon: h.component ? <Component /> : undefined, hint: h.component === 'custom' ? 'Custom' : undefined, onSelect: () => select(h.ref, nav) })), 'Parent elements');
+                      parentsNav.current = e.currentTarget.closest('nav');
+                      menu.openAt(e.currentTarget, () => parentRows.current, 'Parent elements');
                     }}
                   >
                     <Ellipsis />

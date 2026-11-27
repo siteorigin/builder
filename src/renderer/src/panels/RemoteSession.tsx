@@ -1,6 +1,6 @@
 import './RemoteSession.css';
 import { useEffect, useRef, useState } from 'react';
-import { Hourglass, LogOut, Radio, RefreshCw, Users } from 'lucide-react';
+import { FileText, Hourglass, LogOut, Radio, RefreshCw, Users } from 'lucide-react';
 import { getState, useStore } from '../store';
 import { useMenu, type MenuItem } from '../components/ui';
 import { selectPage } from '../lib/actions';
@@ -20,8 +20,10 @@ export function RemoteSessionControl({ compact }: { compact?: boolean }) {
   const pageId = useStore((s) => s.pageId);
   const menu = useMenu();
   const pillRef = useRef<HTMLButtonElement>(null);
-  // The menu says how this guest is connected and who is here as it opened: when that changes (the connection drops,
-  // the host goes, the role changes), an open one closes, so the next look at it is the current one.
+  /** The menu's rows as of this render: the open menu reads them from here, so it follows the session. */
+  const current = useRef<MenuItem[]>([]);
+  // The open menu follows who is where, but not a change in how this guest is connected (the connection drops, the
+  // host goes, the role changes): then an open one closes, so the next look at it is the current one.
   const standing = remote ? `${remote.role} ${remote.reconnecting} ${remote.hostConnected}` : '';
   const lastStanding = useRef(standing);
   useEffect(() => {
@@ -52,25 +54,28 @@ export function RemoteSessionControl({ compact }: { compact?: boolean }) {
     const line = now && s.snapshot ? remoteRoster(s.snapshot.state, now, s.remotePresence).find((l) => l.key === key) : null;
     if (line?.pageId) selectPage(line.pageId);
   };
+  // Who is where is stated as facts; only a person on another page is a way somewhere. The menu reads these rows
+  // again each time this renders, so it keeps up while it is open: someone who moves is shown where they are now.
   const items: MenuItem[] = [
-    { heading: remote.projectName },
-    { heading: pill.detail },
+    { id: 'project', heading: remote.projectName },
+    { id: 'standing', info: true, label: pill.detail },
     ...(roster.length
       ? [
-          { separator: true },
-          { heading: 'Where everyone is' },
+          { id: 'roster-sep', separator: true },
+          { id: 'roster', heading: 'Where everyone is' },
           ...roster.map((l): MenuItem =>
             l.watching
-              ? { label: l.who, hint: 'Watching', disabled: true }
-              : l.pageId && l.pageId === pageId
-                ? { label: `${l.who}: ${l.where}`, hint: 'Same page as you', disabled: true }
-                : { label: `${l.who}: ${l.where}`, disabled: !l.pageId, ...(l.pageId ? { hint: 'Go to page', onSelect: () => goTo(l.key) } : {}) }
+              ? { id: l.key, info: true, label: l.who, hint: 'Watching' }
+              : !l.pageId || l.pageId === pageId
+                ? { id: l.key, info: true, label: `${l.who}: ${l.where}`, hint: l.pageId ? 'Same page as you' : undefined }
+                : { id: l.key, label: `${l.who}: ${l.where}`, icon: <FileText />, hint: 'Go to page', onSelect: () => goTo(l.key) }
           )
         ]
       : []),
-    { separator: true },
-    { label: 'Leave session…', icon: <LogOut />, onSelect: () => void confirmLeaveLive() }
+    { id: 'leave-sep', separator: true },
+    { id: 'leave', label: 'Leave session…', icon: <LogOut />, onSelect: () => void confirmLeaveLive() }
   ];
+  current.current = items;
   const Glyph = pill.kind === 'reconnecting' ? RefreshCw : pill.kind === 'away' ? Hourglass : Radio;
   return (
     <div className="remote-session">
@@ -78,12 +83,10 @@ export function RemoteSessionControl({ compact }: { compact?: boolean }) {
         ref={pillRef}
         type="button"
         className={`btn btn-sm remote-pill ${pill.kind}`}
-        aria-haspopup="menu"
-        // useMenu sets aria-expanded on the trigger itself while its menu is open.
-        aria-expanded={false}
+        {...menu.triggerProps()}
         aria-label={`${pill.label}${others ? `, ${others === 1 ? 'one other' : `${others} others`} here` : ''}. Show who is where`}
         title={pill.label}
-        onClick={(e) => menu.openAt(e.currentTarget, items, 'Live session')}
+        onClick={(e) => menu.openAt(e.currentTarget, () => current.current, 'Live session')}
       >
         <Glyph aria-hidden="true" className="remote-glyph" />
         <span className="ellipsis">{pill.text}</span>

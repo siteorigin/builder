@@ -1026,6 +1026,8 @@ export function InsertPanel() {
   // The component whose manage menu is open. Once it has gone (the AI, an Undo) its menu closes; anything else the
   // menu offers is checked again when it is chosen.
   const menuFor = useRef<string | null>(null);
+  /** The latest `manageRows`, which an open manage menu reads on each render so it says what is true now. */
+  const latestManage = useRef<(it: Item) => MenuItem[]>(() => []);
   // The component deleted from its menu, until it has gone. Its row goes with it, and focus stays in the library
   // (else search) rather than falling to the page, where the next Delete would remove the canvas selection.
   const refocus = useRef<{ id: string; index: number } | null>(null);
@@ -1668,15 +1670,16 @@ export function InsertPanel() {
     const pageLabel = (p: (typeof places)[number]) => (titles.indexOf(p.label) !== titles.lastIndexOf(p.label) ? `${p.label} (${st.pages[p.owner.id]?.route ?? ''})` : p.label);
     // Each placement is its own item, so the one chosen is the one shown; several on one place are counted in order.
     const placeItems = (p: (typeof places)[number]): MenuItem[] => {
-      if (p.owner.kind === 'component') return [{ label: `In ${p.label}`, icon: <Component />, hint: p.nodeIds.length > 1 ? `${p.nodeIds.length} times` : 'Design', disabled: true }];
+      // Inside another component's design: a fact here, not a place to go to.
+      if (p.owner.kind === 'component') return [{ info: true, label: `In ${p.label}`, hint: p.nodeIds.length > 1 ? `${p.nodeIds.length} times` : 'Design' }];
       const label = p.owner.kind === 'page' ? pageLabel(p) : p.owner.kind === 'template' ? p.label : `Shared ${p.label.toLowerCase()}`;
       const icon = p.owner.kind === 'page' ? <FileText /> : p.owner.kind === 'template' ? <LayoutTemplate /> : p.owner.id === 'footer' ? <PanelBottom /> : <PanelTop />;
-      if (p.nodeIds.length === 1) return [{ label, icon, onSelect: () => void showPlacement(def.id, p.owner, p.nodeIds[0]) }];
+      if (p.nodeIds.length === 1) return [{ id: `${p.owner.kind}:${p.owner.id}:${p.nodeIds[0]}`, label, icon, onSelect: () => void showPlacement(def.id, p.owner, p.nodeIds[0]) }];
       // Several on one page: in the order they appear, each named by where it sits.
       const tree = treeFor(st, p.owner);
       const order = tree ? documentOrder(tree) : [];
       const ids = [...p.nodeIds].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-      return ids.map((nodeId, i) => ({ label: tree ? `${label} · ${whereIn(st, p.owner, tree, nodeId)}` : label, icon, hint: `${i + 1} of ${ids.length}`, onSelect: () => void showPlacement(def.id, p.owner, nodeId) }));
+      return ids.map((nodeId, i) => ({ id: `${p.owner.kind}:${p.owner.id}:${nodeId}`, label: tree ? `${label} · ${whereIn(st, p.owner, tree, nodeId)}` : label, icon, hint: `${i + 1} of ${ids.length}`, onSelect: () => void showPlacement(def.id, p.owner, nodeId) }));
     };
     const onPage = places.some((p) => p.owner.kind !== 'component');
     // Component Studio shows any component on its own, placed or not (issue #367); Edit everywhere shows it on a page.
@@ -1698,10 +1701,10 @@ export function InsertPanel() {
       { separator: true },
       { heading: count ? `Used ${usedTimes(count)}` : needs.length ? 'Not placed anywhere' : 'Not used anywhere' },
       ...places.flatMap(placeItems),
-      ...needs.map((d): MenuItem => ({ label: `Needed by ${d.name}`, icon: <Code />, hint: 'Code', disabled: true })),
+      ...needs.map((d): MenuItem => ({ info: true, label: `Needed by ${d.name}`, hint: 'Code' })),
       { separator: true },
       // One in use opens a review of what uses it, with a way to each placement (#663).
-      { label: count || needs.length ? 'Delete component…' : 'Delete component', icon: <Trash2 />, danger: true, hint: count || needs.length ? 'In use' : undefined, onSelect: () => deleteOrReview(def, count > 0 || needs.length > 0) }
+      { id: 'delete', label: count || needs.length ? 'Delete component…' : 'Delete component', icon: <Trash2 />, danger: true, hint: count || needs.length ? 'In use' : undefined, onSelect: () => deleteOrReview(def, count > 0 || needs.length > 0) }
     ];
   };
   // Checked again when chosen: the menu may have opened before something placed it. One the menu offered as in use
@@ -1745,14 +1748,20 @@ export function InsertPanel() {
     savedRefocus.current = { id: c.id, index: Math.max(0, rows.findIndex((r) => r.dataset.key === `saved:${c.id}`)) };
     if (!(await removeFromLibrary(c))) savedRefocus.current = null;
   };
-  const manage = (it: Item) => {
+  const manageRows = (it: Item): MenuItem[] => {
+    // A saved component is looked up again: one removed from the library meanwhile leaves the menu nothing to offer.
     if (it.saved) {
-      menuFor.current = null;
-      return savedItemsMenu(it.saved);
+      const now = byKey.get(it.key)?.saved;
+      return now ? savedItemsMenu(now) : [];
     }
     const def = st.components[it.spec.definitionId!];
-    menuFor.current = def?.id ?? null;
     return def ? manageItems(def) : [];
+  };
+  latestManage.current = manageRows;
+  // An open manage menu follows the project: a placement made or removed elsewhere while it is up shows at once.
+  const manage = (it: Item) => {
+    menuFor.current = it.saved ? null : (it.spec.definitionId ?? null);
+    return () => latestManage.current(it);
   };
 
   // The blocks lead the theme's groups, right after the column layouts they are made to fill.
@@ -1940,7 +1949,7 @@ export function InsertPanel() {
         )}
         aside={(it) =>
           it.variant ? null : (
-            <button className="icon-btn insert-manage" aria-haspopup="menu" aria-expanded="false" aria-label={`Manage ${it.name}`} title="Rename, edit, see where it is used, or delete" onClick={(e) => menu.openAt(e.currentTarget, manage(it), `Manage ${it.name}`)}>
+            <button className="icon-btn insert-manage" {...menu.triggerProps(`manage-${it.key}`)} aria-label={`Manage ${it.name}`} title="Rename, edit, see where it is used, or delete" onClick={(e) => menu.openAt(e.currentTarget, manage(it), `Manage ${it.name}`)}>
               <Ellipsis />
             </button>
           )
@@ -2004,7 +2013,7 @@ export function InsertPanel() {
           </button>
         )}
         aside={(it) => (
-          <button className="icon-btn insert-manage" aria-haspopup="menu" aria-expanded="false" aria-label={`Manage saved ${it.name}`} title="Remove from your library" onClick={(e) => menu.openAt(e.currentTarget, manage(it), `Manage saved ${it.name}`)}>
+          <button className="icon-btn insert-manage" {...menu.triggerProps(`saved-${it.key}`)} aria-label={`Manage saved ${it.name}`} title="Remove from your library" onClick={(e) => menu.openAt(e.currentTarget, manage(it), `Manage saved ${it.name}`)}>
             <Ellipsis />
           </button>
         )}

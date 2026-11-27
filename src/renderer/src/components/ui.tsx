@@ -179,13 +179,30 @@ export function Modal({ title, icon, onClose, children, footer, wide, describedB
   );
 }
 
+/**
+ * One row of a popup menu. A row is one of four kinds, and each looks and behaves as what it is:
+ * - an action (`onSelect`): highlighted under the pointer and the arrow keys, chosen with Enter or a click;
+ * - a refused action (`disabled`): still in the arrow order so it can be found and read, drawn unavailable, and
+ *   saying why in `description` (the one place an unavailable row is allowed: a command the author can't use now);
+ * - an information row (`info`): a fact that is not a command (who is watching, where a component is used). It
+ *   reads in quiet ink with no icon (a row with an icon is always one that can be chosen), takes no highlight, is
+ *   passed over by the arrows and type-ahead, and is read out, after its group's heading, as the menu's description;
+ * - a `heading` or a `separator`.
+ */
 export interface MenuItem {
+  /** Keeps the row's identity while the menu is open and its items change (a person in a roster), so the row
+   *  the pointer or focus is on stays the same row. Defaults to the row's label (a heading's text, a separator's place
+   *  among separators), so rows added above a fixed command leave it where it is; set it for a row whose label
+   *  changes while the menu is up. */
+  id?: string;
   label?: string;
   icon?: ReactNode;
   shortcut?: string;
   hint?: string;
-  /** A second, quieter line under the label that says what the item means. */
+  /** A second, quieter line under the label that says what the item means, or why a refused action is refused. */
   description?: string;
+  /** A row that states a fact rather than offering an action (see above); its `icon` is not drawn. */
+  info?: boolean;
   /** The item's full accessible name, when its visible words are shorter. */
   ariaLabel?: string;
   /** A radio choice: the run of neighbouring items with `checked` set is one group, and one of them is chosen. */
@@ -229,11 +246,12 @@ const boxOf = (el: HTMLElement): Box => {
  * Popup menu, built on Radix DropdownMenu (WAI-ARIA APG menu pattern). It opens at a point (right-click) or
  * against a trigger, flipping and shifting to stay 8px inside the window. A keyboard-opened menu focuses
  * its first available item (its last with `focusLast`); Up/Down wrap, Home/End jump, letters jump by label,
- * Enter/Space choose, Escape or Tab close. Unavailable items are reached by the arrows but do nothing. It is
+ * Enter/Space choose, Escape or Tab close. Refused actions are reached by the arrows but do nothing; information rows
+ * are passed by (MenuItem says which is which). It is
  * modal, so the first press outside (in the page preview too) only closes it. Focus returns to the trigger (else whatever had focus when it opened) unless an action
  * moved it somewhere, such as into a dialog.
  */
-export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger, focusLast, above }: { x: number; y: number; items: MenuItem[]; onClose: () => void; label?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; trigger?: HTMLElement; focusLast?: boolean; above?: boolean }) {
+export function Menu({ x, y, items: source, onClose, label, alignEnd, returnTo, trigger, focusLast, above }: { x: number; y: number; items: MenuItems; onClose: () => void; label?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; trigger?: HTMLElement; focusLast?: boolean; above?: boolean }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const idBase = useId();
   // Who gets focus back when the menu closes: the trigger, else whatever had focus when it opened.
@@ -245,10 +263,11 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
   const [anchor, setAnchor] = useState<Box>(() => (trigger ? boxOf(trigger) : { left: x, top: y, width: 0, height: 0 }));
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
-  const checked = items.findIndex((it) => it.checked && !it.toggle);
+  // Read on every render, so a menu showing live state (who is where) says what is true now, not when it opened.
+  const items = typeof source === 'function' ? source() : source;
   const radios = items.some((it) => it.checked !== undefined);
   // One leading slot holds an item's icon or its check, so every label starts in the same column.
-  const lead = radios || items.some((it) => it.icon);
+  const lead = radios || items.some((it) => it.icon && !it.info);
   useEffect(() => {
     if (!keyboardInput) return;
     requestAnimationFrame(() => {
@@ -256,6 +275,16 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
       (focusLast ? list[list.length - 1] : list[0])?.focus();
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // A live menu can lose the row that had focus (an action that became a fact): focus stays in the menu, on nothing,
+  // so the next arrow key is a deliberate one rather than landing wherever the browser put focus.
+  useLayoutEffect(() => {
+    const c = contentRef.current;
+    if (c && (!document.activeElement || document.activeElement === document.body)) c.focus({ preventScroll: true });
+  });
+  // A live menu whose rows have all gone (what it was about was deleted), or whose button has left the page, closes.
+  useLayoutEffect(() => {
+    if (!items.length || (trigger && !trigger.isConnected)) closeRef.current();
+  });
   useEffect(() => {
     openMenus.count++;
     const close = () => closeRef.current();
@@ -277,17 +306,69 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
       }, 0);
     };
   }, [trigger]);
+  const keys = (() => {
+    const seen = new Map<string, number>();
+    return items.map((it) => {
+      const base = it.id ?? (it.separator ? 'sep' : it.heading ? `h:${it.heading}` : `r:${it.label ?? ''}`);
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return n ? `${base}#${n}` : base;
+    });
+  })();
+  const keyOf = (_it: MenuItem, i: number) => keys[i];
+  // Element ids are by position (a key may hold spaces, which an id list would split); both ends move together.
+  const infoId = (_it: MenuItem, i: number) => `${idBase}-i${i}`;
+  const headId = (_it: MenuItem, i: number) => `${idBase}-h${i}`;
+  // The menu's description is its facts, each after the heading of its group (once), so "Needed by …" is heard as
+  // what it is under "Not placed anywhere".
+  const described = (() => {
+    const ids: string[] = [];
+    let head: string | null = null;
+    items.forEach((it, i) => {
+      if (it.separator) head = null;
+      else if (it.heading) head = headId(it, i);
+      else if (it.info) {
+        if (head) ids.push(head), (head = null);
+        ids.push(infoId(it, i));
+      }
+    });
+    return ids.join(' ');
+  })();
+  // A menu whose rows change while it is open only ever widens, so rows never shift sideways under the pointer.
+  const widest = useRef(0);
+  useLayoutEffect(() => {
+    const c = contentRef.current;
+    if (!c || !c.offsetWidth) return;
+    widest.current = Math.max(widest.current, c.offsetWidth);
+    c.style.minWidth = `${widest.current}px`;
+  });
   const choose = (it: MenuItem) => {
     menuReturn.target = opener.current;
     it.onSelect?.();
   };
   const body = items.map((it, i) =>
     it.separator ? (
-      <DropdownMenu.Separator key={i} className="menu-sep" />
+      <DropdownMenu.Separator key={keyOf(it, i)} className="menu-sep" />
     ) : it.heading ? (
-      <DropdownMenu.Label key={i} className="menu-label">
+      <DropdownMenu.Label key={keyOf(it, i)} id={headId(it, i)} className="menu-label">
         {it.heading}
+        <span className="sr-only">.</span>
       </DropdownMenu.Label>
+    ) : it.info ? (
+      // Not a menu item: nothing to choose, so the arrows and type-ahead pass it by. Its words reach a screen reader
+      // through the menu's description (below), as the facts of the menu rather than as a dimmed command, and stay
+      // readable as text for a reader that does not speak a menu's description.
+      <div key={keyOf(it, i)} id={infoId(it, i)} className="menu-info">
+        {lead && <span className="menu-lead" />}
+        <span className="grow">{it.label}</span>
+        {it.hint && (
+          <span className="hint">
+            <span className="sr-only">, </span>
+            {it.hint}
+          </span>
+        )}
+        <span className="sr-only">.</span>
+      </div>
     ) : (
       (() => {
         const toggle = it.checked !== undefined && !!it.toggle;
@@ -300,6 +381,7 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
         // An unavailable item stays in the arrow-key order (APG menu: disabled items are focusable, so the
         // author can find what exists), but choosing it does nothing and leaves the menu open.
         const props = { className: `menu-item${it.danger ? ' danger' : ''}${it.description ? ' described' : ''}`, 'aria-disabled': it.disabled || undefined, 'aria-label': it.ariaLabel, 'aria-describedby': it.ariaLabel && it.description ? `${idBase}-d${i}` : undefined, textValue: it.label, onSelect: (e: Event) => (it.disabled ? e.preventDefault() : choose(it)) };
+        const key = keyOf(it, i);
         const inner = (
           <>
             {lead && <span className="menu-lead">{it.icon ?? (radio || toggle ? indicator : null)}</span>}
@@ -320,15 +402,15 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
           </>
         );
         return toggle ? (
-          <DropdownMenu.CheckboxItem key={i} checked={!!it.checked} {...props}>
+          <DropdownMenu.CheckboxItem key={key} checked={!!it.checked} {...props}>
             {inner}
           </DropdownMenu.CheckboxItem>
         ) : radio ? (
-          <DropdownMenu.RadioItem key={i} value={String(i)} {...props}>
+          <DropdownMenu.RadioItem key={key} value={String(i)} {...props}>
             {inner}
           </DropdownMenu.RadioItem>
         ) : (
-          <DropdownMenu.Item key={i} {...props}>
+          <DropdownMenu.Item key={key} {...props}>
             {inner}
           </DropdownMenu.Item>
         );
@@ -347,9 +429,10 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
         <DropdownMenu.Content
           ref={contentRef}
           className={`menu${lead ? ' has-lead' : ''}`}
-          // Named by its label, not by the hidden anchor Radix would otherwise point at.
+          // Named by its label, not by the hidden anchor Radix would otherwise point at; described by its facts.
           aria-label={label}
           aria-labelledby={undefined}
+          aria-describedby={described || undefined}
           side={above ? 'top' : 'bottom'}
           align={alignEnd ? 'end' : 'start'}
           sideOffset={trigger ? 4 : 0}
@@ -368,15 +451,16 @@ export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger,
             closeRef.current();
           }}
         >
-          {radioRuns(items, body, checked)}
+          {radioRuns(items, body, keys)}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
   );
 }
 
-/** Wrap each run of consecutive checkable items in its own radio group; everything else stays a plain item. */
-function radioRuns(items: MenuItem[], body: ReactNode[], checked: number): ReactNode[] {
+/** Wrap each run of consecutive radio items in its own radio group, each with its own chosen item; everything else
+ *  (a toggle included) stays a plain item. */
+function radioRuns(items: MenuItem[], body: ReactNode[], keys: string[]): ReactNode[] {
   const out: ReactNode[] = [];
   for (let i = 0; i < items.length; ) {
     if (items[i].checked === undefined || items[i].toggle) {
@@ -385,9 +469,11 @@ function radioRuns(items: MenuItem[], body: ReactNode[], checked: number): React
       continue;
     }
     const start = i;
-    while (i < items.length && items[i].checked !== undefined) i++;
+    while (i < items.length && items[i].checked !== undefined && !items[i].toggle) i++;
+    const checked = items.findIndex((it, j) => j >= start && j < i && it.checked);
     out.push(
-      <DropdownMenu.RadioGroup key={`radio-${start}`} value={checked >= start && checked < i ? String(checked) : ''}>
+      // Keyed by its first row, so a row added above it (a live menu) leaves the group, and focus in it, in place.
+      <DropdownMenu.RadioGroup key={`radio-${keys[start]}`} value={checked < 0 ? '' : String(checked)}>
         {body.slice(start, i)}
       </DropdownMenu.RadioGroup>
     );
@@ -419,37 +505,46 @@ const onWindowResize = (fn: () => void) => {
 /** The window's width in CSS pixels (the editor fills the window), kept current as it is resized. */
 export const useWindowWidth = () => useSyncExternalStore(onWindowResize, () => window.innerWidth);
 
-/** Hook that shows a menu at a position, or below its trigger (which gets aria-expanded while open). */
+/** A menu's rows, or a function that returns them: a function is read again each time the menu's owner renders, so
+ *  a menu showing something that changes while it is open (a roster, a time left) stays true. */
+export type MenuItems = MenuItem[] | (() => MenuItem[]);
+
+/** What a menu button spreads: aria-haspopup, and aria-expanded while its own menu is up. */
+export type MenuTriggerProps = { 'aria-haspopup': 'menu'; 'aria-expanded': boolean; 'data-menu-trigger': string };
+/** A hook's `triggerProps`, handed to triggers rendered further down than the hook's owner (the rows of a tree). */
+export const MenuTriggers = createContext<(key?: string) => MenuTriggerProps>((key = 'menu') => ({ 'aria-haspopup': 'menu', 'aria-expanded': false, 'data-menu-trigger': key }));
+
+/**
+ * Hook that shows a menu at a position, or below its trigger. A button that opens it spreads `triggerProps(key)`:
+ * aria-haspopup, and aria-expanded rendered from the hook's state, true only on the button whose menu is up (`key`
+ * tells apart the buttons that share one hook). primitives.css draws that button pressed in while its menu is up.
+ */
 export function useMenu() {
-  const [menu, setMenu] = useState<{ key: number; x: number; y: number; items: MenuItem[]; label?: string; trigger?: HTMLElement; alignEnd?: boolean; returnTo?: HTMLElement | null; focusLast?: boolean; above?: boolean } | null>(null);
-  useEffect(() => {
-    if (!menu?.trigger) return;
-    const t = menu.trigger;
-    t.setAttribute('aria-expanded', 'true');
-    return () => t.setAttribute('aria-expanded', 'false');
-  }, [menu]);
+  const [menu, setMenu] = useState<{ key: number; x: number; y: number; items: MenuItems; label?: string; trigger?: HTMLElement; owner?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; focusLast?: boolean; above?: boolean } | null>(null);
   const close = useCallback(() => setMenu(null), []);
   /** Close the menu if its trigger has left the page (a toolbar control that moved into another menu). */
   const closeIfTriggerGone = useCallback(() => setMenu((m) => (m?.trigger && !m.trigger.isConnected ? null : m)), []);
   const node = menu ? (() => {
-    const { key, ...props } = menu;
+    const { key, owner: _owner, ...props } = menu;
     return <Menu key={key} {...props} returnTo={menu.trigger ?? menu.returnTo} onClose={close} />;
   })() : null;
   return {
     node,
     isOpen: !!menu,
     close,
+    /** The props for a button that opens this menu with `openAt`. */
+    triggerProps: (key = 'menu'): MenuTriggerProps => ({ 'aria-haspopup': 'menu', 'aria-expanded': menu?.owner === key, 'data-menu-trigger': key }),
     closeIfTriggerGone,
     /** Open at a point (right-click); focus returns to `returnTo` (the row) on close. */
-    open: (x: number, y: number, items: MenuItem[], label?: string, returnTo?: HTMLElement | null) => setMenu({ key: ++menuKey, x, y, items, label, returnTo }),
+    open: (x: number, y: number, items: MenuItems, label?: string, returnTo?: HTMLElement | null) => setMenu({ key: ++menuKey, x, y, items, label, returnTo }),
     /** Open below a trigger button; small icon triggers align the menu's right edge with theirs. With
      *  `focusLast` (Up arrow on the trigger), a keyboard-opened menu starts on its last item. With `above`, it opens
      *  over the trigger instead (a control at the foot of a panel, so the menu does not cover what sits under it). */
-    openAt: (el: HTMLElement, items: MenuItem[], label?: string, opts?: { focusLast?: boolean; above?: boolean }) => {
+    openAt: (el: HTMLElement, items: MenuItems, label?: string, opts?: { focusLast?: boolean; above?: boolean }) => {
       if (menu?.trigger === el) return setMenu(null);
       const r = el.getBoundingClientRect();
       const narrow = r.width < 48;
-      setMenu({ key: ++menuKey, x: narrow ? r.right : r.left, y: r.bottom + 4, items, label, trigger: el, alignEnd: narrow, focusLast: opts?.focusLast, above: opts?.above });
+      setMenu({ key: ++menuKey, x: narrow ? r.right : r.left, y: r.bottom + 4, items, label, trigger: el, owner: el.dataset.menuTrigger, alignEnd: narrow, focusLast: opts?.focusLast, above: opts?.above });
     }
   };
 }

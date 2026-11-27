@@ -256,8 +256,7 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
           )}
           <button
             className="btn btn-sm cs-add"
-            aria-haspopup="menu"
-            aria-expanded="false"
+            {...addMenu.triggerProps()}
             onClick={(e) =>
               addMenu.openAt(
                 e.currentTarget,

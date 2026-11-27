@@ -1133,7 +1133,7 @@ export function Chat() {
             {title}
           </span>
           {/* Switching waits for the project's own conversation to load, and for a message being sent. */}
-          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" aria-haspopup="menu" aria-expanded={menu.isOpen} onClick={(e) => void openHistory(e.currentTarget)} disabled={running || sending || !conversation}>
+          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" {...menu.triggerProps()} onClick={(e) => void openHistory(e.currentTarget)} disabled={running || sending || !conversation}>
             <History />
           </button>
           <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={running || sending || !conversation || msgs.length === 0 || !configured} onClick={() => show(api.ai.newConversation())}>
@@ -1546,8 +1546,7 @@ export function Chat() {
                     className={`chip scope-chip${scopeTone}`}
                     title={`${scopeNow.title}. Change what ${askMode ? 'your question is about' : 'the AI may change'}`}
                     aria-label={scopeName}
-                    aria-haspopup="menu"
-                    aria-expanded={scopeMenu.isOpen}
+                    {...scopeMenu.triggerProps()}
                     onClick={(e) => openScopeMenu(e.currentTarget)}
                     onKeyDown={(e) => {
                       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -1592,8 +1591,7 @@ export function Chat() {
                 className={`btn btn-sm btn-ghost composer-mode${askMode ? ' ask' : ''}`}
                 title={askMode ? 'Ask: a read-only question. The AI reads the site and changes nothing.' : 'Edit: the AI makes the changes you describe.'}
                 aria-label={`What your next message does: ${askMode ? 'Ask, a read-only question' : 'Edit'}`}
-                aria-haspopup="menu"
-                aria-expanded={modeMenu.isOpen}
+                {...modeMenu.triggerProps()}
                 onClick={(e) => openModeMenu(e.currentTarget)}
                 onKeyDown={(e) => {
                   if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -1627,7 +1625,7 @@ export function Chat() {
             <span className="grow" />
             {!asking && hasLibraryImages && (
               // Library images join the message in one click, by name and ID; Assets is a click further for browsing.
-              <button type="button" className="icon-btn sm composer-attach" title="Add images from Assets" aria-label="Add images from Assets" aria-haspopup="menu" aria-expanded={attachMenu.isOpen}
+              <button type="button" className="icon-btn sm composer-attach" title="Add images from Assets" aria-label="Add images from Assets" {...attachMenu.triggerProps()}
                 onClick={(e) => addImages(e.currentTarget)}
                 onKeyDown={(e) => {
                   if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;

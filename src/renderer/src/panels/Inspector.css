@@ -86,7 +86,10 @@
   .insp-mini-row { display: inline-flex; align-items: center; gap: 2px; flex: none; margin: -3px -6px -3px auto; }
   .insp-mini { display: inline-flex; flex: none; align-items: center; gap: 3px; height: 24px; white-space: nowrap; padding: 0 6px; border: 0; border-radius: var(--r-sm); background: none; color: var(--accent-text); font-size: 12px; font-weight: 500; }
   .insp-mini svg { width: 12px !important; height: 12px !important; margin: 0 !important; color: inherit !important; }
-  .insp-mini:hover, .insp-mini[aria-expanded='true'] { background: var(--accent-soft); }
+  .insp-mini:hover { background: var(--accent-soft); }
+  /* Open, it is pressed in like every menu button (primitives.css), not tinted as if chosen. */
+  .insp-mini[aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+  :where(:root[data-appearance='dark']) .insp-mini[aria-expanded='true'] { background: var(--bg); }
   .insp-check { display: flex; align-items: flex-start; gap: 5px; color: var(--text-2); }
   .insp-check svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--amber); }
   /* A description kept from the previous image: the problem and its one repair, read as one note. */

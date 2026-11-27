@@ -434,8 +434,7 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
             <button
               type="button"
               className="btn btn-sm btn-ghost share-extend"
-              aria-haspopup="menu"
-              aria-expanded={false}
+              {...menu.triggerProps()}
               disabled={reconnecting || busy.has('extend')}
               onClick={(e) =>
                 menu.openAt(

@@ -8,7 +8,7 @@ import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
 import { aiActivity, api, applyOps, commitDraft, getState, markDraft, selectSlot, setState, showLayer, toast, useStore } from '../store';
-import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
+import { MenuTriggers, rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { openInsertSearch } from '../lib/insert-focus';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
@@ -777,7 +777,7 @@ export function LayersPanel() {
             {groupCount(picked)}
             <span className="layers-picked-word"> selected</span>
           </span>
-          <button className="layers-picked-actions" aria-haspopup="menu" title={picked.owner.kind === 'page' ? 'Move, copy, duplicate or delete them together' : 'Move, duplicate or delete them together'} onClick={(e) => openGroupMenu(e.currentTarget, picked)}>
+          <button className="layers-picked-actions" {...menu.triggerProps('picked')} title={picked.owner.kind === 'page' ? 'Move, copy, duplicate or delete them together' : 'Move, duplicate or delete them together'} onClick={(e) => openGroupMenu(e.currentTarget, picked)}>
             Actions
             <ChevronDown aria-hidden="true" />
           </button>
@@ -808,6 +808,7 @@ export function LayersPanel() {
       </span>
       {/* The tree stays mounted while the outline shows, so its single tab stop is kept for when it returns. */}
       <Picked.Provider value={picked}>
+      <MenuTriggers.Provider value={menu.triggerProps}>
       <div className="panel-body layers-tree" role="tree" aria-label="Layers" aria-multiselectable="true" ref={treeRef} onKeyDown={onTreeKey} onPointerDown={(e) => e.currentTarget.removeAttribute('data-keys')} hidden={outline}>
         {defOwner && defTree ? (
           <>
@@ -878,6 +879,7 @@ export function LayersPanel() {
           </>
         )}
       </div>
+      </MenuTriggers.Provider>
       </Picked.Provider>
       {peek && !outline && (
         <div ref={peekRef} className={`layers-peek${peek.above ? ' above' : ''}`} aria-hidden="true" style={{ left: peek.x, top: peek.above ? peek.top - 2 : peek.bottom + 2, width: peek.w }}>
@@ -1024,6 +1026,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
   const selection = useStore((s) => s.selection);
   const definitionMode = useStore((s) => s.definitionMode);
   const picked = useContext(Picked);
+  const trigger = useContext(MenuTriggers);
+  const triggerKey = `${owner.kind}:${owner.id}:${id}`;
   // What the row says about visibility follows the size the preview shows (not the inspector's style scope).
   const size = useStore((s) => scopeForWidth(s.viewport));
   const [open, setOpen] = useState(false);
@@ -1424,7 +1428,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
           <button
             className="icon-btn sm"
             tabIndex={-1}
-            aria-haspopup="menu"
+            {...trigger(triggerKey)}
             // One of several selected together: its menu is theirs.
             aria-label={member && picked ? `Actions for ${groupCount(picked)}` : `${name} options`}
             title={member && picked ? `Actions for ${groupCount(picked)}` : 'Layer options'}
@@ -1493,7 +1497,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
                   </span>
                 )}
                 <span className="actions">
-                  <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-label={`${p.label} options`} title="Part options" onDoubleClick={(e) => e.stopPropagation()} onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, pref, false))}>
+                  <button className="icon-btn sm" tabIndex={-1} {...trigger(`${triggerKey}:${pid}`)} aria-label={`${p.label} options`} title="Part options" onDoubleClick={(e) => e.stopPropagation()} onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, pref, false))}>
                     <Ellipsis />
                   </button>
                 </span>
