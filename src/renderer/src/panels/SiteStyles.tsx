@@ -1422,7 +1422,7 @@ export function SiteStyles() {
         )}
         {!compact && (
           <div className="ss-color-extra ss-flags-slot">
-            <ContrastFlags model={contrast} tokenId={t.id} onUse={chooseReadable} onJump={jumpTo} onShowAll={open ? undefined : () => (setOpenDetail(t.id), requestAnimationFrame(() => document.getElementById(detailId)?.querySelector<HTMLElement>('.ss-contrast-block')?.focus()))} showAllControls={detailId} />
+            <ContrastFlags model={contrast} tokenId={t.id} onUse={chooseReadable} onJump={jumpTo} onShowAll={() => (setOpenDetail(t.id), requestAnimationFrame(() => document.getElementById(detailId)?.querySelector<HTMLElement>('.ss-contrast-block')?.focus()))} expanded={open} controls={detailId} />
           </div>
         )}
         {!compact && (

@@ -162,24 +162,37 @@
   /* Contrast: a sample in the pair's own colours beside what it colours and how readable it is, and the offer to fix it. */
   .ss-contrast { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 6px; padding: 10px 12px; border-radius: var(--r-md); background: var(--panel-2); }
   .ss-contrast-flags { display: flex; flex-direction: column; gap: 6px; margin: 0 0 2px; }
-  .ss-contrast-block { display: flex; flex-direction: column; gap: 8px; }
+  /* Room inside its focus ring, taken back outside, so the ring does not touch the label it frames. */
+  .ss-contrast-block { display: flex; flex-direction: column; gap: 8px; margin: -4px; padding: 4px; }
   .ss-pairs { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-  .ss-pair { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; column-gap: 10px; font-size: 12px; }
+  .ss-pair { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; column-gap: 10px; font-size: 12px; }
   .ss-pair-use { grid-column: 2; grid-row: 1; color: var(--text); line-height: 1.35; }
-  .ss-sample { grid-column: 1; grid-row: 1 / span 2; display: flex; align-items: center; justify-content: center; width: 76px; height: 30px; padding: 0 6px; overflow: hidden; white-space: nowrap; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-control); font: 600 12px/1 var(--font); }
+  /* The pair's own two colours, the word in the shape it takes on the site (a link underlined), as tall as a row swatch. */
+  .ss-sample { grid-column: 1; grid-row: 1 / span 2; display: flex; align-items: center; justify-content: center; width: 64px; height: 28px; padding: 0 4px; overflow: hidden; white-space: nowrap; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-control); font: 600 12px/1 var(--font); }
+  .ss-sample.link { text-decoration: underline; text-underline-offset: 2px; }
   .ss-sample.none { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--border-control) 5px 6px), var(--raised); }
+  /* Verdicts and flags keep the panel's text colours; the hue is on the failing icon alone, so a pass stays quiet. */
   .ss-verdict { grid-column: 2; grid-row: 2; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--text-2); }
-  .ss-ratio { font-weight: 600; font-variant-numeric: tabular-nums; }
-  .ss-verdict svg, .ss-flag svg { width: 13px; height: 13px; flex: none; }
-  .ss-verdict.pass, .ss-verdict.pass svg { color: var(--green); }
-  .ss-verdict.fail, .ss-verdict.fail svg, .ss-flag, .ss-flag svg { color: var(--red); }
-  .ss-flag { display: flex; align-items: flex-start; gap: 5px; font-size: 12px; line-height: 1.4; }
+  .ss-ratio { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
+  .ss-verdict svg, .ss-flag svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
+  .ss-verdict.fail svg, .ss-flag svg { color: var(--red); }
+  .ss-flag { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.4; color: var(--text); }
   .ss-flag svg { margin-top: 2px; }
-  .ss-contrast-fix { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
-  .ss-contrast-trade { margin: 0; font-size: 12px; font-weight: 500; line-height: 1.4; color: var(--text); text-wrap: pretty; }
-  /* The offer names the colour it sets, so it may run to two lines in a narrow dock rather than clip. */
+  .ss-flag-more { color: var(--text-2); }
+  .ss-flag.unknown { margin: 0; color: var(--text-2); }
+  .ss-flag.unknown svg { color: var(--text-3); }
+  .ss-contrast-fix { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .ss-contrast-trade { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  /* The offer: its result, a short label and the value it sets. In a narrow dock it wraps rather than clips. */
   .ss-contrast-fix .btn { height: auto; min-height: 28px; max-width: 100%; padding-block: 4px; white-space: normal; text-align: left; line-height: 1.3; }
+  .ss-offer-value { font: 11px/1.3 var(--mono); color: var(--text-3); text-transform: lowercase; }
   .ss-contrast-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  /* The fix this colour owns, read before any offer or pointer. */
+  .ss-contrast-note.ss-contrast-lead { color: var(--text); }
+  /* In Basics, what to do sits under the previews, apart from them. */
+  .ss-contrast-advice { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+  /* The offer after the brand colour's own fix is the other route, not the next step: more room between them. */
+  .ss-contrast-advice > .ss-contrast-lead + .ss-contrast-fix { margin-top: 6px; }
   /* The offer's own result, the suggested text colour on the ground it fixes. */
   .ss-ink { display: inline-grid; place-items: center; width: 26px; height: 20px; flex: none; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-control); font: 600 11px/1 var(--font); }
   .ss-hover-note { display: flex; align-items: flex-start; gap: 8px; margin: -2px 0 2px; padding: 0 2px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
@@ -316,11 +329,11 @@
   .ss-group > :not(.ss-font) + .ss-font { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
   .ss-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .ss-group-head .ss-css-toggle { font-weight: 500; }
+  /* Clear of the sticky head, as layout.css keeps the panel's controls. */
   .ss-contrast-block { scroll-margin-top: 150px; }
   /* No word left alone on a line in the panel's running text. */
   .ss :is(.ss-desc, .ss-contrast-note, .ss-flag > span, .ss-theme-desc, .ss-size-note, .ss-custom-intro, .ss-custom-where, .ss-hover-note, .field-hint) { text-wrap: pretty; }
-  .ss-contrast-fix .btn { text-wrap: balance; }
-  .ss-contrast-block:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: var(--r-sm); }
+  .ss-contrast-block:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
   .ss-size > .ss-border { align-self: stretch; }
   .ss-token-label { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ss-token-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
