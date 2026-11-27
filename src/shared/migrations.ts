@@ -521,8 +521,10 @@ function legacyAxes(def: LegacyDefinition): Record<string, VariantAxis> | undefi
   const fallback = def.defaultVariant && Object.hasOwn(variants, def.defaultVariant) ? def.defaultVariant : ids[0];
   const tones = ids.filter((id) => LEGACY_TONES.has(id));
   const layouts = ids.filter((id) => !LEGACY_TONES.has(id));
-  if (!layouts.length) return { tone: { label: 'Tone', default: fallback, options: variants } };
-  if (def.kind !== 'managed' || !Object.hasOwn(variants, 'default') || hasStyles(variants.default)) return { style: { label: 'Style', default: fallback, options: variants } };
+  // Code reads it as `variant`, which its axis declares.
+  const prop = def.kind === 'code' ? { prop: 'variant' } : {};
+  if (!layouts.length) return { tone: { label: 'Tone', ...prop, default: fallback, options: variants } };
+  if (def.kind !== 'managed' || !Object.hasOwn(variants, 'default') || hasStyles(variants.default)) return { style: { label: 'Style', ...prop, default: fallback, options: variants } };
   const pick = (list: string[]) => Object.fromEntries(list.map((id) => [id, variants[id]]));
   return {
     tone: { label: 'Tone', default: tones.includes(fallback) ? fallback : 'default', options: pick(tones) },

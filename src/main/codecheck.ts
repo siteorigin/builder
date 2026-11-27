@@ -13,6 +13,7 @@ import { posix } from 'node:path';
 import type { ComponentDefinition } from '@shared/types';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { slotIdent } from '@generator/index';
+import { axesOf } from '@shared/variants';
 
 export interface CodeProblem {
   severity: 'error' | 'warning';
@@ -127,6 +128,8 @@ export interface CodeContract {
   parts?: ComponentDefinition['parts'];
   /** The declared slots that hold content in some placement: code that stops showing one would hide that content. */
   filled?: string[];
+  /** The variant axes, each arriving in the property it names (`prop`), which the code must take from $props(). */
+  variantAxes?: ComponentDefinition['variantAxes'];
 }
 
 /** The props a component passes on to places that load a URL, apply CSS or open a link. */
@@ -544,6 +547,82 @@ function propsLocals(ast: Node): Map<string, { local: string; defaulted: boolean
   return locals;
 }
 
+/**
+ * What the script reads of $props() taken as a whole object (`let props = $props()`) or of the rest of them
+ * (`let { title, ...rest } = $props()`): the props it reads from that object by name (`props.tone`, `rest['tone']`),
+ * and whether it also hands the object on (to a helper, a component, an element's attributes, which styles can match)
+ * or reads it by a computed name, where any prop may be read.
+ */
+function wholePropsReads(ast: Node): { read: Set<string>; handed: boolean } {
+  const whole = new Set<string>();
+  const rests = new Set<string>();
+  walkAst(ast.instance, (n) => {
+    if (n.type !== 'VariableDeclarator' || (n.init as Node | null)?.type !== 'CallExpression') return;
+    const callee = (n.init as Node).callee as Node;
+    if (callee?.type !== 'Identifier' || callee.name !== '$props') return;
+    const id = n.id as Node;
+    if (id?.type === 'Identifier') whole.add(String(id.name));
+    if (id?.type === 'ObjectPattern')
+      for (const p of (id.properties as Node[]) ?? []) if (p.type === 'RestElement' && (p.argument as Node)?.type === 'Identifier') rests.add(String((p.argument as Node).name));
+  });
+  const read = new Set<string>();
+  let handed = false;
+  if (!whole.size && !rests.size) return { read, handed };
+  const visit = (n: Node, around: Node[]) => {
+    if (n.type !== 'Identifier' || !(whole.has(String(n.name)) || rests.has(String(n.name)))) return;
+    const parent = around[around.length - 1];
+    if (parent?.type === 'VariableDeclarator' && parent.id === n) return;
+    if (parent?.type === 'RestElement') return;
+    if (parent?.type === 'MemberExpression' && parent.object === n) {
+      const p = parent.property as Node;
+      const name = !parent.computed && p?.type === 'Identifier' ? String(p.name) : parent.computed && p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
+      if (name !== null) read.add(name);
+      else handed = true;
+      return;
+    }
+    handed = true;
+  };
+  walkAst(ast.instance, visit);
+  walkAst(ast.fragment, visit);
+  return { read, handed };
+}
+
+/**
+ * Each variant axis whose property (`prop`) the code does not take from $props(): what placements choose there never
+ * reaches the code. Taken by name in the destructuring, or read by name from the whole props object or the rest of
+ * them, it is taken. When the code hands the object on (to a helper, say), it may be read there, which the check
+ * cannot follow, so it only warns; rest taken and never used pass nothing on.
+ */
+function axisProblems(ast: Node, variantAxes: ComponentDefinition['variantAxes']): Array<{ severity: CodeProblem['severity']; message: string }> {
+  const out: Array<{ severity: CodeProblem['severity']; message: string }> = [];
+  const locals = propsLocals(ast);
+  const whole = wholePropsReads(ast);
+  for (const [axis, a] of axesOf({ variantAxes })) {
+    if (typeof a.prop !== 'string' || locals.has(a.prop) || whole.read.has(a.prop)) continue;
+    const label = typeof a.label === 'string' && a.label.trim() ? a.label.trim() : axis;
+    out.push(
+      whole.handed
+        ? { severity: 'warning', message: `The “${label}” variant arrives in ${a.prop}, which the code does not take from $props() by name: take it (let { ${a.prop} } = $props()) so the check can see the code reads it.` }
+        : { severity: 'error', message: `The “${label}” variant arrives in ${a.prop}, which the code never takes from $props(): take it (let { ${a.prop} } = $props()), or what placements choose there will not show.` }
+    );
+  }
+  return out;
+}
+
+/**
+ * The variant axes of a code component whose property its code does not take from $props() (see axisProblems), for
+ * a change of the axes alone: code that is unchanged passed every other check when it was saved. Null when the code
+ * cannot be parsed.
+ */
+export async function codeAxisPropProblems(source: string, variantAxes: ComponentDefinition['variantAxes']): Promise<CodeProblem[] | null> {
+  const { parse } = await import('svelte/compiler');
+  try {
+    return axisProblems(parse(source, { modern: true }) as unknown as Node, variantAxes);
+  } catch {
+    return null;
+  }
+}
+
 /** The part a node of the markup gives its class to through the placement's hook (so_o?.total, so_o["total"]), if any. */
 function hookedPart(n: Node): string | null {
   if (n.type !== 'MemberExpression' || (n.object as Node)?.type !== 'Identifier' || (n.object as Node).name !== 'so_o') return null;
@@ -690,6 +769,8 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
       if (!r.optional && !r.guarded && !from.fallback)
         out.push({ severity: 'error', message: `Render the “${label}” slot with {@render ${local}?.()} or inside {#if ${local}}: a placement with nothing in it gives no snippet, and the page would fail to render.`, node: r.node });
   }
+  // Each variant axis arrives in the property the manifest names for it.
+  out.push(...axisProblems(ast, contract.variantAxes));
   // Each placement gives the code its part classes, which replace whatever the code gives so_o itself.
   if (locals.get('so_o')?.defaulted) out.push({ severity: 'warning', message: 'Give so_o no default of its own (let { so_o } = $props()): each placement passes its own part classes, which replace it.' });
   const parts = contract.parts ?? {};

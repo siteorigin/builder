@@ -94,7 +94,7 @@ import { fontFaceCss } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
-import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
+import { axesOf, codeAxisProps, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
@@ -1160,8 +1160,8 @@ function legacyVariantCallee(state: ProjectState, def: ComponentDefinition): boo
   const file = `/${defFile(def).split('/').pop()}`;
   return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !d.generatedFrom && !!d.source?.includes(file) && /\bvariant=/.test(d.source));
 }
-/** The prop a component receives an axis's selected option through. */
-const variantProp = (axis: string) => `variant_${safeIdent(axis)}`;
+/** The prop a design's generated file receives an axis's selected option through. */
+export const variantProp = (axis: string) => `variant_${safeIdent(axis)}`;
 export function overrideClass(instanceId: string, partId: string): string {
   return `so-o-${instanceId}-${partId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
@@ -3507,13 +3507,14 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     const own = code && node.variants && Object.hasOwn(node.variants, axis) ? node.variants[axis] : undefined;
     return typeof own === 'string' && !Object.hasOwn(axes.get(axis)!.options, own);
   };
+  // Code takes each axis through the property its manifest declares for it (a design's edited file included, whose
+  // declared props are its design's), and nothing more; a design takes each through the prop its file declares.
+  const codeProps = def.kind === 'code' ? new Map(codeAxisProps(def)) : null;
   for (const [axis, value] of chosen) {
-    // A code component gets an axis prop only if its source reads it; anything else would land in its rest props.
-    if (code && (Object.hasOwn(def.properties, variantProp(axis)) || !def.source?.includes(variantProp(axis)) || stale(axis))) continue;
-    attrs.push(`${variantProp(axis)}=${variantExpr(value, axis)}`);
+    const prop = codeProps ? codeProps.get(axis) : variantProp(axis);
+    if (!prop || stale(axis)) continue;
+    attrs.push(`${prop}=${variantExpr(value, axis)}`);
   }
-  // Code components read the first axis as `variant`, the contract they have always had.
-  if (code && chosen.length && !Object.hasOwn(def.properties, 'variant') && !stale(chosen[0][0])) attrs.push(`variant=${variantExpr(chosen[0][1], chosen[0][0])}`);
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);

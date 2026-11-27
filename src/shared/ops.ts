@@ -917,6 +917,11 @@ export const OPERATION_SCHEMAS = {
     definitionId: z.string(),
     axis: z.string().optional().describe('The variant axis to add to. A new name creates the axis, with a plain "default" option that placements keep unless makeDefault is set. Defaults to the only axis, or "style".'),
     axisLabel: z.string().min(1).max(40).optional(),
+    prop: z
+      .string()
+      .max(60)
+      .optional()
+      .describe('Code components only: the property the code takes this axis’s option through, from $props(). Left out, a new axis arrives in a property named as the axis, and an existing one keeps its own.'),
     variant: z.string(),
     label: z.string().min(1).max(60),
     makeDefault: z.boolean().optional()

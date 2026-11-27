@@ -124,7 +124,7 @@ export const video: ComponentDefinition = {
   },
   parts: { root: { nodeId: 'root', label: 'Video section', styleControls: ['paddingBlock', 'background', 'color', 'hidden'] } },
   variantAxes: {
-    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
+    tone: { label: 'Tone', prop: 'variant', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
   source: VIDEO_SOURCE,
   provenance: FOUNDATION.provenance('media.video'),
@@ -219,7 +219,7 @@ export const videoBlock: ComponentDefinition = {
   },
   parts: { root: { nodeId: 'root', label: 'Video', styleControls: ['paddingBlock', 'paddingInline', 'background', 'color', 'radius', 'hidden'] } },
   variantAxes: {
-    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Plain' }, card: { label: 'Card' }, inverse: { label: 'Dark' } } }
+    tone: { label: 'Tone', prop: 'variant', default: 'default', options: { default: { label: 'Plain' }, card: { label: 'Card' }, inverse: { label: 'Dark' } } }
   },
   source: VIDEO_BLOCK_SOURCE,
   provenance: FOUNDATION.provenance('block.video'),

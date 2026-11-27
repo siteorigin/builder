@@ -717,6 +717,11 @@ export interface VariantDef {
 /** One independent design choice, such as tone or layout. A placement picks one option on every axis. */
 export interface VariantAxis {
   label: string;
+  /**
+   * Code components only: the property the component takes from `$props()` for this axis's selected option. Each
+   * placement passes the option under this name, and nothing else; an axis without one reaches the code not at all.
+   */
+  prop?: string;
   /** Option ID used by placements that have not chosen one. */
   default: string;
   options: Record<string, VariantDef>;

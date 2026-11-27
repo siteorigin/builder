@@ -440,7 +440,7 @@ function definitionOpAllowed(state: ProjectState, op: EditOperation, authority: 
       return op.definitionId === def.id && !Object.hasOwn(def.parts, op.partId) && allowed.has(op.nodeId);
     case 'component.setVariant':
       // A first variant adds a new choice to every placement's Inspector, so it is not a local addition.
-      return op.definitionId === def.id && !op.makeDefault && addsOptionToExistingAxis(def, op.variant, op.axis, op.axisLabel);
+      return op.definitionId === def.id && !op.makeDefault && addsOptionToExistingAxis(def, op.variant, op.axis, op.axisLabel, op.prop);
     case 'component.setSlot':
       return op.definitionId === def.id && !Object.hasOwn(def.slots ?? {}, op.slot);
     default:
@@ -449,12 +449,14 @@ function definitionOpAllowed(state: ProjectState, op: EditOperation, authority: 
 }
 
 /** A new option on an axis that already exists changes no placement; a new axis gives every placement a new choice. */
-function addsOptionToExistingAxis(def: ComponentDefinition, option: string, axis?: string, axisLabel?: string): boolean {
+function addsOptionToExistingAxis(def: ComponentDefinition, option: string, axis?: string, axisLabel?: string, prop?: string): boolean {
   const axes = Object.keys(def.variantAxes ?? {});
   const id = axis ?? (axes.length === 1 ? axes[0] : undefined);
   const target = id !== undefined && Object.hasOwn(def.variantAxes ?? {}, id) ? def.variantAxes![id] : undefined;
-  // Renaming the axis shows in every placement's Inspector.
+  // Renaming the axis shows in every placement's Inspector; moving a code axis to another prop changes what every
+  // placement passes.
   if (axisLabel !== undefined && axisLabel.trim() !== target?.label) return false;
+  if (prop !== undefined && prop !== target?.prop) return false;
   return !!target && !Object.hasOwn(target.options, option);
 }
 

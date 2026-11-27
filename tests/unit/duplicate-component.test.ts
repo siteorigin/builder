@@ -118,6 +118,8 @@ describe('what the Duplicate dialog sends', () => {
     const code = structuredClone(state);
     Object.assign(code.components[def.id], { kind: 'code', source: '<div></div>', sourcePath: 'src/lib/components/custom/ServiceCard.svelte' });
     delete code.components[def.id].tree;
+    // Code that takes none of the design's variant axes declares none.
+    delete code.components[def.id].variantAxes;
     const op = duplicateOperation(code, code.components[def.id], 'Service card copy', 'Service card copy');
     const reason = developerModeReason(code, op)!;
     expect(reason).toBe('“Service card” is a code component. Duplicating it copies its Svelte source into a new code component, which needs Developer mode.');

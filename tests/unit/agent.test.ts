@@ -2338,6 +2338,8 @@ describe('operation reach', () => {
     expect(hasVariants).toBe(true);
     allow({ type: 'component.setVariant', definitionId: def.id, axis: 'tone', variant: 'quiet', label: 'Quiet' });
     deny({ type: 'component.setVariant', definitionId: def.id, axis: 'tone', variant: 'quiet', label: 'Quiet', makeDefault: true });
+    // Moving an axis to another prop changes what every placement passes.
+    deny({ type: 'component.setVariant', definitionId: def.id, axis: 'tone', variant: 'quiet', label: 'Quiet', prop: 'mood' });
     // A new axis gives every placement a new choice.
     deny({ type: 'component.setVariant', definitionId: def.id, axis: 'density', variant: 'quiet', label: 'Quiet' });
     // The first variant of a component adds a choice to every placement.

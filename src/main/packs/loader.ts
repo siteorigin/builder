@@ -12,7 +12,7 @@ import { COMPONENT_CATEGORIES, SCHEMA_VERSION, SLOT_PRIMITIVES, conditionRef, is
 import { slotDecl, slotDeclProblem, slotFill } from '@engine/slots';
 import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST, PACK_VERSION_RE, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { FONT_FAMILY_RE } from '@shared/fonts';
-import { variantIdsValid } from '@shared/variants';
+import { codeAxisProblems, variantIdsValid } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { isCarouselTrack } from '@generator/card-links';
 import { boundSchema } from '@engine/schema';
@@ -123,7 +123,7 @@ const component = z
         })
       )
       .optional(),
-    variantAxes: z.record(z.string(), z.object({ label: z.string(), default: z.string(), options: z.record(z.string(), z.object({ label: z.string() }).loose()) }).loose()).optional(),
+    variantAxes: z.record(z.string(), z.object({ label: z.string(), prop: z.string().optional(), default: z.string(), options: z.record(z.string(), z.object({ label: z.string() }).loose()) }).loose()).optional(),
     tree: z.object({ rootIds: z.array(z.string()).min(1), nodes: z.record(z.string(), z.object({ id: z.string(), kind: z.string() }).loose()) }).optional(),
     source: z.string().max(256 * 1024).optional(),
     provenance: z.object({ pack: z.string(), packVersion: z.string(), componentId: z.string() }).loose(),
@@ -275,6 +275,9 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
     if (files.has(key)) refuse(`${where} would generate the same files as ${files.get(key)}.`);
     files.set(key, def.componentId!);
     if (!variantIdsValid(def)) refuse(`${where} has a variant or option ID that is not allowed (letters and digits, starting with a letter).`);
+    // Code takes each axis through the property its manifest names for it.
+    const axisProblem = codeAxisProblems(def)[0];
+    if (axisProblem) refuse(`${where}: ${axisProblem.message}`);
     // A pack has no library of its own: a background image would name a picture no project it installs into has.
     if (def.kind === 'managed' && designHasMedia(def)) refuse(`${where} sets a background image, which can only name a picture in a project's own library.`);
     for (const [name, p] of Object.entries(def.properties)) {
