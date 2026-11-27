@@ -1,6 +1,6 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, LayoutTemplate, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, LayoutTemplate, MessageCircleQuestionMark, MousePointerClick, PanelBottom, PanelTop, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation, type ProviderId } from '@shared/api';
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
@@ -183,15 +183,52 @@ const seoFindingsOf = (state: ProjectState) => {
 /** Said when a starter widens what the AI may change, so the change of scope is heard as well as seen. */
 const WIDENED_SAY = 'What the AI may change is now the whole site, for this message.';
 
-/** What the run strip says for each phase of a run. */
+/** What the run strip says for each phase of a run. Running with no step reported yet is the model thinking. */
 const PHASE: Record<string, string> = {
   preparing: 'Getting started',
-  running: 'Working',
+  running: 'Thinking',
   'awaiting-input': 'Needs your answer',
   validating: 'Checking the result',
   repairing: 'Fixing a problem',
   stopping: 'Stopping'
 };
+
+/**
+ * A line of the run strip in its parts, so a wrap falls between them: before an arrow ("Contact" / "→ Page
+ * introduction") and after a dot ("OpenAI ·" / "GPT-6.1 Sol"). The first part flows like any words, so a long one
+ * ("Testimonial card everywhere") leaves room on its last line for the next; each later part is kept whole where it
+ * fits. The space between parts is its own text, outside them, where a line keeps it. `lead` (a reach's icon) is kept
+ * with the first word.
+ */
+function StripParts({ text, lead }: { text: string; lead?: ReactNode }) {
+  return text.split(/ (?=→ )|(?<= ·) /).map((part, i) => {
+    // A part's own words (which a reach colours) and the dot after them, which stays neutral.
+    const dot = part.endsWith(' ·');
+    const words = dot ? part.slice(0, -2) : part;
+    const gap = words.indexOf(' ');
+    return (
+      <Fragment key={i}>
+        {i ? ' ' : null}
+        <span className={i ? 'run-part' : 'run-part first'}>
+          <span className="run-words">
+            {!i && lead ? (
+              <>
+                <span className="run-lead">
+                  {lead}
+                  {gap < 0 ? words : words.slice(0, gap)}
+                </span>
+                {gap < 0 ? null : words.slice(gap)}
+              </>
+            ) : (
+              words
+            )}
+          </span>
+          {dot ? ' ·' : null}
+        </span>
+      </Fragment>
+    );
+  });
+}
 
 /** How a finished turn is headed: one icon and one word per outcome, never color alone. */
 /**
@@ -260,9 +297,12 @@ function scopeOf(ctx?: ChatContext | null, state?: ProjectState): string {
   if (ctx.template && typeof ctx.template === 'object') return targetOf(ctx);
   const inComponent = typeof ctx.component?.name === 'string';
   if (ctx.mode !== 'ask' && !ctx.selectionLabel && !inComponent && ctx.pageTitle) return ctx.scope === 'page' ? `This page · ${ctx.pageTitle}` : `Whole site · from ${ctx.pageTitle}`;
-  // A part of a placed component can change the whole placement (agent/scope.ts), which is the real boundary.
+  // A part of a placed component can change the whole placement (agent/scope.ts), which is the real boundary. One in
+  // the shared header or footer reaches every page, so it is named by that, as the Layers panel names it.
   if (ctx.mode !== 'ask' && ctx.selection && !inComponent) {
     const boundary = boundaryOf(state, ctx.selection);
+    const shell = ctx.selection.owner?.kind === 'shell' ? (ctx.selection.owner.id === 'footer' ? 'Shared footer' : 'Shared header') : null;
+    if (shell && (boundary || ctx.selectionLabel)) return `${shell} → ${boundary ?? ctx.selectionLabel}`;
     if (boundary) return `${ctx.pageTitle} → ${boundary}`;
     if (ctx.selection.instancePath?.length) return `${targetOf(ctx)}’s component`;
   }
@@ -660,6 +700,8 @@ export function Chat() {
           } else if (stepKey && echoes) announced.current.add(stepKey);
           else if (stepKey) sayOnce(stepKey, `${step!.label}.`);
         } else if (stepKey && announced.current.has(`${activeRunId}:start`)) sayOnce(stepKey, `${step!.label}.`);
+        // An edit that has started and reports no step yet is thinking, which the strip now says, so it is said once.
+        else if (!stepKey && runStatus === 'running' && runMode !== 'ask' && announced.current.has(`${activeRunId}:start`)) sayOnce(`${activeRunId}:thinking`, `${PHASE.running}.`);
       }
       // Each announcement stays until the next one replaces it: clearing it on the next update could cut it off.
     }
@@ -787,7 +829,8 @@ export function Chat() {
       : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId: seoPage ?? pageId, selection: workspace ? null : selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: seoFindingsOf(st) }));
   const stepNow = currentStep(working?.activities);
   // The run strip is the one place that says what a run is doing now: an edit's current step, or its phase. A question
-  // is always "Reading the site", as the dock tab and the canvas say it, followed by its current step.
+  // says its current step, or "Reading the site" as the dock tab and the canvas say it; that it changes nothing is said
+  // under it, with what it is about.
   const askRun = runMode === 'ask';
   const phase =
     runStatus === 'stopping'
@@ -797,15 +840,30 @@ export function Chat() {
       : runStatus === 'awaiting-input'
         ? PHASE['awaiting-input']
         : askRun
-          ? `Reading the site${stepNow ? ` · ${stepNow}` : ''}`
-          : (stepNow ?? PHASE[runStatus ?? ''] ?? 'Working');
+          ? (stepNow ?? 'Reading the site')
+          : (stepNow ?? PHASE[runStatus ?? ''] ?? 'Thinking');
   // What the run may change, as it stands: once the author allows a wider change, that is the whole site.
   const widened = !!working && turnQuestions(working).some((q) => q?.widen && typeof q.answered === 'string' && (q.answered === q.choices?.[0] || TYPED_YES.test(q.answered)));
   // The run's scope is named as it stood when it was sent, so a rename or a removal meanwhile cannot rewrite it.
   if (activeRunId && workingUser?.context && frozenScope.current.run !== activeRunId) frozenScope.current = { run: activeRunId, text: scopeOf(workingUser.context, st) };
   const sentScope = activeRunId && frozenScope.current.run === activeRunId ? frozenScope.current.text : '';
   const sentPost = typeof workingUser?.context?.post?.title === 'string' ? workingUser.context.post.title : null;
-  const stripDetail = workingUser?.context ? (widened && (sentPost !== null || workingUser.context.pageTitle) ? `Whole site · from ${sentPost !== null ? `the post “${sentPost || 'Untitled'}”` : workingUser.context.pageTitle}` : sentScope || scopeOf(workingUser.context, st)) : '';
+  const sentText = workingUser?.context ? (widened && (sentPost !== null || workingUser.context.pageTitle) ? `Whole site · from ${sentPost !== null ? `the post “${sentPost || 'Untitled'}”` : workingUser.context.pageTitle}` : sentScope || scopeOf(workingUser.context, st)) : '';
+  // A question changes nothing, which its line says first, as its message's caption does.
+  const stripDetail = sentText && askRun ? `Read only · ${sentText}` : sentText;
+  // How far an edit reaches, in the composer chip's house hues and with its icon, never in colour alone: amber and the
+  // globe for the whole site, plum and the component mark for a component edited everywhere, green and the Layers
+  // panel's mark for the shared header or footer. Read from the request as it was sent (and the widening allowed
+  // since), never from its words: a page may be called anything.
+  const sentCtx = workingUser?.context;
+  const sentWhole = !!sentCtx && (widened || (sentCtx.mode !== 'ask' && !sentCtx.selectionLabel && typeof sentCtx.component?.name !== 'string' && !(sentCtx.post && typeof sentCtx.post === 'object') && !(sentCtx.template && typeof sentCtx.template === 'object') && !!sentCtx.pageTitle && sentCtx.scope !== 'page'));
+  // As scopeOf names it: only an element it can name is said to be in the shared header or footer.
+  const sentShell = sentCtx?.selection?.owner?.kind === 'shell' && (sentCtx.selectionLabel || sentCtx.selection.instancePath?.length) ? sentCtx.selection.owner.id : null;
+  const stripReach = askRun || !sentText ? null : sentWhole ? 'site' : typeof sentCtx?.component?.name === 'string' ? 'def' : sentShell ? 'shared' : null;
+  // The running turn's model is said in the strip where it differs from the composer's next one, and while a question
+  // waits, when the composer's answer box has no model to show; otherwise the composer names both, and the model menu
+  // says what the running request went to.
+  const runModelShown = !!inFlight && (!next || !sameRecipient(inFlight, next) || !!asking);
   const hasLibraryImages = Object.values(st.assets.assets).some((a) => a?.kind === 'image');
   /** Add a library image to the message, or take it out again; the draft stays as it is. */
   const toggleImage = (id: string) => {
@@ -924,11 +982,13 @@ export function Chat() {
     }
   };
   // What the open model menu reads each time Chat renders, so its rows follow the local server's answer and a send.
-  const pickerSource = useRef({ providers, ai: settings?.ai, localListing, sending });
-  pickerSource.current = { providers, ai: settings?.ai, localListing, sending };
+  const pickerSource = useRef({ providers, ai: settings?.ai, localListing, sending, inFlight });
+  pickerSource.current = { providers, ai: settings?.ai, localListing, sending, inFlight };
   const modelItems = () => {
-    const { providers: list, ai, localListing: local, sending: busy } = pickerSource.current;
+    const { providers: list, ai, localListing: local, sending: busy, inFlight: running } = pickerSource.current;
     if (!ai) return [];
+    // The model the running request went to, which may differ from the next message's: a fact, not a choice.
+    const thisRequest: MenuItem[] = running ? [{ heading: 'This request' }, { id: 'running', label: turnModelText(running), info: true }, { separator: true }] : [];
     const items: MenuItem[] = modelPickerRows(list, ai, local).map((row): MenuItem => {
       if (row.kind === 'heading') return { id: `h-${row.provider}`, heading: row.label };
       if (row.kind === 'info') return { id: `i-${row.provider}`, label: row.label, info: true };
@@ -948,7 +1008,7 @@ export function Chat() {
         }
       };
     });
-    return [...items, { separator: true }, { id: 'manage', label: 'Manage providers and keys…', icon: <Settings2 />, onSelect: openSettings }];
+    return [...thisRequest, ...items, { separator: true }, { id: 'manage', label: 'Manage providers and keys…', icon: <Settings2 />, onSelect: openSettings }];
   };
   /** The local server's models, asked each time the menu opens; only the newest answer is kept. */
   const listLocalModels = () => {
@@ -982,7 +1042,7 @@ export function Chat() {
       type="button"
       className="btn btn-sm btn-ghost composer-model"
       title={`Next message: ${recipientText(next)}. Change AI provider or model`}
-      aria-label={`${pending ? 'Next: ' : 'Next message: '}${next.id ? `${next.label}, ${PROVIDER_LABELS[next.provider]}` : PROVIDER_LABELS[next.provider]}. Change AI provider or model`}
+      aria-label={`${pending && runModelShown ? 'Next: ' : 'Next message: '}${next.id ? `${next.label}, ${PROVIDER_LABELS[next.provider]}` : PROVIDER_LABELS[next.provider]}. Change AI provider or model`}
       {...modelMenu.triggerProps()}
       onClick={(e) => openModelMenu(e.currentTarget)}
       onKeyDown={(e) => {
@@ -992,8 +1052,8 @@ export function Chat() {
       }}
     >
       <span className="label">
-        {/* Shown while a running turn has a model of its own; always said out loud. */}
-        {pending ? 'Next: ' : ''}
+        {/* Shown while the run strip names the running turn's model, so the two are told apart. */}
+        {pending && runModelShown ? 'Next: ' : ''}
         {next.id ? next.label : PROVIDER_LABELS[next.provider]}
       </span>
       <ChevronDown className="caret" aria-hidden="true" />
@@ -1468,23 +1528,25 @@ export function Chat() {
       </div>
       {running && !runHere && (
         // Another thread's request goes on in the background: its question is answered there, so Answer goes back to
-        // it, and Stop stops that request by its ID and goes back to it too, where its outcome shows (#1125).
-        <div className={`run-strip elsewhere${anyRunStatus === 'awaiting-input' ? ' waiting' : ''}`} data-elsewhere-run-id={anyRunId ?? undefined}>
+        // it, and Stop stops that request by its ID and goes back to it too, where its outcome shows (#1125). It is laid
+        // out as this thread's strip is: what it is doing on the first row, its actions under it at the row's end.
+        <div className={`run-strip elsewhere${anyRunStatus === 'awaiting-input' ? ' waiting' : ''}${anyRunStatus === 'stopping' ? ' stopping' : ''}`} data-elsewhere-run-id={anyRunId ?? undefined}>
           <span className="run-icon" aria-hidden="true">
-            {anyRunStatus === 'awaiting-input' ? <CircleHelp /> : <Spinner decorative />}
+            {anyRunStatus === 'awaiting-input' ? <CircleHelp /> : <Spinner key={anyRunStatus === 'stopping' ? 'stopping' : 'working'} decorative />}
           </span>
-          <span className="run-text" role="status">
-            <span className="run-phase">{anyRunStatus === 'awaiting-input' ? 'The AI needs your answer in another conversation' : anyRunStatus === 'stopping' ? 'Stopping in another conversation' : 'Working in another conversation'}</span>
+          <span className="run-phase" role="status">
+            {anyRunStatus === 'awaiting-input' ? 'The AI needs your answer in another conversation' : anyRunStatus === 'stopping' ? 'Stopping in another conversation' : 'Working in another conversation'}
           </span>
           <span className="run-actions">
             {runThreadId && (
-              <button className={`btn btn-sm${anyRunStatus === 'awaiting-input' ? ' btn-primary' : ''}`} onClick={() => toRunThread()}>
+              // The one filled action is the answer it waits for; going there otherwise is quiet, like Stop.
+              <button className={`btn btn-sm ${anyRunStatus === 'awaiting-input' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => toRunThread()}>
                 {anyRunStatus === 'awaiting-input' ? 'Answer' : 'Go to conversation'}
               </button>
             )}
             {anyRunStatus !== 'stopping' && (
               <button
-                className="btn btn-sm run-stop"
+                className="btn btn-sm btn-ghost run-stop"
                 title={anyRunMode === 'ask' ? 'Stop that question' : 'Stop that request and undo its changes'}
                 onClick={() => {
                   // That request only, and its thread as it is now: the request may end before the thread opens.
@@ -1493,40 +1555,54 @@ export function Chat() {
                   toRunThread(id);
                 }}
               >
-                <Square size={10} fill="currentColor" /> {anyRunMode === 'ask' ? 'Stop' : 'Stop and undo'}
+                <Square fill="currentColor" aria-hidden="true" /> {anyRunMode === 'ask' ? 'Stop' : 'Stop and undo'}
               </button>
             )}
           </span>
         </div>
       )}
       {runHere && (
-        <div className={`run-strip${waiting ? ' waiting' : ''}`} data-run-id={activeRunId ?? undefined}>
-          {/* The one live indicator: it turns while the AI works and stops when it waits on you. */}
+        // Two rows: what the AI is doing now has the whole first row, and what it may change sits under it with Stop at
+        // its end, beside the composer. Once stopping, Stop's room is kept, empty, so nothing rewraps and the box holds
+        // its height.
+        <div className={`run-strip${waiting ? ' waiting' : ''}${runStatus === 'stopping' ? ' stopping' : ''}${runModelShown ? ' with-model' : ''}`} data-run-id={activeRunId ?? undefined}>
+          {/* The one live indicator: it turns while the AI works and stops when it waits on you. Stopping starts it
+              afresh, so its few last turns are counted from the press. */}
           <span className="run-icon" aria-hidden="true">
-            {waiting ? <CircleHelp /> : <Spinner decorative />}
+            {waiting ? <CircleHelp /> : <Spinner key={runStatus === 'stopping' ? 'stopping' : 'working'} decorative />}
           </span>
-          <span className="run-text">
-            <span className="run-phase" title={phase}>
-              {phase}
+          <span className="run-phase">{phase}</span>
+          {stripDetail && (
+            <span className={`run-target${stripReach ? ` ${stripReach}` : ''}`}>
+              <StripParts
+                text={stripDetail}
+                lead={stripReach === 'site' ? <Globe aria-hidden="true" /> : stripReach === 'def' ? <Component aria-hidden="true" /> : stripReach === 'shared' ? sentShell === 'footer' ? <PanelBottom aria-hidden="true" /> : <PanelTop aria-hidden="true" /> : null}
+              />
             </span>
-            {stripDetail && (
-              <span className="run-target" title={stripDetail}>
-                {stripDetail}
-              </span>
-            )}
-            {inFlight && (
+          )}
+          {/* The model it went to, when shown, in the quiet line a turn's model takes under the turn, beside Stop. */}
+          {inFlight &&
+            (runModelShown ? (
               <span className="run-model">
                 <span className="sr-only">Sent to </span>
-                {turnModelText(inFlight)}
+                <StripParts text={turnModelText(inFlight)} lead={<Cpu aria-hidden="true" />} />
               </span>
-            )}
-          </span>
+            ) : (
+              <span className="sr-only">Sent to {turnModelText(inFlight)}</span>
+            ))}
           {/* Stopping an edit puts the site back as it was before the request, so the button says so. Once it is
-              stopping there is nothing left to press. */}
-          {runStatus !== 'stopping' && (
+              stopping there is nothing left to press. Quiet, as on the canvas: the run's words lead, and a question
+              waiting below holds the one filled answer. */}
+          {runStatus === 'stopping' ? (
+            <span className="run-actions held" aria-hidden="true">
+              <span className="btn btn-sm btn-ghost run-stop">
+                <Square fill="currentColor" /> {runMode === 'ask' ? 'Stop' : 'Stop and undo'}
+              </span>
+            </span>
+          ) : (
             <span className="run-actions">
               <button
-                className="btn btn-sm run-stop"
+                className="btn btn-sm btn-ghost run-stop"
                 title={runMode === 'ask' ? 'Stop this question' : 'Stop this request and undo its changes'}
                 onClick={() => {
                   // This request only: one that ended meanwhile is not followed by another being stopped.
@@ -1534,7 +1610,7 @@ export function Chat() {
                   focusComposer();
                 }}
               >
-                <Square size={10} fill="currentColor" /> {runMode === 'ask' ? 'Stop' : 'Stop and undo'}
+                <Square fill="currentColor" aria-hidden="true" /> {runMode === 'ask' ? 'Stop' : 'Stop and undo'}
               </button>
             </span>
           )}

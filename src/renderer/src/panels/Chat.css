@@ -349,21 +349,43 @@
   .suggestion { min-height: 30px; padding: 6px 8px; border: 0; border-radius: var(--r-sm); background: var(--panel-2); text-align: left; font-size: 13px; line-height: 18px; color: var(--text); overflow-wrap: anywhere; }
   .suggestion:hover { background-image: linear-gradient(var(--hover), var(--hover)); }
   .suggestion:active { background-image: linear-gradient(var(--active), var(--active)); }
-  .run-strip { flex: none; display: flex; align-items: center; gap: 8px; margin: 0 12px; padding: 6px 6px 6px 10px; border-radius: var(--r-md); background: var(--accent-soft); color: var(--text); }
-  /* The live glyph stays beside the phase it belongs to, however many lines the strip wraps to. */
-  .run-icon { flex: none; align-self: flex-start; display: grid; place-items: center; height: 16px; color: var(--accent-text); }
+  /* The run strip: status chrome, not a message, so it takes the panel's quiet --panel-2 face (the notes' face) rather
+     than the accent tint the author's own messages wear; the accent stays on the live glyph. Two rows on a grid: the
+     phase or step has the whole first row, since it is what the author looks for; what the request may change sits
+     under it, with Stop at that row's end beside the composer. The second row is at least the button's height, so the
+     strip keeps one height from start to stop at every dock width. */
+  .run-strip { flex: none; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; grid-template-rows: auto minmax(26px, auto); column-gap: 8px; margin: 0 12px; padding: 6px 4px 4px 12px; border-radius: var(--r-md); background: var(--panel-2); color: var(--text); }
+  /* The live glyph sits on the phase's first line, however many lines it wraps to. */
+  .run-icon { grid-area: 1 / 1; display: grid; place-items: center; height: 20px; color: var(--accent-text); }
   .run-icon svg { width: 15px; height: 15px; }
-  .run-icon .spinner { width: 14px; height: 14px; border-width: 1.5px; }
+  /* After Stop the spinner turns afresh for at most seven 700ms turns (4.9 seconds, WCAG 2.2.2) while the words say it
+     is still stopping, as the canvas notice does; so does another conversation's. */
+  .run-strip.stopping .spinner { animation-iteration-count: 7; }
   /* A provider warning sits in the panel's gutter, like the strip and the composer. */
   .chat > .scope-note { flex: none; margin: 8px 12px 0; border-radius: var(--r-md); }
-  .run-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; line-height: 16px; }
-  .run-phase { font-size: 12px; font-weight: 600; color: var(--accent-text); }
-  /* What the run may change wraps rather than clip; its full text is also on hover. */
-  .run-target { font-size: 12px; color: var(--text-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-  .run-strip:not(:has(.run-actions)) { padding-right: 10px; }
-  /* The model the running turn went to, under what it may change. */
-  /* It wraps rather than cut the model's own name, which is what tells two models apart. */
-  .run-model { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+  /* The step in the panel's body size and ink, whole: it wraps rather than clip, so a long step is read without a hover. */
+  .run-phase { grid-area: 1 / 2 / 2 / 4; min-width: 0; padding-right: 6px; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; text-wrap: pretty; }
+  /* What the request may change starts under the glyph, not under the phase, so it takes the glyph's track too and
+     keeps to one line beside Stop at the usual dock width. Its first part flows; each later part ("→ Page
+     introduction") is kept whole where it fits, so a wrap falls between parts before inside one (StripParts). */
+  .run-target, .run-model { grid-row: 2; grid-column: 1 / 3; align-self: center; min-width: 0; padding-block: 3px 4px; font-size: 12px; line-height: 16px; color: var(--text-2); overflow-wrap: anywhere; }
+  .run-part { display: inline-block; max-width: 100%; }
+  .run-part.first { display: inline; }
+  .run-lead { white-space: nowrap; }
+  /* How far an edit reaches, in the house hue of the composer's chip, with its icon on the first part's words: amber for
+     the whole site, plum for a component edited everywhere, green for the shared header or footer. */
+  :is(.run-target, .run-model) svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; }
+  .run-target.site > .run-part.first > .run-words { color: var(--amber); }
+  .run-target.def > .run-part.first > .run-words { color: var(--plum); }
+  .run-target.shared > .run-part.first > .run-words { color: var(--green); }
+  /* The model the running turn went to, said when it is not the composer's next one or while a question waits (the
+     answer box names no model): the quiet line a turn's model takes under the turn. Then what the request may change
+     has the whole row under the phase, and the model shares the last row with Stop. */
+  .run-model { color: var(--text-3); }
+  .run-strip.with-model { grid-template-rows: auto auto minmax(26px, auto); }
+  .run-strip.with-model .run-target { grid-column: 1 / 4; padding: 3px 6px 0 0; }
+  .run-strip.with-model .run-model { grid-row: 3; }
+  .run-strip.with-model .run-actions { grid-row: 3; }
   /* The model a turn went to, under the turn: quiet, and never cut by its result card. */
   .turn-model { display: flex; align-items: flex-start; gap: 5px; min-width: 0; padding: 0 2px; font-size: 12px; color: var(--text-3); }
   .turn-model svg { width: 12px; height: 12px; flex: none; margin-top: 2px; }
@@ -380,11 +402,13 @@
   .headroom-note { background: var(--panel-2); }
   .headroom-note > svg { color: var(--text-2); }
   .headroom-note .link:disabled { color: var(--text-3); text-decoration: none; cursor: default; }
-  .run-actions { flex: none; display: flex; gap: 6px; }
+  .run-actions { grid-area: 2 / 3; align-self: end; display: flex; gap: 6px; }
+  .run-actions .btn { padding-inline: 7px; }
+  /* Once stopping, Stop's room is held by an unseen copy of it, so the scope beside it does not rewrap. */
+  .run-actions.held { visibility: hidden; }
+  /* Stop's square, at the size the canvas notice draws it. The waiting question below carries the accent ring; the
+     strip only names the pause, so one box draws the eye. */
   .run-stop svg { width: 10px; height: 10px; }
-  /* The waiting question below carries the accent ring; the strip only names the pause, so one box draws the eye.
-     The phase wraps to a second line rather than clip "Needs your answer" at the narrowest dock. */
-  .run-phase { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
   .chat-connect { flex: none; display: flex; align-items: center; gap: 10px; margin: 8px 12px 12px; padding: 10px 10px 10px 12px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
   .chat-connect > span { flex: 1; }
   .chat-connect-start { display: flex; flex-direction: column; align-items: center; gap: 6px; }
