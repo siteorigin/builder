@@ -905,9 +905,9 @@ describe('guests’ editor calls', () => {
     const h = editor();
     const { socket, run } = await letIn(h);
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
-    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE } });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE }, spotlights: {}, activity: {} });
     h.manager.setRole(run, 'g1', 'copy-editor');
-    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {} });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {}, spotlights: {}, activity: {} });
     const shown = h.presence.length;
     // Neither before the relay confirms it nor after.
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
