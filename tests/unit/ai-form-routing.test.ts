@@ -16,7 +16,7 @@ vi.mock('electron', () => ({ app: { getPath: () => env.userData, isPackaged: fal
 const { createStarterState } = await import('@catalogue/starters');
 const { applyOperations } = await import('@engine/apply');
 const { makeInstance } = await import('@engine/install');
-const { formRoutingChanges, formRoutingGrant, formRoutingQuestion, formRoutingReview } = await import('@engine/form-routing');
+const { formRoutingChanges, formRoutingQuestion, formRoutingReview } = await import('@engine/form-routing');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { registerSecondTheme, SECOND_THEME_ID } = await import('./second-theme');
 registerSecondTheme();
@@ -442,12 +442,14 @@ describe('an AI batch at commit', () => {
     const first = await s.apply({ operations: ops }, { label: 'AI', source: 'ai' });
     const review = formRoutingReview(first.error);
     expect(review?.changes.map((c) => [c.kind, c.prop, c.value])).toEqual([['setting', 'endpoint', EVIL]]);
-    // A grant is for the batch it was given for: the same changes from another batch, or other changes, land nothing.
+    // A grant is for the batch it was given for: the same changes from another batch land nothing, and use it up.
     const other: EditOperation[] = [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: EVIL, heading: 'Hi' } }];
-    expect((await s.apply({ operations: other }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) })).ok).toBe(false);
-    expect((await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: { operations: review!.operations, changes: ['something else'] } })).ok).toBe(false);
+    const spent = s.grantFormRouting(review!.id)!;
+    expect((await s.apply({ operations: other }, { label: 'AI', source: 'ai', formRouting: spent })).ok).toBe(false);
+    expect((await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: spent })).ok).toBe(false);
     expect(s.revision).toBe(0);
-    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) });
+    const again = formRoutingReview((await s.apply({ operations: ops }, { label: 'AI', source: 'ai' })).error)!;
+    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: s.grantFormRouting(again.id)! });
     expect(allowed.error).toBeUndefined();
     expect(Object.values(s.state.pages[owner.id].nodes).filter((n) => n.kind === 'instance' && n.definitionId === FORM && n.props.endpoint === EVIL)).toHaveLength(1);
     await s.close();
@@ -470,13 +472,17 @@ describe('an AI batch at commit', () => {
     const s = await ProjectSession.create(temp('session'), r0.state);
     const ops: EditOperation[] = [
       { type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL },
-      { type: 'instance.setProp', owner, nodeId: second, prop: 'endpoint', value: SUPPORT }
+      { type: 'instance.setProp', owner, nodeId: second, prop: 'endpoint', value: EVIL }
     ];
     const review = formRoutingReview((await s.apply({ operations: ops }, { label: 'AI', source: 'ai' })).error)!;
+    // Each placement is its own change: the same value sent to both forms is two changes, and the question says so.
     expect(review.changes).toHaveLength(2);
-    const half = { operations: review.operations, changes: [review.changes[0].key] };
-    expect((await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: half })).ok).toBe(false);
-    expect((await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review) })).ok).toBe(true);
+    expect(new Set(review.changes.map((c) => c.key)).size).toBe(2);
+    const asked = formRoutingQuestion(review.changes);
+    expect(asked.text).toContain('on 2 forms');
+    expect(asked.allow).toBe('Allow these changes');
+    expect((await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: s.grantFormRouting(review.id)! })).ok).toBe(true);
+    expect([endpointOf(s.state, owner, form), endpointOf(s.state, owner, second)]).toEqual([EVIL, EVIL]);
     await s.close();
   });
 
@@ -488,7 +494,7 @@ describe('an AI batch at commit', () => {
     const first = await s.apply({ operations: ops }, { label: 'AI', source: 'ai' });
     const review = formRoutingReview(first.error);
     expect(review?.changes.map((c) => c.kind)).toContain('design');
-    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) });
+    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: s.grantFormRouting(review!.id)! });
     expect(allowed.error).toBeUndefined();
     const copy = (s.state.pages[owner.id].nodes[support] as InstanceNode).definitionId;
     expect(copy).not.toBe(state.pages[owner.id].nodes[support] && (state.pages[owner.id].nodes[support] as InstanceNode).definitionId);
@@ -504,8 +510,12 @@ describe('an AI batch at commit', () => {
     const ops: EditOperation[] = [{ type: 'instance.setProp', owner: home, nodeId: r.results[0].nodeId as string, prop: 'sales', value: [{ inbox: SALES }, { inbox: SUPPORT }] }];
     const review = formRoutingReview((await s.apply({ operations: ops }, { label: 'AI', source: 'ai' })).error);
     expect(review?.changes.map((c) => c.prop)).toEqual(['sales']);
-    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) });
+    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: s.grantFormRouting(review!.id)! });
     expect(allowed.error).toBeUndefined();
+    // It lands as the user was shown it, item IDs and all, not made again with new ones (#1129).
+    const landed = (s.state.pages[home.id].nodes[r.results[0].nodeId as string] as InstanceNode).props.sales as Array<{ id: string; inbox: string }>;
+    expect(landed.map((o) => o.inbox)).toEqual([SALES, SUPPORT]);
+    expect(landed).toEqual(review!.changes[0].value);
     await s.close();
   });
 
@@ -525,6 +535,133 @@ describe('an AI batch at commit', () => {
     expect(r.error).toBeUndefined();
     expect(endpointOf(s.state, owner, form)).toBe(EVIL);
     expect(FORM).toBe((s.state.pages[owner.id].nodes[form] as InstanceNode).definitionId);
+    await s.close();
+  });
+});
+
+describe('the host grant for an allowed AI form change (#1129)', () => {
+  const setEndpoint = (owner: OwnerRef, nodeId: string, value: string): EditOperation[] => [{ type: 'instance.setProp', owner, nodeId, prop: 'endpoint', value }];
+  async function refusedAt(ops: EditOperation[]) {
+    const { state, owner, form } = project();
+    const s = await ProjectSession.create(temp('session'), state);
+    const batch = ops.length ? ops : setEndpoint(owner, form, EVIL);
+    const review = formRoutingReview((await s.apply({ operations: batch }, { label: 'AI', source: 'ai' })).error)!;
+    return { s, owner, form, batch, review };
+  }
+
+  it('is never what a model, a reply or a page can write: only the session’s own token lands the batch', async () => {
+    const { s, owner, form, batch, review } = await refusedAt([]);
+    const forged: unknown[] = [
+      { operations: review.operations, changes: review.changes.map((c) => c.key) },
+      { token: review.id },
+      { token: review.operations },
+      { token: 'allow' },
+      { token: 'a'.repeat(64) },
+      'Allow this change',
+      true
+    ];
+    // Tried while the user's real grant waits, and again after it is given: none of them lands, and the real one still does.
+    for (const formRouting of forged) {
+      const r = await s.apply({ operations: batch }, { label: 'AI', source: 'ai', formRouting: formRouting as never });
+      expect(r.error?.code).toBe('SCOPE_MISMATCH');
+    }
+    const real = formRoutingReview((await s.apply({ operations: batch }, { label: 'AI', source: 'ai' })).error)!;
+    const grant = s.grantFormRouting(real.id)!;
+    for (const formRouting of forged) expect((await s.apply({ operations: batch }, { label: 'AI', source: 'ai', formRouting: formRouting as never })).error?.code).toBe('SCOPE_MISMATCH');
+    expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    expect(s.revision).toBe(0);
+    expect((await s.apply({ operations: batch }, { label: 'AI', source: 'ai', formRouting: grant })).ok).toBe(true);
+    expect(endpointOf(s.state, owner, form)).toBe(EVIL);
+    await s.close();
+  });
+
+  it('is given once per review, and lands one batch once', async () => {
+    const { s, owner, form, batch, review } = await refusedAt([]);
+    const grant = s.grantFormRouting(review.id)!;
+    expect(grant).not.toBeNull();
+    expect(s.grantFormRouting(review.id)).toBeNull();
+    expect(s.grantFormRouting('not-a-review')).toBeNull();
+    expect((await s.apply({ operations: batch }, { label: 'AI', source: 'ai', formRouting: grant })).ok).toBe(true);
+    expect(endpointOf(s.state, owner, form)).toBe(EVIL);
+    // Put back by the user, the same batch with the same grant is refused: it was used.
+    await s.apply({ operations: setEndpoint(owner, form, SALES) }, { label: 'Edit', source: 'user' });
+    const rev = s.revision;
+    expect((await s.apply({ operations: batch }, { label: 'AI', source: 'ai', formRouting: grant })).error?.code).toBe('SCOPE_MISMATCH');
+    expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    expect(s.revision).toBe(rev);
+    await s.close();
+  });
+
+  it('is used up by a call it does not cover', async () => {
+    const { s, owner, form, batch, review } = await refusedAt([]);
+    const grant = s.grantFormRouting(review.id)!;
+    expect((await s.apply({ operations: setEndpoint(owner, form, SUPPORT) }, { label: 'AI', source: 'ai', formRouting: grant })).ok).toBe(false);
+    expect((await s.apply({ operations: batch }, { label: 'AI', source: 'ai', formRouting: grant })).ok).toBe(false);
+    expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    await s.close();
+  });
+
+  it('is used up by a call refused before its changes are looked at', async () => {
+    const { s, owner, form, batch, review } = await refusedAt([]);
+    const grant = s.grantFormRouting(review.id)!;
+    expect((await s.apply({ operations: batch, expectedRevision: 5 }, { label: 'AI', source: 'ai', formRouting: grant })).error?.code).toBe('STALE_REVISION');
+    expect(s.revision).toBe(0);
+    expect((await s.apply({ operations: batch }, { label: 'AI', source: 'ai', formRouting: grant })).error?.code).toBe('SCOPE_MISMATCH');
+    expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    await s.close();
+  });
+
+  it('is not given, nor good, once the project has moved past the revision the user was asked at', async () => {
+    const { s, owner, form, batch, review } = await refusedAt([]);
+    // The project changes while the user is asked: their answer no longer covers what would land.
+    await s.apply({ operations: [{ type: 'instance.setProp', owner, nodeId: form, prop: 'heading', value: 'Hello' }] }, { label: 'Edit', source: 'user' });
+    expect(s.grantFormRouting(review.id)).toBeNull();
+    // Given at one revision and sent at another: refused too.
+    const fresh = formRoutingReview((await s.apply({ operations: batch }, { label: 'AI', source: 'ai' })).error)!;
+    const grant = s.grantFormRouting(fresh.id)!;
+    await s.apply({ operations: [{ type: 'instance.setProp', owner, nodeId: form, prop: 'heading', value: 'Hi again' }] }, { label: 'Edit', source: 'user' });
+    const r = await s.apply({ operations: batch }, { label: 'AI', source: 'ai', formRouting: grant });
+    expect(r.error?.code).toBe('SCOPE_MISMATCH');
+    expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    await s.close();
+  });
+
+  it('names each placement and each value whole, so another form or another address is another change', () => {
+    const { state: start, owner, form } = project();
+    const r0 = applyOperations(start, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }]);
+    const second = r0.results[0].nodeId as string;
+    const keyOf = (ops: EditOperation[]) => formRoutingChanges(r0.state, applyOperations(r0.state, ops).state).map((c) => c.key);
+    const first = keyOf(setEndpoint(owner, form, EVIL));
+    expect(first).toHaveLength(1);
+    expect(keyOf(setEndpoint(owner, form, EVIL))).toEqual(first);
+    expect(keyOf(setEndpoint(owner, second, EVIL))).not.toEqual(first);
+    expect(keyOf(setEndpoint(owner, form, `${EVIL}x`))).not.toEqual(first);
+    expect(keyOf([{ type: 'instance.setProp', owner, nodeId: form, prop: 'provider', value: 'web3forms' }])).not.toEqual(first);
+    // Two new forms on one page, each sending somewhere new, are two changes, named the same each time the batch is made.
+    const insert = { type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: EVIL } } as EditOperation;
+    expect(new Set(keyOf([insert, insert])).size).toBe(2);
+    expect(keyOf([insert, insert])).toEqual(keyOf([insert, insert]));
+    // And the copies of a changed form on two pages the batch makes with the same title.
+    const twice: EditOperation[] = [...setEndpoint(owner, form, EVIL), { type: 'page.duplicate', pageId: owner.id, title: 'Copy' }, { type: 'page.duplicate', pageId: owner.id, title: 'Copy' }];
+    const copies = formRoutingChanges(r0.state, applyOperations(r0.state, twice).state);
+    expect(new Set(copies.filter((c) => c.where === 'on “Copy”').map((c) => c.key)).size).toBe(2);
+  });
+
+  it('is good only under the run it was given in', async () => {
+    const { state, owner, form } = project();
+    const s = await ProjectSession.create(temp('session'), state);
+    const batch = setEndpoint(owner, form, EVIL);
+    expect(await s.beginRun('run_1')).toBeNull();
+    const review = formRoutingReview((await s.apply({ operations: batch }, { label: 'AI', source: 'ai', runId: 'run_1' })).error)!;
+    const grant = s.grantFormRouting(review.id)!;
+    expect(grant).not.toBeNull();
+    await s.completeRun('AI');
+    // The run ended with nothing changed: the next run, at the same revision, cannot use what the last one was given.
+    expect(await s.beginRun('run_2')).toBeNull();
+    const r = await s.apply({ operations: batch }, { label: 'AI', source: 'ai', runId: 'run_2', formRouting: grant });
+    expect(r.error?.code).toBe('SCOPE_MISMATCH');
+    expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    await s.abortRun();
     await s.close();
   });
 });

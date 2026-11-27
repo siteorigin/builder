@@ -26,7 +26,7 @@ import { authorityCheck, authorityLabel, canEditContracts, layoutLabel, liveEntr
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { untilStopped } from './validation';
 import { developerModeCheck } from '@engine/developer-mode';
-import { formRoutingGrant, formRoutingQuestion, formRoutingReview, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
+import { formRoutingQuestion, formRoutingReview, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { FORM_ROUTING_PROPS } from '@engine/form-destinations';
 import { guestEditProblem } from '@engine/guest-edits';
 import { checkEditBatch } from '@shared/live/capabilities';
@@ -127,7 +127,7 @@ export interface RunSession {
   runChanged(): boolean;
   /** `collectionWrite`: the post tool's grant for this one batch, never the model's (see shared/collection-grant). */
   /**
-   * `formRouting`: what the user allowed, when the app asked them, of a batch that changes where a form sends
+   * `formRouting`: the grant `grantFormRouting` gave, once the user allowed a batch that changes where a form sends
    * (engine/form-routing). `guard`: asked as the batch's turn comes and just before it is saved, with the project as it
    * would leave it (CommitOptions).
    */
@@ -135,6 +135,8 @@ export interface RunSession {
     batch: { operations: EditOperation[]; expectedRevision?: number },
     opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; formRouting?: FormRoutingGrant; guard?: (next: ProjectState | null) => ToolError | null }
   ): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
+  /** The main process's single-use grant for a form routing review the user allowed when the app asked; null when it no longer holds. */
+  grantFormRouting(reviewId: string): FormRoutingGrant | null;
   diagnostics(): Diagnostic[];
   undoGroup(runId: string): Promise<{ ok: boolean; error?: { message: string } }>;
   historyInfo(): TurnHistory;
@@ -1859,8 +1861,12 @@ export class Orchestrator {
       const { text, choices, allow } = formRoutingQuestion(review.changes);
       const answer = await askUser(text, choices, false, undefined, run.status === 'awaiting-input' ? 'running' : run.status);
       if (signal.aborted) return refused('CANCELLED', 'Canceled', false);
-      if (answer === allow || TYPED_YES.test(answer)) return send(formRoutingGrant(review));
-      return refused('SCOPE_MISMATCH', `The user kept where the contact form sends its messages. Nothing in this batch was applied: send the rest of it again without changing a form's ${FORM_ROUTING_PROPS.join(', ')}, or the design or code that decides them.`, true);
+      if (answer !== allow && !TYPED_YES.test(answer))
+        return refused('SCOPE_MISMATCH', `The user kept where the contact form sends its messages. Nothing in this batch was applied: send the rest of it again without changing a form's ${FORM_ROUTING_PROPS.join(', ')}, or the design or code that decides them.`, true);
+      // Only the session gives a grant, for the review it filed, while the project is as the user saw it.
+      const grant = session.grantFormRouting(review.id);
+      if (!grant) return refused('STALE_REVISION', 'The project changed while the user was asked, so their answer no longer covers this batch. Nothing in it was applied: read the latest state and send it again.', true);
+      return send(grant);
     };
     const host: ToolHost = {
       macros,
@@ -1972,6 +1978,8 @@ export class Orchestrator {
           // a guest: where a form sends is the host's alone, and a guest's batch that changes it is refused as it is.
           const review = res.ok || delegation ? null : formRoutingReview(res.error);
           if (review) res = await approveRouting(review, send);
+          // Refused again: the model hears why, never the session's review of it.
+          if (review && formRoutingReview(res.error)) res = { ...res, error: { code: res.error!.code, message: res.error!.message, recoverable: res.error!.recoverable } };
         } catch (e) {
           // A save that failed part way may have published the source before it threw: the run is undone, so it is kept.
           await keepDrafts(operations, { ok: true });
