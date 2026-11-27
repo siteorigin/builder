@@ -247,11 +247,18 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
    * reads, or each form inside the design it is (a setting the design passes on read from the placement), or that its
    * code decides. `read` resolves a value bound to the design the placement is inside; `tree` holds the placement.
    */
-  const sendsOf = (state: ProjectState, n: Instance, tree?: NodeTree, read: (v: unknown) => unknown = (v) => v, depth = 0): FormSends[] => {
+  const sendsOf = (state: ProjectState, n: Instance, tree?: NodeTree): FormSends[] => {
+    // A walk of a few dozen placements at most, each form listed once: a design placed many times inside another
+    // never holds the question up.
+    const budget = { left: 48 };
+    const seen = new Set<string>();
+    return walk(state, n, tree, (v) => v, 0, budget).filter((f) => !seen.has(JSON.stringify(f)) && !!seen.add(JSON.stringify(f)));
+  };
+  const walk = (state: ProjectState, n: Instance, tree: NodeTree | undefined, read: (v: unknown) => unknown, depth: number, budget: { left: number }): FormSends[] => {
     const d = def(state, n.definitionId);
     // Only a form, or a design that places one, is followed: the rest send nothing.
     if (!d || !(sendsFormMessages(d) || bears().before.has(d.id) || bears().after.has(d.id))) return [];
-    if (depth > 4) return [{ service: 'Set deep inside its design', unknown: 'Set deep inside its design' }];
+    if (depth > 4 || budget.left-- <= 0) return [{ service: 'Set deep inside its design', unknown: 'Set deep inside its design' }];
     const value = (p: string) => withList(read(resolved(state, n, p)), tree, n.id);
     if (sendsFormMessages(d)) {
       const provider = value('provider') ?? 'endpoint';
@@ -260,7 +267,8 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       const options = (d.properties.provider as { options?: Array<{ value: string; label: string }> }).options ?? [];
       const service = FORM_PROVIDERS.find(([v]) => v === provider)?.[1] ?? options.find((o) => o.value === provider)?.label ?? provider;
       const prop = Object.hasOwn(FORM_SERVICES, provider) ? FORM_SERVICES[provider].prop : undefined;
-      if (!prop) return [{ service }];
+      // A service the form has no way to send with: it sends nothing.
+      if (!prop) return [{ service, unknown: 'Nowhere' }];
       const label = (d.properties[prop] as { label?: unknown } | undefined)?.label;
       return [{ service, ...(depth ? {} : { prop }), setting: typeof label === 'string' && label ? label : prop, value: value(prop) }];
     }
@@ -275,7 +283,7 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       if (propBinding(whole)) return { ...(whole as object), field: b.field };
       return whole && typeof whole === 'object' && !Array.isArray(whole) ? (whole as Record<string, unknown>)[b.field] : undefined;
     };
-    return Object.values(d.tree?.nodes ?? {}).flatMap((m) => (m.kind === 'instance' ? sendsOf(state, m, d.tree, inner, depth + 1) : []));
+    return Object.values(d.tree?.nodes ?? {}).flatMap((m) => (m.kind === 'instance' ? walk(state, m, d.tree, inner, depth + 1, budget) : []));
   };
   // The designs that place a form at all, a setting of their own or not, worked out only if something needs them.
   let bearing: { before: Set<string>; after: Set<string> } | undefined;

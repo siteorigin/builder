@@ -570,6 +570,15 @@ describe('the app’s dialog for an AI change to where forms send (#1130)', () =
     });
   });
 
+  it('shows a service the form cannot send with as sending nowhere', () => {
+    // An option the form's code has no way to send with (a project copy may offer one), set as a batch would leave it.
+    const { state, owner, form } = project();
+    const next = structuredClone(state);
+    (next.pages[owner.id].nodes[form] as InstanceNode).props.provider = 'carrier-pigeon';
+    const [f] = formRoutingPrompt(formRoutingChanges(state, next)).forms;
+    expect(f.rows[1]).toEqual({ label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: 'Nowhere' });
+  });
+
   it('names a field a binding reads, and says why no address can be shown when none can', () => {
     const recipients = { $prop: 'recipients', field: 'sales' };
     const [f] = formRoutingPrompt([
