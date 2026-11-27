@@ -16,8 +16,8 @@
  * objects removed. A lock of Git's that no dead writer of the app's took is never cleared, however old: it is another
  * Git's, which may still be running.
  */
-import { createHash } from 'node:crypto';
-import { promises as fs, type Stats } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { promises as fs, type BigIntStats, type Stats } from 'node:fs';
 import { hostname, uptime } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -49,8 +49,12 @@ const LOCK_WAIT_MS = 5000;
 const UNREADABLE_LOCK_MS = 2000;
 /** The app's own lock on the repository, beside Git's files, which Git leaves alone. */
 const WRITER_LOCK = 'siteorigin-writer.lock';
-/** Another Git's temporary objects are its own until they are this old. */
-const ABANDONED_TMP_MS = 60 * 60_000;
+/** Left when a write failed after naming some objects whose folders may not be on the disk: the next write flushes them. */
+const UNFLUSHED = 'siteorigin-unflushed';
+/** Another Git's temporary objects are its own until they are this old: the age `git gc` clears them at. */
+const ABANDONED_TMP_MS = 14 * 86_400_000;
+/** A writer still running whose lock is older than the computer's start by more than this has another's process ID. */
+const BOOT_MARGIN_MS = 60_000;
 /** How much of a file is compressed to see whether compressing it is worth it. */
 const SAMPLE_BYTES = 64 * 1024;
 /** The longest name a folder can hold on macOS, Windows and Linux alike. */
@@ -99,8 +103,8 @@ function badSegment(s: string, folder: boolean): boolean {
   const visible = s.replace(HFS_IGNORED, '');
   if (visible === '.' || visible === '..') return true;
   const name = gitName(s);
-  if (name === '.git' || /^\.?git~[1-9]$/.test(name) || name === '.gitmodules' || /^gi7eba~[1-9]$/.test(name)) return true;
-  return folder && ['.gitattributes', '.gitignore', '.mailmap'].includes(name);
+  if (name === '.git' || /^\.?git~[1-9]$/.test(name) || name === '.gitmodules' || /^(gitmod|gi7eba)~[1-9]$/.test(name)) return true;
+  return folder && (['.gitattributes', '.gitignore', '.mailmap'].includes(name) || /^(gitatt|gi7d29|gitign|gi250a|mailma|maba30)~[1-9]$/.test(name));
 }
 
 /** A path as a tree holds it, or throws: relative, forward slashes, and no part a version cannot hold (badSegment). */
@@ -222,9 +226,13 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
    */
   const recover = async (dead?: number) => {
     const objects = join(gitdir, 'objects');
+    if (dead !== undefined)
+      for (const name of await fs.readdir(gitdir).catch(() => [] as string[])) if (name.startsWith(`siteorigin-${dead}-`) && name.endsWith('.tmp')) await fs.rm(join(gitdir, name), { force: true });
     const fans = (await fs.readdir(objects).catch(() => [] as string[])).filter((d) => /^[0-9a-f]{2}$/.test(d));
     await eachAtMost(4, fans, async (fan) => {
       const dir = join(objects, fan);
+      // A folder linked elsewhere is not the repository's: nothing in it is touched (and reading through it is refused).
+      if (!(await fs.lstat(dir).catch(() => null))?.isDirectory()) return;
       for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
         if (!name.startsWith(TMP_PREFIX)) continue;
         const own = dead !== undefined && name.startsWith(`${TMP_PREFIX}${dead}_`);
@@ -238,24 +246,78 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     unflushed = false;
   };
 
+  /**
+   * Make `path` exclusively, holding `content` from its first moment: written whole to a temporary file and linked into
+   * place, which fails if anything is there, so a lock is never seen empty or half written, even by a writer that stops
+   * as it takes it. Where the disk has no hard links (a FAT drive), it is made exclusively and then written. False when
+   * something is there already.
+   */
+  const createWhole = async (path: string, content: string): Promise<boolean> => {
+    const tmp = join(gitdir, `siteorigin-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
+    try {
+      const t = await fs.open(tmp, 'wx');
+      try {
+        await t.writeFile(content);
+        await t.sync();
+      } finally {
+        await t.close();
+      }
+      try {
+        await fs.link(tmp, path);
+        return true;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      }
+      let handle: Awaited<ReturnType<typeof fs.open>>;
+      try {
+        handle = await fs.open(path, 'wx');
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw e;
+      }
+      try {
+        await handle.writeFile(content);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      return true;
+    } finally {
+      await fs.rm(tmp, { force: true }).catch(() => undefined);
+    }
+  };
+
+  /** The app's lock as it is now, or null when it is not there. A read that fails is thrown: it says nothing either way. */
   const readWriter = async (file: string): Promise<{ writer: Writer | null; st: Stats } | null> => {
     const st = await fs.lstat(file).catch((e) => (isMissing(e) ? null : Promise.reject(e)));
     if (!st) return null;
+    if (!st.isFile()) throw new GitError('corrupt', `The versions repository is damaged: ${WRITER_LOCK} is not a file.`);
+    let text: string;
     try {
-      const w = JSON.parse(await fs.readFile(file, 'utf8')) as Writer;
-      return { writer: Number.isSafeInteger(w?.pid) && typeof w.host === 'string' && Number.isFinite(w.at) ? w : null, st };
+      text = await fs.readFile(file, 'utf8');
     } catch (e) {
       if (isMissing(e)) return null;
+      throw e;
+    }
+    try {
+      const w = JSON.parse(text) as Writer;
+      return { writer: Number.isSafeInteger(w?.pid) && typeof w.host === 'string' && Number.isFinite(w.at) ? w : null, st };
+    } catch {
       return { writer: null, st };
     }
   };
-  /** Whether the writer that holds the app's lock has stopped: it ran before this computer last started, or has exited. */
+  /**
+   * Whether the writer that holds the app's lock has stopped: its process has exited, or still runs but only under a
+   * number reused since the computer last started. Another computer's (a project on a shared folder) cannot be told, so
+   * it is waited for. A lock with nothing readable in it (made where there are no hard links, by a writer that stopped
+   * as it took it) is taken as abandoned a moment after it was made.
+   */
   const stopped = (held: { writer: Writer | null; st: Stats }) => {
     const w = held.writer;
     if (!w) return Date.now() - held.st.mtimeMs >= UNREADABLE_LOCK_MS;
-    if (w.at < Date.now() - uptime() * 1000 - 1000) return true;
-    // Another computer's (a project on a shared folder): there is no telling, so it is waited for.
-    return w.host === hostname() && !alive(w.pid);
+    if (w.host !== hostname()) return false;
+    if (!alive(w.pid)) return true;
+    return w.at < Date.now() - uptime() * 1000 - BOOT_MARGIN_MS;
   };
 
   /**
@@ -265,47 +327,42 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
    */
   const asWriter = async <T>(f: () => Promise<T>, move?: { ref: string; next: Oid }): Promise<T> => {
     const file = join(gitdir, WRITER_LOCK);
+    const unflushedMark = join(gitdir, UNFLUSHED);
     const deadline = performance.now() + lockWait;
     for (let wait = 10; ; wait = Math.min(wait * 2, 100)) {
-      let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
-      try {
-        handle = await fs.open(file, 'wx');
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      }
-      if (handle) {
+      const mine: Writer = { pid: process.pid, host: hostname(), at: Date.now(), ...move };
+      if (await createWhole(file, JSON.stringify(mine))) {
         try {
-          try {
-            await handle.writeFile(JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), ...move } satisfies Writer));
-            if (move) await handle.sync();
-          } finally {
-            await handle.close();
-          }
+          // The lock is in place before a branch lock is taken, so a stopped move's branch lock is known by it.
           if (move) await syncDir(gitdir);
-          if (unflushed) await recover();
+          if (unflushed || (await fs.lstat(unflushedMark).catch(() => null))) {
+            await recover();
+            await fs.rm(unflushedMark, { force: true });
+          }
           return await f();
         } finally {
-          await fs.unlink(file).catch(() => undefined);
+          // Removed only if it is still this writer's.
+          const now = await readWriter(file).catch(() => null);
+          if (now?.writer?.pid === mine.pid && now.writer.at === mine.at && now.writer.host === mine.host) await fs.unlink(file).catch(() => undefined);
         }
       }
       const held = await readWriter(file);
-      if (!held) continue;
-      if (stopped(held)) {
-        // Its branch lock first, while its own lock still keeps every other writer of the app's out; then its objects.
+      if (held && stopped(held)) {
+        // Its branch lock first, while its own lock still keeps every other writer of the app's out; then its objects. A
+        // branch lock is its only if it holds the very commit it was moving the branch to: another Git's never does.
         const w = held.writer;
-        if (w?.ref && w.next && BRANCH_RE.test(w.ref)) {
+        if (w?.ref && w.next && BRANCH_RE.test(w.ref) && w.ref.length <= MAX_REF_LENGTH) {
           const lock = `${join(gitdir, ...w.ref.split('/'))}.lock`;
-          const text = await fs.readFile(lock, 'utf8').catch(() => null);
-          if (text === `${w.next}\n` || text === '') await fs.unlink(lock).catch(() => undefined);
+          const text = await fs.readFile(lock, 'utf8').catch((e) => (isMissing(e) ? null : Promise.reject(e)));
+          if (text === `${w.next}\n`) await fs.unlink(lock).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
         }
         await recover(w && w.host === hostname() ? w.pid : undefined);
-        // Removed only if it is still the one found stopped.
+        // Removed only if it is still the one found stopped; a removal refused is thrown, never retried for ever.
         const again = await readWriter(file);
-        if (again && again.st.ino === held.st.ino && again.st.mtimeMs === held.st.mtimeMs) await fs.unlink(file).catch(() => undefined);
-        continue;
+        if (again && again.st.ino === held.st.ino && again.st.mtimeMs === held.st.mtimeMs) await fs.unlink(file).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
       }
       if (performance.now() >= deadline) throw new GitError('locked', 'Another save is writing to the versions repository; nothing was written.');
-      await sleep(wait);
+      if (!held || !stopped(held)) await sleep(wait);
     }
   };
 
@@ -322,8 +379,12 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
             await gfs.flush();
             return result;
           } catch (e) {
-            // Some may have been named before the failure, their folder not yet flushed.
-            if (gfs.named()) unflushed = true;
+            // Some may have been named before the failure, their folders not yet flushed: the next write, whichever worker
+            // makes it, flushes them before relying on any.
+            if (gfs.named()) {
+              unflushed = true;
+              await fs.writeFile(join(gitdir, UNFLUSHED), String(Date.now())).catch(() => undefined);
+            }
             await gfs.discard();
             throw e;
           }
@@ -356,7 +417,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
    * A project file to read, and its stat: a plain file reached with no link on the way, so nothing outside the project,
    * and nothing of its own `.git` through a folder linked to it, can be taken into a version.
    */
-  const sourceFile = async (source: unknown): Promise<{ abs: string; st: Stats }> => {
+  const sourceFile = async (source: unknown): Promise<{ abs: string; st: BigIntStats }> => {
     checkTreePath(source, limits);
     let found: ReturnType<typeof safeJoinLooking>;
     try {
@@ -364,17 +425,18 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     } catch {
       throw new GitError('invalid', `${String(source)} is not a file of this project.`);
     }
-    const st = found.st === null ? null : await fs.lstat(found.abs).catch((e) => (isMissing(e) ? null : Promise.reject(e)));
-    if (!st) throw new GitError('not-found', `${String(source)} is not there.`);
-    if (found.st === undefined || !st.isFile()) throw new GitError('invalid', `${String(source)} is not a plain file of this project: it is a link, a folder, or reached through a link.`);
-    return { abs: found.abs, st };
+    // The very look that found no link on the way is the one kept: a folder swapped for a link after it is a different
+    // file when it is opened (readSource).
+    if (found.st) return { abs: found.abs, st: found.st };
+    if (found.st === null || !(await fs.lstat(found.abs).catch(() => null))) throw new GitError('not-found', `${String(source)} is not there.`);
+    throw new GitError('invalid', `${String(source)} is not a plain file of this project: it is a link, a folder, or reached through a link.`);
   };
-  const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+  const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 
   /** A file's bytes, read only as far as the size it had when it was checked, and refused if it changed meanwhile. */
-  const readSource = async (source: string, seen?: { abs: string; st: Stats }): Promise<Uint8Array> => {
+  const readSource = async (source: string, seen?: { abs: string; st: BigIntStats }): Promise<Uint8Array> => {
     const { abs, st: checked } = seen ?? (await sourceFile(source));
-    if (checked.size > limits.maxBlobBytes) throw new GitError('too-large', `${source} is too large for a version.`);
+    if (checked.size > BigInt(limits.maxBlobBytes)) throw new GitError('too-large', `${source} is too large for a version.`);
     let opened: Awaited<ReturnType<typeof openRegularFile>>;
     try {
       opened = await openRegularFile(abs);
@@ -384,9 +446,9 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     }
     const { handle, stat } = opened;
     try {
-      if (!same(stat, checked)) throw new GitError('changed', `${source} changed while the version was being saved.`);
+      if (!same(await handle.stat({ bigint: true }), checked)) throw new GitError('changed', `${source} changed while the version was being saved.`);
       const data = await readAtMost(handle, stat.size, stat.size);
-      if (!data || data.byteLength !== stat.size || !same(await handle.stat(), checked)) throw new GitError('changed', `${source} changed while the version was being saved.`);
+      if (!data || data.byteLength !== stat.size || !same(await handle.stat({ bigint: true }), checked)) throw new GitError('changed', `${source} changed while the version was being saved.`);
       return data;
     } finally {
       await handle.close().catch(() => undefined);
@@ -401,7 +463,13 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     const header = Buffer.from(`blob ${bytes.byteLength}\0`);
     const oid = createHash('sha1').update(header).update(bytes).digest('hex');
     const path = objectPath(oid);
-    if (gfs.staged(path) || (await looseExists(oid))) return oid;
+    if (gfs.staged(path)) return oid;
+    if (await looseExists(oid)) {
+      // Used again, as Git does: given the time now, so a `git gc` meanwhile takes it for new, not long unused.
+      const now = new Date();
+      await fs.utimes(path, now, now).catch(() => undefined);
+      return oid;
+    }
     const deflate = createDeflate({ level: incompressible(bytes) ? 0 : zlibConstants.Z_DEFAULT_COMPRESSION });
     await gfs.stage(path, Readable.from([header, bytes], { objectMode: false }).pipe(deflate));
     return oid;
@@ -438,15 +506,11 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     return oid;
   };
 
-  /** Take `<ref>.lock`, waiting a while for another Git that holds it; throws `locked` when it keeps it. */
-  const takeLock = async (lock: string) => {
+  /** Take `<ref>.lock` holding `content`, waiting a while for another Git that holds it; throws `locked` when it keeps it. */
+  const takeLock = async (lock: string, content: string) => {
     const deadline = performance.now() + lockWait;
     for (let wait = 10; ; wait = Math.min(wait * 2, 100)) {
-      try {
-        return await fs.open(lock, 'wx', 0o666);
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      }
+      if (await createWhole(lock, content)) return;
       if (performance.now() >= deadline) throw new GitError('locked', 'Another Git is moving this branch of the versions repository; it was not moved.');
       await sleep(wait);
     }
@@ -506,7 +570,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         if (files.length > limits.maxEntries) throw new GitError('too-large', `A version can hold ${limits.maxEntries} files at most.`);
         // Everything is checked before anything is written: a refused version leaves nothing behind.
         const top: Dir = { kind: 'dir', name: '', children: new Map() };
-        const seen: Array<{ abs: string; st: Stats } | undefined> = [];
+        const seen: Array<{ abs: string; st: BigIntStats } | undefined> = [];
         let total = 0;
         let inline = 0;
         for (const [index, f] of files.entries()) {
@@ -519,8 +583,8 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
             seen.push(undefined);
           } else if (typeof f?.source === 'string') {
             const file = await sourceFile(f.source);
-            if (file.st.size > limits.maxBlobBytes) throw new GitError('too-large', `${f.source} is too large for a version.`);
-            total += file.st.size;
+            if (file.st.size > BigInt(limits.maxBlobBytes)) throw new GitError('too-large', `${f.source} is too large for a version.`);
+            total += Number(file.st.size);
             seen.push(file);
           } else throw new GitError('invalid', `${String(f?.path)} has no content.`);
           if (inline > limits.maxInlineBytes || total > limits.maxTotalBytes) throw new GitError('too-large', 'The files are too large together for one version.');
@@ -622,17 +686,11 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
               check(token);
               const path = join(gitdir, ...ref.split('/'));
               const dir = dirname(path);
-              await realDir(dir, dirname(ref));
+              if (!(await realDir(join(gitdir, 'refs'), 'refs')) || !(await realDir(dir, dirname(ref)))) throw new GitError('corrupt', 'The versions repository is damaged: it has no refs/heads folder.');
               const lock = `${path}.lock`;
-              const handle = await takeLock(lock);
+              await takeLock(lock, `${next}\n`);
               let owned = true;
               try {
-                try {
-                  await handle.writeFile(`${next}\n`);
-                  await handle.sync();
-                } finally {
-                  await handle.close();
-                }
                 if (opts.fault) await opts.fault('lock-written', lock);
                 const actual = await readRef(ref);
                 if (actual !== expected) throw new GitError('conflict', 'The branch moved since it was read; it was not moved again.', actual);

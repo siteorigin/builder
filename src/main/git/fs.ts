@@ -171,9 +171,13 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
   async function discard() {
     const batch = [...pending.values()];
     pending.clear();
-    // Folders made for them stay to be recorded by the next flush: a later object may land in one.
     await synced().catch(() => undefined);
     await Promise.all(batch.map((tmp) => fs.rm(tmp, { force: true }).catch(() => undefined)));
+    // Folders made for them are kept, and recorded in their parent now: a later write, perhaps another worker's, may
+    // name an object in one without making it.
+    const dirs = [...madeDirs];
+    madeDirs.clear();
+    await eachAtMost(FLUSHES_AT_ONCE, [...new Set(dirs.map((d) => dirname(d)))], syncDir).catch(() => undefined);
   }
 
   /** isomorphic-git's writes: objects are staged; anything else (a new repository's config) is written durably at once. */

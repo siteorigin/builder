@@ -47,7 +47,7 @@ const TIMEOUT_MS = 5000;
 /** `git --version` prints one short line; anything longer is not Git. */
 const MAX_OUTPUT = 4096;
 /** `git version 2.39.5 (Apple Git-154)`, `git version 2.47.1.windows.1`: the whole of one line. */
-const VERSION_RE = /^git version (\d+\.\d+(?:\.\d+)*)(?:[ (-][^\n]*|\.[^\d\n][^\n]*)?$/;
+const VERSION_RE = /^git version (\d+\.\d+(?:\.\d+)*)(?:[ (-][^\r\n]*|\.[^\d\r\n][^\r\n]*)?$/;
 
 /** The folders Git's installers put it in, for each platform, looked in after PATH. */
 function usualDirs(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
