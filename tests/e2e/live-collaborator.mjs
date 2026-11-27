@@ -222,7 +222,8 @@ try {
   const open = gw.getByRole('list', { name: 'Open notes' });
   const noteRow = open.locator('.notes-row', { hasText: noteText });
   await noteRow.waitFor({ timeout: 10000 });
-  await noteRow.getByRole('checkbox', { name: 'Resolve' }).check();
+  // The box follows the notes as the host has them: it is ticked once the host has resolved the note.
+  await noteRow.getByRole('checkbox', { name: 'Resolve' }).click();
   await eventually(async () => {
     const note = (await hw.evaluate((key) => window.builder.notes.list(key), workspaceKey))?.notes.find((n) => n.id === pinned.id);
     assert.equal(note?.resolved, true, 'the host’s note is resolved');
