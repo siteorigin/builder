@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import type { ResponsiveScope, ResponsiveStyles, StyleState, StyleTokenRef, StyleValue, TokenDef } from '@shared/types';
 import { CONTAINER_SCOPES, isGroupStyleState, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { hasGroupStyles } from '@shared/interaction-groups';
-import { CONTAINER_SCOPE_LABEL, CONTAINER_SCOPE_RANGE, STATE_WORDS, STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, colorAtStrength, cssRivals, hasStateStyles, isStateStyleProp, partStrength, styleDeclOrder, withColumnSizes, type StyleLayer, type StylePropDef } from '@shared/styles';
+import { CONTAINER_SCOPE_LABEL, CONTAINER_SCOPE_RANGE, STATE_WORDS, STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, colorAtStrength, cssRivals, hasStateStyles, isStateStyleProp, menuTokens, partStrength, styleDeclOrder, withColumnSizes, type StyleLayer, type StylePropDef } from '@shared/styles';
 import { parseColor } from '@shared/color';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorChip, ColorPick, opacityWords } from '../components/ColorPick';
@@ -723,10 +723,7 @@ export function StyleControls({
   );
 }
 
-function tokenOptions(tokens: TokenDef[], group: StylePropDef['tokenGroup']) {
-  const groups = Array.isArray(group) ? group : group ? [group] : [];
-  return tokens.filter((t) => groups.includes(t.group));
-}
+const tokenOptions = menuTokens;
 
 /** The mark for a value linked to Site styles: the colour itself for a colour, the Site styles glyph otherwise. */
 function Lead({ def, v, tokens }: { def: StylePropDef; v: StyleTokenRef; tokens: TokenDef[] }) {

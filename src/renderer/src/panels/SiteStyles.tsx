@@ -1667,7 +1667,7 @@ export function SiteStyles() {
             <span className="ss-name">
               <NameWithReset label={t.label} reset={changed(t.id) && <ResetDot label={name} theme={`value, ${show(g, null, themeValue(t.id))}`} onReset={() => set(t.id, null)} />} />
             </span>
-            {desc && <span className="ss-desc">{desc}</span>}
+            {g === 'shadow' && value.trim().toLowerCase() === 'none' ? <span className="ss-desc">No shadow</span> : desc && <span className="ss-desc">{desc}</span>}
           </span>
         </div>
         {follows ? (
