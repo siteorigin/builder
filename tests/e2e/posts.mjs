@@ -277,6 +277,29 @@ await win.locator('.posts-panel').getByRole('button', { name: 'Back to writing' 
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true));
 await win.locator('.post-details:not(.post-seo) .section-head').click();
 const date = win.getByLabel('Publication date');
+
+step('a future-dated post asks before it is published (#1115)');
+// Typed and not yet committed: Publish saves it first, and asks about the date as saved.
+await date.fill('2099-01-01');
+const futureAsk = win.getByRole('dialog', { name: /^Publish this post dated .*1.*2099\?$/ });
+await win.getByRole('button', { name: 'Publish' }).click();
+await eventually(async () => assert.equal(await futureAsk.isVisible(), true, 'Publish asks, naming the date'), 20000);
+assert.equal(entryFile(entryId).publishedAt, '2099-01-01', 'the date was saved before the question');
+await futureAsk.getByRole('button', { name: 'Keep as draft' }).click();
+await eventually(async () => assert.equal(await futureAsk.count(), 0));
+assert.equal(entryFile(entryId).draft, true, 'Keep as draft leaves it a draft');
+await win.getByRole('button', { name: 'Publish' }).click();
+await eventually(async () => assert.equal(await futureAsk.isVisible(), true));
+await win.keyboard.press('Escape');
+await eventually(async () => assert.equal(await futureAsk.count(), 0));
+assert.equal(entryFile(entryId).draft, true, 'dismissing the question leaves it a draft');
+await win.getByRole('button', { name: 'Publish' }).click();
+await futureAsk.getByRole('button', { name: 'Publish now' }).click();
+await eventually(() => assert.equal(entryFile(entryId).draft, false, 'Publish now publishes it'), 20000);
+await win.getByRole('button', { name: 'Move to drafts' }).click();
+await eventually(() => assert.equal(entryFile(entryId).draft, true, 'and it moves back to drafts'), 20000);
+
+step('backdated, it publishes without a question');
 await date.fill('2025-06-01');
 await date.press('Enter');
 await eventually(() => assert.equal(entryFile(entryId).publishedAt, '2025-06-01', 'the post is backdated'), 20000);

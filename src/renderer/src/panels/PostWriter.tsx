@@ -5,7 +5,7 @@ import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { collectionHasBody, collectionKind, entryRoute, hasDetailPages, orderedEntries } from '@shared/collections';
-import { formatArticleDate, isArticleDate } from '@shared/articles';
+import { formatArticleDate, isArticleDate, todayArticleDate } from '@shared/articles';
 import { COLLECTION_LINK_PREFIX, linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
 import { linkableIndexes } from '@shared/archives';
 import { relsFromAttribute } from '@shared/link-rel';
@@ -27,7 +27,7 @@ import { isImeComposing } from '../lib/ime';
 import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
 import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
-import { MAX_POST_TITLE, postAt } from '../lib/posts';
+import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
 import type { EditOperation } from '@shared/ops';
@@ -738,7 +738,32 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const publish = async (draftOn: boolean) => {
     const noun = entryNounLower(collection);
     if (!(await saveAll())) return notSaved(draftOn ? `Part of the ${noun} is not saved yet, so it stays as it is.` : `Part of the ${noun} is not saved yet, so it was not published.`);
-    const r = await update({ draft: draftOn }, draftOn ? `Move ${noun} to drafts` : `Publish ${noun}`);
+    // Publishing is written at the revision whose date was checked: a date changed since (here, in another window, or
+    // in the file itself) refuses it, so a post never goes on the website on a date it was not checked at (#1115).
+    let revision: number | undefined;
+    if (!draftOn) {
+      // A post dated after today goes on the website at the next export all the same: say so first, with the date as
+      // saved (the date field, if being typed in, committed during saveAll).
+      const now = getState().snapshot;
+      const saved = now ? postAt(now.state, post) : undefined;
+      if (!now || !saved || saved.draft === false) return;
+      revision = now.revision;
+      const question = futurePublishQuestion(saved.publishedAt, noun, now.state.site.language, todayArticleDate());
+      if (question) {
+        const choice = futurePublishChoice(await confirmDialog(question));
+        if (choice === 'stay') return;
+        // Only the post asked about, as it was: the project, the post and its date unchanged meanwhile.
+        const after = getState().snapshot;
+        const fresh = after ? postAt(after.state, post) : undefined;
+        if (!after || after.workspaceKey !== now.workspaceKey || !fresh || fresh.draft === false) return;
+        if (choice === 'keep-draft') return toast(`Kept as a draft: the ${noun} stays off the website.`, 'success');
+        if (fresh.publishedAt !== saved.publishedAt) return toast(`The ${noun}’s date changed meanwhile, so it was not published. Publish it again to check the new date.`, 'error');
+        revision = after.revision;
+      }
+    }
+    // Tracked so Save and leaving wait for it, but not counted as a field's refusal: a stale revision says so itself.
+    const op = { type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, draft: draftOn } as never;
+    const r = await track(applyOps([op], draftOn ? `Move ${noun} to drafts` : `Publish ${noun}`, undefined, revision));
     // A record without a page of its own is on the website wherever a list of its collection shows it.
     const where = hasDetailPages(collection.settings) ? 'it is on the website from the next export.' : `lists of ${collection.settings.name} show it from the next export.`;
     if (r) toast(draftOn ? 'Moved to drafts: it comes off the website at the next export.' : `Published: ${where}`, 'success');
