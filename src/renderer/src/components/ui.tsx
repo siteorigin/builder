@@ -714,7 +714,7 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
  * radio group, so one tab stop and the arrow keys) and the hint describes it. Use it wherever a Segmented answers a
  * question the surrounding form does not already ask.
  */
-export function ChoiceField<T extends string>({ label, hint, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string }>; onChange: (v: T) => void; full?: boolean }) {
+export function ChoiceField<T extends string>({ label, hint, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string; /** Unavailable: shown, skipped by the arrow keys. */ disabled?: boolean }>; onChange: (v: T) => void; full?: boolean }) {
   const id = useId();
   return (
     <div className="field">

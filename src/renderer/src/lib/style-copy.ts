@@ -24,7 +24,11 @@ const keysAt = (scope: StyleScope): StyleScopeKey[] => [scope, ...STYLE_STATES.m
 const ALL_KEYS: StyleScopeKey[] = [...STYLE_SCOPES, ...CONTAINER_SCOPES].flatMap(keysAt);
 const scopeLabel = (scope: StyleScope) => (isContainerScope(scope) ? CONTAINER_SCOPE_LABEL[scope] : SCOPE_LABELS[scope]);
 /** Where a change applies, in words: "Phone", or "All sizes, hover". */
-export const changeLabel = (c: { scope: StyleScope; state?: StyleState }) => (c.state ? `${scopeLabel(c.scope)}, ${STATE_LABELS[c.state]}` : scopeLabel(c.scope));
+/** A size range, and its state in brackets so a list of them never reads one as two: "All sizes (hover)". */
+export const changeLabel = (c: { scope: StyleScope; state?: StyleState }) => (c.state ? `${scopeLabel(c.scope)} (${STATE_LABELS[c.state]})` : scopeLabel(c.scope));
+/** The size range alone, for a row that shows the state beside it. */
+export const changeSize = (c: { scope: StyleScope }) => scopeLabel(c.scope);
+const andJoin = (items: string[]) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
 /** Which sizes a paste writes: every size the copy holds a change for, or only the changes made for one. */
 export type PasteScope = 'every' | ResponsiveScope;
@@ -277,7 +281,7 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
     } else {
       const part = copy.kind === 'single' ? 'root' : set.part;
       target = destination.targets.find((t) => t.part === part);
-      missing = `${destination.label} has no ${set.label.toLowerCase()} part to take it.`;
+      missing = `${destination.label} has no ${set.label.toLowerCase()} part.`;
     }
     const properties = [...new Set(ALL_KEYS.flatMap((sc) => Object.keys(set.styles[sc] ?? {})))];
     for (const property of properties) {
@@ -292,7 +296,7 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
       // A placement takes spans whatever its design lists: they place it in the box around it. Whether that box is a
       // grid can change with this same paste, and outside one they do nothing. (An element's own set offers them.)
       else if (!target.offered.includes(property) && !(target.partId && GRID_CHILD_PROPS.includes(property))) skip(`${destination.kind === 'section' ? `${destination.label}’s ${target.label.toLowerCase()}` : destination.label} doesn’t offer ${label.toLowerCase()}.`);
-      else if (!scopes.some((sc) => set.styles[sc]?.[property] !== undefined)) skip(`The copy sets it for ${scopeList(set.styles, property).join(', ')}, not ${SCOPE_LABELS[scope as ResponsiveScope]}.`);
+      else if (!scopes.some((sc) => set.styles[sc]?.[property] !== undefined)) skip(`The copy sets it for ${andJoin(scopeList(set.styles, property))}, not ${SCOPE_LABELS[scope as ResponsiveScope]}.`);
       else {
         // Every size the paste writes is checked first: a property with one value that can't be written changes nowhere.
         const wants = new Map<StyleScopeKey, { value: StyleValue; stored: StyleValue }>();
