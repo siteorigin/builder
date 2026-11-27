@@ -6,7 +6,7 @@ import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { slotItems } from '../../src/renderer/src/lib/inline-insert';
 import { insertOps } from '../../src/renderer/src/lib/insert-at';
-import { clearSlotOps, moveOutOps, moveOutRefusal, slotCountWords, slotOverviews, slotTitle } from '../../src/renderer/src/lib/slot-overview';
+import { clearSlotOps, moveOutOps, moveOutRefusal, slotCountWords, slotOverviews, slotTally, slotTitle } from '../../src/renderer/src/lib/slot-overview';
 
 /** A placed component's slots as the Inspector lists them (#654), what its Add offers, and how content leaves them. */
 
@@ -78,13 +78,13 @@ describe('the slots of a placed component', () => {
     const [media, body, actions] = p.rows();
     expect(actions.children).toEqual([added[0].nodeId, added[1].nodeId]);
     expect(actions.count).toBe(2);
-    expect(actions.closed).toBe('Full: it holds at most 2 items. Take something out to add more.');
-    expect(media.closed).toBe('Full: it holds at most 1 item. Take something out to add more.');
+    expect(actions.closed).toBe('Full. Take something out to add more.');
+    expect(media.closed).toBe('Full. Take something out to add more.');
     expect([body.count, body.closed]).toEqual([0, null]);
     // Content over a limit tightened by hand is still counted, and the slot stays closed.
     const over = structuredClone(p.state());
     over.components[p.definitionId].slots!.actions.max = 1;
-    expect(slotOverviews(over, p.owner, home(over).nodes[p.card] as InstanceNode)[2]).toMatchObject({ count: 2, closed: 'Full: it holds at most 1 item. Take something out to add more.' });
+    expect(slotOverviews(over, p.owner, home(over).nodes[p.card] as InstanceNode)[2]).toMatchObject({ count: 2, closed: 'Full. Take something out to add more.' });
   });
 
   it('a slot naming components says their names, and one restricted to nothing is closed', () => {
@@ -133,6 +133,7 @@ describe('the slots of a placed component', () => {
 
   it('say how many items each holds in words', () => {
     expect([0, 1, 3, Infinity].map(slotCountWords)).toEqual(['Empty', '1 item', '3 items', 'Any number of items']);
+    expect([slotTally(0, 2), slotTally(1, 2), slotTally(3, undefined), slotTally(Infinity, 4)]).toEqual(['Empty', '1 of 2', '3 items', 'Any number of items']);
   });
 });
 

@@ -102,7 +102,7 @@ await menu.getByRole('menuitem', { name: 'Turn into slot…' }).click();
 await dialog.waitFor();
 assert.equal(await dialog.getByLabel('Slot name').inputValue(), 'Side column', 'the slot is named after the column');
 assert.equal(await dialog.getByRole('radio', { name: 'Move it into each placement' }).isChecked(), true, 'moving the content is the choice');
-assert.match(await dialog.innerText(), /Each of the 2 placements keeps what it shows here now/);
+assert.match(await dialog.innerText(), /Each of the 2 placements keeps its own copy of these 2 items\. New placements start with the slot empty\./);
 await win.screenshot({ path: join(SHOTS, 'turn-into-slot-dialog.png') });
 const applied = (await history()).length;
 await dialog.getByRole('button', { name: 'Turn into slot' }).click();

@@ -32,6 +32,8 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
   const [busy, setBusy] = useState(false);
   // Why the last Repeat as list was refused before it was sent, when the project changed since the dialog said it could.
   const [refused, setRefused] = useState<{ state: ProjectState; why: string } | null>(null);
+  // Said when a confirmation met a project that had changed since the dialog showed it, so nothing was sent.
+  const [notice, setNotice] = useState<string | null>(null);
   const [opened] = useState(() => (st && def && node ? { name: displayName(st, node, def), plan: planRepeatAsList(st, def, target.nodeId) } : null));
   const [label, setLabel] = useState(() => (opened && !('problem' in opened.plan) ? opened.plan.label : 'Items'));
   // Planned again as the project or the name changes, so what the dialog says is what Repeat as list does; the IDs are
@@ -65,6 +67,9 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
     // Checked and planned against the project as it is now, and made only if nothing changes it first.
     const now = getState().snapshot;
     if (!now || now.workspaceKey !== workspace || now.readOnly) return;
+    setNotice(null);
+    // Only the list the dialog showed: a project that changed since is shown again, for the author to confirm.
+    if (now.revision !== snap?.revision) return setNotice('The project changed while this was open. Check what this will do, then choose Repeat as list again.');
     const at = repeatAsListTarget(now, target);
     const fresh = at ? planRepeatAsList(now.state, now.state.components[target.owner.id], target.nodeId, { label }) : null;
     if (!fresh || 'problem' in fresh) return;
@@ -85,7 +90,7 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
   return (
     <Modal
       title="Repeat as list"
-      icon={<Badge icon={<Repeat />} tone={gone || problem ? 'caution' : 'definition'} />}
+      icon={<Badge icon={<Repeat />} tone={gone ? 'caution' : problem ? 'neutral' : 'definition'} />}
       onClose={close}
       busy={busy}
       describedBy={gone || problem || hold ? GONE_ID : `repeat-list-desc repeat-list-subject repeat-list-details${wait ? ' repeat-list-wait' : ''}`}
@@ -118,21 +123,22 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
       ) : hold ? (
         <BlockedNote block={hold} id={GONE_ID} live={false} />
       ) : problem ? (
-        <GoneNotice>{problem}</GoneNotice>
+        <GoneNotice refused>{problem}</GoneNotice>
       ) : (
         <div className="authoring-form">
-          <FormStatus text={busy ? 'Repeating as a list' : (labelError ?? limitSaid(label.length, LABEL_MAX, 'Names'))} />
+          <FormStatus text={busy ? 'Repeating as a list' : (labelError ?? notice ?? limitSaid(label.length, LABEL_MAX, 'Names'))} />
           <p id="repeat-list-desc" className="confirm-lead">
             This container becomes the first item of a list. Each placement can then add, remove and edit its own items.
           </p>
-          <Subject id="repeat-list-subject" icon={<Box />} name={name} note={def ? `${def.name} · ${placements === 1 ? '1 placement' : `${placements} placements`}` : undefined} tone="definition" />
+          <Subject id="repeat-list-subject" icon={<Box />} name={st && def && node ? displayName(st, node, def) : name} note={def ? `${def.name} · ${placements === 0 ? 'Not placed anywhere' : placements === 1 ? '1 placement' : `${placements} placements`}` : undefined} tone="definition" />
           {ready && (
             <Details
               id="repeat-list-details"
               items={[
                 { kind: 'change', icon: <ListPlus />, text: `Each item has its own ${listed(ready.fields.map((f) => f.label.toLowerCase()))}.` },
                 { kind: 'change', icon: <Repeat />, text: `${placements > 0 ? 'Every placement starts' : 'The list starts'} with ${STARTER_ITEMS} items, each a copy of this one.` },
-                ...(ready.shared ? [{ kind: 'keep' as const, icon: <ShieldCheck />, text: `${ready.shared === 1 ? 'One value stays' : `${ready.shared} values stay`} the same in every item.` }] : [])
+                ...(ready.shared ? [{ kind: 'keep' as const, icon: <ShieldCheck />, text: `${ready.shared === 1 ? 'One value stays' : `${ready.shared} values stay`} the same in every item.` }] : []),
+                { kind: 'keep', icon: <ShieldCheck />, text: 'Undo brings the single container back.' }
               ]}
             />
           )}
@@ -145,10 +151,18 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
               aria-required="true"
               maxLength={LABEL_MAX}
               value={label}
-              onChange={(e) => setLabel(e.target.value)}
+              onChange={(e) => {
+                setLabel(e.target.value);
+                setNotice(null);
+              }}
               onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void repeat()}
             />
           </Field>
+          {notice && (
+            <p className="field-hint">
+              {notice}
+            </p>
+          )}
           {wait && <BlockedNote block={wait} id="repeat-list-wait" live={false} />}
         </div>
       )}

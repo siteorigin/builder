@@ -11,7 +11,7 @@ import { insertOps, nodeLabel, type InsertAt } from '../lib/insert-at';
 import { layerLabel } from '../lib/layers';
 import { treeFor } from '../lib/model';
 import { dropRefusal, savingProblems } from '../lib/insert-drop';
-import { moveOutRefusal, slotCountWords, slotOverviews, type SlotOverview } from '../lib/slot-overview';
+import { moveOutRefusal, slotOverviews, slotTally, type SlotOverview } from '../lib/slot-overview';
 import { QuickInsert } from './QuickInsert';
 
 interface Props {
@@ -127,17 +127,22 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
           <div key={row.slot} className="contract-group placed-slot" role="group" aria-label={row.label} data-instance-slot={row.slot}>
             <div className="contract-row">
               <div className="contract-row-main">
-                <strong className="slot-name">{row.label}</strong>
-                {row.description && <span className="faint contract-meta">{row.description}</span>}
-                {row.contract && (
+                {/* The name with what it holds now, the one fact that changes; what it is and takes recede below. */}
+                <div className="slot-head">
+                  <strong className="slot-name">{row.label}</strong>
+                  {row.max !== 0 && (
+                    <span className="slot-tally" data-slot-count>
+                      {slotTally(row.count, row.max)}
+                    </span>
+                  )}
+                </div>
+                {row.description && <span className="slot-desc">{row.description}</span>}
+                {row.contract && row.max !== 0 && (
                   <span className="faint contract-meta" data-slot-contract>
                     {row.contract}
                   </span>
                 )}
                 {row.damaged && <span className="field-error">{row.damaged}</span>}
-                <span className="faint contract-meta" data-slot-count>
-                  {slotCountWords(row.count)}
-                </span>
               </div>
               <button type="button" className="btn btn-sm" disabled={!!(locked ?? addWhy)} aria-label={`Add to ${row.label}`} aria-describedby={addNote} aria-haspopup="dialog" aria-expanded={adding?.slot === row.slot} onClick={(e) => open(row, e.currentTarget)}>
                 <Plus aria-hidden="true" /> Add…
@@ -156,7 +161,7 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
                     const { label, full } = layerLabel(state, treeFor(state, owner)!.nodes[child]);
                     return (
                       <li key={child}>
-                        <button type="button" className="insp-mini" aria-label={`Select ${label}`} title={`Select ${full}`} onClick={() => onSelect({ owner, instancePath: [], nodeId: child })}>
+                        <button type="button" className="insp-mini" aria-label={`Select ${full}`} title={`Select ${full}`} onClick={() => onSelect({ owner, instancePath: [], nodeId: child })}>
                           <span>{label}</span>
                           <ArrowRight aria-hidden="true" />
                         </button>
@@ -165,11 +170,11 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
                   })}
                 </ul>
                 <div className="contract-actions">
-                  <button type="button" className="btn btn-sm" disabled={!!(locked ?? takeOutWhy)} aria-label={`Move ${row.label} content out`} aria-describedby={lockNote ?? takeOutNote} title={`Move what it holds to just after ${nodeLabel(state, owner, selection.nodeId)}`} onClick={() => void emptySlot(selection, row.slot, 'move')}>
-                    <ArrowUpFromLine aria-hidden="true" /> Move out
+                  <button type="button" className="btn btn-sm" disabled={!!(locked ?? takeOutWhy)} aria-label={row.children.length > 1 ? `Move all out of ${row.label}` : `Move out of ${row.label}`} aria-describedby={lockNote ?? takeOutNote} title={`Move what it holds to just after ${nodeLabel(state, owner, selection.nodeId)}`} onClick={() => void emptySlot(selection, row.slot, 'move')}>
+                    <ArrowUpFromLine aria-hidden="true" /> {row.children.length > 1 ? 'Move all out' : 'Move out'}
                   </button>
-                  <button type="button" className="btn btn-sm" disabled={!!(locked ?? row.shared)} aria-label={`Clear ${row.label}`} aria-describedby={lockNote ?? (row.shared ? takeOutNote : undefined)} title="Delete what it holds" onClick={() => void emptySlot(selection, row.slot, 'clear')}>
-                    <Trash2 aria-hidden="true" /> Clear
+                  <button type="button" className="btn btn-sm btn-danger" disabled={!!(locked ?? row.shared)} aria-label={row.children.length > 1 ? `Clear all in ${row.label}` : `Clear ${row.label}`} aria-describedby={lockNote ?? (row.shared ? takeOutNote : undefined)} title="Delete what it holds" onClick={() => void emptySlot(selection, row.slot, 'clear')}>
+                    <Trash2 aria-hidden="true" /> {row.children.length > 1 ? 'Clear all' : 'Clear'}
                   </button>
                 </div>
                 {takeOutNote && (

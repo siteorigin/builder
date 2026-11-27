@@ -736,7 +736,7 @@ export async function emptySlot(ref: ElementRef, slot: string, how: 'move' | 'cl
   const what = subjectWords(snap.state, ref);
   const r = await commitOps(ops, how === 'move' ? `Move ${label} content out of ${what}` : `Clear ${label} of ${what}`, undefined, snap.revision);
   if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-  toast(how === 'move' ? `Moved what “${label}” held out of ${what}.` : `Cleared “${label}” of ${what}.`, 'info', undoAction(r));
+  toast(how === 'move' ? `Moved what “${label}” held to just after ${what}.` : `Cleared “${label}” of ${what}.`, 'info', undoAction(r));
 }
 
 /** Where Place on page puts a library image (`key` tells two placements apart), or why it can't be placed now. */

@@ -19,6 +19,8 @@
   .authoring-form :is(.field-hint, .field-error) { min-height: 17px; line-height: 1.4; text-wrap: pretty; }
   .authoring-gone { padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--red) 28%, transparent); text-wrap: pretty; }
   .authoring-gone > svg { width: 15px; height: 15px; margin-top: 2px; }
+  /* Still there, but it can't take the change: the info face's quiet edge, not the fault's red one. */
+  .authoring-gone[data-refused] { border-color: var(--border-strong); }
   .authoring-gone strong { overflow-wrap: anywhere; }
   /* Where a shared design is used: one row per page, part or component, each with its kind and its count. */
   .placement-block { display: flex; flex-direction: column; gap: 6px; }
@@ -278,6 +280,13 @@
   .page-dialog-option-note svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }
   .page-dialog-option[data-off] .page-dialog-option-note { color: var(--text); }
   .page-dialog-option[data-off] .page-dialog-option-note svg { color: var(--red); }
+  /* Turn into slot's ways: the whole card picks its way. A way that can't be taken now is drawn off (no fill and a
+     dashed edge, so only the ways on offer stand raised, its reason in the info glyph) rather than as a fault; the way
+     that removes content carries the loss mark. */
+  .slot-keep .page-dialog-option:not([data-unavailable]) { cursor: pointer; }
+  .slot-keep .page-dialog-option[data-unavailable] { background: transparent; border-style: dashed; }
+  .slot-keep .page-dialog-option[data-unavailable] .page-dialog-option-note svg { color: var(--text-3); }
+  .slot-keep .page-dialog-option-note[data-kind='lose'] svg { color: var(--red); }
   /* Turn into slot: what the container holds now moves into every placement, or goes; each way says what it means. */
   .slot-keep { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
   .slot-keep legend { padding: 0; margin-bottom: 6px; font-weight: 600; color: var(--text); }
