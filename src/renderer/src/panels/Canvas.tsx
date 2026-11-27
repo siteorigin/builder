@@ -41,7 +41,7 @@ import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, 
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { CHIP_H, chipLeft, chipRoom } from '../lib/chip-place';
-import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
+import { askAiAbout, leaveLayout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
@@ -49,6 +49,7 @@ import { notePointerInput, openMenus, Spinner, useMenu, type MenuTriggerProps } 
 import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement } from './PreviewStatus';
 import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
+import { useTransitionAnnouncement } from '../lib/announce';
 import { runPhase } from '../lib/savestate';
 import { focusInspector } from '../lib/inspector-focus';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
@@ -533,8 +534,14 @@ export function Canvas() {
   const practiceRoom = formsShown && practiceH ? Math.max(0, practiceBottom + practiceH + 8 - 28) : 0;
   // While editing, a page problem sits below the page rather than over its foot (a card, a form's Send button).
   const issueRoom = issueShown && mode === 'edit' && !formsShown ? Math.max(0, issueBottom + (issueH || 40) + 8 - 28) : 0;
+  // A collection's layout being edited has its band (TemplateStrip) over the pasteboard, which starts below it.
+  const layoutBand = !!templateMode && mode === 'edit';
   // The frame's whole footprint (20px top padding + 14px label margin + 28px bottom padding) fits at Fit, so the pasteboard never needs its own scrollbar.
   const frameH = Math.max(formsShown ? 160 : 300, (size.h - 70 - practiceRoom - issueRoom) / zoom);
+  // Said once on opening a collection's layout and once on leaving it, as editing a component everywhere is; stepping
+  // through its entries says nothing.
+  const layoutKey = layoutBand && state && templateMode && Object.hasOwn(state.collections, templateMode.collectionId) ? `${layoutTitle(state, templateMode)}\n${layoutScope(state, templateMode)}` : null;
+  const layoutSaid = useTransitionAnnouncement(layoutKey, (prev, next) => (next ? `Editing the ${next.split('\n')[0]}. ${next.split('\n')[1]}.` : prev ? `Finished editing the ${prev.split('\n')[0]}` : null));
 
   // While editing, a page that never says it has opened (no reply, no error) is reported as a problem after a while,
   // so the canvas offers Try again instead of saying "Opening…" for ever with the page closed to picks. A restart
@@ -574,15 +581,11 @@ export function Canvas() {
   /** What the strip shows on its left (a page opening, a section moving), and how wide it is. */
   const stripLeft = useRef<HTMLDivElement>(null);
   const [stripLeftW, setStripLeftW] = useState(0);
-  /** How wide a collection layout's strip (its entry picker and Done) is, so a parked chip starts after it. */
-  const [templateStripW, setTemplateStripW] = useState(0);
   useLayoutEffect(() => {
     const [short, mid, full] = [...(labelMeasure.current?.children ?? [])].map((el) => (el as HTMLElement).offsetWidth);
     if (short && mid && full && (short !== labelW.short || mid !== labelW.mid || full !== labelW.full)) setLabelW({ short, mid, full });
     const left = stripLeft.current?.offsetWidth ?? 0;
     if (left !== stripLeftW) setStripLeftW(left);
-    const template = canvasRef.current?.querySelector<HTMLElement>('[data-testid="template-strip"]')?.offsetWidth ?? 0;
-    if (template !== templateStripW) setTemplateStripW(template);
   });
 
   /** A page with nothing on it (only the shared header and footer, if it shows them): the canvas offers the first
@@ -3012,9 +3015,10 @@ export function Canvas() {
   // The page's report must be for this selection: one from before it changed measured something else.
   // A code component's marked part has no spacing handles: a report for its placement is never one for the part.
   const spaceFor = !!spacing && !!spaceDesc && !spaceDesc.part && spaceDesc.slot === undefined && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
-  // The selection's chip is parked in the strip above the page (see chipLeft), after a collection layout's own strip.
+  // The selection's chip is parked in the strip above the page (see chipLeft). A collection layout's band is a row of
+  // its own above that strip, so the chip always has the strip's whole width.
   const chipShown = !!firstSel && !!selection;
-  const chipTaken = templateStripW ? templateStripW + 12 : 0;
+  const chipTaken = 0;
   const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !insertDrop && !imageDrop && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   // The canvas's Add buttons (#387), on the box of the selection and of what is hovered, each only on a box the page
   // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
@@ -3098,8 +3102,7 @@ export function Canvas() {
   // The same goes for what the strip says on its left (a page opening, a section moving), which never takes more
   // room than leaves the width itself.
   const chipEnd = chipShown && !reorder && !resizing && !insertDrop && !imageDrop && firstSel ? chipLeft(firstSel.left, chipW, frameW, chipTaken) + chipW + 12 : 0;
-  // A collection layout's own strip (its entry picker and Done) is on the left too, and comes first.
-  const leftEnd = chipEnd || Math.max(stripLeftW ? stripLeftW + 12 : 0, templateStripW ? templateStripW + 12 : 0);
+  const leftEnd = chipEnd || (stripLeftW ? stripLeftW + 12 : 0);
   const labelMode = resizing || leftEnd + labelW.full <= frameW ? 'full' : scalePct !== 100 && leftEnd + labelW.mid <= frameW ? 'mid' : leftEnd + labelW.short <= frameW ? 'short' : 'gone';
   const stripRoom = Math.max(80, frameW - labelW.short - 12);
   // Where the card goes, in page pixels: at the top of the empty page's room, below a header that covers its start.
@@ -3258,6 +3261,9 @@ export function Canvas() {
           </div>
         </div>
       )}
+      <p className="sr-only" role="status">
+        {layoutSaid}
+      </p>
       {/* Said once when a page with forms opens, for an author whose focus stays in the page and never meets the panel. */}
       <p className="sr-only" role="status">
         {formsShown ? `Form sends are practice in Preview. ${forms.some((f) => f.live) ? 'Only a real test is sent.' : 'Nothing is sent.'}` : ''}
@@ -3304,8 +3310,16 @@ export function Canvas() {
           </button>
         </div>
       )}
+      {/* Over the pasteboard, never scrolled away, at every zoom and through every drag, and while the preview is not
+          running. Stays while another entry opens, so the entry picker keeps focus as the author steps through
+          entries. As wide as the frame within the canvas's margins, and at least wide enough for its words, so it is
+          centred over a narrow frame. */}
+      {layoutBand && state && templateMode && (
+        <TemplateStrip state={state} mode={templateMode} width={Math.max(0, Math.min(Math.max(frameW, TEMPLATE_BAND_MIN), size.w - 56))} left={size.w / 2} opening={opening} />
+      )}
       <div
         className="canvas-scroll"
+        style={layoutBand ? { top: TEMPLATE_BAND_ROOM } : undefined}
         ref={scrollRef}
         onMouseDown={(e) => e.target === e.currentTarget && setState({ selection: null })}
       >
@@ -3318,8 +3332,6 @@ export function Canvas() {
                 <span>Opening {(studioView && studioDef?.name) ?? view?.title ?? 'the page'}…</span>
               </div>
             )}
-            {/* Stays while another entry opens, so the entry picker keeps focus as the author steps through entries. */}
-            {templateMode && mode === 'edit' && state && !resizing && !insertDrop && !imageDrop && !reorder && <TemplateStrip state={state} mode={templateMode} maxWidth={stripRoom} opening={opening} />}
             {noEntries && state && templateMode && <TemplateNoEntries state={state} mode={templateMode} readOnly={!!snapshot?.readOnly} />}
             <div className={`frame-width-label${labelMode === 'gone' ? ' gone' : ''}${resizing ? ' live' : ''}`} title={scalePct !== 100 ? `${viewport} px wide, shown at ${scalePct}%` : `${viewport} px wide, shown at actual size`}>
               <b>{viewport}</b>&nbsp;px
@@ -4035,42 +4047,86 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
   );
 }
 
+/** How far down the pasteboard starts under a collection layout's band (8px above it, 42px high), in screen pixels. */
+const TEMPLATE_BAND_ROOM = 50;
+/** The narrowest the band is drawn, room permitting: over a narrower frame (a phone's) it is centred and wider than the
+ *  page, so its words and the entry's title keep their room. */
+const TEMPLATE_BAND_MIN = 960;
+
+/** What a collection's layout is called on the canvas: "Journal layout", "Journal index layout". */
+const layoutTitle = (state: ProjectState, mode: TemplateMode) => `${state.collections[mode.collectionId]?.settings.name ?? 'Collection'} ${mode.archive ? 'index layout' : 'layout'}`;
+/** Who an edit to it reaches. */
+const layoutScope = (state: ProjectState, mode: TemplateMode) => (mode.archive ? 'Applies to every page of the index' : `Applies to every ${entryNounLower(state.collections[mode.collectionId])}`);
+
 /**
- * The strip above the page while a collection's layout is edited: whose layout it is, the entry it is shown on (any
- * of the collection's, to see the layout with other words and pictures), and the way back to the page.
+ * The band over the canvas while a collection's layout is edited, a row of its own above the strip (so the selection's
+ * chip and the width keep the strip): whose layout it is and that an edit reaches every entry, the entry it is shown
+ * with (any of the collection's, to see the layout with other words and pictures; an index is shown with its first
+ * page), and the way back. Neutral, like the canvas: layouts have no hue of their own. As it narrows, the words around
+ * the controls go, the picker narrows to its floor, and then the collection's name is cut; who an edit reaches and Done
+ * stay whole (Canvas.css).
  */
-function TemplateStrip({ state, mode, maxWidth, opening }: { state: ProjectState; mode: TemplateMode; maxWidth: number; opening: boolean }) {
+function TemplateStrip({ state, mode, width, left, opening }: { state: ProjectState; mode: TemplateMode; width: number; left: number; opening: boolean }) {
   const collection = state.collections[mode.collectionId];
   const samples = sampleEntries(state, mode.collectionId);
   if (!collection) return null;
+  const kind = mode.archive ? 'index layout' : 'layout';
+  const shown = samples.find((e) => e.id === mode.entryId);
+  const entryText = (e: (typeof samples)[number]) => `${e.draft !== false ? 'Draft · ' : ''}${e.title || e.slug}`;
+  const busy = <span className="template-strip-busy">{opening && <Spinner decorative />}</span>;
   return (
-    <div className="frame-status template-strip" style={{ maxWidth }} role="group" aria-label={`${collection.settings.name} layout`} aria-busy={opening || undefined} data-testid="template-strip">
-      {opening ? <Spinner decorative /> : <LayoutTemplate aria-hidden="true" />}
-      <span className="template-strip-name" title={`${collection.settings.name} ${mode.archive ? 'index layout' : 'layout'}`}>
-        {collection.settings.name} {mode.archive ? 'index layout' : 'layout'}
-      </span>
-      {samples.length > 0 && !mode.archive && (
-        <label className="template-strip-sample">
-          <span>shown on</span>
-          <select
-            className="select sm"
-            value={mode.entryId ?? ''}
-            aria-label="Entry the layout is shown on"
-            data-testid="template-sample"
-            onChange={(e) => setState({ templateMode: { collectionId: mode.collectionId, entryId: e.target.value } })}
-          >
-            {samples.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.title || e.slug}
-                {e.draft !== false ? ' (draft)' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      <button className="link-btn" onClick={() => setState({ templateMode: null, selection: null })}>
-        Done
-      </button>
+    <div className="template-strip" style={{ width, left: left - width / 2 }} role="group" aria-label={`Editing the ${layoutTitle(state, mode)}`} aria-busy={opening || undefined} data-testid="template-strip">
+      <div className="template-strip-row">
+        <LayoutTemplate className="template-strip-mark" aria-hidden="true" />
+        <span className="template-strip-text">
+          <span className="template-strip-title" title={layoutTitle(state, mode)}>
+            <span className="template-strip-verb">Editing</span>
+            <span className="template-strip-name">{collection.settings.name}</span>
+            <span className="template-strip-kind">{kind}</span>
+          </span>
+          <span className="template-strip-scope">
+            {/* An index in a narrow band says which of its pages is shown here, where the wide one says it beside Done. */}
+            <span className="template-strip-scope-full">{layoutScope(state, mode)}</span>
+            {mode.archive && <span className="template-strip-scope-short">Every index page · showing page 1</span>}
+          </span>
+        </span>
+        {/* The spinner sits just before the picker while the chosen entry opens, in room that is kept (in a narrow band,
+            over the mode glyph), so nothing moves as the author steps through entries. */}
+        <span className="template-strip-end">
+          {mode.archive ? (
+            <span className="template-strip-sample">
+              {busy}
+              <span className="template-strip-label">Shown with its first page</span>
+            </span>
+          ) : (
+            samples.length > 0 && (
+              <label className="template-strip-sample">
+                {busy}
+                <span className="template-strip-label">Shown with</span>
+                <select
+                  className="select sm"
+                  value={mode.entryId ?? ''}
+                  title={shown ? `Shown with: ${entryText(shown)}` : undefined}
+                  aria-label="Entry the layout is shown with"
+                  data-testid="template-sample"
+                  onChange={(e) => setState({ templateMode: { collectionId: mode.collectionId, entryId: e.target.value } })}
+                >
+                  {samples.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {/* "Draft · " first, so a long title cut short in the closed picker still says it. */}
+                      {entryText(e)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )
+          )}
+        </span>
+        <button className="btn btn-sm template-strip-done" title="Finish editing the layout. Esc also finishes once nothing is selected." onClick={leaveLayout}>
+          <Check aria-hidden="true" />
+          Done<span className="template-strip-done-more"> editing</span>
+        </button>
+      </div>
     </div>
   );
 }

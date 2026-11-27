@@ -39,7 +39,7 @@ import { ImportReviewModal } from './panels/ImportReview';
 import { PostImportReviewModal } from './panels/PostImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
 import { DuplicateProjectModal, NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
-import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openComponentStudio, openSiteStyles, planLayers, setMode, ungroupLayers, wrapLayers } from './lib/actions';
+import { askAiAbout, deleteLayers, duplicateLayers, leaveLayout, moveLayers, openComponentStudio, openSiteStyles, planLayers, setMode, ungroupLayers, wrapLayers } from './lib/actions';
 import { StudioControls } from './panels/StudioControls';
 import { copySelection, pasteCopy } from './lib/clipboard';
 import { clipKeyIsEditors, deleteKeyIsEditors } from './lib/clip-keys';
@@ -172,6 +172,8 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean, askAi 
       setState({ selection: { owner: sel.owner, instancePath: sel.instancePath.slice(0, -1), nodeId: sel.instancePath[sel.instancePath.length - 1] } });
     } else if (s.selection) setState({ selection: null });
     else if (s.definitionMode) leaveDefinitionMode();
+    // A collection's layout is left the same way, once nothing in it is selected, as its Done leaves it.
+    else if (s.templateMode && s.mode === 'edit') leaveLayout();
     return true;
   }
   if (mod && shift && (key === 'ArrowUp' || key === 'ArrowDown')) {
@@ -528,7 +530,8 @@ export function Editor() {
       // Escape in a checkbox or other button-like input is no typing: it leaves the SEO view all the same. Held down, it
       // acts once, so the repeats never reach the page the view has just given back.
       if (e.key === 'Escape' && e.repeat) return;
-      const typing = isTyping(e) && !(e.key === 'Escape' && getState().leftTab === 'seo' && e.target instanceof HTMLInputElement && ['checkbox', 'radio', 'button', 'range'].includes(e.target.type));
+      // Nor is Escape in the layout band's closed entry picker (an open one takes the key itself): it leaves the layout.
+      const typing = isTyping(e) && !(e.key === 'Escape' && getState().leftTab === 'seo' && e.target instanceof HTMLInputElement && ['checkbox', 'radio', 'button', 'range'].includes(e.target.type)) && !(e.key === 'Escape' && e.target instanceof HTMLSelectElement && !!e.target.closest('[data-testid="template-strip"]'));
       if (typing && !history && !askAi && !(mod && ['k', 'e', 's', '\\', '|'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
       // Delete removes the canvas selection only from the canvas, Layers or the Insert tile that just made it, never
       // from a button or row in another panel (an Assets tile, a page row) (lib/clip-keys).

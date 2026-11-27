@@ -447,7 +447,7 @@ assert.equal(layoutEdit.ok, true, `the layout is edited: ${layoutEdit.error?.mes
 await eventually(async () => assert.equal(await frame.getByText(LAYOUT_CTA).count(), 1, 'the canvas shows the layout\'s new section on the post'), 30000);
 // Each post keeps its own document: the layout lives in the collection's settings.
 for (const id of ['en_hours01', 'en_spring01']) assert.deepEqual(JSON.parse(readFileSync(join(dir, 'siteorigin/collections/posts/entries', `${id}.json`), 'utf8')).title, blogState.collections.posts.entries[id].title);
-await win.getByRole('button', { name: 'Done', exact: true }).first().click();
+await win.getByTestId('template-strip').getByRole('button', { name: /^Done/ }).click();
 await eventually(async () => assert.equal(await win.getByTestId('template-strip').count(), 0, 'Done closes the layout'), 10000);
 
 step('#397: a post feed on Home, the blog index in pages of two, category archives, and a post backdated');
