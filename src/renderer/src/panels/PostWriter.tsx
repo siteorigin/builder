@@ -1,10 +1,10 @@
 import './PostsPanel.css';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Bold, Check, CircleAlert, Clock, Eye, FileX, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
+import { Bold, Check, CircleAlert, Clock, Eye, FileX, Heading2, Heading3, Heading4, ImageOff, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Search, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
-import { collectionHasBody, collectionKind, entryRoute, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
+import { collectionHasBody, collectionKind, entryRoute, hasDetailPages, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { COLLECTION_LINK_PREFIX, linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
 import { linkableIndexes } from '@shared/archives';
@@ -12,13 +12,15 @@ import { relsFromAttribute } from '@shared/link-rel';
 import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
-import { sortAssets } from '@shared/asset-order';
+import { assetLabels, sortAssets } from '@shared/asset-order';
 import { applyOps, applyWith, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PendingEdit, type PostRef } from '../store';
-import { DraftInput, Field, Modal, Section } from '../components/ui';
+import { ChoiceField, DraftInput, Field, Modal, Section, SwitchRow } from '../components/ui';
 import { RevisionDateField } from '../components/SeoFields';
 import { LinkRelControls } from '../components/LinkRelControls';
 import { seoSummary } from '../lib/sharing';
 import { AssetImage } from '../components/AssetImage';
+import { fitFor } from '../components/AssetPicture';
+import { missingKey } from './ImagesPicker';
 import { SiteImageField } from './PropEditors';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isImeComposing } from '../lib/ime';
@@ -75,6 +77,48 @@ function problemText(p: DraftProblem, noun = 'post'): string {
   }
 }
 
+/**
+ * The link the Link command edits: the one holding the caret, or all of the chosen words. Words reaching past a link,
+ * whichever way they were chosen, get a link of their own instead.
+ */
+function heldLink(root: HTMLElement, range: Range | null): HTMLAnchorElement | null {
+  // Only spaces chosen: no words to say which link, so they take a link of their own.
+  if (!range || (!range.collapsed && !range.toString().trim())) return null;
+  const holder = range.collapsed ? range.startContainer : range.commonAncestorContainer;
+  const a = (holder instanceof Element ? holder : holder.parentElement)?.closest<HTMLAnchorElement>('a[href]');
+  if (a) return root.contains(a) ? a : null;
+  if (range.collapsed) return null;
+  // Words chosen from just outside a link's edge: every word they cover is in that one link.
+  let only: HTMLAnchorElement | null = null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (!coveredText(range, t).trim()) continue;
+    const at = t.parentElement?.closest<HTMLAnchorElement>('a[href]') ?? null;
+    if (!at || (only && at !== only)) return null;
+    only = at;
+  }
+  return only && root.contains(only) ? only : null;
+}
+
+/** A picture in the text the Picture command edits: one chosen whole, or holding the selection. */
+function heldFigure(root: HTMLElement, range: Range | null): HTMLElement | null {
+  if (!range) return null;
+  const picked = !range.collapsed && range.startContainer === range.endContainer && range.endOffset === range.startOffset + 1 ? range.startContainer.childNodes[range.startOffset] : null;
+  if (picked instanceof HTMLElement && picked.matches('figure.post-figure')) return root.contains(picked) ? picked : null;
+  const held = range.commonAncestorContainer instanceof Element ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+  const fig = held?.closest<HTMLElement>('figure.post-figure') ?? null;
+  return fig && root.contains(fig) ? fig : null;
+}
+
+/** Whether chosen words are there to put a link on: a caret, or only spaces chosen, takes words typed in the dialog. */
+const hasWords = (range: Range | null) => !!range && !range.collapsed && !!range.toString().trim();
+
+/** The selection's range, if there is one. */
+const selRange = () => {
+  const sel = document.getSelection();
+  return sel?.rangeCount ? sel.getRangeAt(0) : null;
+};
+
 /** Whether the caret, or any of the selection, is in a link of the text. */
 function linkAtCaret(root: HTMLElement): boolean {
   const sel = document.getSelection();
@@ -113,7 +157,54 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   );
 }
 
-type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'index' | 'url'; page: string; entry: string; index: string; url: string; rel: LinkRel[]; newTab: boolean; error?: string };
+/** A selection in the text as it was made: where it started and where it ended, which may be before its start. */
+type SavedSelection = { anchorNode: Node; anchorOffset: number; focusNode: Node; focusOffset: number };
+/** The selection in the text now, if it is in the text. */
+function savedSelection(root: HTMLElement | null): SavedSelection | null {
+  const sel = document.getSelection();
+  if (!root || !sel?.anchorNode || !sel.focusNode || !root.contains(sel.anchorNode) || !root.contains(sel.focusNode)) return null;
+  return { anchorNode: sel.anchorNode, anchorOffset: sel.anchorOffset, focusNode: sel.focusNode, focusOffset: sel.focusOffset };
+}
+
+/** What is wrong with a link the author asked to apply, and the field it is about. */
+type LinkError = { text?: string; dest?: string };
+type Dialog =
+  | null
+  | {
+      kind: 'image';
+      fig: HTMLElement | null;
+      value: ImageValue;
+      caption: string;
+      at: HTMLElement | null;
+      /** The selection as it was, put back on Cancel. */
+      caret: SavedSelection | null;
+      /** Add or Update was pressed with no description and not decorative. */
+      altError?: boolean;
+      /** How many times it was, so each attempt takes focus to the description. */
+      tried?: number;
+      /** The picture being edited left the text while the dialog was open. */
+      stale?: boolean;
+    }
+  | {
+      kind: 'link';
+      /** The words the link goes on (a link's own words when the caret was in it); null or collapsed: words typed here. */
+      range: Range | null;
+      /** The selection as it was when the dialog opened, put back on Cancel. */
+      caret: SavedSelection | null;
+      /** Whether the dialog changes a link already in the text. */
+      editing: boolean;
+      text: string;
+      to: 'page' | 'post' | 'index' | 'url';
+      page: string;
+      /** The section of `page` an edited link went to, kept while it still goes to that page. */
+      section: { page: string; id: string } | null;
+      entry: string;
+      index: string;
+      url: string;
+      rel: LinkRel[];
+      newTab: boolean;
+      error?: LinkError;
+    };
 
 function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const snap = useStore((s) => s.snapshot)!;
@@ -160,7 +251,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    * yet, so entry text turned off meanwhile never takes away what was typed. Turned on again, it shows the saved text.
    */
   const bodyOn = collectionHasBody(collection.settings) || status.dirty || !!status.problem;
-  const [pressed, setPressed] = useState<{ bold: boolean; italic: boolean; block: string; link: boolean }>({ bold: false, italic: false, block: 'p', link: false });
+  const [pressed, setPressed] = useState<{ bold: boolean; italic: boolean; block: string; link: boolean; held: boolean; figure: boolean }>({ bold: false, italic: false, block: 'p', link: false, held: false, figure: false });
   /** Changes to the post's fields (title, date…) on their way, for the bar's save state. */
   const [fieldsSaving, setFieldsSaving] = useState(0);
   /** Whether a field of the post holds text it could not save (marked invalid beside it), for the bar and the note. */
@@ -329,7 +420,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       if (!el || !sel?.anchorNode || !el.contains(sel.anchorNode)) return;
       const block = blockAtCaret(el);
       const tag = block?.tagName.toLowerCase() ?? 'p';
-      setPressed({ bold: document.queryCommandState('bold'), italic: document.queryCommandState('italic'), block: tag === 'ul' && block?.classList.contains('so-rich--check') ? 'check' : tag, link: linkAtCaret(el) });
+      setPressed({ bold: document.queryCommandState('bold'), italic: document.queryCommandState('italic'), block: tag === 'ul' && block?.classList.contains('so-rich--check') ? 'check' : tag, link: linkAtCaret(el), held: !!heldLink(el, selRange()), figure: !!heldFigure(el, selRange()) });
     };
     document.addEventListener('selectionchange', onSel);
     return () => document.removeEventListener('selectionchange', onSel);
@@ -442,9 +533,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     if (draft.problem?.kind === 'gone' || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
     const sel = document.getSelection();
     let range = sel?.rangeCount && root.current?.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
-    const a = (sel?.anchorNode instanceof Element ? sel.anchorNode : sel?.anchorNode?.parentElement)?.closest('a');
-    // The caret in a link edits that link: its words are chosen, so applying changes it in place, formatting kept.
-    if (range?.collapsed && a && root.current?.contains(a)) {
+    const caret = savedSelection(root.current);
+    const a = root.current ? heldLink(root.current, range) : null;
+    // The caret, or some of the words, in a link edits that whole link: its words are chosen, so applying changes it in
+    // place, formatting kept.
+    if (range && a) {
       range = document.createRange();
       range.selectNodeContents(a);
       sel!.removeAllRanges();
@@ -463,14 +556,18 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const indexes = linkableIndexes(state);
     const indexLink = kept?.type === 'collection' ? kept.target : href.startsWith(COLLECTION_LINK_PREFIX) ? href.slice(COLLECTION_LINK_PREFIX.length) : '';
     const firstPage = state.site.pageOrder[0] ?? Object.keys(state.pages)[0] ?? '';
-    const posts = allPosts(state).filter((p) => p.id !== post.entryId);
+    const posts = linkablePosts(state, post.entryId);
     setDialog({
       kind: 'link',
       range,
-      text: range?.toString() ?? '',
+      caret,
+      editing: !!a,
+      text: hasWords(range) ? range!.toString() : '',
       to: entryLink ? 'post' : indexLink ? 'index' : pageLink?.type === 'page' ? 'page' : pageLink?.type === 'collection' ? 'index' : href ? 'url' : 'page',
       page: pageLink?.type === 'page' ? pageLink.target : firstPage,
-      entry: entryLink || posts[0]?.id || '',
+      section: pageLink?.type === 'page' && pageLink.anchor ? { page: pageLink.target, id: pageLink.anchor } : null,
+      // An entry of the collection being written in first, as the list shows them.
+      entry: entryLink || (posts.find((p) => p.collectionId === post.collectionId) ?? posts[0])?.id || '',
       index: indexLink || (pageLink?.type === 'collection' ? pageLink.target : '') || indexes[0]?.id || '',
       // A web, email or phone link keeps its address in the field; only a page, an entry or an index is chosen from a list.
       url: (pageLink && (pageLink.type === 'page' || pageLink.type === 'collection')) || entryLink || indexLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
@@ -483,21 +580,29 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const applyLink = (d: Extract<Dialog, { kind: 'link' }>) => {
     let href = '';
     let rels: LinkRel[] = [];
-    if (d.to === 'page') href = Object.hasOwn(state.pages, d.page) ? state.pages[d.page].route : '';
-    else if (d.to === 'post') href = findEntry(state, d.entry) ? `entry:${d.entry}` : '';
+    let dest: string | undefined;
+    // A section the link went to stays while it still goes to that page.
+    if (d.to === 'page') href = Object.hasOwn(state.pages, d.page) ? state.pages[d.page].route + (d.section?.page === d.page ? `#${d.section.id}` : '') : '';
+    else if (d.to === 'post') href = linkablePosts(state, post.entryId).some((p) => p.id === d.entry) ? `entry:${d.entry}` : '';
     else if (d.to === 'index') href = linkableIndexes(state).some((x) => x.id === d.index) ? `${COLLECTION_LINK_PREFIX}${d.index}` : '';
     else {
       const t = d.url.trim();
       const link: LinkValue | null = linkFromTarget(/^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(t) ? `https://${t}` : t, state.pages);
-      if (!link || link.type === 'page' || link.type === 'collection' || link.type === 'anchor') return setDialog({ ...d, error: 'Use a full web address, such as https://example.com, or mailto: or tel:.' });
-      href = /^https?:/i.test(t) || t.startsWith('mailto:') || t.startsWith('tel:') ? t : `https://${t}`;
-      if (link.type === 'url') rels = d.rel;
+      if (!link || link.type === 'page' || link.type === 'collection' || link.type === 'anchor') dest = t ? 'Enter a full web address, such as https://example.com. An email (mailto:) or phone (tel:) address works too.' : 'Enter the web address the link goes to.';
+      else {
+        href = /^https?:/i.test(t) || t.startsWith('mailto:') || t.startsWith('tel:') ? t : `https://${t}`;
+        if (link.type === 'url') rels = d.rel;
+      }
     }
-    if (!href) return setDialog({ ...d, error: 'Choose where the link goes.' });
+    if (!href && !dest) dest = 'Choose where the link goes.';
+    const words = hasWords(d.range) ? '' : d.text.trim();
+    // Everything wrong is said at once, each under its own field.
+    const text = !hasWords(d.range) && !words ? 'Type the words readers click to follow the link.' : undefined;
+    if (text || dest) return setDialog({ ...d, error: { text, dest } });
+    // The words chosen left the text while the dialog was open (it was changed somewhere else).
+    if (d.range && !root.current?.contains(d.range.startContainer)) return setDialog({ ...d, error: { [hasWords(d.range) || d.editing ? 'dest' : 'text']: 'The text changed while this was open. Cancel, then choose the words again.' } });
     // A link that opened a new tab still does, to a page, a post or a web address: an email or a call opens its app.
     const newTab = d.newTab && !/^(mailto|tel):/i.test(href);
-    const words = d.range && !d.range.collapsed ? '' : d.text.trim();
-    if (d.range?.collapsed !== false && !words) return setDialog({ ...d, error: 'Type the words the link is on.' });
     afterDialog(d.range, () => {
       if (words) {
         const a = document.createElement('a');
@@ -523,16 +628,40 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     });
   };
 
-  const openImage = (fig: HTMLElement | null) => {
+  /** The link the caret was in, taken off its words; their formatting stays. */
+  const removeLink = (d: Extract<Dialog, { kind: 'link' }>) => afterDialog(d.range, () => document.execCommand('unlink'));
+  /** Closed without a change: back to the text, with the caret or the words chosen as they were. */
+  const cancelDialog = (d: NonNullable<Dialog>) => {
+    setDialog(null);
+    requestAnimationFrame(() => {
+      const el = root.current;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      const c = d.caret;
+      // Put back the way it was made, so Shift and an arrow go on extending it from the same end.
+      if (c && el.contains(c.anchorNode) && el.contains(c.focusNode)) document.getSelection()?.setBaseAndExtent(c.anchorNode, c.anchorOffset, c.focusNode, c.focusOffset);
+    });
+  };
+
+  const openImage = (clicked: HTMLElement | null) => {
     const el = root.current;
     if (!el || draft.problem?.kind === 'gone' || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
+    const sel = document.getSelection();
+    const range = sel?.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
+    // From the toolbar, a picture chosen in the text (selected whole, or holding the selection) is the one edited.
+    const fig = clicked ?? heldFigure(el, range);
     const at = fig ? null : blockAtCaret(el);
     const d = fig?.dataset;
-    setDialog({ kind: 'image', fig, at, value: { assetId: d?.assetId ?? null, alt: d?.alt ?? '', ...(d?.decorative ? { decorative: true } : {}) }, caption: d?.caption ?? '' });
+    setDialog({ kind: 'image', fig: fig && el.contains(fig) ? fig : null, at, caret: savedSelection(el), value: { assetId: d?.assetId ?? null, alt: d?.alt ?? '', ...(d?.decorative ? { decorative: true } : {}) }, caption: d?.caption ?? '' });
   };
   const applyImage = (d: Extract<Dialog, { kind: 'image' }>) => {
     const el = root.current;
     if (!el || !d.value.assetId) return;
+    // A picture that says something needs it said in words: described, or marked decorative.
+    if (!d.value.decorative && !d.value.alt.trim()) return setDialog({ ...d, altError: true, tried: (d.tried ?? 0) + 1 });
+    // The text was replaced while the dialog was open (changed somewhere else): the picture being edited is not in it
+    // now, and updating must never add a second one.
+    if (d.fig && !el.contains(d.fig)) return setDialog({ ...d, stale: true });
     afterDialog(null, () => {
       const data = { type: 'image' as const, assetId: d.value.assetId!, alt: d.value.alt ?? '', ...(d.caption.trim() ? { caption: d.caption.trim() } : {}), ...(d.value.decorative ? { decorative: true as const } : {}) };
       if (d.fig && el.contains(d.fig)) {
@@ -760,9 +889,10 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     { id: 'ul', label: 'Bulleted list', icon: <List />, on: pressed.block === 'ul', run: () => list('ul'), gap: true },
     { id: 'ol', label: 'Numbered list', icon: <ListOrdered />, on: pressed.block === 'ol', run: () => list('ol') },
     { id: 'check', label: 'Check list', icon: <ListChecks />, on: pressed.block === 'check', run: () => list('check') },
-    { id: 'link', label: pressed.link ? 'Edit link' : 'Link', keys: '⌘K', icon: <Link />, on: pressed.link, run: openLink, gap: true },
+    // Edit only when the Link command will edit (see heldLink); Remove link takes any link the selection touches.
+    { id: 'link', label: pressed.held ? 'Edit link' : 'Link', keys: '⌘K', icon: <Link />, on: pressed.link, run: openLink, gap: true },
     { id: 'unlink', label: 'Remove link', icon: <Unlink />, off: !pressed.link, run: () => command(() => document.execCommand('unlink')) },
-    { id: 'image', label: 'Picture', icon: <ImagePlus />, run: () => openImage(null), gap: true },
+    { id: 'image', label: pressed.figure ? 'Edit picture' : 'Picture', icon: <ImagePlus />, run: () => openImage(null), gap: true },
     { id: 'undo', label: 'Undo', keys: '⌘Z', icon: <Undo2 />, off: !canUndo, run: () => void history('undo'), gap: true },
     { id: 'redo', label: 'Redo', keys: '⇧⌘Z', icon: <Redo2 />, off: !canRedo, run: () => void history('redo') }
   ];
@@ -1035,34 +1165,74 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
           onUseSaved={() => (setReviewing(false), showSaved())}
         />
       )}
-      {dialog?.kind === 'image' && (
-        <Modal
-          title={dialog.fig ? 'Picture' : 'Add a picture'}
-          onClose={() => setDialog(null)}
-          footer={
-            <>
-              {dialog.fig && (
-                <button className="btn btn-danger" onClick={() => removeImage(dialog)}>
-                  Remove picture
+      {dialog?.kind === 'image' && (() => {
+        const images = Object.values(state.assets.assets).some((a) => a.kind === 'image');
+        const lost = !!dialog.value.assetId && snap.missingAssets.some((m) => m.assetId === dialog.value.assetId && m.original);
+        const ready = !!dialog.value.assetId && Object.hasOwn(state.assets.assets, dialog.value.assetId) && !lost;
+        return (
+          <Modal
+            title={dialog.fig ? 'Edit picture' : 'Add picture'}
+            onClose={() => cancelDialog(dialog)}
+            // Over a choice and words not yet in the text: only Cancel, Escape or the close button end it.
+            dismissOnBackdrop={false}
+            footer={
+              <>
+                {dialog.fig && (
+                  <button className="btn btn-danger" disabled={dialog.stale} onClick={() => removeImage(dialog)}>
+                    Remove picture
+                  </button>
+                )}
+                <span className="grow" />
+                <button className="btn" onClick={() => cancelDialog(dialog)}>
+                  Cancel
                 </button>
-              )}
-              <span className="grow" />
-              <button className="btn" onClick={() => setDialog(null)}>
-                Cancel
-              </button>
-              <button className="btn btn-primary" disabled={!dialog.value.assetId} onClick={() => applyImage(dialog)}>
-                {dialog.fig ? 'Update' : 'Add picture'}
-              </button>
-            </>
-          }
-        >
-          <PicturePicker state={state} devUrl={devUrl} value={dialog.value} onChange={(value) => setDialog({ ...dialog, value })} />
-          <Field label="Caption" hint="Shown under the picture.">
-            <input className="input" value={dialog.caption} maxLength={MAX_CAPTION} aria-label="Caption" onChange={(e) => setDialog({ ...dialog, caption: e.target.value })} />
-          </Field>
-        </Modal>
-      )}
-      {dialog?.kind === 'link' && <LinkDialog dialog={dialog} state={state} self={post.entryId} onChange={setDialog} onApply={applyLink} />}
+                {images && (
+                  <button className="btn btn-primary" disabled={!ready || dialog.stale} onClick={() => applyImage(dialog)}>
+                    {dialog.fig ? 'Update picture' : 'Add picture'}
+                  </button>
+                )}
+              </>
+            }
+          >
+            {dialog.stale && (
+              <p className="field-error post-dialog-stale" role="alert">
+                The {nounLower}’s text changed while this was open, and this picture is no longer in it. Cancel, then open the picture again.
+              </p>
+            )}
+            <PicturePicker
+              state={state}
+              devUrl={devUrl}
+              missing={snap.missingAssets}
+              value={dialog.value}
+              altError={dialog.altError}
+              tried={dialog.tried ?? 0}
+              // A description written, decorative turned on or another picture chosen settles what was asked.
+              onChange={(value) => setDialog({ ...dialog, value, altError: dialog.altError && !value.decorative && !value.alt.trim() && value.assetId === dialog.value.assetId })}
+              onOpenAssets={() => {
+                setDialog(null);
+                setState({ leftTab: 'assets' });
+              }}
+            />
+            {/* What the picture is called under it waits, with its description, for a picture. */}
+            {images && dialog.value.assetId && (
+              <Field label="Caption" hint="Shown under the picture. Optional.">
+                <input
+                  className="input"
+                  value={dialog.caption}
+                  maxLength={MAX_CAPTION}
+                  onChange={(e) => setDialog({ ...dialog, caption: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' || isImeComposing(e)) return;
+                    e.preventDefault();
+                    if (ready) applyImage(dialog);
+                  }}
+                />
+              </Field>
+            )}
+          </Modal>
+        );
+      })()}
+      {dialog?.kind === 'link' && <LinkDialog dialog={dialog} state={state} self={post.entryId} home={post.collectionId} onChange={setDialog} onApply={applyLink} onCancel={cancelDialog} onRemove={removeLink} />}
     </>
   );
 }
@@ -1108,63 +1278,224 @@ function SavedTextDialog({ noun, body, state, devUrl, onClose, onKeepMine, onUse
 
 /**
  * A picture from the library for the text, with what it shows for people who cannot see it. Nothing reaches the project
- * until the dialog's Add or Update: new pictures are added in Assets.
+ * until the dialog's Add or Update: new pictures are added in Assets. The tiles are the other pickers' (Inspector.css
+ * `.insp-pick-*`): the name under each picture, the chosen one raised, a picture whose file is gone an empty frame
+ * marked Missing, and logos shown whole.
  */
-function PicturePicker({ state, devUrl, value, onChange }: { state: ProjectState; devUrl: string | null; value: ImageValue; onChange: (v: ImageValue) => void }) {
+function PicturePicker({ state, devUrl, missing, value, altError, tried, onChange, onOpenAssets }: { state: ProjectState; devUrl: string | null; missing: ProjectSnapshot['missingAssets']; value: ImageValue; altError?: boolean; tried: number; onChange: (v: ImageValue) => void; onOpenAssets: () => void }) {
   const uid = useId();
   const [q, setQ] = useState('');
   const images = useMemo(() => sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), 'name'), [state.assets]);
+  const labels = useMemo(() => assetLabels(images), [images]);
   const needle = q.trim().toLowerCase();
-  const shown = needle ? images.filter((a) => `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)) : images;
-  if (!images.length) return <p className="posts-note">The library has no pictures yet. Add them in Assets, then choose one here.</p>;
+  // The ID a same-named picture shows is searchable too.
+  const shown = needle ? images.filter((a) => `${a.name} ${a.id} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)) : images;
+  // The grid's one Tab stop: the tile moved to last, else the chosen one, else the first.
+  const [active, setActive] = useState<string | null>(null);
+  const grid = useRef<HTMLDivElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const root = useRef<HTMLDivElement>(null);
+  // Escape with words in the search clears it, from anywhere in the dialog, and keeps the choice; the next one closes.
+  const typed = useRef(q);
+  typed.current = q;
+  useEffect(() => {
+    const dialog = root.current?.closest<HTMLElement>('.modal');
+    if (!dialog) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !typed.current || e.isComposing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setQ('');
+      search.current?.focus();
+    };
+    dialog.addEventListener('keydown', onKey, true);
+    return () => dialog.removeEventListener('keydown', onKey, true);
+  }, []);
+  // Add or Update pressed with nothing said about the picture: to the description, each time.
+  useEffect(() => {
+    if (altError) document.getElementById(`${uid}-alt`)?.focus();
+  }, [tried]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    // A picture already in the text opens with its tile in view.
+    grid.current?.querySelector<HTMLElement>('.insp-pick-tile.current')?.scrollIntoView({ block: 'nearest' });
+  }, []);
+  if (!images.length)
+    return (
+      <div className="post-picker-empty" ref={root}>
+        <ImageOff aria-hidden="true" />
+        <p>No pictures in the library yet. Add them in Assets, then choose one here.</p>
+        <button className="btn" data-autofocus onClick={onOpenAssets}>
+          Open Assets
+        </button>
+      </div>
+    );
+  const damage = (id: string) => missing.find((m) => m.assetId === id);
+  const chosen = value.assetId && Object.hasOwn(state.assets.assets, value.assetId) ? state.assets.assets[value.assetId] : undefined;
+  const nameOf = (id: string) => labels.get(id)?.label ?? state.assets.assets[id]?.name ?? 'Picture';
   const pick = (id: string) => {
-    if (id === value.assetId) return;
+    // A picture whose file is gone can't go into the text; repaired in Assets, it can.
+    if (id === value.assetId || damage(id)?.original) return;
     const a = state.assets.assets[id];
     // A description written for another picture is not this one's: the new picture's suggestion, else none.
     onChange({ assetId: id, alt: a.altSuggestion ?? '', ...(value.decorative ? { decorative: true } : {}) });
   };
+  const roving = shown.some((a) => a.id === active) ? active : shown.some((a) => a.id === value.assetId) ? value.assetId : (shown[0]?.id ?? null);
+  const chosenLost = !!chosen && !!damage(chosen.id)?.original;
   return (
-    <div className="post-picker">
-      {images.length > 8 && <input type="search" className="input sm" placeholder="Search pictures" aria-label="Search pictures" value={q} onChange={(e) => setQ(e.target.value)} />}
-      <div
-        className="post-picker-grid"
-        role="listbox"
-        aria-label="Library pictures"
-        // One stop for Tab; the arrow keys move and choose, Up and Down by a row of the grid.
-        onKeyDown={(e) => {
-          const tiles = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]')];
-          const from = tiles.indexOf(document.activeElement as HTMLButtonElement);
-          if (from < 0) return;
-          const across = getComputedStyle(e.currentTarget).gridTemplateColumns.split(' ').length || 1;
-          const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: across, ArrowUp: -across }[e.key];
-          const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step === undefined ? -1 : Math.min(tiles.length - 1, Math.max(0, from + step));
-          if (to < 0) return;
-          e.preventDefault();
-          tiles[to].focus();
-          pick(shown[to].id);
-        }}
-      >
-        {shown.map((a, i) => (
-          <button key={a.id} type="button" role="option" aria-selected={a.id === value.assetId} tabIndex={a.id === value.assetId || (i === 0 && !shown.some((x) => x.id === value.assetId)) ? 0 : -1} className="post-picker-tile" title={a.name} onClick={() => pick(a.id)}>
-            {devUrl ? <AssetImage asset={a} devUrl={devUrl} cover /> : <span className="post-picker-name">{a.name}</span>}
-          </button>
-        ))}
+    <div className="post-picker" ref={root}>
+      <div className="post-picker-library">
+        {(images.length > 6 || q) && (
+          <div className="post-picker-find">
+            <Search aria-hidden="true" />
+            <input
+              ref={search}
+              type="search"
+              className="input with-icon"
+              placeholder={`Search ${images.length} pictures`}
+              aria-label="Search pictures"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
+        )}
+        {shown.length > 0 ? (
+          <div
+            ref={grid}
+            className="post-picker-grid"
+            role="listbox"
+            aria-label="Library pictures"
+            aria-invalid={chosenLost || undefined}
+            aria-describedby={chosenLost ? `${uid}-lost` : undefined}
+            // One stop for Tab. The arrow keys move, Up and Down by a row of the grid; Enter, Space or a click chooses, so
+            // looking through the pictures never replaces a description already written.
+            onKeyDown={(e) => {
+              const tiles = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+              const from = tiles.indexOf(document.activeElement as HTMLButtonElement);
+              if (from < 0 || e.altKey || e.metaKey || e.ctrlKey) return;
+              const across = getComputedStyle(e.currentTarget).gridTemplateColumns.split(' ').length || 1;
+              const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: across, ArrowUp: -across }[e.key];
+              // Up from the first row and Down from the last stay put; Down into a shorter last row lands on its last picture.
+              const edge = (e.key === 'ArrowUp' && from < across) || (e.key === 'ArrowDown' && Math.floor(from / across) === Math.floor((tiles.length - 1) / across));
+              const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step === undefined ? -1 : edge ? from : Math.min(tiles.length - 1, Math.max(0, from + step));
+              if (to < 0) return;
+              e.preventDefault();
+              setActive(shown[to].id);
+              tiles[to].focus();
+            }}
+            // Coming back with Tab lands on the chosen picture again, not the last one looked at.
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setActive(null);
+            }}
+          >
+            {shown.map((a) => {
+              const hurt = damage(a.id);
+              const current = a.id === value.assetId;
+              const blocked = !!hurt?.original && !current;
+              const label = nameOf(a.id);
+              const why = hurt ? (hurt.original ? 'its file is missing, so repair it in Assets first' : 'some of its smaller copies are missing') : '';
+              const whole = fitFor(a).contain;
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  role="option"
+                  aria-selected={current}
+                  aria-disabled={blocked || (current && !!hurt?.original) || undefined}
+                  aria-label={why ? `${label}: ${why}` : label}
+                  tabIndex={a.id === roving ? 0 : -1}
+                  data-autofocus={current || undefined}
+                  className={`insp-pick-tile${current ? ' current' : ''}${hurt ? ' missing' : ''}`}
+                  title={why ? `${label}: ${why}` : label}
+                  onFocus={() => setActive(a.id)}
+                  onClick={() => pick(a.id)}
+                >
+                  {/* A picture whose file is gone is an empty frame, as in Assets, never a faded memory of it. */}
+                  {hurt?.original || !devUrl ? (
+                    <span className="insp-pick-frame" aria-hidden="true">
+                      <ImageOff />
+                    </span>
+                  ) : (
+                    <AssetImage key={missingKey({ missingAssets: missing }, a.id)} asset={a} devUrl={devUrl} cover={!whole} className={whole ? 'contain' : undefined} alt="" loading="lazy" />
+                  )}
+                  <span className="insp-pick-name" aria-hidden="true">
+                    {labels.get(a.id)?.name ?? a.name}
+                  </span>
+                  {/* Another picture has this name: its ID tells them apart. */}
+                  {labels.get(a.id)?.label !== labels.get(a.id)?.name && (
+                    <span className="ellipsis insp-pick-id" aria-hidden="true">
+                      {a.id}
+                    </span>
+                  )}
+                  {hurt && (
+                    <span className="insp-pick-gone" aria-hidden="true">
+                      <TriangleAlert /> {hurt.original ? 'Missing' : 'Copy missing'}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="post-picker-nomatch">
+            <p>No pictures match “{q.trim()}”.</p>
+            <button
+              className="btn btn-sm"
+              onClick={() => {
+                setQ('');
+                search.current?.focus();
+              }}
+            >
+              Clear search
+            </button>
+          </div>
+        )}
+        {/* What is chosen, said under the pictures however far they are scrolled or searched, at one steady height. */}
+        <p className={`post-picker-chosen${chosen ? '' : ' none'}`}>{chosen ? <>Chosen: <strong>{nameOf(chosen.id)}</strong></> : 'No picture chosen yet'}</p>
       </div>
-      <Field label="Description" controlId={`${uid}-alt`} hint="What the picture shows, for people who cannot see it.">
-        <textarea id={`${uid}-alt`} className="input" rows={2} maxLength={TEXT_LIMITS.imageAlt} disabled={!!value.decorative} placeholder="What the picture shows" value={value.alt} onChange={(e) => onChange({ ...value, alt: e.target.value })} />
-      </Field>
-      <label className="post-picker-decorative">
-        <input type="checkbox" checked={!!value.decorative} onChange={(e) => onChange({ ...value, ...(e.target.checked ? { decorative: true } : { decorative: undefined }) })} /> Decorative: it adds nothing the text does not say
-      </label>
+      <p className="sr-only" role="status">
+        {needle ? `${shown.length} of ${images.length} pictures` : ''}
+      </p>
+      {chosenLost && (
+        <div className="post-picker-lost">
+          <p className="field-error" id={`${uid}-lost`}>
+            {nameOf(chosen.id)} is missing its file. Repair it in Assets, or choose another picture.
+          </p>
+          <button className="btn btn-sm" onClick={onOpenAssets}>
+            Open Assets
+          </button>
+        </div>
+      )}
+      {/* What the picture shows belongs to a chosen picture: the fields wait for one. */}
+      {chosen && !value.decorative && (
+        <Field
+          label="Description"
+          controlId={`${uid}-alt`}
+          error={altError ? 'Describe what the picture shows, or turn on Decorative image.' : undefined}
+          hint={value.alt.trim() ? 'What the picture shows, for people who cannot see it.' : 'Describe what the picture shows for people who cannot see it, or turn on Decorative image.'}
+        >
+          <textarea id={`${uid}-alt`} className="textarea" rows={2} maxLength={TEXT_LIMITS.imageAlt} value={value.alt} onChange={(e) => onChange({ ...value, alt: e.target.value })} />
+        </Field>
+      )}
+      {chosen && (
+        <SwitchRow
+          checked={!!value.decorative}
+          // The description is kept while decorative is on, so turning it off brings it back (see richtext).
+          onChange={(on) => onChange({ ...value, ...(on ? { decorative: true } : { decorative: undefined }) })}
+          label="Decorative image"
+          hint={value.decorative ? 'Screen readers skip it. Turn this off to use its description again.' : 'Turn on if the picture is just decoration, or only repeats what the text says.'}
+        />
+      )}
     </div>
   );
 }
 
-/** Every post of every collection, newest first within each: what a link can go to. */
-function allPosts(state: ProjectState) {
+/** What a link can go to: every entry with a page of its own (drafts too), newest first within each collection. */
+function linkablePosts(state: ProjectState, self: string) {
   return Object.keys(state.collections ?? {})
+    .filter((id) => hasDetailPages(state.collections[id].settings))
     .sort()
-    .flatMap((id) => orderedEntries(state.collections[id]).map((e) => ({ id: e.id, title: e.title, collection: state.collections[id].settings.name })));
+    .flatMap((id) => orderedEntries(state.collections[id]).map((e) => ({ id: e.id, title: e.title, collectionId: id, collection: state.collections[id].settings.name })))
+    .filter((p) => p.id !== self);
 }
 
 /** The part of a text node's words a range covers: a range that only reaches an element's edge covers none of it. */
@@ -1202,49 +1533,117 @@ function opensNewTab(root: HTMLElement, range: Range): boolean {
   return linked;
 }
 
-function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extract<Dialog, { kind: 'link' }>; state: ProjectState; self: string; onChange: (d: Dialog) => void; onApply: (d: Extract<Dialog, { kind: 'link' }>) => void }) {
+/** Words shown inside a sentence: the start of a long run, ellipsised. */
+const quoteWords = (text: string, max = 48) => {
+  const t = text.replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+};
+
+/**
+ * Where a link in the text goes: a page, another entry, a collection's index or a web address (an email or phone
+ * address typed there too), named as the Inspector's link editor names them. What is wrong is said under the field it
+ * is about, and Cancel puts the caret back where it was.
+ */
+function LinkDialog({ dialog, state, self, home, onChange, onApply, onCancel, onRemove }: { dialog: Extract<Dialog, { kind: 'link' }>; state: ProjectState; self: string; home: string; onChange: (d: Dialog) => void; onApply: (d: Extract<Dialog, { kind: 'link' }>) => void; onCancel: (d: Extract<Dialog, { kind: 'link' }>) => void; onRemove: (d: Extract<Dialog, { kind: 'link' }>) => void }) {
   const uid = useId();
-  const posts = allPosts(state).filter((p) => p.id !== self);
+  const form = useRef<HTMLDivElement>(null);
+  const posts = linkablePosts(state, self);
+  // Entries by collection, the one being written in first, then by name: a title alone can belong to either.
+  const groups = [...new Set(posts.map((p) => p.collectionId))]
+    .sort((a, b) => (a === home ? -1 : b === home ? 1 : state.collections[a].settings.name.localeCompare(state.collections[b].settings.name)))
+    .map((id) => ({ id, name: state.collections[id].settings.name, posts: posts.filter((p) => p.collectionId === id) }));
   const indexes = linkableIndexes(state);
-  const set = (p: Partial<typeof dialog>) => onChange({ ...dialog, ...p, error: undefined });
-  const needsWords = !dialog.range || dialog.range.collapsed;
+  // A change clears only what it could have put right: the words their error, a destination its own; the new tab and
+  // what the link tells search engines neither.
+  const set = (p: Partial<typeof dialog>, clears: Array<keyof LinkError> = []) => {
+    const error = dialog.error && { ...dialog.error };
+    for (const k of clears) if (error) delete error[k];
+    onChange({ ...dialog, ...p, error: error && (error.text || error.dest) ? error : undefined });
+  };
+  const needsWords = !hasWords(dialog.range);
+  const words = needsWords ? '' : quoteWords(dialog.range!.toString());
+  const err = (at: keyof LinkError) => dialog.error?.[at];
+  const entry = posts.find((p) => p.id === dialog.entry);
+  // A kind with nothing to choose (no other entry, no index on the website) has no link to apply.
+  const nothing = (dialog.to === 'post' && !posts.length) || (dialog.to === 'index' && !indexes.length);
+  const mailOrPhone = dialog.to === 'url' && /^(mailto|tel):/i.test(dialog.url.trim());
+  // A failed Apply puts focus on the field that says what is wrong.
+  const tried = useRef(0);
+  const apply = () => {
+    tried.current++;
+    onApply(dialog);
+  };
+  // A failed Apply, and only that, puts focus on the first field that says what is wrong.
+  const focused = useRef(0);
+  useEffect(() => {
+    if (!dialog.error || focused.current === tried.current) return;
+    focused.current = tried.current;
+    form.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [dialog.error]);
+  const kinds: Array<{ value: typeof dialog.to; label: string }> = [
+    { value: 'page', label: 'Page' },
+    { value: 'post', label: 'Entry' },
+    // Offered with no index to link to, so the note under it can say how to make one.
+    { value: 'index', label: 'Collection index' },
+    { value: 'url', label: 'Web address' }
+  ];
   return (
     <Modal
-      title="Link"
-      onClose={() => onChange(null)}
+      title={dialog.editing ? 'Edit link' : 'Add link'}
+      onClose={() => onCancel(dialog)}
+      // Over a link not yet in the text: only Cancel, Escape or the close button end it.
+      dismissOnBackdrop={false}
       footer={
         <>
+          {dialog.editing && (
+            <button className="btn btn-danger" onClick={() => onRemove(dialog)}>
+              <Unlink aria-hidden="true" />
+              Remove link
+            </button>
+          )}
           <span className="grow" />
-          <button className="btn" onClick={() => onChange(null)}>
+          <button className="btn" onClick={() => onCancel(dialog)}>
             Cancel
           </button>
-          <button className="btn btn-primary" onClick={() => onApply(dialog)}>
-            Apply link
+          <button className="btn btn-primary" disabled={nothing} onClick={apply}>
+            {dialog.editing ? 'Update link' : 'Add link'}
           </button>
         </>
       }
     >
-      <form
-        onSubmit={(e) => {
+      {/* Not a form: its switch and segments are buttons, and a button in a form submits it. Enter is handled here. */}
+      <div
+        ref={form}
+        className="post-link-form"
+        // Enter in a field applies, as the footer's button does; Space still ticks a box.
+        onKeyDown={(e) => {
+          const t = e.target as HTMLElement;
+          if (e.key !== 'Enter' || isImeComposing(e) || !(t instanceof HTMLInputElement) || t.type === 'checkbox') return;
           e.preventDefault();
-          onApply(dialog);
+          if (!nothing) apply();
         }}
       >
         {needsWords && (
-          <Field label="Text" controlId={`${uid}-text`}>
-            <input id={`${uid}-text`} className="input" value={dialog.text} onChange={(e) => set({ text: e.target.value })} />
+          <Field label="Link text" controlId={`${uid}-text`} error={err('text')}>
+            <input id={`${uid}-text`} className="input" data-autofocus value={dialog.text} onChange={(e) => set({ text: e.target.value }, ['text'])} />
           </Field>
         )}
-        <div className="post-link-kinds" role="radiogroup" aria-label="Link to">
-          {(['page', 'post', ...(indexes.length || dialog.to === 'index' ? (['index'] as const) : []), 'url'] as const).map((k) => (
-            <label key={k} className="post-link-kind">
-              <input type="radio" name={`${uid}-to`} checked={dialog.to === k} onChange={() => set({ to: k })} /> {k === 'page' ? 'A page' : k === 'post' ? 'An entry' : k === 'index' ? 'A collection index' : 'A web address'}
-            </label>
-          ))}
-        </div>
+        <ChoiceField label={words ? <>Link “{words}” to</> : 'Link to'} full value={dialog.to} options={kinds} onChange={(to) => to !== dialog.to && set({ to }, ['dest'])} />
         {dialog.to === 'page' && (
-          <Field label="Page" controlId={`${uid}-page`}>
-            <select id={`${uid}-page`} className="select" value={dialog.page} onChange={(e) => set({ page: e.target.value })}>
+          <Field
+            label="Page"
+            controlId={`${uid}-page`}
+            error={err('dest')}
+            hint={dialog.section?.page === dialog.page ? `Goes to its #${dialog.section.id} section.` : undefined}
+            extra={
+              dialog.section?.page === dialog.page ? (
+                <button type="button" className="btn btn-sm btn-ghost post-link-top" onClick={() => set({ section: null })}>
+                  Go to the top instead
+                </button>
+              ) : undefined
+            }
+          >
+            <select id={`${uid}-page`} className="select" value={dialog.page} onChange={(e) => set({ page: e.target.value, ...(e.target.value !== dialog.page ? { section: null } : {}) }, ['dest'])}>
               {state.site.pageOrder
                 .filter((id) => Object.hasOwn(state.pages, id))
                 .map((id) => (
@@ -1257,22 +1656,32 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
         )}
         {dialog.to === 'post' &&
           (posts.length ? (
-            <Field label="Entry" controlId={`${uid}-post`}>
-              <select id={`${uid}-post`} className="select" value={dialog.entry} onChange={(e) => set({ entry: e.target.value })}>
-                {posts.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.title}
+            <Field label="Entry" controlId={`${uid}-post`} error={err('dest')} hint={entry ? `In ${entry.collection}` : undefined}>
+              <select id={`${uid}-post`} className="select" value={entry ? dialog.entry : ''} onChange={(e) => set({ entry: e.target.value }, ['dest'])}>
+                {/* A linked entry that is gone, or has no page now, is not shown as another title. */}
+                {!entry && (
+                  <option value="" disabled>
+                    Choose an entry…
                   </option>
+                )}
+                {groups.map((g) => (
+                  <optgroup key={g.id} label={g.name}>
+                    {g.posts.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </Field>
           ) : (
-            <p className="posts-note">There is no other entry to link to yet.</p>
+            <p className="post-link-none">There is no other entry to link to yet. Link to a page or a web address instead.</p>
           ))}
         {dialog.to === 'index' &&
           (indexes.length ? (
-            <Field label="Collection" controlId={`${uid}-index`}>
-              <select id={`${uid}-index`} className="select" value={indexes.some((x) => x.id === dialog.index) ? dialog.index : ''} onChange={(e) => set({ index: e.target.value })}>
+            <Field label="Collection" controlId={`${uid}-index`} error={err('dest')}>
+              <select id={`${uid}-index`} className="select" value={indexes.some((x) => x.id === dialog.index) ? dialog.index : ''} onChange={(e) => set({ index: e.target.value }, ['dest'])}>
                 {!indexes.some((x) => x.id === dialog.index) && (
                   <option value="" disabled>
                     Choose a collection…
@@ -1286,21 +1695,17 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
               </select>
             </Field>
           ) : (
-            <p className="posts-note">No collection has an index on the website to link to.</p>
+            <p className="post-link-none">No collection has an index on the website to link to. Turn one on in its collection’s settings, or link to a page.</p>
           ))}
         {dialog.to === 'url' && (
-          <Field label="Web address" controlId={`${uid}-url`}>
-            <input id={`${uid}-url`} className="input" placeholder="https://example.com" value={dialog.url} onChange={(e) => set({ url: e.target.value })} />
+          <Field label="Web address" controlId={`${uid}-url`} error={err('dest')} hint="Or an email (mailto:) or phone (tel:) address.">
+            <input id={`${uid}-url`} className="input" placeholder="https://example.com" spellCheck={false} value={dialog.url} onChange={(e) => set({ url: e.target.value }, ['dest'])} />
           </Field>
         )}
-        {/* An email or phone link goes to no site to say anything about. */}
-        {dialog.to === 'url' && !/^(mailto|tel):/i.test(dialog.url.trim()) && <LinkRelControls value={dialog.rel} onChange={(rel) => set({ rel })} />}
-        {dialog.error && (
-          <p className="field-error" role="alert">
-            {dialog.error}
-          </p>
-        )}
-      </form>
+        {/* An email or a call opens its own app, and goes to no site to say anything about. */}
+        {!nothing && !mailOrPhone && <SwitchRow checked={dialog.newTab} onChange={(newTab) => set({ newTab })} label="Open in a new tab" />}
+        {dialog.to === 'url' && !mailOrPhone && <LinkRelControls value={dialog.rel} onChange={(rel) => set({ rel })} />}
+      </div>
     </Modal>
   );
 }
