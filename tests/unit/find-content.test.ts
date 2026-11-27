@@ -727,7 +727,7 @@ function withEntries(): ProjectState {
     { type: 'collection.create', collectionId: 'posts', name: 'Posts' },
     { type: 'entry.create', collectionId: 'posts', entryId: 'en_launch', title: 'Launching Acme Kilns', excerpt: 'Acme Kilns opens its doors.', draft: false, publishedAt: '2026-01-02' },
     { type: 'entry.create', collectionId: 'posts', entryId: 'en_plans', title: 'Plans for Acme', publishedAt: '2026-01-01' },
-    { type: 'collection.create', collectionId: 'work', name: 'Work', kind: 'structured' },
+    { type: 'collection.create', collectionId: 'work', name: 'Archive of work', kind: 'structured' },
     { type: 'entry.create', collectionId: 'work', entryId: 'en_vase', title: 'A vase', excerpt: 'Thrown for Acme.', draft: false }
   ]).state;
 }
@@ -745,12 +745,12 @@ describe('collection entries (#1121)', () => {
     const ms = findContent(s, 'acme');
     const entries = ms.filter((m) => m.field.entry);
     expect(entries.map((m) => [m.field.where, m.field.section, m.field.label, m.match])).toEqual([
+      ['A vase', 'Archive of work', 'Excerpt', 'Acme'],
       ['Launching Acme Kilns', 'Posts', 'Title', 'Acme'],
       ['Launching Acme Kilns', 'Posts', 'Excerpt', 'Acme'],
-      ['Plans for Acme', 'Posts', 'Title', 'Acme'],
-      ['A vase', 'Work', 'Excerpt', 'Acme']
+      ['Plans for Acme', 'Posts', 'Title', 'Acme']
     ]);
-    // Reading order: every page and shared part first, then the entries.
+    // Reading order: every page and shared part first, then the entries, collection by collection by name.
     expect(ms.slice(-entries.length)).toEqual(entries);
     expect(entries.every((m) => !m.blocked)).toBe(true);
     expect(entries.find((m) => m.field.where === 'Plans for Acme')!.field.entry).toMatchObject({ draft: true, synced: false });
@@ -767,16 +767,16 @@ describe('collection entries (#1121)', () => {
     const { plan, after } = apply(s, findContent(s, 'acme'), 'Birch');
     const edits = plan.operations.filter((o) => o.type === 'entry.update');
     expect(edits).toEqual([
+      { type: 'entry.update', collectionId: 'work', entryId: 'en_vase', excerpt: 'Thrown for Birch.' },
       { type: 'entry.update', collectionId: 'posts', entryId: 'en_launch', title: 'Launching Birch Kilns', excerpt: 'Birch Kilns opens its doors.' },
-      { type: 'entry.update', collectionId: 'posts', entryId: 'en_plans', title: 'Plans for Birch' },
-      { type: 'entry.update', collectionId: 'work', entryId: 'en_vase', excerpt: 'Thrown for Birch.' }
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_plans', title: 'Plans for Birch' }
     ]);
     expect(plan.operations.some((o) => o.type === 'node.setContent' && o.nodeId === 'n_acme')).toBe(true);
     expect(plan.changes.filter((c) => c.field.entry && !c.knockOn).map((c) => [c.before, c.after])).toEqual([
+      ['Thrown for Acme.', 'Thrown for Birch.'],
       ['Launching Acme Kilns', 'Launching Birch Kilns'],
       ['Acme Kilns opens its doors.', 'Birch Kilns opens its doors.'],
-      ['Plans for Acme', 'Plans for Birch'],
-      ['Thrown for Acme.', 'Thrown for Birch.']
+      ['Plans for Acme', 'Plans for Birch']
     ]);
     expect(findContent(after, 'acme')).toEqual([]);
     expect(after.collections.posts.entries.en_launch).toMatchObject({ title: 'Launching Birch Kilns', excerpt: 'Birch Kilns opens its doors.', draft: false });
@@ -789,7 +789,7 @@ describe('collection entries (#1121)', () => {
     const synced = ms.filter((m) => m.field.entry?.collectionId === 'work');
     expect(synced).toHaveLength(1);
     expect(synced[0].field.entry).toMatchObject({ synced: true });
-    expect(synced[0].blocked).toMatch(/Work collection is synced from an external source, so its entries are read-only here/);
+    expect(synced[0].blocked).toMatch(/Archive of work collection is synced from an external source, so its entries are read-only here/);
     expect(ms.filter((m) => m.field.entry?.collectionId === 'posts').every((m) => !m.blocked)).toBe(true);
     const { plan, after } = apply(s, ms, 'Birch');
     expect(plan.skipped).toBe(1);
@@ -810,6 +810,24 @@ describe('collection entries (#1121)', () => {
     const cleared = apply(s, [excerpt], '');
     expect(cleared.after.collections.work.entries.en_vase.excerpt).toBeUndefined();
     expect(cleared.plan.changes.find((c) => c.field.entry && !c.knockOn)).toMatchObject({ before: 'Thrown for Acme.', after: 'Not shown' });
+  });
+
+  it('reports a title or excerpt the replacement makes too long, before anything changes', () => {
+    const s = withEntries();
+    const [title] = findContent(s, 'a vase');
+    expect(planReplace(s, [title], 'v'.repeat(200)).error).toBeUndefined();
+    expect(planReplace(s, [title], 'v'.repeat(201))).toMatchObject({ operations: [], error: expect.stringMatching(/title of “A vase” longer than 200 characters/) });
+    const excerpt = findContent(s, 'thrown').find((m) => m.field.entry)!;
+    const fill = 'x'.repeat(320 - 'Thrown for Acme.'.length + 'Thrown'.length);
+    expect(planReplace(s, [excerpt], fill).error).toBeUndefined();
+    expect(planReplace(s, [excerpt], `${fill}x`)).toMatchObject({ operations: [], error: expect.stringMatching(/excerpt of “A vase” longer than 320 characters/) });
+  });
+
+  it('keeps entries out of the review of the starter’s sample contact details', () => {
+    const s = applyOperations(withEntries(), [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_launch', excerpt: 'Write to hello@example.com.' }]).state;
+    expect(findContent(s, 'hello@example.com').some((m) => m.field.entry)).toBe(true);
+    const email = sampleContactMatches(s).find((g) => g.kind === 'email')!;
+    expect(email.matches.some((m) => m.field.entry)).toBe(false);
   });
 
   it('opens an entry’s title or excerpt in the writer, not the inspector, while the entry is there', () => {
@@ -846,14 +864,20 @@ describe('replacing in a session', () => {
     expect(keep(session.state)).toEqual(done);
   });
 
-  it('changes several entries in one step that undoes and redoes as one', async () => {
+  it('changes a page and several entries in one step that undoes and redoes as one', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-find-'));
     dirs.push(dir);
-    const session = await ProjectSession.create(dir, withEntries());
+    const seeded = withEntries();
+    const page = pageAt(seeded, '/about/');
+    const node: GraphNode = { id: 'n_acme', kind: 'text', tag: 'p', text: 'Acme makes kilns.' };
+    page.nodes[node.id] = node;
+    page.rootIds.push(node.id);
+    const session = await ProjectSession.create(dir, seeded);
     const keep = (st: ProjectState) => JSON.parse(JSON.stringify({ pages: st.pages, collections: st.collections }));
     const before = keep(session.state);
     const plan = planReplace(session.state, findContent(session.state, 'acme'), 'Birch');
     expect(plan.error).toBeUndefined();
+    expect(plan.operations.map((o) => o.type)).toEqual(['node.setContent', 'entry.update', 'entry.update', 'entry.update']);
     const r = await session.apply({ operations: plan.operations, expectedRevision: session.revision }, { label: 'Replace “Acme”' });
     expect(r.ok).toBe(true);
     expect(findContent(session.state, 'acme')).toEqual([]);

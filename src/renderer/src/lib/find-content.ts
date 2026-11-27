@@ -4,7 +4,7 @@
  * reviewed against a dry run first, so it undoes in one step and shows every text and destination it changes.
  */
 import type { ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, NodeTree, OwnerRef, ProjectState, RichListType, RichSpan, RichText } from '@shared/types';
-import type { EditOperation } from '@shared/ops';
+import { validateOperation, type EditOperation } from '@shared/ops';
 import { cleanBlocks, cleanSpans, isImageBlock, isListBlock, toRichText } from '@shared/richtext';
 import { collectionIndexRoutes } from '@shared/archives';
 import { renderedContent, type ContentSource, type RenderedContent } from '@generator/checks';
@@ -176,6 +176,11 @@ function fieldLabel(state: ProjectState, tree: NodeTree, c: RenderedContent): { 
  * then each collection's entries, by their title and excerpt. The header or footer is left out when no page shows it.
  */
 export function contentFields(state: ProjectState): ContentField[] {
+  return [...pageFields(state), ...entryFields(state)];
+}
+
+/** The fields the pages and the shared header and footer show, in reading order. */
+function pageFields(state: ProjectState): ContentField[] {
   const pages = state.site.pageOrder.filter((id) => own(state.pages, id));
   const headerPages = pagesShowing(state, 'header').length;
   const footerPages = pagesShowing(state, 'footer').length;
@@ -211,7 +216,6 @@ export function contentFields(state: ProjectState): ContentField[] {
       });
     }
   }
-  out.push(...entryFields(state));
   return out;
 }
 
@@ -221,9 +225,9 @@ export function contentFields(state: ProjectState): ContentField[] {
  */
 function entryFields(state: ProjectState): ContentField[] {
   const out: ContentField[] = [];
-  const collections = state.collections ?? {};
-  for (const id of Object.keys(collections).sort()) {
-    const c = collections[id];
+  // By name, as the Content panel lists them.
+  const collections = Object.values(state.collections ?? {}).sort((a, b) => a.settings.name.localeCompare(b.settings.name) || a.settings.id.localeCompare(b.settings.id));
+  for (const c of collections) {
     const synced = isSyncedCollection(c.settings);
     for (const e of orderedEntries(c)) {
       const fields: Array<['title' | 'excerpt', string | undefined]> = [
@@ -371,7 +375,7 @@ function crossesLink(spans: RichSpan[], start: number, end: number): boolean {
 
 function blockedReason(f: ContentField, part: Part, start: number, end: number): string | undefined {
   if (f.entry) return f.entry.synced ? `The ${f.section} collection is synced from an external source, so its entries are read-only here. Change this in the source, or detach the collection from it.` : undefined;
-  if (f.computed) return 'This comes from an article’s page settings. Open that page to change its title, date, byline or excerpt.';
+  if (f.computed) return 'This is shown from an article’s page settings or a collection entry. Change its title, date, byline or excerpt there.';
   if (!f.source) return 'This is part of a component’s design. Open it to change it everywhere, or to make this placement its own.';
   if (f.custom) return 'This belongs to a custom code component, which may use it as a setting. Change it in the inspector.';
   if (part.blocked) return part.blocked;
@@ -514,7 +518,8 @@ export function sampleContactMatches(state: ProjectState): SampleContactGroup[] 
   // A shared part's reach is every page one edit to it changes, drafts too, as Find says it.
   const live = publishedState(state);
   const reach = { header: pagesShowing(state, 'header').length, footer: pagesShowing(state, 'footer').length };
-  const fields = contentFields(live).map((f) => (f.owner.kind === 'shell' && f.sharedPages !== undefined && (f.owner.id === 'header' || f.owner.id === 'footer') ? { ...f, sharedPages: reach[f.owner.id] } : f));
+  // The pages and shared parts only, where the starters put their sample details; entries are left to Find.
+  const fields = pageFields(live).map((f) => (f.owner.kind === 'shell' && f.sharedPages !== undefined && (f.owner.id === 'header' || f.owner.id === 'footer') ? { ...f, sharedPages: reach[f.owner.id] } : f));
   const groups: SampleContactGroup[] = [];
   for (const sample of SAMPLE_CONTACT_VALUES) {
     const matches: ContentMatch[] = [];
@@ -697,6 +702,11 @@ function shownBy(state: ProjectState, fields: ContentField[]): Map<string, { fie
   return out;
 }
 
+/** The longest title and excerpt an entry edit takes (see entry.update in @shared/ops). */
+const ENTRY_TITLE_MAX = 200;
+const ENTRY_EXCERPT_MAX = 320;
+const clipped = (t: string) => (t.length > 60 ? `${t.slice(0, 60)}…` : t);
+
 /** The error a dry run raised, without the batch position the project adds for its own logs. */
 const plainError = (e: unknown) => (e instanceof Error ? e.message : String(e)).replace(/^Operation \d+ \([^)]*\): /, '');
 
@@ -758,8 +768,19 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
     }
     operations.push({ type: 'instance.setProp', owner: p.owner, nodeId: p.nodeId, prop: p.prop, itemId: p.itemId, value: p.value });
   }
-  for (const e of entryEdits.values()) operations.push({ type: 'entry.update', collectionId: e.collectionId, entryId: e.entryId, ...e.value });
+  for (const e of entryEdits.values()) {
+    const entry = own(state.collections ?? {}, e.collectionId)?.entries[e.entryId];
+    const name = `“${clipped(entry?.title ?? 'the entry')}”`;
+    if ((e.value.title?.trim().length ?? 0) > ENTRY_TITLE_MAX) return { operations: [], changes: [], error: `Replacing would make the title of ${name} longer than ${ENTRY_TITLE_MAX} characters. Use shorter words, or leave that match out.`, skipped };
+    if ((e.value.excerpt?.trim().length ?? 0) > ENTRY_EXCERPT_MAX) return { operations: [], changes: [], error: `Replacing would make the excerpt of ${name} longer than ${ENTRY_EXCERPT_MAX} characters. Use shorter words, or leave that match out.`, skipped };
+    operations.push({ type: 'entry.update', collectionId: e.collectionId, entryId: e.entryId, ...e.value });
+  }
   if (!operations.length) return { operations, changes, skipped };
+  // Checked as the project checks an edit it is sent (a title's length, say), which a dry run alone does not.
+  for (const op of operations) {
+    const v = validateOperation(op);
+    if (!v.ok) return { operations: [], changes, error: v.message, skipped };
+  }
   let after: ProjectState;
   try {
     after = applyOperations(state, operations).state;

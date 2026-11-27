@@ -1653,6 +1653,21 @@ export const INTERACTIONS: Interaction[] = [
     gaps: [{ missing: 'Find and replace is reached only from the Export dialog’s sample review; no e2e opens it with Shift+Cmd/Ctrl+F or from the command menu', owner: 'find' }]
   },
   {
+    id: 'find.entries',
+    area: 'find',
+    intent: 'Rename a term across the pages and the collection entries’ titles and excerpts',
+    start: 'Site with a blog and a collection synced from an external source',
+    routes: ['key:f', 'command:find', 'dialog:Find and replace › Replace'],
+    outcome: 'Local entries’ titles and excerpts change with the pages in one step that undoes as one; a synced collection’s matches are listed as read-only and left as they are',
+    scenario: 'unit fixtures · none',
+    proof: [
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'replaces in pages and entries in one batch, with one edit per entry, and finds none left' },
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'lists a synced collection’s entries as read-only results, and never changes them' },
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'changes a page and several entries in one step that undoes and redoes as one' }
+    ],
+    gaps: [{ missing: 'No e2e script replaces in an entry from the dialog or opens an entry match in the writer', owner: 'find' }]
+  },
+  {
     id: 'find.command',
     area: 'find',
     intent: 'Find words or a section already on the site by typing',
