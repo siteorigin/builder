@@ -11,8 +11,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AssetRecord, BackgroundImageValue, ElementNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-// Imported as well as bundled below, so a run of the tests a change affects sees a change to the panel.
-import { describeBackgroundImage } from '../../src/renderer/src/panels/BackgroundImageControl';
 import { generateSiteCss, pageNodeClass } from '@generator/index';
 
 const browserInstalled = existsSync(chromium.executablePath());
@@ -135,7 +133,8 @@ const ENTRY = [
   "import { createElement as h, useState } from 'react';",
   "import { createRoot } from 'react-dom/client';",
   "import { flushSync } from 'react-dom';",
-  `import { BackgroundImageControl } from ${renderer('panels/BackgroundImageControl')};`,
+  `import { BackgroundImageControl, describeBackgroundImage } from ${renderer('panels/BackgroundImageControl')};`,
+  'window.__describe = describeBackgroundImage;',
   `import { useStore } from ${renderer('store')};`,
   'const state = window.__project;',
   "flushSync(() => useStore.setState({ screen: 'editor', snapshot: { state, revision: 1, workspaceKey: 'w1', conflicts: [], recentExports: [], diagnostics: [], missingAssets: [] } }));",
@@ -196,10 +195,11 @@ describe.skipIf(!browserInstalled)('the Tile option in the panel (#1137)', { tim
   const saved = () => page.evaluate<BackgroundImageValue[]>('window.__saved');
   const last = async () => (await saved()).at(-1);
 
-  it('names a tiled picture in its summary, with the width when one is set', () => {
-    expect(describeBackgroundImage({ assetId: 'a_grain', size: 'tile' })).toBe('Picture · tiled · no overlay');
-    expect(describeBackgroundImage({ assetId: 'a_grain', size: 'tile', tileSize: 24 })).toBe('Picture · tiled at 24px · no overlay');
-    expect(describeBackgroundImage({ assetId: 'a_grain', tileSize: 24 })).toBe('Picture · filling · no overlay');
+  it('names a tiled picture in its summary, with the width when one is set', async () => {
+    const described = (value: BackgroundImageValue) => page.evaluate<string>(`window.__describe(${JSON.stringify(value)})`);
+    expect(await described({ assetId: 'a_grain', size: 'tile' })).toBe('Picture · tiled · no overlay');
+    expect(await described({ assetId: 'a_grain', size: 'tile', tileSize: 24 })).toBe('Picture · tiled at 24px · no overlay');
+    expect(await described({ assetId: 'a_grain', tileSize: 24 })).toBe('Picture · filling · no overlay');
   });
 
   it('shows an inherited tile’s width as it comes through', async () => {
