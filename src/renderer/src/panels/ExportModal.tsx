@@ -579,8 +579,23 @@ export function ExportModal() {
   ) : null;
   const [notesOpen, setNotesOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  // The first control the author can see and use: never one folded away or unavailable.
-  const firstControl = () => [...(rootRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled):not([aria-disabled="true"])') ?? [])].find((b) => b.offsetParent !== null);
+  const choiceRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  // The first control the author can see and use: never one folded away or unavailable. What the body lists to see to
+  // comes first; with nothing there (the recent exports are further down, not a place to start), the format the
+  // exports save as, then Close. Never a card, which would start an export.
+  const firstControl = () =>
+    [
+      ...(rootRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled):not([aria-disabled="true"])') ?? []),
+      ...(choiceRef.current?.querySelectorAll<HTMLElement>('[role="radio"][aria-checked="true"]:not(:disabled)') ?? []),
+      ...(closeButtonRef.current && !closeButtonRef.current.disabled ? [closeButtonRef.current] : [])
+    ].find((b) => !b.closest('.export-history') && b.offsetParent !== null);
+  // The dialog opens on its first control in the body, which can be a recent export below everything the body says.
+  useEffect(() => {
+    if (!document.activeElement?.closest('.export-history')) return;
+    firstControl()?.focus();
+    rootRef.current?.parentElement?.scrollTo({ top: 0 });
+  }, []);
   // Said once when it changes: a note that simply appears or disappears is not reliably announced.
   // With something else also in the way, the AI's note can't promise an export once it finishes: it says the export
   // waits, and the other note says what else to do.
@@ -731,6 +746,59 @@ export function ExportModal() {
     </section>
   );
 
+  // The two exports and the format they save as. They sit in the dialog's footer, so they stay in view and in reach
+  // however much the body lists above them. With a fix to make first, the website card's export is no longer the primary
+  // action.
+  const choice = (
+    <div className={`export-choice${fix ? ' has-fix' : ''}`} role="group" aria-labelledby="export-choice-title" ref={choiceRef}>
+      <div className="export-choice-head">
+        <h3 id="export-choice-title">Choose an export</h3>
+        <div className="export-format">
+          <span>Save as</span>
+          {/* A fieldset locks both format buttons during a build, and while a conflict stops both exports. */}
+          <fieldset className="export-format-control" role="presentation" disabled={!!busy || conflicts > 0}>
+            <Segmented
+              radio
+              label="Save as"
+              value={format}
+              onChange={(v) => !busy && setFormat(v)}
+              options={[
+                { value: 'folder', label: 'Folder' },
+                { value: 'zip', label: 'ZIP file' }
+              ]}
+            />
+          </fieldset>
+        </div>
+      </div>
+      <button ref={(el) => void (buttons.current.static = el)} className={`action-card export-card${cardState('static')}`} aria-disabled={!!busy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
+        <span className="ico"><Globe size={18} /></span>
+        <span className="grow">
+          <span className="export-card-title">
+            <strong>Website files, ready to upload</strong>
+            {cardEnd('static', blocked || draftLinks.length > 0)}
+          </span>
+          <span className="export-card-line">{format === 'zip' ? 'Every published page as a finished website, in one ZIP file.' : 'Every published page as a finished website folder, for any web host.'}</span>
+          <span className="export-card-line export-card-photos" data-testid="export-photo-privacy">
+            <MapPinOff aria-hidden /> <span>Removes where each photo was taken and the camera details. Credits, copyright, orientation and color stay.</span>
+          </span>
+        </span>
+      </button>
+      <button ref={(el) => void (buttons.current.source = el)} className={`action-card export-card secondary${cardState('source')}`} aria-disabled={!!busy || blocked || undefined} aria-describedby={blockedBy.join(' ') || undefined} onClick={() => void run('source')}>
+        <span className="ico"><FolderCode size={18} /></span>
+        <span className="grow">
+          <span className="export-card-title">
+            <strong>Editable project, for a developer</strong>
+            {cardEnd('source', blocked)}
+          </span>
+          <span className="export-card-line">The complete project {formatWords}, so a developer can keep building it with standard tools.</span>
+          <span className="export-card-line export-card-photos">
+            <MapPin aria-hidden /> <span>Photos stay exactly as imported, including any location they record.</span>
+          </span>
+        </span>
+      </button>
+    </div>
+  );
+
   return (
     <Modal
       title="Export your website"
@@ -740,6 +808,7 @@ export function ExportModal() {
       busy={!!busy}
       footer={
         <>
+          {!succeeded && choice}
           {!succeeded && (
             <span className="export-hosting">
               <Cloud size={14} aria-hidden /> One-click publishing with SiteOrigin Hosting is coming soon.
@@ -751,14 +820,13 @@ export function ExportModal() {
               Back to export options
             </button>
           )}
-          <button className="btn" onClick={close} disabled={!!busy}>
+          <button ref={closeButtonRef} className="btn" onClick={close} disabled={!!busy}>
             Close
           </button>
         </>
       }
     >
-      {/* With a fix to make first, the website card's export is no longer the primary action. */}
-      <div className={`export-dialog${fix ? ' has-fix' : ''}`} ref={rootRef}>
+      <div className="export-dialog" ref={rootRef}>
         {/* Always mounted, so the start of a job is announced. It stays in view while the body scrolls. */}
         <div className="sr-only" role="status">
           {announced}
@@ -889,53 +957,6 @@ export function ExportModal() {
             {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
             {seoAudit && state && <SeoPreflight audit={seoAudit} state={state} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {plan && <PagesSummary published={plan.published} drafts={plan.drafts} publishedEntries={plan.publishedEntries} draftEntries={plan.draftEntries} />}
-            <div className="export-choice" role="group" aria-labelledby="export-choice-title">
-              <div className="export-choice-head">
-                <h3 id="export-choice-title">Choose an export</h3>
-                <div className="export-format">
-                  <span>Save as</span>
-                  {/* A fieldset locks both format buttons during a build, and while a conflict stops both exports. */}
-                  <fieldset className="export-format-control" role="presentation" disabled={!!busy || conflicts > 0}>
-                    <Segmented
-                      radio
-                      label="Save as"
-                      value={format}
-                      onChange={(v) => !busy && setFormat(v)}
-                      options={[
-                        { value: 'folder', label: 'Folder' },
-                        { value: 'zip', label: 'ZIP file' }
-                      ]}
-                    />
-                  </fieldset>
-                </div>
-              </div>
-              <button ref={(el) => void (buttons.current.static = el)} className={`action-card export-card${cardState('static')}`} aria-disabled={!!busy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
-                <span className="ico"><Globe size={18} /></span>
-                <span className="grow">
-                  <span className="export-card-title">
-                    <strong>Website files, ready to upload</strong>
-                    {cardEnd('static', blocked || draftLinks.length > 0)}
-                  </span>
-                  <span className="export-card-line">{format === 'zip' ? 'Every published page as a finished website, in one ZIP file.' : 'Every published page as a finished website folder, for any web host.'}</span>
-                  <span className="export-card-line export-card-photos" data-testid="export-photo-privacy">
-                    <MapPinOff aria-hidden /> <span>Removes where each photo was taken and the camera details. Credits, copyright, orientation and color stay.</span>
-                  </span>
-                </span>
-              </button>
-              <button ref={(el) => void (buttons.current.source = el)} className={`action-card export-card secondary${cardState('source')}`} aria-disabled={!!busy || blocked || undefined} aria-describedby={blockedBy.join(' ') || undefined} onClick={() => void run('source')}>
-                <span className="ico"><FolderCode size={18} /></span>
-                <span className="grow">
-                  <span className="export-card-title">
-                    <strong>Editable project, for a developer</strong>
-                    {cardEnd('source', blocked)}
-                  </span>
-                  <span className="export-card-line">The complete project {formatWords}, so a developer can keep building it with standard tools.</span>
-                  <span className="export-card-line export-card-photos">
-                    <MapPin aria-hidden /> <span>Photos stay exactly as imported, including any location they record.</span>
-                  </span>
-                </span>
-              </button>
-            </div>
             {history}
           </>
         )}

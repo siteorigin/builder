@@ -11,9 +11,22 @@
   }
   @media (max-height: 720px) and (min-width: 880px) {
     .modal:has(> .modal-body > .export-dialog) { width: min(800px, calc(100vw - 48px)); }
-    .export-dialog .export-choice .export-card { padding: 12px; gap: 10px; }
-    .export-dialog .export-choice { display: grid; grid-template-columns: 1fr 1fr; }
-    .export-dialog .export-choice-head { grid-column: 1 / -1; }
+    .modal-foot > .export-choice .export-card { padding: 12px; gap: 10px; }
+    .modal-foot > .export-choice { display: grid; grid-template-columns: 1fr 1fr; }
+    .modal-foot > .export-choice > .export-choice-head { grid-column: 1 / -1; }
+  }
+  /* The two exports lead the footer, on a row of their own, so they stay in view while the body scrolls. They keep the
+     dialog's own surface, which their card states are drawn for. */
+  .modal:has(> .modal-body > .export-dialog) > .modal-foot { flex-wrap: wrap; row-gap: 10px; }
+  .modal:has(> .modal-foot > .export-choice) > .modal-foot { background: var(--panel); }
+  .modal-foot > .export-choice { flex: 1 0 100%; min-width: 0; }
+  /* Zoomed in far enough, the exports leave the body no room of its own: the whole dialog scrolls instead, so every
+     control stays within reach. */
+  @media (max-height: 560px), (max-height: 720px) and (max-width: 879px) {
+    .modal:has(> .modal-body > .export-dialog) { overflow-y: auto; }
+    .modal:has(> .modal-body > .export-dialog) > * { flex: none; }
+    .modal:has(> .modal-body > .export-dialog) > .modal-body { overflow: visible; }
+    .modal:has(.export-progress:not(:empty)) { scroll-padding-top: 76px; }
   }
   .export-dialog { display: flex; flex-direction: column; gap: 12px; }
   .export-intro { margin: 0; color: var(--text-2); }
@@ -92,32 +105,32 @@
   .export-choice-head h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
   .export-format { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
   .export-format-control { display: inline-flex; min-width: 0; margin: 0; padding: 0; border: 0; }
-  .export-dialog .export-card { align-items: flex-start; padding: 14px 12px 14px 14px; }
-  .export-dialog .export-card .ico { background: var(--active); color: var(--text-2); }
-  .export-dialog .export-card .grow { padding-top: 1px; }
+  .export-choice .export-card { align-items: flex-start; padding: 14px 12px 14px 14px; }
+  .export-choice .export-card .ico { background: var(--active); color: var(--text-2); }
+  .export-choice .export-card .grow { padding-top: 1px; }
   /* The card's status sits on its title row, so a change of status never re-wraps the copy below it. */
   .export-card-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-height: 24px; margin: -2px 0 2px; }
   .export-card-title > strong { padding-top: 3px; }
   .export-card-line { display: block; line-height: 1.45; text-wrap: pretty; }
   .export-card-line + .export-card-line { margin-top: 4px; }
   .export-card-photos { display: flex; align-items: flex-start; gap: 6px; }
-  .export-dialog .export-card-photos > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
-  .export-dialog .export-card-end { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 24px; padding: 0 2px; border-radius: var(--r-sm); font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
-  .export-dialog .export-card-end.is-ready { padding: 0 4px 0 9px; background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
-  .export-dialog .export-card:hover:not(:disabled, [aria-disabled='true']) .export-card-end.is-ready { background: var(--panel-2); }
+  .export-choice .export-card-photos > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+  .export-choice .export-card-end { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 24px; padding: 0 2px; border-radius: var(--r-sm); font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+  .export-choice .export-card-end.is-ready { padding: 0 4px 0 9px; background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+  .export-choice .export-card:hover:not(:disabled, [aria-disabled='true']) .export-card-end.is-ready { background: var(--panel-2); }
   /* The website is the dialog's one primary action, so only its ready end takes the accent fill: unless a failure has a
      fix to make first, which then holds the accent while the retry waits, neutral. */
-  .export-dialog:not(.has-fix) .export-card:not(.secondary) .export-card-end.is-ready { background: var(--accent-fill); color: var(--on-accent); box-shadow: none; }
-  .export-dialog:not(.has-fix) .export-card:not(.secondary):hover:not(:disabled, [aria-disabled='true']) .export-card-end.is-ready { background: var(--accent-fill-hover); }
+  .export-choice:not(.has-fix) .export-card:not(.secondary) .export-card-end.is-ready { background: var(--accent-fill); color: var(--on-accent); box-shadow: none; }
+  .export-choice:not(.has-fix) .export-card:not(.secondary):hover:not(:disabled, [aria-disabled='true']) .export-card-end.is-ready { background: var(--accent-fill-hover); }
   .export-card-end svg { width: 14px; height: 14px; }
   /* An export that cannot start stays readable: its photo note still informs the choice. */
-  .export-dialog .export-card[aria-disabled='true'] { opacity: 1; background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
-  .export-dialog .export-card[aria-disabled='true'] strong { color: var(--text-2); }
-  .export-dialog .export-card[aria-disabled='true'] .ico { color: var(--text-3); }
-  .export-dialog .export-card[aria-disabled='true'] .export-card-end { font-weight: 500; color: var(--text-3); }
-  .export-dialog .export-card.is-running[aria-disabled='true'] { background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); }
-  .export-dialog .export-card.is-running[aria-disabled='true'] strong { color: var(--text); }
-  .export-dialog .export-card.is-running[aria-disabled='true'] .export-card-end { font-weight: 600; color: var(--text); }
+  .export-choice .export-card[aria-disabled='true'] { opacity: 1; background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
+  .export-choice .export-card[aria-disabled='true'] strong { color: var(--text-2); }
+  .export-choice .export-card[aria-disabled='true'] .ico { color: var(--text-3); }
+  .export-choice .export-card[aria-disabled='true'] .export-card-end { font-weight: 500; color: var(--text-3); }
+  .export-choice .export-card.is-running[aria-disabled='true'] { background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); }
+  .export-choice .export-card.is-running[aria-disabled='true'] strong { color: var(--text); }
+  .export-choice .export-card.is-running[aria-disabled='true'] .export-card-end { font-weight: 600; color: var(--text); }
 
   /* What the website includes: published pages and the drafts it leaves out. */
   .export-pages { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 4px; padding: 0 2px; color: var(--text-2); font-size: 12.5px; text-wrap: pretty; }
@@ -173,7 +186,7 @@
 
   /* What this opening of the project exported, newest first; the newest is raised after a success. */
   .export-history { display: flex; flex-direction: column; gap: 8px; }
-  .export-choice ~ .export-history { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .export-pages ~ .export-history { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--border); }
   .export-history-title { display: flex; flex-direction: column; gap: 1px; }
   .export-history-title h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
   .export-history-title span { font-size: 12px; color: var(--text-2); }
