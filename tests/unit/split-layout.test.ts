@@ -143,7 +143,7 @@ describe('Split layout (#669)', () => {
   });
 
   it('exports both columns as plain elements with no Builder runtime, and marks empty slots only in the editor', async () => {
-    for (const themeId of ['foundation', 'editorial', 'signal']) {
+    for (const themeId of ['foundation', 'foundation-alt']) {
       const p = placed(themeId);
       const dev = [...generateProject(p.state(), { instrument: true }).values()].join('\n');
       expect(dev.match(/data-so-slot-empty=\{"(primary|secondary)"\}/g), themeId).toHaveLength(2);
@@ -216,7 +216,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('Split layout in a brows
     return measure(page);
   };
 
-  it.each(['foundation', 'editorial', 'signal'])('stacks on phones and keeps each ratio from tablet up in %s', async (themeId) => {
+  it.each(['foundation', 'foundation-alt'])('stacks on phones and keeps each ratio from tablet up in %s', async (themeId) => {
     for (const [ratio, expected] of [['equal', 1], ['wide-left', 2], ['wide-right', 0.5]] as const) {
       const p = placed(themeId);
       fill(p);

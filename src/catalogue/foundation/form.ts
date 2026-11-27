@@ -45,17 +45,17 @@ function formSource(kind: 'section' | 'block'): string {
 	import { visitorText } from '../runtime/visitor-text.js';
 
 	let {
-		eyebrow = '',
-		heading = '',
-		lead = '',
+		eyebrow,
+		heading,
+		lead,
 		provider = 'endpoint',
 		endpoint = '',
 		accessKey = '',
-		formName = 'contact',
-		fields = [],
-		submitLabel = '',
-		successMessage = '',
-		errorMessage = '',
+		formName = '${block ? 'newsletter' : 'contact'}',
+		fields,
+		submitLabel,
+		successMessage,
+		errorMessage,
 		variant = 'default',
 		class: className = ''
 	} = $props();
@@ -420,6 +420,11 @@ ${FIELD_NAME_SOURCE}
 	   on a dark fill. */
 	.so-form {
 		--so-form-line: color-mix(in srgb, var(--so-color-text) 80%, var(--so-color-surface));
+		/* What is wrong, in the error colour that reads on the form's own ground: the light grounds' or dark sections'. */
+		--so-form-error: var(--so-color-error);
+	}
+	.so-form--inverse {
+		--so-form-error: var(--so-color-error-on-inverse);
 	}
 	.so-form__form {
 		display: grid;
@@ -456,6 +461,8 @@ ${FIELD_NAME_SOURCE}
 		border: 1px solid var(--so-form-line);
 		border-radius: var(--so-radius-sm);
 		background: var(--so-color-surface);
+		/* The fill stops inside the edge, so the edge is seen over the form's ground, where its contrast is measured. */
+		background-clip: padding-box;
 		color: var(--so-color-text);
 		font: inherit;
 		transition: border-color 160ms ease, box-shadow 160ms ease;
@@ -478,10 +485,13 @@ ${FIELD_NAME_SOURCE}
 		outline: 2px solid var(--so-surface-ink, var(--so-color-focus));
 		outline-offset: 1px;
 	}
-	/* An answer to put right: a heavier outline beside the words that say why (never the colour alone). */
-	.so-form__control[aria-invalid='true'] {
-		border-color: var(--so-color-text);
-		box-shadow: inset 0 0 0 1px var(--so-color-text);
+	/* An answer to put right: a heavier outline beside the words that say why (never the colour alone), in the error
+	   colour. The outer edge meets the form's ground and the inner one the field's own fill, so each takes the error
+	   colour that reads there. */
+	.so-form__control[aria-invalid='true'],
+	.so-form__control[aria-invalid='true']:hover {
+		border-color: var(--so-form-error);
+		box-shadow: inset 0 0 0 1px var(--so-color-error);
 	}
 	.so-form__error {
 		display: flex;
@@ -492,6 +502,7 @@ ${FIELD_NAME_SOURCE}
 		font-size: var(--so-text-small-size);
 		line-height: var(--so-text-small-line-height);
 		font-weight: 600;
+		color: var(--so-form-error);
 	}
 	.so-form__icon {
 		flex: none;
@@ -552,6 +563,7 @@ ${FIELD_NAME_SOURCE}
 		border: 1px solid var(--so-form-line);
 		border-radius: var(--so-radius-sm);
 		background: var(--so-color-surface);
+		background-clip: padding-box;
 		cursor: pointer;
 		transition: background-color 160ms ease, border-color 160ms ease;
 	}
@@ -588,9 +600,11 @@ ${FIELD_NAME_SOURCE}
 		border-color: var(--so-color-text);
 	}
 	.so-form__choices--invalid input:not(:checked),
-	.so-form__check input[aria-invalid='true']:not(:checked) {
-		border-color: var(--so-color-text);
-		box-shadow: inset 0 0 0 1px var(--so-color-text);
+	.so-form__check input[aria-invalid='true']:not(:checked),
+	.so-form__choices--invalid .so-form__choice:hover input:not(:checked, :disabled),
+	.so-form__check:hover input[aria-invalid='true']:not(:checked, :disabled) {
+		border-color: var(--so-form-error);
+		box-shadow: inset 0 0 0 1px var(--so-color-error);
 	}
 	.so-form__choice input:focus-visible,
 	.so-form__check input:focus-visible {
@@ -643,7 +657,8 @@ ${FIELD_NAME_SOURCE}
 		opacity: 0.6;
 	}
 	/* A message the visitor must not miss: what stops the form, or why the last send failed. Drawn from the section's
-	   own text colour, so it reads in every tone and palette, and marked with a symbol as well as a rule. */
+	   own text colour (a failed send from its error colour), so it reads in every tone and palette, and marked with a
+	   symbol as well as a rule. */
 	.so-form__notice,
 	.so-form__status--error.so-form__status--shown,
 	.so-form__status--sent {
@@ -687,6 +702,7 @@ ${FIELD_NAME_SOURCE}
 	}
 	.so-form__status--error {
 		font-weight: 600;
+		color: var(--so-form-error);
 	}
 	/* Sent: a panel of its own, at the head of the form. */
 	.so-form__status--sent {

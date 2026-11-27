@@ -66,7 +66,9 @@ const ROLE_LIGHTNESS: Record<string, number> = {
   'color.inverse': 0.19,
   'color.on-inverse': 0.94,
   'color.border': 0.42,
-  'color.focus': 0.8
+  'color.focus': 0.8,
+  'color.error': 0.78,
+  'color.error-on-inverse': 0.78
 };
 
 /** The most colourful a made colour gets (OKLCH chroma): enough to keep the brand's hue, never a neon on black. */

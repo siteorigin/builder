@@ -3,7 +3,8 @@ import { Check, CircleAlert, CloudAlert, CloudDownload, Copy, CopyCheck, FileArc
 import type { DuplicateProjectResult, ProgressEvent, TrustRequest, Unpacking, WebsiteTools } from '@shared/api';
 import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
 import { defaultTheme, getTheme, listThemes } from '@catalogue/index';
-import { starterProblem } from '@catalogue/starters';
+import { STARTERS as CATALOGUE_STARTERS, starterProblem, starterTakesSamples, type StarterId } from '@catalogue/starters';
+import { showcaseHome, showcasePages } from '@catalogue/showcase';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
 import { api, errorText, toast, useStore } from '../store';
@@ -77,8 +78,6 @@ function PathReadout({ path, pending, id, className = '' }: { path: string; pend
 
 // ---------- Starting points ----------
 
-type StarterId = 'business' | 'blank';
-
 type PageSketch = { name: string; sections: Array<{ id: string; variant?: string; whole?: boolean }> };
 
 /**
@@ -86,7 +85,7 @@ type PageSketch = { name: string; sections: Array<{ id: string; variant?: string
  * Contact leaves out its page intro: the theme's thumbnail of it is About's, and two sheets opening on the same
  * banner read as one page twice.
  */
-const STARTER_PAGES: Record<StarterId, PageSketch[]> = {
+const STARTER_PAGES: Record<Exclude<StarterId, 'showcase'>, PageSketch[]> = {
   business: [
     { name: 'Home', sections: [{ id: 'hero.split' }, { id: 'logos.strip' }, { id: 'features.grid' }, { id: 'content.media', variant: 'media-end' }, { id: 'stats.row', variant: 'inverse' }] },
     { name: 'About', sections: [{ id: 'intro.page' }, { id: 'content.media' }, { id: 'team.grid', variant: 'muted' }] },
@@ -95,11 +94,22 @@ const STARTER_PAGES: Record<StarterId, PageSketch[]> = {
   blank: [{ name: 'Home', sections: [] }]
 };
 
-const STARTERS: Array<{ id: StarterId; name: string; blurb: string }> = [
-  { id: 'business', name: 'Business', blurb: 'Sample text, services, a gallery and testimonials, ready to make your own.' },
-  { id: 'blank', name: 'Blank site', blurb: 'One empty page with a header and footer.' }
-];
-const pagesOf = (id: StarterId) => STARTER_PAGES[id].map((p) => p.name);
+/** A starter's pages on this theme: the showcase's are the theme's own kinds of component (catalogue/showcase.ts). */
+function starterPages(starter: StarterId, themeId: string): PageSketch[] {
+  if (starter !== 'showcase') return STARTER_PAGES[starter];
+  const kinds = showcasePages(themeId);
+  return [
+    { name: 'Home', sections: showcaseHome(themeId).map((id) => ({ id })) },
+    ...kinds.map((k) => ({ name: k.title, sections: k.components.filter((c) => c.insertAs !== 'element').map((c) => ({ id: c.componentId })) }))
+  ];
+}
+
+const STARTER_BLURBS: Record<StarterId, string> = {
+  business: 'Sample text, services, a gallery and testimonials, ready to make your own.',
+  blank: 'One empty page with a header and footer.',
+  showcase: 'Every component the theme ships, a page for each kind.'
+};
+const STARTERS = CATALOGUE_STARTERS.map((s) => ({ id: s.id, name: s.id === 'business' ? 'Business' : s.name, blurb: STARTER_BLURBS[s.id] }));
 
 /**
  * The site's own colours and type, from the theme it starts with, so the sketch around the thumbnails matches them.
@@ -186,7 +196,9 @@ function PageSheet({ themeId, page, nav, siteName, className, onReady }: { theme
  * blank site is its one empty page, at the same scale.
  */
 function StarterArt({ starter, siteName, themeId }: { starter: StarterId; siteName: string; themeId: string }) {
-  const keys = () => STARTER_PAGES[starter].flatMap((p) => p.sections.map((s) => `${p.name}:${s.id}`));
+  // The showcase draws Home and the first two of its kind pages, each showing its top; the rest would be slivers.
+  const pages = starter === 'showcase' ? starterPages(starter, themeId).slice(0, 3) : starterPages(starter, themeId);
+  const keys = () => pages.flatMap((p) => p.sections.map((s) => `${p.name}:${s.id}`));
   const [waiting, setWaiting] = useState<Set<string>>(() => new Set(keys()));
   const onReady = useRef((key: string, ready: boolean) =>
     setWaiting((w) => {
@@ -197,9 +209,9 @@ function StarterArt({ starter, siteName, themeId }: { starter: StarterId; siteNa
       return next;
     })
   ).current;
-  const [home, ...rest] = STARTER_PAGES[starter];
+  const [home, ...rest] = pages;
   const name = siteName.trim() || 'Your site';
-  const nav = pagesOf(starter);
+  const nav = pages.map((p) => p.name);
   return (
     <div className={`starter-art ${starter}`} aria-hidden="true" data-loading={waiting.size ? '' : undefined} data-theme={themeId} style={siteLook(themeId)}>
       <PageSheet key={themeId} themeId={themeId} page={home} nav={nav} siteName={name} className="home" onReady={onReady} />
@@ -1008,7 +1020,7 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
               </>
             )}
             <p className="np-theme-about" id="new-project-theme-about">
-              {theme.description} <span className="np-theme-later">You can change it any time in Site styles.</span>
+              {theme.description} {themes.length > 1 && <span className="np-theme-later">You can change it any time in Site styles.</span>}
             </p>
           </div>
           <div className="field-label" id="new-project-starter-label">
@@ -1022,12 +1034,17 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
               if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
               e.preventDefault();
               const group = e.currentTarget;
-              setStarter(starter === 'business' ? 'blank' : 'business');
+              const step = e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 1;
+              const at = STARTERS.findIndex((s) => s.id === starter);
+              setStarter(STARTERS[(at + step + STARTERS.length) % STARTERS.length].id);
               requestAnimationFrame(() => group.querySelector<HTMLElement>('[aria-checked="true"]')?.focus());
             }}
           >
             {STARTERS.map((s) => {
               const on = starter === s.id;
+              const names = starterPages(s.id, theme.id).map((p) => p.name);
+              // A long list of pages is counted rather than named, so the card's title keeps its room.
+              const chips = names.length > 3 ? [`${names.length} pages`] : names;
               return (
                 <button
                   key={s.id}
@@ -1047,12 +1064,12 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
                       </span>
                       <strong id={`starter-${s.id}-name`}>{s.name}</strong>
                       <span className="pages" aria-hidden="true">
-                        {pagesOf(s.id).map((p) => (
+                        {chips.map((p) => (
                           <span key={p}>{p}</span>
                         ))}
                       </span>
                       <span className="sr-only" id={`starter-${s.id}-pages`}>
-                        {pagesOf(s.id).length === 1 ? 'One page: Home.' : `${pagesOf(s.id).length} pages: ${pagesOf(s.id).join(', ')}.`}
+                        {names.length === 1 ? 'One page: Home.' : `${names.length} pages: ${names.join(', ')}.`}
                       </span>
                     </span>
                     <span className="blurb" id={`starter-${s.id}-blurb`}>
@@ -1065,7 +1082,7 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
           </div>
           {/* The same height for either starter, so choosing one never moves the buttons under the pointer. */}
           <div className="np-option">
-            {starter === 'business' ? (
+            {starterTakesSamples(starter) ? (
               <SwitchRow checked={images} onChange={setImages} label="Include sample images" hint="Interior photos fill the image spaces, shown empty in the previews. Replace them any time." />
             ) : (
               <p className="np-option-note">Starts with nothing to replace: no sample text or images.</p>

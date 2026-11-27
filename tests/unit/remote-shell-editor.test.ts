@@ -1,4 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import type { BuilderApi, ProjectSnapshot, RemoteState } from '@shared/api';
 import type { LiveProjectSnapshot } from '@shared/live/snapshot';
 import { createStarterState } from '@catalogue/starters';
@@ -13,7 +15,10 @@ import { createStarterState } from '@catalogue/starters';
 type Handler = (payload: unknown) => void;
 const handlers = new Map<string, Set<Handler>>();
 const emit = (channel: string, payload: unknown) => handlers.get(channel)?.forEach((h) => h(payload));
-const calls = { localApply: 0, remoteApply: [] as unknown[], closes: 0, joins: [] as unknown[], leaves: 0, snapshots: [] as string[], presence: [] as unknown[] };
+const calls = { localApply: 0, remoteApply: [] as unknown[], closes: 0, joins: [] as unknown[], leaves: 0, snapshots: [] as string[], presence: [] as unknown[], notes: [] as unknown[], localNotes: 0 };
+/** Holds the host's answer to the next notes read, while set. */
+let notesHeld: Promise<unknown> | null = null;
+const NOTES = { notes: [{ id: 'n1', text: 'Swap this photo', authorName: 'Ann', authorRole: 'viewer', createdAt: 1, pageId: 'p_home', target: null, resolved: false }], guestNotes: true };
 let closeAnswer = { ok: true };
 /** What the main process says the join is, when the editor asks. */
 let remoteStateAnswer: RemoteState = { phase: 'idle', ended: null };
@@ -58,7 +63,9 @@ const PATHS = {
   snapshots: '../../src/renderer/src/lib/remote-snapshot',
   view: '../../src/renderer/src/lib/remote-view',
   transports: '../../src/renderer/src/lib/transport',
-  liveHost: '../../src/renderer/src/lib/live-host'
+  liveHost: '../../src/renderer/src/lib/live-host',
+  remoteChat: '../../src/renderer/src/panels/RemoteChat',
+  notesFeed: '../../src/renderer/src/lib/notes-feed'
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Loaded = any;
@@ -68,6 +75,7 @@ let snapshots: Loaded;
 let view: Loaded;
 let transports: Loaded;
 let liveHost: Loaded;
+let notesFeed: Loaded;
 
 beforeAll(async () => {
   // Leaving settles what is being typed (lib/leave.ts), which looks for the focused field.
@@ -103,7 +111,34 @@ beforeAll(async () => {
       },
       ai: { conversations: async () => ({ active: { id: 'local', messages: [] }, list: [] }), providers: async () => [] },
       live: { state: async () => ({ phase: 'idle', lastError: null }) },
+      notes: {
+        list: async () => {
+          calls.localNotes++;
+          return null;
+        },
+        add: async () => {
+          calls.localNotes++;
+          return { ok: true };
+        }
+      },
       remote: {
+        notes: async (joinId: string) => {
+          calls.notes.push(['list', joinId]);
+          if (notesHeld) await notesHeld;
+          return NOTES;
+        },
+        addNote: async (joinId: string, draft: unknown) => {
+          calls.notes.push(['add', joinId, draft]);
+          return { ok: true, notes: NOTES };
+        },
+        resolveNote: async (joinId: string, id: string, resolved: boolean) => {
+          calls.notes.push(['resolve', joinId, id, resolved]);
+          return { ok: true };
+        },
+        deleteNote: async (joinId: string, id: string) => {
+          calls.notes.push(['delete', joinId, id]);
+          return { ok: true };
+        },
         join: async (opts: unknown) => {
           calls.joins.push(opts);
           return { ok: true, state: { phase: 'waiting' } };
@@ -118,6 +153,7 @@ beforeAll(async () => {
           calls.remoteApply.push({ joinId, batch });
           return remoteApplyAnswer;
         },
+        ai: async () => null,
         presence: async (joinId: string, presence: unknown) => {
           calls.presence.push({ joinId, presence });
           return true;
@@ -131,6 +167,7 @@ beforeAll(async () => {
   view = await import(/* @vite-ignore */ PATHS.view);
   transports = await import(/* @vite-ignore */ PATHS.transports);
   liveHost = await import(/* @vite-ignore */ PATHS.liveHost);
+  notesFeed = await import(/* @vite-ignore */ PATHS.notesFeed);
 });
 
 const offs: Array<() => void> = [];
@@ -140,12 +177,13 @@ afterEach(() => {
   offs.splice(0).forEach((off) => off());
   handlers.clear();
   calls.localApply = calls.closes = calls.leaves = 0;
-  calls.remoteApply.length = calls.joins.length = calls.snapshots.length = calls.presence.length = 0;
+  calls.remoteApply.length = calls.joins.length = calls.snapshots.length = calls.presence.length = calls.notes.length = 0;
+  calls.localNotes = 0;
   closeAnswer = { ok: true };
   remoteSnapshot = null;
   remoteStateAnswer = { phase: 'idle', ended: null };
   remoteApplyAnswer = APPLIED;
-  store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, selection: null, pageId: null });
+  store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, remoteAi: null, selection: null, pageId: null, notes: null });
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -221,6 +259,62 @@ describe('the transport', () => {
   });
 });
 
+describe('pinned notes in the remote shell (#770)', () => {
+  it('never takes an older read of the notes over a change that came after it', async () => {
+    let release!: () => void;
+    notesHeld = new Promise<void>((r) => (release = r));
+    await shown();
+    offs.push(...session.followRemote());
+    offs.push(notesFeed.followNotes());
+    await flush();
+    const newer = { notes: [], guestNotes: false };
+    emit('remote:notes', { joinId: 'join-1', notes: newer });
+    release();
+    notesHeld = null;
+    await flush();
+    await flush();
+    expect(store.getState().notes).toEqual({ ...newer, opening: 'remote:join-1' });
+    // Opening Notes asks for them again.
+    const asked = calls.notes.length;
+    notesFeed.refreshNotes();
+    await flush();
+    expect(calls.notes.slice(asked)).toEqual([['list', 'join-1']]);
+    expect(store.getState().notes).toEqual({ ...NOTES, opening: 'remote:join-1' });
+  });
+
+  it('reads and changes the host’s notes, never this computer’s, and follows the host’s changes for the join shown', async () => {
+    await shown();
+    offs.push(...session.followRemote());
+    offs.push(notesFeed.followNotes());
+    await flush();
+    // The shown project's notes are the host's, read for the join shown.
+    expect(calls.notes).toContainEqual(['list', 'join-1']);
+    expect(store.getState().notes).toEqual({ ...NOTES, opening: 'remote:join-1' });
+    expect(await store.api.notes.add('remote:join-1', { text: 'Hi', pageId: home })).toMatchObject({ ok: true });
+    expect(await store.api.notes.resolve('remote:join-1', 'n1', true)).toEqual({ ok: true });
+    expect(await store.api.notes.delete('remote:join-1', 'n1')).toEqual({ ok: true });
+    expect(calls.notes.slice(-3)).toEqual([
+      ['add', 'join-1', { text: 'Hi', pageId: home }],
+      ['resolve', 'join-1', 'n1', true],
+      ['delete', 'join-1', 'n1']
+    ]);
+    // A call made for another opening reaches nobody.
+    expect(await store.api.notes.add('/sites/acme#1', { text: 'Hi', pageId: home })).toMatchObject({ ok: false });
+    expect(calls.localNotes).toBe(0);
+    // The host's changes reach the editor as the shown project's; another join's, or this computer's own, do not.
+    const later = { notes: [], guestNotes: false };
+    emit('remote:notes', { joinId: 'join-0', notes: { notes: [], guestNotes: true } });
+    emit('notes:changed', { notes: [], guestNotes: true });
+    expect(store.getState().notes).toEqual({ ...NOTES, opening: 'remote:join-1' });
+    emit('remote:notes', { joinId: 'join-1', notes: later });
+    expect(store.getState().notes).toEqual({ ...later, opening: 'remote:join-1' });
+    // Leaving the session leaves no notes of the host's shown.
+    session.applyRemoteState({ phase: 'idle', ended: null });
+    store.setState({ snapshot: null });
+    expect(store.getState().notes).toBeNull();
+  });
+});
+
 describe('the host’s project as the editor shows it', () => {
   it('is editable by a collaborator, with nothing of the host’s own history, folder or AI', () => {
     const snap = snapshots.remoteSnapshot(admitted(), live(7));
@@ -231,6 +325,7 @@ describe('the host’s project as the editor shows it', () => {
   it('is read-only, saying why, whenever the guest cannot edit it now', () => {
     const reason = (remote: Partial<Extract<RemoteState, { phase: 'admitted' }>>, l: Partial<LiveProjectSnapshot> = {}) => snapshots.remoteSnapshot(admitted(remote), live(7, l)).readOnly?.reason;
     expect(reason({ role: 'viewer' })).toMatch(/as a viewer/);
+    expect(reason({ role: 'copy-editor' })).toMatch(/copy editor.*not edit it/);
     expect(reason({ hostConnected: false })).toMatch(/host is reconnecting/);
     expect(reason({ reconnecting: true })).toMatch(/connection to the live session dropped/);
     expect(reason({ tooLarge: true })).toMatch(/too large/);
@@ -441,30 +536,30 @@ describe('presence', () => {
     const at = { pageId: home, viewportWidth: 1280, selection: headline(), previewPath: '/' };
     const remote = admitted({
       participants: [
-        { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' },
-        { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' },
-        { guestId: 'g-3', displayName: 'Ann', role: 'viewer' }
+        { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator', colorSlot: 1, connected: true },
+        { guestId: 'g-2', displayName: 'Tom', role: 'collaborator', colorSlot: 2, connected: true },
+        { guestId: 'g-3', displayName: 'Ann', role: 'viewer', colorSlot: 3, connected: true }
       ]
     });
-    const lines = view.presenceLines(state, remote, { joinId: 'join-1', host: { ...at, selection: null }, guests: { 'g-1': at, 'g-2': at, 'g-3': at } });
+    const lines = view.presenceLines(state, remote, { joinId: 'join-1', host: { ...at, selection: null }, guests: { 'g-1': at, 'g-2': at, 'g-3': at }, activity: {} });
     expect(lines.map((l: { who: string; pageId: string | null }) => [l.who, l.pageId])).toEqual([
       ['Host', home],
       ['Tom', home]
     ]);
     expect(lines[0].where).toBe(state.pages[home].title);
     expect(lines[1].where).toMatch(new RegExp(` on ${state.pages[home].title}$`));
-    expect(view.presenceLines(state, remote, { joinId: 'join-0', host: at, guests: {} })).toEqual([]);
+    expect(view.presenceLines(state, remote, { joinId: 'join-0', host: at, guests: {}, activity: {} })).toEqual([]);
   });
 
   it('lists everyone else the count counts: the host while connected, collaborators where they are or not yet known, then viewers', () => {
     const at = { pageId: home, viewportWidth: 1280, selection: null, previewPath: '/' };
     const participants = [
-      { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' as const },
-      { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' as const },
-      { guestId: 'g-4', displayName: 'Lee', role: 'collaborator' as const },
-      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const }
+      { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' as const, colorSlot: 4, connected: true },
+      { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' as const, colorSlot: 5, connected: true },
+      { guestId: 'g-4', displayName: 'Lee', role: 'collaborator' as const, colorSlot: 6, connected: true },
+      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const, colorSlot: 7, connected: true }
     ];
-    const roster = view.remoteRoster(state, admitted({ participants }), { joinId: 'join-1', host: at, guests: { 'g-2': at } });
+    const roster = view.remoteRoster(state, admitted({ participants }), { joinId: 'join-1', host: at, guests: { 'g-2': at }, activity: {} });
     expect(roster.map((l: { who: string; where: string; pageId: string | null; watching: boolean }) => [l.who, l.where, l.pageId, l.watching])).toEqual([
       ['Host', state.pages[home].title, home, false],
       ['Tom', state.pages[home].title, home, false],
@@ -472,7 +567,7 @@ describe('presence', () => {
       ['Ann', 'Watching', null, true]
     ]);
     // A host that is away is not counted as here; presence from another join says nothing about where anyone is.
-    expect(view.remoteRoster(state, admitted({ participants, hostConnected: false }), { joinId: 'join-0', host: at, guests: {} }).map((l: { who: string; where: string }) => [l.who, l.where])).toEqual([
+    expect(view.remoteRoster(state, admitted({ participants, hostConnected: false }), { joinId: 'join-0', host: at, guests: {}, activity: {} }).map((l: { who: string; where: string }) => [l.who, l.where])).toEqual([
       ['Tom', 'Location not known yet'],
       ['Lee', 'Location not known yet'],
       ['Ann', 'Watching']
@@ -487,5 +582,59 @@ describe('presence', () => {
     expect(view.remotePill(admitted({ role: 'viewer', sessionExpiresAt: now + 60_000 }), now).text).toBe('Viewer · 1m left');
     expect(view.remotePill(admitted({ hostConnected: false }), now).kind).toBe('away');
     expect(view.remotePill(admitted({ reconnecting: true }), now).kind).toBe('reconnecting');
+  });
+});
+
+describe('the host’s AI (#769)', () => {
+  const ai = (joinId: string, extra: Record<string, unknown> = {}) => ({ joinId, access: { allowed: true, turnsLeft: 2 }, turns: [], activeRunId: null, ...extra });
+
+  it('gives a collaborator the AI view, and a viewer never', () => {
+    expect([...session.remoteRightTabs('collaborator')].sort()).toEqual(['chat', 'inspect', 'styles']);
+    expect([...session.remoteRightTabs('viewer')].sort()).toEqual(['inspect', 'styles']);
+    expect(session.remoteRightTabs(undefined).has('chat')).toBe(false);
+  });
+
+  it('follows this join’s own AI requests, never another join’s, and lets them go when the join ends', async () => {
+    await shown();
+    offs.push(...session.followRemote());
+    emit('remote:ai', ai('join-0'));
+    expect(store.getState().remoteAi).toBeNull();
+    emit('remote:ai', ai('join-1', { activeRunId: 'run-1', turns: [{ runId: 'run-1', request: 'Bigger', reply: '', status: 'awaiting-input', activities: [], question: { id: 'q1', text: 'Which?', choices: [] }, result: null }] }));
+    expect(store.getState().remoteAi).toMatchObject({ joinId: 'join-1', activeRunId: 'run-1' });
+    // The AI tab's mark follows this guest's own request on the host.
+    expect(session.remoteRunStatus(store.getState())).toBe('awaiting-input');
+    emit('remote:ai', ai('join-1', { activeRunId: null, turns: [{ runId: 'run-1', request: 'Bigger', reply: 'Done', status: 'completed', activities: [], question: null, result: { status: 'completed', summary: 'Done', changes: [] } }] }));
+    expect(session.remoteRunStatus(store.getState())).toBeNull();
+    session.applyRemoteState({ phase: 'idle', ended: null });
+    expect(store.getState().remoteAi).toBeNull();
+  });
+
+  it('says AI editing is off until the host allows it, then that requests run on the host’s AI, and shows a viewer nothing', async () => {
+    const { RemoteChat } = await import(/* @vite-ignore */ PATHS.remoteChat);
+    await shown();
+    // Rendered on the server, a store hook reads the store's first state: this view reads the state as it is now.
+    const view = { getState: store.getState, getInitialState: store.getState, subscribe: store.useStore.subscribe };
+    const render = () => renderToStaticMarkup(createElement(store.StoreViewContext.Provider, { value: view }, createElement(RemoteChat)));
+    expect(render()).toContain('AI editing is off');
+    expect(render()).not.toContain('Ask the host’s AI');
+    store.setState({ remoteAi: ai('join-1', { turns: [{ runId: 'run-1', request: 'Make the heading bigger', reply: 'Made it bigger.', status: 'completed', activities: [], question: null, result: { status: 'completed', summary: 'Made it bigger.', changes: ['Heading size'] } }] }) });
+    const html = render();
+    expect(html).toContain('Running on the host’s AI.');
+    expect(html).toContain('2 requests left.');
+    expect(html).toContain('Make the heading bigger');
+    expect(html).toContain('Heading size');
+    expect(html).toContain('aria-label="Ask the host’s AI"');
+    expect(html).toContain('using their AI provider and its quota');
+    // With an element selected on the page, the request is about it by default.
+    store.setState({ selection: { owner: { kind: 'page', id: home }, instancePath: [], nodeId: Object.keys(state.pages[home].nodes)[0] } });
+    expect(render()).toMatch(/checked=""[^>]*>Selection · /);
+    // Made a viewer: no AI view at all.
+    session.applyRemoteState(admitted({ role: 'viewer' }));
+    expect(render()).toBe('');
+  });
+
+  it('never routes the host’s conversations or this computer’s AI runs to the host', async () => {
+    await shown();
+    for (const call of [() => store.api.ai.send('Hi', {}), () => store.api.ai.conversations(), () => store.api.ai.undoTurn('run-1'), () => store.api.ai.stop('run-1'), () => store.api.ai.answer('run-1', 'q1', 'Yes')]) await expect(call()).rejects.toBeInstanceOf(transports.HostOnlyError);
   });
 });

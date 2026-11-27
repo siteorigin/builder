@@ -8,13 +8,15 @@ import { isBinding } from '@shared/types';
 import { PREVIEW_COMPONENT_STYLES, PREVIEW_META, PREVIEW_MODULE, PREVIEW_NODE_ID, previewCtx, type ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
 import { siteDirection, siteLanguage } from '@shared/languages';
-import { catalogueComponent } from '@catalogue/index';
+import { catalogueComponent, getTheme } from '@catalogue/index';
 import { namesFormFields } from '@shared/form-contract';
 import { defaultProps, installComponent } from '@engine/install';
+import { isFrozenThrough } from '@engine/draft';
 import { declaredState, stateValueFits } from '@engine/schema';
 import { normalizeProp } from '@engine/values';
+import { placementContent } from '@engine/tree';
 import { formDefaults, settleFormKeys } from '@engine/form-keys';
-import { RUNTIME_DIR, STYLES_DIR, FONTS_DIR, generateIsolatedInstance, generateLibrary, type FileMap } from './index';
+import { RUNTIME_DIR, STYLES_DIR, FONTS_DIR, defFile, generateIsolatedInstance, libraryFiles, type FileMap, type FileMaker } from './index';
 import { iconsJs } from './runtime-files';
 
 export { PREVIEW_NODE_ID, previewCtx };
@@ -25,7 +27,11 @@ export { PREVIEW_NODE_ID, previewCtx };
  * every preview of it, so each still renders as its own item.
  */
 function startingProps(def: ComponentDefinition): Record<string, unknown> {
-  const props = defaultProps(def);
+  return settleRows(def, defaultProps(def));
+}
+
+/** `props` with each list's rows given IDs of their own where they lack one (or share one), as startingProps says. */
+function settleRows(def: ComponentDefinition, props: Record<string, unknown>): Record<string, unknown> {
   for (const [name, schema] of Object.entries(def.properties)) {
     if (schema.type !== 'list' || !Array.isArray(props[name])) continue;
     const rows = (props[name] as unknown[]).map((it) => (it && typeof it === 'object' ? it : {}) as ListItem);
@@ -49,11 +55,13 @@ export type ComponentPreview = { files: FileMap; definitionId: string; name: str
 
 /**
  * Every file a preview of `spec` needs, by its path inside the preview's folder (which mirrors the project's): the
- * preview module, which places one instance of the component, and a copy of the generated library it imports
- * (runtime helpers, component files, component styles). The library is the preview's own because the instance can
- * need what the project's lacks: a catalogue component the project does not have, the helpers it brings, an icon
- * only its sample values name. The site's tokens and base styles come from the project itself (see
- * PREVIEW_PROJECT_STYLES), with the fonts they load. `state` is never changed.
+ * preview module, which places one instance of the component, and a copy of what it imports of the generated library
+ * (runtime helpers, component files) with the component styles. The library is the preview's own because the instance
+ * can need what the project's lacks: a catalogue component the project does not have, the helpers it brings, an icon
+ * only its sample values name. Only the library files the module imports, and what they import in turn, are made:
+ * the library's own files import each other by relative paths alone. Code written by hand can import any of them, in
+ * any way, so a preview that reaches a code component has the whole library. The site's tokens and base styles come
+ * from the project itself (see PREVIEW_PROJECT_STYLES), with the fonts they load. `state` is never changed.
  */
 export function generateComponentPreview(state: ProjectState, spec: ComponentPreviewSpec): ComponentPreview {
   const named = [spec.definitionId, spec.componentId].filter((v) => v !== undefined);
@@ -105,7 +113,22 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
   // Made as inserting it on a page makes a placement, but with the design's own list items, under their own IDs: the
   // same in every preview of it, so an item picked in Component Studio is still there after the next edit. Then the
   // sample values checked and stored as an edit stores them, and the fields of a new form given keys of their own.
+  let pageId: string | undefined;
   const node: InstanceNode = { id: PREVIEW_NODE_ID, kind: 'instance', definitionId: def.id, props: startingProps(def), ...(Object.keys(variants).length ? { variants } : {}) };
+  if (spec.placement) {
+    if (spec.props) return { error: 'Show either a placement’s content or sample values, not both.' };
+    if (spec.definitionId === undefined) return { error: 'Only a component of the project’s own has placements to show the content of.' };
+    // Its content as it is saved, as its page shows it (a picture whose file is gone included), over the starting
+    // values; a placement gone since shows the starting content.
+    const own = placementContent(state, def.id, spec.placement);
+    if (own) {
+      // A hand-edited list (rows without IDs) is settled as the starting content's is, so each row is its own.
+      node.props = settleRows(def, { ...node.props, ...structuredClone(own.props) });
+      // A list connected to a collection shows the entries it finds, and computed lists are worked out for its page.
+      if (own.listSources) node.listSources = structuredClone(own.listSources);
+      pageId = own.pageId;
+    }
+  }
   for (const [name, value] of Object.entries(spec.props ?? {})) {
     const schema = Object.hasOwn(def.properties, name) ? def.properties[name] : undefined;
     if (!schema) return { error: `"${def.name}" has no property "${name}".` };
@@ -118,15 +141,75 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
   }
   if (Array.isArray(node.props.fields) && spec.props && 'fields' in spec.props && namesFormFields(def)) node.props.fields = settleFormKeys([], node.props.fields as ListItem[], new Set(), formDefaults(def));
 
+  const module = generateIsolatedInstance(shown, PREVIEW_MODULE, node, previewCtx(def.id), pageId);
+  // The preview's icons are the project's and those its sample values name, in place of the library's own.
+  const icons = `${RUNTIME_DIR}/icons.js`;
+  const library = libraryFiles(shown, { instrument: true, previewOpen: def.id }, previewMaker(shown));
+  // Tokens, base styles and fonts are the project's own; page styles belong to pages.
+  const unused = (path: string) => path === icons || path.startsWith(`${FONTS_DIR}/`) || (path.startsWith(`${STYLES_DIR}/`) && path !== PREVIEW_COMPONENT_STYLES);
+  const code = new Set(Object.values(shown.components).flatMap((d) => (d.kind === 'code' ? [defFile(d)] : [])));
   const files: FileMap = new Map();
-  for (const [path, content] of generateLibrary(shown, { instrument: true, previewOpen: def.id })) {
-    // Tokens, base styles and fonts are the project's own; page styles belong to pages.
-    if (path.startsWith(`${FONTS_DIR}/`) || (path.startsWith(`${STYLES_DIR}/`) && path !== PREVIEW_COMPONENT_STYLES)) continue;
+  const add = (path: string): boolean => {
+    if (files.has(path) || unused(path)) return true;
+    const make = library.get(path);
+    if (!make) return true;
+    if (code.has(path)) return false;
+    const content = make();
+    if (content === null) return true;
     files.set(path, content);
+    return relativeImports(path, content).every(add);
+  };
+  if (![...relativeImports(PREVIEW_MODULE, module), PREVIEW_COMPONENT_STYLES].every(add)) {
+    files.clear();
+    for (const [path, make] of library) {
+      if (unused(path)) continue;
+      const content = make();
+      if (content !== null) files.set(path, content);
+    }
   }
-  files.set(`${RUNTIME_DIR}/icons.js`, iconsJs(shown, node.props));
-  files.set(PREVIEW_MODULE, generateIsolatedInstance(shown, PREVIEW_MODULE, node, previewCtx(def.id)));
+  files.set(icons, iconsJs(shown, node.props));
+  files.set(PREVIEW_MODULE, module);
   // What the preview's page needs to know of the site: the language its text is in, and the way that text runs.
   files.set(PREVIEW_META, JSON.stringify({ lang: siteLanguage(shown.site), dir: siteDirection(shown.site) }));
   return { files, definitionId: def.id, name: def.name };
+}
+
+/**
+ * The library paths a generated file imports by relative path (`import … from './x'`, `import('./x')`), resolved
+ * from the file's own folder. Anything else (svelte, $app/…) is the preview server's to resolve.
+ */
+export function relativeImports(file: string, content: string): string[] {
+  const dir = file.split('/').slice(0, -1);
+  const found: string[] = [];
+  const IMPORT = /\b(?:import|export)\s*(?:\(\s*|[^'"`;()]*?\bfrom\s*|)(['"])(\.{1,2}\/[^'"]+)\1/g;
+  for (const m of content.matchAll(IMPORT)) {
+    const parts = [...dir];
+    for (const seg of m[2].split('/')) {
+      if (seg === '..') parts.pop();
+      else if (seg !== '.' && seg !== '') parts.push(seg);
+    }
+    found.push(parts.join('/'));
+  }
+  return found;
+}
+
+/**
+ * The component styles of one state with the theme it was made with: every preview of the same project state (each
+ * of Insert's thumbnails after a change) has the same ones. Only a state frozen through and through is kept (as the
+ * session holds every one, src/engine/draft.ts): it never changes, and a theme pack registered again is a new object, so an entry is
+ * never stale.
+ */
+const componentStyles = new WeakMap<ProjectState, { theme: unknown; css: string }>();
+
+/** Makes the preview's library files from `shown`, its component styles once per state and theme. */
+function previewMaker(shown: ProjectState): FileMaker {
+  return (key, make) => {
+    if (key !== 'components.css' || !isFrozenThrough(shown)) return make(shown);
+    const theme = getTheme(shown.site.themeId);
+    const known = componentStyles.get(shown);
+    if (known && known.theme === theme) return known.css;
+    const css = make(shown);
+    componentStyles.set(shown, { theme, css });
+    return css;
+  };
 }

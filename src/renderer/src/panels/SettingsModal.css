@@ -36,6 +36,8 @@
   .settings-row-head:has(> :nth-child(2)) { min-height: 26px; }
   .settings-row-label, .settings-row .switch-row-title { font-size: 13px; font-weight: 500; color: var(--text); }
   .settings-row :is(.field-hint, .field-error) { line-height: 1.45; text-wrap: pretty; }
+  .settings-git-status { display: flex; align-items: flex-start; gap: 6px; }
+  .settings-git-status > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }
   .settings-row-link { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; font-size: 12px; }
   .settings-row-link > svg { width: 12px; height: 12px; flex: none; }
   .settings-note-strong { color: var(--text); }

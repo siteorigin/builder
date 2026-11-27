@@ -16,6 +16,12 @@ let selected = null; // descriptor
 let hovered = null;
 // The empty slots of the selected placement the editor draws Add buttons in (#657): measured with each outline.
 let trackedSlots = [];
+/**
+ * What the others in a live session are on (#768), for the editor to outline in their colors: each an element (`desc`)
+ * or a point on the page as shares of its whole width and height (`point`), under the editor's own key. Measured with
+ * the selection, and reported with it as `marks`: one box each, for those that show.
+ */
+let trackedMarks = [];
 /** The innermost element under the pointer, as last reported to the editor. */
 let pointerAt = null;
 /** The element `pointerAt` describes. */
@@ -120,7 +126,7 @@ function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
 function sameDesc(a, b) {
-  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot);
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && (a.partItem || '') === (b.partItem || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
 }
 /**
  * The slot an empty slot's placeholder stands for, as the editor names it: its placement's descriptor and the slot's
@@ -161,12 +167,89 @@ function partIdOf(el) {
   for (const c of el.classList || []) if (c.startsWith(PART_CLASS) && c.length > PART_CLASS.length) part = c.slice(PART_CLASS.length);
   return part;
 }
-/** A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. */
+/** The attribute a code component's author marks text with, through the hook only the preview gives it (#1074). */
+const TEXT_ATTR = 'data-so-text';
+/**
+ * The text a code component's author marked at `target`, as the editor names it: its placement's descriptor and the
+ * marker (the property, or a list's field and the item, it shows). Null when the nearest marker is not inside that
+ * placement's own markup (it is in content placed in a slot, or there is none before the editor's own element).
+ */
+function textBindAt(target) {
+  for (let el = target instanceof Element ? target : target?.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+    if (el.hasAttribute('data-so-node') || el.hasAttribute('data-so-slot-empty')) return null;
+    const bind = el.getAttribute(TEXT_ATTR);
+    if (!bind) continue;
+    const owner = partOwner(el);
+    return owner ? { ...descOf(owner), bind } : null;
+  }
+  return null;
+}
+/**
+ * Whether marked text being edited now shows something else: a list shown without keys gives its row to another item,
+ * whose marker Svelte writes in place. What the page writes there then is that item's, never what was typed.
+ */
+const markMoved = (e) => !!e.desc.bind && e.el.getAttribute(TEXT_ATTR) !== e.desc.bind;
+/**
+ * What was typed over marked text, as the last input left it: kept for an edit whose element the page reuses. Its
+ * words are read while the element is still laid out, as a commit reads them (a copy's would run lines together).
+ */
+function keepTyped() {
+  if (editing && editing.desc.bind && !markMoved(editing)) editing.typed = { el: editing.el.cloneNode(true), text: editing.el.innerText };
+}
+/** Whether `el` is the text `desc` names: its marker, inside the markup of the code placement `desc` names. */
+function marksText(el, desc) {
+  if (el.getAttribute(TEXT_ATTR) !== desc.bind) return false;
+  const owner = partOwner(el);
+  return !!owner && sameDesc(descOf(owner), { ctx: desc.ctx, node: desc.node, items: desc.items });
+}
+/** The class prefix an item's own styles take, which the preview gives every item of a code placement's repeated parts. */
+const ITEM_CLASS = 'so-oi-';
+const partItemMaps = new WeakMap();
+/**
+ * Which item of which repeated part each item class names, in a code placement (`data-so-part-items`, written by the
+ * generator): read once per value of the attribute, since the pointer reads it on every move.
+ */
+function partItemsOf(owner) {
+  const raw = owner.getAttribute('data-so-part-items') || '';
+  const cached = partItemMaps.get(owner);
+  if (cached && cached.raw === raw) return cached.map;
+  let map = null;
+  try {
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) map = parsed;
+  } catch {
+    map = null;
+  }
+  partItemMaps.set(owner, { raw, map });
+  return map;
+}
+/** An item ID as the editor's item paths write it: "%" and "," escaped, so one ID stays one item. */
+function encodeItem(id) {
+  return String(id).replaceAll('%', '%25').replaceAll(',', '%2C');
+}
+/** The item (encoded) a code placement's repeated part is shown for, by the item class it carries; '' for none. */
+function partItemOf(el, owner, part) {
+  const map = partItemsOf(owner);
+  if (!map) return '';
+  for (const c of el.classList || []) {
+    if (!c.startsWith(ITEM_CLASS) || !Object.hasOwn(map, c)) continue;
+    const entry = map[c];
+    if (Array.isArray(entry) && entry[0] === part && typeof entry[1] === 'string') return encodeItem(entry[1]);
+  }
+  return '';
+}
+/**
+ * A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. A part
+ * shown once per item of a list names its item (`partItem`, apart from the items the placement itself is shown for),
+ * so one card is picked rather than all of them.
+ */
 function partDesc(el) {
   if (el.hasAttribute('data-so-node')) return null;
   const part = partIdOf(el);
   const owner = part ? partOwner(el) : null;
-  return owner ? { ...descOf(owner), part } : null;
+  if (!owner) return null;
+  const item = partItemOf(el, owner, part);
+  return { ...descOf(owner), part, ...(item ? { partItem: item } : {}) };
 }
 /**
  * What the pointer is on, as the editor names it: the innermost marked part of a code placement or editor element
@@ -215,11 +298,18 @@ function findAll(desc) {
   }
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   const els = [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
-  if (typeof desc.part !== 'string' || !desc.part) return els;
+  const part = typeof desc.part === 'string' && desc.part ? desc.part : '';
+  // Text a code placement's author marked: every element of its own markup carrying that marker.
+  if (typeof desc.bind === 'string' && desc.bind) return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(`[${TEXT_ATTR}="${cssEscape(desc.bind)}"]`)].filter((t) => partOwner(t) === el));
+  if (!part) return els;
+  const item = typeof desc.partItem === 'string' ? desc.partItem : '';
   // A marked part of a code placement: every element of that placement's own markup carrying the marker (the
-  // author's code can show one more than once), never one in another placement or in content placed in a slot.
-  const marked = `[data-so-part="${cssEscape(desc.part)}"], .${cssEscape(PART_CLASS + desc.part)}`;
-  return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === desc.part && partOwner(p) === el));
+  // author's code can show one more than once), never one in another placement or in content placed in a slot. One
+  // item's part is the elements of it shown for that item.
+  const marked = `[data-so-part="${cssEscape(part)}"], .${cssEscape(PART_CLASS + part)}`;
+  return els
+    .filter((el) => el.hasAttribute('data-so-code'))
+    .flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === part && partOwner(p) === el && (!item || partItemOf(p, el, part) === item)));
 }
 /** The box an element is laid out as (with display: contents, its first child that shows), and whether its container
  *  lays its items out by CSS order: only a flex or grid container does. */
@@ -336,6 +426,27 @@ let rectsPosted = '';
  */
 let timeRects = false;
 let measuringMs = 0;
+/** Where a point given as shares of the page's whole width and height is in the frame now: a box of no size. */
+function pointBox(point) {
+  const root = document.documentElement;
+  const width = Math.max(root.scrollWidth, document.body?.scrollWidth ?? 0);
+  const height = Math.max(root.scrollHeight, document.body?.scrollHeight ?? 0);
+  return { x: point.x * width - scrollX, y: point.y * height - scrollY, width: 0, height: 0 };
+}
+/** The marks a `track` names, as far as they are well formed: at most 32, each keyed, an element or a point. */
+function marksOf(list) {
+  if (!Array.isArray(list)) return [];
+  const share = (n) => typeof n === 'number' && n >= 0 && n <= 1;
+  return list
+    .flatMap((m) => {
+      if (!m || typeof m.key !== 'string' || m.key.length > 8192) return [];
+      const desc = m.desc && typeof m.desc.ctx === 'string' && typeof m.desc.node === 'string' ? m.desc : null;
+      const point = m.point && share(m.point.x) && share(m.point.y) ? { x: m.point.x, y: m.point.y } : null;
+      return desc || point ? [{ key: m.key, desc, point }] : [];
+    })
+    .slice(0, 32);
+}
+const sameMarks = (a, b) => a.length === b.length && a.every((m, i) => m.key === b[i].key && sameDesc(m.desc, b[i].desc) && m.point?.x === b[i].point?.x && m.point?.y === b[i].point?.y);
 function isSeparator(el) {
   return el.tagName === 'HR' || el.classList.contains('so-band') || el.classList.contains('so-band-icon');
 }
@@ -361,7 +472,12 @@ function sendRects() {
   const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   // Each tracked slot's placeholder where it first shows, with what it was measured for.
   const slots = mode === 'edit' ? trackedSlots.flatMap((desc) => { const box = findAll(desc).map(rectOf).find(Boolean); return box ? [{ desc, box }] : []; }) : [];
-  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
+  const marks = trackedMarks.flatMap((m) => {
+    // An element that shows nowhere at this width (a spotlight on a copy hidden here) falls back to its point.
+    const box = (m.desc ? findAll(m.desc).map(rectOf).find((r) => r && (r.width || r.height)) : null) ?? (m.point ? pointBox(m.point) : null);
+    return box ? [{ key: m.key, box }] : [];
+  });
+  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, marks, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
   const seen = JSON.stringify([navigationId, revision, report]);
   if (timeRects) measuringMs += performance.now() - t0;
   if (seen === rectsPosted) return;
@@ -1434,7 +1550,8 @@ document.addEventListener(
     e.preventDefault();
     e.stopPropagation();
     pendingHit = { id: String(++hitCount), target: new WeakRef(e.target), at: textAt(e.clientX, e.clientY) };
-    send('dblclick', { chain: chainFrom(e.target, true), hit: pendingHit.id });
+    const bind = textBindAt(e.target);
+    send('dblclick', { chain: chainFrom(e.target, true), hit: pendingHit.id, ...(bind ? { bind } : {}) });
   },
   true
 );
@@ -1956,7 +2073,7 @@ function wordRange(el, node, at) {
  * selected (or a caret, off a word), as a double-click does in any text. Whole text is for Select All. An answer to
  * an earlier double-click than the last one starts nothing: the author has double-clicked something else since.
  */
-function beginTextEdit(desc, editId, hitId) {
+function beginTextEdit(desc, editId, hitId, wantRich) {
   // An answer to an older double-click leaves the newer one waiting for its own answer.
   const hit = hitId && pendingHit && pendingHit.id === hitId ? pendingHit : null;
   if (hit) pendingHit = null;
@@ -1965,13 +2082,19 @@ function beginTextEdit(desc, editId, hitId) {
   if (hit) {
     const target = hit.target.deref();
     clicked = target && target.isConnected ? (target instanceof Element ? target : target.parentElement) : null;
-    while (clicked && !(clicked.hasAttribute('data-so-node') && sameDesc(descOf(clicked), desc))) clicked = clicked.parentElement;
+    // Text a code placement's author marked is the marked element; anything else, the editor's own element.
+    const named = desc && desc.bind ? (el) => marksText(el, desc) : (el) => el.hasAttribute('data-so-node') && sameDesc(descOf(el), desc);
+    while (clicked && !named(clicked)) clicked = clicked.parentElement;
     // The text double-clicked has been replaced since (the page updated): what the author meant to edit is gone.
     if (!clicked) return send('textCancel', { desc, editId });
   }
   const el = clicked || findAll(desc)[0];
   // The editor is waiting for this edit to end: tell it there is nothing to edit.
   if (!el) return send('textCancel', { desc, editId });
+  // Marked text is typed over only where it is the text alone, shown as its property is: rich text through RichText,
+  // a line of text otherwise. An element holding the editor's own (content placed in a slot) or other marked text,
+  // or one that is not HTML (an SVG's text), would store more, or other, than the property's words.
+  if (desc.bind && (!(el instanceof HTMLElement) || el.querySelector(`[data-so-node], [data-so-slot-empty], [${TEXT_ATTR}]`) || (typeof wantRich === 'boolean' && el.classList.contains('so-rich') !== wantRich))) return send('textCancel', { desc, editId });
   if (editing) commitEdit();
   // Typed text shown there from the inspector gives way to the page's own text, which the edit then works on.
   restoreDraft(el);
@@ -2012,6 +2135,7 @@ function beginTextEdit(desc, editId, hitId) {
   el.addEventListener('input', scheduleRects);
   el.addEventListener('paste', onEditPaste);
   el.addEventListener('drop', onEditDrop);
+  if (desc.bind) el.addEventListener('input', keepTyped);
   if (rich) openToolbar();
   send('textEditStarted', { desc });
 }
@@ -2301,6 +2425,8 @@ function linkChecked(payload) {
       if (newTab) a.setAttribute('target', '_blank');
       if (rels.length) a.setAttribute('rel', rels.join(' '));
     }
+  // The link's options are set after the browser's input: what is kept of the edit has them too.
+  keepTyped();
 }
 /** The part of a text node's words a range covers: a range that only reaches an element's edge covers none of it. */
 function coveredText(range, t) {
@@ -2930,6 +3056,7 @@ function endEdit() {
   el.removeEventListener('input', scheduleRects);
   el.removeEventListener('paste', onEditPaste);
   el.removeEventListener('drop', onEditDrop);
+  el.removeEventListener('input', keepTyped);
   el.removeAttribute('contenteditable');
   el.removeAttribute('spellcheck');
   el.style.outline = '';
@@ -2945,25 +3072,34 @@ const committed = new Map();
 function commitEdit(detached = false) {
   if (!editing) return;
   const { el, desc, editId, rich, original, before } = editing;
+  // Marked text whose element now shows another item is handed over as text the update took away, typed as the last
+  // input left it: the editor checks it against the item it was typed over. The element is that other item's now, so
+  // nothing is put back into it.
+  const moved = markMoved(editing);
+  if (moved) detached = true;
+  const left = moved ? editing.typed && editing.typed.el : el;
   // A destination still being checked in the link field is not applied: the editor is told, as saving does.
   if (linkEditor && linkEditor.check) send('linkDropped', { desc, editId });
   // Nothing changed: end the edit without a commit, so no history entry or rebuild follows.
-  if (el.innerHTML === original) {
+  if (!left || left.innerHTML === original) {
     endEdit();
     return send('textCancel', { desc, editId });
   }
   // Rich text goes back as a small copy of its structure (blocks, lists, breaks, marks, links) for the editor
   // to turn into its stored form; plain text as its words.
-  const payload = rich ? { desc, editId, rich: richCopy(el) } : { desc, editId, text: el.innerText.replace(/\s+/g, ' ').trim() };
+  const payload = rich ? { desc, editId, rich: richCopy(left) } : { desc, editId, text: (moved ? editing.typed.text : el.innerText).replace(/\s+/g, ' ').trim() };
   if (detached) Object.assign(payload, { detached: true }, typeof before === 'string' ? { before } : {});
   // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
   if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
-    el.innerHTML = original;
+    if (!moved) el.innerHTML = original;
     endEdit();
     return send('textCancel', { desc, editId, reason: 'too-large' });
   }
+  // A row the page gave another item without writing over what was typed (that item's words are the same as the
+  // ones it showed) still shows the typing: it shows the words the page last wrote there again.
+  if (moved && el.innerHTML === left.innerHTML) el.innerHTML = original;
   endEdit();
-  committed.set(editId, { el, original, left: el.innerHTML });
+  if (!moved) committed.set(editId, { el, original, left: el.innerHTML, bind: desc.bind });
   // Only the last few can still be answered: older ones are let go.
   while (committed.size > 8) committed.delete(committed.keys().next().value);
   send('textCommit', payload);
@@ -3004,8 +3140,8 @@ function richCopy(root) {
 function cancelEdit() {
   if (!editing) return;
   const { el, original, desc, editId } = editing;
-  // Untouched text keeps its live nodes, which Svelte still owns.
-  if (el.innerHTML !== original) el.innerHTML = original;
+  // Untouched text keeps its live nodes, which Svelte still owns; marked text the page gave another item is its now.
+  if (el.innerHTML !== original && !markMoved(editing)) el.innerHTML = original;
   endEdit();
   send('textCancel', { desc, editId });
 }
@@ -5057,6 +5193,8 @@ window.addEventListener('message', async (e) => {
       if (shownHold && !sameDesc(shownHold.desc, selected)) shownHold = null;
       if (m.payload.hovered !== undefined) hovered = m.payload.hovered;
       trackedSlots = Array.isArray(m.payload.slots) ? m.payload.slots.filter((d) => d && typeof d.slot === 'string').slice(0, 50) : [];
+      const marksWere = trackedMarks;
+      trackedMarks = marksOf(m.payload.marks);
       timeRects = m.payload.timed === true;
       rectsPosted = '';
       // Only what is hovered changed, and the next frame has nothing to do before it measures (a reveal to put in place, a
@@ -5064,7 +5202,7 @@ window.addEventListener('message', async (e) => {
       // outline in its next frame, not the one after, and it keeps up with the pointer. The next frame measures again
       // either way, after what the page itself does in it (a component moving what the pointer reached), and reports
       // only what that changed.
-      const hoverOnly = !sameDesc(was.hovered, hovered) && sameDesc(was.selected, selected) && was.slots.length === trackedSlots.length && was.slots.every((d, i) => sameDesc(d, trackedSlots[i]));
+      const hoverOnly = !sameDesc(was.hovered, hovered) && sameDesc(was.selected, selected) && was.slots.length === trackedSlots.length && was.slots.every((d, i) => sameDesc(d, trackedSlots[i])) && sameMarks(marksWere, trackedMarks);
       if (hoverOnly && !revealDirty && !revealPlace && !pendingScroll && !shownHold && !keepHold) sendRects();
       scheduleRects();
       break;
@@ -5142,7 +5280,7 @@ window.addEventListener('message', async (e) => {
       setReveal(m.payload.target);
       break;
     case 'beginTextEdit':
-      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit);
+      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit, m.payload.rich);
       break;
     case 'linkChecked':
       linkChecked(m.payload);
@@ -5156,7 +5294,9 @@ window.addEventListener('message', async (e) => {
       {
         // Each edit's own record, so a reply for one never answers (or forgets) another.
         const c = committed.get(m.payload.editId);
-        if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
+        // Marked text whose row the page has given another item since is that item's now.
+        if (c && c.bind && c.el.getAttribute(TEXT_ATTR) !== c.bind) committed.delete(m.payload.editId);
+        else if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
         else if (c && editing?.el === c.el && editing.original === c.left) {
           // Edited again before the answer came, from the text that was not kept: with nothing typed yet the saved
           // text comes back, to edit from; anything typed since is the new edit's, and Escape goes back to the saved text.
@@ -5329,7 +5469,7 @@ window.addEventListener('message', async (e) => {
 window.addEventListener(
   'scroll',
   (e) => {
-    if (e.target === document || selected || reveal || (hovered && mode === 'edit')) scheduleRects();
+    if (e.target === document || selected || reveal || trackedMarks.length || (hovered && mode === 'edit')) scheduleRects();
   },
   { passive: true, capture: true }
 );
@@ -5356,7 +5496,7 @@ new MutationObserver(() => {
   // The page re-rendered the element being edited away (an update arrived): the edit is over. Text typed into it
   // is handed to the editor as it would be on leaving it, never dropped: the editor checks it against what the
   // update changed before it is saved, and keeps it for the author when it cannot be.
-  if (editing && !editing.el.isConnected) {
+  if (editing && (!editing.el.isConnected || markMoved(editing))) {
     // A link still being typed has nowhere to go: say so, as saving does.
     if (linkEditor) {
       closeLinkEditor(false);
@@ -5372,10 +5512,11 @@ new MutationObserver(() => {
   // Outlines are measured again only while there is one to keep in place, or an element a scroll waits for. With
   // nothing selected, hovered while editing or revealed, the editor already has none, so a change to the page is
   // neither measured nor reported.
-  if (revealDirty || selected || pendingScroll || emptySpace || (hovered && mode === 'edit')) scheduleRects();
+  if (revealDirty || selected || pendingScroll || emptySpace || trackedMarks.length || (hovered && mode === 'edit')) scheduleRects();
   // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
   if (forced) markForced();
-}).observe(document.body, { childList: true, subtree: true, characterData: true });
+  // A text marker changing in place is watched too: the row being typed in may now show another list item.
+}).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: [TEXT_ATTR] });
 /**
  * A page error, with where it came from so the editor can name the component that threw (#738): the stack, the
  * file it was thrown in, and the change the page had been told of when it happened.

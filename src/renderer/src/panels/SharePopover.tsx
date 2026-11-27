@@ -1,13 +1,17 @@
 import './SharePopover.css';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Copy, Lock, Radio, RefreshCw, Users, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, FileText, Lock, Radio, RefreshCw, Users, X } from 'lucide-react';
 import type { LiveHostState, LiveRun } from '@shared/api';
-import { GUEST_ROLES, type GuestRole } from '@shared/live/limits';
+import type { GuestRole } from '@shared/live/limits';
 import { SESSION_DURATIONS, type SessionDuration } from '@shared/live/expiry';
+import { LIVE_AI_TURN_LIMITS } from '@shared/live/ai';
 import { api, confirmDialog, getState, setState, useStore } from '../store';
 import { openMenus, Segmented, Spinner, SwitchRow, useDialogOpen, useMenu } from '../components/ui';
 import { cancelStart, copiedAtStart, copyInvite, liveCommand, onStartCopied, shownLive, startLive } from '../lib/live-host';
+import { selectPage } from '../lib/actions';
+import { livePeers, peerColor } from '../lib/live-marks';
+import { presenceWhere } from '../lib/remote-view';
 import { JoinAnswers, OUTCOME_WORDS, outcomeOf, sendAnswer, useAnswers, useBusy, type Answer, type Outcome } from '../components/JoinRequests';
 import {
   admittedGuests,
@@ -21,6 +25,7 @@ import {
   hasRoom,
   livePill,
   liveRun,
+  OFFERED_ROLES,
   relayNow,
   remainingMs,
   ROLE_LABELS,
@@ -519,6 +524,13 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
           disabled={reconnecting || busy.has('lock')}
           onChange={(locked) => void go('lock', () => liveCommand(run, (r) => api.live.setLocked(r, locked)))}
         />
+        <SwitchRow
+          label="Allow guest notes"
+          hint="Guests can pin short notes to pages for you. Notes already left stay."
+          checked={live.guestNotes}
+          disabled={busy.has('notes')}
+          onChange={(allowed) => void go('notes', () => liveCommand(run, (r) => api.live.setGuestNotes(r, allowed)))}
+        />
         <div className="share-foot">
           <button type="button" className="btn btn-sm btn-danger" disabled={busy.has('end')} onClick={(e) => void end(e.currentTarget)}>
             End session
@@ -589,6 +601,7 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
     <li className="live-row">
       <span className="live-name-line">
         <span className="live-name">
+          <span className="peer-dot" style={{ '--peer': peerColor(guest.colorSlot) } as CSSProperties} aria-hidden="true" />
           <strong>{guest.displayName}</strong>
           {asked && asked !== guest.role ? <span className="share-quiet"> · Updating…</span> : timeLeft && <span className="share-quiet"> · {timeLeft}</span>}
         </span>
@@ -596,6 +609,7 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
           Remove
         </button>
       </span>
+      <GuestWhere guest={guest} />
       <span className="live-controls">
         <select
           className="select sm"
@@ -610,8 +624,9 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
             });
           }}
         >
-          {GUEST_ROLES.map((role) => (
-            <option key={role} value={role}>
+          {/* A role the host cannot pick shows while the guest holds it, and is never offered back. */}
+          {(OFFERED_ROLES.includes(guest.role) ? OFFERED_ROLES : [...OFFERED_ROLES, guest.role]).map((role) => (
+            <option key={role} value={role} disabled={!OFFERED_ROLES.includes(role)}>
               {ROLE_LABELS[role]}
             </option>
           ))}
@@ -636,6 +651,79 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
           ))}
         </select>
       </span>
+      {guest.role === 'collaborator' && <GuestAi run={run} live={live} guest={guest} disabled={off} go={go} />}
     </li>
+  );
+}
+
+/**
+ * Where a guest is now (#768): a connection that dropped, a viewer watching, or the page and element a collaborator is
+ * on (and that it is editing), with a way to that page when it is another one. What is said follows the guest as it
+ * moves; Go to page reads where they are when it is pressed.
+ */
+function GuestWhere({ guest }: { guest: AdmittedGuest }) {
+  // Read whole, so the row follows the session without a new object on every look.
+  const live = useStore((s) => s.live);
+  const livePresence = useStore((s) => s.livePresence);
+  const snapshot = useStore((s) => s.snapshot);
+  const pageId = useStore((s) => s.pageId);
+  const state = snapshot?.state ?? null;
+  const peer = livePeers({ live, livePresence, snapshot, remote: getState().remote, remotePresence: null }).find((p) => p.key === guest.guestId) ?? null;
+  if (!guest.connected) return <span className="live-where share-quiet">Connection dropped. Waiting for them to reconnect…</span>;
+  if (guest.role !== 'collaborator') return <span className="live-where share-quiet">Watching</span>;
+  const presence = peer?.presence ?? null;
+  if (!state || !presence) return <span className="live-where share-quiet">Location not known yet</span>;
+  const there = presence.pageId && Object.hasOwn(state.pages, presence.pageId) ? presence.pageId : null;
+  const goTo = () => {
+    const now = livePeers(getState()).find((p) => p.key === guest.guestId)?.presence?.pageId;
+    if (now && Object.hasOwn(getState().snapshot?.state.pages ?? {}, now)) selectPage(now);
+  };
+  return (
+    <span className="live-where">
+      <span className="share-quiet">
+        {presenceWhere(state, presence)}
+        {peer?.activity ? ' · editing' : ''}
+      </span>
+      {there && there !== pageId ? (
+        <button type="button" className="link-btn" onClick={goTo} aria-label={`Go to ${guest.displayName}’s page`}>
+          <FileText aria-hidden="true" /> Go to page
+        </button>
+      ) : (
+        there && <span className="share-quiet"> · Same page as you</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Whether a collaborator may ask this computer's AI to edit (#769): off when it is let in, until the host turns it on,
+ * with how many requests it may make. Its requests run here, with the host's provider and quota, which the row says.
+ */
+function GuestAi({ run, live, guest, disabled, go }: { run: LiveRun; live: LiveRoomState; guest: AdmittedGuest; disabled: boolean; go: (key: string, fn: () => Promise<unknown>) => Promise<unknown> }) {
+  const grant = live.ai[guest.guestId] ?? { allowed: false, turnLimit: null, turnsUsed: 0 };
+  const set = (allowed: boolean, turnLimit: number | null) => void go('ai', () => liveCommand(run, (r) => api.live.setAi(r, guest.guestId, { allowed, turnLimit })));
+  const limits: Array<number | null> = [null, ...LIVE_AI_TURN_LIMITS];
+  if (grant.turnLimit !== null && !limits.includes(grant.turnLimit)) limits.push(grant.turnLimit);
+  return (
+    <div className="live-ai">
+      <SwitchRow
+        checked={grant.allowed}
+        disabled={disabled}
+        onChange={(on) => set(on, grant.turnLimit)}
+        label="Allow AI editing"
+        hint="Their AI requests run on this computer, using your AI provider and its quota."
+      />
+      {/* The limit can be chosen before AI is turned on, so a guest never has more requests than the host meant. */}
+      <span className="live-controls">
+        <select className="select sm" aria-label={`AI requests for ${guest.displayName}`} value={grant.turnLimit === null ? 'none' : String(grant.turnLimit)} disabled={disabled} onChange={(e) => set(grant.allowed, e.target.value === 'none' ? null : Number(e.target.value))}>
+          {limits.map((n) => (
+            <option key={n ?? 'none'} value={n === null ? 'none' : String(n)}>
+              {n === null ? 'No limit on requests' : n === 1 ? 'Up to 1 request' : `Up to ${n} requests`}
+            </option>
+          ))}
+        </select>
+        <span className="share-quiet live-ai-used">{grant.turnsUsed === 1 ? '1 used' : `${grant.turnsUsed} used`}</span>
+      </span>
+    </div>
   );
 }

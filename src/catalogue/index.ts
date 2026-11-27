@@ -10,6 +10,12 @@ export type { ThemePack } from './pack';
  */
 let registry: ThemePack[] = [];
 let byId = new Map<string, ThemePack>();
+let generation = 0;
+
+/** How many times the packs have been replaced: what anything worked out from them was worked out under. */
+export function packsGeneration(): number {
+  return generation;
+}
 
 /** Replace the loaded packs. The first pack that is not a development fixture is the default theme. */
 export function registerPacks(packs: ThemePack[]): void {
@@ -20,6 +26,7 @@ export function registerPacks(packs: ThemePack[]): void {
   }
   registry = [...packs];
   byId = new Map(registry.map((p) => [p.id, p]));
+  generation++;
 }
 
 /** The pack with this ID, if it is loaded. */

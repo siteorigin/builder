@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, toast, transport, useStore, whenThemesReady } from './store';
+import { api, applyAiEvent, detachedRun, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, showConversation, toast, transport, useStore, whenThemesReady } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
@@ -19,6 +19,7 @@ import { startEditorFonts } from './lib/editor-fonts';
 import { isAskAiKey } from './lib/ask-ai-key';
 import { followLive, syncPresence } from './lib/live-host';
 import { followRemote, syncRemotePresence } from './lib/remote-session';
+import { followNotes } from './lib/notes-feed';
 import { JoinLiveDialog } from './components/JoinLive';
 import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
@@ -197,7 +198,9 @@ export function App() {
       syncPresence(),
       // Another computer's live session this app is a guest in, and where it is for the others (#766).
       ...followRemote(),
-      syncRemotePresence()
+      syncRemotePresence(),
+      // The shown project's pinned notes (#770).
+      followNotes()
     ];
     // A project already open (the editor reloaded, or a window opened again over it) shows the editor at once, once
     // its code and the catalogue are here: Welcome never shows in between. The changes that follow are made against
@@ -376,8 +379,15 @@ async function restoreConversation(seq: number, remembered: string | undefined) 
     // A new conversation left with a draft was never saved: a new one takes its place, and its draft.
     else if (plan.kind === 'fresh' && active.messages.length) conversation = await api.ai.newConversation();
     if (!current()) return;
-    const s = getState();
-    setState(plan.kind === 'fresh' ? { conversation, chatDrafts: moveDraft(s.chatDrafts, plan.from, conversation.id), chatImages: moveImages(s.chatImages, plan.from, conversation.id) } : { conversation });
+    const id = conversation.id;
+    const moved = () => {
+      const s = getState();
+      return plan.kind === 'fresh' ? { chatDrafts: moveDraft(s.chatDrafts, plan.from, id), chatImages: moveImages(s.chatImages, plan.from, id) } : {};
+    };
+    const opening = getState().snapshot?.workspaceKey;
+    // Shown as main has it by its ID, with the request running in it: a window reloaded mid-run has missed both.
+    if (opening) await showConversation(conversation, opening, current, moved);
+    else setState({ conversation, ...moved() });
   } catch {
     // The project closed while its conversations were loading: nothing to show. If they could not be read, a new
     // conversation still lets the panel work.

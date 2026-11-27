@@ -17,7 +17,9 @@ import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
 import { catalogueIndex, compactNode, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars } from '@agent/context';
 import { applyOperations } from '@engine/apply';
+import { developerModeReason } from '@engine/developer-mode';
 import { drafts } from '@engine/draft';
+import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
 import { diagnosticKey, validateState } from '@engine/validate';
@@ -145,6 +147,33 @@ describe('an AI batch applied to copies of the project', () => {
     await env.run('Rewrite the hero', { scope: 'page' });
     expect(applied.ok).toBe(true);
     expect(made).toBeLessThanOrEqual(editor + 1);
+  });
+});
+
+describe('a managed component built and placed by a run, applied to copies of the project', () => {
+  it('copies the project no more often than the same batch from the editor does, and once more', async () => {
+    for (const codeEnabled of [true, false]) {
+      let made = 0;
+      let applied: { ok?: boolean } = {};
+      const env = await setup(
+        [
+          () => {
+            made = drafts.made;
+            return [call('c1', 'upsert_managed_component', { ...COMPONENT_BLUEPRINTS[0].args, placeOnPage: { pageId: env.session.state.site.homePageId } })];
+          },
+          (req) => {
+            made = drafts.made - made;
+            applied = JSON.parse((req.items.at(-1) as { content: string }).content);
+            return finish('Built the cards.');
+          }
+        ],
+        { codeEnabled }
+      );
+      await env.run('Build feature cards and put them on the home page');
+      expect(applied.ok).toBe(true);
+      // From the editor, the same two operations are one batch, applied to one copy.
+      expect(made).toBeLessThanOrEqual(2);
+    }
   });
 });
 
@@ -5994,5 +6023,591 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(sourceOf(session.state, id)).toBe(before);
     const kept = Object.fromEntries((result?.sourceDrafts ?? []).map((d) => [d.reason, readFileSync(join(session.dir, d.path), 'utf8')]));
     expect(kept).toEqual({ rejected: long, reverted: attempted });
+  });
+});
+
+describe('a change to where a contact form sends (#1128)', () => {
+  const SALES = 'https://forms.example.com/sales';
+  const EVIL = 'https://evil.example/f';
+  const content = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+
+  /**
+   * A run whose one call sets the home page form's `prop`, the form placed by the user to send to Sales; `answer`
+   * replies to the question the app asks, if it asks one. What the model was told comes back as `told`.
+   */
+  async function editForm(prop: string, value: unknown, answer: (orch: Orchestrator, runId: string, q: NonNullable<ChatMessage['questions']>[number]) => void | Promise<void>, extra: Record<string, unknown> = {}) {
+    let told: { ok?: boolean; error?: { code?: string; message?: string } } = {};
+    const env = await setup([
+      () => [call('f1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner, nodeId: form, prop, value }], ...extra })],
+      (req) => {
+        told = content(req);
+        return finish('Done.');
+      }
+    ]);
+    const owner = { kind: 'page' as const, id: env.session.state.site.homePageId };
+    const placed = await env.session.apply({ operations: [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }] }, { label: 'Add a form' });
+    const form = placed.results![0].nodeId as string;
+    const r = await env.orch.send('Change the form', { pageId: owner.id, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 });
+    let asked: NonNullable<ChatMessage['questions']>[number] | undefined;
+    while (env.orch.busy) {
+      const q = [...env.events].reverse().find((e) => e.message?.questions?.length)?.message?.questions?.at(-1);
+      if (q && !asked && env.events.some((e) => e.status === 'awaiting-input')) {
+        asked = q;
+        await answer(env.orch, r.runId!, q);
+      }
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    const node = env.session.state.pages[owner.id].nodes[form] as InstanceNode;
+    return { env, asked, told, node };
+  }
+
+  it('asks the user in the app’s own words, and lands the change once they allow it', async () => {
+    const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[1]));
+    expect(asked?.text).toContain(EVIL);
+    expect(asked?.text).toContain('“Home”');
+    expect(asked?.choices).toEqual(['Keep it as it is', 'Allow this change']);
+    expect(asked?.widen).toBeUndefined();
+    expect(told.ok).toBe(true);
+    expect(node.props.endpoint).toBe(EVIL);
+  });
+
+  it('keeps the form sending where it did when the user says no, and tells the model so', async () => {
+    const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[0]));
+    expect(asked).toBeDefined();
+    expect(told.error?.code).toBe('SCOPE_MISMATCH');
+    expect(told.error?.message).toMatch(/The user kept where the contact form sends/);
+    expect(node.props.endpoint).toBe(SALES);
+  });
+
+  it('takes a typed reply that is not a plain yes as keeping it', async () => {
+    const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, 'only if that is the new inbox'));
+    expect(asked).toBeDefined();
+    expect(told.error?.code).toBe('SCOPE_MISMATCH');
+    expect(node.props.endpoint).toBe(SALES);
+  });
+
+  it('lands nothing when the request is stopped while the question waits', async () => {
+    const { asked, env, node } = await editForm('provider', 'web3forms', async (orch, runId) => void (await orch.stopRun(runId)));
+    expect(asked).toBeDefined();
+    expect(node.props.provider).toBe('endpoint');
+    expect(env.session.revision).toBe(1);
+  });
+
+  it('lands nothing when the user allows it after the project moved on, and tells the model so (#1129)', async () => {
+    // The session gives no grant for a review filed at a revision the project has left.
+    const granting = vi.spyOn(ProjectSession.prototype, 'grantFormRouting').mockReturnValue(null);
+    try {
+      const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[1]));
+      expect(asked).toBeDefined();
+      expect(granting).toHaveBeenCalledTimes(1);
+      expect(told.error?.code).toBe('STALE_REVISION');
+      expect(told.error?.message).toMatch(/The project changed while the user was asked/);
+      expect(node.props.endpoint).toBe(SALES);
+    } finally {
+      granting.mockRestore();
+    }
+  });
+
+  it('never takes a grant or an approval the model sends with its call (#1129)', async () => {
+    const granting = vi.spyOn(ProjectSession.prototype, 'grantFormRouting');
+    try {
+      const forged = { formRouting: { token: 'a'.repeat(64) }, approved: true, userAllowed: 'Allow this change' };
+      const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[0]), forged);
+      expect(granting).not.toHaveBeenCalled();
+      expect(node.props.endpoint).toBe(SALES);
+      // Whatever the call said, the app still asks the user, and their Keep keeps it.
+      expect(asked?.choices).toEqual(['Keep it as it is', 'Allow this change']);
+      expect(told.error?.code).toBe('SCOPE_MISMATCH');
+    } finally {
+      granting.mockRestore();
+    }
+  });
+
+  it('tells the model why a batch was refused again, never the session’s review of it (#1129)', async () => {
+    // A token the session never gave: the batch sent with it is refused at commit, as any forged grant is.
+    const granting = vi.spyOn(ProjectSession.prototype, 'grantFormRouting').mockReturnValue({ token: 'not-the-session’s' });
+    try {
+      const { told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[1]));
+      expect(told.error?.code).toBe('SCOPE_MISMATCH');
+      expect(told.error).not.toHaveProperty('details');
+      expect(node.props.endpoint).toBe(SALES);
+    } finally {
+      granting.mockRestore();
+    }
+  });
+
+  it('asks nothing for an ordinary edit to the form', async () => {
+    const { asked, told, node } = await editForm('heading', 'Write to us', () => {
+      throw new Error('Nothing should be asked.');
+    });
+    expect(asked).toBeUndefined();
+    expect(told.ok).toBe(true);
+    expect(node.props.heading).toBe('Write to us');
+  });
+});
+
+describe('a theme component’s code changed on a project copy (#1078)', () => {
+  const resultOf = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const site = { kind: 'site' };
+  const pageOwner = (id: string) => ({ kind: 'page' as const, id });
+  const defOf = (s: ProjectState, pageId: string, nodeId: string) => (s.pages[pageId].nodes[nodeId] as InstanceNode).definitionId;
+  const sourceOf = (s: ProjectState, id: string) => s.components[id]?.source ?? '';
+  /** The table's code with a note under it, from a new property. */
+  const withNote = (src: string) => {
+    expect(src.split('</section>')).toHaveLength(2);
+    expect(src.split('rowHeaders = false,')).toHaveLength(2);
+    return src.replace('rowHeaders = false,', "rowHeaders = false,\n\t\tnote = '',").replace('</section>', '\t{#if note}<p class="so-table__note">{note}</p>{/if}\n</section>');
+  };
+  const NOTE = { type: 'string', label: 'Note', default: '' };
+  type Read = { revision: number; hash: string; editable: boolean; source: string; properties: Record<string, unknown>; propertiesHash: string };
+  /** The patch of a copy read with read_source: its code, and its properties when given. */
+  const patch = (definitionId: string, read: Read, change: { source?: string; properties?: Record<string, unknown>; renames?: Array<{ from: string; to: string }> }, scope: unknown = site) => ({
+    definitionId,
+    scope,
+    expectedRevision: read.revision,
+    expectedHash: read.hash,
+    ...change,
+    ...(change.properties ? { expectedPropertiesHash: read.propertiesHash } : {})
+  });
+  /** Two data tables on the home page and one on another page, placed by the author before the run. */
+  async function placeTables(session: ProjectSession) {
+    const home = session.state.site.homePageId;
+    const other = session.state.site.pageOrder.find((id) => id !== home)!;
+    const r = await session.apply(
+      {
+        operations: [
+          { type: 'node.insert', owner: pageOwner(home), index: 0, componentId: 'data.table' },
+          { type: 'node.insert', owner: pageOwner(home), index: 1, componentId: 'data.table' },
+          { type: 'node.insert', owner: pageOwner(other), index: 0, componentId: 'data.table' }
+        ]
+      },
+      { label: 'Tables', source: 'user' }
+    );
+    expect(r.ok).toBe(true);
+    const [a, b, c] = r.results!.map((x) => (x as { nodeId: string }).nodeId);
+    const theme = defOf(session.state, home, a);
+    expect(session.state.components[theme]).toMatchObject({ owner: 'theme', kind: 'code' });
+    return { home, other, homeTables: [a, b], otherTable: c, theme };
+  }
+
+  it('forks it for the placements the request covers, patches its Svelte and properties together, names the copy and undoes as one run', async () => {
+    let session: ProjectSession;
+    let placed: Awaited<ReturnType<typeof placeTables>>;
+    let fork = '';
+    let read = {} as Read;
+    let copied = '';
+    const homeTables = () => placed.homeTables.map((nodeId) => ({ owner: pageOwner(placed.home), nodeId }));
+    const env = await setup([
+      () => [call('r0', 'read_source', { definitionId: placed.theme })],
+      () => [call('p0', 'apply_source_patch', { definitionId: placed.theme, scope: site, expectedRevision: session.revision, expectedHash: 'x', source: '<p>x</p>\n' })],
+      () => [call('f1', 'apply_operations', { expectedRevision: session.revision, scope: site, operations: [{ type: 'component.fork', definitionId: placed.theme, placements: homeTables() }] })],
+      (req) => {
+        fork = resultOf(req).results[0].definitionId;
+        copied = sourceOf(session.state, fork);
+        return [call('r1', 'read_source', { definitionId: fork })];
+      },
+      (req) => {
+        read = resultOf(req);
+        // Written from what read_source returned.
+        return [call('p1', 'apply_source_patch', patch(fork, read, { source: withNote(read.source), properties: { ...read.properties, note: NOTE } }))];
+      },
+      () => finish('Both tables on the home page now take a note.')
+    ]);
+    session = env.session;
+    placed = await placeTables(session);
+    const theme = structuredClone(session.state.components[placed.theme]);
+    const { result, runId } = await env.run('Add a note under both tables on the home page');
+    // The theme's code says how to change it, and where it is placed; it is never patched itself.
+    const first = resultOf(env.adapter.requests[1]);
+    expect(first).toMatchObject({ editable: false, note: expect.stringMatching(/the theme's code.*component\.fork \{ definitionId, placements/) });
+    expect(first.properties).toBeUndefined();
+    expect(first.placements).toEqual(expect.arrayContaining([...placed.homeTables.map((nodeId) => ({ owner: pageOwner(placed.home), nodeId, where: expect.any(String) })), { owner: pageOwner(placed.other), nodeId: placed.otherTable, where: expect.any(String) }]));
+    expect(first.placements).toHaveLength(3);
+    expect(resultOf(env.adapter.requests[2]).error).toMatchObject({ code: 'PATH_DENIED', message: expect.stringMatching(/the theme's code.*component\.fork/) });
+    expect(resultOf(env.adapter.requests[3]).results[0]).toEqual({ definitionId: fork, moved: 2, of: 3 });
+    // The copy reads whole with its properties, and its patch lands both.
+    expect(read).toMatchObject({ editable: true, source: copied, properties: theme.properties, propertiesHash: expect.any(String) });
+    expect(resultOf(env.adapter.requests[5])).toMatchObject({ ok: true });
+    for (const id of placed.homeTables) expect(defOf(session.state, placed.home, id)).toBe(fork);
+    expect(session.state.components[fork]).toMatchObject({ owner: 'project', kind: 'code', provenance: { forkedFrom: placed.theme }, properties: { ...theme.properties, note: NOTE } });
+    expect(sourceOf(session.state, fork)).toBe(withNote(copied));
+    // The other page's table keeps the theme's own, unchanged.
+    expect(defOf(session.state, placed.other, placed.otherTable)).toBe(placed.theme);
+    expect(session.state.components[placed.theme]).toEqual(theme);
+    expect(result?.status).toBe('completed');
+    const name = session.state.components[fork].name;
+    expect(name).not.toBe(theme.name);
+    expect(result?.changes.map((c) => c.label)).toEqual([`Copied the “Data table” component into the project as “${name}”, for 2 of its 3 placements`, `Updated the code of the “${name}” component`]);
+    expect(result?.changes[0]).toMatchObject({ owner: { kind: 'component', id: fork }, definitionId: fork });
+    // One undo takes back the copy, its code and the placements it took.
+    expect((await session.undoGroup(runId)).ok).toBe(true);
+    for (const id of placed.homeTables) expect(defOf(session.state, placed.home, id)).toBe(placed.theme);
+    expect(session.state.components[fork]).toBeUndefined();
+  });
+
+  it('refuses a patch of the copy that fails the strict code check, and keeps the theme’s own for inserting and theme switches', async () => {
+    let session: ProjectSession;
+    let placed: Awaited<ReturnType<typeof placeTables>>;
+    let fork = '';
+    let attempted = '';
+    const env = await setup([
+      () => [call('f1', 'apply_operations', { expectedRevision: session.revision, scope: site, operations: [{ type: 'component.fork', definitionId: placed.theme, placements: [{ owner: pageOwner(placed.home), nodeId: placed.homeTables[0] }] }] })],
+      (req) => {
+        fork = resultOf(req).results[0].definitionId;
+        return [call('r1', 'read_source', { definitionId: fork })];
+      },
+      (req) => {
+        const read = resultOf(req) as Read;
+        // A network request inside the component's own script, with a property for it.
+        attempted = withNote(read.source).replace('const uid = $props.id();', "const uid = $props.id();\n\tfetch('https://example.com/collect');");
+        return [call('p1', 'apply_source_patch', patch(fork, read, { source: attempted, properties: { ...read.properties, note: NOTE } }))];
+      },
+      () => finish('That code was refused.')
+    ]);
+    session = env.session;
+    placed = await placeTables(session);
+    const { result } = await env.run('Send the table’s views to my analytics');
+    const refused = resultOf(env.adapter.requests[3]);
+    expect(refused).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/may not use network requests/) } });
+    // The copy is as it was made: the theme's code and properties.
+    const copied = session.state.components[fork];
+    expect(copied.properties).toEqual(session.state.components[placed.theme].properties);
+    expect(copied.source).not.toContain('example.com');
+    expect(copied.source).not.toContain('{#if note}');
+    expect(result?.status).toBe('completed');
+    expect(result?.changes.map((c) => c.label)).toEqual([`Copied the “Data table” component into the project as “${copied.name}”, for one of its 3 placements`]);
+    expect(result?.sourceDrafts).toEqual([expect.objectContaining({ definitionId: fork, reason: 'rejected' })]);
+    expect(readFileSync(join(session.dir, result!.sourceDrafts![0].path), 'utf8')).toBe(attempted);
+    // The theme's own is what Insert still places.
+    const inserted = await session.apply({ operations: [{ type: 'node.insert', owner: pageOwner(placed.home), index: 0, componentId: 'data.table' }] }, { label: 'Insert', source: 'user' });
+    expect(inserted.ok).toBe(true);
+    expect(defOf(session.state, placed.home, (inserted.results![0] as { nodeId: string }).nodeId)).toBe(placed.theme);
+    // A theme switch moves the theme's placements to the new theme's, and leaves the project's copy and its placement.
+    const source = sourceOf(session.state, fork);
+    expect((await session.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation-alt' }] }, { label: 'Theme', source: 'user' })).ok).toBe(true);
+    expect(defOf(session.state, placed.home, placed.homeTables[0])).toBe(fork);
+    expect(sourceOf(session.state, fork)).toBe(source);
+    expect(session.state.components[defOf(session.state, placed.other, placed.otherTable)]).toMatchObject({ owner: 'theme', provenance: { pack: 'foundation-alt' } });
+  });
+
+  it('lets a selection fork only placements inside it, then patch that copy', async () => {
+    let session: ProjectSession;
+    let placed: Awaited<ReturnType<typeof placeTables>>;
+    let fork = '';
+    const scope = () => ({ kind: 'selection', targetIds: [placed.homeTables[0]] });
+    const fork1 = (ids?: string[]) => ({ type: 'component.fork', definitionId: placed.theme, ...(ids ? { placements: ids.map((nodeId) => ({ owner: pageOwner(placed.home), nodeId })) } : {}) });
+    const env = await setup([
+      () => [call('r0', 'read_source', { definitionId: placed.theme })],
+      () => [call('f0', 'apply_operations', { expectedRevision: session.revision, scope: scope(), operations: [fork1()] })],
+      () => [call('f1', 'apply_operations', { expectedRevision: session.revision, scope: scope(), operations: [fork1(placed.homeTables)] })],
+      () => [call('f2', 'apply_operations', { expectedRevision: session.revision, scope: scope(), operations: [fork1([placed.homeTables[0]])] })],
+      (req) => {
+        fork = resultOf(req).results[0].definitionId;
+        return [call('r1', 'read_source', { definitionId: fork })];
+      },
+      (req) => {
+        const read = resultOf(req) as Read;
+        return [call('p1', 'apply_source_patch', patch(fork, read, { source: withNote(read.source), properties: { ...read.properties, note: NOTE } }, scope()))];
+      },
+      () => finish('Done.')
+    ]);
+    session = env.session;
+    placed = await placeTables(session);
+    const { result } = await env.run('Add a note under this table', { selection: { owner: pageOwner(placed.home), instancePath: [], nodeId: placed.homeTables[0] }, selectionLabel: 'Data table' });
+    // The note names the copies a selection may make, and lists only the placement inside it.
+    const first = resultOf(env.adapter.requests[1]);
+    expect(first.note).toMatch(/component\.makeUnique \{ owner, nodeId \} copies it for the selected placement, or component\.fork \{ definitionId, placements/);
+    expect(first.placements).toEqual([{ owner: pageOwner(placed.home), nodeId: placed.homeTables[0], where: expect.any(String) }]);
+    expect(resultOf(env.adapter.requests[2]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/without placements moves every placement of the component to the copy, which changes more than/) });
+    expect(resultOf(env.adapter.requests[3]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/moves placements outside/) });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ ok: true });
+    expect(resultOf(env.adapter.requests[6])).toMatchObject({ ok: true });
+    expect(defOf(session.state, placed.home, placed.homeTables[0])).toBe(fork);
+    expect(defOf(session.state, placed.home, placed.homeTables[1])).toBe(placed.theme);
+    expect(sourceOf(session.state, fork)).toContain('{#if note}');
+    expect(result?.status).toBe('completed');
+  });
+
+  it('asks to widen before copying from a page run or a selection inside a design, and treats the root part as the placement', async () => {
+    let session: ProjectSession;
+    let placed: Awaited<ReturnType<typeof placeTables>>;
+    const reading = () => [call('r', 'read_source', { definitionId: placed.theme })];
+    const env = await setup([reading, () => finish('That needs a wider change.'), reading, () => finish('That needs a wider change.'), reading, () => finish('Done.')]);
+    session = env.session;
+    placed = await placeTables(session);
+    await env.run('Add a note under the tables', { scope: 'page' });
+    const fromPage = resultOf(env.adapter.requests[1]);
+    expect(fromPage.note).toMatch(/adds a component to the site: more than the .* page\. Ask the user to allow a wider change first/);
+    expect(fromPage.placements).toBeUndefined();
+    // A selection inside a component's design: a copy would add a component to the site.
+    const hero = session.state.pages[placed.home].rootIds.find((id) => !placed.homeTables.includes(id))!;
+    const designed = await session.apply({ operations: [{ type: 'component.fork', definitionId: defOf(session.state, placed.home, hero) }] }, { label: 'Edit everywhere', source: 'user' });
+    const design = (designed.results![0] as { definitionId: string }).definitionId;
+    const root = session.state.components[design].tree!.rootIds[0];
+    await env.run('Add a note under the table', { selection: { owner: { kind: 'component', id: design }, instancePath: [], nodeId: root }, selectionLabel: 'Hero' });
+    expect(resultOf(env.adapter.requests[3]).note).toMatch(/more than the selection\. Ask the user to allow a wider change first/);
+    // The table's root part is the whole placement, which a selection may copy.
+    await env.run('Add a note under this', { selection: { owner: pageOwner(placed.home), instancePath: [placed.homeTables[0]], nodeId: placed.homeTables[0], partId: 'root' }, selectionLabel: 'Table section' });
+    const fromRoot = resultOf(env.adapter.requests[5]);
+    expect(fromRoot.note).toMatch(/component\.makeUnique \{ owner, nodeId \} copies it for the selected placement/);
+    expect(fromRoot.placements).toEqual([{ owner: pageOwner(placed.home), nodeId: placed.homeTables[0], where: expect.any(String) }]);
+    expect(session.state.components[placed.theme].owner).toBe('theme');
+  });
+
+  it('refuses a fork of the contact form, whose own code the strict check forbids the assistant', async () => {
+    let session: ProjectSession;
+    let form = '';
+    let theme = '';
+    const env = await setup([
+      () => [call('f1', 'apply_operations', { expectedRevision: session.revision, scope: site, operations: [{ type: 'component.fork', definitionId: theme, placements: [{ owner: pageOwner(session.state.site.homePageId), nodeId: form }] }] })],
+      () => finish('The form’s code cannot be copied.')
+    ]);
+    session = env.session;
+    const home = session.state.site.homePageId;
+    const r = await session.apply({ operations: [{ type: 'node.insert', owner: pageOwner(home), index: 0, componentId: 'contact.form' }] }, { label: 'Form', source: 'user' });
+    expect(r.ok).toBe(true);
+    form = (r.results![0] as { nodeId: string }).nodeId;
+    theme = defOf(session.state, home, form);
+    const components = Object.keys(session.state.components).length;
+    await env.run('Move the email field above the name');
+    expect(resultOf(env.adapter.requests[1])).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/may not use network requests/) } });
+    expect(defOf(session.state, home, form)).toBe(theme);
+    expect(Object.keys(session.state.components)).toHaveLength(components);
+  });
+
+  it('keeps a fork of every placement away from a collection layout, which only the editor changes', async () => {
+    let session: ProjectSession;
+    let placed: Awaited<ReturnType<typeof placeTables>>;
+    let inLayout = '';
+    const env = await setup([
+      () => [call('f1', 'apply_operations', { expectedRevision: session.revision, scope: site, operations: [{ type: 'component.fork', definitionId: placed.theme }] })],
+      () => [call('f2', 'apply_operations', { expectedRevision: session.revision, scope: site, operations: [{ type: 'component.fork', definitionId: placed.theme, placements: [{ owner: pageOwner(placed.home), nodeId: placed.homeTables[0] }] }] })],
+      () => finish('Copied the home table.')
+    ]);
+    session = env.session;
+    placed = await placeTables(session);
+    const r = await session.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }] }, { label: 'Blog', source: 'user' });
+    expect(r.ok).toBe(true);
+    const laid = await session.apply({ operations: [{ type: 'node.insert', owner: { kind: 'template', id: 'posts' }, index: 0, componentId: 'data.table' }] }, { label: 'Layout', source: 'user' });
+    expect(laid.ok).toBe(true);
+    inLayout = (laid.results![0] as { nodeId: string }).nodeId;
+    const layoutDef = () => (session.state.collections.posts.settings.template.nodes[inLayout] as InstanceNode).definitionId;
+    expect(layoutDef()).toBe(placed.theme);
+    await env.run('Copy the data table');
+    expect(resultOf(env.adapter.requests[1]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/also placed in a collection layout, which only the editor changes/) });
+    expect(resultOf(env.adapter.requests[2])).toMatchObject({ ok: true });
+    expect(layoutDef()).toBe(placed.theme);
+    expect(defOf(session.state, placed.home, placed.homeTables[0])).not.toBe(placed.theme);
+  });
+
+  it('patches the code of a component placed in a collection layout, never its properties, which the layout’s values are kept under', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let inLayout = '';
+    const source = "<script>\n\tlet { label = '', class: className = '' } = $props();\n</script>\n\n<p class={className}>{label}</p>\n";
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        const read = resultOf(req) as Read;
+        // Renamed in the code and the properties together, which would move the layout's own value.
+        return [call('p1', 'apply_source_patch', patch(id, read, { source: read.source.replace("let { label = ''", "let { caption = ''").replace('{label}', '{caption}'), properties: { caption: { type: 'string', label: 'Caption', default: '' } }, renames: [{ from: 'label', to: 'caption' }] }))];
+      },
+      () => [call('r2', 'read_source', { definitionId: id })],
+      (req) => {
+        const read = resultOf(req) as Read;
+        return [call('p2', 'apply_source_patch', patch(id, read, { source: read.source.replace('<p class={className}>', '<p class={className} title={label}>') }))];
+      },
+      () => finish('Changed the code only.')
+    ]);
+    session = env.session;
+    const made = await session.apply({ operations: [{ type: 'component.createCode', name: 'Note', source, properties: { label: { type: 'string', label: 'Label', default: '' } } }] }, { label: 'Code', source: 'user' });
+    expect(made.ok).toBe(true);
+    id = (made.results![0] as { definitionId: string }).definitionId;
+    expect((await session.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }] }, { label: 'Blog', source: 'user' })).ok).toBe(true);
+    const laid = await session.apply({ operations: [{ type: 'node.insert', owner: { kind: 'template', id: 'posts' }, index: 0, definitionId: id }] }, { label: 'Layout', source: 'user' });
+    expect(laid.ok).toBe(true);
+    inLayout = (laid.results![0] as { nodeId: string }).nodeId;
+    expect((await session.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'template', id: 'posts' }, nodeId: inLayout, prop: 'label', value: 'Filed under' }] }, { label: 'Label', source: 'user' })).ok).toBe(true);
+    await env.run('Call the label a caption');
+    expect(resultOf(env.adapter.requests[2]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/placed in a collection layout, whose values only the editor changes/) });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ ok: true });
+    const node = session.state.collections.posts.settings.template.nodes[inLayout] as InstanceNode;
+    expect(node.props).toMatchObject({ label: 'Filed under' });
+    expect(Object.keys(session.state.components[id].properties)).toEqual(['label']);
+    expect(sourceOf(session.state, id)).toContain('title={label}');
+  });
+
+  it('keeps a fork out of a page run, a selected part and a component’s design, and needs Developer mode for one of code', () => {
+    let state = createStarterState('business', 'Test', false);
+    const home = state.site.homePageId;
+    const placedTable = applyOperations(state, [{ type: 'node.insert', owner: pageOwner(home), index: 0, componentId: 'data.table' }]);
+    state = placedTable.state;
+    const nodeId = (placedTable.results[0] as { nodeId: string }).nodeId;
+    const theme = defOf(state, home, nodeId);
+    const op = { type: 'component.fork', definitionId: theme, placements: [{ owner: pageOwner(home), nodeId }] } as EditOperation;
+    expect(checkAuthority(state, [op], { kind: 'page', pageId: home, label: 'the Home page' })).toMatch(/adds a new component to the site/);
+    const whole: Authority = { kind: 'selection', owner: pageOwner(home), nodeId, label: 'the table' };
+    expect(checkAuthority(state, [op], whole)).toBeNull();
+    expect(checkAuthority(state, [{ type: 'component.fork', definitionId: theme }], whole)).toMatch(/without placements moves every placement/);
+    expect(checkAuthority(state, [op], { ...whole, part: { regionNodeId: nodeId, partId: 'root' } })).toMatch(/more than the part/);
+    expect(checkAuthority(state, [op], { kind: 'component', definitionId: theme, label: 'Data table' })).not.toBeNull();
+    // A selection inside a component's design: a copy of what it places would add a component to the site.
+    const hero = state.pages[home].rootIds.find((id) => id !== nodeId)!;
+    const designed = applyOperations(state, [{ type: 'component.fork', definitionId: defOf(state, home, hero) }]);
+    const design = (designed.results[0] as { definitionId: string }).definitionId;
+    const root = designed.state.components[design].tree!.rootIds[0];
+    const inDesign = { type: 'component.fork', definitionId: theme, placements: [{ owner: { kind: 'component', id: design }, nodeId: root }] } as EditOperation;
+    expect(checkAuthority(designed.state, [inDesign], { kind: 'selection', owner: { kind: 'component', id: design }, nodeId: root, label: 'the hero design' })).toMatch(/adds a new component to the site/);
+    expect(developerModeReason(state, op)).toMatch(/is a code component\. Copying it for these placements copies its Svelte source/);
+    // The engine moves exactly the placements named, once each, and only placements of that component.
+    expect(() => applyOperations(state, [{ ...op, placements: [{ owner: pageOwner(home), nodeId }, { owner: pageOwner(home), nodeId }] } as EditOperation])).toThrow(/listed twice/);
+    expect(() => applyOperations(state, [{ ...op, placements: [{ owner: pageOwner(home), nodeId: hero }] } as EditOperation])).toThrow(/is not a placement of/);
+  });
+
+  it('round-trips the properties of each Foundation video copy with a new one', () => {
+    let state = createStarterState('business', 'Test', false);
+    const home = pageOwner(state.site.homePageId);
+    for (const componentId of ['media.video', 'block.video']) {
+      const placedVideo = applyOperations(state, [{ type: 'node.insert', owner: home, index: 0, componentId }]);
+      state = placedVideo.state;
+      const nodeId = (placedVideo.results[0] as { nodeId: string }).nodeId;
+      const forked = applyOperations(state, [{ type: 'component.fork', definitionId: defOf(state, home.id, nodeId), placements: [{ owner: home, nodeId }] }]);
+      const id = (forked.results[0] as { definitionId: string }).definitionId;
+      const def = forked.state.components[id];
+      const r = applyOperations(forked.state, [{ type: 'component.updateSource', definitionId: id, source: def.source!, properties: { ...def.properties, note: NOTE } }]);
+      expect(r.state.components[id].properties.note).toMatchObject({ type: 'string', label: 'Note' });
+      expect(r.state.components[id].properties.url).toEqual(def.properties.url);
+    }
+  });
+
+  it('limits a text property to at most 4,096 characters, which a web address fits', () => {
+    const state = createStarterState('business', 'Test', false);
+    const made = applyOperations(state, [{ type: 'component.createCode', name: 'Link', source: "<script>\n\tlet { url = '', class: className = '' } = $props();\n</script>\n\n<a class={className} href={url}>Go</a>\n" }]);
+    const id = (made.results[0] as { definitionId: string }).definitionId;
+    const source = made.state.components[id].source!;
+    const limited = (maxLength: number) => () => applyOperations(made.state, [{ type: 'component.updateSource', definitionId: id, source, properties: { url: { type: 'string', label: 'Address', default: '', maxLength } } }]);
+    expect(limited(4096)).not.toThrow();
+    expect(limited(4097)).toThrow(/maxLength must be a whole number from 0 to 4,096/);
+  });
+
+  it('forks the shared header in a run and patches the copy, which is still held to the strict code check', async () => {
+    let session: ProjectSession;
+    let fork = '';
+    const header = () => session.state.site.shell.header.rootIds[0];
+    const env = await setup([
+      () => [call('f1', 'apply_operations', { expectedRevision: session.revision, scope: site, operations: [{ type: 'component.fork', definitionId: 'foundation.shell.header' }] })],
+      (req) => {
+        fork = resultOf(req).results?.[0]?.definitionId;
+        return [call('r1', 'read_source', { definitionId: fork })];
+      },
+      (req) => {
+        const read = resultOf(req) as Read;
+        // Passing the window object around is the assistant's to never write.
+        return [call('p0', 'apply_source_patch', patch(fork, read, { source: sourceOf(session.state, fork).replace('<script>', '<script>\n\tconst w = window;') }))];
+      },
+      () => [call('r2', 'read_source', { definitionId: fork })],
+      (req) => {
+        const read = resultOf(req) as Read;
+        return [call('p1', 'apply_source_patch', patch(fork, read, { source: `${sourceOf(session.state, fork)}\n<!-- tidied -->\n` }))];
+      },
+      () => finish('Done.')
+    ]);
+    session = env.session;
+    const { result } = await env.run('Tidy the header code');
+    expect(resultOf(env.adapter.requests[1])).toMatchObject({ ok: true, results: [{ definitionId: fork, moved: 1, of: 1 }] });
+    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/may not use global object access/) } });
+    expect(resultOf(env.adapter.requests[5])).toMatchObject({ ok: true });
+    expect((session.state.site.shell.header.nodes[header()] as InstanceNode).definitionId).toBe(fork);
+    expect(sourceOf(session.state, fork)).toMatch(/<!-- tidied -->\n$/);
+    expect(sourceOf(session.state, fork)).not.toContain('const w = window');
+    expect(result?.changes[0].label).toBe('Copied the “Header” component into the project as “Header”, for its one placement');
+  });
+
+  it('checks the code against the properties it lands with, keeps a rename’s values, and refuses properties the code no longer fits', async () => {
+    let session: ProjectSession;
+    let placed: Awaited<ReturnType<typeof placeTables>>;
+    let fork = '';
+    const reads: Read[] = [];
+    const last = () => reads.at(-1)!;
+    const env = await setup([
+      () => [call('f1', 'apply_operations', { expectedRevision: session.revision, scope: site, operations: [{ type: 'component.fork', definitionId: placed.theme, placements: [{ owner: pageOwner(placed.home), nodeId: placed.homeTables[0] }] }] })],
+      (req) => {
+        fork = resultOf(req).results[0].definitionId;
+        return [call('r1', 'read_source', { definitionId: fork })];
+      },
+      // Code that marks its note for typing over, with properties that have no note: refused.
+      (req) => {
+        reads.push(resultOf(req));
+        return [call('p1', 'apply_source_patch', patch(fork, last(), { source: withNote(last().source).replace('<p class="so-table__note">', `<p class="so-table__note" data-so-text={so_text?.('note')}>`).replace("class: className = ''", "class: className = '',\n\t\tso_text") }))];
+      },
+      // The heading renamed in the properties alone: the code still takes “heading”.
+      () => {
+        const { heading, ...rest } = last().properties;
+        return [call('p2', 'apply_source_patch', patch(fork, last(), { properties: { ...rest, title: heading }, renames: [{ from: 'heading', to: 'title' }] }))];
+      },
+      // Written against properties that have changed since: refused.
+      () => [call('p3', 'apply_source_patch', { ...patch(fork, last(), { properties: { ...last().properties, note: NOTE } }), expectedPropertiesHash: 'stale' })],
+      // The rename with the code that reads the new name: every placement keeps its heading as its title.
+      () => {
+        const { heading, ...rest } = last().properties;
+        expect(last().source).toContain('\t\theading,\n');
+        return [call('p4', 'apply_source_patch', patch(fork, last(), { source: last().source.replace('\t\theading,\n', '\t\ttitle: heading,\n'), properties: { ...rest, title: heading }, renames: [{ from: 'heading', to: 'title' }] }))];
+      },
+      () => [call('r2', 'read_source', { definitionId: fork })],
+      (req) => {
+        reads.push(resultOf(req));
+        return finish('Renamed it.');
+      }
+    ]);
+    session = env.session;
+    placed = await placeTables(session);
+    expect((await session.apply({ operations: [{ type: 'instance.setProp', owner: pageOwner(placed.home), nodeId: placed.homeTables[0], prop: 'heading', value: 'Spring timetable' }] }, { label: 'Heading', source: 'user' })).ok).toBe(true);
+    await env.run('Call the table heading a title');
+    expect(resultOf(env.adapter.requests[3]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/“note” is not/) });
+    expect(resultOf(env.adapter.requests[4]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/takes heading from \$props\(\), which is not one of the component's properties/) });
+    expect(resultOf(env.adapter.requests[5]).error).toMatchObject({ code: 'STALE_REVISION', message: expect.stringMatching(/properties changed/) });
+    expect(resultOf(env.adapter.requests[6])).toMatchObject({ ok: true });
+    const node = session.state.pages[placed.home].nodes[placed.homeTables[0]] as InstanceNode;
+    expect(node.props.title).toBe('Spring timetable');
+    expect(node.props.heading).toBeUndefined();
+    expect(Object.keys(session.state.components[fork].properties)).toContain('title');
+    expect(last().properties).toHaveProperty('title');
+  });
+
+  it('refuses new properties that leave text the unchanged code marks naming a field it no longer has', async () => {
+    let session: ProjectSession;
+    let id = '';
+    const source = "<script>\n\tlet { items = [], so_text, class: className = '' } = $props();\n</script>\n\n<ul class={className}>\n\t{#each items as item (item.id)}<li data-so-text={so_text?.('items.title', item.id)}>{item.title}</li>{/each}\n</ul>\n";
+    const items = { type: 'list', label: 'Items', itemLabel: 'Item', fields: { title: { type: 'string', label: 'Title' } }, default: [] };
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        const read = resultOf(req) as Read;
+        // The items' title renamed to name, with the code left marking “items.title”.
+        return [call('p1', 'apply_source_patch', patch(id, read, { properties: { ...read.properties, items: { ...items, fields: { name: { type: 'string', label: 'Name' } } } } }))];
+      },
+      () => finish('Could not rename it.'),
+      () => [call('r2', 'read_source', { definitionId: id })],
+      (req) => {
+        const read = resultOf(req) as Read;
+        // The subtitle the code marks given back, and the title it marks taken away: one broken marker for another.
+        return [call('p2', 'apply_source_patch', patch(id, read, { properties: { ...read.properties, items: { ...items, fields: { subtitle: { type: 'string', label: 'Subtitle' } } } } }))];
+      },
+      () => finish('Could not change it.')
+    ]);
+    session = env.session;
+    const made = await session.apply({ operations: [{ type: 'component.createCode', name: 'Item list', source, properties: { items } }] }, { label: 'Code', source: 'user' });
+    expect(made.ok).toBe(true);
+    id = (made.results![0] as { definitionId: string }).definitionId;
+    await env.run('Call the items’ titles names');
+    expect(resultOf(env.adapter.requests[2]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/does not fit its new properties/) });
+    expect(Object.keys((session.state.components[id].properties.items as { fields: object }).fields)).toEqual(['title']);
+    // The code also marks a subtitle the author's own edit took away: that problem was there already, a new one is not.
+    const marked = source.replace('{item.title}</li>', `{item.title}</li><li data-so-text={so_text?.('items.subtitle', item.id)}>{item.subtitle}</li>`);
+    expect((await session.apply({ operations: [{ type: 'component.updateSource', definitionId: id, source: marked, properties: { items: { ...items, fields: { title: items.fields.title, subtitle: { type: 'string', label: 'Subtitle' } } } } }] }, { label: 'Code', source: 'user' })).ok).toBe(true);
+    expect((await session.apply({ operations: [{ type: 'component.setPropSchema', definitionId: id, prop: 'items', schema: items }] }, { label: 'Fields', source: 'user' })).ok).toBe(true);
+    await env.run('Show a subtitle instead of the title');
+    expect(resultOf(env.adapter.requests[5]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/does not fit its new properties.*no “title” field/) });
+    expect(Object.keys((session.state.components[id].properties.items as { fields: object }).fields)).toEqual(['title']);
   });
 });

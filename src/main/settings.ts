@@ -27,6 +27,7 @@ const DEFAULTS: SettingsFile = {
   settings: {
     appearance: 'system',
     developerMode: false,
+    gitSnapshots: false,
     liveRelayUrl: null,
     shortcuts: DEFAULT_SHORTCUTS,
     ai: {
@@ -123,6 +124,8 @@ export async function loadSettings(): Promise<SettingsFile> {
     // A relay address that is not text is none. Text that is not a usable address is kept, so starting a live session
     // reports it rather than quietly using the production relay.
     if (typeof cache.settings.liveRelayUrl !== 'string' || !cache.settings.liveRelayUrl.trim()) cache.settings.liveRelayUrl = null;
+    // Only a hand-edited true turns Git snapshots on: anything else is the default, off.
+    cache.settings.gitSnapshots = cache.settings.gitSnapshots === true;
   } catch (e) {
     unread = (e as NodeJS.ErrnoException).code !== 'ENOENT';
     // Kept in the main process's log (main-log.ts): settings that could not be read start from the defaults.
@@ -176,6 +179,11 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
     const cleared = asked === null || (typeof asked === 'string' && !asked.trim());
     const relay = cleared ? null : checkRelayUrl(asked);
     patch = relay === null ? { ...rest, liveRelayUrl: null } : relay.ok ? { ...rest, liveRelayUrl: relay.url } : rest;
+  }
+  // Git snapshots are on or off: any other value is refused, keeping the one in use.
+  if ('gitSnapshots' in patch && typeof patch.gitSnapshots !== 'boolean') {
+    const { gitSnapshots: _refused, ...rest } = patch;
+    patch = rest;
   }
   const prev = s.settings.ai;
   const local = { ...prev.local, ...(patch.ai?.local ?? {}), modelsByServer: { ...prev.local.modelsByServer } };
@@ -453,6 +461,32 @@ async function readStoredKeys(): Promise<Partial<Record<ProviderId, string>>> {
   } catch {
     return {};
   }
+}
+
+/**
+ * Every provider key the app holds (stored, and a development build's from the environment), for a publication to be
+ * searched for (#1154): never shown, logged or sent. A key file that is there but cannot be read rejects, rather than
+ * passing as one with no keys.
+ */
+export async function keyValues(): Promise<string[]> {
+  let text: string | null = null;
+  try {
+    text = await fs.readFile(credFile(), 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Your API keys could not be read, so the website could not be checked for them.', { cause: e });
+  }
+  let stored: unknown = {};
+  try {
+    stored = text === null ? {} : JSON.parse(text);
+  } catch {
+    throw new Error('Your API keys file is damaged, so the website could not be checked for them. Save your keys again in Settings.');
+  }
+  const values = stored && typeof stored === 'object' ? Object.values(stored as Record<string, unknown>).filter((v): v is string => typeof v === 'string' && v !== '') : [];
+  for (const provider of Object.keys(ENV_KEYS) as ProviderId[]) {
+    const env = envKey(provider);
+    if (env) values.push(env);
+  }
+  return values;
 }
 
 export async function setKey(provider: ProviderId, key: string | null) {

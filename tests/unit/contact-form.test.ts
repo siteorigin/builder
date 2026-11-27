@@ -29,6 +29,8 @@ const FIELDS = [
   { id: 'f2', label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' },
   { id: 'f3', label: 'Message', name: 'message', type: 'textarea', required: true, placeholder: '' }
 ];
+/** A required single-choice question, for the rings of an unanswered one. */
+const CHOICE = { id: 'f4', label: 'Service', name: 'service', type: 'choice', required: true, placeholder: '', options: [{ id: 'o1', label: 'Kitchen' }, { id: 'o2', label: 'Lighting' }] };
 const SENT = 'Thank you. Your message has been sent.';
 const FAILED = 'Sorry, your message could not be sent. Please try again or contact us directly.';
 
@@ -341,6 +343,49 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       expect(await values()).toEqual(['', '', '']);
     });
   }, 20_000);
+
+  it('draws what is wrong in the error colour of the form’s ground: the light grounds’, or dark sections’ (#1016)', async () => {
+    // The site's colours as the theme's stylesheet sets them, each one distinct so the test can tell which is drawn.
+    const COLORS = `:root { --so-color-text: rgb(17, 17, 17); --so-color-on-inverse: rgb(240, 240, 240); --so-color-surface: rgb(255, 255, 255);
+      --so-color-inverse: rgb(20, 33, 29); --so-color-error: rgb(179, 38, 30); --so-color-error-on-inverse: rgb(255, 138, 128); }`;
+    for (const [variant, ground] of [['default', 'rgb(179, 38, 30)'], ['inverse', 'rgb(255, 138, 128)']] as const)
+      await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [...FIELDS, CHOICE], variant }, async ({ page, field, button, nextPost, alert }) => {
+        await page.addStyleTag({ content: COLORS });
+        // Sent from a script, which has the browser refuse every unanswered field in one attempt.
+        await page.evaluate(`document.querySelector('form').requestSubmit()`);
+        const wrong = page.locator('.so-form__control[aria-invalid="true"]').first();
+        await expect.poll(() => wrong.count()).toBe(1);
+        const drawn = (selector: string, props: string[]) =>
+          page.evaluate(`(() => { const s = getComputedStyle(document.querySelector(${JSON.stringify(selector)})); return ${JSON.stringify(props)}.map((p) => s.getPropertyValue(p)); })()`);
+        // The message and its mark in the ground's error colour; the field's outer edge on the ground, its inner edge
+        // on the field's own card-coloured fill, so each reads where it is drawn. The heavier edge stays.
+        expect(await drawn('.so-form__error', ['color']), variant).toEqual([ground]);
+        // Polled: the edge eases in.
+        await expect.poll(() => drawn('.so-form__control[aria-invalid="true"]', ['border-top-color', 'box-shadow']), { message: variant }).toEqual([ground, 'rgb(179, 38, 30) 0px 0px 0px 1px inset']);
+        // The unanswered choices' rings too, at rest and under the pointer.
+        await expect.poll(() => drawn('.so-form__choices--invalid input', ['border-top-color', 'box-shadow']), { message: `${variant} choices` }).toEqual([ground, 'rgb(179, 38, 30) 0px 0px 0px 1px inset']);
+        // Under the pointer, read once the edge has had time to ease to whatever it turns to (a poll would take the first).
+        const settle = () => page.waitForTimeout(400);
+        await page.locator('.so-form__choices--invalid .so-form__choice').first().hover();
+        await settle();
+        expect(await drawn('.so-form__choices--invalid .so-form__choice:hover input', ['border-top-color']), `${variant} choice on hover`).toEqual([ground]);
+        // A field to put right keeps its edge under the pointer once it no longer has focus.
+        await page.evaluate(`document.activeElement.blur()`);
+        await wrong.hover();
+        await expect.poll(() => page.evaluate(`document.querySelector('.so-form__control[aria-invalid="true"]').matches(':hover:not(:focus)')`)).toBe(true);
+        await settle();
+        expect(await drawn('.so-form__control[aria-invalid="true"]', ['border-top-color']), `${variant} on hover`).toEqual([ground]);
+        // A failed send says so in the same colour.
+        await field('Name').fill('Ada');
+        await field('Email').fill('ada@example.com');
+        await field('Message').fill('Hello');
+        await page.getByRole('radio', { name: 'Kitchen' }).check();
+        await button.click();
+        await (await nextPost()).respond(500);
+        await expect.poll(alert).toBe(FAILED);
+        expect(await drawn('.so-form__status[role="alert"]', ['color']), variant).toEqual([ground]);
+      });
+  }, 30_000);
 
   it('refuses to send two answers under one key, and says why (issue #198)', async () => {
     // The stock form with "EMAIL" typed into Phone's field name, as in the issue.

@@ -1,6 +1,6 @@
 /**
  * Whether what the Inspector styles sits directly in a grid, and the style rows that follow from it: a grid item's
- * Column span and Row span show in the Layout group itself rather than behind its "more" toggle.
+ * Column start, Column span and Row span show in the Layout group itself rather than behind its "more" toggle.
  */
 import type { Binding, ComponentDefinition, ElementNode, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, ResponsiveScope } from '@shared/types';
 import { isBinding } from '@shared/types';
@@ -13,7 +13,7 @@ import { isCardLink, isCarouselTrack } from '@generator/card-links';
 import { treeFor } from './model';
 
 /** The styles that place an item in its parent grid. */
-export const GRID_CHILD_PROPS: readonly string[] = ['columnSpan', 'rowSpan'];
+export const GRID_CHILD_PROPS: readonly string[] = ['columnStart', 'columnSpan', 'rowSpan'];
 
 /** One tree on the way to the styled element: its owner's own, or a design as one placement shows it. */
 interface Frame {
@@ -198,7 +198,7 @@ export function designGridRef(selection: ElementRef | null, design: OwnerRef, no
   return { owner: design, instancePath: [], nodeId };
 }
 
-/** The style controls a grid item offers: a design's own list, with the spans added so the first one can be set. */
+/** The style controls a grid item offers: a design's own list, with a grid item's controls added so the first one can be set. */
 export function withGridChildProps(allowed: string[] | undefined, gridChild: boolean): string[] | undefined {
   if (!gridChild || !allowed?.length) return allowed;
   const missing = GRID_CHILD_PROPS.filter((p) => !allowed.includes(p));
@@ -217,7 +217,7 @@ export interface StyleRowGroup {
 /**
  * The inspector's style rows by group, in the order the properties come. A long list shows the common rows of its
  * first two groups plus anything set at any size; the rest are tucked behind their group's heading. A grid item's
- * spans always show, and neither make a list long nor take another group's place among the first two.
+ * placement controls always show, and neither make a list long nor take another group's place among the first two.
  */
 export function styleRowGroups(
   props: StylePropDef[],

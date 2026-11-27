@@ -22,7 +22,11 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 export function entryNeighbours(state: ProjectState, collectionId: string, entryId: string): EntryNeighbours {
   // Each entry's own pair, worked out once per state: in a cached run an entry's page depends on its two neighbours,
   // not on every entry (a draft added elsewhere, or a post reordered far from it, leaves it as it is).
-  const pair = derived(state, `entryNeighbours:${collectionId}:${entryId}`, (s) => collectionPairs(s, collectionId).get(entryId) ?? null);
+  // The pairs of the collection are one value of their own, read by each entry's.
+  const pair = derived(state, `entryNeighbours:${collectionId}:${entryId}`, (s) => {
+    const all = derived(s, `entryPairs:${collectionId}`, (t) => pairsByEntry(t, collectionId));
+    return Object.hasOwn(all, entryId) ? all[entryId] : null;
+  });
   const entries = state.collections[collectionId]?.entries ?? {};
   const prev = pair?.prev ? own(entries, pair.prev) : undefined;
   const next = pair?.next ? own(entries, pair.next) : undefined;
@@ -30,6 +34,15 @@ export function entryNeighbours(state: ProjectState, collectionId: string, entry
 }
 
 type Pair = { prev: string | null; next: string | null };
+
+/** A collection's pairs (collectionPairs) by entry ID, made once for each time they are worked out. */
+const records = new WeakMap<Map<string, Pair>, Record<string, Pair>>();
+function pairsByEntry(state: ProjectState, collectionId: string): Record<string, Pair> {
+  const pairs = collectionPairs(state, collectionId);
+  let record = records.get(pairs);
+  if (!record) records.set(pairs, (record = Object.fromEntries(pairs)));
+  return record;
+}
 /**
  * Every entry's neighbours in one collection, by entry ID: the nearest published entries before and after it among
  * those the site has a page for. Worked out in one pass per state and collection, however many entries ask.

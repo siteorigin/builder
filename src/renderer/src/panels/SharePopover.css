@@ -92,6 +92,11 @@
   .share-popover .live-row { display: flex; flex-direction: column; gap: 6px; padding: 7px 8px; border-radius: var(--r-sm); background: var(--panel-2); }
   .share-popover .live-name-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; margin: -2px 0; }
   .share-popover .live-name { min-width: 0; overflow-wrap: anywhere; }
+  /* Each guest's color on the canvas (#768), beside their name: a dot edged so it holds on the row's fill. */
+  .share-popover .peer-dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; background: var(--peer); box-shadow: 0 0 0 1px var(--raised); vertical-align: 0; }
+  .share-popover .live-where { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: -4px; font-size: 12px; overflow-wrap: anywhere; }
+  .share-popover .live-where .link-btn { font-size: 12px; }
+  .share-popover .live-where .link-btn svg { width: 13px; height: 13px; }
   /* Quiet on every row (it asks first, and a removed guest can ask again); red once it is pointed at or focused.
      End session keeps the one red label at rest. */
   .share-popover .live-remove { flex: none; margin: -2px -4px -2px 0; padding: 0 6px; }
@@ -102,6 +107,10 @@
   .share-popover .live-settled.left svg { color: var(--text-2); }
   .share-popover .live-row.settled:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   .share-popover .live-controls { display: flex; align-items: center; gap: 6px; }
+  /* Allow AI editing (#769): a collaborator's switch, then its limit on requests once it is on. */
+  .share-popover .live-ai { display: flex; flex-direction: column; gap: 6px; }
+  .share-popover .live-ai .switch-row { padding: 0; }
+  .share-popover .live-ai-used { flex: none; font-size: 12px; font-variant-numeric: tabular-nums; }
   .share-popover .live-controls .select { min-width: 0; flex: 1 1 0; }
   /* Held while the session reconnects, a guest's role and access are still facts the host reads: they keep readable
      ink on the drawn-disabled field. */

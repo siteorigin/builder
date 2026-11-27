@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import type { AssetRecord, ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import type { AssetRecord, ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation, InspectLayoutOptions } from '@shared/api';
 import type { EditOperation, ToolError } from '@shared/ops';
-import { EditOperationSchema, LAYOUT_BINDING, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
+import { EditOperationSchema, LAYOUT_BINDING, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, propertiesHash, type OperationType } from '@shared/ops';
 import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { addressSlug, normalizeRoute } from '@shared/routes';
 import { FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
@@ -14,7 +14,7 @@ import type { ModelCapabilities, ToolDefinition } from './types';
 import { colorSchemeMode } from '@shared/color-scheme';
 import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, layoutDetail, layoutTree, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
-import { getTree, findParent, displayName } from '@engine/tree';
+import { getTree, findParent, displayName, instancesOf, subtreeIds } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { PAGE_SEO_ARGS, PAGE_SEO_BRIEF, PAGE_SEO_DESCRIPTION, pageSeoToolSchema, runPageSeo, runSiteSeo, SITE_SEO_ARGS, SITE_SEO_BRIEF, SITE_SEO_DESCRIPTION, siteSeoToolSchema } from './seo-tools';
@@ -82,7 +82,14 @@ export const TOOL_ARGS = {
     expectedHash: z.string().describe('Hash returned by read_source.'),
     scope: REQUESTED_SCOPE.describe(`${SCOPE_NOTE} From a selection, only code placed nowhere else: component.convertToCode the selected placement, then patch the copy.`),
     edits: z.array(z.object({ find: z.string(), replace: z.string() })).optional().describe('Exact text replacements applied in order. Each find must match exactly once.'),
-    source: z.string().optional().describe('Full replacement source, instead of edits.')
+    source: z.string().optional().describe('Full replacement source, instead of edits.'),
+    properties: z.record(z.string(), z.unknown()).optional().describe('The whole new property schema, when the code takes other properties.'),
+    expectedPropertiesHash: z.string().optional().describe('With properties: the propertiesHash read_source returned.'),
+    renames: z
+      .array(z.object({ from: z.string(), to: z.string() }))
+      .max(60)
+      .optional()
+      .describe('With properties: renamed ones; placements keep their values.')
   }),
   inspect_layout: z.object({
     pageId: z.string(),
@@ -152,8 +159,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   search_assets: 'List imported images by name and description, with the assetId that identifies each one (two images can share a name). You cannot see image contents.',
   apply_operations:
     'Apply a batch of typed edit operations atomically. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
-  read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
-  apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the revision and hash read_source returned with it.',
+  read_source: "Read a component's Svelte source, with the properties of one that can be patched. Generated managed sources are read-only; a theme's code is patched on a project copy (component.fork); project code components can be patched.",
+  apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies), and its properties with it. Requires the revision and hash read_source returned with it.',
   inspect_layout:
     'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; Pass refs to re-measure those elements: report.targets has each one\'s box, scroll size and visibility, beside the findings inside them (targets: which, by index). contrast-unverified is text only pixels could judge (over an image). On a page of two or more sections, report.rhythm is advice on composition (never an error): three or more sections in a row with one layout on one background (at phone width, only sections that keep columns side by side) or each with a filled button, and an inner heading as large as the h1, each with the refs of the sections or headings to vary. No screenshots.',
   inspect_component:
@@ -194,8 +201,8 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   search_components: 'Theme and project components by keywords, with their IDs.',
   read_component: "A component's property schema, parts, variants, slots and examples. Read it before using an unfamiliar component.",
   search_assets: 'Images by name and description, each with its assetId (names can repeat). You cannot see images.',
-  read_source: "A component's Svelte source. Only project code components can be patched.",
-  apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the revision and hash from read_source.',
+  read_source: "A component's Svelte source. Only project code components can be patched: a theme's code on a project copy (component.fork).",
+  apply_source_patch: 'Change a project code component (never generated files, config or dependencies) and its properties, with the revision and hash from read_source.',
   inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots. refs (findings\' refs): just those elements, each\'s box in report.targets.',
   inspect_component: 'Measure a component on its own at phone and desktop width, in every variant option and with long, empty and repeated content: overflow, cut-off text, contrast, overlaps and collapsed spacing, each with where it is in the design. Changes nothing.',
   validate_project: VALIDATE_BRIEF,
@@ -810,6 +817,10 @@ export interface ToolHost {
   definitionTarget?(): DefinitionTarget | null;
   /** Whether the run is still limited to its selection: the user has not let it change more. */
   selectionLimited?(): boolean;
+  /** Whether that selection is a part of a placement, or inside a component's design: neither may add a component. */
+  selectionNarrow?(): boolean;
+  /** Whether the run is still limited to one component's design. */
+  componentLimited?(): boolean;
   /** The page the run is still limited to, and how it is named, or null once it may change more. */
   pageLimit?(): { pageId: string; label: string } | null;
   /** The post the run is limited to (sent from the Posts workspace), and how it is named, or null once it may change
@@ -852,10 +863,11 @@ function valueHint(p: StylePropDef): string {
     return ` or up to ${MAX_GRID_TRACKS} column sizes (repeats counted in full): fr shares, lengths, auto, minmax(min, max) with a min that is not fr, and repeat(count, sizes), such as "16rem 1fr 14rem" or "2fr repeat(2, 1fr)"; "repeat(auto-fit, minmax(18rem, 1fr))" (or auto-fill) for as many columns as fit, each at least that plain length (or the whole grid when narrower). Set for all sizes it applies from tablet up; set it at scope phone to use it on phones`;
   if (p.id === 'gridAutoFlow') return ' (on a grid: "dense" packs gaps tightly, letting a later item show above an earlier one in a hole it left; keyboard and screen reader order stay as written)';
   if (p.id === 'gridAutoRows') return ' or one row size: a length, auto, min-content, max-content, 1fr or minmax(min, max) with a min that is not fr, such as "minmax(12rem, auto)" (on a grid: the height of each row it makes; a fixed length lets taller content spill out)';
+  if (p.id === 'columnStart') return ' (a grid child: the column line it starts on, or "auto"; a line set for all sizes applies from tablet up, set it at scope phone to place it there; Full width always starts on line 1)';
   if (p.id === 'columnSpan' || p.id === 'rowSpan') return ' (a grid child; above 1 for all sizes it applies from tablet up, set it at scope phone to span there)';
   if (p.id === 'backdropBlur') return ` or one length in px, rem or em up to ${BLUR_LIMITS.px}px or ${BLUR_LIMITS.rem}rem, 0 for none: blurs what shows through a background at less than full strength, for frosted glass`;
   if (p.kind === 'color') return ' (a color token at part strength is {"token": "color.surface", "alpha": 0.7} for 70%, a see-through surface)';
-  if (p.kind === 'media') return ': {"assetId": a library image\'s ID, "size": "cover" (default) or "contain", "position": "X% Y%" focus (default center), "scrim": a color or one gradient over the picture}; give it a scrim whenever text sits on top, so the text stays readable';
+  if (p.kind === 'media') return ': {"assetId": a library image\'s ID, "size": "cover" (default), "contain" or "tile" (repeat it, for a pattern or grain), "tileSize": one tile\'s width in whole CSS pixels (tile only; default the picture\'s own size), "position": "X% Y%" focus (default center), "scrim": a color or one gradient over the picture}; give it a scrim whenever text sits on top, so the text stays readable';
   if (p.group !== 'motion') return '';
   if (p.id === 'translateX' || p.id === 'translateY') return ` (0 or one length such as "-4px": at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or em, or ${TRANSLATE_LIMITS['%']}% either way)`;
   if (p.kind === 'number') return ` (${p.integer ? 'whole number ' : ''}${p.min} to ${p.max}${p.unit ? ` ${p.unit}` : ''})`;
@@ -956,6 +968,44 @@ export type { ToolOutcome } from './result';
  * Run one tool call. Its result always has the one shape every tool's has (see result.ts), with the revision the call
  * read wherever the tool does not name the one it reflects (a change names the revision it made).
  */
+/**
+ * How a theme's code is changed (§8.4): on a project copy for the placements the request covers, which then reads and
+ * patches like any project code, while the theme's own stays for every other placement, for inserting and for theme
+ * switches. Says which copy this run may make, and lists the placements it may move to one.
+ */
+function themeCodeCopy(state: ProjectState, def: ComponentDefinition, host: ToolHost): { note: string; placements?: Array<{ owner: OwnerRef; nodeId: string; where: string }>; morePlacements?: number } {
+  const shared = `“${def.name}” is the theme's code, shared by every placement of it: it is never patched.`;
+  const then = 'Then read_source the definitionId it returns, and patch that.';
+  // A copy adds a component to the site: more than a page, a selected part or a selection inside a design can change.
+  const widen = (label: string) => ({ note: `${shared} Changing it needs a project copy, which adds a component to the site: more than ${label}. Ask the user to allow a wider change first.` });
+  const page = host.pageLimit?.();
+  if (page) return widen(page.label);
+  if (host.componentLimited?.()) return widen('this component’s design');
+  const selected = host.selectionLimited?.() ? host.selection?.() : null;
+  if (selected && host.selectionNarrow?.()) return widen('the selection');
+  let inside: Set<string> | null = null;
+  if (selected) {
+    try {
+      inside = new Set(subtreeIds(getTree(state, selected.owner), selected.nodeId));
+    } catch {
+      inside = new Set();
+    }
+  }
+  // Only placements a fork can move: never a collection layout's (the editor's) or one inside a theme's own design.
+  const movable = (o: OwnerRef) => o.kind !== 'template' && o.kind !== 'archive' && (o.kind !== 'component' || state.components[o.id]?.owner === 'project');
+  const all = instancesOf(state, def.id)
+    .filter((p) => movable(p.owner) && (!selected || (p.owner.kind === selected.owner.kind && p.owner.id === selected.owner.id && inside!.has(p.node.id))))
+    .map((p) => ({ owner: p.owner, nodeId: p.node.id, where: p.label }));
+  const placements = all.slice(0, 40);
+  const listed = { placements, ...(all.length > placements.length ? { morePlacements: all.length - placements.length } : {}) };
+  if (selected)
+    return { note: `${shared} Patch a project copy instead: component.makeUnique { owner, nodeId } copies it for the selected placement, or component.fork { definitionId, placements: [{ owner, nodeId }] } for several of the placements inside the selection (listed here), which share the copy. ${then}`, ...listed };
+  return {
+    note: `${shared} Patch a project copy instead: component.fork { definitionId, placements: [{ owner, nodeId }] } copies it for the placements the request covers (listed here), which share the copy while every other keeps the theme's; without placements, every placement the project can change moves to it. ${then}`,
+    ...listed
+  };
+}
+
 export async function executeTool(name: string, rawArgs: string, host: ToolHost, callId: string): Promise<ResultOutcome> {
   const revision = host.revision();
   return stamp(await runTool(name, rawArgs, host, callId, revision), revision);
@@ -1149,25 +1199,34 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       const lines = (def.source ?? '').split('\n');
       const start = (a.startLine ?? 1) - 1;
       const end = Math.min(lines.length, a.endLine ?? start + 400);
-      return { ok: true, content: { definitionId: def.id, revision: host.revision(), editable: def.owner === 'project', hash: sourceHash(def.source ?? ''), totalLines: lines.length, startLine: start + 1, endLine: end, source: lines.slice(start, end).join('\n') } };
+      const editable = def.owner === 'project';
+      // A patch replaces the whole property schema with the code, so the code that can be patched is read with it; a
+      // theme's code says how to get a copy that can.
+      const manifest = editable ? (start === 0 ? { properties: def.properties, propertiesHash: propertiesHash(def.properties) } : {}) : themeCodeCopy(state, def, host);
+      return { ok: true, content: { definitionId: def.id, revision: host.revision(), editable, hash: sourceHash(def.source ?? ''), totalLines: lines.length, startLine: start + 1, endLine: end, source: lines.slice(start, end).join('\n'), ...manifest } };
     }
     case 'apply_source_patch': {
       const a = args as z.infer<(typeof TOOL_ARGS)['apply_source_patch']>;
       const def = Object.hasOwn(state.components, a.definitionId) ? state.components[a.definitionId] : undefined;
-      if (!def || def.kind !== 'code' || def.owner !== 'project') return toolError('PATH_DENIED', 'Only project code components can be patched.');
+      if (def?.kind === 'code' && def.owner !== 'project') return toolError('PATH_DENIED', themeCodeCopy(state, def, host).note);
+      if (!def || def.kind !== 'code') return toolError('PATH_DENIED', 'Only project code components can be patched.');
       let src = def.source ?? '';
       // Bound to the project as it was read, like any other change: an edit in between (to this component's contract,
       // say) can make a patch written against the old one wrong even when the source itself did not change.
       if (a.expectedRevision !== host.revision())
         return toolError('STALE_REVISION', `This patch was written against revision ${a.expectedRevision}, but the project is at ${host.revision()}. Call read_source again and write the patch against what it returns.`, { revision: host.revision() });
       if (sourceHash(src) !== a.expectedHash) return toolError('STALE_REVISION', 'The source changed. Call read_source again.', { revision: host.revision() });
+      // New properties replace the whole schema, so they are bound to the one they were written from, as the code is.
+      if (a.properties && a.expectedPropertiesHash === undefined) return toolError('INVALID_ARGUMENT', 'properties needs expectedPropertiesHash: the propertiesHash read_source returned.');
+      if (a.properties && a.expectedPropertiesHash !== propertiesHash(def.properties)) return toolError('STALE_REVISION', 'The properties changed. Call read_source again.', { revision: host.revision() });
       if (a.source !== undefined) src = a.source;
       else for (const e of a.edits ?? []) {
         const count = src.split(e.find).length - 1;
         if (count !== 1) return toolError('INVALID_ARGUMENT', `"${e.find.slice(0, 60)}" matched ${count} times; it must match exactly once.`);
         src = src.replace(e.find, e.replace);
       }
-      const ops: EditOperation[] = [{ type: 'component.updateSource', definitionId: def.id, source: src, expectedHash: a.expectedHash }];
+      // The properties travel in the same operation, so the code is checked against the contract it lands with.
+      const ops: EditOperation[] = [{ type: 'component.updateSource', definitionId: def.id, source: src, expectedHash: a.expectedHash, ...(a.properties ? { properties: a.properties, expectedPropertiesHash: a.expectedPropertiesHash } : {}), ...(a.renames?.length ? { renames: a.renames } : {}) }];
       const res = await host.apply(ops, a.expectedRevision, `Edit ${def.name} source`, callId, undefined, a.scope);
       if (!res.ok) return applyFailure(res);
       const compile = (await host.compileAll()).filter((d) => d.severity === 'error');

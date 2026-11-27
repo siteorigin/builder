@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import type { LiveCommandResult, LiveHostState, LiveJoinRequest, LivePresence, LiveRun, LiveStartResult } from '@shared/api';
-import { checkRpcRequest, type LiveEditBatch } from '@shared/live/capabilities';
+import type { AiEvent, ChatMessage, LiveActivity, LiveAiGrant, LiveCommandResult, LiveHostState, LiveJoinRequest, LivePresence, LiveRun, LiveSpotlight, LiveStartResult, RunStatus } from '@shared/api';
+import type { RunDelegation } from '@agent/orchestrator';
+import { LIVE_AI_REPLY_MAX, LIVE_AI_TERMINAL, LIVE_AI_TURN_LIMIT_MAX, liveAiTurn, NO_AI_ACCESS, scrubPrivateAddresses, type LiveAiAccess, type LiveAiContext, type LiveAiTurn, type LiveAiTurnEvent } from '@shared/live/ai';
+import { checkRpcRequest, type LiveCall, type LiveEditBatch } from '@shared/live/capabilities';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { generateHostKeyPair, signHostChallenge, type HostKeyPair } from '@shared/live/crypto';
 import { checkGuestExpiry, checkSessionExpiry, guestAccessEndsAt, isExpired, isSessionDuration, type SessionDuration } from '@shared/live/expiry';
-import { GUEST_ID_RE, GUEST_ROLES, LIVE_PROTOCOL_VERSION, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
-import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type HostToRelay, type Participant, type Presence, type RpcError } from '@shared/live/messages';
-import type { LiveApplyResult, LiveProjectChanged, LiveProjectSnapshot } from '@shared/live/snapshot';
+import { GUEST_ID_RE, GUEST_ROLES, leastRole, LIVE_PROTOCOL_VERSION, MAX_ID_LENGTH, MAX_MESSAGE_LENGTH, narrower, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
+import { encodeFrame, normalizeDisplayName, parseFrame, type ElementTarget, type Frame, type HostToRelay, type Participant, type Presence, type RpcError } from '@shared/live/messages';
+import { HOST_PATH_PLACEHOLDER, hostPathTail, scrubHostPaths, type LiveApplyResult, type LiveProjectChanged, type LiveProjectSnapshot } from '@shared/live/snapshot';
+import { GUEST_NOTE_BURST, GUEST_NOTE_LIMIT, GUEST_NOTE_REFILL_MS, NOTE_KEPT, NOTES_CHANGED, type LiveNotes, type NoteDraft } from '@shared/live/notes';
 import { formatInviteLink, HOST_SOCKET_PATH, RELAY_URL_ENV, relaySocketUrl, roomSocketPath, type ResolvedRelayUrl } from '@shared/live/relay-url';
 import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
 
@@ -20,15 +23,36 @@ import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
  * session for everyone. Admitted guests' editor calls (#765) are checked here against what each guest may do now, as
  * the host last decided it as well as the relay last said, and only then handed to the editor, which makes a
  * collaborator's edits through its own pipeline as the host's writer.
+ *
+ * A collaborator may also ask the host's AI to edit (#769), but only once the host has allowed it, which it never does
+ * by itself: the request runs in the host's own assistant, with the host's provider and key, and only that request's
+ * progress, made safe to share, goes back to that guest alone. Taking AI away, making the guest a viewer, removing it,
+ * or the guest leaving stops the request it has running and refuses the next.
  */
 
 /**
- * A guest's edit, as the editor is given it: who it is from, and a check the editor asks again as the edit's turn comes
- * and just before it is saved, null while the guest may still make it.
+ * The host's AI, as a collaborator's requests reach it (#769). Set by the main process once its assistant is made;
+ * while it is null, no guest's request is taken.
+ */
+export interface LiveHostAi {
+  /** Start a collaborator's request in the opening named; resolves once it runs (with its ID) or was refused. */
+  send(opening: string, text: string, context: LiveAiContext, delegation: RunDelegation): Promise<{ ok: boolean; runId?: string; message?: string }>;
+  /** Stop the request with this ID, if it is the one running; resolves once it has ended. */
+  stop(runId: string): Promise<unknown>;
+  /** Answer the question the request is waiting on; false when it is not waiting on that one. */
+  answer(runId: string, questionId: string, answer: string): boolean;
+}
+
+/**
+ * A guest's edit, as the editor is given it: who it is from, the role it was checked as (what the editor holds the
+ * project it would leave to), and a check the editor asks again as the edit's turn comes and just before it is saved,
+ * null while the guest may still make it. The check refuses once the guest's access has narrowed in any way, so the
+ * role the edit was asked with is never more than the guest holds when it is saved.
  */
 export interface LiveGuestEdit {
   guestId: string;
   displayName: string;
+  role: GuestRole;
   check(): RpcError | null;
 }
 
@@ -51,7 +75,25 @@ export interface LiveHostContext {
   guestSnapshot?(opening: string): LiveProjectSnapshot | null;
   /** Make a collaborator's checked edit in the opening named, through the editor's own pipeline. */
   applyGuest?(opening: string, guest: LiveGuestEdit, batch: LiveEditBatch): Promise<LiveApplyResult>;
+  /** This computer's paths (the project folder, the home folder), taken out of what a guest is sent of the host's AI. */
+  hostPaths?(): readonly string[];
+  /**
+   * The pinned notes of the project open in the opening named (#770), as guests reach them. Each change takes a check
+   * the keeper asks as its turn comes and again just before it is written (null while the guest may still make it), and
+   * tells this manager (notesChanged) once it is kept. Absent: guests' note calls are unavailable.
+   */
+  notes?: LiveHostNotes;
   emit(channel: 'live:state' | 'live:request' | 'live:presence', payload: LiveHostState | LiveJoinRequest | LivePresence): void;
+}
+
+/** A guest's note call, answered: the notes as they are now, or why not. */
+export type LiveNotesAnswer = { ok: true; notes: LiveNotes } | { ok: false; error: RpcError };
+
+export interface LiveHostNotes {
+  list(opening: string): Promise<LiveNotesAnswer>;
+  add(opening: string, author: { name: string; role: GuestRole }, draft: NoteDraft, check: () => RpcError | null): Promise<LiveNotesAnswer>;
+  resolve(opening: string, id: string, resolved: boolean, check: () => RpcError | null): Promise<LiveNotesAnswer>;
+  delete(opening: string, id: string, check: () => RpcError | null): Promise<LiveNotesAnswer>;
 }
 
 /** Opens a WebSocket to the relay. Tests give their own; the app uses the platform's. */
@@ -73,6 +115,10 @@ export interface LiveHostTimings {
   expiryGraceMs: number;
   /** Changes to the project this close together reach guests as one project:changed. */
   eventsMs: number;
+  /** How long a guest's spotlight is shown in the editor (#768): its ring, or the prompt to go to the page it is on. */
+  spotlightMs: number;
+  /** How long a collaborator's edit shows it as editing (#768). */
+  activityMs: number;
 }
 
 export const LIVE_HOST_TIMINGS: LiveHostTimings = {
@@ -85,7 +131,9 @@ export const LIVE_HOST_TIMINGS: LiveHostTimings = {
   outageMs: 15 * 60_000,
   reloadMs: 250,
   expiryGraceMs: 5_000,
-  eventsMs: 250
+  eventsMs: 250,
+  spotlightMs: 8_000,
+  activityMs: 3_000
 };
 
 /** A guest's edits waiting their turn at once: one guest cannot fill the project's write queue. */
@@ -96,6 +144,11 @@ export const MAX_GUEST_EDITS_IN_FLIGHT = 2;
  */
 export const GUEST_SNAPSHOT_BURST = 5;
 export const GUEST_SNAPSHOT_REFILL_MS = 1_000;
+/** Note calls one guest may have waiting their turn at once. */
+export const MAX_GUEST_NOTE_CALLS = 2;
+/** Note lists a guest may ask for in a burst, and how often one more after: asked on joining and after each change. */
+export const GUEST_NOTE_READ_BURST = 5;
+export const GUEST_NOTE_READ_REFILL_MS = 1_000;
 /** Answers wait while this much is still going out on the host's socket, rather than piling up behind it. */
 const RPC_BACKLOG_BYTES = 8 * 1024 * 1024;
 /**
@@ -120,6 +173,32 @@ export const MAX_SOCKET_BACKLOG_BYTES = 64 * 1024 * 1024;
 const ASKED_EXPIRY_MS = 10_000;
 
 const OPEN = 1;
+/** Numbers each spotlight and edit shown, so the editor tells a new one from one it already shows. */
+let markSeq = 0;
+
+/**
+ * The one element a guest's batch of edits changed, when every operation in it names the same node of a page or its
+ * header or footer; null for anything else (several elements, a component everywhere, the site's settings); undefined
+ * for a batch that copies or duplicates, whose operations name the element it leaves as it was: no edit is shown for it.
+ */
+export function editTarget(batch: unknown): ElementTarget | null | undefined {
+  const operations = (batch as { operations?: unknown } | null)?.operations;
+  if (!Array.isArray(operations) || !operations.length) return null;
+  type Op = { type?: unknown; owner?: { kind?: unknown; id?: unknown }; nodeId?: unknown; toOwner?: unknown };
+  // A copy or a duplicate names the element it was made from, which it leaves as it was: anywhere in the batch.
+  if ((operations as Op[]).some((op) => !!op && typeof op === 'object' && (op.toOwner !== undefined || (typeof op.type === 'string' && /\.(copy|duplicate)$/.test(op.type))))) return undefined;
+  let target: ElementTarget | null = null;
+  for (const op of operations as Op[]) {
+    if (!op || typeof op !== 'object') return null;
+    const kind = op?.owner?.kind;
+    const id = op?.owner?.id;
+    const nodeId = op?.nodeId;
+    if ((kind !== 'page' && kind !== 'shell') || typeof id !== 'string' || typeof nodeId !== 'string' || !id || !nodeId || id.length > MAX_ID_LENGTH || nodeId.length > MAX_ID_LENGTH) return null;
+    if (target && (target.owner.kind !== kind || target.owner.id !== id || target.nodeId !== nodeId)) return null;
+    target = { owner: { kind, id }, instancePath: [], nodeId };
+  }
+  return target;
+}
 /** The code the host closes a connection it gives up on with (one of the codes a client may send). */
 const ABANDONED = 4000;
 
@@ -182,8 +261,39 @@ interface Grant {
    * may have been forwarded before it, so the guest holds the least role among them.
    */
   unconfirmed: GuestRole[];
-  /** Bumped whenever the host takes a role away, so an edit asked for before then never lands, whatever came after. */
+  /**
+   * Bumped whenever the host narrows a guest's role (to a viewer, or a collaborator to a copy editor), so an edit asked
+   * for before then never lands, whatever came after.
+   */
   generation: number;
+  /** This admission, for the conversation a guest's AI requests hear: its own turns, and no other admission's. */
+  id: string;
+  /**
+   * Whether the host lets this guest ask its AI (#769), off from admission until the host turns it on; how many requests
+   * it may make in all (null: no limit) and has made. `generation` is bumped whenever AI is taken away, so a request
+   * asked for before then never runs, whatever came after.
+   */
+  ai: LiveAiGrant & { generation: number };
+}
+
+/**
+ * The collaborator's request the host's AI is working on (#769): whose it is, under which admission, and what the
+ * guest was last sent of it. The assistant runs one request at a time, so there is at most one.
+ */
+interface Delegated {
+  runId: string;
+  guestId: string;
+  grant: Grant;
+  request: string;
+  message: ChatMessage | null;
+  status: RunStatus | null;
+  /** The reply's text as the guest was last sent it. */
+  sentReply: string;
+  /**
+   * The host ended it for the guest (access taken away, the relay lost, the session over): the guest was told so, and
+   * nothing more of it is sent but how it really ended, should that differ from a stop (it was kept, or failed).
+   */
+  ended: boolean;
 }
 
 interface Run {
@@ -225,10 +335,34 @@ interface Run {
   kicked: Set<string>;
   /** Each guest's edits being made now (MAX_GUEST_EDITS_IN_FLIGHT). */
   edits: Map<string, number>;
+  /** Guests whose AI request is on its way to the host's assistant, not yet run or refused: one at a time each. */
+  aiSending: Set<string>;
+  /** The collaborator's request the host's AI is working on (Delegated), or null. */
+  delegated: Delegated | null;
+  /**
+   * Each guest's latest request as it was last made to be sent (ended, once it has): sent again whenever the guest may
+   * have missed some of it (it asks for the project on coming back, the room is taken back), so a question, an ending
+   * or a replaced reply that never arrived is never waited on.
+   */
+  lastTurns: Map<string, LiveAiTurn>;
   /** Each guest's snapshot budget (GUEST_SNAPSHOT_BURST), and when it was last counted (monotonic). */
   reads: Map<string, { tokens: number; at: number }>;
+  /** Allow guest notes (#770): whether guests may leave notes now. On for every session until the host turns it off. */
+  guestNotes: boolean;
+  /** Each guest's note calls waiting their turn (MAX_GUEST_NOTE_CALLS). */
+  noteCalls: Map<string, number>;
+  /** Each guest's note-list budget (GUEST_NOTE_READ_BURST) and note budget (GUEST_NOTE_BURST). */
+  noteReads: Map<string, { tokens: number; at: number }>;
+  noteWrites: Map<string, { tokens: number; at: number }>;
+  /** The notes each guest has left this session, and those being kept now (GUEST_NOTE_LIMIT). */
+  notesLeft: Map<string, number>;
   /** Where each collaborator is, as each last said. */
   presence: Map<string, Presence>;
+  /** Each guest's latest spotlight and each collaborator's latest edit (#768), until it is no longer shown. */
+  spotlights: Map<string, LiveSpotlight & { until: number }>;
+  activity: Map<string, LiveActivity & { until: number }>;
+  /** Takes spotlights and edits off once their time is up: one timer, for the soonest. */
+  marksTimer: ReturnType<typeof setTimeout> | null;
   /** The editor's state guests were last sent, so a change reaches them once. */
   sentSnapshot: LiveProjectSnapshot | null;
   sentRuntime: string | null;
@@ -269,6 +403,9 @@ const isRole = (role: unknown): role is GuestRole => typeof role === 'string' &&
 const isTime = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
 /** The relay's time now, from its clock as last read. */
 const relayNow = (room: Room) => Math.round(room.relayAt + (performance.now() - room.monoAt));
+/** The AI requests a guest has left of the host's limit; null when there is none. */
+const turnsLeft = (grant: Grant): number | null => (grant.ai.turnLimit === null ? null : Math.max(0, grant.ai.turnLimit - grant.ai.turnsUsed));
+
 
 export class LiveHostManager {
   private run: Run | null = null;
@@ -309,11 +446,16 @@ export class LiveHostManager {
       expiresAt: room.expiresAt,
       relayClockOffsetMs: relayNow(room) - Date.now(),
       locked: room.locked,
+      guestNotes: run.guestNotes,
       participants: room.participants.map((p) => ({ ...p })),
       previewReady: this.servingPreview(run) !== null,
-      lastError: run.lastError
+      lastError: run.lastError,
+      ai: Object.fromEntries([...run.grants].map(([guestId, g]) => [guestId, { allowed: g.ai.allowed, turnLimit: g.ai.turnLimit, turnsUsed: g.ai.turnsUsed }]))
     };
   }
+
+  /** The host's AI, for collaborators the host lets use it (LiveHostAi); null while there is none. */
+  ai: LiveHostAi | null = null;
 
   // -------------------------------------------------------------------------
   // Starting and ending
@@ -353,8 +495,19 @@ export class LiveHostManager {
       grants: new Map(),
       kicked: new Set(),
       edits: new Map(),
+      aiSending: new Set(),
+      delegated: null,
+      lastTurns: new Map(),
       reads: new Map(),
+      guestNotes: true,
+      noteCalls: new Map(),
+      noteReads: new Map(),
+      noteWrites: new Map(),
+      notesLeft: new Map(),
       presence: new Map(),
+      spotlights: new Map(),
+      activity: new Map(),
+      marksTimer: null,
       sentSnapshot: null,
       sentRuntime: null,
       eventsTimer: null,
@@ -411,6 +564,8 @@ export class LiveHostManager {
     if (run.stopping) return run.stopping;
     run.phase = 'stopping';
     this.clearTimers(run);
+    // A collaborator's AI request ends with the session.
+    this.endDelegated(run, 'The live session ended, so this request was stopped.');
     // Nothing more reaches guests from here, whatever the relay says.
     run.conn?.proxy?.dispose();
     if (run.conn) run.conn.proxy = null;
@@ -470,6 +625,7 @@ export class LiveHostManager {
     if (run.ended) return;
     run.ended = true;
     this.clearTimers(run);
+    this.endDelegated(run, 'The live session ended, so this request was stopped.');
     const conn = run.conn;
     run.conn = null;
     if (conn) this.close(conn, 1000, null);
@@ -483,8 +639,8 @@ export class LiveHostManager {
   }
 
   private clearTimers(run: Run): void {
-    for (const timer of [run.retryTimer, run.expiryTimer, run.reloadTimer, run.eventsTimer]) if (timer) clearTimeout(timer);
-    run.retryTimer = run.expiryTimer = run.reloadTimer = run.eventsTimer = null;
+    for (const timer of [run.retryTimer, run.expiryTimer, run.reloadTimer, run.eventsTimer, run.marksTimer]) if (timer) clearTimeout(timer);
+    run.retryTimer = run.expiryTimer = run.reloadTimer = run.eventsTimer = run.marksTimer = null;
   }
 
   /** Whether `run` is still the session starting or running in the open project. */
@@ -576,6 +732,8 @@ export class LiveHostManager {
         return this.onCall(conn, frame);
       case 'presence:changed':
         return this.onPresence(conn, frame);
+      case 'spotlight:pointed':
+        return this.onSpotlight(conn, frame);
       case 'protocol:error':
         // Proving itself with a key the room was not made with, or for a room that has changed, never comes right.
         if (frame.code === 'AUTH_FAILED' && conn.stage !== 'host') return this.lost(conn, LIVE_CLOSE_CODES.POLICY, 'The relay did not accept this computer as the live session’s host.');
@@ -646,10 +804,17 @@ export class LiveHostManager {
   private onRoster(conn: Connection, participants: Participant[]): void {
     const run = conn.run;
     if (!run.room || (conn.stage !== 'roster' && conn.stage !== 'host')) return;
+    const held = this.heldRoles(run);
     run.room.participants = participants;
     const first = conn.stage === 'roster';
     conn.stage = 'host';
     this.confirmGrants(run, first && conn.kind === 'reclaim' ? conn : null);
+    // A roster that leaves a guest less than it held, with no decision of the host's behind it, ends what it asked for
+    // before as surely as the host's own narrowing does: a later roster giving the role back lands none of it.
+    for (const [guestId, role] of this.heldRoles(run)) {
+      const was = held.get(guestId);
+      if (was && narrower(role, was)) run.grants.get(guestId)!.generation++;
+    }
     // Ending: nobody is let in or told about any more.
     if (run.phase === 'stopping') return;
     if (!first) {
@@ -676,6 +841,9 @@ export class LiveHostManager {
     }
     this.publish();
     this.announce(run);
+    // Whatever the host decided about guests' AI while the connection was down, and how their requests went, may not
+    // have reached them.
+    if (conn.kind === 'reclaim') for (const guestId of run.grants.keys()) this.resyncAi(run, guestId);
     // Guests following the host see where it is now, whatever was sent before a drop.
     if (run.hostPresence) this.sendOn(conn, { type: 'presence:update', presence: run.hostPresence });
     if (run.reloadDue) this.scheduleReload(run, 0);
@@ -708,6 +876,9 @@ export class LiveHostManager {
     if (ended) return this.finish(run, ended);
     if (run.phase === 'active') {
       run.phase = 'reconnecting';
+      // Away from the relay, the host cannot hear a guest leave or be timed out: nothing a guest asked its AI for goes on
+      // meanwhile. The guest is told once the room is taken back.
+      this.endDelegated(run, 'The host’s connection to the live session dropped, so this request was stopped.');
       this.publish();
     }
     this.reconnectLater(run);
@@ -842,7 +1013,8 @@ export class LiveHostManager {
    * host's page for latecomers (#766).
    */
   private presentToNewcomers(run: Run, conn: Connection): void {
-    const admitted = run.room!.participants.filter((p) => p.status === 'admitted').map((p) => p.guestId);
+    // A guest back from a dropped connection is a newcomer again: it heard nothing while it was away.
+    const admitted = run.room!.participants.filter((p) => p.status === 'admitted' && p.connected).map((p) => p.guestId);
     const fresh = admitted.some((id) => !run.presentedTo.has(id));
     run.presentedTo = new Set(admitted);
     if (fresh && run.hostPresence?.selection) this.sendOn(conn, { type: 'presence:update', presence: run.hostPresence });
@@ -877,15 +1049,22 @@ export class LiveHostManager {
   private decided(run: Run, frame: HostToRelay): void {
     switch (frame.type) {
       case 'guest:admit':
-        run.grants.set(frame.guestId, { role: frame.role, guestExpiresAt: frame.guestExpiresAt, unconfirmed: [], generation: 0 });
+        // AI is never part of letting a guest in: the host turns it on for a collaborator afterwards, if at all.
+        run.grants.set(frame.guestId, { role: frame.role, guestExpiresAt: frame.guestExpiresAt, unconfirmed: [], generation: 0, id: randomUUID(), ai: { allowed: false, turnLimit: null, turnsUsed: 0, generation: 0 } });
         return;
       case 'guest:set-role': {
         const grant = run.grants.get(frame.guestId);
         if (!grant) return;
-        if (frame.role === 'viewer') grant.generation++;
+        if (narrower(frame.role, grant.role)) grant.generation++;
         grant.role = frame.role;
         grant.unconfirmed.push(frame.role);
-        if (frame.role === 'viewer') this.dropPresence(run, frame.guestId);
+        if (frame.role !== 'collaborator') {
+          // Only a collaborator shows anybody where it is; a copy editor or a viewer may still point.
+          this.dropPresence(run, frame.guestId, { keepSpotlight: true });
+          // Only a collaborator has AI, and one made a collaborator again has none until the host turns it on again.
+          const as = frame.role === 'viewer' ? 'a viewer' : 'a copy editor';
+          if (this.revokeAi(run, frame.guestId, `The host made you ${as}, so this request was stopped.`)) this.sendAccess(run, frame.guestId);
+        }
         return;
       }
       case 'guest:set-expiry': {
@@ -894,7 +1073,9 @@ export class LiveHostManager {
         return;
       }
       case 'guest:kick':
+        this.revokeAi(run, frame.guestId, 'The host removed you from the live session, so this request was stopped.');
         run.grants.delete(frame.guestId);
+        run.lastTurns.delete(frame.guestId);
         run.kicked.add(frame.guestId);
         this.dropPresence(run, frame.guestId);
         return;
@@ -912,7 +1093,10 @@ export class LiveHostManager {
     for (const [guestId, grant] of run.grants) {
       const p = listed.get(guestId);
       if (!p) {
+        // Gone (left, timed out or turned away): its AI request goes with it.
+        this.revokeAi(run, guestId, 'You left the live session, so this request was stopped.');
         run.grants.delete(guestId);
+        run.lastTurns.delete(guestId);
         continue;
       }
       if (p.status !== 'admitted') continue;
@@ -945,7 +1129,17 @@ export class LiveHostManager {
         }
       }
     }
-    for (const guestId of run.presence.keys()) if (this.collaborator(run, guestId) === null) this.dropPresence(run, guestId);
+    for (const guestId of new Set([...run.presence.keys(), ...run.spotlights.keys(), ...run.activity.keys()])) {
+      // A guest gone, or only away: nothing of it is shown until it is back and says where it is again.
+      if (!this.connected(run, guestId)) this.dropPresence(run, guestId);
+      else if (this.collaborator(run, guestId) === null) this.dropPresence(run, guestId, { keepSpotlight: true });
+    }
+  }
+
+  /** Whether the relay lists the guest as let in and connected, and the host has not removed it. */
+  private connected(run: Run, guestId: string): boolean {
+    const p = run.room?.participants.find((x) => x.guestId === guestId);
+    return p?.status === 'admitted' && p.connected && !('code' in this.grantOf(run, guestId));
   }
 
   /**
@@ -959,8 +1153,17 @@ export class LiveHostManager {
     if (!room || p?.status !== 'admitted' || !grant || run.kicked.has(guestId)) return { code: 'PERMISSION_DENIED', message: 'You are not in this live session.', recoverable: false };
     const ends = Math.min(guestAccessEndsAt(p.guestExpiresAt, room.expiresAt), guestAccessEndsAt(grant.guestExpiresAt, room.expiresAt));
     if (isExpired(ends - GRANT_CLOCK_MARGIN_MS, relayNow(room))) return { code: 'EXPIRED', message: 'Your access to this live session has ended.', recoverable: false };
-    const role: GuestRole = p.role === 'viewer' || grant.role === 'viewer' || grant.unconfirmed.includes('viewer') ? 'viewer' : 'collaborator';
-    return { role, displayName: p.displayName, generation: grant.generation };
+    return { role: leastRole(p.role, grant.role, ...grant.unconfirmed), displayName: p.displayName, generation: grant.generation };
+  }
+
+  /** The role each guest let in holds now, as grantOf works it out, whether or not its access has ended. */
+  private heldRoles(run: Run): Map<string, GuestRole> {
+    const held = new Map<string, GuestRole>();
+    for (const p of run.room?.participants ?? []) {
+      const grant = run.grants.get(p.guestId);
+      if (p.status === 'admitted' && grant) held.set(p.guestId, leastRole(p.role, grant.role, ...grant.unconfirmed));
+    }
+    return held;
   }
 
   /** A guest's grant when it is a collaborator now, or null. */
@@ -978,35 +1181,44 @@ export class LiveHostManager {
     const run = conn.run;
     const answer = (result: { ok: true; result: unknown } | { ok: false; error: RpcError }) => this.answer(conn, frame, result);
     const refuse = (code: RpcError['code'], message: string, recoverable: boolean) => answer({ ok: false, error: { code, message, recoverable } });
-    if (conn.stage !== 'host' || run.phase !== 'active' || !this.current(run) || !this.ctx.guestSnapshot || !this.ctx.applyGuest) return refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
+    if (conn.stage !== 'host' || run.phase !== 'active' || !this.current(run)) return refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
     const grant = this.grantOf(run, frame.guestId);
     if ('code' in grant) return answer({ ok: false, error: grant });
     const call = checkRpcRequest(grant.role, frame.method, frame.args);
     if (!call.ok) return answer(call);
     if (conn.socket.bufferedAmount > RPC_BACKLOG_BYTES) return refuse('BUSY', 'The host is busy sending. Try again shortly.', true);
+    if (call.value.method.startsWith('notes.')) return this.onNoteCall(conn, frame, grant, call.value);
+    if (!this.ctx.guestSnapshot || !this.ctx.applyGuest) return refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
+    if (call.value.method === 'ai.send' || call.value.method === 'ai.stop' || call.value.method === 'ai.answer') return this.onAiCall(conn, frame.guestId, grant, call.value, answer);
     if (call.value.method === 'project.snapshot') {
       if (!this.spendRead(run, frame.guestId)) return refuse('BUSY', 'Too many requests for the project. Try again shortly.', true);
       const snapshot = this.ctx.guestSnapshot(run.workspaceKey);
       // The guest is told which revision the preview serves now, so its canvas knows what the page it loads shows (#766).
       const previewRevision = this.previewRevision(run);
-      return snapshot ? answer({ ok: true, result: previewRevision === null ? snapshot : { ...snapshot, previewRevision } }) : refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
+      if (!snapshot) return refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
+      answer({ ok: true, result: previewRevision === null ? snapshot : { ...snapshot, previewRevision } });
+      // A guest asks for the project on joining and on coming back: whatever it missed of its AI access and its last
+      // request meanwhile, it is told again.
+      return this.resyncAi(run, frame.guestId);
     }
+    if (call.value.method !== 'project.apply') return refuse('PERMISSION_DENIED', 'That is not something a guest can do.', false);
     const { guestId } = frame;
     const edits = run.edits.get(guestId) ?? 0;
     if (edits >= MAX_GUEST_EDITS_IN_FLIGHT) return refuse('BUSY', 'Your earlier edits are still being made. Try again shortly.', true);
     run.edits.set(guestId, edits + 1);
-    const { generation } = grant;
-    // Asked again as the edit's turn comes and just before it is saved: a guest removed, made a viewer, or out of time
-    // since it asked (even one given its role back since) lands nothing, and so does an edit whose connection dropped.
+    const { generation, role } = grant;
+    // Asked again as the edit's turn comes and just before it is saved: a guest removed, given less to do (a viewer, or a
+    // collaborator made a copy editor), or out of time since it asked (even one given its role back since) lands
+    // nothing, and so does an edit whose connection dropped.
     const check = (): RpcError | null => {
       if (this.run !== run || run.phase !== 'active' || run.conn !== conn || conn.closed) return { code: 'UNAVAILABLE', message: 'The live session’s connection dropped before your edit was made.', recoverable: true };
       const now = this.grantOf(run, guestId);
       if ('code' in now) return now;
-      if (now.role !== 'collaborator' || now.generation !== generation) return { code: 'PERMISSION_DENIED', message: 'The host changed your access before your edit was made.', recoverable: false };
+      if (now.generation !== generation || narrower(now.role, role)) return { code: 'PERMISSION_DENIED', message: 'The host changed your access before your edit was made.', recoverable: false };
       return null;
     };
     void this.ctx
-      .applyGuest(run.workspaceKey, { guestId, displayName: grant.displayName, check }, call.value.args[0])
+      .applyGuest(run.workspaceKey, { guestId, displayName: grant.displayName, role, check }, (call.value as Extract<LiveCall, { method: 'project.apply' }>).args[0])
       // A failure the editor did not turn into a refusal may have come after the edit was saved: the guest is told it
       // cannot know, rather than that nothing changed, so it reads the project before trying again.
       .catch((): LiveApplyResult => ({ ok: false, error: { code: 'INTERNAL', message: 'The host could not confirm whether your edit was saved. Fetch the project before trying again.', recoverable: false } }))
@@ -1014,20 +1226,104 @@ export class LiveHostManager {
         const left = (run.edits.get(guestId) ?? 1) - 1;
         if (left > 0) run.edits.set(guestId, left);
         else run.edits.delete(guestId);
+        // Shown as editing only for an edit that was made, by a guest still a collaborator on this connection.
+        if (result.ok && check() === null) this.edited(run, conn, guestId, call.value.args[0]);
         answer(result.ok ? { ok: true, result: { revision: result.revision, results: result.results } } : { ok: false, error: result.error });
       });
   }
 
   /** Take one of a guest's snapshot budget, refilled over time; false when it has none left. */
   private spendRead(run: Run, guestId: string): boolean {
-    const now = performance.now();
-    const budget = run.reads.get(guestId) ?? { tokens: GUEST_SNAPSHOT_BURST, at: now };
-    budget.tokens = Math.min(GUEST_SNAPSHOT_BURST, budget.tokens + (now - budget.at) / GUEST_SNAPSHOT_REFILL_MS);
-    budget.at = now;
-    run.reads.set(guestId, budget);
-    if (budget.tokens < 1) return false;
-    budget.tokens--;
-    return true;
+    return spend(run.reads, guestId, GUEST_SNAPSHOT_BURST, GUEST_SNAPSHOT_REFILL_MS);
+  }
+
+  /**
+   * A guest's note call (#770): reading the notes, leaving one, or (a collaborator) resolving or deleting one. Leaving
+   * one is held to Allow guest notes, a burst and a count for the session; every change is asked again as its turn comes
+   * and just before it is written, so a guest removed, out of time or made a viewer since it asked changes nothing.
+   */
+  private onNoteCall(conn: Connection, frame: Frame<'relay-to-host', 'rpc:request'>, grant: { role: GuestRole; displayName: string; generation: number }, call: LiveCall): void {
+    const run = conn.run;
+    const { guestId } = frame;
+    const answer = (result: { ok: true; result: unknown } | { ok: false; error: RpcError }) => this.answer(conn, frame, result);
+    const refuse = (code: RpcError['code'], message: string, recoverable: boolean) => answer({ ok: false, error: { code, message, recoverable } });
+    const notes = this.ctx.notes;
+    if (!notes) return refuse('UNAVAILABLE', 'The host’s notes are not available right now.', true);
+    if (call.method === 'notes.list' && !spend(run.noteReads, guestId, GUEST_NOTE_READ_BURST, GUEST_NOTE_READ_REFILL_MS)) return refuse('BUSY', 'Too many requests for the notes. Try again shortly.', true);
+    const waiting = run.noteCalls.get(guestId) ?? 0;
+    if (waiting >= MAX_GUEST_NOTE_CALLS) return refuse('BUSY', 'Your earlier notes are still being saved. Try again shortly.', true);
+    const adding = call.method === 'notes.add';
+    if (adding) {
+      if (!run.guestNotes) return refuse('PERMISSION_DENIED', 'The host has turned off notes from guests.', false);
+      if ((run.notesLeft.get(guestId) ?? 0) >= GUEST_NOTE_LIMIT) return refuse('PERMISSION_DENIED', `You have left ${GUEST_NOTE_LIMIT} notes, as many as one person can in a live session.`, false);
+      if (!spend(run.noteWrites, guestId, GUEST_NOTE_BURST, GUEST_NOTE_REFILL_MS)) return refuse('BUSY', 'You are leaving notes very quickly. Wait a few seconds, then try again.', true);
+      // Counted now, so notes sent together cannot pass the count between them; given back if it is not kept.
+      run.notesLeft.set(guestId, (run.notesLeft.get(guestId) ?? 0) + 1);
+    }
+    run.noteCalls.set(guestId, waiting + 1);
+    const { generation } = grant;
+    const check = (): RpcError | null => {
+      if (this.run !== run || run.phase !== 'active' || run.conn !== conn || conn.closed) return { code: 'UNAVAILABLE', message: 'The live session’s connection dropped before your note was saved.', recoverable: true };
+      const now = this.grantOf(run, guestId);
+      if ('code' in now) return now;
+      if (adding && !run.guestNotes) return { code: 'PERMISSION_DENIED', message: 'The host has turned off notes from guests.', recoverable: false };
+      if (!adding && call.method !== 'notes.list' && (now.role !== 'collaborator' || now.generation !== generation)) return { code: 'PERMISSION_DENIED', message: 'The host changed your access before your change to the notes was saved.', recoverable: false };
+      return null;
+    };
+    const opening = run.workspaceKey;
+    const asked =
+      call.method === 'notes.list'
+        ? notes.list(opening)
+        : call.method === 'notes.add'
+          ? notes.add(opening, { name: grant.displayName, role: grant.role }, call.args[0], check)
+          : call.method === 'notes.resolve'
+            ? notes.resolve(opening, call.args[0], call.args[1], check)
+            : notes.delete(opening, (call as Extract<LiveCall, { method: 'notes.delete' }>).args[0], check);
+    void asked
+      .catch((): LiveNotesAnswer => ({ ok: false, error: { code: 'INTERNAL', message: 'The host could not confirm whether the notes changed. Look at them again before trying again.', recoverable: false } }))
+      .then((result) => {
+        const left = (run.noteCalls.get(guestId) ?? 1) - 1;
+        if (left > 0) run.noteCalls.set(guestId, left);
+        else run.noteCalls.delete(guestId);
+        if (adding && !result.ok) {
+          const n = (run.notesLeft.get(guestId) ?? 1) - 1;
+          if (n > 0) run.notesLeft.set(guestId, n);
+          else run.notesLeft.delete(guestId);
+        }
+        answer(result.ok ? { ok: true, result: call.method === 'notes.list' ? { ...result.notes, guestNotes: run.guestNotes } : NOTE_KEPT } : { ok: false, error: result.error });
+      });
+  }
+
+  /** Whether guests may leave notes now: Allow guest notes in the session running, or on while none runs. */
+  get guestNotes(): boolean {
+    return this.run?.guestNotes ?? true;
+  }
+
+  /**
+   * The project's notes changed, or whether guests may leave them (#770): every guest the host still lets in is told
+   * only that, and asks for the list when it wants it.
+   */
+  notesChanged(): void {
+    const run = this.run;
+    const conn = run?.conn;
+    if (!run || run.phase !== 'active' || conn?.stage !== 'host' || !this.current(run)) return;
+    const listed = run.room!.participants.filter((p) => p.status === 'admitted');
+    const granted = listed.filter((p) => !('code' in this.grantOf(run, p.guestId)));
+    if (!granted.length) return;
+    const to: Array<string | undefined> = granted.length === listed.length ? [undefined] : granted.map((p) => p.guestId);
+    for (const guestId of to) this.sendOn(conn, { type: 'rpc:event', event: 'notes:changed', payload: NOTES_CHANGED, ...(guestId ? { guestId } : {}) });
+  }
+
+  /** Allow guest notes, or stop guests leaving any more (#770). A setting of the host's alone: the relay is not told. */
+  setGuestNotes(value: unknown, allowed: unknown): LiveCommandResult {
+    const run = this.matching(value);
+    if (!run || run.phase === 'stopping') return { ok: false, message: 'That live session has ended.' };
+    if (typeof allowed !== 'boolean') return { ok: false, message: 'Say whether guests may leave notes.' };
+    if (run.guestNotes === allowed) return { ok: true };
+    run.guestNotes = allowed;
+    this.publish();
+    this.notesChanged();
+    return { ok: true };
   }
 
   /**
@@ -1052,17 +1348,63 @@ export class LiveHostManager {
     const run = conn.run;
     if (conn.stage !== 'host' || run.phase !== 'active' || frame.participant.kind !== 'guest') return;
     const { guestId } = frame.participant;
-    if (!this.collaborator(run, guestId)) return;
+    if (!this.collaborator(run, guestId) || !this.connected(run, guestId)) return;
     run.presence.set(guestId, frame.presence);
     this.publishPresence(run);
   }
 
-  private dropPresence(run: Run, guestId: string): void {
-    if (run.presence.delete(guestId)) this.publishPresence(run);
+  /**
+   * A guest pointed at something on its preview (#768): shown in the editor for a while, for any guest let in, a viewer
+   * too, while it is connected. Its newest spotlight replaces the one before.
+   */
+  private onSpotlight(conn: Connection, frame: Frame<'relay-to-host', 'spotlight:pointed'>): void {
+    const run = conn.run;
+    if (conn.stage !== 'host' || run.phase !== 'active' || !this.connected(run, frame.guestId)) return;
+    run.spotlights.set(frame.guestId, { seq: ++markSeq, spotlight: frame.spotlight, until: performance.now() + this.timings.spotlightMs });
+    this.publishPresence(run);
+    this.armMarks(run);
+  }
+
+  /**
+   * A collaborator's edit was just saved: shown as editing for a moment, here and to the other collaborators, on what
+   * it changed when that is one element of a page or its header or footer.
+   */
+  private edited(run: Run, conn: Connection, guestId: string, batch: unknown): void {
+    if (this.run !== run || run.phase !== 'active' || run.conn !== conn || !this.collaborator(run, guestId) || !this.connected(run, guestId)) return;
+    const target = editTarget(batch);
+    if (target === undefined) return;
+    run.activity.set(guestId, { seq: ++markSeq, target, until: performance.now() + this.timings.activityMs });
+    this.publishPresence(run);
+    this.armMarks(run);
+    if (conn.stage === 'host') this.sendOn(conn, { type: 'activity:edit', guestId, target });
+  }
+
+  /** Take what has had its time off, and wake again for the next. */
+  private armMarks(run: Run): void {
+    if (run.marksTimer) clearTimeout(run.marksTimer);
+    run.marksTimer = null;
+    const due = Math.min(...[...run.spotlights.values(), ...run.activity.values()].map((m) => m.until));
+    if (!Number.isFinite(due)) return;
+    run.marksTimer = setTimeout(() => {
+      run.marksTimer = null;
+      if (this.run !== run || run.ended) return;
+      const now = performance.now();
+      let changed = false;
+      for (const marks of [run.spotlights, run.activity]) for (const [guestId, mark] of marks) if (mark.until <= now) changed = marks.delete(guestId) || changed;
+      if (changed) this.publishPresence(run);
+      this.armMarks(run);
+    }, Math.max(0, due - performance.now()));
+  }
+
+  /** Stop showing a guest: where it is, its edits, and (unless it may still point) its spotlight. */
+  private dropPresence(run: Run, guestId: string, options: { keepSpotlight?: boolean } = {}): void {
+    const dropped = [run.presence.delete(guestId), run.activity.delete(guestId), !options.keepSpotlight && run.spotlights.delete(guestId)].some(Boolean);
+    if (dropped) this.publishPresence(run);
   }
 
   private publishPresence(run: Run): void {
-    this.ctx.emit('live:presence', { workspaceKey: run.workspaceKey, runId: run.runId, guests: Object.fromEntries(run.presence) });
+    const shown = <T extends { until: number }>(marks: Map<string, T>) => Object.fromEntries([...marks].map(([guestId, { until: _until, ...mark }]) => [guestId, mark]));
+    this.ctx.emit('live:presence', { workspaceKey: run.workspaceKey, runId: run.runId, guests: Object.fromEntries(run.presence), spotlights: shown(run.spotlights), activity: shown(run.activity) });
   }
 
   /**
@@ -1108,6 +1450,266 @@ export class LiveHostManager {
   }
 
   // -------------------------------------------------------------------------
+  // The host's AI, for collaborators it allows (#769)
+
+  /**
+   * A collaborator's call into the host's AI. Every one is refused unless the host has allowed this guest AI editing;
+   * `ai.send` also needs a request left of the host's limit and none of its own on the way, and `ai.stop` and
+   * `ai.answer` name the guest's own request, while it runs. The request runs in the host's assistant: whether it may
+   * still run is asked once more at the moment it starts (RunDelegation.accept), and at every change it makes.
+   */
+  private onAiCall(
+    conn: Connection,
+    guestId: string,
+    grant: { displayName: string; generation: number },
+    call: Extract<LiveCall, { method: 'ai.send' | 'ai.stop' | 'ai.answer' }>,
+    answer: (result: { ok: true; result: unknown } | { ok: false; error: RpcError }) => void
+  ): void {
+    const refuse = (code: RpcError['code'], message: string, recoverable: boolean) => answer({ ok: false, error: { code, message, recoverable } });
+    const run = conn.run;
+    const ai = this.ai;
+    const held = run.grants.get(guestId);
+    if (!held || !ai || !held.ai.allowed) return refuse('PERMISSION_DENIED', 'The host has not allowed you to use its AI.', false);
+    if (call.method !== 'ai.send') {
+      const [runId] = call.args;
+      const mine = run.delegated;
+      if (!mine || mine.ended || mine.runId !== runId || mine.guestId !== guestId || mine.grant !== held) return refuse('INVALID_ARGUMENT', 'That AI request is not running.', false);
+      // Answered at once: the request's end, rolled back, reaches the guest as its turn does.
+      if (call.method === 'ai.stop') {
+        void ai.stop(runId).catch(() => undefined);
+        return answer({ ok: true, result: { stopped: true } });
+      }
+      return answer({ ok: true, result: ai.answer(runId, call.args[1], call.args[2]) });
+    }
+    if (turnsLeft(held) === 0) return refuse('PERMISSION_DENIED', 'You have made all the AI requests the host allowed.', false);
+    if (run.aiSending.has(guestId)) return refuse('BUSY', 'Your last AI request is still on its way.', true);
+    const { generation } = grant;
+    const aiGeneration = held.ai.generation;
+    // Whether the request may still run, or change the project: the same session, the same admission, still a
+    // collaborator, and AI still allowed, none of it taken away since it was asked for (even if given back since).
+    const stillAllowed = (): RpcError | null => {
+      if (this.run !== run || run.ended || run.phase === 'stopping') return { code: 'UNAVAILABLE', message: 'The live session has ended.', recoverable: false };
+      // While the relay is out of reach, the host cannot know the guest is still there; and a request asked for on a
+      // connection since let go (or closing) never runs, even once the room is taken back.
+      if (run.phase !== 'active' || run.conn !== conn || conn.closed || conn.socket.readyState !== OPEN) return { code: 'UNAVAILABLE', message: 'The host’s connection to the live session dropped.', recoverable: true };
+      const now = this.grantOf(run, guestId);
+      if ('code' in now) return now;
+      if (now.role !== 'collaborator' || now.generation !== generation || run.grants.get(guestId) !== held || !held.ai.allowed || held.ai.generation !== aiGeneration)
+        return { code: 'PERMISSION_DENIED', message: 'The host changed your access to its AI.', recoverable: false };
+      return null;
+    };
+    let refusal: RpcError | null = null;
+    const [text, context] = call.args;
+    const delegation: RunDelegation = {
+      guestName: grant.displayName,
+      grantId: held.id,
+      accept: (runId) => {
+        refusal = stillAllowed() ?? (turnsLeft(held) === 0 ? { code: 'PERMISSION_DENIED', message: 'You have made all the AI requests the host allowed.', recoverable: false } : null);
+        if (refusal) return refusal.message;
+        held.ai.turnsUsed++;
+        // Telling the guest can find the connection gone (a backlog it gives up on): then the request never starts,
+        // and costs nothing. It is the guest's only once that is known.
+        const told = this.sendAccess(run, guestId);
+        const after = stillAllowed();
+        if (!told || after) {
+          held.ai.turnsUsed--;
+          refusal = after ?? { code: 'UNAVAILABLE', message: 'The host’s connection to the live session dropped.', recoverable: true };
+          return refusal.message;
+        }
+        run.delegated = { runId, guestId, grant: held, request: text, message: null, status: null, sentReply: '', ended: false };
+        this.publish();
+        return null;
+      },
+      check: () => {
+        const gone = stillAllowed();
+        return gone ? gone.message : null;
+      }
+    };
+    run.aiSending.add(guestId);
+    void ai
+      .send(run.workspaceKey, text, context, delegation)
+      .catch((e: Error): { ok: boolean; runId?: string; message?: string } => ({ ok: false, message: e.message }))
+      .then((sent) => {
+        run.aiSending.delete(guestId);
+        if (sent.ok && sent.runId) return answer({ ok: true, result: { runId: sent.runId } });
+        const error: RpcError = refusal ?? { code: 'UNAVAILABLE', message: this.scrub(sent.message ?? 'The host’s AI could not take the request.').slice(0, MAX_MESSAGE_LENGTH), recoverable: true };
+        answer({ ok: false, error });
+      });
+  }
+
+  private hostPaths(): readonly string[] {
+    return this.ctx.hostPaths?.() ?? [];
+  }
+
+  /** Text a guest is sent of the host's AI, with this computer's paths taken out. */
+  private scrub(text: string): string {
+    return scrubHostPaths(text, this.hostPaths());
+  }
+
+  /**
+   * A request's reply as its guest is sent it, the same way for a piece and a whole turn: this computer's paths taken
+   * out, at most LIVE_AI_REPLY_MAX characters, and, while it is still being written, up to the start of anything that
+   * may be one of those paths part way written. Once the turn has ended, such an end is taken out instead.
+   */
+  private reply(text: string, ended: boolean): string {
+    // The end is looked at before any path is taken out, so a longer path written over a shorter one (a project folder
+    // inside the home folder) is held back whole. An address still being written is held back too.
+    const paths = this.hostPaths();
+    let raw = text;
+    if (!ended) raw = raw.slice(0, raw.length - hostPathTail(raw, paths)).replace(/\bhttps?:\/\/\S*$/i, '');
+    else {
+      const tail = hostPathTail(raw, paths, 4);
+      if (tail) raw = raw.slice(0, raw.length - tail) + HOST_PATH_PLACEHOLDER;
+    }
+    return scrubPrivateAddresses(this.scrub(raw)).slice(0, LIVE_AI_REPLY_MAX);
+  }
+
+  /**
+   * Take AI away from a guest: its request running now is stopped (rolled back, as the host's own Stop does) and
+   * nothing more of it is sent, and one still on its way never runs. True when it had been allowed.
+   */
+  private revokeAi(run: Run, guestId: string, why: string): boolean {
+    const grant = run.grants.get(guestId);
+    const had = !!grant?.ai.allowed;
+    if (grant) {
+      grant.ai.allowed = false;
+      grant.ai.generation++;
+    }
+    if (run.delegated?.guestId === guestId) this.endDelegated(run, why);
+    return had;
+  }
+
+  /**
+   * Stop the collaborator's request the host's AI is working on, if any. Nothing more of it reaches the guest but its
+   * ending, with why: that it was stopped, never whether its changes were all taken back, which is the host's to see.
+   */
+  private endDelegated(run: Run, why: string): void {
+    const mine = run.delegated;
+    if (!mine || mine.ended) return;
+    mine.ended = true;
+    void this.ai?.stop(mine.runId).catch(() => undefined);
+    const last = run.lastTurns.get(mine.guestId);
+    // One that has already ended keeps how it ended.
+    if (last?.runId === mine.runId && last.result) return;
+    const base: LiveAiTurn = last?.runId === mine.runId ? last : { runId: mine.runId, request: this.scrub(mine.request), reply: '', status: null, activities: [], question: null, result: null };
+    const ended: LiveAiTurn = { ...base, status: 'cancelled', question: null, result: { status: 'cancelled', summary: why, changes: [] } };
+    run.lastTurns.set(mine.guestId, ended);
+    this.sendTurnEvent(run, mine.guestId, { kind: 'turn', turn: ended });
+  }
+
+  /** Tell a guest again what it may do with the host's AI, and how its last request stands. */
+  private resyncAi(run: Run, guestId: string): void {
+    this.sendAccess(run, guestId);
+    const last = run.lastTurns.get(guestId);
+    if (last) this.sendTurnEvent(run, guestId, { kind: 'turn', turn: last });
+  }
+
+  /** What a guest may do with the host's AI now, as it is told it. False when it could not be told. */
+  private accessOf(run: Run, guestId: string): LiveAiAccess {
+    const grant = run.grants.get(guestId);
+    if (!grant || !this.ai || !grant.ai.allowed || !this.collaborator(run, guestId)) return NO_AI_ACCESS;
+    return { allowed: true, turnsLeft: turnsLeft(grant) };
+  }
+
+  /** Tell a guest what it may do with the host's AI now, while the room is held. */
+  private sendAccess(run: Run, guestId: string): boolean {
+    const conn = run.conn;
+    if (run.phase !== 'active' || conn?.stage !== 'host' || !run.grants.has(guestId)) return false;
+    return this.sendOn(conn, { type: 'rpc:event', event: 'ai:access', guestId, payload: this.accessOf(run, guestId) });
+  }
+
+  /**
+   * One of the host's AI events. The collaborator whose request it is about is sent it, made safe to share (shared/
+   * live/ai.ts): its own request's progress, and nothing of anyone else's.
+   */
+  aiEvent(e: AiEvent): void {
+    const run = this.run;
+    const mine = run?.delegated;
+    if (!run || !mine || e.runId !== mine.runId) return;
+    const final = e.kind === 'message' && e.message?.role === 'assistant' && !!e.message.result;
+    if (mine.ended) {
+      // Ended for the guest: only how it really ended goes, and only when that is more than the stop it was told of.
+      if (!final) return;
+      run.delegated = null;
+      if (e.message!.result!.status === 'cancelled') return;
+      mine.message = e.message!;
+      return this.sendTurn(run, mine);
+    }
+    if (e.kind === 'text') {
+      if (!mine.message) return;
+      const before = mine.message.text ?? '';
+      mine.message = { ...mine.message, text: e.at === undefined ? (e.text ?? '') : before.slice(0, e.at) + (e.text ?? '') };
+      return this.sendReply(run, mine);
+    }
+    if (e.kind === 'status' && e.status) {
+      mine.status = e.status;
+      // How it ended goes with its last message, which says what it did: never a bare ending before it.
+      if (LIVE_AI_TERMINAL.includes(e.status)) return;
+    }
+    if (e.kind === 'message' && e.message) {
+      if (e.message.role === 'user') mine.request = e.message.text;
+      else mine.message = e.message;
+    }
+    // Its last message, with how it ended: nothing more of it is sent, and the guest can no longer stop or answer it.
+    // Let go before it is sent, so a connection that gives way under it never takes the ending for a stop.
+    if (final) run.delegated = null;
+    this.sendTurn(run, mine);
+  }
+
+  private sendTurnEvent(run: Run, guestId: string, payload: LiveAiTurnEvent): boolean {
+    const conn = run.conn;
+    if (run.phase !== 'active' || conn?.stage !== 'host') return false;
+    return this.sendOn(conn, { type: 'rpc:event', event: 'ai:turn', guestId, payload });
+  }
+
+  /** The guest's request as it stands now, its reply as far as is safe to send (reply). Kept to send again. */
+  private sendTurn(run: Run, mine: Delegated): void {
+    // A guest the host no longer has is sent nothing more, nor is anything kept for it.
+    if (!mine.message || !run.grants.has(mine.guestId)) return;
+    const turn = liveAiTurn(mine.request, mine.message, mine.status, (t) => this.scrub(t));
+    turn.reply = this.reply(mine.message.text ?? '', !!turn.result);
+    run.lastTurns.set(mine.guestId, turn);
+    if (this.sendTurnEvent(run, mine.guestId, { kind: 'turn', turn })) mine.sentReply = turn.reply;
+  }
+
+  /** The reply has grown: the guest is sent the piece it gained, or the whole turn when the reply was replaced. */
+  private sendReply(run: Run, mine: Delegated): void {
+    const reply = this.reply(mine.message?.text ?? '', false);
+    const last = run.lastTurns.get(mine.guestId);
+    if (last?.runId === mine.runId) run.lastTurns.set(mine.guestId, { ...last, reply });
+    if (reply === mine.sentReply) return;
+    if (!reply.startsWith(mine.sentReply)) return this.sendTurn(run, mine);
+    if (this.sendTurnEvent(run, mine.guestId, { kind: 'text', runId: mine.runId, at: mine.sentReply.length, text: reply.slice(mine.sentReply.length) })) mine.sentReply = reply;
+  }
+
+  /**
+   * Let a collaborator use the host's AI, or stop letting it, with a limit on its requests (null: none). It holds on the
+   * host at once: the relay never hears of it. Turning it off stops the request the guest has running.
+   */
+  setAi(value: unknown, guestId: unknown, options: unknown): LiveCommandResult {
+    const run = this.matching(value);
+    if (!run || run.phase === 'stopping' || !run.room) return { ok: false, message: 'That live session has ended.' };
+    const { allowed, turnLimit } = (options && typeof options === 'object' ? options : {}) as { allowed?: unknown; turnLimit?: unknown };
+    if (typeof allowed !== 'boolean' || !(turnLimit === null || (Number.isSafeInteger(turnLimit) && (turnLimit as number) >= 0 && (turnLimit as number) <= LIVE_AI_TURN_LIMIT_MAX)))
+      return { ok: false, message: 'Say whether the guest may use AI, and how many requests it may make.' };
+    const guest = this.guest(run.room, guestId);
+    if (typeof guest === 'string') return { ok: false, message: guest };
+    const grant = run.grants.get(guest.guestId);
+    if (!grant || guest.status !== 'admitted') return { ok: false, message: 'Let that guest in first.' };
+    if (allowed) {
+      if (run.phase !== 'active') return { ok: false, message: 'The live session is reconnecting to the relay. Try again in a moment.' };
+      if (!this.ai) return { ok: false, message: 'AI isn’t available on this computer.' };
+      if (!this.collaborator(run, guest.guestId)) return { ok: false, message: 'Only a collaborator can use AI. Make them a collaborator first.' };
+    }
+    grant.ai.turnLimit = turnLimit as number | null;
+    if (allowed) grant.ai.allowed = true;
+    else this.revokeAi(run, guest.guestId, 'The host turned off AI editing for you, so this request was stopped.');
+    this.sendAccess(run, guest.guestId);
+    this.publish();
+    return { ok: true };
+  }
+
+  // -------------------------------------------------------------------------
   // The host's commands
 
   /**
@@ -1138,7 +1740,7 @@ export class LiveHostManager {
       if (typeof guest === 'string') return guest;
       if (current.kicked.has(guest.guestId)) return 'That guest has been removed from the live session.';
       if (guest.status !== 'pending') return 'That guest has already been let in.';
-      if (!isRole(role)) return 'Choose whether the guest views or collaborates.';
+      if (!isRole(role)) return 'Choose a role for the guest.';
       const until = checkGuestExpiry(guestExpiresAt ?? null, room.expiresAt, now);
       if (!until.ok) return until.message;
       return { type: 'guest:admit', guestId: guest.guestId, role, guestExpiresAt: until.expiresAt };
@@ -1159,7 +1761,7 @@ export class LiveHostManager {
       const guest = this.guest(room, guestId);
       if (typeof guest === 'string') return guest;
       if (guest.status !== 'admitted') return 'Let that guest in first.';
-      if (!isRole(role)) return 'Choose whether the guest views or collaborates.';
+      if (!isRole(role)) return 'Choose a role for the guest.';
       return { type: 'guest:set-role', guestId: guest.guestId, role };
     });
   }
@@ -1219,10 +1821,25 @@ export class LiveHostManager {
     if (!encoded.ok) return { ok: false, message: 'That is not a place in the editor guests can follow.' };
     // What was checked, as it was checked: never the caller's own object.
     const next = (JSON.parse(encoded.frame) as { presence: Presence }).presence;
+    // The editor says where it is whenever it starts following a session, a reloaded one too: it hears in return where
+    // everyone else is, rather than only once someone next moves.
+    this.publishPresence(run);
     if (run.hostPresence && encoded.frame === JSON.stringify({ type: 'presence:update', presence: run.hostPresence })) return { ok: true };
     run.hostPresence = next;
     const conn = run.conn;
     if (run.phase === 'active' && conn?.stage === 'host') this.sendOn(conn, { type: 'presence:update', presence: next });
     return { ok: true };
   }
+}
+
+/** Take one token of a budget that refills over time (monotonic clock); false when it has none left. */
+function spend(budgets: Map<string, { tokens: number; at: number }>, key: string, burst: number, refillMs: number): boolean {
+  const now = performance.now();
+  const budget = budgets.get(key) ?? { tokens: burst, at: now };
+  budget.tokens = Math.min(burst, budget.tokens + (now - budget.at) / refillMs);
+  budget.at = now;
+  budgets.set(key, budget);
+  if (budget.tokens < 1) return false;
+  budget.tokens--;
+  return true;
 }

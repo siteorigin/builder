@@ -9,13 +9,13 @@ import { perfMark } from './perf';
  * reaches whichever project is shown now.
  *
  * What is this computer's stays its own in either case: the app, its settings and AI keys, text-field Undo, the
- * menus, keys and appearance. What is the project's (`projects`, `project`, `ai`, `live`) goes to the remote project
+ * menus, keys and appearance. What is the project's (`projects`, `project`, `ai`, `live`, `notes`) goes to the remote project
  * while one is shown, and there only what the remote shell answers is ever done: a method it does not answer is
  * refused, never passed to this computer's own project by mistake.
  */
 
 /** The namespaces that are the shown project's. */
-const PROJECT_NAMESPACES = ['projects', 'project', 'ai', 'live'] as const;
+const PROJECT_NAMESPACES = ['projects', 'project', 'ai', 'live', 'notes'] as const;
 type ProjectNamespace = (typeof PROJECT_NAMESPACES)[number];
 /** Every namespace of the API. */
 const NAMESPACES = ['app', 'edit', 'dialogs', ...PROJECT_NAMESPACES, 'remote'] as const;
@@ -36,7 +36,9 @@ export const DEVICE_CHANNELS: ReadonlySet<string> = new Set([
   'remote:state',
   'remote:changed',
   'remote:reload',
-  'remote:presence'
+  'remote:presence',
+  'remote:ai',
+  'remote:notes'
 ]);
 
 /** What the remote shell answers, namespace by namespace: anything missing is refused while it is shown. */

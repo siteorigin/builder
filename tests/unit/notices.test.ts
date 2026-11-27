@@ -236,7 +236,7 @@ describe('the notices file', () => {
       'node_modules/svelte/LICENSE.md': 'Copyright (c) 2016 Svelte contributors',
       'node_modules/locate-character/package.json': pkg('locate-character', '3.0.0'),
       'packs/foundation/pack.json': { name: 'Foundation', fonts: [{ name: 'Inter', family: 'Inter Variable', license: 'OFL-1.1', notice: 'Copyright 2020 The Inter Project Authors\r\nSIL OPEN FONT LICENSE Version 1.1' }] },
-      'packs/editorial/pack.json': { name: 'Editorial', fonts: [{ name: 'Inter', family: 'Inter Variable', license: 'OFL-1.1', notice: 'Copyright 2020 The Inter Project Authors\nSIL OPEN FONT LICENSE Version 1.1' }, { name: 'Fraunces', family: 'Fraunces Variable', license: 'OFL-1.1', notice: 'Copyright 2018 The Fraunces Project Authors' }] },
+      'packs/atlas/pack.json': { name: 'Atlas', fonts: [{ name: 'Inter', family: 'Inter Variable', license: 'OFL-1.1', notice: 'Copyright 2020 The Inter Project Authors\nSIL OPEN FONT LICENSE Version 1.1' }, { name: 'Fraunces', family: 'Fraunces Variable', license: 'OFL-1.1', notice: 'Copyright 2018 The Fraunces Project Authors' }] },
       'packs/.staging/x/pack.json': { name: 'never', fonts: [{ name: 'Never', family: 'Never', license: 'OFL-1.1', notice: 'x' }] }
     });
     const nm = (n: string) => join(root, 'node_modules', n);
@@ -262,7 +262,7 @@ describe('the notices file', () => {
     expect(entries[0]).toContain('The package carries no licence text; its declared licence is above.');
     expect(entries[3]).toContain('Included in: the website starter, cached for setting projects up offline');
     // One family with the same notice in two packs is listed once, with both packs.
-    expect(entries[5]).toBe('Font: Inter (Inter Variable)\nLicence: OFL-1.1\nIncluded in theme packs: Editorial, Foundation\n\nCopyright 2020 The Inter Project Authors\nSIL OPEN FONT LICENSE Version 1.1\n');
+    expect(entries[5]).toBe('Font: Inter (Inter Variable)\nLicence: OFL-1.1\nIncluded in theme packs: Atlas, Foundation\n\nCopyright 2020 The Inter Project Authors\nSIL OPEN FONT LICENSE Version 1.1\n');
     expect(missing).toEqual(['locate-character@3.0.0 (MIT)']);
   });
 

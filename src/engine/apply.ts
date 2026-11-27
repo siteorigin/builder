@@ -68,7 +68,7 @@ import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneCom
 import { slotsInsideCards } from '@generator/card-links';
 import { chosenUses, imageUses, variantBackgrounds } from './image-uses';
 import { isPictureAsset } from '@shared/background-image';
-import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
+import { NO_SHELL_IDS, labelKeyFor, pageIds, type CheckParts } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
@@ -171,7 +171,7 @@ export interface ApplyContext {
    * A theme switch reads it for the code components of both themes too (`shown`: the slot props the code renders or
    * hands on), to report content a placement holds in a slot the new code would not show; without it, code is not judged.
    */
-  codeNames?: (source: string) => { parts: readonly string[]; slots: readonly string[]; shown: readonly string[] } | null | undefined;
+  codeNames?: (source: string) => { parts: readonly string[]; slots: readonly string[]; shown: readonly string[]; lists?: Readonly<Record<string, string>> } | null | undefined;
   /**
    * The addresses visitors reached each collection entry at when the batch began, lowercased, with that entry's ID
    * (see entryAddressesInUse): an entry keeps an old address working only when it was one of these. An entry removed
@@ -346,7 +346,7 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
     case 'component.create':
       return componentCreate(state, op);
     case 'component.upsert':
-      return componentUpsert(state, op, { setStyle: (st, o) => void nodeSetStyle(st, o) });
+      return componentUpsert(state, op, { setStyle: (st, o) => void nodeSetStyle(st, o), dependsOn: (st, defId, targetId) => dependsOn(st, defId, targetId), placesClass: (d) => mayPlaceClass(d) });
     case 'component.createFromNode':
       return createFromNode(state, op);
     case 'component.makeUnique':
@@ -371,8 +371,11 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       return {};
     }
     case 'component.fork': {
+      if (op.placements) return forkPlacements(state, op);
+      // How many placements the copy took, of how many the original had, as the fork found them.
+      const of = instancesOf(state, op.definitionId).length;
       const id = ensureProjectOwned(state, op.definitionId);
-      return { definitionId: id };
+      return id === op.definitionId ? { definitionId: id } : { definitionId: id, moved: instancesOf(state, id).length, of };
     }
     case 'component.convertToCode':
       return convertToCode(state, op);
@@ -443,6 +446,8 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
     case 'asset.add': {
       if (state.assets.assets[op.asset.id]) fail(`Asset "${op.asset.id}" already exists.`);
       if (op.asset.kind === 'document' ? !isDocumentFile(op.asset.file, op.asset.mime) : isDocumentMime(op.asset.mime) || !!documentFormat(op.asset.file)) fail(`"${op.asset.name}" is not ${op.asset.kind === 'document' ? 'a document the library takes' : `an ${op.asset.kind}`}.`);
+      // Only a picture's copies are made after it lands, and never beside copies it already has.
+      if (op.asset.copiesPending && (op.asset.kind !== 'image' || op.asset.variants?.length)) fail(`"${op.asset.name}" has no copies to wait for.`);
       state.assets.assets[op.asset.id] = clone(op.asset);
       return { assetId: op.asset.id };
     }
@@ -591,8 +596,9 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       a.mime = op.mime;
       a.bytes = op.bytes;
       a.hash = op.hash;
-      // Details the new file does not have are dropped, never left over from the old one.
-      for (const k of ['width', 'height', 'variants', 'originalName'] as const) delete a[k];
+      // Details the new file does not have are dropped, never left over from the old one: copies still being made of the
+      // old file are no longer this image's.
+      for (const k of ['width', 'height', 'variants', 'copiesPending', 'originalName'] as const) delete a[k];
       if (op.width !== undefined) a.width = op.width;
       if (op.height !== undefined) a.height = op.height;
       if (op.variants?.length) a.variants = clone(op.variants);
@@ -707,6 +713,62 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   }
 }
 
+/** The assets a value uses (walkValues): each picture, and each document a link goes to, as often as it is used. */
+function valueUses(root: unknown, out = new Map<string, number>()): Map<string, number> {
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') {
+      countUse(out, v);
+      Object.values(v).forEach(walk);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+function countUse(out: Map<string, number>, v: unknown) {
+  const id = (v as { assetId?: unknown }).assetId;
+  if (typeof id === 'string') out.set(id, (out.get(id) ?? 0) + 1);
+  // A document is in use while a link goes to it.
+  if (isDocumentLink(v)) out.set(v.target, (out.get(v.target) ?? 0) + 1);
+}
+
+/** The site's own pictures, each page's sharing image, then each entry's featured and sharing images. */
+function pictureUses(state: ProjectState): Map<string, number> {
+  const out = new Map<string, number>();
+  const count = (id: string) => out.set(id, (out.get(id) ?? 0) + 1);
+  for (const k of [state.site.favicon, state.site.socialImage, state.site.identity?.logo]) if (typeof k === 'string' && k) count(k);
+  for (const p of Object.values(state.pages)) if (p.seo.socialImage) count(p.seo.socialImage);
+  for (const e of collectionEntries(state)) {
+    if (typeof e.featuredImage === 'string' && e.featuredImage) count(e.featuredImage);
+    const sharing = entrySharingImage(e);
+    if (sharing) count(sharing);
+  }
+  return out;
+}
+
+/** The assets the components' properties use, then the backgrounds of their designs' variant options. */
+function componentUses(state: ProjectState): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const d of Object.values(state.components)) valueUses(d.properties, out);
+  for (const v of variantBackgrounds(state)) countUse(out, v.value);
+  return out;
+}
+
+/** The assets the collections' fields use: each picture, link or rich text field's default, and each entry's value and text. */
+function collectionUses(state: ProjectState): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const c of Object.values(state.collections ?? {})) {
+    const holding = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image' || f?.type === 'link' || f?.type === 'richtext');
+    for (const [, f] of holding) valueUses(f.default, out);
+    for (const e of Object.values(c.entries)) {
+      for (const [name] of holding) if (Object.hasOwn(e.values ?? {}, name)) valueUses(e.values[name], out);
+      valueUses(e.body, out);
+    }
+  }
+  return out;
+}
+
 /** Every entry of every collection. */
 const collectionEntries = (state: ProjectState) => Object.values(state.collections ?? {}).flatMap((c) => Object.values(c.entries));
 
@@ -744,21 +806,24 @@ export function isDocumentLink(v: unknown): v is LinkValue & { type: 'document' 
 /** Whether a file is one of the document formats, its name and MIME type agreeing. */
 const isDocumentFile = (file: string, mime: string) => isDocumentMime(mime) && documentFormat(file)?.mime === mime;
 
-export function assetUsages(state: ProjectState): Record<string, number> {
+/**
+ * How many places use each library asset. With `parts` (a session's validation keeper), each document's own count is
+ * kept between states, so an edit counts again only what it changed (#966); the totals, and the order assets are named
+ * in, are the same either way.
+ */
+export function assetUsages(state: ProjectState, parts?: CheckParts): Record<string, number> {
   const out: Record<string, number> = {};
-  walkValues(state, (v) => {
-    const id = (v as { assetId?: unknown }).assetId;
-    if (typeof id === 'string') out[id] = (out[id] ?? 0) + 1;
-    // A document is in use while a link goes to it.
-    if (isDocumentLink(v)) out[v.target] = (out[v.target] ?? 0) + 1;
-  });
-  for (const k of [state.site.favicon, state.site.socialImage, state.site.identity?.logo]) if (typeof k === 'string' && k) out[k] = (out[k] ?? 0) + 1;
-  for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
-  for (const e of collectionEntries(state)) {
-    if (typeof e.featuredImage === 'string' && e.featuredImage) out[e.featuredImage] = (out[e.featuredImage] ?? 0) + 1;
-    const sharing = entrySharingImage(e);
-    if (sharing) out[sharing] = (out[sharing] ?? 0) + 1;
-  }
+  const add = (counts: ReadonlyMap<string, number>) => {
+    for (const [id, n] of counts) out[id] = (Object.hasOwn(out, id) ? out[id] : 0) + n;
+  };
+  const shared = (key: string, compute: () => Map<string, number>) => (parts ? parts.shared(key, compute) : compute());
+  // The uses walkValues finds, part by part in its order: each tree, the components, each page's sharing settings,
+  // then the collections.
+  for (const t of allTrees(state)) add(parts ? parts.tree(t, 'assetUses', () => valueUses(t.tree.nodes)) : valueUses(t.tree.nodes));
+  add(shared('componentAssetUses', () => componentUses(state)));
+  for (const [id, p] of Object.entries(state.pages)) add(parts ? parts.tree({ owner: { kind: 'page', id }, tree: p, label: p.title }, 'seoAssetUses', () => valueUses(p.seo)) : valueUses(p.seo));
+  add(shared('collectionAssetUses', () => collectionUses(state)));
+  add(shared('pictureAssetUses', () => pictureUses(state)));
   // An imported font is in use while a token or style names its family.
   for (const [id, n] of Object.entries(fontAssetUsages(state, themeFontTokens(state)))) out[id] = (out[id] ?? 0) + n;
   return out;
@@ -2255,17 +2320,19 @@ function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, var
 
 /**
  * The placement and part one repeated item is styled on (`itemId`): a part inside exactly one repeat of a managed
- * definition, placed on a page or in the shared header or footer, and an item its list shows now.
+ * definition, or one a code component declares repeats over a list, placed on a page or in the shared header or
+ * footer, and an item its list shows now.
  */
 function itemStyleTarget(state: ProjectState, owner: OwnerRef, node: GraphNode, partId: string | undefined, itemId: string): { node: InstanceNode; partId: string; list: string; itemId: string } {
   if (node.kind !== 'instance') fail('"itemId" styles one item of a repeated part of a component; this node is not a component.');
   if (owner.kind === 'component') fail('Only a placement on a page or in the shared header or footer can style one item on its own.');
   const def = own(state.components, node.definitionId) ?? fail(`Component definition "${node.definitionId}" is missing.`);
   if (partId === undefined) fail('"itemId" needs a "partId": name the repeated part to style, such as the card.');
-  if (def.kind !== 'managed') fail(`"${def.name}" is a code component, so its items are styled together. Leave out itemId.`);
   if (!own(def.parts, partId)) fail(`"${def.name}" has no part "${partId}". Parts: ${Object.keys(def.parts).join(', ')}.`);
   const list = repeatedPartList(def, partId);
   if (!list) fail(`"${def.parts[partId].label}" in "${def.name}" is not shown once per list item, so it has no single item to style. Leave out itemId to style it everywhere.`);
+  // A code placement's list connected to a collection shows its entries, which take no item classes of their own.
+  if (def.kind === 'code' && Object.hasOwn(node.listSources ?? {}, list)) fail(`${def.properties[list].label} shows a collection's entries here, so its items are styled together. Leave out itemId, or disconnect the list first.`);
   const items = placementItems(def, node, list);
   // An item copied from the definition's defaults is found by the default's ID too (see placedItemIndex).
   const at = placedItemIndex(items, owner, node.id, itemId);
@@ -3346,14 +3413,40 @@ export function ensureProjectOwned(state: ProjectState, defId: string): string {
 function makeUnique(state: ProjectState, op: Op<'component.makeUnique'>): OpResult {
   const { node, def, tree } = instanceTarget(state, op.owner, op.nodeId);
   const copy = copyDefinition(state, def, op.name?.trim() || uniqueCopyName(state, def.name));
-  // The slot it sits in must take the copy too: one that names the original by its ID takes only the original.
+  rebindTo(state, tree, node, def, copy);
+  return { definitionId: copy.id };
+}
+
+/**
+ * A copy of a definition for some of its placements (§8.4): the placements a change covers move to one project copy
+ * they share, and every other keeps the original, which stays available to insert.
+ */
+function forkPlacements(state: ProjectState, op: Op<'component.fork'>): OpResult {
+  const def = own(state.components, op.definitionId) ?? fail(`Component "${op.definitionId}" does not exist.`);
+  const seen = new Set<string>();
+  const uses = (op.placements ?? []).map(({ owner, nodeId }) => {
+    const key = JSON.stringify([owner.kind, owner.id, nodeId]);
+    if (seen.has(key)) fail(`"${nodeId}" is listed twice in placements.`);
+    seen.add(key);
+    const { node, tree } = instanceTarget(state, owner, nodeId);
+    if (node.definitionId !== def.id) fail(`"${nodeId}" is not a placement of “${def.name}”.`);
+    return { node, tree };
+  });
+  const of = instancesOf(state, def.id).length;
+  const copy = copyDefinition(state, def, uniqueCopyName(state, def.name));
+  for (const { node, tree } of uses) rebindTo(state, tree, node, def, copy);
+  return { definitionId: copy.id, moved: uses.length, of };
+}
+
+/** Move one placement to a copy of its definition. The slot it sits in must take the copy too: one that names the
+ *  original by its ID takes only the original. */
+function rebindTo(state: ProjectState, tree: NodeTree, node: InstanceNode, def: ComponentDefinition, copy: ComponentDefinition) {
   const at = findParent(tree, node.id);
   const holder = at?.parentId && Object.hasOwn(tree.nodes, at.parentId) ? tree.nodes[at.parentId] : undefined;
   const decl = holder?.kind === 'instance' && at?.slot !== undefined ? slotDecl(state, holder, at.slot) : undefined;
   if (decl && !takesComponent(decl, copy))
     fail(`The “${decl.label}” slot of “${state.components[(holder as InstanceNode).definitionId]?.name ?? 'its component'}” takes ${slotAccepts(decl, state)}, not a copy of “${def.name}”. Move it out of the slot first.`);
   node.definitionId = copy.id;
-  return { definitionId: copy.id };
 }
 
 /**

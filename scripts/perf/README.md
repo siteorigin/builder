@@ -105,7 +105,8 @@ one revision, the page's document on disk holds the new heading, the preview sho
 editor sending the edit): `apply` (the whole edit in the main process, queue included), `sessionApply`,
 `validateOperations`, `applyOperations`, `validate` (the saving checks), `generate` (both variants), `generateCheck`
 (the part of both generations the generation cache spent finding which files' inputs are unchanged,
-`session.generateCheck`), `changedDocs` (every document serialized and compared with its last text to find what the
+`session.generateCheck`, with two counts: `generateLooked`, the things files read that it looked up in the new state,
+each once a state, and `generateDerived`, the derived values among them it worked out), `changedDocs` (every document serialized and compared with its last text to find what the
 edit changed, `session.changedDocs`), `persist`, `publish` (spans); `hmrRelease`, `changed`, `snapshotSent`, `snapshotReceived`, `rendererCommit`, `previewPublished`
 and `previewApplied` (the headline); the change reaching the editor in its stretches, `changedToSent` (`session.changed` to
 `controller.snapshotSent`: the main process putting the editor's copy together and sending it), `sentToReceived` (IPC
@@ -131,6 +132,18 @@ scenario starts (untimed), 100 edits of the hero's Heading are made through the 
 Checks: History held 100 applied steps before the edit, and after it still holds 100, the edit's step is the last
 applied one and the oldest is gone; then the same as `edit`. The same metrics as `edit`, named `editFullHistory.*`.
 
+**`editBranded`** (after `open`, and after every other scenario that edits the fixture's own copy): as `edit`, on a site
+with a favicon of its own, in the save right after one that copied a theme font into the project. Before the scenario
+starts (untimed), a 256-pixel PNG is written into `static/assets/`, added to the library and chosen as the favicon in one
+change, until the home-screen icon drawn from it is on disk; then, once the picture's file is 3.5 s old (as a person's
+favicon is, `ProjectSession.settleMs`), the heading font (`font.display`) is set to the theme's Lora, which the Business
+starter does not use, so that save copies Lora's files in. Checks: all four icons (the three PNGs and `favicon.ico`)
+were drawn from the favicon, the canvas showed the font change, and every Lora face the website's styles name was copied
+in as the theme pack's own file; after the edit the site still has its favicon and none of those faces or icons
+changed; then the same as `edit`. The same metrics as `edit`, named `editBranded.*`, and the favicon's reads and the
+bytes of it hashed by the edit's publication (`publishFaviconReads`, `publishFaviconBytesHashed`), only from a build
+that counted the favicon's reads before the edit (one that never counts them fails rather than reporting none).
+
 **`batch`** (after `open`): in the AI panel, in Edit mode limited to the home page (This page), ask for a change that the
 scripted model (no live provider) makes as one `apply_operations` call of 30 operations, the most one call may carry:
 `instance.setProp` on the home page's text properties in turn (each placement's string properties; one set twice keeps
@@ -140,7 +153,8 @@ wrote, so does the home page's document on disk, the answer is in the log, and t
 applied. Times from the request being sent: `beginRun` (the run's start, `session.beginRun`), `checks` (what the run
 checks before handing the batch to the project: Developer mode's copies and the request's reach,
 `agent.devModeCheck` and `agent.authorityCheck`), and in the batch's own `session.apply` (`sessionApply`):
-`applyOperations`, `validate`, `generate`, `generateCheck`, `changedDocs`, `persist`, `publish`; `runMarker` (the run's
+`applyOperations`, `validate`, `generate`, `generateCheck` (with `generateLooked` and `generateDerived`, as in `edit`),
+`changedDocs`, `persist`, `publish`; `runMarker` (the run's
 recovery marker built at its start and with the batch, `session.runMarker`, its write left out) and `previewApplied`.
 Counts: `runMarkers`, `runDocsHashed` (documents the markers hashed, `run.docsHashed`), `docsCopied`,
 `docsSerialized`, durable writes and fsyncs in the apply; `project:changed` sends and their bytes over the whole run
@@ -308,9 +322,11 @@ the import review confirmed as it opens, which adds each as a web-sized copy; un
 all its copies. Checks: the review offers all 20 a web-sized copy, 20 images arrive, each a 2560-pixel JPEG turned
 upright, with JPEG copies at each smaller width, WebP at those and its full width and AVIF the same or none, every file
 on disk the size and format its record says, the credited photos' WebP and AVIF copies carrying their credits, each
-original and its smallest copy loading from the preview, and Assets saying it added 20 images. Times from
-`import.requested` (the editor sending the confirmed import): `total` (to the commit showing every photo), `firstShown`
-(to the first commit showing any), `main` (`controller.importAssets`), `apply` (the one change that adds them), `review`
+original and its smallest copy loading from the preview, and Assets saying it added 20 images (watched for from the
+confirmation on, as it says so for a few seconds, which can be before the copies are made). Times from
+`import.requested` (the editor sending the confirmed import): `total` (to the commit showing every photo with all its
+copies), `firstShown` (to the first commit showing any), `main` (`controller.importAssets`), `apply` (the import's first
+change, the one that adds them) and `applies` (every change in `controller.importAssets`), `review`
 (`controller.reviewImport`, before the request); per photo (medians): `image.ms` (its time in the main process),
 `image.webMs`, `image.webDecodeMs`, `image.webCopyMs` (its web-sized copy in the media worker: the whole request, its
 decodes, its resize and encode) and `image.copiesMs`, `image.copiesDecodeMs`, `image.jpegMs`, `image.webpMs`,
@@ -319,8 +335,18 @@ reports each request it answers (`media.request`, with `stats` asked for only wh
 `decodes` (pixel decodes of an encoded picture), `encodes`, `workerCpuMs` (CPU each worker used, every thread, from the first
 request it was given to the last it answered, added up over the workers: divided by
 `total`, the cores the import kept busy), `workers` and `workerPeakRss` (each worker's peak resident memory, added up).
-Counts: file writes, durable writes and fsyncs in the import, `images` and `variants` added; the longest main-process
-stall.
+Counts: file writes, durable writes and fsyncs in the import, the snapshots sent to the editor and their bytes
+(`snapshotsSent`, `snapshotBytes`), `images` and `variants` added; the longest main-process stall.
+
+**`importOriginals`** and **`importHeic`** (after `open`) add the same 20 photos another way, each with the same
+checks and metrics named after it (`importOriginals.total`, …). `importOriginals` unticks every web-sized copy in the
+review, one by one, before confirming it, so each 12-megapixel original is kept as it is and its copies are made from
+it: each image is the very file chosen, 4032 × 3024 (3024 × 4032 turned upright), with JPEG copies at each smaller
+width and WebP and AVIF at those and its full width; the worker makes no web-sized copies, so there are no `image.web…`
+metrics. `importHeic` imports the photos as HEIC files, converted from the JPEGs once per machine by macOS's own
+encoder (`sips`, which turns their pixels upright and keeps their credits; `photos.ts` `scenarioHeicPhotos`): the review
+lists all 20 to be converted, and each arrives as a 2560-pixel JPEG web-sized copy, as `import`'s do, by way of the
+system's decoder (`sips`, into a TIFF the worker reads). It runs only on macOS.
 
 **`cmdk`** (after `open`): with nothing else open, press the command menu's shortcut and type "contact" one key every
 100 ms, until the menu lists the results for the whole search. Checks: the search has the focus and holds what was
@@ -341,7 +367,14 @@ an edit elsewhere (the home hero's Heading, through the editor's API) with it sh
 top to its end, 400 px a notch, one every 16 ms. Checks: the library holds that many images with no files missing, the
 grid starts with the first image in its order and its end shows the last, the edit is in the project, and the keyboard
 walks the whole grid as before (End focuses the last image, Home the first, ArrowRight the next, ArrowDown the one a row
-down, Enter opens that image and Back returns the focus to it). Per library (`assets.<at>.*`): `showMs` (the rail
+down, Enter opens that image and Back returns the focus to it); walked from its top to its end half a view at a time
+(untimed), the tiles in the page at every stop are in the library's order, none twice, those in view one unbroken run
+of it (and some), and between them every image in view, so a grid that puts only the rows in view in the page passes and
+one that skips, reorders or shows no image fails. Then,
+with Assets still shown, the Inspector's two pickers of library images, each opened from a section of the home page
+chosen on the canvas: the image picker (`imagePicker`, the hero's Image, Choose image…) and the gallery picker (`galleryPicker`, the gallery's Choose images…). Each opens at its top with the library's
+first image first in view and, scrolled (untimed) to its end, shows the last there; it is closed and the selection and the right
+panel's view put back. Per library (`assets.<at>.*`): `showMs` (the rail
 button's click to the first frame with the grid's tiles in view) and `picturesMs` (to the first with every tile in view
 showing its picture), from a watch the scenario runs in the editor's page that reads only the tiles down to the view's
 bottom; `tiles` (tiles in the page once shown) and `tilesInView`; per window (`show`, `edit`, `scroll`) `renders` (every
@@ -349,8 +382,9 @@ component React rendered), `assetsRenders` and `assetsRenderMs` (the Assets pane
 `rendererCommits`; for the edit `commitMs` (the snapshot received to the commit showing it); for the show and the scroll
 the frame watch's `frames`, `droppedFrames`, `longestFrameMs`, `longTasks` and `longTaskMs`; for the scroll `ms` and
 `notches` (the grid's height in notches); and at the grid's end `picturesHeld` (pictures in the grid's page loaded) and
-`pictureBytes` (their decoded size, width × height × 4 bytes each). The image pickers in the Inspector are not
-measured.
+`pictureBytes` (their decoded size, width × height × 4 bytes each); and per picker (`<picker>.*`), from the press to it open
+with every option in its view showing its picture, `renders`, `rendererCommits` and `tiles` (its options in the page),
+and at its end `picturesHeld` and `pictureBytes`.
 
 **`memory`** (after `launch`, and only on its own: see Memory below): the memory of every process of the app at rest on
 a fresh Welcome (`welcome`); the fixture opened from its card as `open` opens it, untimed, sampled throughout for its
@@ -472,7 +506,10 @@ size depends on the machine's display as well as the build, the same 30 pictures
 another, so compare bytes only between runs taken together and read `pictures` across launches), `pictures` (answers
 carrying a picture), `captures` (photographs taken, `thumbs.captures`) and `captureMs` (their time in the hidden
 window), `keys` (thumbnail keys worked out), `brands` (brand fingerprints worked out) and `keyMs` (their time in the main
-process), `busyMs` (from the window's start to the last thumbnail request, answer or photograph in it) and the longest
+process), `prepareMs` (making and writing each photograph's preview, `thumbs.prepare`), `generateMs` (making every
+component preview of the window, synchronously on main, `componentPreview.generate`: the photographs' and the one Insert
+shows of its own), `previewFiles` and `previewBytes` (the files those previews were made of, and their size, as made;
+a window that took photographs without these marks fails), `busyMs` (from the window's start to the last thumbnail request, answer or photograph in it) and the longest
 main-process stall; for `fill` and `scroll`, `ms` (to every tile in view showing its picture) and `inView` (the tiles in
 view then).
 
@@ -651,7 +688,9 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 - `c` on a mark: every counter of its process, cumulative. `dc` on a span: what each counter gained while it ran.
 
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
-(project, generated and theme pack files) and `files.hashedBytes` (the bytes those hashes ran over), `files.stats` (a
+(project, generated and theme pack files) and `files.hashedBytes` (the bytes those hashes ran over), `favicon.read`,
+`favicon.readBytes` and `favicon.hashedBytes` (the site's favicon picture read and hashed to make its icons,
+`src/main/project/site-icons.ts`; not in `files.read`), `files.stats` (a
 project file looked at by its path without being read: a stat, an lstat, or a handle opened for its stat alone;
 `src/main/project/stable-read.ts` and the session's publication), `fs.syncCalls` (synchronous filesystem calls on the
 main process's event loop by path containment, `safeJoin`, the server-hook check and the publication), `docs.read` (canonical document files read from the project folder, also
@@ -667,7 +706,9 @@ found nothing changed), `tools.npmRuns` (npm runs that set up a project's websit
 dependency trees worked out to check what they need, `src/main/runtime/manager.ts`), `thumbs.requests` and
 `thumbs.bytes` (Insert's thumbnail requests and their answers as IPC serializes them, `src/main/controller.ts`),
 `thumbs.captures` (thumbnails photographed), `thumbs.keys`, `thumbs.brands` and `thumbs.keyMs` (thumbnail keys and brand
-fingerprints worked out, and the time the keys took: `src/main/runtime/component-thumbs.ts`), `main.stalls` (main), and
+fingerprints worked out, and the time the keys took: `src/main/runtime/component-thumbs.ts`), `componentPreview.files`
+and `componentPreview.bytes` (the files an isolated component preview was made of and their size, counted as it is
+made, for every caller, `src/main/controller.ts`), `main.stalls` (main), and
 `react.commits`, `react.renders`
 (components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes

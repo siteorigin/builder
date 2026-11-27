@@ -21,7 +21,8 @@ import { projectDefinitionId } from '@shared/component-ids';
 import { normalizeRoute } from '@shared/routes';
 import { BACKGROUND_IMAGE, DIVIDER_SHAPE_TEXT, STYLE_TOKEN_REF, validateOperation } from '@shared/ops';
 import { sha256Hex } from '@shared/sha256';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, dependsOn } from '@engine/apply';
+import { findVariant } from '@shared/variants';
 import type { EngineError } from '@engine/tree';
 import { MAX_UI_STATES, acceptedTypes, checkPropName, declaredState, isProtoKey, normalizePropSchema, normalizeUiState, stateActionProblem, stateUsers, type BindField } from '@engine/schema';
 import { normalizeLink } from '@engine/values';
@@ -98,6 +99,8 @@ const CONDITIONS = {
 };
 const CHILDREN = z.array(NODE_ID).max(200).optional().describe('IDs of the nodes inside it, in order.');
 const NODE_HEAD = { id: NODE_ID.describe('Its ID in the design, such as "title" or "card".'), name: z.string().max(60).optional(), anchor: z.string().max(62).optional() };
+/** A placed component's property value: text (a link, an icon or a token ID too), a number, yes/no, or an image. */
+const PROP_VALUE = z.union([z.string(), z.number(), z.boolean(), IMAGE]);
 const APPEAR = z.enum(APPEAR_PRESETS as unknown as [string, ...string[]]).optional().describe('How it enters when first scrolled into view.');
 
 const NODE = z.discriminatedUnion('kind', [
@@ -184,6 +187,26 @@ const NODE = z.discriminatedUnion('kind', [
       ...NODE_HEAD,
       slot: z.string().describe('The declared slot whose content shows here.'),
       children: CHILDREN.describe('Fallback: nodes shown here instead while a placement leaves the slot empty, such as a default badge.'),
+      ...CONDITIONS
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('instance'),
+      id: NODE_HEAD.id,
+      name: NODE_HEAD.name,
+      definitionId: z.string().min(1).max(120).describe('A component the site already has, placed here: its definitionId from read_project or read_component.'),
+      props: z
+        .array(z.object({ name: z.string().describe('One of its properties.'), value: bindable(PROP_VALUE) }).strict())
+        .max(60)
+        .optional()
+        .describe('Its property values, or this design\'s properties ({"$prop"}) and item fields ({"$item"}) it shows. A property left out starts at its default; a rebuild keeps what the placement holds.'),
+      variants: z
+        .array(z.object({ axis: z.string(), option: z.string() }).strict())
+        .max(8)
+        .optional()
+        .describe('The option it shows on its variant axes. An axis left out uses its default; a rebuild keeps the option the placement shows.'),
+      styles: STYLES.describe('Styles of the placement as a whole.'),
       ...CONDITIONS
     })
     .strict()
@@ -335,10 +358,10 @@ export function managedComponentSchema(): JsonSchema {
 }
 
 export const MANAGED_COMPONENT_DESCRIPTION =
-  'Create a reusable managed component, or rebuild one (definitionId), in one call: its properties (what authors fill in on each placement), its design as a flat list of nodes that name their children by ID, the parts authors can style, slots, variant options and UI state. Bind a node to a property with {"$prop": name} ({"$prop": name, "field": f} for one field of an object property); inside a repeat of a list property, bind to each item\'s field with {"$item": field}. Style with site tokens such as {"token": "space.lg"} and add phone/tablet/desktop rules with scope. Interactive parts work in the published site with no code: declare UI state (a choice such as "plan" with options, or a yes/no "open"), give buttons a stateAction and link "", and show content only for one value with when. Tabs: a div holding nothing but one button per option (stateAction {"op": "set", "state": "plan", "value": option}), and one div panel per option with when {"ref": {"$state": "plan"}, "eq": option}. A toggle: a button with stateAction {"op": "toggle", "state": "open"} and content with when {"$state": "open"}; add overlay "dialog" or "drawer-end" to that div to show it over the page. Steps whose button shows their own text and picture from one list: an item state {"type": "item", "name": "active", "list": "steps"}; in a repeat of steps, a button with stateAction {"op": "select", "state": "active"} and a div with when {"$state": "active"}; a second repeat of steps (the picture side) whose div also has when {"$state": "active"}. A rebuild replaces the whole design and its UI state; placements keep the values the new properties still take. placeOnPage places it on a page in the same step. If anything is invalid nothing is applied and the error names each field by its path: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
+  'Create a reusable managed component, or rebuild one (definitionId), in one call: its properties (what authors fill in on each placement), its design as a flat list of nodes that name their children by ID, the parts authors can style, slots, variant options and UI state. Bind a node to a property with {"$prop": name} ({"$prop": name, "field": f} for one field of an object property); inside a repeat of a list property, bind to each item\'s field with {"$item": field}. Style with site tokens such as {"token": "space.lg"} and add phone/tablet/desktop rules with scope. Interactive parts work in the published site with no code: declare UI state (a choice such as "plan" with options, or a yes/no "open"), give buttons a stateAction and link "", and show content only for one value with when. Tabs: a div holding nothing but one button per option (stateAction {"op": "set", "state": "plan", "value": option}), and one div panel per option with when {"ref": {"$state": "plan"}, "eq": option}. A toggle: a button with stateAction {"op": "toggle", "state": "open"} and content with when {"$state": "open"}; add overlay "dialog" or "drawer-end" to that div to show it over the page. Steps whose button shows their own text and picture from one list: an item state {"type": "item", "name": "active", "list": "steps"}; in a repeat of steps, a button with stateAction {"op": "select", "state": "active"} and a div with when {"$state": "active"}; a second repeat of steps (the picture side) whose div also has when {"$state": "active"}. Reuse a component the site already has with an instance node: {"kind": "instance", "id": "badge", "definitionId": its ID, "props": [{"name": "label", "value": {"$prop": "badgeText"}}]}; changes to that component then show wherever it is placed. A rebuild replaces the whole design and its UI state; placements keep the values the new properties still take, and an instance sent again by id and definitionId keeps the values it leaves out. placeOnPage places it on a page in the same step. If anything is invalid nothing is applied and the error names each field by its path: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
 
 export const MANAGED_COMPONENT_BRIEF =
-  'A whole reusable component in one call: properties authors fill in, nodes (a flat list; children name node IDs; one root element), parts, slots, variant options and UI state; definitionId rebuilds one whole. Bind with {"$prop": name}, or {"$item": field} inside a repeat of a list. Tabs: declare an enum state; a div holding only one button per option (stateAction set to the option, link ""); one div panel per option with when {"ref":{"$state":name},"eq":option}. A toggle: a toggle button and when {"$state":name}; overlay makes that div a dialog or drawer. Steps from one list: an item state (type "item", list); in each repeat of that list, a select button and divs with when {"$state":name}. Style with tokens such as {"token":"space.lg"}; scope adds phone/tablet/desktop rules. placeOnPage also places it. On an error nothing is applied: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
+  'A whole reusable component in one call: properties authors fill in, nodes (a flat list; children name node IDs; one root element), parts, slots, variant options and UI state; definitionId rebuilds one whole. Bind with {"$prop": name}, or {"$item": field} inside a repeat of a list. Tabs: declare an enum state; a div holding only one button per option (stateAction set to the option, link ""); one div panel per option with when {"ref":{"$state":name},"eq":option}. A toggle: a toggle button and when {"$state":name}; overlay makes that div a dialog or drawer. Steps from one list: an item state (type "item", list); in each repeat of that list, a select button and divs with when {"$state":name}. Reuse a component the site has: {"kind":"instance","id":"badge","definitionId":id,"props":[{"name":"label","value":{"$prop":"badgeText"}}]}. Style with tokens such as {"token":"space.lg"}; scope adds phone/tablet/desktop rules. placeOnPage also places it. On an error nothing is applied: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
 
 // ---------------------------------------------------------------------------
 // Running the tool
@@ -501,9 +524,10 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
     return fieldError([{ field: o === place ? 'placeOnPage' : node !== undefined ? `nodes[${node}]` : 'arguments', message: v.message }], NOTHING_APPLIED);
   }
 
-  // The engine checks the description as the finished component: run it on a copy first, alone so a problem it finds
-  // is named by the field it came from, then with its placement, as the session will apply them, so what only the two
-  // together break (a list item placed straight on a page) is named by placeOnPage.
+  // The engine checks the description as the finished component: run it on a copy first, with its placement as the
+  // session will apply them. A placement adds a fresh page section and can only add problems, never take one away, so
+  // when the two fail together the component is tried alone: a problem it has by itself is named by the field it came
+  // from, and what only the two together break (a list item placed straight on a page) by placeOnPage.
   const failure = (e: unknown, placing: boolean) => {
     const details = (e as EngineError).details;
     const owner = isRecord(details) && isRecord(details.owner) ? details.owner.kind : undefined;
@@ -513,16 +537,15 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
     return fieldError([{ field, message: (e as Error).message }], NOTHING_APPLIED);
   };
   try {
-    applyOperations(state, [op]);
+    applyOperations(state, ops);
   } catch (e) {
-    return failure(e, false);
-  }
-  if (place) {
+    if (!place) return failure(e, false);
     try {
-      applyOperations(state, ops);
-    } catch (e) {
-      return failure(e, true);
+      applyOperations(state, [op]);
+    } catch (alone) {
+      return failure(alone, false);
     }
+    return failure(e, true);
   }
 
   const label = `${op.definitionId ? 'Rebuild' : 'Build'} ${op.name}`;
@@ -785,6 +808,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
       if (!p && !Object.hasOwn(properties, n.list)) issues.push({ field: `${at}.list`, message: `"${n.list}" is not one of the properties. Add a list property for the items` });
       else if (p && p.type !== 'list') issues.push({ field: `${at}.list`, message: `"${n.list}" is a ${p.type} property, not a list` });
     }
+    if (n.kind === 'instance') placedComponent(state, args, n, at, out, prev, (b, field) => checkBinding(b, field, n.id), issues);
     if (n.kind === 'slot') {
       if (!(args.slots ?? []).some((s) => s.name === n.slot)) issues.push({ field: `${at}.slot`, message: `"${n.slot}" is not one of the slots. Declare it in slots` });
       else if (slotsShown.has(n.slot)) issues.push({ field: `${at}.slot`, message: `the slot "${n.slot}" is already shown by "${slotsShown.get(n.slot)}". Each slot is shown once` });
@@ -881,8 +905,62 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   return { op, place, index: sourceIndex(args) };
 }
 
+/**
+ * A component the design places: one the site has, never the component itself or one that already places it. Its rows
+ * become the maps the operation takes, each named by its row where it is wrong; the engine settles the values.
+ */
+function placedComponent(
+  state: ProjectState,
+  args: ManagedComponentArgs,
+  n: Extract<NodeArgs, { kind: 'instance' }>,
+  at: string,
+  out: Record<string, unknown>,
+  prev: Record<string, unknown> | undefined,
+  checkBinding: (b: { $prop: string; field?: string } | { $item: string }, field: string) => unknown,
+  issues: FieldIssue[]
+) {
+  const self = args.definitionId;
+  const found = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
+  // Only a component it can place has its rows checked against it: a refused one is named once, by its definitionId.
+  let def = found;
+  if (self !== undefined && (n.definitionId === self || (found && dependsOn(state, n.definitionId, self)))) {
+    issues.push({ field: `${at}.definitionId`, message: `a component cannot contain itself: ${n.definitionId === self ? 'this is the component being rebuilt' : `"${found!.name}" already places it`}` });
+    def = undefined;
+  } else if (!found) issues.push({ field: `${at}.definitionId`, message: `"${n.definitionId}" is not a component of the site. Use a definitionId from read_project or read_component` });
+  else if (found.category === 'shell') {
+    issues.push({ field: `${at}.definitionId`, message: `"${found.name}" is the site's shared header or footer, which cannot be placed in a component` });
+    def = undefined;
+  }
+  const props: Record<string, unknown> = {};
+  (n.props ?? []).forEach((r, j) => {
+    const rat = `${at}.props[${j}]`;
+    if (reservedKey(r.name, `${rat}.name`, issues)) return;
+    if (Object.hasOwn(props, r.name)) return issues.push({ field: `${rat}.name`, message: `"${r.name}" is given twice` });
+    const schema = def && Object.hasOwn(def.properties, r.name) ? def.properties[r.name] : undefined;
+    if (def && !schema) issues.push({ field: `${rat}.name`, message: `"${def.name}" has no property "${r.name}". Properties: ${Object.keys(def.properties).join(', ') || 'none'}` });
+    if (isBindingValue(r.value)) checkBinding(r.value, `${rat}.value`);
+    // A token property names its token as { token } in the operation; a text a read shortened is the whole text it
+    // stands for, while the placement is the same component's.
+    const stored = prev?.kind === 'instance' && prev.definitionId === n.definitionId && isRecord(prev.props) ? prev.props[r.name] : undefined;
+    props[r.name] = schema?.type === 'token' && typeof r.value === 'string' ? { token: r.value } : unclip(r.value, stored);
+  });
+  const variants: Record<string, string> = {};
+  (n.variants ?? []).forEach((r, j) => {
+    const rat = `${at}.variants[${j}]`;
+    if (reservedKey(r.axis, `${rat}.axis`, issues)) return;
+    if (Object.hasOwn(variants, r.axis)) return issues.push({ field: `${rat}.axis`, message: `"${r.axis}" is given twice` });
+    const found = def ? findVariant(def, r.option, r.axis) : null;
+    if (found && 'error' in found) issues.push({ field: rat, message: found.error.replace(/\.$/, '') });
+    variants[r.axis] = r.option;
+  });
+  delete out.props;
+  delete out.variants;
+  if (n.props?.length) out.props = props;
+  if (n.variants?.length) out.variants = variants;
+}
+
 /** What a property, or a field of a list or object, keeps through a rebuild that this tool has no field for. */
-const KEPT_PROPERTY_KEYS = ['group', 'feed', 'pageTeaser', 'plainAs', 'codeForm'] as const;
+const KEPT_PROPERTY_KEYS = ['group', 'feed', 'pageTeaser', 'plainAs', 'codeForm', 'copyEditable'] as const;
 
 /** `sent` with the settings `old` had that this tool cannot give, its fields' included, where `sent` names none. */
 function keptSettings(old: Record<string, unknown>, sent: Record<string, unknown>): Record<string, unknown> {

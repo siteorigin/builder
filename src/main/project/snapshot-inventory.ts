@@ -60,7 +60,8 @@ export type SnapshotPlace =
   | { kind: 'excluded'; reason: SnapshotExclusion };
 
 /** The files at the project's top a snapshot holds: its manifest, the starter's configuration and lockfile, and the files the app writes there. */
-const ROOT_FILES = new Set([MANIFEST_FILE, 'package.json', 'package-lock.json', 'jsconfig.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'vercel.json', '.gitignore', 'README.md', 'NOTICE.md']);
+export const SNAPSHOT_ROOT_FILES: readonly string[] = [MANIFEST_FILE, 'package.json', 'package-lock.json', 'jsconfig.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'vercel.json', '.gitignore', 'README.md', 'NOTICE.md'];
+const ROOT_FILES = new Set(SNAPSHOT_ROOT_FILES);
 /** The folders at the project's top a snapshot looks in. */
 const ROOT_FOLDERS = new Set(['src', 'static', 'siteorigin', 'scripts']);
 /** The generator's record of what it wrote, beside the canonical documents. */
@@ -289,6 +290,13 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
       throw unreadable(rel, e);
     }
     const names = raw.map((b) => ({ name: b.toString('utf8'), raw: b })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    // A folder with a `.git` of its own (a submodule, a nested checkout) is another repository's work: none of it is
+    // read. The marker itself is never opened. The project's own `.git`, at its top, leaves the project as it is.
+    if (rel && names.some(({ name }) => fold(name) === '.git')) return;
+    // Nor a bare repository's folder (a clone kept as Git keeps one): its objects hold whatever it ever held.
+    const kind = async (n: string) => (await fs.lstat(join(abs, n)).catch(() => null))?.isDirectory();
+    const head = async () => /^(ref: refs\/|[0-9a-f]{40})/.test(await fs.readFile(join(abs, 'HEAD'), 'utf8').catch(() => ''));
+    if (rel && names.some(({ name }) => name === 'HEAD') && (await kind('objects')) && (await kind('refs')) && (await head())) return;
     for (const { name, raw: bytes } of names) {
       const r = rel ? `${rel}/${name}` : name;
       const place = snapshotPlace(r);

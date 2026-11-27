@@ -31,10 +31,13 @@ extraResources:
     to: resources/starter-assets
   # Theme pack releases built by `npm run build:packs`. The development fixtures ship too, hidden from the theme
   # picker, so a project switched to one while developing still opens for editing.
+  # A build's staging folders (.staging-<pid>) never ship, even one an interrupted build left behind.
   - from: resources/packs
     to: resources/packs
+    filter: ["**/*", "!.staging*", "!.staging*/**"]
   - from: resources/packs-dev
     to: resources/packs-dev
+    filter: ["**/*", "!.staging*", "!.staging*/**"]
 
 mac:
   category: public.app-category.graphics-design

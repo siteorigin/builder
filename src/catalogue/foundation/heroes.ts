@@ -12,10 +12,10 @@ const actions = (b: import('../dsl').TreeBuilder, align: 'start' | 'center') =>
 
 const heroProps = {
   ...P.group('Text', {
-    eyebrow: P.str('Eyebrow', 'Independent studio'),
-    heading: P.str('Heading', 'Thoughtful work for people who care about the details'),
+    eyebrow: P.copy(P.str('Eyebrow', 'Independent studio')),
+    heading: P.copy(P.str('Heading', 'Thoughtful work for people who care about the details')),
     headingLevel: headingLevel('h1'),
-    lead: P.text('Supporting text', 'We help small teams plan, design and deliver projects that feel considered from the first conversation to the final handover.')
+    lead: P.copy(P.text('Supporting text', 'We help small teams plan, design and deliver projects that feel considered from the first conversation to the final handover.'))
   }),
   ...P.group('Actions', {
     primaryLabel: P.str('Primary button label', 'Start a project'),
@@ -69,7 +69,7 @@ export const heroSplit = managed({
   category: 'hero',
   tags: ['hero', 'banner', 'image', 'media', 'split', 'intro', 'photo'],
   icon: 'panel-right',
-  properties: { ...heroProps, ...P.group('Media', { image: P.image('Image', 'A calm, light-filled studio workspace') }) },
+  properties: { ...heroProps, ...P.group('Media', { image: P.copy(P.image('Image', 'A calm, light-filled studio workspace')) }) },
   parts: {
     ...heroParts,
     media: { nodeId: 'media', label: 'Image', styleControls: ['aspectRatio', 'radius', 'shadow'] }

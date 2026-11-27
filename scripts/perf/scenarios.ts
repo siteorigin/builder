@@ -17,15 +17,15 @@ import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
 import { HISTORY_LIMIT, type BuilderApi, type ProjectSnapshot } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
-import { generateProject } from '../../src/generator/index';
+import { FONTS_DIR, generateProject, STYLES_DIR } from '../../src/generator/index';
 import type { ChatMessage, Conversation } from '../../src/shared/api';
 import { DONE, envelopeReply, MockOpenAIServer, sseChunk, textReply, toolCallReply, type MockReply } from '../../tests/unit/mock-openai-server';
 import { createStarterState, STARTER_ASSETS } from '../../src/catalogue/starters';
 import { projectFolderName } from '../../src/shared/project-name';
-import { fixturePng, type FixtureSpec } from './fixtures';
+import { fixturePng, ROOT, type FixtureSpec } from './fixtures';
 import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
 import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
-import { PHOTO_COUNT, photoSpec, scenarioPhotos } from './photos';
+import { PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
 import { displayName } from '../../src/engine/tree';
 
@@ -486,7 +486,9 @@ function switchReady(t: Trace, fixture: FixtureFacts): PerfRecord | undefined {
 /**
  * `<prefix>.generate`, every generation of both variants in [from, to] (the website's and the preview's), and
  * `<prefix>.generateCheck`, the part of them the generation cache spent finding which files' inputs are unchanged: a
- * sum missing a variant would look faster than it is.
+ * sum missing a variant would look faster than it is. With them, `<prefix>.generateLooked`, the things read that the
+ * cache looked up in the new state (each once a state), and `<prefix>.generateDerived`, the derived values among them
+ * it worked out (src/generator/cache.ts).
  */
 function generation(m: Collector, trace: Trace, prefix: string, from: number, to: number) {
   const variant = (name: string, v: string) => trace.all(name, (r) => r.proc === 'main' && r.attrs?.variant === v, from, to);
@@ -497,7 +499,15 @@ function generation(m: Collector, trace: Trace, prefix: string, from: number, to
   if (clean.length && dev.length) m.ms(`${prefix}.generate`, [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
   const checks = [...variant('session.generateCheck', 'clean'), ...variant('session.generateCheck', 'dev')];
   if (!checks.some((r) => r.attrs?.variant === 'clean') || !checks.some((r) => r.attrs?.variant === 'dev')) m.need('session.generateCheck (both variants)', undefined);
-  else m.ms(`${prefix}.generateCheck`, checks.reduce((n, r) => n + (typeof r.attrs?.ms === 'number' ? r.attrs.ms : NaN), 0));
+  else {
+    m.ms(`${prefix}.generateCheck`, checks.reduce((n, r) => n + (typeof r.attrs?.ms === 'number' ? r.attrs.ms : NaN), 0));
+    const sum = (attr: string) => checks.reduce((n, r) => n + (typeof r.attrs?.[attr] === 'number' ? (r.attrs[attr] as number) : NaN), 0);
+    for (const [metric, attr] of [['generateLooked', 'looked'], ['generateDerived', 'derived']] as const) {
+      const n = sum(attr);
+      if (Number.isFinite(n)) m.count(`${prefix}.${metric}`, n);
+      else m.need(`session.generateCheck (${attr})`, undefined);
+    }
+  }
 }
 
 export const EDITED_HEADING = 'Benchmark heading';
@@ -2818,167 +2828,233 @@ export function copiesProblem(rec: ImportedRecord): string | null {
 }
 
 /**
- * Add the scenario's 20 photos of 12 megapixels (scripts/perf/photos.ts) in Assets, as a person does: Add images, the
- * chooser answered through the driver, and the import review confirmed as it opens, with a web-sized copy of each;
- * until every photo is in the library with all its copies.
+ * How the scenario's photos are added: as the review offers them, each stored as a web-sized copy (`web`); with every
+ * web-sized copy unticked, so each 12-megapixel original is kept and its copies are made from it (`originals`); or
+ * as HEIC photos (scripts/perf/photos.ts scenarioHeicPhotos), each converted through the system's decoder (`heic`).
  */
-export const importPhotos: Scenario = {
-  name: 'import',
-  after: 'open',
-  description: 'Add 20 photos of 12 megapixels in Assets, confirming the import review as it opens, until each is in the library with every copy.',
-  async run(ctx) {
-    const { win, app } = ctx;
-    // Drawn once per machine, before anything is timed.
-    const photos = await scenarioPhotos();
-    const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-    expect(before, 'no project is open');
-    const had = new Set(Object.keys(before.state.assets.assets));
-    // Not timed: the Assets view shown, on its images.
-    const rail = win.locator('.rail [data-rail="assets"]');
-    if ((await rail.getAttribute('aria-pressed')) !== 'true') await rail.click();
-    // The panel's own button, or the empty library's when it has no images yet.
-    const add = win.locator('#editor-sidebar').getByRole('button', { name: /Add images/ }).first();
-    await add.waitFor({ timeout: 15_000 });
-    expect(await add.isEnabled(), 'Add images is not enabled');
-    const answer: DesktopCall = { op: 'setAnswers', answers: [{ dialog: 'open', selection: 'files', paths: photos.files }], request: null };
-    const set = (await app.evaluate(desktopInMain, answer)) as { error?: string };
-    if (set.error) throw new Error(`The file chooser could not be answered: ${set.error}`);
-    // Showing the view saves the workspace 300 ms later: that lands before the import starts, not in it.
-    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
-    await ctx.mark('scenario.start', { scenario: 'import', photos: photos.hash });
-    await add.click();
-    // The review opens for photos this large, each offered a web-sized copy and checked for one.
-    const confirm = win.getByTestId('import-review-add');
-    await confirm.waitFor({ timeout: 60_000 });
-    expect((await confirm.innerText()).trim() === `Add ${PHOTO_COUNT} files to Assets`, `the import review offers “${(await confirm.innerText()).trim()}”, not all ${PHOTO_COUNT} photos`);
-    const copies = win.locator('.modal input[type="checkbox"]');
-    expect((await copies.count()) === PHOTO_COUNT, `the import review offers ${await copies.count()} web-sized copies, not ${PHOTO_COUNT}`);
-    for (let i = 0; i < PHOTO_COUNT; i++) expect(await copies.nth(i).isChecked(), `the import review does not offer photo ${i + 1} as a web-sized copy`);
-    await confirm.click();
-    // Until every photo is in the library with its copies.
-    const deadline = Date.now() + SCENARIO_IMPORT_MS;
-    let added: ImportedRecord[] = [];
-    let revision = before.revision;
-    while (Date.now() < deadline) {
-      const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-      added = Object.values((snap?.state.assets.assets ?? {}) as Record<string, ImportedRecord>).filter((a) => !had.has(a.id));
-      revision = snap?.revision ?? revision;
-      if (added.length >= PHOTO_COUNT && added.every((a) => !copiesProblem(a))) break;
-      await sleep(50);
-    }
-    expect(added.length === PHOTO_COUNT, `${added.length} of the ${PHOTO_COUNT} photos reached the library`);
-    for (const a of added) {
-      const problem = copiesProblem(a);
-      expect(!problem, `${a.name} has ${problem}`);
-    }
-    const variants = added.reduce((n, a) => n + (a.variants?.length ?? 0), 0);
-    await ctx.mark('import.done', { scenario: 'import', revision, images: added.length, variants });
-    await win.getByText(`Added ${PHOTO_COUNT} images.`, { exact: false }).first().waitFor({ timeout: 15_000 });
-    // Each photo as its web-sized copy: named for its file, turned upright, at the size the review promised.
-    const sharp = (await import('sharp')).default;
-    const byName = new Map(added.map((a) => [a.name, a]));
-    for (let i = 1; i <= PHOTO_COUNT; i++) {
-      const spec = photoSpec(i);
-      const name = spec.name.replace(/\.jpg$/, '').replace(/[-_]+/g, ' ');
-      const rec = byName.get(name);
-      expect(rec, `no image named “${name}” was added`);
-      const [w, h] = spec.turned ? [1920, WEB_EDGE] : [WEB_EDGE, 1920];
-      expect(rec.kind === 'image' && rec.mime === 'image/jpeg' && rec.width === w && rec.height === h, `${name} was added as a ${rec.width} × ${rec.height} ${rec.mime}, not a ${w} × ${h} web-sized JPEG`);
-      // Every file on disk, each the size and format its record says.
-      for (const f of [{ file: rec.file, width: w }, ...(rec.variants ?? [])]) {
-        const at = join(ctx.projectDir, f.file);
-        expect(existsSync(at), `${f.file} is not in the project`);
-        const meta = await sharp(at).metadata();
-        const ext = f.file.split('.').pop();
-        expect(meta.width === f.width && (meta.autoOrient?.width ?? meta.width) === f.width, `${f.file} is ${meta.width} wide, not ${f.width}`);
-        expect({ jpg: 'jpeg', webp: 'webp', avif: 'heif' }[ext ?? ''] === meta.format, `${f.file} is ${meta.format}`);
-        // Upright: a portrait photo's copies are portrait too.
-        if (meta.height) expect(spec.turned ? meta.height > meta.width! : meta.height < meta.width!, `${f.file} is not turned the way the photo is shown`);
-        // The modern copies carry the photo's credits, which an export cannot add to them.
-        if (spec.credited && (ext === 'webp' || ext === 'avif')) expect(meta.exif?.includes('Ana Field'), `${f.file} does not carry the photo’s credits`);
+export type PhotoImportMode = 'web' | 'originals' | 'heic';
+
+/** Each mode's scenario name, which its metrics are named after. */
+const PHOTO_IMPORT_NAMES: Record<PhotoImportMode, string> = { web: 'import', originals: 'importOriginals', heic: 'importHeic' };
+
+/** The width and height a photo of the scenario is stored at, as its record says: upright, web-sized or as it is. */
+export function storedPhotoSize(mode: PhotoImportMode, turned: boolean): [number, number] {
+  const [w, h] = mode === 'originals' ? [PHOTO_WIDTH, PHOTO_HEIGHT] : [WEB_EDGE, Math.round((WEB_EDGE * PHOTO_HEIGHT) / PHOTO_WIDTH)];
+  return turned ? [h, w] : [w, h];
+}
+
+/**
+ * Add the scenario's 20 photos of 12 megapixels (scripts/perf/photos.ts) in Assets, as a person does: Add images, the
+ * chooser answered through the driver, and the import review confirmed as it opens (`mode` says what it is confirmed
+ * with); until every photo is in the library with all its copies.
+ */
+function photoImport(mode: PhotoImportMode): Scenario {
+  const name = PHOTO_IMPORT_NAMES[mode];
+  const description = {
+    web: 'Add 20 photos of 12 megapixels in Assets, confirming the import review as it opens, until each is in the library with every copy.',
+    originals: 'Add 20 photos of 12 megapixels in Assets, unticking every web-sized copy in the import review so each original is kept, until each is in the library with every copy.',
+    heic: 'Add 20 HEIC photos of 12 megapixels in Assets, confirming the import review that converts them, until each is in the library with every copy.'
+  }[mode];
+  return {
+    name,
+    after: 'open',
+    description,
+    async run(ctx) {
+      const { win, app } = ctx;
+      // Drawn (and for HEIC, converted) once per machine, before anything is timed.
+      const photos = mode === 'heic' ? await scenarioHeicPhotos() : await scenarioPhotos();
+      const sources = mode === 'originals' ? new Map(photos.files.map((f) => [f.split('/').pop()!, createHash('sha256').update(readFileSync(f)).digest('hex')])) : null;
+      const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+      expect(before, 'no project is open');
+      const had = new Set(Object.keys(before.state.assets.assets));
+      // Not timed: the Assets view shown, on its images.
+      const rail = win.locator('.rail [data-rail="assets"]');
+      if ((await rail.getAttribute('aria-pressed')) !== 'true') await rail.click();
+      // Back to the grid when an image's details are open (an import before this one opens the first image it added).
+      const back = win.locator('#editor-sidebar .asset-detail .asset-back');
+      if (await back.count()) await back.first().click();
+      // The panel's own button, or the empty library's when it has no images yet.
+      const add = win.locator('#editor-sidebar').getByRole('button', { name: /Add images/ }).first();
+      await add.waitFor({ timeout: 15_000 });
+      expect(await add.isEnabled(), 'Add images is not enabled');
+      const answer: DesktopCall = { op: 'setAnswers', answers: [{ dialog: 'open', selection: 'files', paths: photos.files }], request: null };
+      const set = (await app.evaluate(desktopInMain, answer)) as { error?: string };
+      if (set.error) throw new Error(`The file chooser could not be answered: ${set.error}`);
+      // Showing the view saves the workspace 300 ms later: that lands before the import starts, not in it.
+      await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+      await ctx.mark('scenario.start', { scenario: name, photos: photos.hash });
+      await add.click();
+      // The review opens for photos this large: each JPEG offered a web-sized copy and checked for one, each HEIC to convert.
+      const confirm = win.getByTestId('import-review-add');
+      await confirm.waitFor({ timeout: 60_000 });
+      expect((await confirm.innerText()).trim() === `Add ${PHOTO_COUNT} files to Assets`, `the import review offers “${(await confirm.innerText()).trim()}”, not all ${PHOTO_COUNT} photos`);
+      const copies = win.locator('.modal input[type="checkbox"]');
+      if (mode === 'heic') {
+        const converted = await win.locator('.modal [data-testid="import-review-row"].convert').count();
+        expect(converted === PHOTO_COUNT, `the import review converts ${converted} photos, not ${PHOTO_COUNT}`);
+        expect((await copies.count()) === 0, `the import review offers ${await copies.count()} web-sized copies of HEIC photos`);
+      } else {
+        expect((await copies.count()) === PHOTO_COUNT, `the import review offers ${await copies.count()} web-sized copies, not ${PHOTO_COUNT}`);
+        for (let i = 0; i < PHOTO_COUNT; i++) expect(await copies.nth(i).isChecked(), `the import review does not offer photo ${i + 1} as a web-sized copy`);
+        // Each original kept: every web-sized copy unticked, as a person does one by one.
+        if (mode === 'originals') {
+          for (let i = 0; i < PHOTO_COUNT; i++) await copies.nth(i).uncheck();
+          for (let i = 0; i < PHOTO_COUNT; i++) expect(!(await copies.nth(i).isChecked()), `photo ${i + 1} is still to be added as a web-sized copy`);
+        }
       }
+      await confirm.click();
+      // Assets says what it added for a few seconds once the photos have landed, which can be before their copies are
+      // made: it is watched for while they are.
+      const told = win.getByText(`Added ${PHOTO_COUNT} images.`, { exact: false }).first();
+      let toldSeen = false;
+      // Until every photo is in the library with its copies.
+      const deadline = Date.now() + SCENARIO_IMPORT_MS;
+      let added: ImportedRecord[] = [];
+      let revision = before.revision;
+      while (Date.now() < deadline) {
+        const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+        added = Object.values((snap?.state.assets.assets ?? {}) as Record<string, ImportedRecord>).filter((a) => !had.has(a.id));
+        revision = snap?.revision ?? revision;
+        if (!toldSeen) toldSeen = (await told.count()) > 0;
+        if (added.length >= PHOTO_COUNT && added.every((a) => !copiesProblem(a))) break;
+        await sleep(50);
+      }
+      expect(added.length === PHOTO_COUNT, `${added.length} of the ${PHOTO_COUNT} photos reached the library`);
+      for (const a of added) {
+        const problem = copiesProblem(a);
+        expect(!problem, `${a.name} has ${problem}`);
+      }
+      const variants = added.reduce((n, a) => n + (a.variants?.length ?? 0), 0);
+      await ctx.mark('import.done', { scenario: name, revision, images: added.length, variants });
+      if (!toldSeen) await told.waitFor({ timeout: 15_000 });
+      // Each photo named for its file, upright, at the size it is stored at: its web-sized copy, or the original as it was.
+      const sharp = (await import('sharp')).default;
+      const byName = new Map(added.map((a) => [a.name, a]));
+      for (let i = 1; i <= PHOTO_COUNT; i++) {
+        const spec = photoSpec(i);
+        const named = spec.name.replace(/\.jpg$/, '').replace(/[-_]+/g, ' ');
+        const rec = byName.get(named);
+        expect(rec, `no image named “${named}” was added`);
+        const [w, h] = storedPhotoSize(mode, spec.turned);
+        expect(rec.kind === 'image' && rec.mime === 'image/jpeg' && rec.width === w && rec.height === h, `${named} was added as a ${rec.width} × ${rec.height} ${rec.mime}, not a ${w} × ${h} ${mode === 'originals' ? 'original' : 'web-sized'} JPEG`);
+        // A kept original is the very file chosen; a web-sized copy is checked as its copies are.
+        if (sources) {
+          const at = join(ctx.projectDir, rec.file);
+          expect(existsSync(at), `${rec.file} is not in the project`);
+          expect(createHash('sha256').update(readFileSync(at)).digest('hex') === sources.get(spec.name), `${rec.file} is not the original ${spec.name}`);
+        }
+        // Every file on disk, each the size and format its record says.
+        for (const f of [...(sources ? [] : [{ file: rec.file, width: w }]), ...(rec.variants ?? [])]) {
+          const at = join(ctx.projectDir, f.file);
+          expect(existsSync(at), `${f.file} is not in the project`);
+          const meta = await sharp(at).metadata();
+          const ext = f.file.split('.').pop();
+          expect(meta.width === f.width && (meta.autoOrient?.width ?? meta.width) === f.width, `${f.file} is ${meta.width} wide, not ${f.width}`);
+          expect({ jpg: 'jpeg', webp: 'webp', avif: 'heif' }[ext ?? ''] === meta.format, `${f.file} is ${meta.format}`);
+          // Upright: a portrait photo's copies are portrait too.
+          if (meta.height) expect(spec.turned ? meta.height > meta.width! : meta.height < meta.width!, `${f.file} is not turned the way the photo is shown`);
+          // The modern copies carry the photo's credits, which an export cannot add to them.
+          if (spec.credited && (ext === 'webp' || ext === 'avif')) expect(meta.exif?.includes('Ana Field'), `${f.file} does not carry the photo’s credits`);
+        }
+      }
+      // Shown from the preview, as the canvas and Assets show them: each original and its smallest copy load.
+      const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+      const devUrl = snap?.runtime.state === 'ready' ? snap.runtime.url : null;
+      expect(devUrl, 'the preview is not running');
+      const urls = added.flatMap((a) => [a.file, a.variants![0].file].map((f) => `${devUrl}/${f.replace(/^static\//, '')}`));
+      type Img = { naturalWidth: number; onload: (() => void) | null; onerror: (() => void) | null; src: string };
+      const widths = await win.evaluate(
+        (list) => Promise.all(list.map((src) => new Promise<number>((resolve) => { const img = new (globalThis as unknown as { Image: new () => Img }).Image(); img.onload = () => resolve(img.naturalWidth); img.onerror = () => resolve(0); img.src = src; }))),
+        urls
+      );
+      const unshown = widths.filter((x) => !x).length;
+      expect(!unshown, `${unshown} of the ${urls.length} files the preview should serve did not load`);
+      await sleep(ctx.settleMs);
+      await ctx.mark('scenario.end', { scenario: name });
+      await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario(name, 'renderer')) && !!t.first('scenario.end', forScenario(name, 'main')));
+    },
+    measure(trace) {
+      const m = new Collector();
+      const p = name;
+      const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario(name, 'renderer')));
+      const from = begin?.t ?? Infinity;
+      const req = m.need('import.requested', trace.first('import.requested', inProc('renderer'), from));
+      const at = req?.t ?? Infinity;
+      const done = m.need('import.done', trace.first('import.done', forScenario(name, 'renderer'), at));
+      const revision = typeof done?.attrs?.revision === 'number' ? done.attrs.revision : NaN;
+      const shown = m.need('renderer.commit (the import)', trace.first('renderer.commit', (r) => r.proc === 'renderer' && r.attrs?.revision === revision, at));
+      // The first commit to show any of the photos: with them all arriving together, the same one.
+      const from0 = typeof req?.attrs?.revision === 'number' ? req.attrs.revision : NaN;
+      const first = trace.first('renderer.commit', (r) => r.proc === 'renderer' && typeof r.attrs?.revision === 'number' && r.attrs.revision > from0, at);
+      m.span(`${p}.review`, m.need('controller.reviewImport', trace.first('controller.reviewImport', inProc('main'), from, at)));
+      m.since(`${p}.total`, req, shown);
+      m.since(`${p}.firstShown`, req, m.need('renderer.commit (the first photos)', first));
+      const whole = m.need('controller.importAssets', trace.first('controller.importAssets', inProc('main'), at));
+      m.span(`${p}.main`, whole);
+      const until = whole?.t ?? -Infinity;
+      const start = startOf(whole) ?? Infinity;
+      // The change that adds the photos is the import's first; any after it (their copies, say) are counted.
+      const applies = trace.all('session.apply', inProc('main'), start, until);
+      m.span(`${p}.apply`, m.need('session.apply', applies[0]));
+      m.count(`${p}.applies`, applies.length);
+      // Every photo's own time in the main process, from reading it to its files written.
+      const files = trace.all('import.file', inProc('main'), start, until);
+      if (files.length !== PHOTO_COUNT) m.need(`import.file spans (${files.length} of ${PHOTO_COUNT})`, undefined);
+      else m.ms(`${p}.image.ms`, median(files.map((f) => f.ms ?? NaN)));
+      // What the media worker did: a web-sized copy and the copies of it, for each photo. The copies are the requests that
+      // encode some (a picture only checked is no photo's copies). A kept original is given no web-sized copy by the
+      // import, so in that mode none is the import's (the editor may weigh one for the original Assets opens).
+      const asked = trace.all('media.request', inProc('main'), start, until);
+      const num = (r: PerfRecord, k: string) => (typeof r.attrs?.[k] === 'number' ? (r.attrs[k] as number) : NaN);
+      const kind = (k: string) => asked.filter((r) => r.attrs?.kind === k);
+      const webs = mode === 'originals' ? 0 : PHOTO_COUNT;
+      const web = webs ? kind('web') : [];
+      const copies = kind('variants').filter((r) => num(r, 'encodes') > 0);
+      if (web.length !== webs || copies.length !== PHOTO_COUNT) m.need(`media.request marks (${web.length} web-sized and ${copies.length} copies of ${PHOTO_COUNT} photos)`, undefined);
+      else {
+        const med = (list: PerfRecord[], k: string) => median(list.map((r) => num(r, k)));
+        if (webs) {
+          m.ms(`${p}.image.webMs`, med(web, 'ms'));
+          m.ms(`${p}.image.webDecodeMs`, med(web, 'decodeMs'));
+          m.ms(`${p}.image.webCopyMs`, med(web, 'webCopyMs'));
+        }
+        m.ms(`${p}.image.copiesMs`, med(copies, 'ms'));
+        m.ms(`${p}.image.copiesDecodeMs`, med(copies, 'decodeMs'));
+        for (const f of ['jpeg', 'webp', 'avif']) m.ms(`${p}.image.${f}Ms`, med(copies, `${f}Ms`));
+      }
+      m.count(`${p}.workerRequests`, asked.length);
+      m.count(`${p}.decodes`, asked.reduce((n, r) => n + num(r, 'decodes'), 0));
+      m.count(`${p}.encodes`, asked.reduce((n, r) => n + num(r, 'encodes'), 0));
+      // Each worker's CPU from the first request it was given to the last it answered (requests that overlap share it),
+      // and its peak memory; added up over the workers.
+      const workers = new Map<unknown, { from: number; to: number; peak: number }>();
+      for (const r of asked) {
+        const w = workers.get(r.attrs?.worker) ?? { from: Infinity, to: -Infinity, peak: 0 };
+        workers.set(r.attrs?.worker, { from: Math.min(w.from, num(r, 'cpuStart')), to: Math.max(w.to, num(r, 'cpuEnd')), peak: Math.max(w.peak, num(r, 'peakRss')) });
+      }
+      m.ms(`${p}.workerCpuMs`, [...workers.values()].reduce((n, w) => n + (w.to - w.from), 0));
+      const peaks = new Map([...workers].map(([k, w]) => [k, w.peak]));
+      m.count(`${p}.workers`, peaks.size);
+      m.count(`${p}.workerPeakRss`, [...peaks.values()].reduce((n, v) => n + v, 0), 'bytes');
+      m.count(`${p}.fileWrites`, delta(whole, 'fs.writes'));
+      m.count(`${p}.durableWrites`, delta(whole, 'fs.durableWrites'));
+      m.count(`${p}.fsyncs`, delta(whole, 'fs.fsyncs'));
+      // What the editor was sent while the import ran: one snapshot per change it made.
+      m.count(`${p}.snapshotsSent`, delta(whole, 'ipc.projectChanged.sends'));
+      m.count(`${p}.snapshotBytes`, delta(whole, 'ipc.projectChanged.bytes'), 'bytes');
+      if (done) {
+        m.count(`${p}.images`, Number(done.attrs?.images));
+        m.count(`${p}.variants`, Number(done.attrs?.variants));
+      }
+      m.ms(`${p}.mainStallMax`, stallMax(trace, req, shown));
+      return m;
     }
-    // Shown from the preview, as the canvas and Assets show them: each original and its smallest copy load.
-    const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-    const devUrl = snap?.runtime.state === 'ready' ? snap.runtime.url : null;
-    expect(devUrl, 'the preview is not running');
-    const urls = added.flatMap((a) => [a.file, a.variants![0].file].map((f) => `${devUrl}/${f.replace(/^static\//, '')}`));
-    type Img = { naturalWidth: number; onload: (() => void) | null; onerror: (() => void) | null; src: string };
-    const widths = await win.evaluate(
-      (list) => Promise.all(list.map((src) => new Promise<number>((resolve) => { const img = new (globalThis as unknown as { Image: new () => Img }).Image(); img.onload = () => resolve(img.naturalWidth); img.onerror = () => resolve(0); img.src = src; }))),
-      urls
-    );
-    const unshown = widths.filter((w) => !w).length;
-    expect(!unshown, `${unshown} of the ${urls.length} files the preview should serve did not load`);
-    await sleep(ctx.settleMs);
-    await ctx.mark('scenario.end', { scenario: 'import' });
-    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('import', 'renderer')) && !!t.first('scenario.end', forScenario('import', 'main')));
-  },
-  measure(trace) {
-    const m = new Collector();
-    const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('import', 'renderer')));
-    const from = begin?.t ?? Infinity;
-    const req = m.need('import.requested', trace.first('import.requested', inProc('renderer'), from));
-    const at = req?.t ?? Infinity;
-    const done = m.need('import.done', trace.first('import.done', forScenario('import', 'renderer'), at));
-    const revision = typeof done?.attrs?.revision === 'number' ? done.attrs.revision : NaN;
-    const shown = m.need('renderer.commit (the import)', trace.first('renderer.commit', (r) => r.proc === 'renderer' && r.attrs?.revision === revision, at));
-    // The first commit to show any of the photos: with them all arriving together, the same one.
-    const from0 = typeof req?.attrs?.revision === 'number' ? req.attrs.revision : NaN;
-    const first = trace.first('renderer.commit', (r) => r.proc === 'renderer' && typeof r.attrs?.revision === 'number' && r.attrs.revision > from0, at);
-    m.span('import.review', m.need('controller.reviewImport', trace.first('controller.reviewImport', inProc('main'), from, at)));
-    m.since('import.total', req, shown);
-    m.since('import.firstShown', req, m.need('renderer.commit (the first photos)', first));
-    const whole = m.need('controller.importAssets', trace.first('controller.importAssets', inProc('main'), at));
-    m.span('import.main', whole);
-    const until = whole?.t ?? -Infinity;
-    const start = startOf(whole) ?? Infinity;
-    m.span('import.apply', m.need('session.apply', trace.all('session.apply', inProc('main'), start, until).at(-1)));
-    // Every photo's own time in the main process, from reading it to its files written.
-    const files = trace.all('import.file', inProc('main'), start, until);
-    if (files.length !== PHOTO_COUNT) m.need(`import.file spans (${files.length} of ${PHOTO_COUNT})`, undefined);
-    else m.ms('import.image.ms', median(files.map((f) => f.ms ?? NaN)));
-    // What the media worker did: a web-sized copy and the copies of it, for each photo.
-    const asked = trace.all('media.request', inProc('main'), start, until);
-    const kind = (k: string) => asked.filter((r) => r.attrs?.kind === k);
-    const web = kind('web');
-    const copies = kind('variants');
-    const num = (r: PerfRecord, k: string) => (typeof r.attrs?.[k] === 'number' ? (r.attrs[k] as number) : NaN);
-    if (web.length !== PHOTO_COUNT || copies.length !== PHOTO_COUNT) m.need(`media.request marks (${web.length} web-sized and ${copies.length} copies of ${PHOTO_COUNT} photos)`, undefined);
-    else {
-      const med = (list: PerfRecord[], k: string) => median(list.map((r) => num(r, k)));
-      m.ms('import.image.webMs', med(web, 'ms'));
-      m.ms('import.image.webDecodeMs', med(web, 'decodeMs'));
-      m.ms('import.image.webCopyMs', med(web, 'webCopyMs'));
-      m.ms('import.image.copiesMs', med(copies, 'ms'));
-      m.ms('import.image.copiesDecodeMs', med(copies, 'decodeMs'));
-      for (const f of ['jpeg', 'webp', 'avif']) m.ms(`import.image.${f}Ms`, med(copies, `${f}Ms`));
-    }
-    m.count('import.workerRequests', asked.length);
-    m.count('import.decodes', asked.reduce((n, r) => n + num(r, 'decodes'), 0));
-    m.count('import.encodes', asked.reduce((n, r) => n + num(r, 'encodes'), 0));
-    // Each worker's CPU from the first request it was given to the last it answered (requests that overlap share it),
-    // and its peak memory; added up over the workers.
-    const workers = new Map<unknown, { from: number; to: number; peak: number }>();
-    for (const r of asked) {
-      const w = workers.get(r.attrs?.worker) ?? { from: Infinity, to: -Infinity, peak: 0 };
-      workers.set(r.attrs?.worker, { from: Math.min(w.from, num(r, 'cpuStart')), to: Math.max(w.to, num(r, 'cpuEnd')), peak: Math.max(w.peak, num(r, 'peakRss')) });
-    }
-    m.ms('import.workerCpuMs', [...workers.values()].reduce((n, w) => n + (w.to - w.from), 0));
-    const peaks = new Map([...workers].map(([k, w]) => [k, w.peak]));
-    m.count('import.workers', peaks.size);
-    m.count('import.workerPeakRss', [...peaks.values()].reduce((n, v) => n + v, 0), 'bytes');
-    m.count('import.fileWrites', delta(whole, 'fs.writes'));
-    m.count('import.durableWrites', delta(whole, 'fs.durableWrites'));
-    m.count('import.fsyncs', delta(whole, 'fs.fsyncs'));
-    if (done) {
-      m.count('import.images', Number(done.attrs?.images));
-      m.count('import.variants', Number(done.attrs?.variants));
-    }
-    m.ms('import.mainStallMax', stallMax(trace, req, shown));
-    return m;
-  }
-};
+  };
+}
+
+export const importPhotos = photoImport('web');
+export const importOriginals = photoImport('originals');
+export const importHeic = photoImport('heic');
 
 // ---------------------------------------------------------------------------
 // cmdk
@@ -3182,6 +3258,124 @@ async function picturesHeld(win: Page): Promise<{ pictures: number; pictureBytes
   }, ASSET_BODY);
 }
 
+/**
+ * The grid walked from its top to its end half a view at a time, untimed: at every stop, the tiles in the page are in
+ * the library's order (`ids`), none twice, those in view are one unbroken run of it (and there are some), and between
+ * them the stops show every image in view. A grid that puts only some of its tiles in the page passes as one that puts
+ * them all there does; one that skips, repeats or reorders an image, or shows none, does not.
+ */
+async function walkGrid(win: Page, ids: string[]): Promise<{ seen: number; stops: number; broken: string | null; unseen: string | null }> {
+  return (await win.evaluate(`(${WALK_GRID})(${JSON.stringify(ASSET_BODY)}, ${JSON.stringify(ids)})`)) as { seen: number; stops: number; broken: string | null; unseen: string | null };
+}
+/** The walk, run in the editor's page. Source text, as the frame watch is. */
+const WALK_GRID = `async (sel, order) => {
+  const body = document.querySelector(sel);
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+  const tiles = () => [...body.querySelectorAll('.asset-grid [data-asset]')];
+  const at = new Map(order.map((id, i) => [id, i]));
+  const seen = new Set();
+  let broken = null;
+  let stops = 0;
+  const step = Math.max(40, Math.floor(body.clientHeight / 2));
+  for (let top = 0; ; top += step) {
+    body.scrollTop = Math.min(top, body.scrollHeight - body.clientHeight);
+    // Until a tile is drawn across the view (a grid that draws its tiles as it scrolls has done so), and a frame more.
+    const box = body.getBoundingClientRect();
+    for (let i = 0; i < 30; i++) {
+      await frame();
+      if (tiles().some((t) => t.getBoundingClientRect().bottom > box.top && t.getBoundingClientRect().top < box.bottom)) break;
+    }
+    await frame();
+    stops++;
+    const all = tiles();
+    const run = all.map((t) => t.getAttribute('data-asset') || '');
+    // Every tile in the page in the library's order, none twice; those in view one unbroken run of it.
+    const where = 'at ' + Math.round(body.scrollTop) + 'px the grid shows ';
+    const bad = run.findIndex((id, k) => !at.has(id) || (k > 0 && at.get(id) <= at.get(run[k - 1])));
+    if (bad >= 0 && !broken) broken = where + (run[bad] || 'a tile without an image') + (bad ? ' after ' + run[bad - 1] : '') + ', out of the library’s order';
+    const shown = all.filter((t) => t.getBoundingClientRect().bottom > box.top && t.getBoundingClientRect().top < box.bottom).map((t) => at.get(t.getAttribute('data-asset')));
+    const gap = shown.findIndex((i, k) => k > 0 && i !== shown[k - 1] + 1);
+    if (gap >= 0 && !broken) broken = where + order[shown[gap]] + ' in view right after ' + order[shown[gap - 1]] + ', skipping ' + (shown[gap] - shown[gap - 1] - 1) + ' images';
+    if (!shown.length && !broken) broken = where + 'no image in view';
+    // Seen only once in view: a tile in the page but out of view (drawn ahead, or kept) is not shown.
+    for (const i of shown) seen.add(order[i]);
+    if (body.scrollTop >= body.scrollHeight - body.clientHeight - 1) break;
+  }
+  return { seen: seen.size, stops, broken, unseen: order.find((id) => !seen.has(id)) || null };
+}`;
+
+/**
+ * The Inspector's pickers of library images `assets` opens: the image picker beside an image field, a popover, and the
+ * gallery picker in a gallery's list. Each is opened from the home page, by `button` once its section is chosen.
+ */
+export const ASSET_PICKERS = [
+  { key: 'imagePicker', label: 'image picker', button: 'Choose image…', root: '.insp-image-pop' },
+  { key: 'galleryPicker', label: 'gallery picker', button: 'Choose images…', root: '.insp-pick-many' }
+] as const;
+/** The Business starter's gallery on the home page, by its heading. */
+const GALLERY_HEADING = 'Recent projects';
+/** The canvas's toolbar for the section chosen, whichever it is. */
+const SELECTION_CHIP = '[role="toolbar"][aria-label$=" actions"]';
+
+/** The pictures an open picker (`root`) holds loaded, and their decoded size (width × height × 4 bytes each). */
+async function pickerPicturesHeld(win: Page, root: string): Promise<{ pictures: number; pictureBytes: number }> {
+  return win.evaluate((sel) => {
+    let pictures = 0;
+    let pictureBytes = 0;
+    type Img = { complete: boolean; naturalWidth: number; naturalHeight: number };
+    for (const img of (globalThis as unknown as { document: { querySelectorAll(s: string): Iterable<Img> } }).document.querySelectorAll(`${sel} .insp-pick-grid img`)) {
+      if (!img.complete || !img.naturalWidth) continue;
+      pictures++;
+      pictureBytes += img.naturalWidth * img.naturalHeight * 4;
+    }
+    return { pictures, pictureBytes };
+  }, root);
+}
+
+/**
+ * Whether every option of an open picker (`sel`) that is in its grid's view shows its picture, loaded (and some are in
+ * view): an option showing the glyph for a picture that will not load is not pictured. A function
+ * with no functions inside it, not source text: the page's content security policy refuses a string to evaluate, which
+ * a wait that polls would evaluate again on every frame.
+ */
+const pickerPictured = (sel: string): boolean => {
+  type Box = { top: number; bottom: number; height: number };
+  type El = { getBoundingClientRect(): Box; querySelector(s: string): (El & { complete?: boolean; naturalWidth?: number }) | null; querySelectorAll(s: string): Iterable<El> };
+  const grid = (globalThis as unknown as { document: { querySelector(s: string): El | null } }).document.querySelector(`${sel} .insp-pick-grid`);
+  if (!grid) return false;
+  const box = grid.getBoundingClientRect();
+  let seen = 0;
+  for (const tile of grid.querySelectorAll('[role="option"]')) {
+    const r = tile.getBoundingClientRect();
+    if (r.top >= box.bottom) break;
+    if (r.bottom <= box.top || r.height === 0) continue;
+    seen++;
+    const img = tile.querySelector('img');
+    if (!img || !(img.complete && (img.naturalWidth ?? 0) > 0)) return false;
+  }
+  return seen > 0;
+};
+
+/**
+ * What an open picker (`sel`) shows: its first and last option in its grid's view (their titles), and whether the grid
+ * is scrolled to its top and to its end. A function with no functions inside it (see pickerPictured).
+ */
+const pickerView = (sel: string): { first: string | null; last: string | null; top: boolean; end: boolean; scrollTop: number } => {
+  type El = { scrollTop: number; scrollHeight: number; clientHeight: number; getBoundingClientRect(): { top: number; bottom: number }; getAttribute(n: string): string | null; querySelectorAll(s: string): Iterable<El> };
+  const grid = (globalThis as unknown as { document: { querySelector(s: string): El | null } }).document.querySelector(`${sel} .insp-pick-grid`);
+  if (!grid) return { first: null, last: null, top: false, end: false, scrollTop: -1 };
+  const box = grid.getBoundingClientRect();
+  let first: string | null = null;
+  let last: string | null = null;
+  for (const o of grid.querySelectorAll('[role="option"]')) {
+    const r = o.getBoundingClientRect();
+    if (r.bottom <= box.top || r.top >= box.bottom) continue;
+    first ??= o.getAttribute('title');
+    last = o.getAttribute('title');
+  }
+  return { first, last, top: grid.scrollTop <= 1, end: grid.scrollTop >= grid.scrollHeight - grid.clientHeight - 1, scrollTop: Math.round(grid.scrollTop) };
+};
+
 /** The grid's scroll position and how far it can go. */
 const gridScroll = (win: Page) =>
   win.locator(ASSET_BODY).first().evaluate((el) => {
@@ -3257,8 +3451,6 @@ export const assets: Scenario = {
       const shown = (await win.evaluate('globalThis.__perfShow.stop()')) as { clickAt: number | null; laidOutAt: number | null; picturedAt: number | null; inView: number };
       await ctx.mark('assets.window', { scenario: 'assets', at, window: 'show', edge: 'end', ...(await framesSeen(win, periodMs)), showMs: shown.clickAt !== null && shown.laidOutAt !== null ? shown.laidOutAt - shown.clickAt : -1, picturesMs: shown.clickAt !== null && shown.picturedAt !== null ? shown.picturedAt - shown.clickAt : -1, inView: shown.inView, tiles: await win.locator(ASSET_TILES).count() });
       expect(shown.inView > 0, 'the grid showed no tiles in view');
-      const tiles = await win.locator(ASSET_TILES).count();
-      expect(tiles === lib.images, `the grid shows ${tiles} tiles for the library's ${lib.images} images`);
       expect((await win.locator(ASSET_TILES).first().getAttribute('data-asset')) === order[0], 'the grid does not start with the first image in its order');
 
       // An edit elsewhere with the grid shown: the project the editor receives is drawn again.
@@ -3308,6 +3500,11 @@ export const assets: Scenario = {
       await ctx.mark('assets.held', { scenario: 'assets', at, ...held });
       expect(held.pictures > 0, 'the grid holds no pictures at its end');
 
+      // Not timed: the grid shows the whole library, in its order, from its top to its end.
+      const walked = await walkGrid(win, order);
+      expect(!walked.broken, `walking the grid: ${walked.broken}`);
+      expect(walked.seen === lib.images && !walked.unseen, `walking the grid in ${walked.stops} stops showed ${walked.seen} of the library's ${lib.images} images (not ${walked.unseen})`);
+
       // Not timed: the keyboard walks the whole grid (End, Home, arrows) and Enter opens the image focused.
       await win.locator(ASSET_BODY).first().evaluate((el) => ((el as unknown as { scrollTop: number }).scrollTop = 0));
       await sleep(300);
@@ -3330,6 +3527,58 @@ export const assets: Scenario = {
       await win.locator('#editor-sidebar .asset-detail .asset-back').click();
       await win.locator(ASSET_TILES).first().waitFor({ timeout: 15_000 });
       expect((await focusedTile(win)) === order[1 + cols], 'Back did not return the focus to the image it opened');
+
+      // The Inspector's two pickers of library images, with Assets still shown: the image picker on the home hero's
+      // Image (Choose image…: the fixture's hero has none) and the gallery picker on its gallery's images (Choose images…). From the press to the picker
+      // open with every option in its view showing its picture, then (untimed) scrolled to its end. The section is
+      // chosen on the canvas, and put back afterwards (nothing selected, the right panel's view as it was), so the next
+      // picker and the next library start as this one did.
+      const hero = findHeading((await snap())!.state.pages[ctx.fixture.homePageId], ctx.fixture.heroId)?.heading ?? heading;
+      const names = order.map((id) => (now.state.assets.assets[id] as { name: string }).name);
+      for (const pk of ASSET_PICKERS) {
+        const tiles = `${pk.root} .insp-pick-grid [role="option"]`;
+        const dockTab = await win.locator('#editor-dock [role="tab"][aria-selected="true"]').first().getAttribute('id');
+        // In the middle of the page's view, clear of the shared header that stays on top of it.
+        const section = preview(win).getByRole('heading', { name: pk.key === 'imagePicker' ? hero : GALLERY_HEADING, exact: true, level: pk.key === 'imagePicker' ? 1 : 2 }).first();
+        await section.evaluate((h) => (h as unknown as { scrollIntoView(o: object): void }).scrollIntoView({ block: 'center', behavior: 'instant' }));
+        // Clicked where it now is: the click's own scroll would put it back under the header.
+        const where = await section.boundingBox();
+        expect(where, `the ${pk.label}'s section heading has no box on the page`);
+        await win.mouse.click(where.x + Math.min(where.width / 2, 40), where.y + where.height / 2);
+        await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+        const open = win.locator('#dock-panel-inspect').getByRole('button', { name: pk.button, exact: true }).first();
+        await open.waitFor({ timeout: 15_000 });
+        await open.scrollIntoViewIfNeeded();
+        await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+        await ctx.mark('assets.window', { scenario: 'assets', at, window: pk.key, edge: 'start' });
+        await open.click();
+        await win.locator(tiles).first().waitFor({ timeout: 15_000 });
+        await win.waitForFunction(pickerPictured, pk.root, { timeout: 30_000, polling: 'raf' });
+        await ctx.mark('assets.window', { scenario: 'assets', at, window: pk.key, edge: 'end', tiles: await win.locator(tiles).count() });
+        const atTop = await win.evaluate(pickerView, pk.root);
+        expect(atTop.top && (atTop.first ?? '').startsWith(names[0]), `the ${pk.label} opens on “${atTop.first}” at ${atTop.scrollTop}px, not ${names[0]} at its top`);
+        const grid = win.locator(`${pk.root} .insp-pick-grid`).first();
+        for (let i = 0; i < ASSET_NOTCHES_MAX; i++) {
+          const end = await grid.evaluate((el) => {
+            const g = el as unknown as { scrollTop: number; scrollHeight: number; clientHeight: number };
+            g.scrollTop = Math.min(g.scrollTop + g.clientHeight, g.scrollHeight - g.clientHeight);
+            return g.scrollTop >= g.scrollHeight - g.clientHeight - 1;
+          });
+          await sleep(STEP_MS * 2);
+          if (end) break;
+        }
+        await sleep(1000);
+        await win.waitForFunction(pickerPictured, pk.root, { timeout: 30_000, polling: 'raf' });
+        const atEnd = await win.evaluate(pickerView, pk.root);
+        expect(atEnd.end && (atEnd.last ?? '').startsWith(names[names.length - 1]), `the ${pk.label} ends with “${atEnd.last}” at ${atEnd.scrollTop}px, not ${names[names.length - 1]} at its end`);
+        await ctx.mark('assets.pickerHeld', { scenario: 'assets', at, picker: pk.key, ...(await pickerPicturesHeld(win, pk.root)) });
+        await win.locator(tiles).last().focus();
+        await win.keyboard.press('Escape');
+        await win.locator(`${pk.root} .insp-pick-grid`).first().waitFor({ state: 'detached', timeout: 15_000 });
+        if (dockTab) await win.locator(`#${dockTab}`).click();
+        for (let i = 0; i < 4 && (await win.locator(SELECTION_CHIP).count()); i++) await win.keyboard.press('Escape');
+        expect(!(await win.locator(SELECTION_CHIP).count()), `a section stayed selected after the ${pk.label}`);
+      }
     }
     await ctx.mark('scenario.end', { scenario: 'assets' });
     await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('assets', 'renderer')) && !!t.first('scenario.end', forScenario('assets', 'main')));
@@ -3387,6 +3636,23 @@ export const assets: Scenario = {
       if (held) {
         m.count(`${p}.picturesHeld`, Number(held.attrs?.pictures));
         m.count(`${p}.pictureBytes`, Number(held.attrs?.pictureBytes), 'bytes');
+      }
+      // The Inspector's pickers: what opening each rendered and put in the page, and the pictures it holds at its end.
+      for (const { key: pk } of ASSET_PICKERS) {
+        const q = `${p}.${pk}`;
+        const start = edge(pk, 'start');
+        const end = edge(pk, 'end');
+        if (start && end) {
+          if (trackless(start) || trackless(end)) m.need(`${q}.renders (the editor did not count component renders)`, undefined);
+          else m.count(`${q}.renders`, gained(start, end, 'react.renders'));
+          commits(m, trace, `${q}.rendererCommits`, start, end);
+          m.count(`${q}.tiles`, Number(end.attrs?.tiles));
+        }
+        const held = m.need(`assets.pickerHeld ${at} ${pk}`, trace.first('assets.pickerHeld', (r) => r.proc === 'renderer' && r.attrs?.scenario === 'assets' && r.attrs?.at === at && r.attrs?.picker === pk));
+        if (held) {
+          m.count(`${q}.picturesHeld`, Number(held.attrs?.pictures));
+          m.count(`${q}.pictureBytes`, Number(held.attrs?.pictureBytes), 'bytes');
+        }
       }
     }
     return m;
@@ -4066,6 +4332,106 @@ export const editFullHistory: Scenario = {
 };
 
 // ---------------------------------------------------------------------------
+// editBranded
+// ---------------------------------------------------------------------------
+
+/** The favicon `editBranded` gives the site: a picture of the size a person picks for one, its file where an import puts it. */
+export const BRANDED_FAVICON = { id: 'img-perf-favicon', file: 'static/assets/perf-favicon.png', size: 256 } as const;
+/** The heading font it chooses: a theme font the Business starter does not use, so choosing it copies its files into the project. */
+export const BRANDED_FONT = { tokenId: 'font.display', value: "'Lora Variable', 'Lora', Georgia, 'Times New Roman', serif", face: /^lora-/ } as const;
+/** How old the favicon's file is before the font is chosen: older than a save trusts a file's timestamps for (ProjectSession.settleMs). */
+const FAVICON_AGE_MS = 3500;
+const BRANDED_HEADING = 'Branded heading';
+/** The website's icons drawn from the favicon (SITE_ICON_PATHS). */
+const DRAWN_ICONS = ['static/apple-touch-icon.png', 'static/icon-192.png', 'static/icon-512.png', 'static/favicon.ico'];
+
+/** The font faces the website's styles name (`url('../fonts/<file>')`) whose file names match `face`. */
+export function namedFaces(css: string, face: RegExp): string[] {
+  return [...css.matchAll(/url\('\.\.\/fonts\/([^'/]+)'\)/g)].map((m) => m[1]).filter((f) => face.test(f));
+}
+
+export const editBranded: Scenario = {
+  name: 'editBranded',
+  after: 'open',
+  description: 'Give the site a favicon and, once its file has settled, a theme font for headings it did not use (untimed); then change the home hero’s Heading in the Inspector and wait for the preview to show it: the save right after one that copied a font in, on a site with its own icons.',
+  async run(ctx) {
+    const { win, projectDir } = ctx;
+    const snap = () => win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    const at = (rel: string) => join(projectDir, ...rel.split('/'));
+    const bytesAt = (rel: string) => (existsSync(at(rel)) ? readFileSync(at(rel)) : null);
+    const apply = async (operations: unknown[], label: string) => {
+      const refused = await win.evaluate(
+        async ([ops, l]) => {
+          const r = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: ops as never }, { label: l });
+          return r.ok ? null : (r.error?.message ?? 'no reason given');
+        },
+        [operations, label] as const
+      );
+      expect(refused === null, `${label} was refused: ${refused}`);
+    };
+    const first = await snap();
+    expect(first, 'no project is open');
+    // Not timed. The favicon: its file written where an import puts it, its record added and chosen as one change, then
+    // left until every icon drawn from it is on disk.
+    const monogram = DRAWN_ICONS.map(bytesAt);
+    const picture = fixturePng(1, BRANDED_FAVICON.size, BRANDED_FAVICON.size);
+    mkdirSync(dirname(at(BRANDED_FAVICON.file)), { recursive: true });
+    writeFileSync(at(BRANDED_FAVICON.file), picture);
+    const writtenAt = Date.now();
+    const record = { id: BRANDED_FAVICON.id, name: 'Benchmark favicon', file: BRANDED_FAVICON.file, mime: 'image/png', bytes: picture.length, width: BRANDED_FAVICON.size, height: BRANDED_FAVICON.size, hash: createHash('sha256').update(picture).digest('hex'), kind: 'image', createdAt: ASSET_GROWN_AT };
+    await apply([{ type: 'asset.add', asset: record }, { type: 'site.update', favicon: BRANDED_FAVICON.id }], 'Benchmark favicon');
+    let drawn: Array<Buffer | null> = [];
+    for (let i = 0; i < 120; i++) {
+      drawn = DRAWN_ICONS.map(bytesAt);
+      if (drawn.every((b, k) => b && !(monogram[k] && b.equals(monogram[k])))) break;
+      await sleep(250);
+    }
+    const undrawn = DRAWN_ICONS.filter((_, k) => !drawn[k] || (monogram[k] && drawn[k]!.equals(monogram[k]!)));
+    expect(!undrawn.length, `the site’s icons were not drawn from its new favicon within 30 s: ${undrawn.join(', ')}`);
+    await settledAgain(ctx);
+    // The font, once the favicon's file is as old as a person's: its save copies the font's files in.
+    await sleep(Math.max(0, writtenAt + FAVICON_AGE_MS - Date.now()));
+    const before = (await snap())!;
+    await apply([{ type: 'token.set', tokenId: BRANDED_FONT.tokenId, value: BRANDED_FONT.value }], 'Benchmark font');
+    const shown = await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(before.revision + 1)), 30_000);
+    expect(shown.first('canvas.revisionApplied', atRevision(before.revision + 1)), 'the canvas did not show the font change within 30 s');
+    // Every face of the font the website's styles name, copied in as its theme's own file.
+    const faces = namedFaces(bytesAt(`${STYLES_DIR}/tokens.css`)?.toString('utf8') ?? '', BRANDED_FONT.face);
+    expect(faces.length, 'the website’s styles name no face of the heading font');
+    const pack = join(ROOT, 'resources', 'packs', before.state.site.themeId, 'fonts');
+    const copied = new Map<string, Buffer>();
+    for (const f of faces) {
+      const got = bytesAt(`${FONTS_DIR}/${f}`);
+      const want = existsSync(join(pack, f)) ? readFileSync(join(pack, f)) : null;
+      expect(got && want && got.equals(want), `the heading font’s face ${f} was not copied into the project as its theme’s file`);
+      copied.set(f, got);
+    }
+    await editHeroHeading(ctx, 'editBranded', BRANDED_HEADING, (after) => {
+      expect(after.state.site.favicon === BRANDED_FAVICON.id, 'the site lost its favicon');
+      for (const [f, bytes] of copied) expect(bytesAt(`${FONTS_DIR}/${f}`)?.equals(bytes), `the heading font’s face ${f} in the project changed with the edit`);
+      for (const [k, rel] of DRAWN_ICONS.entries()) expect(bytesAt(rel)?.equals(drawn[k]!), `the site’s icon ${rel} changed with the edit`);
+    });
+  },
+  measure(trace) {
+    const m = measureEdit(trace, 'editBranded');
+    // The favicon's file read and its bytes hashed by the edit's publication, which changed neither it nor any font.
+    // Only from a build that counts them: the publications before the edit read the favicon's new file at least once.
+    const startMain = m.need('scenario.start (main)', trace.first('scenario.start', forScenario('editBranded', 'main')));
+    if (!(counter(startMain, 'favicon.read') > 0)) m.need('favicon.read (counted before the edit)', undefined);
+    const begin = trace.first('scenario.start', forScenario('editBranded', 'renderer'));
+    const req = trace.first('edit.requested', inProc('renderer'), begin?.t ?? Infinity);
+    const target = typeof req?.attrs?.revision === 'number' ? req.attrs.revision + 1 : NaN;
+    const applied = trace.first('controller.apply', atRevision(target), req?.t ?? Infinity);
+    const publish = trace.first('session.publish', inProc('main'), req?.t ?? Infinity, applied?.t ?? -Infinity);
+    if (publish) {
+      m.count('editBranded.publishFaviconReads', delta(publish, 'favicon.read'));
+      m.count('editBranded.publishFaviconBytesHashed', delta(publish, 'favicon.hashedBytes'), 'bytes');
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // ai
 // ---------------------------------------------------------------------------
 
@@ -4600,7 +4966,7 @@ export const thumbs: Scenario = {
       await sleep(100);
     }
     // The card on the brand colour is drawn again (the window lasts until it is, then until quiet).
-    for (const until = Date.now() + THUMBS_WINDOW_MS; (await brandPicture()) === wasPainted; ) {
+    for (const until = Date.now() + THUMBS_WINDOW_MS; [wasPainted, null].includes(await brandPicture()); ) {
       expect(Date.now() < until, `${THUMBS_BRAND_CARD}, painted on the brand colour, still shows its picture from before the colour change`);
       await sleep(16);
     }
@@ -4660,6 +5026,15 @@ export const thumbs: Scenario = {
       m.count(name('keys'), gained('thumbs.keys'));
       m.count(name('brands'), gained('thumbs.brands'));
       m.ms(name('keyMs'), gained('thumbs.keyMs'));
+      // Each photograph's preview: made (synchronously, on main) and written, and what it came to.
+      const prepares = trace.all('thumbs.prepare', inProc('main'), start.t, end.t);
+      const generated = trace.all('componentPreview.generate', inProc('main'), start.t, end.t);
+      // A photograph is of a preview made for it: a build that marks photographs but none of that did not mark it.
+      if (gained('thumbs.captures') > 0 && (!prepares.length || !generated.length)) m.need(`thumbs.prepare and componentPreview.generate (none in ${w.name}, which took photographs)`, undefined);
+      m.ms(name('prepareMs'), prepares.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      m.ms(name('generateMs'), generated.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      m.count(name('previewFiles'), gained('componentPreview.files'));
+      m.count(name('previewBytes'), gained('componentPreview.bytes'), 'bytes');
       // How long the thumbnails kept the main process working after the window began: to the last of them.
       const last = Math.max(start.t, ...[...asked, ...answered, ...shots].map((r) => r.t));
       m.ms(name('busyMs'), last - start.t);
@@ -4676,7 +5051,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, editBranded, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

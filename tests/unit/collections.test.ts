@@ -4,7 +4,7 @@
  * or pointed elsewhere when it goes, and pictures they show count as uses of the library's images.
  */
 import { describe, expect, it } from 'vitest';
-import type { AssetRecord, InstanceNode, ProjectState } from '@shared/types';
+import type { AssetRecord, EntryDoc, InstanceNode, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
@@ -219,6 +219,18 @@ describe('collections', () => {
     expect(JSON.stringify(linked.collections.posts.entries.en_spring.body)).toContain('{"type":"entry","target":"en_winter"}');
     expect(validateState(linked).filter((d) => d.severity === 'error')).toEqual([]);
     expect(() => apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_nope', title: 'X' }])).toThrow(/no entry "en_nope"/);
+  });
+
+  it('orders a collection holding a damaged entry as it always has', () => {
+    const s = blog();
+    const posts = s.collections.posts;
+    // One entry: never compared, so kept whatever it is. Two: the damaged one cannot be compared.
+    expect(orderedEntries({ ...posts, entries: { en_bad: null as never } })).toEqual([null]);
+    expect(() => orderedEntries({ ...posts, entries: { ...posts.entries, en_bad: null as never } })).toThrow(TypeError);
+    // Text where an entry should be has no date: it is compared as one without, as the sort always did.
+    const entries: Record<string, EntryDoc> = { ...posts.entries, en_odd: 'odd' as never };
+    const before = Object.values(entries).sort((a, b) => (a.publishedAt !== b.publishedAt ? (a.publishedAt < b.publishedAt ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    expect(orderedEntries({ ...posts, entries })).toEqual(before);
   });
 
   it('orders entries newest first, or in a chosen order that new entries join at the end', () => {

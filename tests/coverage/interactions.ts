@@ -151,7 +151,7 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Make a new site, choosing its theme and starter content',
     start: 'Welcome in a fresh profile, or a project already open',
     routes: ['welcome:New project', 'dialog:New project › Theme', 'dialog:New project › Starter', 'dialog:New project › Create project', 'dialog:New project › Escape', 'menu:File > New Project…', 'command:newproject', 'item:Toolbar:New project…'],
-    outcome: 'The project is written to the folder the chooser gave and opens in the editor; Editorial is offered with its own starter thumbnails and sets headings from the project’s own font files; a Blank site’s Home starts empty with a note only the editor shows; over an open project the focused field is saved first, and Escape makes nothing and leaves the project as it was',
+    outcome: 'The project is written to the folder the chooser gave and opens in the editor; a Blank site’s Home starts empty with a note only the editor shows; over an open project the focused field is saved first, and Escape makes nothing and leaves the project as it was',
     scenario: 'welcome · none',
     proof: [
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'Welcome: a dialog opens from its button, keeps the focus, and Escape closes it with nothing made' },
@@ -160,7 +160,6 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/mcp.mjs', kind: 'driver', step: 'open New project, fill its name and read it back' },
       { test: 'tests/e2e/smoke.mjs', kind: 'e2e', step: 'create a project' },
       { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Welcome: Export and Close Project are unavailable, New Project opens its dialog' },
-      { test: 'tests/e2e/editorial.mjs', kind: 'e2e', step: 'New project offers Editorial' },
       { test: 'tests/e2e/starter-content.mjs', kind: 'e2e', step: 'Blank: Home starts empty, and only the editor says how to begin' },
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'name, starter and folder chosen through its controls' },
       { test: 'tests/e2e/lifecycle.mjs', kind: 'e2e', step: 'File > New Project opens over the project, saving the focused field, and Escape leaves the project as it was' },
@@ -1067,13 +1066,9 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Switch the site to another theme, including one I installed, and back',
     start: 'Business site on Foundation, Site styles open, with a pack in userData/packs beside a malformed one',
     routes: ['panel:Site styles › Theme'],
-    outcome: 'Every section and what it says is kept; Signal draws the pages with its own thumbnails and passes the layout inspection; an installed pack loads while a malformed one is listed as refused with its reason, and switching copies its fonts into the project for the preview; switching back leaves the project exactly as it was',
+    outcome: 'Every section and what it says is kept; an installed pack loads while a malformed one is listed as refused with its reason, and switching copies its fonts into the project for the preview; switching back leaves the project exactly as it was',
     scenario: 'Business starter · none',
     proof: [
-      { test: 'tests/e2e/signal-theme.mjs', kind: 'e2e', step: 'Site styles switches the project to Signal and shows its built thumbnail' },
-      { test: 'tests/e2e/signal-theme.mjs', kind: 'e2e', step: 'switching back to Foundation leaves the project as it was' },
-      { test: 'tests/e2e/editorial.mjs', kind: 'e2e', step: 'Site styles switches to Foundation and back, keeping every section and what it says' },
-      { test: 'tests/unit/signal-pack.test.ts', kind: 'unit' },
       { test: 'tests/unit/theme-packs.test.ts', kind: 'unit' },
       { test: 'tests/e2e/theme-packs.mjs', kind: 'e2e', step: 'Site styles offers the installed pack, lists the refused one, and switching copies the new font in' },
       { test: 'tests/e2e/theme-packs.mjs', kind: 'e2e', step: 'the preview loads the new font from the project' },
@@ -1111,7 +1106,6 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/insert-at.test.ts', kind: 'unit' },
       { test: 'tests/unit/insert-search.test.ts', kind: 'unit' },
       { test: 'tests/e2e/theme-packs.mjs', kind: 'e2e', step: 'Variants lists each option with its own thumbnail, and inserts the option shown' },
-      { test: 'tests/e2e/signal-theme.mjs', kind: 'e2e', step: 'Insert shows Signal’s thumbnails for its sections and variants' },
       { test: 'tests/unit/thumbs.test.ts', kind: 'unit' }
     ]
   },
@@ -1288,8 +1282,10 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'Rename gives a variant a descriptive name and a description' },
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'deleting an unused variant keeps the others, and Undo brings it back' },
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'each component in Your components shows a thumbnail, drawn again when its style changes (#370)' },
+      { test: 'tests/e2e/thumbs-brand.mjs', kind: 'e2e', step: 'a brand colour change draws again only the card that shows it' },
       { test: 'tests/unit/component-library.test.ts', kind: 'unit' },
-      { test: 'tests/unit/component-thumbs.test.ts', kind: 'unit' }
+      { test: 'tests/unit/component-thumbs.test.ts', kind: 'unit' },
+      { test: 'tests/unit/thumb-reads-browser.test.ts', kind: 'unit' }
     ]
   },
   {
@@ -1527,12 +1523,12 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Let a code component take content and expose parts to style',
     start: 'Blank site, a code component that marks a part and shows a slot',
     routes: ['canvas:click the marked part', 'canvas:+ inside the slot'],
-    outcome: 'Both are declared when it is created; content inserted on the canvas goes into the slot; a background set in the Inspector reaches the marked element; the website’s build carries no marker while the editable project keeps them',
+    outcome: 'Both are declared when it is created; content inserted on the canvas goes into the slot; a background set in the Inspector reaches the marked element; neither the website’s build nor the source export carries a marker while the editable project keeps them',
     scenario: 'Blank starter · none',
     proof: [
       { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'a Stack and a Button inserted on the canvas go into the code component’s slot' },
       { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'a background set in the Inspector reaches the marked element' },
-      { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'the website’s build carries no marker' },
+      { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'neither export carries a marker; the editable project keeps them' },
       { test: 'tests/unit/code-parts.test.ts', kind: 'unit' }
     ]
   },
@@ -1651,6 +1647,21 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/find-content.test.ts', kind: 'unit' }
     ],
     gaps: [{ missing: 'Find and replace is reached only from the Export dialog’s sample review; no e2e opens it with Shift+Cmd/Ctrl+F or from the command menu', owner: 'find' }]
+  },
+  {
+    id: 'find.entries',
+    area: 'find',
+    intent: 'Rename a term across the pages and the collection entries’ titles and excerpts',
+    start: 'Site with a blog and a collection synced from an external source',
+    routes: ['key:f', 'command:find', 'dialog:Find and replace › Replace'],
+    outcome: 'Local entries’ titles and excerpts change with the pages in one step that undoes as one; a synced collection’s matches are listed as read-only and left as they are',
+    scenario: 'unit fixtures · none',
+    proof: [
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'replaces in pages and entries in one batch, with one edit per entry, and finds none left' },
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'lists a synced collection’s entries as read-only results, and never changes them' },
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'changes a page and several entries in one step that undoes and redoes as one' }
+    ],
+    gaps: [{ missing: 'No e2e script replaces in an entry from the dialog or opens an entry match in the writer', owner: 'find' }]
   },
   {
     id: 'find.command',
@@ -1985,6 +1996,24 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/desktop.mjs', kind: 'driver', step: 'Show in folder is recorded as the reveal the app asked for, and Finder never opens' },
       { test: 'tests/e2e/export.mjs', kind: 'e2e', step: 'issue 212: the export dialog still lists what was handed off after it is closed and reopened' }
     ]
+  },
+  {
+    id: 'export.review-sheet',
+    area: 'export',
+    intent: 'Show a client chosen pages as pictures at desktop and phone widths, in one file they can open from Downloads without Builder, a server or the internet',
+    start: 'Business site open, the Export dialog’s Client review pages opened',
+    routes: ['menu:File > Export…', 'dialog:Export › Client review pages', 'dialog:Export › Capture page', 'dialog:Export › Save as one file', 'dialog:Export › Client review › Show in folder'],
+    outcome:
+      'Capturing pictures each chosen page at each width and lists the new edition; saving an edition writes one HTML file holding every picture, the pages’ titles, the widths’ names and the edition ID, with a note that links, menus and forms need a live preview, and the file opens from disk with no network and asks for nothing; a changed or missing picture, a link in the edition, or a place inside the project writes nothing',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/unit/export-modal-actions-browser.test.ts', kind: 'unit', step: 'captures chosen pages and saves an earlier edition as one file from a folded Client review section (#1134)' },
+      { test: 'tests/unit/review-edition.test.ts', kind: 'unit', step: 'writes one HTML file with every picture, title, width and the edition ID, where the chooser says, and can show it' },
+      { test: 'tests/unit/review-sheet-browser.test.ts', kind: 'unit' },
+      { test: 'tests/unit/review-sheet.test.ts', kind: 'unit' },
+      { test: 'tests/unit/review-ipc.test.ts', kind: 'unit' }
+    ],
+    gaps: [{ missing: 'No e2e script captures pages in the built app and saves the sheet through the real chooser; the dialog is proven with a stand-in bridge and the controller with a stand-in for the hidden capture window', owner: 'export' }]
   },
   {
     id: 'export.proofs',
@@ -2466,7 +2495,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'settings',
     intent: 'Connect an AI provider with my API key',
     start: 'A project open, Settings closed',
-    routes: ['toolbar:Settings', 'command:settings', 'item:Toolbar:Settings…', 'dialog:Settings › AI assistant › API key'],
+    routes: ['toolbar:Settings', 'command:settings', 'item:Toolbar:Settings…', 'item:Chat:Manage providers and keys…', 'dialog:Settings › AI assistant › API key'],
     outcome: 'The key is stored in a user-only local file and never in the OS keychain; once typed, it never comes back in an observation, a screenshot or a run record; in a zoomed-in interface Settings… is in the More menu',
     scenario: 'Business starter · none',
     proof: [
@@ -2476,7 +2505,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'a credential entered through the actions never comes back, nor does a screenshot while it is known' },
       { test: 'tests/e2e/mcp.mjs', kind: 'driver', step: 'once a credential is known, no screenshot comes back, not even one taken before' },
       { test: 'tests/e2e/layout.mjs', kind: 'e2e', step: 'a zoomed-in interface moves Zoom and Settings into a labelled More menu' },
-      { test: 'tests/unit/local-key-storage.test.ts', kind: 'unit' }
+      { test: 'tests/unit/local-key-storage.test.ts', kind: 'unit' },
+      { test: 'tests/unit/chat-model-menu-browser.test.ts', kind: 'unit', step: 'ends with Manage providers and keys, which opens the AI assistant settings' }
     ],
     gaps: [{ missing: 'Settings… from the command menu is never chosen by a test', owner: 'settings' }]
   },

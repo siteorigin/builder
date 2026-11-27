@@ -204,8 +204,9 @@ describe('offers', () => {
     });
     const offer = suggestForeground(tokens, PAIRS, byId(evaluatePairs(tokens, PAIRS), 'button') as never)!;
     expect(offer.value).toBe('#000000');
-    // What black makes measurable and failing is said (the light button's hover), not hidden.
-    expect(offer.breaks.map((r) => r.pair.id)).toEqual(['light-button-hover']);
+    // What black makes measurable and failing is said (the light button's hover, and error messages on the alternate
+    // ground that black now is), not hidden.
+    expect(offer.breaks.map((r) => r.pair.id)).toEqual(['error-surface-alt', 'light-button-hover']);
   });
 
   it('offers a choice for a brand linked to an independent color', () => {
@@ -359,7 +360,7 @@ describe('values that cannot be known', () => {
 describe('what ships', () => {
   it('declares only tokens its theme has, with unique ids', () => {
     const declaring = listThemes().filter((t) => t.contrastPairs);
-    expect(declaring.map((t) => t.id).sort()).toEqual(['editorial', 'foundation', 'foundation-alt', 'signal']);
+    expect(declaring.map((t) => t.id).sort()).toEqual(['foundation', 'foundation-alt']);
     for (const theme of declaring) {
       const ids = new Set(theme.tokens.map((t) => t.id));
       const pairs = theme.contrastPairs!;
@@ -373,7 +374,7 @@ describe('what ships', () => {
 
   it('is readable for every theme and starter as it is delivered', () => {
     const themes = listThemes().filter((t) => t.contrastPairs);
-    expect(themes.map((t) => t.id)).toEqual(expect.arrayContaining(['foundation', 'signal']));
+    expect(themes.map((t) => t.id)).toEqual(expect.arrayContaining(['foundation', 'foundation-alt']));
     for (const theme of themes) {
       const results = evaluatePairs(theme.tokens, theme.contrastPairs!);
       expect(results.map((r) => r.pair.id)).toEqual(expect.arrayContaining(['button', 'button-hover', 'dark-text', 'dark-accent', 'text-background', 'muted-surface-alt']));
@@ -392,7 +393,8 @@ describe('what ships', () => {
     expect(byId(results, 'brand-text-surface')).toMatchObject({ fg: '#1f5a4c', bg: '#ffffff' });
     expect(byId(results, 'brand-text-surface-alt')).toMatchObject({ fg: '#1f5a4c', bg: '#f2efe8' });
     expect(PAIRS.map((p) => p.id).sort()).toEqual([
-      'brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'dark-accent', 'dark-button', 'dark-button-hover', 'dark-text',
+      'brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'dark-accent', 'dark-button', 'dark-button-hover', 'dark-error', 'dark-error-edge', 'dark-text',
+      'error-background', 'error-edge-background', 'error-edge-surface', 'error-edge-surface-alt', 'error-surface', 'error-surface-alt',
       'focus-background', 'focus-surface', 'focus-surface-alt', 'light-button', 'light-button-hover', 'muted-background', 'muted-surface', 'muted-surface-alt',
       'text-background', 'text-surface', 'text-surface-alt'
     ]);
@@ -406,6 +408,47 @@ describe('what ships', () => {
     expect(hover).toMatchObject({ status: 'fail', fg: '#707070' });
     expect(ratioOf(hover)).toBeCloseTo(4.2621, 4);
     expect(suggestForeground(business({ 'color.inverse': '#707070', 'color.on-inverse': '#ffffff' }), PAIRS, hover as never)).toBeNull();
+  });
+
+  it('pairs each error colour with the grounds a form sits on, as text and as a field edge, each warning on its own (#1016)', () => {
+    const errorPairs = PAIRS.filter((p) => p.fg.startsWith('color.error')).map((p) => [p.id, p.fg, p.bg, p.min ?? 4.5, p.group]);
+    expect(errorPairs).toEqual([
+      ['error-background', 'color.error', 'color.background', 4.5, 'error'],
+      ['error-surface', 'color.error', 'color.surface', 4.5, 'error'],
+      ['error-surface-alt', 'color.error', 'color.surface-alt', 4.5, 'error'],
+      ['error-edge-background', 'color.error', 'color.background', 3, 'error-edge'],
+      ['error-edge-surface', 'color.error', 'color.surface', 3, 'error-edge'],
+      ['error-edge-surface-alt', 'color.error', 'color.surface-alt', 3, 'error-edge'],
+      ['dark-error', 'color.error-on-inverse', 'color.inverse', 4.5, 'dark-error'],
+      ['dark-error-edge', 'color.error-on-inverse', 'color.inverse', 3, 'dark-error-edge']
+    ]);
+    // The development fixture draws the same forms, so it checks the same pairs.
+    for (const id of ['foundation-alt']) expect((getTheme(id).contrastPairs ?? []).filter((p) => p.fg.startsWith('color.error')).map((p) => p.id), id).toEqual(errorPairs.map(([pid]) => pid));
+  });
+
+  it('measures error messages at 4.5:1 and the edges of fields to put right at 3:1, on the light grounds and in dark sections (#1016)', () => {
+    const errorIds = ['error-background', 'error-surface', 'error-surface-alt', 'error-edge-background', 'error-edge-surface', 'error-edge-surface-alt', 'dark-error', 'dark-error-edge'];
+    const status = (results: PairResult[]) => errorIds.map((id) => [id, byId(results, id).status]);
+    // As shipped, every error pair reads.
+    expect(status(evaluatePairs(business({}), PAIRS)).filter(([, s]) => s !== 'pass')).toEqual([]);
+    // A grey that reads as an edge on white cards (3.54:1) but not as text: only the text pair warns there.
+    const grey = evaluatePairs(business({ 'color.error': '#888888' }), PAIRS);
+    expect(byId(grey, 'error-surface')).toMatchObject({ status: 'fail', min: 4.5, fg: '#888888', bg: '#ffffff' });
+    expect(ratioOf(byId(grey, 'error-surface'))).toBeCloseTo(3.5449, 4);
+    expect(byId(grey, 'error-edge-surface')).toMatchObject({ status: 'pass', min: 3 });
+    // Paler still, it fails as an edge too.
+    const pale = evaluatePairs(business({ 'color.error': '#aaaaaa' }), PAIRS);
+    expect(byId(pale, 'error-surface').status).toBe('fail');
+    expect(byId(pale, 'error-edge-surface')).toMatchObject({ status: 'fail', min: 3 });
+    expect(ratioOf(byId(pale, 'error-edge-surface'))).toBeCloseTo(2.3231, 4);
+    // Dark sections are checked on their own error colour, which the light grounds' never stands in for.
+    const dark = evaluatePairs(business({ 'color.error-on-inverse': '#5a1a1a' }), PAIRS);
+    expect(byId(dark, 'dark-error')).toMatchObject({ status: 'fail', fg: '#5a1a1a', bg: '#14211d', min: 4.5 });
+    expect(byId(dark, 'dark-error-edge')).toMatchObject({ status: 'fail', min: 3 });
+    expect(status(dark).filter(([id, s]) => s !== 'pass' && !String(id).startsWith('dark-'))).toEqual([]);
+    // The error colour is the author's to choose: Site styles names what fails and offers no change to it.
+    expect(PAIRS.filter((p) => p.fg.startsWith('color.error')).every((p) => p.fixable === false)).toBe(true);
+    expect(suggestForeground(business({ 'color.error': '#888888' }), PAIRS, byId(grey, 'error-surface') as never)).toBeNull();
   });
 
   it('measures the focus outline against the page, cards and alternate sections at 3:1', () => {

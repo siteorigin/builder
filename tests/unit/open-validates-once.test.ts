@@ -15,13 +15,13 @@ vi.mock('@engine/validate', async (load) => {
   const real = await load<typeof import('@engine/validate')>();
   return {
     ...real,
-    coreValidation: (state: ProjectState) => {
+    coreValidation: (state: ProjectState, ...rest: unknown[]) => {
       checked.push(state);
-      return real.coreValidation(state);
+      return real.coreValidation(state, ...(rest as []));
     },
-    adviceValidation: (state: ProjectState) => {
+    adviceValidation: (state: ProjectState, ...rest: unknown[]) => {
       advised.push(state);
-      return real.adviceValidation(state);
+      return real.adviceValidation(state, ...(rest as []));
     }
   };
 });

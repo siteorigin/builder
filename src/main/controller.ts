@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, shell, type OpenDialogOptions, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, shell, type OpenDialogOptions, type WebContents } from 'electron';
 import { markdownMirrorRoute } from '@shared/llms';
+import { PREVIEW_PROJECT_STYLES } from '@shared/component-preview';
 import { firstStepsStart } from '@shared/first-steps';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -11,7 +12,7 @@ import { validateOperation, type ApplyResult, type EditBatch, type EditOperation
 import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SavedCopy, SourceSettingsDraft, TrustRequest, Unpacking } from '@shared/api';
 import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
-import { createStarterState, starterProblem } from '@catalogue/starters';
+import { STARTERS, createStarterState, starterProblem, starterTakesSamples } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
 import { applyOperations, sourceHash } from '@engine/apply';
@@ -26,12 +27,21 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
+import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionChanged, writeReviewEdition } from './review-edition';
+import { reviewSheet, writeReviewSheet } from './review-sheet';
+import type { ReviewShot } from './review-shot';
+import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { gitClient } from './git/process';
+import { GitError, type GitRepository } from './git/protocol';
+import { SNAPSHOT_ROOT_FILES } from './project/snapshot-inventory';
+import { commitPublication, credentialProblem, projectPublication, publishedTree, treeOid, type PreparedPublication, type Projection, type PublicationStatus } from './publication';
+import { redactSecrets } from './sources/redact';
 import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
 import { createAgentSources } from './sources/agent';
 import { sourceFingerprint } from '@shared/sources';
@@ -43,7 +53,7 @@ import { isImageBlock } from '@shared/richtext';
 import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
-import { atomicWrite, readIfExists, sha, toJson } from './project/fsutil';
+import { atomicWrite, readIfExists, safeJoin, sha, toJson } from './project/fsutil';
 import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/published';
 import { collectionRouteOwner } from '@shared/collections';
 import { fontCoverage } from './project/media';
@@ -55,11 +65,11 @@ import { DevServer, buildProject, dependenciesReady, prepareDependencies, stageD
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { type BuildTools, createPreviewStage, KeptTools, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
-import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/component-thumbs';
+import { ComponentThumbs, writeThumb, writeThumbReads, type CaptureResult } from './runtime/component-thumbs';
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
-import { addRecent, isTrusted, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
+import { addRecent, isTrusted, keyValues, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
 import { LIVE_BATCH_LABEL_MAX, type LiveEditBatch } from '@shared/live/capabilities';
@@ -67,9 +77,12 @@ import { MAX_MESSAGE_LENGTH } from '@shared/live/limits';
 import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/live/messages';
 import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
 import { guestEditProblem } from '@engine/guest-edits';
+import { copyEditorBatchProblem } from '@engine/copy-editor';
 import { formDestinationProblems } from '@engine/collection-sources';
 import { displayName } from '@engine/tree';
-import { LiveHostManager, type LiveGuestEdit } from './live/host';
+import { LiveHostManager, type LiveGuestEdit, type LiveNotesAnswer } from './live/host';
+import { makeNote, notePlace, NotesStore, type NotesChange } from './project/notes';
+import { NOTE_DRAFT_SCHEMA, NOTE_ID_RE, type LiveNote, type LiveNoteResult, type LiveNotes, type NoteAuthorRole, type NoteDraft } from '@shared/live/notes';
 import { LiveGuestManager } from './live/guest';
 import { loopbackPreview } from './live/preview-proxy';
 import { newId } from '@shared/ids';
@@ -322,6 +335,21 @@ const EDITOR_MARKUP = /<[a-zA-Z][^<>]*\sdata-so-(?:ctx|node)="|siteorigin-bridge
 const editorMarkup = (html: string) => EDITOR_MARKUP.test(html) || carriesCodeMarker(html);
 /** The same in a built script: the bridge, the editor's attributes, or a template that writes a code marker. */
 const editorScript = (js: string) => /siteorigin-bridge|data-so-ctx/.test(js) || carriesCodeMarker(js);
+/**
+ * How often an import gives the pictures it added the copies made of them so far (#979), besides once at its end: each
+ * time is one change, so the library is written and the editor sent the project once rather than once a picture.
+ */
+const COPIES_FILL_MS = 5000;
+
+/** What a publication says when the versions repository refused it: the repository's own words, which name no secret. */
+function publicationFailed(e: unknown): { ok: false; message: string; warnings: string[] } {
+  if (e instanceof GitError && e.code === 'conflict') return { ok: false, message: 'Another publication was prepared while this one was. Prepare the publication again.', warnings: [] };
+  return { ok: false, message: e instanceof GitError ? e.message : 'The versions repository could not be used, so the publication was not prepared.', warnings: [] };
+}
+
+/** Why a read-only project's notes are not changed. */
+const READ_ONLY_NOTES = 'This project is open read-only, so its notes can’t be changed.';
+
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -410,7 +438,31 @@ export class Controller {
       const s = this.session;
       if (!s || s.readOnly || s.dir !== root) return;
       await s.whileOwner(() => writeThumb(root, key, png));
-    }
+    },
+    persistReads: async (root, base, reads) => {
+      const s = this.session;
+      if (!s || s.readOnly || s.dir !== root) return;
+      await s.whileOwner(() => writeThumbReads(root, base, reads));
+    },
+    // A token or base stylesheet edited outside the app is what the preview shows, and no key says what is in it; nor
+    // does one for the private copy a project this app may not write to is previewed from.
+    ownStyles: () => {
+      const s = this.session;
+      return !!s && !s.readOnly && !this.stage && !s.conflicts.some((c) => (PREVIEW_PROJECT_STYLES as readonly string[]).includes(c.path));
+    },
+    showsStyles: async (tokens, baseCss) => {
+      const s = this.session;
+      if (!s || s.readOnly || this.stage) return false;
+      // The preview server shows the project's file, or the editor's copy of it in the dev cache: both must be these.
+      for (const [rel, want] of [[PREVIEW_PROJECT_STYLES[0], tokens], [PREVIEW_PROJECT_STYLES[1], baseCss]] as const) {
+        for (const root of [s.dir, join(s.dir, '.siteorigin', 'cache', 'dev')]) {
+          const got = await fs.readFile(safeJoin(root, rel), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' && root !== s.dir ? undefined : null));
+          if (got !== undefined && got !== want) return false;
+        }
+      }
+      return true;
+    },
+    scheme: () => (nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
   });
   /**
    * The live session the open project is hosting, if any (#762). It belongs to the opening it was started in and ends
@@ -424,6 +476,16 @@ export class Controller {
     relay: async () => resolveRelayUrl({ env: process.env[RELAY_URL_ENV], setting: (await loadSettings()).settings.liveRelayUrl }),
     guestSnapshot: (opening) => this.guestSnapshot(opening),
     applyGuest: (opening, guest, batch) => this.applyGuest(opening, guest, batch),
+    hostPaths: () => (this.session ? [this.session.dir, homedir()] : [homedir()]),
+    notes: {
+      list: async (opening) => {
+        const notes = await this.listNotes(opening);
+        return notes ? { ok: true, notes } : { ok: false, error: { code: 'UNAVAILABLE', message: 'The host’s project is not open.', recoverable: true } };
+      },
+      add: (opening, author, draft, check) => this.guestNoteChange(opening, check, (s, store, authorize) => this.addNoteTo(s, store, draft, author, authorize)),
+      resolve: (opening, id, resolved, check) => this.guestNoteChange(opening, check, (_s, store, authorize) => store.resolve(id, resolved, authorize)),
+      delete: (opening, id, check) => this.guestNoteChange(opening, check, (_s, store, authorize) => store.delete(id, authorize))
+    },
     emit: (channel, payload) => this.send(channel, payload)
   });
   /**
@@ -449,6 +511,8 @@ export class Controller {
    */
   private noticeTicket = 0;
   private publishedTicket = 0;
+  /** The open project's pinned notes (#770), for the session they were read in. */
+  private notesStore: { session: ProjectSession; store: NotesStore } | null = null;
   /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
   private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
   /**
@@ -609,7 +673,8 @@ export class Controller {
    * (shared/live/capabilities.ts), in the opening `opening`: through the same pipeline as the editor's own edits, in
    * turn with them, as a History step of its own that names the guest. Never code, whatever Settings allow. Refused, as
    * local edits are, while the AI is making changes or the project is read-only; and refused whole if, by the time it
-   * would be saved, the guest's access has changed or it would change where a contact form sends its messages.
+   * would be saved, the guest's access has changed or it would change where a contact form sends its messages. A copy
+   * editor's edit is held, as it would be saved, to what a copy editor may change (engine/copy-editor.ts).
    */
   async applyGuest(opening: string, guest: LiveGuestEdit, batch: LiveEditBatch): Promise<LiveApplyResult> {
     const session = this.session;
@@ -622,15 +687,20 @@ export class Controller {
     const shared = (error: RpcError): LiveApplyResult => ({ ok: false, error: { ...error, message: scrubHostPaths(error.message, [session.dir, homedir()]).slice(0, MAX_MESSAGE_LENGTH) } });
     let refusal: RpcError | null = null;
     // The project as the batch would leave it is the same however often the guard asks: checked once.
-    let checked: { next: ProjectState; problem: string | null } | null = null;
+    let checked: { next: ProjectState; problem: { message: string; operationIndex?: number } | null } | null = null;
+    const problem = (next: ProjectState) => {
+      const message = guestEditProblem(session.state, next);
+      if (message) return { message };
+      return guest.role === 'copy-editor' ? copyEditorBatchProblem(session.state, next, batch.operations) : null;
+    };
     const guard = (next: ProjectState | null) => {
       refusal =
         guest.check() ??
         (gone() ? { code: 'UNAVAILABLE', message: 'The host’s project is not open.', recoverable: true } : null) ??
         (this.aiBusy() ? { code: 'BUSY', message: 'The host’s AI is making changes. Try again once it has finished.', recoverable: true } : null);
       if (!refusal && next) {
-        if (checked?.next !== next) checked = { next, problem: guestEditProblem(session.state, next) };
-        if (checked.problem) refusal = { code: 'PERMISSION_DENIED', message: checked.problem, recoverable: false };
+        if (checked?.next !== next) checked = { next, problem: problem(next) };
+        if (checked.problem) refusal = { code: 'PERMISSION_DENIED', message: checked.problem.message, recoverable: false, ...(checked.problem.operationIndex !== undefined ? { operationIndex: checked.problem.operationIndex } : {}) };
       }
       return refusal ? { code: 'CANCELLED' as const, message: refusal.message, recoverable: refusal.recoverable } : null;
     };
@@ -646,6 +716,100 @@ export class Controller {
     const code = (RPC_ERROR_CODES as readonly string[]).includes(error.code) ? (error.code as RpcError['code']) : 'INTERNAL';
     // The engine's words, never its details.
     return shared({ code, message: error.message, recoverable: error.recoverable });
+  }
+
+  // -------------------------------------------------------------------------
+  // Pinned notes (#770)
+
+  /** The notes of the project open in the opening `key`, while it is not closing. */
+  private notesIn(key: unknown): { session: ProjectSession; store: NotesStore } | null {
+    const s = typeof key === 'string' ? this.openedAs(key) : null;
+    if (!s) return null;
+    if (this.notesStore?.session !== s) this.notesStore = { session: s, store: new NotesStore(s.local('notes.json'), (fn) => s.whileOwner(fn)) };
+    return this.notesStore;
+  }
+
+  /** The project's notes, newest first, in the opening `key`; null when that is not the project open. */
+  async listNotes(key: unknown): Promise<LiveNotes | null> {
+    const held = this.notesIn(key);
+    if (!held) return null;
+    const notes = await held.store.list().catch(() => null);
+    return notes && this.notesHeld(key, held) ? { notes: [...notes], guestNotes: this.live.guestNotes } : null;
+  }
+
+  /** Whether the notes read for an opening are still that opening's, and it is still the one open. */
+  private notesHeld(key: unknown, held: { session: ProjectSession; store: NotesStore }): boolean {
+    return this.notesStore === held && typeof key === 'string' && this.openedAs(key) === held.session;
+  }
+
+  /** Leave a note of the host's own, in the opening `key`. */
+  addNote(key: unknown, draft: unknown): Promise<LiveNoteResult> {
+    const parsed = NOTE_DRAFT_SCHEMA.safeParse(draft);
+    if (!parsed.success) return Promise.resolve({ ok: false, message: 'That note cannot be left.' });
+    return this.hostNoteChange(key, (s, store) => this.addNoteTo(s, store, parsed.data, { name: 'Host', role: 'host' }));
+  }
+
+  resolveNote(key: unknown, id: unknown, resolved: unknown): Promise<LiveNoteResult> {
+    if (typeof id !== 'string' || !NOTE_ID_RE.test(id) || typeof resolved !== 'boolean') return Promise.resolve({ ok: false, message: 'That note cannot be found.' });
+    return this.hostNoteChange(key, (_s, store) => store.resolve(id, resolved));
+  }
+
+  deleteNote(key: unknown, id: unknown): Promise<LiveNoteResult> {
+    if (typeof id !== 'string' || !NOTE_ID_RE.test(id)) return Promise.resolve({ ok: false, message: 'That note cannot be found.' });
+    return this.hostNoteChange(key, (_s, store) => store.delete(id));
+  }
+
+  /** A note on its page, checked against the project as it is now, then kept. */
+  private addNoteTo(s: ProjectSession, store: NotesStore, draft: NoteDraft, author: { name: string; role: NoteAuthorRole }, authorize?: () => string | null): Promise<NotesChange> {
+    const place = notePlace(s.state, draft);
+    if (typeof place === 'string') return Promise.resolve({ ok: false, message: place });
+    const note = makeNote(draft, place, author);
+    if (typeof note === 'string') return Promise.resolve({ ok: false, message: note });
+    return store.add(note, authorize);
+  }
+
+  /** Make a change to the notes of the opening `key`; once it is kept, the editor and the session's guests are told. */
+  private async noteChange(key: string, change: (s: ProjectSession, store: NotesStore, authorize?: () => string | null) => Promise<NotesChange>, authorize?: () => string | null): Promise<NotesChange> {
+    const held = this.notesIn(key);
+    if (!held) return { ok: false, message: 'The project is not open.', unavailable: true };
+    if (held.session.readOnly) return { ok: false, message: READ_ONLY_NOTES };
+    const result = await change(held.session, held.store, authorize);
+    if (result.ok && this.notesHeld(key, held)) this.notesChanged(result.notes);
+    return result;
+  }
+
+  private async hostNoteChange(key: unknown, change: (s: ProjectSession, store: NotesStore) => Promise<NotesChange>): Promise<LiveNoteResult> {
+    if (typeof key !== 'string') return { ok: false, message: 'The project is not open.' };
+    const result = await this.noteChange(key, change);
+    return result.ok ? { ok: true, notes: { notes: [...result.notes], guestNotes: this.live.guestNotes } } : result;
+  }
+
+  /** A guest's change, as the live session checked it; asked again (`check`) as its turn comes and before it is written. */
+  private async guestNoteChange(key: string, check: () => RpcError | null, change: (s: ProjectSession, store: NotesStore, authorize: () => string | null) => Promise<NotesChange>): Promise<LiveNotesAnswer> {
+    let refusal: RpcError | null = null;
+    const authorize = () => {
+      refusal = check();
+      return refusal?.message ?? null;
+    };
+    const dir = this.session?.dir;
+    const result = await this.noteChange(key, (s, store, a) => change(s, store, a!), authorize);
+    if (result.ok) return { ok: true, notes: { notes: [...result.notes], guestNotes: this.live.guestNotes } };
+    // What went wrong, in the words a guest acts on: its access, the project, a moment's trouble, or the note itself.
+    const failed: RpcError =
+      refusal ??
+      (result.message === READ_ONLY_NOTES
+        ? { code: 'READ_ONLY', message: result.message, recoverable: false }
+        : result.unavailable
+          ? { code: 'UNAVAILABLE', message: result.message, recoverable: true }
+          : { code: 'INVALID_ARGUMENT', message: result.message, recoverable: false });
+    // Whatever a guest is told names nothing of this computer.
+    return { ok: false, error: { ...failed, message: scrubHostPaths(failed.message, dir ? [dir, homedir()] : [homedir()]).slice(0, MAX_MESSAGE_LENGTH) } };
+  }
+
+  /** The notes changed: the editor is sent them, and the live session's guests are told. */
+  private notesChanged(notes: readonly LiveNote[]): void {
+    this.send('notes:changed', { notes: [...notes], guestNotes: this.live.guestNotes } satisfies LiveNotes);
+    this.live.notesChanged();
   }
 
   /** What the preview is doing; a project only a newer version can generate never has one. */
@@ -804,7 +968,7 @@ export class Controller {
       };
       const notice = starterNotice();
       const assetsDir = join(resourcesDir(), 'resources', 'starter-assets');
-      const withImages = opts.starter === 'business' && opts.sampleImages && existsSync(assetsDir);
+      const withImages = starterTakesSamples(opts.starter) && opts.sampleImages && existsSync(assetsDir);
       const state = createStarterState(opts.starter, name, withImages, opts.themeId);
       // Its website's icons are drawn while the rest of it is made.
       const draft = ProjectSession.starting(dir, state);
@@ -817,7 +981,7 @@ export class Controller {
           // A bundled sample is no file of the author's.
           delete record.originalName;
           record.altSuggestion = a.alt;
-          record.description = 'Sample image bundled with the Business starter. Replace it with your own.';
+          record.description = `Sample image bundled with the ${STARTERS.find((s) => s.id === opts.starter)?.name ?? 'starter'}. Replace it with your own.`;
           state.assets.assets[a.id] = record;
         }
         if (existsSync(notice)) {
@@ -1293,6 +1457,7 @@ export class Controller {
     this.handingOver = false;
     // A new opening lists only its own exports, even if an earlier one was never closed.
     this.endExports();
+    this.copiesFailed.clear();
     this.session = session;
     // In place before the first snapshot, so the editor opens with it.
     if (runtimeError) this.pendingStatus = runtimeError;
@@ -1340,8 +1505,14 @@ export class Controller {
       this.broadcast();
       // An import, a relink, an undo or an outside edit of the library may name files that are, or are not, there.
       if (ev.changedDocs.includes('siteorigin/assets.json')) void this.checkAssetFiles(session);
+      // Images still waiting for their copies are made once the project can take them (after a conflict is settled, say).
+      this.copyPending(session);
     });
-    session.on('history', () => this.broadcast());
+    session.on('history', () => {
+      this.broadcast();
+      // An AI request that ended lets the copies it held off be given (ProjectSession.fillCopies waits for it).
+      this.copyPending(session);
+    });
     // A save that failed shows in the editor's save indicator at once, though the project's revision did not move.
     session.on('save-failed', () => {
       if (this.session === session) this.broadcast();
@@ -1351,6 +1522,8 @@ export class Controller {
     this.watchExternalChanges(session);
     // Icons a save stopped waiting for before this app held the project's lock (a new project's) are published now.
     void session.refreshSiteIcons().catch(() => null);
+    // Copies a quit or a crash left unmade (#979).
+    this.copyPending(session);
     this.broadcast();
     // Project health lists missing image files a moment after the project shows: the look at every original and copy
     // in the library is not waited for.
@@ -1836,7 +2009,16 @@ export class Controller {
     if (!this.stage && session.readOnly) return { ok: false, message: 'The preview is not running.' };
     const spec = previewSpec(request);
     if (!spec) return { ok: false, message: 'That is not a component preview request.' };
+    // What one preview costs the main process to make, and what it is made of (scripts/perf: the thumbs scenario).
+    const endGenerate = perf.span('componentPreview.generate');
     const made = generateComponentPreview(session.state, spec);
+    endGenerate({ files: 'error' in made ? 0 : made.files.size });
+    if (perf.on && !('error' in made)) {
+      let bytes = 0;
+      for (const content of made.files.values()) bytes += Buffer.byteLength(content);
+      perf.count('componentPreview.files', made.files.size);
+      perf.count('componentPreview.bytes', bytes);
+    }
     if ('error' in made) return { ok: false, message: made.error };
     const root = this.stage ?? session.dir;
     // The lock is read again before writing into the project: a takeover the heartbeat has not seen yet gets nothing.
@@ -2119,6 +2301,8 @@ export class Controller {
     // From here preview work still under way finds the project gone and starts nothing; an install into the folder is
     // cancelled. Close waits for that work (a copy being made, a removal) before letting the lock go.
     if (this.session === s) this.session = null;
+    // Its notes go with it: a change to them still being made ends as it would, but tells nobody (noteChange).
+    if (this.notesStore?.session === s) this.notesStore = null;
     // From here the project is gone, whatever fails while it is put away, so the editor is always told: a project
     // opened next must never be shown over what is left of this one.
     try {
@@ -2536,6 +2720,126 @@ export class Controller {
   }
 
   /**
+   * As serialImport, but `fn` answers before all its work is done: the caller has `answer` at once, and the next import
+   * waits for `rest` too (the copies of the pictures an import added, #979).
+   */
+  private serialImportAnswering<T>(fn: () => Promise<{ answer: T; rest?: Promise<unknown> }>): Promise<T> {
+    const p = this.importQueue.then(fn, fn);
+    this.importQueue = p.then((r) => r.rest, () => undefined).catch(() => undefined);
+    return p.then((r) => r.answer);
+  }
+
+  /**
+   * Library images whose copies an opening of a project is making now (#979), by ID: by the import that added them, or
+   * by copyPending. An opening's own: one that closed while its copies were made never holds up the next one's.
+   */
+  private copying = new WeakMap<ProjectSession, Set<string>>();
+  private copyingIn(s: ProjectSession) {
+    let ids = this.copying.get(s);
+    if (!ids) this.copying.set(s, (ids = new Set()));
+    return ids;
+  }
+  /** The copy runs under way or waiting their turn, which an export waits for, so the site it builds has every copy. */
+  private copyRuns = new Set<Promise<unknown>>();
+  /**
+   * Images whose copies could not be made because their file is missing or is not the picture recorded (`id:hash`), in
+   * this opening: not tried again until the file is located.
+   */
+  private copiesFailed = new Set<string>();
+
+  /**
+   * Make the copies of library images added before them (copiesPending, #979), a few at a time, and give the records the
+   * copies written: once every COPIES_FILL_MS while they are made, so a long batch keeps what it has made if the app
+   * stops, and once at the end. Each is one change (ProjectSession.fillCopies), no step of History. Runs in an import's
+   * turn, holding off the asset sweep. Resolves once every copy is made or the project closed. An image still waiting at
+   * the end (undone and redone meanwhile, or its copies refused while an AI request ran) is made again, unless the
+   * project could not be written; one whose file is missing or another picture waits until it is located.
+   */
+  private makeCopies(s: ProjectSession, records: readonly AssetRecord[]): Promise<void> {
+    const todo = [...records];
+    const fence = this.writeFence(s);
+    const fills: Array<{ assetId: string; file: string; hash: string; variants: Array<{ width: number; file: string }> }> = [];
+    let lastFill = Date.now();
+    // Whether the project refused a fill or a write for a reason that holds (it cannot be written now): nothing is made again.
+    let stuck = false;
+    let filling: Promise<void> | null = null;
+    const fill = () => {
+      if (filling || !fills.length) return;
+      // One batch at a time: copies made while it is saved wait for the next (or the last).
+      filling = (async () => {
+        const batch = fills.splice(0);
+        const r = await s.fillCopies(batch).catch(() => null);
+        // Copies refused while an AI request runs are given at the end, when it may have finished.
+        if (r?.busy) fills.unshift(...batch);
+        else if (!r?.ok) stuck = true;
+        filling = null;
+      })();
+    };
+    const lane = async () => {
+      for (let r = todo.shift(); r; r = todo.shift()) {
+        if (this.session !== s || this.closing) return;
+        let variants: Array<{ width: number; file: string }> | null;
+        try {
+          variants = await makePendingCopies(s.dir, r, fence);
+        } catch {
+          // A write that failed (a full disk): tried again when the library next changes or the project opens.
+          stuck = true;
+          continue;
+        }
+        if (!variants) {
+          // Copies the project closed before (or a quit) are made when it opens again.
+          if (this.session === s && !this.closing) this.copiesFailed.add(`${r.id}:${r.hash}`);
+          continue;
+        }
+        fills.push({ assetId: r.id, file: r.file, hash: r.hash, variants });
+        // Each change sends the editor the project and writes the library again: copies wait to be given together.
+        if (Date.now() - lastFill >= COPIES_FILL_MS) {
+          lastFill = Date.now();
+          fill();
+        }
+      }
+    };
+    const claimed = this.copyingIn(s);
+    const run = s
+      .withImport(async () => {
+        await Promise.all(Array.from({ length: Math.max(1, Math.min(MEDIA_PARALLEL, todo.length)) }, lane));
+        while (filling) await filling;
+        fill();
+        while (filling) await filling;
+      })
+      .finally(() => {
+        for (const r of records) claimed.delete(r.id);
+        this.copyRuns.delete(run);
+        if (!stuck && this.session === s && !this.closing && records.some((r) => s.state.assets.assets[r.id]?.copiesPending === true)) this.copyPending(s);
+      });
+    this.copyRuns.add(run);
+    return run;
+  }
+
+  /**
+   * Make the copies of every library image still waiting for them that no import is making (#979): ones a quit or a
+   * crash left unmade, and ones Undo, Redo, a restored version or an outside edit brought back still waiting. In an
+   * import's turn, after any import before it; an export waits for it from now.
+   */
+  private copyPending(s: ProjectSession) {
+    // Never while the project closes: its runs stop at once, and the next opening makes what is left.
+    if (s.readOnly || this.session !== s || this.closing || s.activeRun) return;
+    const claimed = this.copyingIn(s);
+    const waiting = Object.values(s.state.assets.assets).filter((a) => a.copiesPending === true && !claimed.has(a.id) && !this.copiesFailed.has(`${a.id}:${a.hash}`));
+    if (!waiting.length) return;
+    for (const a of waiting) claimed.add(a.id);
+    const queued: Promise<unknown> = this.serialImport(() => (this.session === s ? this.makeCopies(s, waiting) : Promise.resolve(waiting.forEach((a) => claimed.delete(a.id)))))
+      .catch(() => undefined)
+      .finally(() => this.copyRuns.delete(queued));
+    this.copyRuns.add(queued);
+  }
+
+  /** Until the copies being made now, or waiting their turn, are made: a site exported after it has every copy. */
+  async copiesMade(): Promise<void> {
+    while (this.copyRuns.size) await Promise.all([...this.copyRuns]).catch(() => undefined);
+  }
+
+  /**
    * Choose files to import (the chooser, unless `paths` are given) and say what each would become, writing nothing:
    * which HEIC photos are converted, which large photos could be added as web-sized copies, which can't be added.
    */
@@ -2577,57 +2881,79 @@ export class Controller {
     const picked = only ? files.filter((f) => isAssetOfKind(f, only)) : files;
     const refused = files.length - picked.length;
     const reviewed = new Map((choices?.files ?? []).map((f) => [f.path, f]));
-    // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile.
-    return this.serialImport(timed('controller.importAssets', () => s.withImport(async () => {
-      const ids: string[] = [];
-      const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
-      const notes: string[] = [];
-      const ops: Array<{ type: 'asset.add'; asset: AssetRecord }> = [];
-      const backfills = [];
-      // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
-      const known = Object.values(s.state.assets.assets);
-      // One time for the whole import, so the images it adds are listed together and by name.
-      const createdAt = new Date().toISOString();
-      // A few at a time, as many as the media worker makes at once; what each did is told in the files' order.
-      // Written only while the project is still open and this app's; the decoding and converting are done before.
-      const outcomes = await importAssetBatch(
-        s.dir,
-        picked.map((f) => {
-          const r = reviewed.get(f);
-          return { path: f, opts: { decoder: this.photoDecoder, createdAt, ...(r ? { webCopy: r.webCopy, fingerprint: r.fingerprint } : {}) } };
-        }),
-        known,
-        this.writeFence(s),
-        // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
-        { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
-      );
-      const started = outcomes.findIndex((o) => !o);
-      for (const o of started < 0 ? outcomes : outcomes.slice(0, started)) {
-        if (!o) continue;
-        if ('error' in o) {
-          errors.push(o.error.message);
-          continue;
-        }
-        const { record, existing, font, note } = o;
-        if (note) notes.push(note);
-        if (!ids.includes(record.id)) ids.push(record.id);
-        if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
-        if (!existing) ops.push({ type: 'asset.add' as const, asset: record });
+    // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile. The editor
+    // has its answer once the pictures have landed; their copies follow in the same turn (#979), which the span covers.
+    return this.serialImportAnswering(async () => {
+      const span = perf.span('controller.importAssets');
+      let added = 0;
+      try {
+        const { answer, rest } = await s.withImport(async (): Promise<{ answer: { ok: boolean; assetIds: string[]; message?: string; note?: string }; rest?: Promise<void> }> => {
+          const ids: string[] = [];
+          const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
+          const notes: string[] = [];
+          const ops: Array<{ type: 'asset.add'; asset: AssetRecord }> = [];
+          const backfills = [];
+          // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
+          const known = Object.values(s.state.assets.assets);
+          // One time for the whole import, so the images it adds are listed together and by name.
+          const createdAt = new Date().toISOString();
+          // A few at a time, as many as the media worker makes at once; what each did is told in the files' order.
+          // Written only while the project is still open and this app's; the decoding and converting are done before.
+          // A picture lands as soon as its own file is stored, its copies made after (#979).
+          const outcomes = await importAssetBatch(
+            s.dir,
+            picked.map((f) => {
+              const r = reviewed.get(f);
+              return { path: f, opts: { decoder: this.photoDecoder, createdAt, copiesLater: true, ...(r ? { webCopy: r.webCopy, fingerprint: r.fingerprint } : {}) } };
+            }),
+            known,
+            this.writeFence(s),
+            // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
+            { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
+          );
+          const started = outcomes.findIndex((o) => !o);
+          for (const o of started < 0 ? outcomes : outcomes.slice(0, started)) {
+            if (!o) continue;
+            if ('error' in o) {
+              errors.push(o.error.message);
+              continue;
+            }
+            const { record, existing, font, note } = o;
+            if (note) notes.push(note);
+            if (!ids.includes(record.id)) ids.push(record.id);
+            if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
+            if (!existing) ops.push({ type: 'asset.add' as const, asset: record });
+          }
+          if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
+          if (backfills.length) {
+            const r = await s.apply({ operations: backfills }, { label: 'Update font details', source: 'user' });
+            if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
+          }
+          // The pictures still to be given their copies, claimed before they land so nothing else starts on them.
+          const waiting = ops.map((o) => o.asset).filter((a) => a.copiesPending);
+          const claimed = this.copyingIn(s);
+          for (const a of waiting) claimed.add(a.id);
+          if (ops.length) {
+            const kinds = ['font', 'image', 'document'] as const;
+            const one = kinds.find((k) => ops.every((o) => o.asset.kind === k));
+            const noun = one ? [one, `${one}s`] : ['file', 'files'];
+            const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
+            if (!r.ok) {
+              for (const a of waiting) claimed.delete(a.id);
+              return { answer: { ok: false, assetIds: [], message: r.error?.message } };
+            }
+          }
+          const answer = { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
+          // Started inside this import's hold on the asset sweep, so there is no moment between them for a sweep.
+          return { answer, rest: waiting.length ? this.makeCopies(s, waiting) : undefined };
+        });
+        added = answer.assetIds.length;
+        return { answer, rest: (rest ?? Promise.resolve()).finally(() => span({ files: picked.length, added })) };
+      } catch (e) {
+        span({ files: picked.length, added });
+        throw e;
       }
-      if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
-      if (backfills.length) {
-        const r = await s.apply({ operations: backfills }, { label: 'Update font details', source: 'user' });
-        if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
-      }
-      if (ops.length) {
-        const kinds = ['font', 'image', 'document'] as const;
-        const one = kinds.find((k) => ops.every((o) => o.asset.kind === k));
-        const noun = one ? [one, `${one}s`] : ['file', 'files'];
-        const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
-        if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
-      }
-      return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
-    }), (r) => ({ files: picked.length, added: r?.assetIds.length ?? 0 })));
+    });
   }
 
   /**
@@ -3271,6 +3597,8 @@ export class Controller {
         const found = await locateAssetFile(s.dir, record, file, this.assetFence(s, record, at), Object.values(s.state.assets.assets));
         if (found.same) {
           await this.checkAssetFiles(s);
+          // An image waiting for copies its missing file kept from being made has them made now.
+          if (this.copiesFailed.delete(`${record.id}:${record.hash}`)) this.copyPending(s);
           if (document) return { ok: true, message: found.written.length ? `${name} is back in the project folder.` : `${name} already has that file.` };
           if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
           return { ok: true, message: `${name} is back in the project folder.` };
@@ -3469,6 +3797,9 @@ export class Controller {
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
+    // Images just added carry the copies being made of them (#979).
+    await this.copiesMade();
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     // What the export says about what it delivered, in order, with where to fix what the editor can fix.
     const notes: ExportNote[] = [];
     const warn = (...messages: string[]) => void notes.push(...messages.map((message) => ({ message })));
@@ -3516,6 +3847,9 @@ export class Controller {
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
+    // The site offers every copy of the images just added (#979): it waits for the ones being made.
+    await this.copiesMade();
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     // Build an isolated snapshot so the running preview and later edits cannot mix into the output.
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published));
   }
@@ -3532,7 +3866,275 @@ export class Controller {
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, 'folder');
     if (bad) return { ok: false, message: bad, warnings: [] };
+    // The review shows every copy of the images just added, as the website export does (#979).
+    await this.copiesMade();
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the review was built.', warnings: [] };
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, 'folder', undefined, { review: true }));
+  }
+
+  /** Photographs one page of a served review build at one width; set by the app (main/review-capture). */
+  reviewShoot: ((url: string, width: number, signal: AbortSignal) => Promise<ReviewShot>) | null = null;
+  /** The review edition being captured, called off when its project closes. */
+  private reviewCapture: AbortController | null = null;
+
+  /**
+   * Capture a review edition (#1133): build the site for review (stageReviewBuild), serve it over loopback, photograph
+   * each of `request.routes` at each of `request.widths` (a desktop and a phone width when none are given), and keep
+   * the pictures and their manifest as a new edition in the project's private reviews folder. A page that could not
+   * be pictured faithfully at a width is recorded as unavailable there; the edition is kept all the same. Nothing is
+   * kept when the build fails, the project closes or changes hands, or the edition cannot be written.
+   */
+  async captureReviewEdition(request: { routes: unknown; widths?: unknown }): Promise<ReviewEditionResult> {
+    const shoot = this.reviewShoot;
+    if (!shoot) return { ok: false, message: 'Review pages cannot be captured here.' };
+    const blocked = this.exportBlocked();
+    if (blocked) return { ok: false, message: blocked.message };
+    const s = this.session!;
+    const widths = reviewWidths(request.widths);
+    if ('error' in widths) return { ok: false, message: widths.error };
+    const routes = reviewRoutes(request.routes);
+    if ('error' in routes) return { ok: false, message: routes.error };
+    // Asked for against the project as it is now, so a mistake is said before the build; and again against the build.
+    const asked = pickReviewPages(reviewPages(publishedState(s.state)), routes);
+    if ('error' in asked) return { ok: false, message: asked.error };
+    // One capture at a time; one called off (its project closed) is on its way out and holds nothing up.
+    if (this.reviewCapture && !this.reviewCapture.signal.aborted) return { ok: false, message: 'A review edition is already being captured. Wait for it to finish.' };
+    const job = new AbortController();
+    this.reviewCapture = job;
+    const siteName = s.state.site.name;
+    const closed = 'The project was closed before the review edition was captured.';
+    const gone = () => job.signal.aborted || this.session !== s;
+    try {
+      return await this.withStaging(async (staging): Promise<ReviewEditionResult> => {
+        // The staging folder took a moment: the build is of this project, or of nothing.
+        if (gone()) return { ok: false, message: closed };
+        const site = join(staging, 'site');
+        const built = await this.stageReviewBuild(site);
+        if (gone()) return { ok: false, message: closed };
+        if (!built.ok) return { ok: false, message: built.message, ...(built.details ? { details: built.details } : {}) };
+        const pages = pickReviewPages(built.pages ?? [], routes);
+        if ('error' in pages) return { ok: false, message: pages.error };
+        const base = built.basePath ?? '';
+        let server: string;
+        try {
+          server = await this.previews.serve(site, base);
+        } catch {
+          return { ok: false, message: gone() ? closed : 'The review build could not be served to be captured.' };
+        }
+        try {
+          const { manifest, dir } = await writeReviewEdition({
+            projectDir: s.dir,
+            site,
+            server,
+            siteName,
+            basePath: base,
+            revision: built.revision ?? s.revision,
+            pages,
+            widths,
+            shoot: (url, width) => shoot(url, width, job.signal),
+            work: join(staging, 'edition'),
+            signal: job.signal,
+            // Written as every write into the project is (writeFence): in its queue, only while it is the open project,
+            // not closing, and owned by this app, holding its claim throughout; and looked at again just before the move.
+            commit: async (publish) => {
+              if (!(await this.writeFence(s)(publish))) throw new Error(gone() || this.closing ? closed : (s.readOnly?.reason ?? READ_ONLY));
+            },
+            beforeCommit: () => {
+              if (gone() || this.closing) throw new Error(closed);
+            }
+          });
+          const missing = manifest.captures.filter((c) => c.status !== 'captured').length;
+          const shots = manifest.captures.length;
+          return { ok: true, edition: manifest, path: dir, message: missing ? `Captured ${shots - missing} of ${shots} pictures; ${missing} could not be taken.` : `Captured ${shots} ${shots === 1 ? 'picture' : 'pictures'}.` };
+        } finally {
+          this.previews.stop(server);
+        }
+      });
+    } catch (e) {
+      if (gone()) return { ok: false, message: closed };
+      return { ok: false, message: `The review edition could not be saved: ${e instanceof Error ? e.message : String(e)}` };
+    } finally {
+      if (this.reviewCapture === job) this.reviewCapture = null;
+    }
+  }
+
+  /** Call off the review edition being captured, if any: nothing of it is kept (the editor closed, so nobody waits for it). */
+  cancelReviewCapture() {
+    this.reviewCapture?.abort();
+  }
+
+  /** The open project's review editions, newest first. */
+  async reviewEditions(): Promise<ReviewEditionManifest[]> {
+    return this.session ? listReviewEditions(this.session.dir) : [];
+  }
+
+  /** The versions repository of the project in a folder (#1152): the Git worker's. Tests give one of their own. */
+  repository: (root: string) => GitRepository = (root) => gitClient.repository(root);
+
+  /** The publication being prepared or checked, so one waits for the other (#1154). */
+  private publishing: Promise<unknown> = Promise.resolve();
+
+  private onePublication<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.publishing.then(fn, fn);
+    this.publishing = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * The open project's website as it would be published, staged in `staging` (#1154): the website build's isolated
+   * copy, its root files held still too, turned into the publication (projectPublication).
+   */
+  private async stagePublication(s: ProjectSession, staging: string): Promise<Projection> {
+    const project = join(staging, 'project');
+    const snap = await this.snapshotSource(s, project, { forBuild: true, roots: SNAPSHOT_ROOT_FILES });
+    if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+    return projectPublication(project, snap.state);
+  }
+
+  /**
+   * Prepare the open project's publication (#1154): its published website alone, committed onto the publication's own
+   * history in the project's versions repository (made now if the project has none), after the last one prepared.
+   * Stops, moving nothing, when the website holds one of the user's secrets or keys, an address with a password in it,
+   * or is missing a file it uses. A website the same as the last publication's makes no commit.
+   */
+  preparePublication(): Promise<PreparedPublication> {
+    // The project asked for is the one prepared: one opened meanwhile, while an earlier publication finished, is not it.
+    const s = this.session;
+    return this.onePublication(() => timed('controller.preparePublication', () => this.preparePublicationNow(s), (r) => ({ ok: r?.ok ?? false }))());
+  }
+
+  /** The user's secrets and keys, to search the publication for and to keep out of what it says, or why they cannot be read. */
+  private async publicationSecrets(s: ProjectSession): Promise<{ values: string[] } | { failed: string }> {
+    try {
+      return { values: [...(await sourceSecrets.values(s.state.manifest.projectId)), ...(await keyValues())] };
+    } catch (e) {
+      return { failed: `${(e as Error).message} The website could not be checked for your secrets, so it was not prepared.` };
+    }
+  }
+
+  private async preparePublicationNow(s: ProjectSession | null): Promise<PreparedPublication> {
+    const closed = { ok: false as const, message: 'The project was closed before the publication was prepared.', warnings: [] };
+    if (s && this.session !== s) return closed;
+    const blocked = this.exportBlocked();
+    if (blocked || !s) return { ok: false, message: blocked?.message ?? 'No project open.', warnings: [] };
+    await this.copiesMade();
+    if (this.session !== s) return closed;
+    const repo = this.repository(s.dir);
+    // The publication goes after the last one as it was before the project was read: one made meanwhile is never built on unseen.
+    let last: Awaited<ReturnType<typeof publishedTree>>;
+    try {
+      last = await publishedTree(repo);
+    } catch (e) {
+      return publicationFailed(e);
+    }
+    // Read before the website is and again after, so a key replaced meanwhile is searched for as it was and as it is.
+    const before = await this.publicationSecrets(s);
+    if ('failed' in before) return { ok: false, message: before.failed, warnings: [] };
+    return this.withStaging(async (staging) => {
+      const made = await this.stagePublication(s, staging);
+      const after = await this.publicationSecrets(s);
+      if ('failed' in after) return { ok: false, message: after.failed, warnings: [] };
+      const secrets = { values: [...new Set([...before.values, ...after.values])] };
+      // What a stop says names files and pictures, any of which may be named with a secret.
+      const told = <T extends { ok: false; message: string; warnings: string[] }>(r: T): T => ({ ...r, message: redactSecrets(r.message, secrets.values), warnings: r.warnings.map((w) => redactSecrets(w, secrets.values)) });
+      if (!made.ok) return told(made);
+      const problem = await credentialProblem(made.files, secrets.values);
+      if (problem) return { ok: false, message: problem, warnings: [] };
+      if (this.session !== s) return closed;
+      try {
+        return { ok: true, ...(await commitPublication(repo, made.files, last)) };
+      } catch (e) {
+        return told(publicationFailed(e));
+      }
+    });
+  }
+
+  /**
+   * Whether the open project's website differs from its last publication (#1154): its publication made again and
+   * compared file by file, so an edit to what the website does not carry (the brief, a draft), or one undone, is no
+   * change, and a picture replaced on disk is one. Writes nothing, and makes no repository.
+   */
+  publicationStatus(): Promise<PublicationStatus> {
+    const s = this.session;
+    return this.onePublication(() => timed('controller.publicationStatus', () => this.publicationStatusNow(s), (r) => ({ ok: r?.ok ?? false }))());
+  }
+
+  private async publicationStatusNow(s: ProjectSession | null): Promise<PublicationStatus> {
+    const closed = { ok: false as const, message: 'The project was closed before its publication was checked.', warnings: [] };
+    if (s && this.session !== s) return closed;
+    const blocked = this.exportBlocked();
+    if (blocked || !s) return { ok: false, message: blocked?.message ?? 'No project open.', warnings: [] };
+    await this.copiesMade();
+    if (this.session !== s) return closed;
+    return this.withStaging(async (staging) => {
+      const made = await this.stagePublication(s, staging);
+      if (!made.ok) {
+        const secrets = await this.publicationSecrets(s);
+        const values = 'values' in secrets ? secrets.values : [];
+        return { ...made, message: redactSecrets(made.message, values), warnings: made.warnings.map((w) => redactSecrets(w, values)) };
+      }
+      // The last publication as it is now that the website has been read, so the answer is about the branch as it stands.
+      try {
+        const last = await publishedTree(this.repository(s.dir));
+        return { ok: true, prepared: last?.commit ?? null, changed: last?.tree !== treeOid(made.files) };
+      } catch (e) {
+        return publicationFailed(e);
+      }
+    });
+  }
+
+  /**
+   * Save review edition `editionId` of the open project as its offline sheet (#1134): one HTML file holding every
+   * picture, which opens from disk with no Builder, server or network. The chooser offers a file in Documents unless
+   * `dest` is given. Only reads the project, so it works read-only too; a picture that is gone or no longer matches
+   * the edition stops it, and nothing is written.
+   */
+  async exportReviewSheet(editionId: unknown, dest?: string): Promise<ReviewSheetResult> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'Open a project to save its review pages.' };
+    const gone = 'That review edition is no longer in this project.';
+    if (typeof editionId !== 'string' || !(await hasReviewEdition(s.dir, editionId))) return { ok: false, message: gone };
+    let file = dest;
+    // A name typed without ".html": the file is named here, never landing on one the chooser did not ask about.
+    let typed: string | null = null;
+    if (!file) {
+      const r = await dialog.showSaveDialog(this.getWindow()!, {
+        title: 'Save the review pages as one file',
+        defaultPath: join(app.getPath('documents'), `${slugify(s.state.site.name) || 'website'}-review-${editionId}.html`),
+        filters: [{ name: 'Web page', extensions: ['html'] }],
+        buttonLabel: 'Save',
+        properties: ['showOverwriteConfirmation', 'createDirectory']
+      });
+      if (r.canceled || !r.filePath) return { ok: false };
+      file = r.filePath;
+      if (!/\.html?$/i.test(file)) typed = file;
+    }
+    const closed = 'The project was closed before the review pages were saved.';
+    const open = () => this.session === s && !this.closing;
+    if (!open()) return { ok: false, message: closed };
+    // A file written into the project would be one of its own, outside its history.
+    if (isInside(s.dir, typed ? `${typed}.html` : file)) return { ok: false, message: 'Choose a location outside the project folder.' };
+    const named = (i: number) => `${typed}${i > 1 ? `-${i}` : ''}.html`;
+    const exists = (p: string) => fs.lstat(p).then(() => true, () => false);
+    try {
+      // Read after the chooser closed, a picture at a time: what is saved is the edition as it is on disk now.
+      const edition = await openReviewEdition(s.dir, editionId);
+      if (!edition.ok) return { ok: false, message: edition.message };
+      for (let i = 1; ; i++) {
+        if (typed) {
+          while (await exists(named(i))) i++;
+          file = named(i);
+        }
+        const r = await writeReviewSheet(file, reviewSheet(edition.manifest, edition.picture), { fresh: !!typed, stillOpen: open });
+        if (r === 'closed') return { ok: false, message: closed };
+        if (r === 'written') break;
+      }
+      this.exportPaths.add(file);
+      return { ok: true, path: file, message: 'Saved the review pages as one file.' };
+    } catch (e) {
+      if (e instanceof ReviewEditionChanged) return { ok: false, message: e.message };
+      return { ok: false, message: `The review pages were not saved: ${e instanceof Error ? e.message : String(e)}` };
+    }
   }
 
   /** Each open project's file hashes from its last export's fingerprints, by the stamps they stand for (projectInventory). */
@@ -3554,7 +4156,7 @@ export class Controller {
     return join(app.getPath('userData'), 'build-staging');
   }
 
-  private async withStaging(fn: (staging: string) => Promise<ExportResult>): Promise<ExportResult> {
+  private async withStaging<T>(fn: (staging: string) => Promise<T>): Promise<T> {
     const stagingRoot = this.stagingRoot();
     const sweeping = perf.span('export.sweep');
     await fs.mkdir(stagingRoot, { recursive: true });
@@ -3580,11 +4182,11 @@ export class Controller {
    * build configuration the user trusted, because the build runs the copy. The state returned is the one the
    * files were copied from, so everything said about the export describes this snapshot.
    */
-  private snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+  private snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean; roots?: readonly string[] } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
     return timed('export.stage', () => this.snapshotSourceNow(s, dest, opts), (r) => ({ ok: r?.ok ?? false, forBuild: !!opts.forBuild }))();
   }
 
-  private async snapshotSourceNow(s: ProjectSession, dest: string, opts: { forBuild?: boolean }): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+  private async snapshotSourceNow(s: ProjectSession, dest: string, opts: { forBuild?: boolean; roots?: readonly string[] }): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
     const stop = (message: string) => ({ ok: false as const, message });
     // The website's icons follow a favicon file changed with no document changing (put back by Locate, replaced in the
     // folder), so the export never carries icons of another picture than its favicon. They are drawn without holding
@@ -3609,7 +4211,7 @@ export class Controller {
       // Files left alone since an earlier pass (this export's, or the last one's) are known by their stamps.
       const cache = this.exportHashes.get(s) ?? new Map();
       this.exportHashes.set(s, cache);
-      const before = await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs }), () => ({ pass: 'before' }))();
+      const before = await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs, roots: opts.roots }), () => ({ pass: 'before' }))();
       // The generated files were just hashed for the fingerprint: those whose stamps stand for their bytes are checked
       // against the manifest by those hashes (inventoryChanged below sees any write to them since), the rest are read.
       const trusted = new Map([...before.hashes].filter(([rel]) => before.stamps.get(rel)?.trusted));
@@ -3639,7 +4241,7 @@ export class Controller {
       if (opts.forBuild) {
         if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
       } else await finishExportedSource(dest, s.state, starterNotice(), await syncCliText(s.state));
-      if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
+      if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs, roots: opts.roots }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       return { ok: true as const, revision: s.revision, state: structuredClone(s.state) };
     }));
@@ -3822,7 +4424,7 @@ export class Controller {
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();
     if (problem) return { ok: false, message: problem, warnings: warnings() };
     // A review build is put in place and nothing more: no address it holds was delivered to visitors.
-    if (opts.review) return { ok: true, path: dest, message: `Built ${exported} for review.`, warnings: warnings(), notes, revision, basePath: basePath(state) };
+    if (opts.review) return { ok: true, path: dest, message: `Built ${exported} for review.`, warnings: warnings(), notes, revision, basePath: basePath(state), pages: reviewPages(live) };
     // How the host shows the not-found page is guidance, not a warning: it goes beside the notes, never among them.
     const hosting = notFoundHostNote(basePath(state), redirectHost(live.site));
     const exportedAt = new Date().toISOString();
@@ -3881,6 +4483,8 @@ export class Controller {
 
   /** Stop every exported-website preview and forget the exports: they belonged to the project that made them. */
   private endExports() {
+    // A review edition being captured belongs to the project too: it is called off, and nothing of it is kept.
+    this.reviewCapture?.abort();
     this.previews.stopAll();
     this.recentExports = [];
   }

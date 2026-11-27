@@ -14,6 +14,8 @@ import { declaredTokens } from './tokens';
 import { ICONS } from '@shared/icons';
 
 const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'token', 'list', 'table', 'object'] as const;
+/** The property types a live session's Copy Editor may be allowed to change (see engine/copy-editor.ts). */
+const COPY_EDITABLE_TYPES: readonly string[] = ['string', 'richtext', 'image'];
 /** Token groups a token property can choose from. A text style is several values at once, so no style can bind one. */
 const TOKEN_PROP_GROUPS: readonly TokenGroup[] = ['color', 'font', 'space', 'container', 'radius', 'shadow', 'border'];
 
@@ -45,6 +47,14 @@ const num = (v: unknown, label: string): number | undefined => {
 const count = (v: unknown, label: string): number | undefined => {
   const n = num(v, label);
   if (n !== undefined && (!Number.isInteger(n) || n < 0 || n > 1000)) fail(`${label} must be a whole number from 0 to 1000.`);
+  return n;
+};
+/** The most characters a text property may be limited to: a web address takes up to 2,048. A default is held to its
+ *  limit, so a component's whole manifest still fits one tool result for the assistant to read and send back. */
+const MAX_TEXT_LENGTH = 4096;
+const length = (v: unknown, label: string): number | undefined => {
+  const n = num(v, label);
+  if (n !== undefined && (!Number.isInteger(n) || n < 0 || n > MAX_TEXT_LENGTH)) fail(`${label} must be a whole number from 0 to ${MAX_TEXT_LENGTH.toLocaleString('en')}.`);
   return n;
 };
 
@@ -120,10 +130,16 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
   const label = `Property "${name}"`;
   if (r.required !== undefined && typeof r.required !== 'boolean') fail(`${label}: required must be true or false.`);
   if (r.required) out.required = true;
+  if (r.copyEditable !== undefined && r.copyEditable !== false) {
+    // Copy a live session's Copy Editor may change: a component's own text or picture, never a field of a list or object.
+    if (r.copyEditable !== true) fail(`${label}: copyEditable must be true or false.`);
+    if (inList || !COPY_EDITABLE_TYPES.includes(type)) fail(`${label}: only a component's own text, rich text or image property can be copyEditable.`);
+    out.copyEditable = true;
+  }
   switch (type) {
     case 'string': {
       if (r.multiline !== undefined) out.multiline = !!r.multiline;
-      const maxLength = count(r.maxLength, `${label} maxLength`);
+      const maxLength = length(r.maxLength, `${label} maxLength`);
       if (maxLength) out.maxLength = maxLength;
       out.default = '';
       break;

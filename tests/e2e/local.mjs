@@ -75,10 +75,9 @@ try {
   const dialog = win.locator('.modal');
   await dialog.getByRole('tab', { name: 'AI assistant' }).click();
   await dialog.getByRole('tab', { name: 'Local model' }).click();
-  // Looking at a provider's settings does not switch the one in use; the button does.
+  // Looking at a provider's setup does not switch the one in use; the composer's model menu does (#954).
   assert.notEqual((await settings()).ai.provider, 'local');
-  await dialog.getByRole('button', { name: 'Use Local model', exact: true }).click();
-  await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
+  assert.equal(await dialog.getByRole('button', { name: 'Use Local model', exact: true }).count(), 0, 'Settings only sets providers up');
 
   step(`the ${preset.label} preset`);
   const presetButton = dialog.getByRole('group', { name: 'Usual address for' }).getByRole('button', { name: preset.label, exact: true });
@@ -136,6 +135,10 @@ try {
   step('a chat edit through the local model');
   server.script(envelopeReply('update_site_brand', { siteName: 'Harbor Coffee' }, 'Renaming the site'), envelopeReply('finish', { message: 'Renamed the site to Harbor Coffee.' }));
   await win.locator('.dock-tab', { hasText: 'AI' }).click();
+  // OpenAI has no key, so the chat asks for one; its model menu switches to the local server set up above.
+  await win.locator('.composer-model').click();
+  await win.getByRole('menuitemradio', { name: 'second-model, Local model', exact: true }).click();
+  await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
   const message = win.getByRole('textbox', { name: 'Message' });
   /** Send a request and wait for its result card. */
   const sendRequest = async (text) => {
@@ -286,15 +289,10 @@ try {
 
   step('switching this conversation to a hosted provider warns that its messages leave this computer');
   await win.evaluate(() => window.builder.ai.setKey('openai', `sk-proj-${'e2eNotARealKey0123456789'.repeat(2)}`));
-  await win.locator('[aria-label="Settings"]').click();
-  await dialog.getByRole('tab', { name: 'AI assistant' }).click();
-  await dialog.getByRole('tab', { name: 'OpenAI' }).click();
-  // Looking at a provider's settings does not switch the one in use; the button does.
-  assert.notEqual((await settings()).ai.provider, 'openai');
-  await dialog.getByRole('button', { name: 'Use OpenAI', exact: true }).click();
+  // Chosen from the composer's model menu, which lists OpenAI's models once its key is saved (#954).
+  await win.locator('.composer-model').click();
+  await win.getByRole('menuitemradio', { name: 'GPT-6.2 Sol, OpenAI', exact: true }).click();
   await eventually(async () => assert.equal((await settings()).ai.provider, 'openai'));
-  await dialog.locator('button.btn', { hasText: /^Close$/ }).click();
-  await dialog.waitFor({ state: 'detached' });
   await eventually(async () => assert.equal(await notice.innerText(), 'Your next message goes to OpenAI · GPT-6.2 Sol with recent messages from your conversation with Local model · first-model and Local model · second-model. Those messages leave this computer. Start fresh'));
   assert.match((await notice.getAttribute('class')) ?? '', /\bdanger\b/);
 

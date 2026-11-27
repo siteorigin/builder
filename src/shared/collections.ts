@@ -35,6 +35,14 @@ export function collectionKind(settings: { kind?: unknown } | undefined): Collec
   return settings?.kind === 'structured' ? 'structured' : 'editorial';
 }
 
+/** Whether a collection of this kind is in the site's RSS feed when it says nothing of its own: dated articles are, records are not. */
+export const feedsByDefault = (kind: CollectionKind): boolean => kind === 'editorial';
+
+/** Whether a collection's entries are listed in the site's RSS feed: as it says, otherwise as its kind does. */
+export function inSiteFeed(settings: { kind?: unknown; rss?: unknown } | undefined): boolean {
+  return typeof settings?.rss === 'boolean' ? settings.rss : feedsByDefault(collectionKind(settings));
+}
+
 const pagesOf = (settings: { pages?: unknown } | undefined) => (settings?.pages && typeof settings.pages === 'object' ? (settings.pages as { detail?: unknown; archive?: unknown }) : {});
 
 /** Whether each of a collection's entries has a page of its own: yes unless it says no. */
@@ -146,10 +154,18 @@ export function findEntry(state: ProjectState, entryId: string): { collection: C
  */
 export function orderedEntries(collection: Collection): EntryDoc[] {
   const all = Object.values(collection.entries);
-  const byDate = all.sort((a, b) => (a.publishedAt !== b.publishedAt ? (a.publishedAt < b.publishedAt ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // Each entry's date and ID read once, and compared as they are: a sort compares each entry many times over. A
+  // damaged entry (written by hand) is compared as it always was.
+  const byDate = all.every((e) => e && typeof e === 'object')
+    ? all
+        .map((entry) => ({ entry, at: entry.publishedAt, id: entry.id }))
+        .sort((a, b) => (a.at !== b.at ? (a.at < b.at ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .map((k) => k.entry)
+    : all.sort((a, b) => (a.publishedAt !== b.publishedAt ? (a.publishedAt < b.publishedAt ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const order = collection.settings.entryOrder;
   if (!Array.isArray(order)) return byDate;
-  const listed = order.filter((id) => Object.hasOwn(collection.entries, id)).map((id) => collection.entries[id]);
+  // Each entry once, where the order first lists it (a hand-edited order may repeat one).
+  const listed = [...new Set(order)].filter((id) => Object.hasOwn(collection.entries, id)).map((id) => collection.entries[id]);
   const seen = new Set(listed);
   return [...listed, ...byDate.filter((e) => !seen.has(e))];
 }

@@ -11,7 +11,7 @@ import { PALETTE_MOODS, PALETTE_ROLES, darkPins, darkSection, harmonizePalette, 
 import { compositeOver } from '@shared/contrast';
 import { getTheme } from '@catalogue/index';
 
-/** Yellows, cyans, deep indigos, pastels, near-blacks and near-whites, saturated mid-tones, and the greys where Signal's eyebrow pill reads on neither page. */
+/** Yellows, cyans, deep indigos, pastels, near-blacks and near-whites, saturated mid-tones, and the greys where a tinted eyebrow pill reads on neither page. */
 const BRANDS = [
   '#f5c518', '#ffff00', '#ffd60a', '#eab308',
   '#00ffff', '#06b6d4', '#22d3ee',
@@ -22,9 +22,21 @@ const BRANDS = [
   '#777777', '#747474', '#707070', '#787878', '#0064fa', '#e11d48', '#d14131', '#22c55e', '#00ff00', '#ff00ff', '#f97316',
   '#1f5a4c', '#1e3a5f', '#6b2d5c', '#8b4513'
 ];
-const THEMES = ['foundation', 'signal', 'editorial'];
+/** A theme beside Foundation, to be sure the palette also works on any other. */
+const THEMES = ['foundation', 'foundation-alt', 'eyebrow-pill'];
+/** An eyebrow pill is its label colour at 8% over the section: a theme that draws one adds pairs a mid-tone brand cannot satisfy on either page. */
+const pill = (fg: string, ground: string) => ({ mix: [fg, 8, ground] as [string, number, string] });
+const EYEBROW_PAIRS: ContrastPair[] = [
+  { id: 'eyebrow-background', use: 'Eyebrow labels on the page', fg: 'color.brand', bg: pill('color.brand', 'color.background'), state: 'rest', group: 'brand-text', fixable: false },
+  { id: 'eyebrow-surface-alt', use: 'Eyebrow labels on alternate sections', fg: 'color.brand', bg: pill('color.brand', 'color.surface-alt'), state: 'rest', group: 'brand-text', fixable: false },
+  { id: 'eyebrow-dark', use: 'Eyebrow labels in dark sections', fg: 'color.accent', bg: pill('color.accent', 'color.inverse'), state: 'rest', group: 'dark-accent', fixable: false }
+];
 
 const themeOf = (id: string) => {
+  if (id === 'eyebrow-pill') {
+    const foundation = getTheme('foundation');
+    return { tokens: foundation.tokens as TokenDef[], pairs: [...(foundation.contrastPairs ?? []), ...EYEBROW_PAIRS] };
+  }
   const theme = getTheme(id);
   expect(theme.id).toBe(id);
   return { tokens: theme.tokens as TokenDef[], pairs: theme.contrastPairs ?? [] };
@@ -59,26 +71,26 @@ describe('every pair readable, for any brand and mood (#357)', () => {
     expect(checked).toBeGreaterThan(BRANDS.length * PALETTE_MOODS.length * THEMES.length * 20);
   });
 
-  it('keeps the brand exactly wherever a page can carry it as text, which on Foundation and Editorial is every brand', () => {
-    for (const themeId of ['foundation', 'editorial'])
+  it('keeps the brand exactly wherever a page can carry it as text, which on Foundation is every brand', () => {
+    for (const themeId of ['foundation', 'foundation-alt'])
       for (const mood of PALETTE_MOODS)
         for (const brand of BRANDS) {
           const h = make(brand, mood, themeId);
           expect(h.adjusted, `${themeId} ${mood} ${brand}`).toBe(false);
           expect(h.values['color.brand']).toBe(brand);
         }
-    expect(make('#1f5a4c', 'tinted', 'signal')).toMatchObject({ adjusted: false, brand: '#1f5a4c' });
+    expect(make('#1f5a4c', 'tinted', 'eyebrow-pill')).toMatchObject({ adjusted: false, brand: '#1f5a4c' });
   });
 
-  it("moves a mid-grey brand the least it must on Signal, whose tinted eyebrow pill reads on neither a white nor a black page, and says so", () => {
-    const h = make('#747474', 'tinted', 'signal');
+  it("moves a mid-grey brand the least it must on a theme whose tinted eyebrow pill reads on neither a white nor a black page, and says so", () => {
+    const h = make('#747474', 'tinted', 'eyebrow-pill');
     expect(h).toMatchObject({ requested: '#747474', adjusted: true });
     expect(h.values['color.brand']).toBe(h.brand);
     expect(h.brand).not.toBe('#747474');
     // Every grey from #707070 to #787878 reads on neither page; the nearest that does on each side are #6f6f6f and
     // #797979, and the palette takes whichever is nearer the brand in lightness.
-    for (const grey of ['#707070', '#787878']) expect(make(grey, 'tinted', 'signal').adjusted, grey).toBe(true);
-    for (const grey of ['#6f6f6f', '#797979']) expect(make(grey, 'tinted', 'signal').adjusted, grey).toBe(false);
+    for (const grey of ['#707070', '#787878']) expect(make(grey, 'tinted', 'eyebrow-pill').adjusted, grey).toBe(true);
+    for (const grey of ['#6f6f6f', '#797979']) expect(make(grey, 'tinted', 'eyebrow-pill').adjusted, grey).toBe(false);
     const L = lch('#747474').L;
     const nearer = Math.abs(lch('#6f6f6f').L - L) < Math.abs(lch('#797979').L - L) ? '#6f6f6f' : '#797979';
     expect(h.brand).toBe(nearer);
@@ -98,8 +110,42 @@ describe('every pair readable, for any brand and mood (#357)', () => {
     }
   });
 
+  it('sets a red error colour for the light grounds and one for dark sections, readable on each, for any brand, mood and page (#1016)', () => {
+    const red = (hex: string) => {
+      const c = lch(hex);
+      // sRGB takes chroma away, never hue: the red stays within a few degrees of the one asked for.
+      return c.C > 0.08 && Math.abs(((c.h - 27 + 540) % 360) - 180) < 3;
+    };
+    const pages = new Set<string>();
+    for (const themeId of THEMES)
+      for (const mood of PALETTE_MOODS)
+        for (const brand of BRANDS) {
+          const h = make(brand, mood, themeId);
+          const v = h.values;
+          const at = `${themeId} ${mood} ${brand}`;
+          pages.add(h.page);
+          // Both roles are made on every theme that has them, as saved #rrggbb, and stay red whatever the brand.
+          expect(v['color.error'], at).toMatch(/^#[0-9a-f]{6}$/);
+          expect(v['color.error-on-inverse'], at).toMatch(/^#[0-9a-f]{6}$/);
+          expect(red(v['color.error']!), `${at} error ${v['color.error']}`).toBe(true);
+          expect(red(v['color.error-on-inverse']!), `${at} error-on-inverse ${v['color.error-on-inverse']}`).toBe(true);
+          // Measured again on the saved colours: text on the page, cards and alternate sections, and in dark sections.
+          for (const ground of ['color.background', 'color.surface', 'color.surface-alt'] as const) expect(ratio(v['color.error']!, v[ground]!), `${at} on ${ground}`).toBeGreaterThanOrEqual(4.5);
+          expect(ratio(v['color.error-on-inverse']!, v['color.inverse']!), `${at} in dark sections`).toBeGreaterThanOrEqual(4.5);
+        }
+    // Dark pages (a yellow brand) are among them: their error colour turns light with their grounds.
+    expect([...pages].sort()).toEqual(['dark', 'light']);
+    // Each page and mood at the lightness it asks for, where every pair allows it (Foundation keeps the targets here).
+    const L = (brand: string, mood: PaletteMood, id: 'color.error' | 'color.error-on-inverse') => lch(make(brand, mood).values[id]!).L;
+    expect(L('#ffff00', 'neutral', 'color.error')).toBeCloseTo(0.72, 2);
+    expect(L('#1f5a4c', 'neutral', 'color.error')).toBeCloseTo(0.5, 2);
+    expect(L('#1f5a4c', 'high-contrast', 'color.error')).toBeCloseTo(0.44, 2);
+    expect(L('#ffff00', 'high-contrast', 'color.error')).toBeCloseTo(0.76, 2);
+    for (const brand of ['#1f5a4c', '#ffff00']) expect(L(brand, 'tinted', 'color.error-on-inverse')).toBeCloseTo(0.78, 2);
+  });
+
   it('is deterministic', () => {
-    for (const mood of PALETTE_MOODS) expect(make('#6b2d5c', mood, 'signal')).toEqual(make('#6b2d5c', mood, 'signal'));
+    for (const mood of PALETTE_MOODS) expect(make('#6b2d5c', mood, 'eyebrow-pill')).toEqual(make('#6b2d5c', mood, 'eyebrow-pill'));
   });
 });
 

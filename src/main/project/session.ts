@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent } from 'node:fs';
+import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, PublishedDoc, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
@@ -16,16 +16,18 @@ import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, Save
 import { validateOperation } from '@shared/ops';
 import { axesOf, choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
-import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, type Clipboard } from '@engine/apply';
+import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, walkOperations, type Clipboard } from '@engine/apply';
 import { frozen } from '@engine/draft';
 import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
-import { anchorsInUse, displayName, EngineError } from '@engine/tree';
+import { anchorsInUse, displayName, EngineError, instancesOf } from '@engine/tree';
 import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
 import { syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
+import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
+import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
@@ -34,15 +36,16 @@ import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { HISTORY_LIMIT } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile } from '@generator/index';
+import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
+import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, codeAxisPropProblems, codeContractNames, componentSources } from '../codecheck';
+import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, componentSources } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
@@ -55,7 +58,10 @@ import { perf, timed } from '../perf';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
 
 export { statTrusted };
-import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
+import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type PendingOutcome, type SavedVersion } from './versions';
+import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
+import { captureSnapshotInventory, foldName } from './snapshot-inventory';
+import { GitError, type FileInput } from '../git/protocol';
 
 export const LOCAL_DIR = '.siteorigin';
 
@@ -83,6 +89,8 @@ export interface OpenOptions {
 export const SOURCE_DRAFTS = 'ai-runs';
 /** Which property each variant axis of a definition arrives in, comparable between two versions of it. */
 const axisPropsKey = (def: ComponentDefinition) => JSON.stringify(axesOf(def).map(([axis, a]) => [axis, a.prop]).sort(([a], [b]) => String(a).localeCompare(String(b))));
+/** What a code component's code is held to of its manifest (see codeManifestProblems): its axes' props and its properties. */
+const manifestKey = (def: ComponentDefinition) => `${axisPropsKey(def)}|${JSON.stringify(def.properties ?? {})}`;
 /** A run's ID as the orchestrator makes it (newId): safe to name a folder with. */
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -192,14 +200,66 @@ function namesFile(text: string, file: string): boolean {
 /** A restore stopped before its documents were saved: the files it put back are put back as they were. */
 class RestoreStopped extends Error {}
 
-/** The name of the version saved before restoring the one named `name`, kept short however often restores nest. */
+/** A version could not be saved to Git because the project's version history is damaged. */
+class HistoryDamaged extends Error {}
+
+/** Whether a part of project path `rel` that is there is a link: looked at from the top down; a part not there ends it. */
+async function linkOnTheWay(root: string, rel: string): Promise<boolean> {
+  let at = root;
+  for (const part of rel.split('/')) {
+    const st = await fs.lstat((at = join(at, part))).catch(() => null);
+    if (!st) return false;
+    if (st.isSymbolicLink()) return true;
+  }
+  return false;
+}
+
+/** A version's name as another's names it, kept short however often restores nest. */
+const shortName = (name: string) => (name.length > 50 ? `${name.slice(0, 49).trimEnd()}…` : name);
+
+/** The name of the version saved before restoring the one named `name`. */
 function backupName(name: string): string {
-  const short = name.length > 50 ? `${name.slice(0, 49).trimEnd()}…` : name;
-  return `Before restoring “${short}”`;
+  return `Before restoring “${shortName(name)}”`;
+}
+
+/** The name of the version of the site as restoring the one named `name` left it (#1155). */
+function restoredName(name: string): string {
+  return `Restored “${shortName(name)}”`;
 }
 
 /** Every stored version a history entry restores or expects. */
 const entryBlobs = (e: HistoryEntry) => Object.values(e.docs).flatMap((d) => [d.before, d.after]).filter((x): x is string => !!x);
+
+/**
+ * History with a change folded into it rather than recorded as a step (a library image's copies arriving after the
+ * import that added it, #979): for each document the change rewrote, the nearest applied step that left it and the
+ * nearest undone step that expects it name the new version instead of the one replaced, when they named that one. Those
+ * are the versions Undo and Redo check the document against first, so both still find it as they left it, and each
+ * then restores what it always did (an Undo of the import, the images without their copies). Steps further away, and
+ * the order and number of steps, are as they were.
+ */
+function amendedHistory(h: HistoryFile, changed: Record<string, { before: string | null; after: string | null }>): HistoryFile {
+  const entries = h.entries.map((e) => ({ ...e, docs: { ...e.docs } }));
+  for (const [path, { before, after }] of Object.entries(changed)) {
+    if (!before || !after) continue;
+    for (let i = h.cursor - 1; i >= 0; i--) {
+      const d = entries[i].docs[path];
+      if (!d) continue;
+      if (d.after === before) entries[i].docs[path] = { ...d, after };
+      break;
+    }
+    for (let i = h.cursor; i < entries.length; i++) {
+      const d = entries[i].docs[path];
+      if (!d) continue;
+      if (d.before === before) entries[i].docs[path] = { ...d, before: after };
+      break;
+    }
+  }
+  return { ...h, entries };
+}
+
+/** Whether `copy` is a file of the responsive copies of the library file `file`, as the importer names them. */
+const copyOf = (file: string, copy: string) => copy.startsWith(`${file.replace(/\.[a-z0-9]+$/, '')}-`) && /^static\/assets\/[a-z0-9][a-z0-9-]*-\d+w\.(jpg|png|webp|avif)$/.test(copy);
 
 /** The project files (static/assets/…) an assets document lists, with their responsive copies. */
 function libraryFiles(text: string | null | undefined): string[] {
@@ -299,7 +359,7 @@ export interface HistoryEntry {
    * entry is applied, that run's turn reads as undone. Never on the AI run's own entry, which `runId` names.
    */
   revertsRunId?: string;
-  /** The live-session guest who made this change, by the name the host let them in under (#765). */
+  /** The live-session guest who made this change, by the name the host let them in under (#765); on an AI step, the guest the AI ran for (#769). */
   guestName?: string;
 }
 
@@ -579,9 +639,12 @@ export class ProjectSession extends EventEmitter {
    * set a save stopped waiting for is published on its own once it is ready, while this app holds the project's lock
    * (a new project's session has none until the app takes it; the set is then published as the project opens).
    */
-  private siteIcons = new SiteIconMaker(() => {
-    if (this.lockState === 'held') void this.refreshSiteIcons().catch(() => null);
-  });
+  private siteIcons = new SiteIconMaker(
+    () => {
+      if (this.lockState === 'held') void this.refreshSiteIcons().catch(() => null);
+    },
+    () => this.settleMs
+  );
   /** The icons the last finished publication carried (what they were made from, and which drawing made them). */
   private iconsPublished: { key: string; id: number | null } | null = null;
   /** What the icons the last publication asked for are made from. */
@@ -597,6 +660,8 @@ export class ProjectSession extends EventEmitter {
   settleMs = 3000;
   /** Checks worked out from a state, kept for as long as it is the session's: the state is replaced, never changed. */
   private derived = new WeakMap<ProjectState, { core?: CoreValidation; diagnostics?: Diagnostic[]; saving?: Diagnostic[]; usages?: Record<string, number>; updates?: ThemeUpdates }>();
+  /** The parts of validation one state can share with the next: each document checked again only when it changes. */
+  private validation = new ValidationCache();
   conflicts: Conflict[] = [];
   /** While the open's publication runs after the project is shown: the conflicts as they were before it (shownConflicts). */
   private conflictsBeforeOpen: Conflict[] | null = null;
@@ -639,6 +704,8 @@ export class ProjectSession extends EventEmitter {
   activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>>; hashes: Map<string, { text: string; hash: string }> } | null = null;
   private writing: Promise<unknown> = Promise.resolve();
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
+  /** What the user allowed of AI batches that change where a contact form sends, and what they may yet be asked (#1129). */
+  private routingGrants = new FormRoutingGrants();
   /** The documents were read in an older format and the update has not been stored yet. */
   private migrationDue = false;
   /** Publishing an update failed and may have left its journal, which only reopening the project can finish. */
@@ -664,7 +731,7 @@ export class ProjectSession extends EventEmitter {
 
   constructor(public readonly dir: string) {
     super();
-    this.versions = new VersionStore(this.local('versions'));
+    this.versions = new VersionStore(this.local('versions'), dir);
   }
 
   local(...parts: string[]): string {
@@ -845,8 +912,23 @@ export class ProjectSession extends EventEmitter {
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)));
     // Before the first sweep, which collects what no saved version names.
     await s.versions.load();
+    // The version of a restore the app stopped recording is finished first (#1155): listed, or told of.
+    const recorded = await s.versions.recordPending().catch((): PendingOutcome => ({ state: 'unreadable' }));
+    if (recorded.state === 'pending')
+      s.recoveryNotes.push(`Restoring “${recorded.version}” finished, but the site as it left it is not in Saved versions yet. ${recorded.reason} It is added the next time the project opens or a version is saved. Your work from before is saved as “${recorded.backup}”.`);
+    else if (recorded.state === 'moved')
+      s.recoveryNotes.push(`Restoring “${recorded.version}” finished, but the project’s version history was changed by something else before the site as it left it was added, so both were left as they are. Your work from before is saved as “${recorded.backup}”.`);
+    else if (recorded.state === 'unreadable') s.recoveryNotes.push('The version of a restore that was still being saved could not be read, so it was left as it is.');
     const interrupted = await s.versions.takeRestoring().catch(() => null);
-    if (interrupted) s.recoveryNotes.push(`Restoring “${interrupted.version}” was interrupted, so some of it may be missing. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
+    // A restore whose version was noted is told of by what became of that version, above.
+    const owed = recorded.state === 'unreadable' ? undefined : recorded.op;
+    // Or listed already: only the note of the restore was left behind.
+    if (!interrupted || (interrupted.op && (interrupted.op === owed || s.versions.versions.some((v) => v.id === interrupted.op)))) {
+      // Told of above, or nothing to tell.
+    } else if (interrupted.settled)
+      s.recoveryNotes.push(`Restoring “${interrupted.version}” finished, but the site as it left it could not be saved as a version of its own. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
+    else
+      s.recoveryNotes.push(`Restoring “${interrupted.version}” was interrupted, so some of it may be missing. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
     const manifestAt = Date.now();
     const manifest = await readTextAt(join(dir, 'siteorigin', 'generated-manifest.json'));
     if (manifest) perf.count('files.read');
@@ -1471,7 +1553,9 @@ export class ProjectSession extends EventEmitter {
     const problems = (
       await checkSvelteSource(def.source, {
         filename: def.sourcePath,
-        contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes },
+        contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties },
+        // The design's properties, which the converted file must still take under the keys its design's file did.
+        manifest: { ...def, designFile: true },
         resolve,
         modules: exists
       })
@@ -2051,7 +2135,7 @@ export class ProjectSession extends EventEmitter {
    * instead of recording a new step (undo and redo). A save that fails is kept for the editor to show until a later one
    * succeeds; one stopped cleanly by a file saved outside the app is a conflict instead, which Project health lists.
    */
-  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
+  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; amendHistory?: boolean }): Promise<SessionEvent> {
     try {
       return await this.writeState(next, opts);
     } catch (e) {
@@ -2064,7 +2148,7 @@ export class ProjectSession extends EventEmitter {
     }
   }
 
-  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
+  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; amendHistory?: boolean }): Promise<SessionEvent> {
     // Frozen now, as it will be once it is the project: generated and serialized as it will stay.
     frozen(next);
     // A state whose theme is not available here would be generated from the wrong pack.
@@ -2141,13 +2225,16 @@ export class ProjectSession extends EventEmitter {
       blobs.clear();
       await this.writeRunMarker(nextDocs);
     }
-    // The undo position is part of the change: planned now, journaled with the documents, installed with them.
+    // The undo position is part of the change: planned now, journaled with the documents, installed with them. A change
+    // folded into History (amendHistory) is journaled with the History it leaves too.
     const planned =
       opts.history !== false && Object.keys(changed).length
         ? this.planHistory(changed, opts, this.revision + 1)
         : opts.cursor !== undefined
           ? { history: { ...this.history, cursor: opts.cursor }, pruned: false, entryId: undefined }
-          : null;
+          : opts.amendHistory && Object.keys(changed).length
+            ? { history: amendedHistory(this.history, changed), pruned: false, entryId: undefined }
+            : null;
     const journaled = !!(writes.length || deletes.length || planned);
     // A guard (CommitOptions.guard) is asked now, and again as the journal is about to take its place: the last moment
     // the change can be turned away whole, with nothing of it on disk but its blobs.
@@ -2294,15 +2381,16 @@ export class ProjectSession extends EventEmitter {
     }
   }
 
-  private async writeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace?: () => Promise<boolean>) {
-    await atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace } : {});
+  private async writeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace?: () => Promise<boolean>): Promise<boolean> {
+    // Asked again before each Windows rename retry too: the journal is the run's decision, and what decided it must hold.
+    return atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace, retryCheck: beforeReplace } : {});
   }
 
   /** Every generated file for `state`, reusing what earlier generations made from inputs that are unchanged. */
   private generate(state: ProjectState, instrument: boolean): Map<string, string> {
     const files = generateProject(state, { instrument }, this.generation);
     // How long the generation cache spent finding which files' inputs are unchanged (src/generator/cache.ts).
-    if (perf.on) perf.mark('session.generateCheck', { variant: instrument ? 'dev' : 'clean', ms: this.generation.checkMs, files: this.generation.checked });
+    if (perf.on) perf.mark('session.generateCheck', { variant: instrument ? 'dev' : 'clean', ms: this.generation.checkMs, files: this.generation.checked, looked: this.generation.looked, derived: this.generation.derived });
     return files;
   }
 
@@ -2439,33 +2527,36 @@ export class ProjectSession extends EventEmitter {
     // The theme's font files are copied from its pack beside the generated text, under the same ownership rules.
     const copies = new Map<string, string | Buffer>();
     const fonts = packFileCopies(this.state, this.generation).filter((c) => !authored.has(c.path) && !clean.has(c.path));
-    // Looked at together, each folder once (see the project's files below).
-    const fontPass = new FolderPass();
-    const fontLooks = fonts.map((c) => safeJoinLooking(this.dir, c.path, fontPass));
-    for (const [i, c] of fonts.entries()) {
-      // Published last time from bytes that hash to what the pack lists for it now (so the pack's validated bytes), and
-      // still those bytes on disk: nothing to write, so the pack is not read, nor its bytes hashed, again. A copy that
-      // is not in place is read from the pack as before.
-      const { abs, st } = fontLooks[i];
-      const was = this.contentHashes.get(abs);
-      if (was && was.hash === packFileInfo(c.pack, c.file)?.sha256 && (await this.seenHash(abs, st)) === was.hash) {
+    /** Copies taken from the pack's bytes the last publication held rather than read from the pack now (see below). */
+    const held = new Map<string, PackFileCopy>();
+    /** A pack that cannot supply a copy costs that font's update, not the save. */
+    const uncopied = async (c: PackFileCopy, e: unknown) => {
+      // A copy already in the project stays, still claimed, so it is neither replaced nor removed as obsolete.
+      console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
+      // Only a copy that already is the pack's validated file is kept: another theme's file of the same name is not.
+      // A copy that cannot be read stays claimed, so it is never removed and a missing one is still noticed.
+      if (!known(c.path)) return;
+      // Checked again on its own: the pack was being read meanwhile.
+      const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
+      const h = disk === null ? null : sha(disk);
+      if (h === null) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
+      else if (ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
+    };
+    for (const c of fonts) {
+      // Published last time from bytes that hash to what the pack lists for it now: the pack's validated bytes, held
+      // since. While the copy on disk is still those bytes (found below), the pack is not read, nor its bytes hashed,
+      // again; a copy that is anything else is decided only once the pack has been read and checked, as ever.
+      // Named as the check below names it (safeJoinLooking): `resolve` is what it comes to for any path it accepts.
+      const was = this.contentHashes.get(resolvePath(this.dir, c.path));
+      if (was && was.hash === packFileInfo(c.pack, c.file)?.sha256) {
         copies.set(c.path, was.content);
+        held.set(c.path, c);
         continue;
       }
       try {
         copies.set(c.path, await readPackFile(c.pack, c.file));
       } catch (e) {
-        // A damaged or missing pack file costs that font's update, not the save: a copy already in the project stays,
-        // still claimed, so it is neither replaced nor removed as obsolete.
-        console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
-        // Only a copy that already is the pack's validated file is kept: another theme's file of the same name is not.
-        // A copy that cannot be read stays claimed, so it is never removed and a missing one is still noticed.
-        if (!known(c.path)) continue;
-        // Checked again on its own: the pack was being read meanwhile.
-        const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
-        const h = disk === null ? null : sha(disk);
-        if (h === null) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
-        else if (ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
+        await uncopied(c, e);
       }
     }
     // The website's icons are drawn from the favicon (or the monogram) beside the generated text, under the same rules.
@@ -2531,6 +2622,22 @@ export class ProjectSession extends EventEmitter {
       if (settled) continue;
       const { hash: diskHash, stamp } = onDisk[i]!;
       if (diskHash === h) continue;
+      // A copy taken from the pack's held bytes that is not those bytes on disk (gone, or someone else's): the pack is
+      // read and checked first, and one that cannot supply it now leaves the copy as a failed read of it would.
+      const copy = held.get(path);
+      if (copy) {
+        const failed = await readPackFile(copy.pack, copy.file).then(
+          () => null,
+          (e: unknown) => ({ e })
+        );
+        if (failed) {
+          delete desired[path];
+          delete nextFiles[path];
+          hashes.delete(abs);
+          await uncopied(copy, failed.e);
+          continue;
+        }
+      }
       if (!initial && diskHash !== null && known(path) && !ours(path, diskHash)) {
         // Edited outside the app (or no longer readable by it): keep the external version.
         nextFiles[path] = prev[path] ?? inflight[path];
@@ -3006,12 +3113,16 @@ export class ProjectSession extends EventEmitter {
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
    * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant), and
    * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts).
+   * `formRouting` is the grant `grantFormRouting` gave when the user allowed an AI batch that changes where a contact
+   * form sends: used up by this call, whatever it does.
    * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
    */
   apply(
     batch: EditBatch,
-    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
+    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; formRouting?: FormRoutingGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
+    // A form routing grant is good for one call at most, whichever way it goes, even one that never gets its turn.
+    const routingGrant = opts.formRouting ? this.routingGrants.take(opts.formRouting) : null;
     // An edit's own work, once it is its turn (src/shared/perf.ts): the wait for that is the rest of controller.apply.
     return this.serialize(timed('session.apply', async (): Promise<ApplyResult> => {
       const refused = opts.guard?.(null);
@@ -3104,6 +3215,22 @@ export class ProjectSession extends EventEmitter {
       if (granted) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: granted, recoverable: true } };
       if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection and upsert_collection_entry write and a layout edited from a request sent while it is open.', recoverable: true } };
+      // A fork of every placement moves a collection layout's too, which is the editor's in the same way: the placements
+      // the request covers are listed instead. So does new code's whole property schema, which renames or drops the values
+      // a layout's placement holds: the code alone may change. Each is checked against the project as the batch leaves it
+      // then (a theme switch before it rebinds a layout's placements to the new theme's component).
+      const reachesLayouts = (o: EditOperation): o is Extract<EditOperation, { type: 'component.fork' | 'component.updateSource' }> => (o.type === 'component.fork' && !o.placements) || (o.type === 'component.updateSource' && o.properties !== undefined);
+      const inLayouts =
+        ai && !opts.collectionWrite && ops.some(reachesLayouts)
+          ? walkOperations(this.state, ops, (draft, o) => {
+              if (!reachesLayouts(o) || !instancesOf(draft, o.definitionId).some((u) => u.owner.kind === 'template' || u.owner.kind === 'archive')) return null;
+              const name = `“${draft.components[o.definitionId]?.name ?? o.definitionId}”`;
+              return o.type === 'component.fork'
+                ? `${name} is also placed in a collection layout, which only the editor changes. List the placements the copy is for in placements.`
+                : `${name} is placed in a collection layout, whose values only the editor changes: change its code alone, or ask the user to change its properties in the editor.`;
+            }, context)
+          : null;
+      if (inLayouts) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: inLayouts, recoverable: true } };
       // A library image's file is only ever one the importer checked and wrote.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };
@@ -3113,8 +3240,12 @@ export class ProjectSession extends EventEmitter {
       let next: ProjectState;
       let results;
       const applying = perf.span('session.applyOperations');
+      // A batch the user allowed lands as it was when they were shown it (#1129): made again, it would have new IDs, and
+      // an item's ID is something a form's code may send by.
+      const run = this.activeRun?.id ?? null;
+      const allowed = ai ? reviewed(routingGrant, this.state, this.revision, run, fingerprint) : null;
       try {
-        ({ state: next, results } = applyOperations(this.state, ops, context));
+        ({ state: next, results } = allowed ? { state: allowed.state, results: allowed.results } : applyOperations(this.state, ops, context));
       } catch (e) {
         applying({ ok: false });
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
@@ -3144,15 +3275,31 @@ export class ProjectSession extends EventEmitter {
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined) continue;
         const was = this.state.components[def.id];
-        // The props its axes arrive in, checked alone against code that passed its other checks: unchanged code (a
+        // What its code is held to of its manifest (a design's edited file takes what the design's file took: see
+        // the generator's designCalled), checked alone against code that passed its other checks: unchanged code (a
         // theme refresh among them), or code the app ships.
+        const manifest = designCalled(next, def) ? { ...def, designFile: true } : def;
         const axesOnly = async () => {
-          const errors = ((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []).filter((p) => p.severity === 'error');
-          return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
+          const errors = [...((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []), ...((await codeManifestProblems(def.source!, manifest, opts.source === 'ai' || importing)) ?? [])].filter((p) => p.severity === 'error');
+          return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
         };
         if (was?.source === def.source) {
-          // Unchanged code passed its checks when it was saved: only a change of the props its axes arrive in is checked.
-          if (axisPropsKey(was) === axisPropsKey(def)) continue;
+          // The assistant's change to the properties of a project's own code is held to the contract of the unchanged
+          // code too: renaming or removing one can leave text the code marks for typing over naming a property or field it
+          // no longer has. Only what the new properties bring counts (the code passed its checks when it was saved): it is
+          // checked against the contract as it lands with the old properties and with the new, so an error that is there
+          // either way refuses nothing. What the code takes from $props() is held to the new ones by the manifest check.
+          if (ai && def.owner === 'project' && JSON.stringify(was.properties) !== JSON.stringify(def.properties)) {
+            const source = def.source;
+            const contracted = async (properties: ComponentDefinition['properties']) =>
+              (await checkSvelteSource(source, { filename: def.sourcePath, resolve, contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties } })).filter((p) => p.severity === 'error');
+            const had = new Set((await contracted(was.properties)).map((p) => p.message));
+            const fresh = (await contracted(def.properties)).filter((p) => !had.has(p.message));
+            if (fresh.length)
+              return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" does not fit its new properties: ${fresh.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: fresh } };
+          }
+          // Unchanged code passed its checks when it was saved: only a change of what it is held to of its manifest is.
+          if (manifestKey(was) === manifestKey(def)) continue;
           const refused = await axesOnly();
           if (refused) return refused;
           continue;
@@ -3164,7 +3311,7 @@ export class ProjectSession extends EventEmitter {
         const shipped = (c: ComponentDefinition) => c.kind === 'code' && c.source === def.source && (def.owner === 'theme' || (importing && JSON.stringify(c.properties) === JSON.stringify(def.properties)));
         const shippedAs = (def.owner === 'theme' || importing) && listThemes().flatMap((t) => (t.source !== 'user' ? t.components.filter(shipped) : []));
         if (shippedAs && shippedAs.length) {
-          if (shippedAs.some((c) => axisPropsKey(c) === axisPropsKey(def))) continue;
+          if (shippedAs.some((c) => manifestKey(c) === manifestKey(def))) continue;
           const refused = await axesOnly();
           if (refused) return refused;
           continue;
@@ -3177,7 +3324,9 @@ export class ProjectSession extends EventEmitter {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
-            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes } } : {}),
+            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties } } : {}),
+            // Its code takes what its properties hold, and nothing they do not.
+            manifest,
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }
@@ -3221,6 +3370,17 @@ export class ProjectSession extends EventEmitter {
       validating({ introduced: introduced.length });
       if (introduced.length)
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
+      // Where a contact form sends visitors' messages is the user's to change (#1128), however a batch of the assistant's
+      // gets there: it lands only with the user's say for exactly the changes it makes, given when the app asked them
+      // (agent/orchestrator.ts), at the revision it was asked at (#1129). Asked last, so the user is never asked about a
+      // batch that could not land anyway.
+      if (ai) {
+        const routing = formRoutingChanges(this.state, next);
+        if (!admits(routingGrant, this.revision, run, fingerprint, routing)) {
+          const review: FormRoutingReview = this.routingGrants.review(this.revision, run, fingerprint, routing, { base: this.state, state: next, results });
+          return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: formRoutingRefusal(routing), recoverable: true, details: { formRouting: review } } };
+        }
+      }
       let ev: SessionEvent;
       const persisting = perf.span('session.persist');
       try {
@@ -3233,10 +3393,22 @@ export class ProjectSession extends EventEmitter {
       } finally {
         persisting();
       }
+      // Nothing filed before this save can be granted or used now.
+      this.routingGrants.forget(this.revision);
       const result: ApplyResult = { ok: true, revision: this.revision, results, changed: ev.changedDocs, entryId: ev.entryId };
       if (opts.idempotencyKey) this.idempotency.set(opts.idempotencyKey, { fingerprint, result });
       return result;
     }, (r) => ({ ok: r?.ok ?? false, revision: this.revision })));
+  }
+
+  /**
+   * The grant for a form routing review this session filed (`apply`'s refusal), once the user allowed it when the app
+   * asked them: the app's own call, never the model's (agent/orchestrator.ts). Null when the review is not one this
+   * session filed, was already granted, was filed under another run, or the project changed since: what the user saw
+   * is no longer what would land.
+   */
+  grantFormRouting(reviewId: string): FormRoutingGrant | null {
+    return this.routingGrants.grant(reviewId, this.revision, this.activeRun?.id ?? null);
   }
 
   /** The definitions a batch's `component.import` brought or kept from the theme, as they are in `next`. */
@@ -3275,7 +3447,16 @@ export class ProjectSession extends EventEmitter {
 
   /** How many places use each library asset. */
   assetUsages(): Record<string, number> {
-    return this.memo(this.state, 'usages', assetUsages);
+    return this.memo(this.state, 'usages', (st) => assetUsages(st, this.usageParts(st)));
+  }
+
+  /** What asset usage may keep from the last state's count: none when the state cannot be read for validation (read-only). */
+  private usageParts(state: ProjectState) {
+    try {
+      return this.validation.keeper(state);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Theme components with a newer version available. */
@@ -3285,7 +3466,7 @@ export class ProjectSession extends EventEmitter {
 
   /** Every problem `validateState` finds in `state`, as Project health shows them, worked out once. */
   private problemsOf(state: ProjectState): Diagnostic[] {
-    return this.memo(state, 'diagnostics', (st) => joinValidation(this.coreOf(st), adviceValidation(st)));
+    return this.memo(state, 'diagnostics', (st) => joinValidation(this.coreOf(st), adviceValidation(st, this.validation)));
   }
 
   /** Problems that stop a state from being saved. */
@@ -3300,7 +3481,7 @@ export class ProjectSession extends EventEmitter {
    */
   private coreOf(state: ProjectState): CoreValidation {
     const checks = this.checksOf(state);
-    return (checks.core ??= coreValidation(state));
+    return (checks.core ??= coreValidation(state, this.validation));
   }
 
   /**
@@ -3431,6 +3612,42 @@ export class ProjectSession extends EventEmitter {
       this.assetGate = null;
       open();
     }
+  }
+
+  /**
+   * Give library images the copies made for them after they were added (#979). Each fill names the image, the file and
+   * content (`hash`) its copies were made from, and the copies, already written: a record still waiting for them
+   * (copiesPending) with that file and content gets them and stops waiting, and everything else about it (a name or alt
+   * text changed meanwhile) stays as it is. Any other fill is left out: the image has gone, been given another file, or
+   * already has its copies. The change is no step of its own: it is folded into History (amendHistory), so Undo takes
+   * back the import that added the images, copies and all. Waits while an AI request is changing the project, and is
+   * never made in a project this app may not write. Returns the images that got their copies.
+   */
+  fillCopies(fills: ReadonlyArray<{ assetId: string; file: string; hash: string; variants: ReadonlyArray<{ width: number; file: string }> }>): Promise<{ ok: boolean; filled: string[]; busy?: boolean }> {
+    return this.serialize(timed('session.fillCopies', async (): Promise<{ ok: boolean; filled: string[]; busy?: boolean }> => {
+      if (this.activeRun) return { ok: false, filled: [], busy: true };
+      if (await this.writeBlocked()) return { ok: false, filled: [] };
+      const assets = this.state.assets.assets;
+      const taken = fills.filter((f) => {
+        const a = Object.hasOwn(assets, f.assetId) ? assets[f.assetId] : undefined;
+        return !!a && a.kind === 'image' && a.copiesPending === true && a.file === f.file && a.hash === f.hash && f.variants.every((v) => copyOf(a.file, v.file));
+      });
+      if (!taken.length) return { ok: true, filled: [] };
+      const nextAssets = { ...assets };
+      for (const f of taken) {
+        const { copiesPending: _done, ...rest } = assets[f.assetId];
+        nextAssets[f.assetId] = f.variants.length ? { ...rest, variants: f.variants.map((v) => ({ width: v.width, file: v.file })) } : rest;
+      }
+      const next: ProjectState = { ...this.state, assets: { ...this.state.assets, assets: nextAssets } };
+      try {
+        await this.persist(next, { label: taken.length === 1 ? 'Add image copies' : `Add copies of ${taken.length} images`, source: 'system', history: false, amendHistory: true });
+      } catch (e) {
+        // The assets file changed outside the app: the images keep waiting, and are filled once it has been read.
+        if (e instanceof DiskConflictError) return { ok: false, filled: [] };
+        throw e;
+      }
+      return { ok: true, filled: taken.map((f) => f.assetId) };
+    }, (r) => ({ filled: r?.filled.length ?? 0 })));
   }
 
   /**
@@ -3768,7 +3985,7 @@ export class ProjectSession extends EventEmitter {
       media,
       kept,
       history: { steps: h.entries.length, bytes: sum(h.entries.flatMap(entryBlobs)) },
-      versions: { count: this.versions.versions.length, bytes: this.versions.totalBytes() },
+      versions: { count: this.versions.versions.length, bytes: this.versions.totalBytes(), ...(this.versions.historyBytes() ? { historyBytes: this.versions.historyBytes() } : {}) },
       reclaim: null,
       blocked: this.reclaimBlocked()
     };
@@ -3890,11 +4107,13 @@ export class ProjectSession extends EventEmitter {
         name: v.name,
         time: v.time,
         auto: !!v.auto,
+        ...(v.restored ? { restored: true } : {}),
         pages: Object.keys(v.docs).filter((p) => PAGE_DOC.test(p)).length,
         bytes: store.exclusiveBytes(v),
         missing: Object.keys(v.media).filter((p) => v.media[p] === null)
       })),
       bytes: store.totalBytes(),
+      ...(store.historyBytes() ? { historyBytes: store.historyBytes() } : {}),
       ...(store.problem ? { problem: store.problem } : {})
     };
     timing();
@@ -3966,7 +4185,11 @@ export class ProjectSession extends EventEmitter {
    * something else in), as a version not yet in the list. A file that is not there, or is a link, is kept as missing;
    * one that could not be read stops the save.
    */
-  private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
+  private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string>; plain?: boolean } = {}): Promise<SavedVersion> {
+    await this.versions.checkFolders();
+    // Asked once per version: the same Git decides and stores it. `plain` keeps it to this store whatever the setting.
+    const git = opts.plain ? null : versionsGit();
+    if (git && (await git.enabled())) return this.captureGitVersion(git, name, opts);
     const docs: Record<string, string> = {};
     // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
     // Nor what has been published: a restore never takes back what the website was exported with.
@@ -3994,12 +4217,107 @@ export class ProjectSession extends EventEmitter {
   }
 
   /**
+   * captureVersion with Git snapshots on (#1153): the whole site (snapshot-inventory.ts) written as a tree and a commit
+   * of it on the versions branch's tip, the branch not moved yet (VersionStore.add moves it). The documents are the
+   * loaded ones, as for any version, so what the row records is what the tree holds; external sources' settings and
+   * converters are objects of the list's store instead, never in Git, as is a file the site names that a snapshot
+   * leaves out (a private name, a file of a nested repository). The media a restore puts back are recorded as ever, by
+   * their SHA-256, and the worker stores each file only while it still holds the bytes hashed.
+   */
+  private async captureGitVersion(git: VersionsGit, name: string, opts: { auto?: boolean; restored?: { id: string }; also?: string[]; filled?: Record<string, string> }): Promise<SavedVersion> {
+    // A restore's version takes the ID its restore noted first, so a stop is matched with the restore it belongs to.
+    const id = opts.restored?.id ?? newVersionId();
+    const time = new Date().toISOString();
+    const docs: Record<string, string> = {};
+    const files: FileInput[] = [];
+    const inline = new Set<string>();
+    for (const [path, content] of this.docs) {
+      if (path === BRIEF_FILE || path === PUBLISHED_FILE) continue;
+      if (keptOutOfGit(path)) docs[path] = await this.versions.putText(content);
+      else {
+        const bytes = Buffer.from(content, 'utf8');
+        docs[path] = sha(bytes);
+        files.push({ path, bytes });
+        inline.add(path);
+      }
+    }
+    let inventory: Awaited<ReturnType<typeof captureSnapshotInventory>>;
+    try {
+      inventory = await captureSnapshotInventory(this.dir, { settleMs: this.settleMs });
+    } catch (e) {
+      throw new Error(`${(e as Error).message} Nothing was saved.`);
+    }
+    // Every other file of the site, as it is on disk (the record of what was published, and code no component claims,
+    // included); the documents on disk are the loaded ones, checked before saving.
+    const hashed = new Map<string, string>();
+    // A document loaded under another spelling of a file's name is that file, where the disk ignores case: the same
+    // file under both names. Two files whose names differ only so are two, and the worker refuses the clash.
+    const folded = (p: string) => p.split('/').map(foldName).join('/');
+    const inlineNames = new Map([...inline].map((p) => [folded(p), p]));
+    const sameFile = async (a: string, b: string) => {
+      const [x, y] = await Promise.all([a, b].map((p) => fs.stat(join(this.dir, p), { bigint: true }).catch(() => null)));
+      return !!x && !!y && x.dev === y.dev && x.ino === y.ino;
+    };
+    for (const f of inventory.tree) {
+      const loaded = inlineNames.get(folded(f.path));
+      if (loaded === f.path || (loaded !== undefined && (await sameFile(loaded, f.path)))) continue;
+      hashed.set(f.path, f.sha256);
+      files.push({ path: f.path, source: f.path, sha256: f.sha256, mode: f.mode });
+    }
+    const outside: string[] = [];
+    const media: Record<string, string | null> = {};
+    for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
+      let abs: string;
+      try {
+        abs = safeJoin(this.dir, rel);
+      } catch {
+        media[rel] = null;
+        continue;
+      }
+      let st: Stats;
+      try {
+        st = await fs.lstat(abs);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`${rel} could not be read, so nothing was saved: ${(e as Error).message}`);
+        media[rel] = null;
+        continue;
+      }
+      if (!st.isFile()) {
+        media[rel] = null;
+        continue;
+      }
+      const h = hashed.get(rel);
+      if (h) {
+        media[rel] = h;
+        continue;
+      }
+      // A file the site names that a snapshot leaves out (a private name, a nested repository's, another spelling of a
+      // file on a disk that ignores case): held as it always was, an object beside the list, and never in history.
+      media[rel] = await this.versions.putFile(abs);
+      outside.push(rel);
+    }
+    let stored: { commit: string; tree: string };
+    try {
+      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, opts.restored ? 'restored' : opts.auto ? 'before-restore' : 'saved');
+    } catch (e) {
+      if (e instanceof GitError && e.code === 'corrupt') throw new HistoryDamaged(gitSaveProblem(e));
+      throw new Error(gitSaveProblem(e));
+    } finally {
+      // Whatever was written counts from now, whether this version is listed or not.
+      await this.versions.measureGit();
+    }
+    const filled = opts.filled && Object.keys(opts.filled).length ? { filled: opts.filled } : {};
+    const made = opts.restored ? { auto: true, restored: true } : opts.auto ? { auto: true } : {};
+    return { id, name, time, revision: this.revision, schemaVersion: SCHEMA_VERSION, ...made, docs, media, ...filled, git: { ...stored, ...(outside.length ? { outside: outside.sort() } : {}) } };
+  }
+
+  /**
    * Save the site as it is now as a named version, kept until the author deletes it. A file its documents name that
    * is missing from the folder does not stop the save: it is listed in `missing`, and the version records it as such.
    */
   saveVersion(name: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }> {
     return this.serialize(async () => {
-      const why = await this.versionsBlocked();
+      const why = (await this.versionsBlocked()) ?? (await this.pendingVersionBlocks());
       if (why) return { ok: false, message: why };
       const clean = name.replace(/\s+/g, ' ').trim();
       if (!clean) return { ok: false, message: 'Give the version a name.' };
@@ -4015,7 +4333,7 @@ export class ProjectSession extends EventEmitter {
         const late = await this.unloadedEdit(new Set());
         if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
         if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
-        await this.versions.publish([...this.versions.versions, v]);
+        v = await this.versions.add(v);
       } catch (e) {
         return { ok: false, message: (e as Error).message };
       }
@@ -4035,7 +4353,7 @@ export class ProjectSession extends EventEmitter {
     const stored = new Map<string, string>();
     try {
       // A version never holds the brief; one that does (saved before that was so) is restored without it.
-      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) stored.set(path, (await this.versions.read(h)).toString('utf8'));
+      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) stored.set(path, (await this.versions.readFile(v, path, h)).toString('utf8'));
     } catch (e) {
       return refuse((e as Error).message);
     }
@@ -4075,8 +4393,10 @@ export class ProjectSession extends EventEmitter {
       const st = await fs.lstat(abs).catch(() => null);
       if (st && !st.isFile()) return refuse(`${path} is not a file, so “${v.name}” can’t put back its own.`);
       if (st && sha(await fs.readFile(abs)) === h) continue;
+      // Never through a link inside the project, which could lead into its own `.git` or `.siteorigin`.
+      if (await linkOnTheWay(this.dir, path)) return refuse(`${path} is reached through a link, so “${v.name}” can’t put it back.`);
       try {
-        await this.versions.read(h);
+        await this.versions.readFile(v, path, h);
       } catch (e) {
         return refuse((e as Error).message);
       }
@@ -4148,7 +4468,7 @@ export class ProjectSession extends EventEmitter {
    */
   restoreVersion(id: string, expectedRevision: number, reviewed?: { files: string[]; replaced: string[] }): Promise<RestoreVersionResult> {
     return this.serialize(async () => {
-      const why = await this.versionsBlocked();
+      const why = (await this.versionsBlocked()) ?? (await this.pendingVersionBlocks());
       if (why) return { ok: false, message: why };
       const v = this.versions.versions.find((x) => x.id === id);
       if (!v) return { ok: false, message: 'That saved version is no longer there.' };
@@ -4184,13 +4504,32 @@ export class ProjectSession extends EventEmitter {
       const replaced = plan.files.filter((f) => prior.get(f.path)).map((f) => f.path);
       const filled = Object.fromEntries(plan.files.filter((f) => !prior.get(f.path)).map((f) => [f.path, f.hash]));
       let backup: SavedVersion;
+      // With Git snapshots on, what the restore leaves is saved after it as a version of its own (#1155): decided once,
+      // by the store the way back went to.
+      let inGit = false;
+      let damaged = false;
       try {
-        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled });
-        const kept = this.versions.versions.find((x) => sameContents(x, now));
-        backup = kept ?? now;
-        if (!kept) {
+        // With the version history damaged, the way back is saved in the plain store instead: a restore still has one.
+        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled }).catch((e: unknown) => {
+          if (!(e instanceof HistoryDamaged)) return Promise.reject(e);
+          damaged = true;
+          return this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled, plain: true });
+        });
+        inGit = !!now.git;
+        // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
+        // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
+        let kept: SavedVersion | undefined;
+        for (const x of this.versions.versions) {
+          if (!sameContents(x, now) || (now.git ? x.git?.tree !== now.git.tree : !!x.git)) continue;
+          // A version in Git is the way back only while its commit is there to read: otherwise this one is saved.
+          if (now.git && !(await this.versions.holdsTree(x, now.git.tree))) continue;
+          kept = x;
+          break;
+        }
+        if (kept) backup = kept;
+        else {
           if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
-          await this.versions.publish([...this.versions.versions, now]);
+          backup = await this.versions.add(now);
         }
       } catch (e) {
         return { ok: false, message: `Your current work could not be saved first, so nothing was restored. ${(e as Error).message}` };
@@ -4200,7 +4539,9 @@ export class ProjectSession extends EventEmitter {
       const label = `Restore “${v.name}”`;
       const written: Array<{ path: string; hash: string; prior: string | null }> = [];
       let ev: SessionEvent | null = null;
-      const earlier = await this.versions.markRestoring(v.name, way.name);
+      // The ID of the version recording what the restore leaves, noted with it so a stop is matched with that version.
+      const op = inGit ? newVersionId() : undefined;
+      const earlier = await this.versions.markRestoring(v.name, way.name, op);
       const clear = async () => {
         if (!earlier) await this.versions.clearRestoring().catch(() => undefined);
       };
@@ -4215,9 +4556,9 @@ export class ProjectSession extends EventEmitter {
             if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
             const abs = safeJoin(this.dir, f.path);
             // Read before the file is checked, so as little time as possible passes between the check and the write.
-            const bytes = await this.versions.read(f.hash);
+            const bytes = await this.versions.readFile(v, f.path, f.hash);
             const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
-            if (now !== before) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
+            if (now !== before || (await linkOnTheWay(this.dir, f.path))) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
             // Noted before writing: a write that lands but fails to report so is still undone.
             written.push({ path: f.path, hash: f.hash, prior: before });
             await atomicWrite(abs, bytes);
@@ -4240,9 +4581,16 @@ export class ProjectSession extends EventEmitter {
         if (e instanceof DiskConflictError || e instanceof RestoreStopped) return { ok: false, message: e.message, backup: way };
         throw e;
       }
-      await clear();
       if (!ev) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: written.map((w) => w.path), label, source: 'user' } satisfies SessionEvent);
-      return { ok: true, revision: this.revision, entryId: ev?.entryId, backup: way, replaced: written.filter((w) => w.prior).length, left: plan.left };
+      let notice: string | undefined;
+      if (op) {
+        // Everything is back: a stop from here is told as the version of it not saved, not as a restore that may have
+        // left something out. The note stays until the version is noted itself, so a stop is never told of by neither.
+        if (!earlier) await this.versions.settleRestoring(v.name, way.name, op).catch(() => undefined);
+        notice = await this.recordRestore(v, way, op, plan.files.map((f) => f.path));
+      } else if (damaged) notice = 'The project’s version history is damaged, so the site as restored was not added to it.';
+      await clear();
+      return { ok: true, revision: this.revision, entryId: ev?.entryId, backup: way, replaced: written.filter((w) => w.prior).length, left: plan.left, ...(notice ? { notice } : {}) };
     });
   }
 
@@ -4268,6 +4616,60 @@ export class ProjectSession extends EventEmitter {
       }
     }
     return clean;
+  }
+
+  /**
+   * With Git snapshots on, save the site as restoring `v` left it as a version of its own, on top of the history
+   * (#1155): a restore goes forward, never back. The whole site is committed on the versions branch's tip, the version
+   * noted with the commit the branch moves from (VersionStore.recordPending), and only then the branch moved and the
+   * row listed, so a stop anywhere is finished on reopening rather than repeated. The restore itself is done whatever
+   * happens here: gives what to tell the author when the version is not, or not yet, saved.
+   */
+  private async recordRestore(v: SavedVersion, backup: { name: string }, op: string, files: string[]): Promise<string | undefined> {
+    const notSaved = (why: string) => `The site as restored could not be saved as a version of its own. ${why}`;
+    const git = versionsGit();
+    if (!git) return notSaved('The project’s version history can’t be reached.');
+    try {
+      // A change made outside the app meanwhile is not the restore's to record: it is loaded as ever, and the version
+      // of the restore not saved, rather than either taken for the other.
+      const before = await this.unloadedEdit(new Set());
+      if (before) return notSaved(`${before} changed outside the app meanwhile.`);
+      const row = await this.captureGitVersion(git, restoredName(v.name), { restored: { id: op }, also: files });
+      const late = await this.unloadedEdit(new Set());
+      if (late) return notSaved(`${late} changed outside the app meanwhile.`);
+      if (!(await this.stillOwner())) return notSaved(this.readOnly?.reason ?? LOCK_UNCHECKED);
+      const expected = (await git.repository(this.dir).readCommit(row.git!.commit)).parents[0] ?? null;
+      const record = { op, version: v.name, backup: backup.name, expected, row };
+      await this.versions.writePending(record).catch(async (e: unknown) => {
+        // Written whole though its folder could not be flushed: it stands, and is finished like any other.
+        const there = await this.versions.readPending().catch(() => null);
+        if (!there || typeof there === 'string' || JSON.stringify(there) !== JSON.stringify(record)) throw e;
+        await this.versions.flushPending().catch(() => Promise.reject(e));
+      });
+    } catch (e) {
+      // Not noted, or perhaps noted only part way (its folder could not be flushed): nothing is left to finish.
+      await this.versions.clearPending().catch(() => undefined);
+      return notSaved(e instanceof GitError ? gitSaveProblem(e) : (e as Error).message);
+    }
+    const r = await this.versions.recordPending().catch((e: Error): PendingOutcome => ({ state: 'pending', op, version: v.name, backup: backup.name, reason: e.message }));
+    this.emit('history');
+    if (r.state === 'pending') return `The site as restored is not in Saved versions yet. ${r.reason} It is added the next time the project opens or a version is saved.`;
+    if (r.state === 'moved') return 'The project’s version history was changed by something else meanwhile, so the site as restored was not added to it.';
+    return undefined;
+  }
+
+  /**
+   * Finish recording the version a restore left (#1155) before anything else moves the versions branch. Says why no
+   * version can be saved to Git now, while that is still to be done.
+   */
+  private async pendingVersionBlocks(): Promise<string | null> {
+    const r = await this.versions.recordPending().catch(() => null);
+    if (r?.state === 'recorded' && r.op) this.emit('history');
+    if (r?.state !== 'pending' && !(r?.state === 'unreadable' && r.retry)) return null;
+    const git = versionsGit();
+    if (!git || !(await git.enabled())) return null;
+    if (r.state === 'unreadable') return 'The version still being saved after a restore could not be read just now. Try again in a moment.';
+    return `The site as restoring “${r.version}” left it is not in Saved versions yet. ${r.reason} Try again in a moment.`;
   }
 
   /** Give saved version `id` another name. What it holds, and when it was saved, stay as they are. */
@@ -4301,6 +4703,7 @@ export class ProjectSession extends EventEmitter {
       const left = this.versions.versions.filter((v) => v.id !== id);
       if (left.length === this.versions.versions.length) return { ok: true, freed: 0 };
       try {
+        await this.versions.forgetPending(id);
         await this.versions.publish(left);
       } catch (e) {
         return { ok: false, message: (e as Error).message };
@@ -4898,8 +5301,13 @@ export class ProjectSession extends EventEmitter {
     return false;
   }
 
-  /** Commit the run as one history group. */
-  completeRun(label: string): Promise<boolean> {
+  /**
+   * Commit the run as one history group; `guestName` is the live-session guest it ran for (#769), if any.
+   * `stillWanted` is asked before the run is decided and again as its journal is about to take its place, the moment
+   * it is decided: false keeps the run open, so it is rolled back (abortRun), and throws a cancellation (a guest's access
+   * taken away while it finished).
+   */
+  completeRun(label: string, guestName?: string, stillWanted?: () => boolean): Promise<boolean> {
     return this.serialize(async () => {
       const run = this.activeRun;
       if (!run) return false;
@@ -4918,14 +5326,16 @@ export class ProjectSession extends EventEmitter {
         if (b === a) continue;
         changed[p] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : await this.putBlob(a) };
       }
-      const planned = Object.keys(changed).length ? this.planHistory(changed, { label, source: 'ai', runId: run.id }, this.revision) : null;
+      const planned = Object.keys(changed).length ? this.planHistory(changed, { label, source: 'ai', runId: run.id, ...(guestName ? { guestName } : {}) }, this.revision) : null;
+      if (stillWanted && !stillWanted()) throw new Error('Canceled');
       // From here a failure is settled by reopening: recovery either finishes the run or restores its checkpoint.
       this.activeRun = null;
+      let refused = false;
       try {
         if (planned) {
           // The journal is the decision. Before it is on disk, a crash restores the checkpoint (the marker is still
           // there); once it is, recovery records the run's step and clears the marker, so the finished work is kept.
-          await this.writeJournal({ writes: [], deletes: [], history: planned.history, revision: this.revision, finishRun: run.id });
+          refused = !(await this.writeJournal({ writes: [], deletes: [], history: planned.history, revision: this.revision, finishRun: run.id }, stillWanted ? async () => stillWanted() : undefined));
         } else {
           // Nothing changed: restoring the checkpoint and keeping the run are the same thing.
           await removeDurable(this.local('sessions', 'active-run.json'));
@@ -4933,6 +5343,11 @@ export class ProjectSession extends EventEmitter {
       } catch (e) {
         this.unsettled = true;
         throw e;
+      }
+      // Turned away at the moment of decision: nothing replaced the journal, and the run is open again to be rolled back.
+      if (refused) {
+        this.activeRun = run;
+        throw new Error('Canceled');
       }
       if (planned) {
         try {
@@ -5579,7 +5994,8 @@ async function readText(abs: string): Promise<FileText> {
   return textOf(read.bytes);
 }
 
-function sameContent(path: string, disk: string | null, expected: string | null): boolean {
+/** Whether a document on disk says what the project holds: the same text, or for JSON the same value however it is laid out. */
+export function sameContent(path: string, disk: string | null, expected: string | null): boolean {
   if (disk === expected) return true;
   if (path.endsWith('.json')) {
     if (disk === null) return expected === null || path === 'siteorigin/theme-lock.json';

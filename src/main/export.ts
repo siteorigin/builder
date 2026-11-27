@@ -357,6 +357,67 @@ async function websiteText(project: string, { files, candidate, draftOnly }: { f
   return texts.join('\n');
 }
 
+/** An import of a module, static or dynamic, and the path it names: `from './x.svelte'`, `import('./x.svelte')`, `import './x.css'`. */
+const IMPORT_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(?\s*)(['"])([^'"\n]+)\1/g;
+/** What a module's source says without running: an HTML comment, a block comment, a line that is a comment. */
+const COMMENT = /<!--[\s\S]*?-->|\/\*[\s\S]*?\*\/|^[ \t]*\/\/.*$/gm;
+
+/**
+ * The paths a module's source imports, static or dynamic, each without the query or hash Vite reads (`./x.svelte?raw`
+ * is `./x.svelte`). An import in a comment is none.
+ */
+export function importSpecifiers(text: string, opts: { runtime?: boolean } = {}): string[] {
+  const code = text.replace(COMMENT, '');
+  // With `runtime`, a type-only import (erased once compiled) loads nothing.
+  const loaded = opts.runtime ? code.replace(/\b(?:import|export)\s+type\b[^;'"]*?\bfrom\s*(['"])[^'"\n]+\1/g, '') : code;
+  return [...loaded.matchAll(IMPORT_SPECIFIER)].map((m) => m[2].replace(/[?#].*$/, ''));
+}
+
+/**
+ * The components (by ID) the published website never imports (#1154): installed but placed on no published page,
+ * layout or component in use, nor imported by code, such as one made from a draft since deleted. Followed through the
+ * imports the website's source makes: from every file under src/ that is no component's file (the pages, the layout,
+ * the hooks, hand-written source), each component file one of them imports is taken in, with its declared dependencies
+ * and the design converted code was made from, and what it imports in turn, until nothing new is imported. Only an
+ * import counts, so a comment or a word that mentions a component's file keeps nothing. A component with no file in
+ * the copy is imported by nothing.
+ */
+export async function unusedComponents(project: string, state: ProjectState): Promise<string[]> {
+  const forms = webMcpOn(state.site);
+  const owner = new Map<string, string>();
+  for (const def of Object.values(state.components)) {
+    owner.set(defFile(def), def.id);
+    if (forms && def.kind === 'code' && declaresFormTool(def)) owner.set(webMcpFormFile(def), def.id);
+  }
+  const byName = new Map<string, string[]>();
+  for (const rel of owner.keys()) byName.set(basename(rel), [...(byName.get(basename(rel)) ?? []), rel]);
+  const used = new Set<string>();
+  const texts = new Map<string, string>();
+  const pending: string[] = [];
+  const take = (id: string) => {
+    if (used.has(id) || !Object.hasOwn(state.components, id)) return;
+    used.add(id);
+    const def = state.components[id];
+    for (const [rel, who] of owner) if (who === id && texts.has(rel)) pending.push(texts.get(rel)!);
+    for (const dep of def.kind === 'code' ? [...(def.dependencies ?? []), ...(def.generatedFrom ? [def.generatedFrom] : [])] : []) take(dep);
+  };
+  const seeds: string[] = [];
+  for (const rel of (await listFiles(join(project, 'src'))).map((f) => `src/${f.split(sep).join('/')}`)) {
+    if (!TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
+    const text = await readExportFile(join(project, rel), 'utf8');
+    if (owner.has(rel)) texts.set(rel, text);
+    else seeds.push(text);
+  }
+  pending.push(...seeds);
+  while (pending.length) {
+    const text = pending.pop()!;
+    for (const spec of importSpecifiers(text)) for (const rel of byName.get(basename(spec)) ?? []) take(owner.get(rel)!);
+  }
+  return Object.keys(state.components)
+    .filter((id) => !used.has(id))
+    .sort();
+}
+
 export async function pruneWebsiteAssets(project: string, state: ProjectState): Promise<AssetRecord[]> {
   const site = await websiteFiles(project, state);
   const candidates = site.files.filter(site.candidate);
@@ -405,6 +466,18 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
     const used = [...(m.original ? [asset.file] : []), ...m.variants].some(named) || (m.original && (asset.variants ?? []).some((v) => credited(v.file) && named(v.file)));
     return { asset, missing: m, used };
   });
+}
+
+/**
+ * Library fonts whose file is missing from a staged copy of the project while the website names it (its @font-face
+ * rules, or code that reads it): a publication is built elsewhere, where a missing font file cannot be put back
+ * (#1154). missingWebsiteAssets leaves fonts to Project health.
+ */
+export async function missingWebsiteFonts(project: string, state: ProjectState): Promise<AssetRecord[]> {
+  const fonts = Object.values(state.assets.assets).filter((a) => a?.kind === 'font' && typeof a.file === 'string' && !isPlainFile(join(project, a.file)));
+  if (!fonts.length) return [];
+  const text = await websiteText(project, await websiteFiles(project, state));
+  return fonts.filter((a) => namesWholeFile(text, basename(a.file)));
 }
 
 /** Characters namesFile reads as part of a file name, around one. */
@@ -833,15 +906,24 @@ export async function editedGeneratedFile(dir: string, known?: ReadonlyMap<strin
  * no page file and no old address leading to it, links to drafts are left unlinked, and the layout, styles and sitemap
  * carry no trace of them. generated-manifest.json then lists what the copy has, so it reopens without conflicts and
  * SiteOrigin Builder writes the drafts' files back. The canonical documents keep every page, so the drafts are still
- * there to edit. Only files the manifest says SiteOrigin Builder generated are touched.
+ * there to edit. Only files the manifest says SiteOrigin Builder generated are touched. With `live`, the generated files
+ * of `state` become those of `live` instead (a publication's state, which leaves out more, #1154).
  */
-export async function leaveOutDrafts(dir: string, state: ProjectState): Promise<void> {
-  const live = publishedState(state);
+export async function leaveOutDrafts(dir: string, state: ProjectState, live: ProjectState = publishedState(state)): Promise<void> {
   if (live === state) return;
   const full = generateProject(state, { instrument: false });
   const published = generateProject(live, { instrument: false });
   const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
   const files = manifest.files ?? {};
+  // A file only the result has (a form's tool once markers no longer hide it) is written, unless one of the author's own is there.
+  for (const [path, content] of published) {
+    if (full.has(path) || (!Object.hasOwn(files, path) && existsSync(safeJoin(dir, path)))) continue;
+    const abs = safeJoin(dir, path);
+    await fs.mkdir(dirname(abs), { recursive: true });
+    await fs.writeFile(abs, content);
+    files[path] = sha(content);
+    if (manifest.pending) delete manifest.pending[path];
+  }
   for (const [path, content] of full) {
     if (!Object.hasOwn(files, path) && !Object.hasOwn(manifest.pending ?? {}, path)) continue;
     const next = published.get(path);
@@ -1059,7 +1141,7 @@ export function inventoryChanged(before: { fingerprint: string; stamps: Inventor
  * `cache`, a file whose stamp shows it unchanged since an earlier pass is not read again (stableHash), and the cache
  * then holds this pass's files only.
  */
-export async function projectInventory(dir: string, opts: { cache?: ExportHashes; settleMs?: number } = {}): Promise<{ fingerprint: string; hashes: Map<string, string>; stamps: InventoryStamps }> {
+export async function projectInventory(dir: string, opts: { cache?: ExportHashes; settleMs?: number; roots?: readonly string[] } = {}): Promise<{ fingerprint: string; hashes: Map<string, string>; stamps: InventoryStamps }> {
   const parts: string[] = [];
   const hashes = new Map<string, string>();
   const stamps: InventoryStamps = new Map();
@@ -1083,6 +1165,16 @@ export async function projectInventory(dir: string, opts: { cache?: ExportHashes
     const hash = sha(vercel);
     hashes.set(VERCEL_CONFIG_FILE, hash);
     parts.push(`${VERCEL_CONFIG_FILE}:${hash}`);
+  }
+  // With `roots`, those files at the project's top too (a publication's package.json and lockfile, #1154), so two of
+  // them changed one after the other while the copy was made are never published as a pair that never was.
+  for (const rel of [...(opts.roots ?? [])].filter((r) => r !== VERCEL_CONFIG_FILE).sort()) {
+    // Read only as a plain file, and known by its stamp as the files above are, so one written and put back between
+    // two passes is seen too.
+    const found = isPlainFile(join(dir, rel)) ? await hashOf(join(dir, rel)).catch(() => null) : null;
+    hashes.set(rel, found?.hash ?? '-');
+    if (found) stamps.set(rel, { stamp: found.stamp, trusted: found.trusted });
+    parts.push(`${rel}:${found?.hash ?? '-'}`);
   }
   if (opts.cache) {
     opts.cache.clear();
@@ -1227,7 +1319,7 @@ The website's pages are made from those documents by SiteOrigin Builder, so \`np
 
 /** The notices of a site with this theme: its name and licence, the icons' and the fonts' (whose own notice travels with them). */
 export function themeNotice(theme: { name: string; license: string }): string {
-  return `The ${theme.name} theme is licensed under ${theme.license}. Icons come from Lucide (ISC license). The fonts come with the theme, in \`src/lib/siteorigin/fonts/\`, whose NOTICE.txt gives their licenses. Sample images from the Business starter, where still used, are described in NOTICE.md.`;
+  return `The ${theme.name} theme is licensed under ${theme.license}. Icons come from Lucide (ISC license). The fonts come with the theme, in \`src/lib/siteorigin/fonts/\`, whose NOTICE.txt gives their licenses. Sample images from the starters, where still used, are described in NOTICE.md.`;
 }
 /** The notices of a site on Foundation, the theme every new project starts with. */
 const NOTICE = themeNotice({ name: 'Foundation', license: 'MIT-0' });

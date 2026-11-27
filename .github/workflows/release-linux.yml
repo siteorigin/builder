@@ -73,8 +73,6 @@ jobs:
             exit 1
           fi
       - run: npm ci
-      # The theme pack thumbnails are drawn in Chromium (`--require-previews`).
-      - run: npx playwright install --with-deps chromium
       - run: npm run dist -- --linux --x64 --publish never
       - uses: ./.github/actions/resolve-update-metadata-prefix
       # The AppImage carries its blockmap inside it, which the feed records.

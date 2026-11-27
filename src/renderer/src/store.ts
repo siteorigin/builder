@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
@@ -44,7 +45,7 @@ export type RightTab = 'chat' | 'inspect' | 'styles' | 'project';
 export const RIGHT_TABS: readonly RightTab[] = ['chat', 'inspect', 'styles', 'project'];
 /** The view remembered from an earlier opening, or the AI when there is none or it names a view this version does not have. */
 export const restoreRightTab = (saved: unknown): RightTab => RIGHT_TABS.find((t) => t === saved) ?? 'chat';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'repeat-as-list'; ref: ElementRef; workspaceKey?: string } | { kind: 'turn-into-slot'; ref: ElementRef; workspaceKey?: string } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'swap-component'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'duplicate-component'; definitionId: string; workspaceKey?: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions'; review?: boolean; opening?: string } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string } | { kind: 'removal-review'; opening: string; definitionId: string; slot?: string };
+export type Modal = null | { kind: 'settings'; tab?: string; provider?: ProviderId } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'repeat-as-list'; ref: ElementRef; workspaceKey?: string } | { kind: 'turn-into-slot'; ref: ElementRef; workspaceKey?: string } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'swap-component'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'duplicate-component'; definitionId: string; workspaceKey?: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions'; review?: boolean; opening?: string } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string } | { kind: 'removal-review'; opening: string; definitionId: string; slot?: string };
 
 export interface Rect {
   x: number;
@@ -159,6 +160,8 @@ export interface State {
   snapshot: ProjectSnapshot | null;
   runtime: RuntimeState;
   settings: AppSettings | null;
+  /** Settings changes still being saved. A message sent meanwhile would name the model from before (#954). */
+  settingsSaving: number;
   providers: ProviderStatus[];
   pageId: string | null;
   /** The post open in the Posts workspace (shown while the Posts panel is), kept while other panels are. */
@@ -249,8 +252,20 @@ export interface State {
   liveClock: RelayClock | null;
   /** What screen readers were last told about guests asking to join; `id` changes with each telling. */
   liveNotice: { id: number; text: string };
+  /**
+   * Where the collaborators of the session this app hosts are, with each guest's latest spotlight and each
+   * collaborator's latest edit while they are shown (#768), as the main process last said; null with no session.
+   */
+  livePresence: LivePresence | null;
   /** The Share popover is open. */
   shareOpen: boolean;
+  /**
+   * The shown project's pinned notes (#770), for the opening they were read in (its snapshot's workspaceKey): this
+   * computer's own, or the host's in the remote shell. Null until read, or while no project is shown.
+   */
+  notes: (LiveNotes & { opening: string }) | null;
+  /** The Notes popover is open. */
+  notesOpen: boolean;
   /**
    * This app as a guest in another computer's live session (lib/remote-session.ts), as the main process last said.
    * While it is admitted the editor shows the host's project, and `snapshot` is that project's.
@@ -258,6 +273,8 @@ export interface State {
   remote: RemoteState;
   /** Where the host and the other collaborators are, for the join shown, as each last said. */
   remotePresence: RemotePresence | null;
+  /** This app's own requests to the host's AI in the join shown (#769), as the main process last said. */
+  remoteAi: RemoteAi | null;
   /**
    * The host's preview changed and the canvas loads its page again: `seq` counts the reloads asked for, and
    * `revision` is the project revision a page loaded now shows (null when the host has not said).
@@ -386,6 +403,7 @@ const live = create<State>((set) => ({
   snapshot: null,
   runtime: { state: 'idle' },
   settings: null,
+  settingsSaving: 0,
   providers: [],
   pageId: null,
   post: null,
@@ -427,9 +445,13 @@ const live = create<State>((set) => ({
   live: { phase: 'idle', lastError: null },
   liveClock: null,
   liveNotice: { id: 0, text: '' },
+  livePresence: null,
   shareOpen: false,
+  notes: null,
+  notesOpen: false,
   remote: { phase: 'idle', ended: null },
   remotePresence: null,
+  remoteAi: null,
   remoteReload: { seq: 0, revision: null },
   joinOpen: false,
   savedRetired: 0,
@@ -1475,6 +1497,30 @@ let providersRequest = 0;
  * Read the providers' status again (what is set up, and what the local server last showed). Only the latest
  * request's answer is kept, whichever part of the app asked; a failure leaves the status as it was.
  */
+/**
+ * Save a settings change and show what main kept. While it is being saved the composer sends nothing, since the message
+ * would name the provider and model from before it and main would refuse it as moved (#954). Main can take a change in
+ * memory and then fail to write it to disk, so after a failure the settings are read back from main.
+ */
+export async function saveSettings(patch: SettingsPatch): Promise<AppSettings> {
+  setState({ settingsSaving: getState().settingsSaving + 1 });
+  try {
+    const settings = await api.app.setSettings(patch);
+    setState({ settings });
+    return settings;
+  } catch (e) {
+    // Only the provider and model are taken from it, which the composer names to main; the rest shows what is saved.
+    const held = await api.app.getSettings().catch(() => null);
+    const shown = getState().settings;
+    if (held && shown) setState({ settings: { ...shown, ai: { ...shown.ai, provider: held.ai.provider, models: held.ai.models } } });
+    throw e;
+  } finally {
+    setState({ settingsSaving: getState().settingsSaving - 1 });
+    // Each change can change what Chat shows (the provider, the local server, its model or its last check).
+    void refreshProviders();
+  }
+}
+
 /** Providers' status as an answer just gave it: kept, and any older read still under way is dropped. */
 export function setProviders(providers: ProviderStatus[]) {
   providersRequest++;
@@ -1508,6 +1554,7 @@ const ENDED_KEPT = 20;
 export function applyAiEvent(e: AiEvent) {
   const s = getState();
   if (e.kind === 'status') {
+    statusSeen++;
     if (endedRuns.includes(e.runId)) return;
     const terminal = ['completed', 'partial', 'no-changes', 'cancelled', 'failed', 'conflicted'].includes(e.status!);
     if (terminal) {
@@ -1531,6 +1578,8 @@ export function applyAiEvent(e: AiEvent) {
     return;
   }
   const conv = s.conversation;
+  // The conversation is still being read for (showConversation): what it says now is read again once it shows.
+  if (showing && e.conversationId === showing.id) showing.missed = true;
   // A run's messages belong to the conversation it was filed in: one shown in any other thread (or from a project
   // closed mid-run, tagged with none) would look sent there while being saved elsewhere.
   if (!conv || e.conversationId !== conv.id) return;
@@ -1561,6 +1610,8 @@ export function applyAiEvent(e: AiEvent) {
         lost = true;
         return m;
       }
+      // A piece that follows what is shown makes this copy as new as main's: a read under way is no newer.
+      shownWhole?.add(m.id);
       return { ...m, text: m.text + piece };
     });
     // Text for a turn this window does not show at all is as lost as a piece that does not fit.
@@ -1577,6 +1628,35 @@ let catchingUp: { key: string; again: boolean } | null = null;
  */
 let shownWhole: Set<string> | null = null;
 
+/** Status events received, counted: a run's status read from main is older than any that arrived while it was read. */
+let statusSeen = 0;
+/** The conversation showConversation is reading, and whether events for it arrived meanwhile (with nothing to land in). */
+let showing: { id: string; missed: boolean } | null = null;
+
+/**
+ * Show conversation `fallback.id` of opening `opening` as main has it now, with the request running in it, if any: a
+ * window reloaded mid-run has neither its newest text nor the run's status, which is sent only when it changes. Shown
+ * with what `extra()` gives then, and only while `current()` says the restore that asked is still the latest. `fallback` is shown when
+ * it cannot be read. Events for it that arrive meanwhile have nothing to land in, so it is read again once it shows.
+ */
+export async function showConversation(fallback: Conversation, opening: string, current: () => boolean, extra: () => Partial<State> = () => ({})): Promise<void> {
+  const id = fallback.id;
+  const mine = { id, missed: false };
+  showing = mine;
+  const seen = statusSeen;
+  const read = await Promise.resolve()
+    .then(() => api.ai.readConversation(id, opening))
+    .catch(() => null);
+  if (showing === mine) showing = null;
+  if (!current() || getState().snapshot?.workspaceKey !== opening) return;
+  const run = read?.conversation.id === id ? read.run : null;
+  // A status that arrived while it was read is newer than the one read (the run may have ended meanwhile).
+  const status = run && statusSeen === seen ? { runStatus: run.status, activeRunId: run.runId, runMode: run.mode, runConversationId: id } : {};
+  if (run && statusSeen === seen && run.mode !== 'ask') aiEpoch++;
+  setState({ conversation: read?.conversation.id === id ? read.conversation : fallback, ...extra(), ...status });
+  if (mine.missed) catchUpConversation(id, opening);
+}
+
 /**
  * Show the open conversation as main has it now, read without opening anything (main keeps its open conversation as it
  * is), only while the same conversation of the same opening is on screen. Text that did not fit while the read was
@@ -1589,11 +1669,12 @@ function catchUpConversation(id: string, opening: string | undefined) {
   catchingUp = reading;
   const kept = (shownWhole = new Set());
   void Promise.resolve()
-    .then(() => api.ai.conversations())
+    .then(() => api.ai.readConversation(id, opening ?? ''))
     .then(
-      ({ active }) => {
+      ({ conversation: active }) => {
         const s = getState();
-        if (active.id !== id || s.conversation?.id !== id || s.snapshot?.workspaceKey !== opening) return;
+        // A read overtaken by another (this thread left and shown again meanwhile) is older than that one.
+        if (catchingUp !== reading || active.id !== id || s.conversation?.id !== id || s.snapshot?.workspaceKey !== opening) return;
         const mine = new Map(s.conversation.messages.map((m) => [m.id, m]));
         const messages = active.messages.map((m) => (kept.has(m.id) ? (mine.get(m.id) ?? m) : m));
         for (const k of kept) if (!active.messages.some((m) => m.id === k) && mine.has(k)) messages.push(mine.get(k)!);

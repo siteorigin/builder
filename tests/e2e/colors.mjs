@@ -335,7 +335,7 @@ const proposed = await chips();
 assert.notEqual(proposed['color.background'], neutral['color.background'], 'each mood proposes its own colors');
 assert.notEqual(await drawnPage(), neutralPage, 'and the preview is drawn in them');
 assert.equal(await drawnPage(), rgbOf(proposed['color.background']), 'its page in the proposed background');
-for (const id of ['color.background', 'color.surface', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent']) assert.match(proposed[id] ?? '', /^#[0-9a-f]{6}$/, `the preview names ${id}`);
+for (const id of ['color.background', 'color.surface', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent', 'color.error', 'color.error-on-inverse']) assert.match(proposed[id] ?? '', /^#[0-9a-f]{6}$/, `the preview names ${id}`);
 assert.match(await harmony.locator('.ss-harmony-facts').textContent(), /Every color pair in this preview is readable/, 'and says the proposal is readable');
 assert.equal(await settled(), atRest, 'choosing a mood only previews it');
 assert.deepEqual(await overrides(), beforePalette, 'and saves nothing');

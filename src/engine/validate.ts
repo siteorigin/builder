@@ -5,7 +5,7 @@ import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
 import { sourceDiagnostics } from './sources';
 import { isPictureAsset } from '@shared/background-image';
-import type { BackgroundImageValue, GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
+import type { BackgroundImageValue, ComponentDefinition, GraphNode, ImageValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
 import { STYLE_PROP_MAP, containerStyleError, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
@@ -19,20 +19,22 @@ import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds
 import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
-import { nestingChecker } from './semantic-tags';
-import { requiredProblems } from './required';
+import { trackedNestingChecker, type NestingProblem } from './semantic-tags';
+import { requiredDefaults, requiredPlacementProblems, type RequiredProblem } from './required';
 import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, dividerProblem, overlayProblem, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
-import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
+import { isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
-import { emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
+import { emptySectionMessage, emptySections, missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type CheckParts, type FormNameClash } from '@generator/checks';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
 import { collectionSourceProblems, loopMembers } from './collection-sources';
+import { formDestinationLookup } from './form-destinations';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
+import { freshKeeper, type CheckedTree, type Keeper, type ValidationCache } from './validation-cache';
 import { formConnectionProblem, formNoun, isFormContract, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@shared/form-contract';
 
 export interface Diagnostic {
@@ -139,6 +141,11 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   return opts.sectionLinks === false ? core.core : joinValidation(core, adviceValidation(state));
 }
 
+/** Adds what was found to the end of `out`, one by one: a list can be longer than a call's arguments may be. */
+function append(out: Diagnostic[], found: readonly Diagnostic[]) {
+  for (const d of found) out.push(d);
+}
+
 /** What a save gate checks, as `validateState(state, { sectionLinks: false })` reports it, and where the advice goes. */
 export interface CoreValidation {
   core: Diagnostic[];
@@ -151,9 +158,43 @@ export type AdviceValidation = readonly [links: Diagnostic[], rest: Diagnostic[]
 
 /**
  * Everything `validateState` checks but the advice (adviceValidation): what a save gate checks. Each finding is in the
- * order `validateState` reports it, and `at` records where the advice goes among them.
+ * order `validateState` reports it, and `at` records where the advice goes among them. With a session's `cache`, a part
+ * of an earlier state's validation that reads the same in this state is used again (ValidationCache).
  */
-export function coreValidation(state: ProjectState): CoreValidation {
+export function coreValidation(state: ProjectState, cache?: ValidationCache): CoreValidation {
+  const keep = cache ? cache.keeper(state) : freshKeeper(state);
+  const out: Diagnostic[] = [...keep.shared('site', () => siteDiagnostics(state)), ...keep.shared('definitions', () => definitionDiagnostics(state))];
+  for (const t of allTrees(state)) append(out, keep.tree(t, 'core', () => treeDiagnostics(state, t)));
+  for (const p of keep.cards)
+    out.push({
+      severity: 'error',
+      code: 'CARD_LINK_INTERACTIVE',
+      message: `${p.label}: ${p.what} sits inside a card that links somewhere, and a link or control cannot sit inside another. Move it out of the card, or remove the card's link.`,
+      owner: p.owner,
+      nodeId: p.nodeId,
+      // Each card (or placement whose slot content sits in cards) is its own problem, whatever the content inside it is
+      // called and however many cards hold it: a second broken card is new, while a button losing its state action, or
+      // one of several cards losing its link, is not.
+      site: `card:${p.nodeId}`
+    });
+  // The links to sections that do not exist go here (adviceValidation).
+  const linksAt = out.length;
+  append(out, keep.shared('defaults', () => defaultDiagnostics(state)));
+  // The page outlines, form names, run-time fonts, layout guardrails and reusability go here (adviceValidation).
+  const adviceAt = out.length;
+  append(out, structureDiagnostics(state, keep));
+  // A required value left empty (a hand edit, or a swap, theme change or import that carried one over). A binding that
+  // could pass an empty value is reported with the other binding problems.
+  const required = (p: RequiredProblem): Diagnostic => ({ severity: 'error', code: 'PROP_REQUIRED_EMPTY', message: p.message, owner: p.owner, ...(p.nodeId ? { nodeId: p.nodeId } : {}), site: p.key });
+  const defaults = keep.shared('requiredDefaults', () => requiredDefaults(state));
+  append(out, defaults.problems.map(required));
+  if (defaults.definitions.size) for (const t of allTrees(state)) append(out, keep.tree(t, 'required', () => requiredPlacementProblems(state, t, defaults.definitions, false).map(required)));
+  append(out, keep.shared('assets', () => assetSizeDiagnostics(state)));
+  return { core: out, at: [linksAt, adviceAt] };
+}
+
+/** The site's pages, old addresses, collections and sources: what coreValidation reports first. */
+function siteDiagnostics(state: ProjectState): Diagnostic[] {
   const out: Diagnostic[] = [];
   const routes = new Map<string, string>();
   if (!Object.hasOwn(state.pages, state.site.homePageId)) out.push({ severity: 'error', code: 'HOME_MISSING', message: 'The site has no Home page.' });
@@ -222,6 +263,12 @@ export function coreValidation(state: ProjectState): CoreValidation {
     if ((p.route === '/') !== (p.id === state.site.homePageId))
       out.push({ severity: 'error', code: 'HOME_ROUTE', message: p.route === '/' ? `${p.title} uses "/" but is not the Home page.` : `The Home page (${p.title}) must use "/".`, owner: { kind: 'page', id: p.id } });
   }
+  return out;
+}
+
+/** Component definitions (computed lists, UI state, designs and their bindings) and the links their defaults hold. */
+function definitionDiagnostics(state: ProjectState): Diagnostic[] {
+  const out: Diagnostic[] = [];
   // Computed lists (a hand-edited definition): a feed this version knows, and a whole-number limit.
   for (const def of Object.values(state.components)) {
     for (const [k, p] of Object.entries(def.properties ?? {})) {
@@ -246,6 +293,26 @@ export function coreValidation(state: ProjectState): CoreValidation {
           if (problem) out.push({ severity: 'error', code: 'STATE_INVALID', message: `${def.name}: ${problem}`, owner, site: `state:${name}` });
         }
       }
+    }
+    // A part rendered once per list item names a list of the code component's own (see PartDef.list).
+    for (const [pid, part] of Object.entries(def.parts ?? {})) {
+      const list = part && typeof part === 'object' ? (part as { list?: unknown }).list : undefined;
+      if (list === undefined) continue;
+      const schema = typeof list === 'string' && Object.hasOwn(def.properties ?? {}, list) ? def.properties[list] : undefined;
+      const problem =
+        def.kind !== 'code'
+          ? 'only a code component declares the list a part repeats over; a design shows it with a repeat'
+          : pid === 'root'
+            ? 'the root part is the whole component, so it repeats over no list'
+            : typeof list !== 'string'
+              ? 'the list it repeats over is not named by a property name'
+              : !schema
+              ? `it repeats over "${list}", which is not one of its properties`
+              : schema.type !== 'list' || schema.feed
+                ? `it repeats over "${list}", which is not a list that keeps its own items`
+                : null;
+      // Harmless while it stands (the part is styled for every item together), so it never blocks an edit.
+      if (problem) out.push({ severity: 'warning', code: 'PART_LIST', message: `${def.name}: part "${pid}": ${problem}.`, owner, site: `part-list:${pid}` });
     }
     if (def.kind !== 'managed') continue;
     if (!def.tree) {
@@ -348,169 +415,168 @@ export function coreValidation(state: ProjectState): CoreValidation {
       if (broken.has('collection')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a collection that no longer exists. Choose another destination for it.`, owner });
     }
   }
+  return out;
+}
 
-  for (const { owner, tree, label } of allTrees(state)) {
-    const seen = new Map<string, number>();
-    const visit = (ids: string[]) => {
-      for (const id of ids) {
-        seen.set(id, (seen.get(id) ?? 0) + 1);
-        const n = tree.nodes[id];
-        if (!n) {
-          out.push({ severity: 'error', code: 'NODE_MISSING', message: `${label}: missing node ${id}.`, owner });
-          continue;
-        }
-        if ((seen.get(id) ?? 0) > 1) {
-          out.push({ severity: 'error', code: 'NODE_SHARED', message: `${label}: node ${id} appears twice.`, owner, nodeId: id });
-          continue;
-        }
-        for (const cl of childLists(n)) visit(cl.ids);
+/**
+ * One document's problems, as coreValidation reports them for each tree in turn: its nodes and how they hold each other,
+ * the links, pictures and alternative text in its values, its buttons, menu links and empty sections, and its forms.
+ * It reads its own tree, the components, the library, collections and the pages' other fields, never another page's tree.
+ */
+function treeDiagnostics(state: ProjectState, { owner, tree, label }: CheckedTree): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const seen = new Map<string, number>();
+  const visit = (ids: string[]) => {
+    for (const id of ids) {
+      seen.set(id, (seen.get(id) ?? 0) + 1);
+      const n = tree.nodes[id];
+      if (!n) {
+        out.push({ severity: 'error', code: 'NODE_MISSING', message: `${label}: missing node ${id}.`, owner });
+        continue;
       }
-    };
-    visit(tree.rootIds);
-    for (const n of Object.values(tree.nodes)) {
-      // Every tree, a theme's copy too: the site shows a plain line, or the default icon, for what cannot be drawn.
-      const divider = dividerProblem(n);
-      if (divider) out.push({ severity: 'error', code: 'DIVIDER_INVALID', message: `${label}: ${nodeLabel(n)} ${divider}`, owner, nodeId: n.id, site: `${n.id}|shape` });
-      if (n.kind === 'instance') {
-        const def = state.components[n.definitionId];
-        if (!def) out.push({ severity: 'error', code: 'DEF_MISSING', message: `${label}: ${n.definitionId} is not installed.`, owner, nodeId: n.id });
-        // A table changed by hand into a shape it cannot have shows only the rows it can, so it is reported.
-        else
-          for (const [k, schema] of Object.entries(def.properties)) {
-            // A computed list shows what the site's pages give it, whatever is stored.
-            if (schema.type === 'list' && !schema.feed && Object.hasOwn(n.props, k))
-              for (const id of duplicateItemIds(n.props[k]))
-                out.push({ severity: 'error', code: 'LIST_ITEM_DUPLICATE', message: `${label}: ${duplicateItemMessage(displayName(state, n), schema, id)}`, owner, nodeId: n.id, site: `${n.id}|${k}|${id}` });
-            if (schema.type === 'object' && Object.hasOwn(n.props, k) && !isBinding(n.props[k])) {
-              // An object edited by hand: a field it does not have, or one missing, is reported; the site shows the rest.
-              let problem: string | null = null;
-              try {
-                if (sortedJson(normalizeObject(schema, n.props[k], state, schema.label, n.props[k])) !== sortedJson(n.props[k])) problem = 'it is not saved in the form the editor shows';
-              } catch (e) {
-                problem = e instanceof EngineError ? e.message : 'it is not an object of its fields';
-              }
-              if (problem) out.push({ severity: 'warning', code: 'OBJECT_DAMAGED', message: `${label}: “${schema.label}” in ${displayName(state, n)} cannot be read as saved (${problem}). Set it again in the Inspector.`, owner, nodeId: n.id });
-              continue;
-            }
-            if (schema.type !== 'table' || !Object.hasOwn(n.props, k) || isBinding(n.props[k])) continue;
-            // A pure check of a saved value: whatever it throws, the project still opens and says what is wrong.
+      if ((seen.get(id) ?? 0) > 1) {
+        out.push({ severity: 'error', code: 'NODE_SHARED', message: `${label}: node ${id} appears twice.`, owner, nodeId: id });
+        continue;
+      }
+      for (const cl of childLists(n)) visit(cl.ids);
+    }
+  };
+  visit(tree.rootIds);
+  for (const n of Object.values(tree.nodes)) {
+    // Every tree, a theme's copy too: the site shows a plain line, or the default icon, for what cannot be drawn.
+    const divider = dividerProblem(n);
+    if (divider) out.push({ severity: 'error', code: 'DIVIDER_INVALID', message: `${label}: ${nodeLabel(n)} ${divider}`, owner, nodeId: n.id, site: `${n.id}|shape` });
+    if (n.kind === 'instance') {
+      const def = state.components[n.definitionId];
+      if (!def) out.push({ severity: 'error', code: 'DEF_MISSING', message: `${label}: ${n.definitionId} is not installed.`, owner, nodeId: n.id });
+      // A table changed by hand into a shape it cannot have shows only the rows it can, so it is reported.
+      else
+        for (const [k, schema] of Object.entries(def.properties)) {
+          // A computed list shows what the site's pages give it, whatever is stored.
+          if (schema.type === 'list' && !schema.feed && Object.hasOwn(n.props, k))
+            for (const id of duplicateItemIds(n.props[k]))
+              out.push({ severity: 'error', code: 'LIST_ITEM_DUPLICATE', message: `${label}: ${duplicateItemMessage(displayName(state, n), schema, id)}`, owner, nodeId: n.id, site: `${n.id}|${k}|${id}` });
+          if (schema.type === 'object' && Object.hasOwn(n.props, k) && !isBinding(n.props[k])) {
+            // An object edited by hand: a field it does not have, or one missing, is reported; the site shows the rest.
             let problem: string | null = null;
             try {
-              if (sortedJson(normalizeTable(n.props[k], schema.label)) !== sortedJson(n.props[k])) problem = 'it is not saved in the form the editor shows';
+              if (sortedJson(normalizeObject(schema, n.props[k], state, schema.label, n.props[k])) !== sortedJson(n.props[k])) problem = 'it is not saved in the form the editor shows';
             } catch (e) {
-              problem = e instanceof EngineError ? e.message : 'it has a value that is not a table';
+              problem = e instanceof EngineError ? e.message : 'it is not an object of its fields';
             }
-            if (problem) out.push({ severity: 'warning', code: 'TABLE_DAMAGED', message: `${label}: part of a table in ${displayName(state, n)} cannot be read (${problem}). Editing the table keeps the rows and columns that can.`, owner, nodeId: n.id });
+            if (problem) out.push({ severity: 'warning', code: 'OBJECT_DAMAGED', message: `${label}: “${schema.label}” in ${displayName(state, n)} cannot be read as saved (${problem}). Set it again in the Inspector.`, owner, nodeId: n.id });
+            continue;
           }
-      }
-      if (!seen.has(n.id)) out.push({ severity: 'warning', code: 'NODE_DETACHED', message: `${label}: ${displayName(state, n)} is not attached to the tree.`, owner, nodeId: n.id });
-    }
-    // References inside literal values
-    // A computed list's stored items are never shown (the site's pages fill it), so what they hold is not a picture.
-    let ignored = new Set<unknown>();
-    const walk = (v: unknown, nodeId: string, shown = true) => {
-      if (Array.isArray(v)) return v.forEach((x) => walk(x, nodeId, shown && !ignored.has(v)));
-      if (!v || typeof v !== 'object' || isBinding(v)) return;
-      const o = v as Record<string, unknown>;
-      if (o.type === 'page' && typeof o.target === 'string' && !state.pages[o.target])
-        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a page that no longer exists.`, owner, nodeId });
-      if (o.type === 'collection' && typeof o.target === 'string' && !Object.hasOwn(state.collections ?? {}, o.target))
-        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to the list of a collection that no longer exists. Choose another destination for it.`, owner, nodeId });
-      // Only an entry's own text can hold a link to an entry for now: anywhere else the website could not show it, and
-      // editing its text on the page would drop it.
-      if (o.type === 'entry' && typeof o.target === 'string')
-        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to ${findEntry(state, o.target) ? 'a collection entry, which only another entry can link to for now' : 'a collection entry that no longer exists'}. Choose another destination for it.`, owner, nodeId });
-      const asset = typeof o.assetId === 'string' && Object.hasOwn(state.assets.assets, o.assetId) ? state.assets.assets[o.assetId] : undefined;
-      if (typeof o.assetId === 'string' && !asset) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: an image references a missing asset.`, owner, nodeId });
-      else if (asset && asset.kind !== 'image' && shown)
-        out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${label}: an image shows “${asset.name}”, which is a ${asset.kind}, not a picture. Choose an image instead.`, owner, nodeId, site: `${nodeId}|${asset.id}` });
-      if (o.type === 'document' && typeof o.target === 'string' && (Object.hasOwn(state.assets.assets, o.target) ? state.assets.assets[o.target] : undefined)?.kind !== 'document')
-        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to a document that is no longer in Assets. Choose another destination for it.`, owner, nodeId });
-      // A section heading or a picture between paragraphs belongs to a post's text (an import or a hand edit can put one
-      // in a page's): it shows, but the text's own editors cannot keep it.
-      if ((o.type === 'h2' && Array.isArray(o.spans)) || (o.type === 'image' && typeof o.assetId === 'string' && !('label' in o)))
-        out.push({ severity: 'warning', code: 'ARTICLE_BLOCK', message: `${label}: text holds a ${o.type === 'h2' ? 'section heading' : 'picture'} that only a post's text can hold. Editing that text drops it; change it in the inspector.`, owner, nodeId, site: `${nodeId}|article` });
-      if ('assetId' in o && o.assetId && !o.decorative && typeof o.alt !== 'object' && !String(o.alt ?? '').trim() && owner.kind !== 'component')
-        out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: an image has no alternative text.`, owner, nodeId });
-      Object.values(o).forEach((x) => walk(x, nodeId, shown));
-    };
-    for (const n of Object.values(tree.nodes)) {
-      const props = n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
-      ignored = new Set(Object.entries(props ?? {}).flatMap(([k, sch]) => (sch.type === 'list' && sch.feed && n.kind === 'instance' && Array.isArray(n.props[k]) ? [n.props[k]] : [])));
-      // Style rules hold no content: a background image in one is checked with the other styles, and describes nothing.
-      const { styles: _styles, overrides: _overrides, itemOverrides: _items, ...content } = n as GraphNode & { overrides?: unknown; itemOverrides?: unknown };
-      walk(content, n.id);
-    }
-    // A page list's card with no image of its own shows its page's sharing image, which needs a description too.
-    if (owner.kind !== 'component')
-      for (const n of Object.values(tree.nodes)) {
-        if (n.kind !== 'instance') continue;
-        for (const [prop, schema] of Object.entries(state.components[n.definitionId]?.properties ?? {})) {
-          const field = schema.type === 'list' ? schema.pageTeaser?.image : undefined;
-          const items = Object.hasOwn(n.props, prop) ? n.props[prop] : schema.default;
-          if (!field || schema.type !== 'list' || !Array.isArray(items)) continue;
-          for (const item of items as Array<Record<string, unknown>>) {
-            // Only an image the card takes from its page: one of its own is checked with the other literal images.
-            if (!item || typeof item !== 'object' || !followsPage(item[field])) continue;
-            const shown = effectiveItem(state, schema, item);
-            const image = shown === item ? undefined : (shown[field] as ImageValue | undefined);
-            if (!image?.assetId || String(image.alt ?? '').trim()) continue;
-            const title = String(shown[schema.pageTeaser!.title] ?? '').trim() || schema.itemLabel;
-            out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: the “${title}” card shows its page’s sharing image, which has no description. Add one to the image in the library, or choose an image for the card.`, owner, nodeId: n.id });
+          if (schema.type !== 'table' || !Object.hasOwn(n.props, k) || isBinding(n.props[k])) continue;
+          // A pure check of a saved value: whatever it throws, the project still opens and says what is wrong.
+          let problem: string | null = null;
+          try {
+            if (sortedJson(normalizeTable(n.props[k], schema.label)) !== sortedJson(n.props[k])) problem = 'it is not saved in the form the editor shows';
+          } catch (e) {
+            problem = e instanceof EngineError ? e.message : 'it has a value that is not a table';
           }
+          if (problem) out.push({ severity: 'warning', code: 'TABLE_DAMAGED', message: `${label}: part of a table in ${displayName(state, n)} cannot be read (${problem}). Editing the table keeps the rows and columns that can.`, owner, nodeId: n.id });
+        }
+    }
+    if (!seen.has(n.id)) out.push({ severity: 'warning', code: 'NODE_DETACHED', message: `${label}: ${displayName(state, n)} is not attached to the tree.`, owner, nodeId: n.id });
+  }
+  // References inside literal values
+  // A computed list's stored items are never shown (the site's pages fill it), so what they hold is not a picture.
+  let ignored = new Set<unknown>();
+  const walk = (v: unknown, nodeId: string, shown = true) => {
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, nodeId, shown && !ignored.has(v)));
+    if (!v || typeof v !== 'object' || isBinding(v)) return;
+    const o = v as Record<string, unknown>;
+    if (o.type === 'page' && typeof o.target === 'string' && !state.pages[o.target])
+      out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a page that no longer exists.`, owner, nodeId });
+    if (o.type === 'collection' && typeof o.target === 'string' && !Object.hasOwn(state.collections ?? {}, o.target))
+      out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to the list of a collection that no longer exists. Choose another destination for it.`, owner, nodeId });
+    // Only an entry's own text can hold a link to an entry for now: anywhere else the website could not show it, and
+    // editing its text on the page would drop it.
+    if (o.type === 'entry' && typeof o.target === 'string')
+      out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to ${findEntry(state, o.target) ? 'a collection entry, which only another entry can link to for now' : 'a collection entry that no longer exists'}. Choose another destination for it.`, owner, nodeId });
+    const asset = typeof o.assetId === 'string' && Object.hasOwn(state.assets.assets, o.assetId) ? state.assets.assets[o.assetId] : undefined;
+    if (typeof o.assetId === 'string' && !asset) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: an image references a missing asset.`, owner, nodeId });
+    else if (asset && asset.kind !== 'image' && shown)
+      out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${label}: an image shows “${asset.name}”, which is a ${asset.kind}, not a picture. Choose an image instead.`, owner, nodeId, site: `${nodeId}|${asset.id}` });
+    if (o.type === 'document' && typeof o.target === 'string' && (Object.hasOwn(state.assets.assets, o.target) ? state.assets.assets[o.target] : undefined)?.kind !== 'document')
+      out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to a document that is no longer in Assets. Choose another destination for it.`, owner, nodeId });
+    // A section heading or a picture between paragraphs belongs to a post's text (an import or a hand edit can put one
+    // in a page's): it shows, but the text's own editors cannot keep it.
+    if ((o.type === 'h2' && Array.isArray(o.spans)) || (o.type === 'image' && typeof o.assetId === 'string' && !('label' in o)))
+      out.push({ severity: 'warning', code: 'ARTICLE_BLOCK', message: `${label}: text holds a ${o.type === 'h2' ? 'section heading' : 'picture'} that only a post's text can hold. Editing that text drops it; change it in the inspector.`, owner, nodeId, site: `${nodeId}|article` });
+    if ('assetId' in o && o.assetId && !o.decorative && typeof o.alt !== 'object' && !String(o.alt ?? '').trim() && owner.kind !== 'component')
+      out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: an image has no alternative text.`, owner, nodeId });
+    Object.values(o).forEach((x) => walk(x, nodeId, shown));
+  };
+  for (const n of Object.values(tree.nodes)) {
+    const props = n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
+    ignored = new Set(Object.entries(props ?? {}).flatMap(([k, sch]) => (sch.type === 'list' && sch.feed && n.kind === 'instance' && Array.isArray(n.props[k]) ? [n.props[k]] : [])));
+    // Style rules hold no content: a background image in one is checked with the other styles, and describes nothing.
+    const { styles: _styles, overrides: _overrides, itemOverrides: _items, ...content } = n as GraphNode & { overrides?: unknown; itemOverrides?: unknown };
+    walk(content, n.id);
+  }
+  // A page list's card with no image of its own shows its page's sharing image, which needs a description too.
+  if (owner.kind !== 'component')
+    for (const n of Object.values(tree.nodes)) {
+      if (n.kind !== 'instance') continue;
+      for (const [prop, schema] of Object.entries(state.components[n.definitionId]?.properties ?? {})) {
+        const field = schema.type === 'list' ? schema.pageTeaser?.image : undefined;
+        const items = Object.hasOwn(n.props, prop) ? n.props[prop] : schema.default;
+        if (!field || schema.type !== 'list' || !Array.isArray(items)) continue;
+        for (const item of items as Array<Record<string, unknown>>) {
+          // Only an image the card takes from its page: one of its own is checked with the other literal images.
+          if (!item || typeof item !== 'object' || !followsPage(item[field])) continue;
+          const shown = effectiveItem(state, schema, item);
+          const image = shown === item ? undefined : (shown[field] as ImageValue | undefined);
+          if (!image?.assetId || String(image.alt ?? '').trim()) continue;
+          const title = String(shown[schema.pageTeaser!.title] ?? '').trim() || schema.itemLabel;
+          out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: the “${title}” card shows its page’s sharing image, which has no description. Add one to the image in the library, or choose an image for the card.`, owner, nodeId: n.id });
         }
       }
-    if (owner.kind !== 'component') {
-      for (const b of unlinkedButtons(state, tree))
-        out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so visitors won’t see it. Choose where it goes, or hide the button.`, owner, nodeId: b.nodeId });
-      for (const m of unlinkedMenuLinks(state, tree))
-        out.push({ severity: 'warning', code: 'MENU_LINK_UNLINKED', message: `${label}: the “${m.label}” menu link has no destination, so it goes nowhere. Choose where it goes, or remove it from the menu.`, owner, nodeId: m.nodeId });
-      // Pages and the shared header and footer, as the export notes name them: a collection's layout is read without the
-      // values of the entries it shows.
-      for (const e of owner.kind === 'page' || owner.kind === 'shell' ? emptySections(state, tree) : [])
-        out.push({ severity: 'warning', code: 'SECTION_EMPTY', message: `${label}: ${emptySectionMessage(e)}`, owner, nodeId: e.nodeId, ...(e.placementId !== e.nodeId ? { site: `${e.nodeId}|${e.placementId}` } : {}) });
     }
-    // Theme definitions are fixed theme data; a project component's own forms are checked like a page's.
-    const inTheme = owner.kind === 'component' && state.components[owner.id]?.owner === 'theme';
-    for (const n of Object.values(tree.nodes)) {
-      const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
-      if (inTheme || n.kind !== 'instance' || !def || !isFormContract(def.componentId) || def.kind !== 'code') continue;
-      const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
-      const unconnected = formConnectionDiagnostic(state, owner, label, n);
-      if (unconnected) out.push(unconnected);
-      // A list bound from outside is only known where it is placed.
-      if (namesFormFields(def) && !isBinding(props.fields)) {
-        const fields = formFieldsAsSent(def, props.fields);
-        // Which field a finding is about, by its row (the one to change), so each finding leads to its own row.
-        const row = (i: number | undefined) => (i !== undefined && typeof fields[i]?.id === 'string' ? { site: `${n.id}|fields|${fields[i].id}` } : {});
-        for (const clash of formKeyClashes(fields)) {
-          const what = formFieldTitles(fields, clash.indexes, fields.map((_, i) => i));
-          const outcome = formRefusesClashes(def) ? 'so visitors cannot send the form' : 'so the form service cannot tell those answers apart';
-          const all = clash.indexes.length === 2 ? 'both' : 'all';
-          out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the ${formNoun(def)}'s ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id, ...row(clash.indexes[1]) });
-        }
-        for (const i of offersFormChoices(def) ? formUnchoosable(fields) : []) {
-          const what = formFieldTitles(fields, [i], fields.map((_, j) => j));
-          const outcome = formRefusesUnchoosable(def) ? 'so visitors cannot send the form' : 'so visitors cannot answer it';
-          out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the ${formNoun(def)}'s ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id, ...row(i) });
-        }
+  if (owner.kind !== 'component') {
+    for (const b of unlinkedButtons(state, tree))
+      out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so visitors won’t see it. Choose where it goes, or hide the button.`, owner, nodeId: b.nodeId });
+    for (const m of unlinkedMenuLinks(state, tree))
+      out.push({ severity: 'warning', code: 'MENU_LINK_UNLINKED', message: `${label}: the “${m.label}” menu link has no destination, so it goes nowhere. Choose where it goes, or remove it from the menu.`, owner, nodeId: m.nodeId });
+    // Pages and the shared header and footer, as the export notes name them: a collection's layout is read without the
+    // values of the entries it shows.
+    for (const e of owner.kind === 'page' || owner.kind === 'shell' ? emptySections(state, tree) : [])
+      out.push({ severity: 'warning', code: 'SECTION_EMPTY', message: `${label}: ${emptySectionMessage(e)}`, owner, nodeId: e.nodeId, ...(e.placementId !== e.nodeId ? { site: `${e.nodeId}|${e.placementId}` } : {}) });
+  }
+  // Theme definitions are fixed theme data; a project component's own forms are checked like a page's.
+  const inTheme = owner.kind === 'component' && state.components[owner.id]?.owner === 'theme';
+  for (const n of Object.values(tree.nodes)) {
+    const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
+    if (inTheme || n.kind !== 'instance' || !def || !isFormContract(def.componentId) || def.kind !== 'code') continue;
+    const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
+    const unconnected = formConnectionDiagnostic(state, owner, label, n);
+    if (unconnected) out.push(unconnected);
+    // A list bound from outside is only known where it is placed.
+    if (namesFormFields(def) && !isBinding(props.fields)) {
+      const fields = formFieldsAsSent(def, props.fields);
+      // Which field a finding is about, by its row (the one to change), so each finding leads to its own row.
+      const row = (i: number | undefined) => (i !== undefined && typeof fields[i]?.id === 'string' ? { site: `${n.id}|fields|${fields[i].id}` } : {});
+      for (const clash of formKeyClashes(fields)) {
+        const what = formFieldTitles(fields, clash.indexes, fields.map((_, i) => i));
+        const outcome = formRefusesClashes(def) ? 'so visitors cannot send the form' : 'so the form service cannot tell those answers apart';
+        const all = clash.indexes.length === 2 ? 'both' : 'all';
+        out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the ${formNoun(def)}'s ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id, ...row(clash.indexes[1]) });
+      }
+      for (const i of offersFormChoices(def) ? formUnchoosable(fields) : []) {
+        const what = formFieldTitles(fields, [i], fields.map((_, j) => j));
+        const outcome = formRefusesUnchoosable(def) ? 'so visitors cannot send the form' : 'so visitors cannot answer it';
+        out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the ${formNoun(def)}'s ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id, ...row(i) });
       }
     }
   }
-  for (const p of cardLinkProblems(state))
-    out.push({
-      severity: 'error',
-      code: 'CARD_LINK_INTERACTIVE',
-      message: `${p.label}: ${p.what} sits inside a card that links somewhere, and a link or control cannot sit inside another. Move it out of the card, or remove the card's link.`,
-      owner: p.owner,
-      nodeId: p.nodeId,
-      // Each card (or placement whose slot content sits in cards) is its own problem, whatever the content inside it is
-      // called and however many cards hold it: a second broken card is new, while a button losing its state action, or
-      // one of several cards losing its link, is not.
-      site: `card:${p.nodeId}`
-    });
-  // The links to sections that do not exist go here (adviceValidation).
-  const linksAt = out.length;
+  return out;
+}
+
+/** What the components give placements that set nothing of their own, and the site's pictures. */
+function defaultDiagnostics(state: ProjectState): Diagnostic[] {
+  const out: Diagnostic[] = [];
   // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
   // ones), and the pictures of a project component, which can only show images.
   for (const def of Object.values(state.components)) {
@@ -533,18 +599,17 @@ export function coreValidation(state: ProjectState): CoreValidation {
   picture(state.site.socialImage, 'The site’s sharing image', 'socialImage');
   picture(state.site.identity?.logo, 'The site’s logo', 'logo');
   for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
-  // The page outlines, form names, run-time fonts, layout guardrails and reusability go here (adviceValidation).
-  const adviceAt = out.length;
-  out.push(...structureDiagnostics(state));
-  // A required value left empty (a hand edit, or a swap, theme change or import that carried one over). A binding that
-  // could pass an empty value is reported with the other binding problems.
-  for (const p of requiredProblems(state, { bindings: false }))
-    out.push({ severity: 'error', code: 'PROP_REQUIRED_EMPTY', message: p.message, owner: p.owner, ...(p.nodeId ? { nodeId: p.nodeId } : {}), site: p.key });
+  return out;
+}
+
+/** Library images too large for fast pages: what coreValidation reports last. */
+function assetSizeDiagnostics(state: ProjectState): Diagnostic[] {
+  const out: Diagnostic[] = [];
   for (const a of Object.values(state.assets.assets)) {
     // A download is the size it is; only what pages load and show is worth making smaller.
     if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
   }
-  return { core: out, at: [linksAt, adviceAt] };
+  return out;
 }
 
 /**
@@ -552,9 +617,10 @@ export function coreValidation(state: ProjectState): CoreValidation {
  * pages' heading outlines, form names, fonts code may choose at run time, layout guardrails and how reusable each project
  * component is. `joinValidation` puts each in its place among the core's findings.
  */
-export function adviceValidation(state: ProjectState): AdviceValidation {
+export function adviceValidation(state: ProjectState, cache?: ValidationCache): AdviceValidation {
+  const keep = cache ? cache.keeper(state) : freshKeeper(state);
   const links: Diagnostic[] = [];
-  for (const i of missingSectionLinks(state)) {
+  for (const i of missingSectionLinks(state, keep)) {
     const entry = i.owner.kind === 'entry' ? findEntry(state, i.owner.id) : undefined;
     const where =
       i.owner.kind === 'shell'
@@ -591,20 +657,27 @@ export function adviceValidation(state: ProjectState): AdviceValidation {
     const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
     links.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
-  const rest: Diagnostic[] = [...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state)];
-  for (const d of layoutGuardrailDiagnostics(state)) rest.push(d);
+  const rest: Diagnostic[] = [...headingDiagnostics(state, keep), ...formNameDiagnostics(state, keep), ...runtimeFontDiagnostics(state)];
+  for (const d of layoutGuardrailDiagnostics(state, undefined, keep)) rest.push(d);
+  append(rest, keep.shared('reusability', () => reusabilityDiagnostics(state)));
+  return [links, rest];
+}
+
+/** How reusable each of the project's own components is, as adviceValidation reports it last. */
+function reusabilityDiagnostics(state: ProjectState): Diagnostic[] {
+  const out: Diagnostic[] = [];
   // Theme components are fixed theme data; only a project's own components are its author's to make reusable.
   const tokens = effectiveTokens(state);
   for (const def of Object.values(state.components)) {
     if (def.kind !== 'managed' || def.owner !== 'project') continue;
     // Advice on a definition edited by hand into a shape it cannot have is skipped, never a reason it cannot open.
     try {
-      rest.push(...componentReusabilityDiagnostics(def, tokens));
+      out.push(...componentReusabilityDiagnostics(def, tokens));
     } catch {
-      /* the structural checks above say what is wrong with it */
+      /* the structural checks say what is wrong with it */
     }
   }
-  return [links, rest];
+  return out;
 }
 
 /** Every finding of `validateState`, in its order: the core's, with the advice in its two places among them. */
@@ -681,8 +754,8 @@ export function formNameClashMessage(state: ProjectState, clash: FormNameClash):
  * Contact forms that send to Netlify under one form name, each flagged where it is: Netlify would file their messages
  * together. A warning, so the site still saves and exports, but it is listed before an export.
  */
-export function formNameDiagnostics(state: ProjectState): Diagnostic[] {
-  return netlifyFormClashes(state).flatMap((clash) => {
+export function formNameDiagnostics(state: ProjectState, parts?: CheckParts): Diagnostic[] {
+  return netlifyFormClashes(state, parts).flatMap((clash) => {
     const message = formNameClashMessage(state, clash);
     const label = (f: FormNameClash['forms'][number]) => (f.owner.kind === 'shell' ? (f.owner.id === 'header' ? 'Header' : 'Footer') : formPlace(state, f));
     // A form shown more than once (through a slot inside a list) is flagged once where it is.
@@ -754,39 +827,45 @@ const quoted = (text: string) => (text ? `“${text.length > 60 ? `${text.slice(
  * Each page's heading outline, as warnings to review: they never block a save or an export, since a second Heading 1
  * can be deliberate. Each names the heading to change, and the page it is on.
  */
-export function headingDiagnostics(state: ProjectState): Diagnostic[] {
+export function headingDiagnostics(state: ProjectState, keep: Keeper = freshKeeper(state)): Diagnostic[] {
   const out: Diagnostic[] = [];
   for (const id of state.site.pageOrder) {
     const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
-    if (!page) continue;
-    const owner = { kind: 'page', id };
-    // The shared header and footer never count toward a page's review: they are left out of the walk.
-    const { outline, review } = pageHeadings(state, id, { shell: false });
-    if (review.missingTitle)
-      out.push({ severity: 'warning', code: 'HEADING_MISSING_H1', message: `${page.title}: no heading is a Heading 1, so the page has no title for screen readers to announce. Make the page’s main heading Heading 1.`, owner });
-    if (review.extraTitles) {
-      const titles = review.titles.map((i) => outline[i]);
-      const names = listed([...new Set(titles.map((h) => quoted(h.text)))]);
-      const lead = titles.length === 1 ? `the Heading 1 ${names} is shown more than once` : `${titles.length} headings are Heading 1s (${names})`;
-      const second = titles[1] ?? titles[0];
-      out.push({
-        severity: 'warning',
-        code: 'HEADING_MULTIPLE_H1',
-        message: `${page.title}: ${lead}, so screen readers announce more than one page title. Keep the page’s title as Heading 1 and make the others Heading 2, unless they are meant to be titles.`,
-        owner,
-        nodeId: second.nodeId
-      });
-    }
-    for (const skip of review.skips) {
-      const h = outline[skip.index];
-      out.push({
-        severity: 'warning',
-        code: 'HEADING_LEVEL_SKIP',
-        message: `${page.title}: ${quoted(h.text)} is a Heading ${h.level} right after a Heading ${skip.after}, so the outline skips a level. Make it Heading ${skip.suggest}.`,
-        owner,
-        nodeId: h.nodeId
-      });
-    }
+    if (page) append(out, keep.tree({ owner: { kind: 'page', id }, tree: page, label: page.title }, 'headings', () => pageHeadingDiagnostics(state, id, page)));
+  }
+  return out;
+}
+
+/** The heading outline of the page listed as `id`, as headingDiagnostics reports it. */
+function pageHeadingDiagnostics(state: ProjectState, id: string, page: PageDoc): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const owner = { kind: 'page', id };
+  // The shared header and footer never count toward a page's review: they are left out of the walk.
+  const { outline, review } = pageHeadings(state, id, { shell: false });
+  if (review.missingTitle)
+    out.push({ severity: 'warning', code: 'HEADING_MISSING_H1', message: `${page.title}: no heading is a Heading 1, so the page has no title for screen readers to announce. Make the page’s main heading Heading 1.`, owner });
+  if (review.extraTitles) {
+    const titles = review.titles.map((i) => outline[i]);
+    const names = listed([...new Set(titles.map((h) => quoted(h.text)))]);
+    const lead = titles.length === 1 ? `the Heading 1 ${names} is shown more than once` : `${titles.length} headings are Heading 1s (${names})`;
+    const second = titles[1] ?? titles[0];
+    out.push({
+      severity: 'warning',
+      code: 'HEADING_MULTIPLE_H1',
+      message: `${page.title}: ${lead}, so screen readers announce more than one page title. Keep the page’s title as Heading 1 and make the others Heading 2, unless they are meant to be titles.`,
+      owner,
+      nodeId: second.nodeId
+    });
+  }
+  for (const skip of review.skips) {
+    const h = outline[skip.index];
+    out.push({
+      severity: 'warning',
+      code: 'HEADING_LEVEL_SKIP',
+      message: `${page.title}: ${quoted(h.text)} is a Heading ${h.level} right after a Heading ${skip.after}, so the outline skips a level. Make it Heading ${skip.suggest}.`,
+      owner,
+      nodeId: h.nodeId
+    });
   }
   return out;
 }
@@ -955,11 +1034,72 @@ function queryContainerCollapse(n: GraphNode & { kind: 'element' }, parentOf: Ma
  * Checks that catch documents edited outside the editor: unknown HTML tags, slots that do not match their
  * definition, definitions that contain themselves, and site styles that loop or point at nothing.
  */
-function structureDiagnostics(state: ProjectState): Diagnostic[] {
+function structureDiagnostics(state: ProjectState, keep: Keeper): Diagnostic[] {
   const out: Diagnostic[] = [];
-  const tokenIds = new Set(declaredTokens(state).map((t) => t.id));
-  const groupOf = new Map(declaredTokens(state).map((t) => [t.id, t.group]));
-  const checkStyles = (rs: ResponsiveStyles | undefined, label: string, owner: Diagnostic['owner'], nodeId?: string, layer = 'own', grouped = true, what = 'it') => {
+  const styles: StyleContext = { state, tokenIds: new Set(declaredTokens(state).map((t) => t.id)), groupOf: new Map(declaredTokens(state).map((t) => [t.id, t.group])) };
+  const { tokenIds, groupOf } = styles;
+  const lookups = new Map<string, (nodeId: string) => string | null>();
+  // Theme definitions are fixed theme data, checked when the theme is built.
+  const trees = allTrees(state).filter((t) => t.owner.kind !== 'component' || state.components[t.owner.id]?.owner !== 'theme');
+  const nesting = treeNesting(state, keep, trees);
+  for (const [i, t] of trees.entries()) {
+    const def = t.owner.kind === 'component' ? state.components[t.owner.id] : undefined;
+    let groups: ((nodeId: string) => string | null) | undefined;
+    const group = (nodeId: string) => (groups ??= groupLookup(t.tree))(nodeId);
+    append(out, keep.tree(t, 'structure', () => nodeStructure(styles, lookups, t, def, group)));
+    // HTML the browser would rebuild (a block in a paragraph), or a list item, term or caption outside its list or figure.
+    // A container directly in a list is a warning: lists are built that way, one edit at a time.
+    for (const p of nesting[i]) out.push({ severity: p.severity, code: 'TAG_NESTING', message: `${t.label}: ${p.message}`, owner: t.owner, nodeId: p.nodeId, site: p.site });
+    if (def) append(out, keep.tree(t, 'design', () => designStructure(styles, t, def, group)));
+  }
+  // Lists connected to a collection, collection loops and what their elements read of each entry.
+  const destination = formDestinationLookup(state);
+  for (const t of allTrees(state))
+    append(out, keep.tree(t, 'collectionSources', () => collectionSourceProblems(state, [t], destination).map((p): Diagnostic => ({ severity: 'error', code: 'COLLECTION_SOURCE', message: `${p.label}: ${nodeLabel(p.node)} ${p.message}`, owner: p.owner, nodeId: p.nodeId, site: p.key }))));
+  // Slot declarations of the project's own components, code components included (theme ones are checked by the loader).
+  append(out, keep.shared('slots', () => slotDeclarationDiagnostics(state)));
+  // A token property names a token of its own group. One that is gone (a hand edit, a theme without it) shows nothing.
+  // Each tree's placements in turn, then the project's own definitions' defaults.
+  const tokenProps = (opts: { trees: CheckedTree[]; defaults: boolean }) => {
+    const found: Diagnostic[] = [];
+    forEachTokenPropRef(state, (id, site) => {
+      const where = { owner: site.owner, ...(site.nodeId ? { nodeId: site.nodeId } : {}) };
+      if (!tokenIds.has(id)) found.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${site.label}: a component property uses the site style "${id}", which does not exist.`, ...where });
+      else if (groupOf.get(id) !== site.tokenGroup) found.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${site.label}: a component property uses the site style "${id}", which is not a ${site.tokenGroup} style.`, ...where });
+    }, { themeDesigns: true, ...opts });
+    return found;
+  };
+  for (const t of allTrees(state)) append(out, keep.tree(t, 'tokenProps', () => tokenProps({ trees: [t], defaults: false })));
+  append(out, keep.shared('tokenPropDefaults', () => tokenProps({ trees: [], defaults: true })));
+  // The site styles themselves, and definitions that place themselves.
+  append(out, keep.shared('tokens', () => tokenDiagnostics(state, styles)));
+  return out;
+}
+
+/**
+ * Each tree's nesting problems, checked in turn with one reading of the project. A tree's are kept unless its check read
+ * where a design is placed (another document's placements can change it) or a check so far met a document holding
+ * itself: from then on each check depends on the ones before it, so every tree is checked again, in turn, as a
+ * validation of the state alone checks them.
+ */
+function treeNesting(state: ProjectState, keep: Keeper, trees: CheckedTree[]): NestingProblem[][] {
+  const nesting = trackedNestingChecker(state);
+  const found = trees.map((t) => keep.tree(t, 'nesting', () => nesting.check(t.owner, t.tree), (r) => !r.readPlacements && !nesting.cycles()).problems);
+  if (!nesting.cycles()) return found;
+  const again = trackedNestingChecker(state);
+  return trees.map((t) => again.check(t.owner, t.tree).problems);
+}
+
+/** What structureDiagnostics reads to check style rules, the same for every tree. */
+interface StyleContext {
+  state: ProjectState;
+  tokenIds: ReadonlySet<string>;
+  groupOf: ReadonlyMap<string, string>;
+}
+
+/** A check of style rules, adding what it finds to `out`. */
+function styleChecker({ state, tokenIds, groupOf }: StyleContext, out: Diagnostic[]) {
+  return (rs: ResponsiveStyles | undefined, label: string, owner: Diagnostic['owner'], nodeId?: string, layer = 'own', grouped = true, what = 'it') => {
     // Group states with no group around the element: kept, so turning a group back on restores them, but never shown.
     if (!grouped && hasGroupStyles(rs))
       out.push({
@@ -1026,117 +1166,121 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
       }
     }
   };
-  const nestingOf = nestingChecker(state);
-  const lookups = new Map<string, (nodeId: string) => string | null>();
-  for (const { owner, tree, label } of allTrees(state)) {
-    const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
-    // Theme definitions are fixed theme data, checked when the theme is built.
-    if (def?.owner === 'theme') continue;
-    const group = groupLookup(tree);
-    const parentOf = new Map(Object.values(tree.nodes).flatMap((p) => childLists(p).flatMap((l) => l.ids.map((c) => [c, p] as const))));
-    const inLoop = loopMembers(tree);
-    for (const n of Object.values(tree.nodes)) {
-      const collapse = n.kind === 'element' ? queryContainerCollapse(n, parentOf) : null;
-      if (collapse) out.push({ severity: 'warning', code: 'CONTAINER_COLLAPSE', message: `${label}: ${nodeLabel(n)} is a query container ${collapse}, so it can shrink to nothing: a query container's width never comes from what is inside it. Give it a width (or Grow in a horizontal stack), or set Query container to None.`, owner, nodeId: n.id, site: `${n.id}|containerType` });
-      // Only a container can be an interaction group, and it is one by `true`.
-      if (Object.hasOwn(n, 'interactionGroup') && (n.kind !== 'element' || (n as { interactionGroup?: unknown }).interactionGroup !== true))
-        out.push({ severity: 'error', code: 'GROUP_INVALID', message: `${label}: ${nodeLabel(n)} is marked as an interaction group, which only a container can be, by true.`, owner, nodeId: n.id, site: `${n.id}|interactionGroup` });
-      if (n.kind === 'element' && !isBinding(n.tag) && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
-      if (n.kind === 'text' && !isBinding(n.tag) && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
-      // A carousel's buttons go beside its list, which only a plain list can have.
-      if ((n as { carousel?: unknown }).carousel !== undefined && !isCarouselTrack(n))
-        out.push({ severity: 'error', code: 'CAROUSEL_INVALID', message: `${label}: ${nodeLabel(n)} is marked as a carousel, which only a bulleted list (ul) that is not itself a link can be.`, owner, nodeId: n.id });
-      if (n.kind === 'text' && n.datetime !== undefined && (n.rich || (!isBinding(n.datetime) && (typeof n.datetime !== 'string' || (n.datetime.trim() !== '' && !isArticleDate(n.datetime.trim()))))))
-        out.push({ severity: 'error', code: 'DATETIME_INVALID', message: `${label}: ${nodeLabel(n)} ${n.rich ? 'is rich text, which cannot state a date' : 'states a date that is not written YYYY-MM-DD'}.`, owner, nodeId: n.id });
-      // A page or the shared header and footer has no UI state to open a dialog with (a design's are checked with its state).
-      if (!def && (n as { overlay?: unknown }).overlay !== undefined)
-        out.push({ severity: 'error', code: 'OVERLAY_INVALID', message: `${label}: ${nodeLabel(n)} shows over the page as a dialog or drawer, which only a container in a component’s design can.`, owner, nodeId: n.id, site: `${n.id}|overlay` });
-      if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
-      // Properties and list items belong to a component: a page or the shared header and footer has none to show. A
-      // collection loop shows entries anywhere, and what its elements read of them is checked with it (below).
-      else if (n.kind === 'repeat' && !def && !isCollectionLoop(n)) out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: a repeat shows a component's list, so it can only be placed inside a component definition.`, owner, nodeId: n.id, site: n.id });
-      else if (!def && bindingSlots(n).some((sl) => !readsEntry(owner.kind, sl) && !(inLoop.has(n.id) && readsRowField(sl)) && (sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : isBindingRef(sl.value))))
-        out.push({
-          severity: 'error',
-          code: 'BINDING_SCOPE',
-          message: bindingSlots(n).some((sl) => isEntryBinding(conditionRef(sl.value) ?? sl.value))
-            ? `${label}: ${nodeLabel(n)} shows a field of a collection entry, which only an element of a collection's layout can.`
-            : `${label}: ${nodeLabel(n)} shows a component property, list item field or UI state, which only an element inside a component definition can.`,
-          owner,
-          nodeId: n.id,
-          site: n.id
-        });
-      else if (owner.kind === 'template' && Object.hasOwn(state.collections, owner.id))
-        for (const problem of entryBindingProblems(state, state.collections[owner.id], n)) out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${label}: ${nodeLabel(n)} ${problem}`, owner, nodeId: n.id, site: n.id });
-      else if (n.kind === 'slot' && def && !Object.hasOwn(def.slots ?? {}, n.slot))
-        out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });
-      // A fallback damaged by hand shows nothing until it is fixed.
-      if (n.kind === 'slot' && n.children !== undefined && (!Array.isArray(n.children) || n.children.some((c) => typeof c !== 'string')))
-        out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the fallback content of the slot "${n.slot}" is not a list of elements.`, owner, nodeId: n.id, site: `${n.id}|fallback` });
-      // Checked on its own, so a read reported on the same button never hides an action added to it.
-      if (!def && Object.hasOwn(n, 'stateAction'))
-        out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: ${nodeLabel(n)} changes UI state, which only a button inside a component definition can.`, owner, nodeId: n.id, site: `${n.id}|stateAction` });
-      if (n.kind === 'instance') {
-        const target = state.components[n.definitionId];
-        for (const s of Object.keys(n.slots ?? {})) {
-          const placed = n.slots![s];
-          if (!Array.isArray(placed)) {
-            out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the content placed in "${s}" of ${displayName(state, n)} is damaged and cannot be shown.`, owner, nodeId: n.id });
-            continue;
-          }
-          if (target && !Object.hasOwn(target.slots ?? {}, s)) {
-            out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: content is placed in "${s}", which ${target.name} does not have.`, owner, nodeId: n.id });
-            continue;
-          }
-          // What the slot holds must be what it takes, and no more than it holds (a hand edit, or a contract tightened since).
-          const decl = target ? slotDecl(state, n, s) : undefined;
-          if (!decl || slotDeclProblem(decl)) continue;
-          const fill = slotFill(state, tree, placed, decl, def);
-          const where = `${label}: the “${decl.label}” slot of ${displayName(state, n)}`;
-          for (const r of fill.refusedAll) out.push({ severity: 'error', code: 'SLOT_REFUSED', message: `${where} takes ${slotAccepts(decl, state)}, but holds ${r.what}.`, owner, nodeId: r.nodeId });
-          // The message leaves the count out, so taking content out of a slot that is still over its limit is no new problem.
-          if (decl.max !== undefined && fill.count > decl.max) out.push({ severity: 'error', code: 'SLOT_FULL', message: `${where} holds at most ${decl.max}, but shows more.`, owner, nodeId: n.id });
+}
+
+/** One tree's nodes as structureDiagnostics checks them: tags, scope, slots, placed variants and styles. */
+function nodeStructure(styles: StyleContext, lookups: Map<string, (nodeId: string) => string | null>, { owner, tree, label }: CheckedTree, def: ComponentDefinition | undefined, group: (nodeId: string) => string | null): Diagnostic[] {
+  const { state } = styles;
+  const out: Diagnostic[] = [];
+  const checkStyles = styleChecker(styles, out);
+  const parentOf = new Map(Object.values(tree.nodes).flatMap((p) => childLists(p).flatMap((l) => l.ids.map((c) => [c, p] as const))));
+  const inLoop = loopMembers(tree);
+  for (const n of Object.values(tree.nodes)) {
+    const collapse = n.kind === 'element' ? queryContainerCollapse(n, parentOf) : null;
+    if (collapse) out.push({ severity: 'warning', code: 'CONTAINER_COLLAPSE', message: `${label}: ${nodeLabel(n)} is a query container ${collapse}, so it can shrink to nothing: a query container's width never comes from what is inside it. Give it a width (or Grow in a horizontal stack), or set Query container to None.`, owner, nodeId: n.id, site: `${n.id}|containerType` });
+    // Only a container can be an interaction group, and it is one by `true`.
+    if (Object.hasOwn(n, 'interactionGroup') && (n.kind !== 'element' || (n as { interactionGroup?: unknown }).interactionGroup !== true))
+      out.push({ severity: 'error', code: 'GROUP_INVALID', message: `${label}: ${nodeLabel(n)} is marked as an interaction group, which only a container can be, by true.`, owner, nodeId: n.id, site: `${n.id}|interactionGroup` });
+    if (n.kind === 'element' && !isBinding(n.tag) && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
+    if (n.kind === 'text' && !isBinding(n.tag) && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
+    // A carousel's buttons go beside its list, which only a plain list can have.
+    if ((n as { carousel?: unknown }).carousel !== undefined && !isCarouselTrack(n))
+      out.push({ severity: 'error', code: 'CAROUSEL_INVALID', message: `${label}: ${nodeLabel(n)} is marked as a carousel, which only a bulleted list (ul) that is not itself a link can be.`, owner, nodeId: n.id });
+    if (n.kind === 'text' && n.datetime !== undefined && (n.rich || (!isBinding(n.datetime) && (typeof n.datetime !== 'string' || (n.datetime.trim() !== '' && !isArticleDate(n.datetime.trim()))))))
+      out.push({ severity: 'error', code: 'DATETIME_INVALID', message: `${label}: ${nodeLabel(n)} ${n.rich ? 'is rich text, which cannot state a date' : 'states a date that is not written YYYY-MM-DD'}.`, owner, nodeId: n.id });
+    // A page or the shared header and footer has no UI state to open a dialog with (a design's are checked with its state).
+    if (!def && (n as { overlay?: unknown }).overlay !== undefined)
+      out.push({ severity: 'error', code: 'OVERLAY_INVALID', message: `${label}: ${nodeLabel(n)} shows over the page as a dialog or drawer, which only a container in a component’s design can.`, owner, nodeId: n.id, site: `${n.id}|overlay` });
+    if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
+    // Properties and list items belong to a component: a page or the shared header and footer has none to show. A
+    // collection loop shows entries anywhere, and what its elements read of them is checked with it (below).
+    else if (n.kind === 'repeat' && !def && !isCollectionLoop(n)) out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: a repeat shows a component's list, so it can only be placed inside a component definition.`, owner, nodeId: n.id, site: n.id });
+    else if (!def && bindingSlots(n).some((sl) => !readsEntry(owner.kind, sl) && !(inLoop.has(n.id) && readsRowField(sl)) && (sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : isBindingRef(sl.value))))
+      out.push({
+        severity: 'error',
+        code: 'BINDING_SCOPE',
+        message: bindingSlots(n).some((sl) => isEntryBinding(conditionRef(sl.value) ?? sl.value))
+          ? `${label}: ${nodeLabel(n)} shows a field of a collection entry, which only an element of a collection's layout can.`
+          : `${label}: ${nodeLabel(n)} shows a component property, list item field or UI state, which only an element inside a component definition can.`,
+        owner,
+        nodeId: n.id,
+        site: n.id
+      });
+    else if (owner.kind === 'template' && Object.hasOwn(state.collections, owner.id))
+      for (const problem of entryBindingProblems(state, state.collections[owner.id], n)) out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${label}: ${nodeLabel(n)} ${problem}`, owner, nodeId: n.id, site: n.id });
+    else if (n.kind === 'slot' && def && !Object.hasOwn(def.slots ?? {}, n.slot))
+      out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });
+    // A fallback damaged by hand shows nothing until it is fixed.
+    if (n.kind === 'slot' && n.children !== undefined && (!Array.isArray(n.children) || n.children.some((c) => typeof c !== 'string')))
+      out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the fallback content of the slot "${n.slot}" is not a list of elements.`, owner, nodeId: n.id, site: `${n.id}|fallback` });
+    // Checked on its own, so a read reported on the same button never hides an action added to it.
+    if (!def && Object.hasOwn(n, 'stateAction'))
+      out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: ${nodeLabel(n)} changes UI state, which only a button inside a component definition can.`, owner, nodeId: n.id, site: `${n.id}|stateAction` });
+    if (n.kind === 'instance') {
+      const target = state.components[n.definitionId];
+      for (const s of Object.keys(n.slots ?? {})) {
+        const placed = n.slots![s];
+        if (!Array.isArray(placed)) {
+          out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the content placed in "${s}" of ${displayName(state, n)} is damaged and cannot be shown.`, owner, nodeId: n.id });
+          continue;
         }
-        for (const [axis, v] of Object.entries(n.variants ?? {})) {
-          if (!target || isBindingRef(v)) continue;
-          const a = target.variantAxes && Object.hasOwn(target.variantAxes, axis) ? target.variantAxes[axis] : undefined;
-          if (!a || !Object.hasOwn(a.options, v)) out.push({ severity: 'warning', code: 'VARIANT_UNKNOWN', message: `${label}: ${target.name} has no ${axis} "${String(v)}", so it shows its default.`, owner, nodeId: n.id });
+        if (target && !Object.hasOwn(target.slots ?? {}, s)) {
+          out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: content is placed in "${s}", which ${target.name} does not have.`, owner, nodeId: n.id });
+          continue;
         }
-        const placed = group(n.id) !== null;
-        const partWords = (partId: string) => (partId === 'root' ? displayName(state, n) : `the “${partId}” part of ${displayName(state, n)}`);
-        for (const [partId, o] of Object.entries(n.overrides ?? {})) checkStyles(o, label, owner, n.id, `part:${partId}`, partInInteractionGroup(target, partId, placed, lookups), partWords(partId));
-        for (const [partId, entry] of Object.entries(n.itemOverrides ?? {})) {
-          const valid = !!entry && typeof entry === 'object' && typeof entry.list === 'string' && !!entry.items && typeof entry.items === 'object' && !Array.isArray(entry.items);
-          if (!valid) out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on single items of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
-          else if (Object.values(entry.items).some((rs) => !rs || typeof rs !== 'object' || Array.isArray(rs)))
-            out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on a single item of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
-          else for (const [itemId, rs] of Object.entries(entry.items)) checkStyles(rs, label, owner, n.id, `item:${partId}:${itemId}`, partInInteractionGroup(target, partId, placed, lookups), `one item of ${partWords(partId)}`);
-        }
+        // What the slot holds must be what it takes, and no more than it holds (a hand edit, or a contract tightened since).
+        const decl = target ? slotDecl(state, n, s) : undefined;
+        if (!decl || slotDeclProblem(decl)) continue;
+        const fill = slotFill(state, tree, placed, decl, def);
+        const where = `${label}: the “${decl.label}” slot of ${displayName(state, n)}`;
+        for (const r of fill.refusedAll) out.push({ severity: 'error', code: 'SLOT_REFUSED', message: `${where} takes ${slotAccepts(decl, state)}, but holds ${r.what}.`, owner, nodeId: r.nodeId });
+        // The message leaves the count out, so taking content out of a slot that is still over its limit is no new problem.
+        if (decl.max !== undefined && fill.count > decl.max) out.push({ severity: 'error', code: 'SLOT_FULL', message: `${where} holds at most ${decl.max}, but shows more.`, owner, nodeId: n.id });
       }
-      checkStyles(n.styles, label, owner, n.id, 'own', group(n.id) !== null, nodeLabel(n));
+      for (const [axis, v] of Object.entries(n.variants ?? {})) {
+        if (!target || isBindingRef(v)) continue;
+        const a = target.variantAxes && Object.hasOwn(target.variantAxes, axis) ? target.variantAxes[axis] : undefined;
+        if (!a || !Object.hasOwn(a.options, v)) out.push({ severity: 'warning', code: 'VARIANT_UNKNOWN', message: `${label}: ${target.name} has no ${axis} "${String(v)}", so it shows its default.`, owner, nodeId: n.id });
+      }
+      const placed = group(n.id) !== null;
+      const partWords = (partId: string) => (partId === 'root' ? displayName(state, n) : `the “${partId}” part of ${displayName(state, n)}`);
+      for (const [partId, o] of Object.entries(n.overrides ?? {})) checkStyles(o, label, owner, n.id, `part:${partId}`, partInInteractionGroup(target, partId, placed, lookups), partWords(partId));
+      for (const [partId, entry] of Object.entries(n.itemOverrides ?? {})) {
+        const valid = !!entry && typeof entry === 'object' && typeof entry.list === 'string' && !!entry.items && typeof entry.items === 'object' && !Array.isArray(entry.items);
+        if (!valid) out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on single items of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
+        else if (Object.values(entry.items).some((rs) => !rs || typeof rs !== 'object' || Array.isArray(rs)))
+          out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on a single item of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
+        else for (const [itemId, rs] of Object.entries(entry.items)) checkStyles(rs, label, owner, n.id, `item:${partId}:${itemId}`, partInInteractionGroup(target, partId, placed, lookups), `one item of ${partWords(partId)}`);
+      }
     }
-    // HTML the browser would rebuild (a block in a paragraph), or a list item, term or caption outside its list or figure.
-    // A container directly in a list is a warning: lists are built that way, one edit at a time.
-    for (const p of nestingOf(owner, tree)) out.push({ severity: p.severity, code: 'TAG_NESTING', message: `${label}: ${p.message}`, owner, nodeId: p.nodeId, site: p.site });
-    if (def) {
-      for (const { axis, id, option: v } of variantOptions(def))
-        for (const [nid, st] of Object.entries(v.styles ?? {})) {
-          const styled = Object.hasOwn(tree.nodes, nid) ? tree.nodes[nid] : undefined;
-          checkStyles(st, label, owner, nid, `variant:${axis}:${id}`, group(nid) !== null, styled ? `${nodeLabel(styled)} in its ${id} look` : 'a node');
-        }
-      if (!variantIdsValid(def)) out.push({ severity: 'warning', code: 'VARIANT_ID_INVALID', message: `${label}: a variant name uses characters that cannot be generated, so that variant is ignored.`, owner });
-      for (const [axis, a] of Object.entries(def.variantAxes ?? {}))
-        if (!Object.hasOwn(a.options ?? {}, a.default)) out.push({ severity: 'error', code: 'VARIANT_INVALID', message: `${label}: the default of the "${a.label ?? axis}" variant axis ("${a.default}") is not one of its options.`, owner });
-      const reachable = new Set(tree.rootIds.flatMap((r) => subtreeIds(tree, r)));
-      if (def.kind === 'managed')
-        for (const s of Object.keys(def.slots ?? {}))
-          if (!Object.values(tree.nodes).some((n) => n.kind === 'slot' && n.slot === s && reachable.has(n.id)))
-            out.push({ severity: 'warning', code: 'SLOT_UNPLACED', message: `${label}: the "${def.slots![s].label}" slot is declared but not placed, so content put there will not show.`, owner });
-    }
+    checkStyles(n.styles, label, owner, n.id, 'own', group(n.id) !== null, nodeLabel(n));
   }
-  // Lists connected to a collection, collection loops and what their elements read of each entry.
-  for (const p of collectionSourceProblems(state)) out.push({ severity: 'error', code: 'COLLECTION_SOURCE', message: `${p.label}: ${nodeLabel(p.node)} ${p.message}`, owner: p.owner, nodeId: p.nodeId, site: p.key });
-  // Slot declarations of the project's own components, code components included (theme ones are checked by the loader).
+  return out;
+}
+
+/** A design's own variants and slots, as structureDiagnostics checks them after its nodes. */
+function designStructure(styles: StyleContext, { owner, tree, label }: CheckedTree, def: ComponentDefinition, group: (nodeId: string) => string | null): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const checkStyles = styleChecker(styles, out);
+  for (const { axis, id, option: v } of variantOptions(def))
+    for (const [nid, st] of Object.entries(v.styles ?? {})) {
+      const styled = Object.hasOwn(tree.nodes, nid) ? tree.nodes[nid] : undefined;
+      checkStyles(st, label, owner, nid, `variant:${axis}:${id}`, group(nid) !== null, styled ? `${nodeLabel(styled)} in its ${id} look` : 'a node');
+    }
+  if (!variantIdsValid(def)) out.push({ severity: 'warning', code: 'VARIANT_ID_INVALID', message: `${label}: a variant name uses characters that cannot be generated, so that variant is ignored.`, owner });
+  for (const [axis, a] of Object.entries(def.variantAxes ?? {}))
+    if (!Object.hasOwn(a.options ?? {}, a.default)) out.push({ severity: 'error', code: 'VARIANT_INVALID', message: `${label}: the default of the "${a.label ?? axis}" variant axis ("${a.default}") is not one of its options.`, owner });
+  const reachable = new Set(tree.rootIds.flatMap((r) => subtreeIds(tree, r)));
+  if (def.kind === 'managed')
+    for (const s of Object.keys(def.slots ?? {}))
+      if (!Object.values(tree.nodes).some((n) => n.kind === 'slot' && n.slot === s && reachable.has(n.id)))
+        out.push({ severity: 'warning', code: 'SLOT_UNPLACED', message: `${label}: the "${def.slots![s].label}" slot is declared but not placed, so content put there will not show.`, owner });
+  return out;
+}
+
+/** The slot declarations of the project's own components, code components included (theme ones are checked by the loader). */
+function slotDeclarationDiagnostics(state: ProjectState): Diagnostic[] {
+  const out: Diagnostic[] = [];
   for (const def of Object.values(state.components)) {
     if (def.owner === 'theme') continue;
     for (const [k, d] of Object.entries(def.slots ?? {})) {
@@ -1146,12 +1290,12 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     // Each axis of code arrives in the property its manifest names, which must be one the code can take.
     for (const p of codeAxisProblems(def)) out.push({ severity: 'error', code: 'VARIANT_INVALID', message: `${def.name}: ${p.message}`, owner: { kind: 'component', id: def.id } });
   }
-  // A token property names a token of its own group. One that is gone (a hand edit, a theme without it) shows nothing.
-  forEachTokenPropRef(state, (id, site) => {
-    const where = { owner: site.owner, ...(site.nodeId ? { nodeId: site.nodeId } : {}) };
-    if (!tokenIds.has(id)) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${site.label}: a component property uses the site style "${id}", which does not exist.`, ...where });
-    else if (groupOf.get(id) !== site.tokenGroup) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${site.label}: a component property uses the site style "${id}", which is not a ${site.tokenGroup} style.`, ...where });
-  }, { themeDesigns: true });
+  return out;
+}
+
+/** What is wrong with the site styles (their links, the dark palette, cycles), then the first definition that places itself. */
+function tokenDiagnostics(state: ProjectState, { tokenIds, groupOf }: StyleContext): Diagnostic[] {
+  const out: Diagnostic[] = [];
   for (const [id, v] of [...Object.entries(state.tokens.overrides), ...state.tokens.custom.map((t) => [t.id, t.value] as const)]) {
     // Editing refuses these; one written by hand or by an older version still exports, metric by metric.
     if (groupOf.get(id) === 'text' && v && typeof v === 'object' && 'token' in v)

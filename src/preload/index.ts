@@ -26,11 +26,11 @@ if (!markAppearance()) {
 }
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
 
 const api: BuilderApi = {
   platform: process.platform,
-  app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal'), buildDetails: invoke('app:buildDetails'), showThemesFolder: invoke('app:showThemesFolder'), quit: invoke('app:quit'), recordShortcut: invoke('app:recordShortcut') } as BuilderApi['app'],
+  app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), gitRuntime: invoke('app:gitRuntime'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal'), buildDetails: invoke('app:buildDetails'), showThemesFolder: invoke('app:showThemesFolder'), quit: invoke('app:quit'), recordShortcut: invoke('app:recordShortcut') } as BuilderApi['app'],
   edit: { undo: invoke('edit:undo'), redo: invoke('edit:redo') } as BuilderApi['edit'],
   dialogs: { chooseFolder: invoke('dialogs:chooseFolder'), chooseImages: async () => [], defaultProjectsFolder: invoke('dialogs:defaultProjectsFolder') } as BuilderApi['dialogs'],
   projects: {
@@ -91,6 +91,9 @@ const api: BuilderApi = {
     deleteVersion: invoke('project:deleteVersion'),
     exportSource: invoke('project:exportSource'),
     exportStatic: invoke('project:exportStatic'),
+    reviewEditions: invoke('project:reviewEditions'),
+    captureReviewEdition: invoke('project:captureReviewEdition'),
+    exportReviewSheet: invoke('project:exportReviewSheet'),
     retryPreview: invoke('project:retryPreview'),
     prepareComponentPreview: invoke('project:prepareComponentPreview'),
     releaseComponentPreview: invoke('project:releaseComponentPreview'),
@@ -118,6 +121,7 @@ const api: BuilderApi = {
     conversations: invoke('ai:conversations'),
     newConversation: invoke('ai:newConversation'),
     openConversation: invoke('ai:openConversation'),
+    readConversation: invoke('ai:readConversation'),
     renameConversation: invoke('ai:renameConversation'),
     deleteConversation: invoke('ai:deleteConversation'),
     clearHistory: invoke('ai:clearHistory'),
@@ -128,6 +132,12 @@ const api: BuilderApi = {
     fixCode: invoke('ai:fixCode'),
     cancelFix: invoke('ai:cancelFix')
   } as BuilderApi['ai'],
+  notes: {
+    list: invoke('notes:list'),
+    add: invoke('notes:add'),
+    resolve: invoke('notes:resolve'),
+    delete: invoke('notes:delete')
+  } as BuilderApi['notes'],
   live: {
     start: invoke('live:start'),
     stop: invoke('live:stop'),
@@ -137,8 +147,10 @@ const api: BuilderApi = {
     setGuestExpiry: invoke('live:setGuestExpiry'),
     kick: invoke('live:kick'),
     setLocked: invoke('live:setLocked'),
+    setGuestNotes: invoke('live:setGuestNotes'),
     extend: invoke('live:extend'),
     presence: invoke('live:presence'),
+    setAi: invoke('live:setAi'),
     state: invoke('live:state')
   } as BuilderApi['live'],
   remote: {
@@ -147,7 +159,15 @@ const api: BuilderApi = {
     state: invoke('remote:state'),
     snapshot: invoke('remote:snapshot'),
     apply: invoke('remote:apply'),
-    presence: invoke('remote:presence')
+    presence: invoke('remote:presence'),
+    ai: invoke('remote:ai'),
+    aiSend: invoke('remote:aiSend'),
+    aiStop: invoke('remote:aiStop'),
+    aiAnswer: invoke('remote:aiAnswer'),
+    notes: invoke('remote:notes'),
+    addNote: invoke('remote:addNote'),
+    resolveNote: invoke('remote:resolveNote'),
+    deleteNote: invoke('remote:deleteNote')
   } as BuilderApi['remote'],
   on: ((channel: string, cb: (payload: unknown) => void) => {
     if (!ALLOWED_EVENTS.has(channel)) throw new Error(`Unknown channel ${channel}`);
@@ -170,6 +190,8 @@ if (process.argv.includes(PERF_ARG)) contextBridge.exposeInMainWorld('builderPer
 contextBridge.exposeInMainWorld('builderTest', {
   exportStatic: invoke('test:exportStatic'),
   exportSource: invoke('test:exportSource'),
+  preparePublication: invoke('test:preparePublication'),
+  publicationStatus: invoke('test:publicationStatus'),
   previewComponent: invoke('test:previewComponent'),
   thumbCaptures: invoke('test:thumbCaptures'),
   inspectLayout: invoke('test:inspectLayout'),

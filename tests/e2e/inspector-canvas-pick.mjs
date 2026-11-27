@@ -56,6 +56,39 @@ assert.equal(after[home.other].props.heading, savedOther, 'the section clicked k
 assert.equal(await lost().count(), 0, 'no notice says the text was lost');
 await win.screenshot({ path: join(SHOTS, 'inspector-canvas-pick.png') });
 
+step('selecting the hero and its heading with the Inspector open leaves the editor in its window (#897)');
+await openInspector(win);
+/** The editor document's own scroll position, and how far it reaches past the window. */
+const docScroll = () => win.evaluate(() => ({ x: scrollX, y: scrollY, top: document.scrollingElement.scrollTop, over: document.documentElement.scrollHeight - innerHeight }));
+const still = { x: 0, y: 0, top: 0, over: 0 };
+const pageHeading = frame.locator('h1').first();
+const chips = win.locator('.ov-chip .label');
+const chip = async () => ((await chips.count()) ? chips.first().innerText() : null);
+/** Once the selection is what `expected` says, and the page has settled, the editor has not moved. */
+const settled = async (what, expected) => {
+  await eventually(async () => expected(await chip()), 10000);
+  await new Promise((r) => setTimeout(r, 600));
+  assert.deepEqual(await docScroll(), still, `the editor stays put after ${what}`);
+};
+await win.keyboard.press('Escape');
+await settled('Escape to nothing', (c) => assert.equal(c, null));
+await pageHeading.click();
+let hero;
+await settled('picking the hero', (c) => assert.ok((hero = c), 'the hero is selected'));
+await pageHeading.click();
+await settled('picking its heading', (c) => assert.ok(c && c !== hero && /heading/i.test(c), `its heading is selected, not ${c}`));
+await win.keyboard.press('Escape');
+await settled('Escape to the hero', (c) => assert.equal(c, hero));
+await win.keyboard.press('Escape');
+await settled('Escape to nothing', (c) => assert.equal(c, null));
+// A layer far down the page, picked in Layers: the preview scrolls to it, and the editor around it does not.
+const layers = win.locator('[role="tree"] [role="treeitem"]');
+if (!(await layers.last().isVisible())) await win.locator('.rail [aria-label="Layers"]').click();
+await layers.last().click();
+await eventually(async () => assert.ok((await frame.locator('html').evaluate(() => scrollY)) > 0, 'the preview scrolled to the layer'), 10000);
+await settled('picking a layer far down the page', (c) => assert.ok(c, 'the layer is selected'));
+await win.keyboard.press('Escape');
+
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();
 cleanup();

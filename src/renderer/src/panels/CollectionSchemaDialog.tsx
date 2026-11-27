@@ -13,7 +13,7 @@ import type { CollectionFieldSchema, CollectionKind } from '@shared/types';
 import { COLLECTION_FIELD_TYPES } from '@shared/types';
 import { claimRefusals, commitOps, confirmDialog, getState, useStore } from '../store';
 import { ChoiceField, Field, Modal, SwitchRow, useMenu } from '../components/ui';
-import { FIELD_TYPE_LABELS, entryNoun, newFieldSchema, retypeField, schemaDraftOf, schemaLosses, schemaUpdateOp, settleDraft, type CollectionFieldType, type FieldRow, type SchemaDraft } from '../lib/content';
+import { FIELD_TYPE_LABELS, draftFeedChoice, draftInFeed, draftKindFeeds, entryNoun, newFieldSchema, retypeField, schemaDraftOf, schemaLosses, schemaUpdateOp, settleDraft, type CollectionFieldType, type FieldRow, type SchemaDraft } from '../lib/content';
 import { isImeComposing } from '../lib/ime';
 import './CollectionSchemaDialog.css';
 
@@ -214,6 +214,18 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
               <Field label="Address" controlId={`${uid}-route`} hint={`Each entry’s address starts with it, such as ${draft.route.replace(/\/?$/, '/')}an-entry/.`}>
                 <input id={`${uid}-route`} className="input" maxLength={200} spellCheck={false} value={draft.route} onChange={(e) => set({ route: e.target.value })} />
               </Field>
+              {/* Records such as staff or listings stay out of the blog's feed unless the author puts them in. */}
+              <SwitchRow
+                checked={draftInFeed(draft)}
+                onChange={(on) => set(draftFeedChoice(on))}
+                label="Listed in the RSS feed"
+                hint={draft.rss === undefined ? (draft.kind === 'structured' ? 'Records are left out unless this is turned on.' : 'Each published entry is listed in the site’s rss.xml.') : `Chosen for this collection, whatever its kind. Left to its kind, ${draft.kind === 'structured' ? 'records' : 'articles'} are ${draftKindFeeds(draft) ? 'listed' : 'left out'}.`}
+              />
+              {draft.rss !== undefined && (
+                <button type="button" className="btn btn-sm cs-add" onClick={() => set({ rss: undefined })}>
+                  Leave it to the kind
+                </button>
+              )}
             </>
           )}
         </section>

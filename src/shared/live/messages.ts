@@ -130,7 +130,15 @@ const guestStatus = z.discriminatedUnion('status', [
   msg('guest:status', { status: z.literal('ended') })
 ]);
 
-const admittedParticipant = z.object({ guestId, displayName, status: z.literal('admitted'), role, guestExpiresAt: time.nullable() }).strict();
+/**
+ * `colorSlot` is the guest's own place in the room's palette, given by the relay when it is let in and kept while it
+ * holds its place, so everyone in the session shows a guest in the same color and no two guests in it share one.
+ * `connected` says whether its socket is up now: one whose connection dropped keeps its place for a while, but is
+ * shown nowhere on the canvas until it is back.
+ */
+const admittedParticipant = z
+  .object({ guestId, displayName, status: z.literal('admitted'), role, guestExpiresAt: time.nullable(), colorSlot: z.number().int().min(0).max(MAX_GUESTS - 1), connected: z.boolean() })
+  .strict();
 const participant = z.discriminatedUnion('status', [z.object({ guestId, displayName, status: z.literal('pending') }).strict(), admittedParticipant]);
 /** Everyone in the room, as the host sees it: those waiting too (its join requests). */
 const hostRoster = msg('room:roster', { participants: z.array(participant).max(MAX_GUESTS) });
@@ -236,8 +244,15 @@ const rpcResponse = <E extends z.ZodRawShape, N extends typeof method | typeof l
     msg('rpc:response', { ...extra, requestId, method: named, ok: z.literal(false), error: rpcError })
   ]);
 
-/** The host's editor events guests follow. Payloads are the host's own, made safe to share before they are sent. */
-export const LIVE_EVENTS = ['project:changed', 'runtime:status'] as const;
+/**
+ * The host's editor events guests follow. Payloads are the host's own, made safe to share before they are sent.
+ * `ai:access` (whether the host lets a collaborator use its AI, and how many requests are left) and `ai:turn` (that
+ * collaborator's own AI request as it runs) go only to the one guest they are about, never to everyone (shared/live/ai.ts).
+ * `notes:changed` says the project's pinned notes changed (#770), to everyone.
+ */
+export const LIVE_EVENTS = ['project:changed', 'runtime:status', 'ai:access', 'ai:turn', 'notes:changed'] as const;
+/** The events the host sends one guest alone: a frame of one with no guest named is never sent, nor passed on. */
+export const PRIVATE_LIVE_EVENTS: readonly LiveEvent[] = ['ai:access', 'ai:turn'];
 export type LiveEvent = (typeof LIVE_EVENTS)[number];
 const rpcEvent = <E extends z.ZodRawShape>(extra: E) => msg('rpc:event', { ...extra, event: z.enum(LIVE_EVENTS), payload: z.unknown() });
 
@@ -245,9 +260,9 @@ const rpcEvent = <E extends z.ZodRawShape>(extra: E) => msg('rpc:event', { ...ex
 // Presence
 
 const shortId = z.string().min(1).max(MAX_ID_LENGTH);
-/** The editor's ElementRef, as presence carries it (capabilities.ts checks the two stay the same). */
+/** The editor's ElementRef, as presence and notes carry it (capabilities.ts checks the two stay the same). */
 const OWNER_KINDS = ['page', 'shell', 'component', 'template', 'archive'] as const;
-const elementRef = z
+export const ELEMENT_REF_SCHEMA = z
   .object({
     owner: z.object({ kind: z.enum(OWNER_KINDS), id: shortId }).strict(),
     instancePath: z.array(shortId).max(MAX_SELECTION_DEPTH),
@@ -257,6 +272,18 @@ const elementRef = z
     slot: shortId.optional()
   })
   .strict();
+const elementRef = ELEMENT_REF_SCHEMA;
+/** The editor's ElementRef as the live contract reads it, for checks outside this module (capabilities.ts). */
+export const ELEMENT_REF = elementRef;
+/**
+ * Where a page is in the preview: the path and query on the room's preview origin, as a URL serializes them. Printable
+ * ASCII, less what a URL serializer would percent-encode in a path or query, so it compares equal to the address the
+ * guest's browser reports for the same page.
+ */
+export const PREVIEW_PATH_SCHEMA = z
+  .string()
+  .refine((path) => /^[\x21-\x7e]+$/.test(path) && !/["<>`{}]/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' });
+const previewPath = PREVIEW_PATH_SCHEMA;
 /**
  * What a participant is looking at, replacing whatever it showed before. Null clears a page or a selection.
  * `previewPath` is where that page is in the preview (the path and query on the room's preview origin, as a URL
@@ -269,16 +296,35 @@ const presence = z
     pageId: shortId.nullable(),
     viewportWidth: z.number().int().min(MIN_VIEWPORT_WIDTH).max(MAX_VIEWPORT_WIDTH),
     selection: elementRef.nullable(),
-    previewPath: z
-      .string()
-      // Printable ASCII, less what a URL serializer would percent-encode in a path or query, so it compares equal to
-      // the address the guest's browser reports for the same page.
-      .refine((path) => /^[\x21-\x7e]+$/.test(path) && !/["<>`{}]/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
-      .nullable()
+    previewPath: previewPath.nullable()
   })
   .strict();
 const presenceUpdate = msg('presence:update', { presence });
 const presenceChanged = msg('presence:changed', { participant: z.discriminatedUnion('kind', [z.object({ kind: z.literal('host') }).strict(), z.object({ kind: z.literal('guest'), guestId }).strict()]), presence });
+
+// ---------------------------------------------------------------------------
+// Spotlight
+
+/** A share of the page's whole width or height, from its left or top edge. */
+const fraction = z.number().min(0).max(1);
+/**
+ * Where a guest pointed on the page its preview shows (#768), for the host's canvas to flash a ring there: the page's
+ * address, the element pointed at when the page names one (null otherwise), and the point itself as shares of the
+ * page's whole width and height, so the ring lands near it whatever width the host shows the page at.
+ */
+const spotlight = z.object({ previewPath, target: elementRef.nullable(), x: fraction, y: fraction }).strict();
+/** A guest points at something: passed on to the host alone, and never kept. */
+const spotlightPoint = msg('spotlight:point', { spotlight });
+/** The relay names the guest that pointed; the host never takes a guest's word for it. */
+const spotlightPointed = msg('spotlight:pointed', { guestId, spotlight });
+
+/**
+ * A collaborator's edit has just been made on the host (#768), and what it changed when that is one element (null for
+ * an edit of several, or of the page): the host tells the other collaborators, so they see who is editing what. Sent
+ * only once the host has saved it, and never kept.
+ */
+const activityEdit = msg('activity:edit', { guestId, target: elementRef.nullable() });
+const activityEdited = msg('activity:edited', { guestId, target: elementRef.nullable() });
 
 
 // ---------------------------------------------------------------------------
@@ -304,7 +350,8 @@ const HOST_TO_RELAY = z.discriminatedUnion('type', [
   // The host answers the guest that asked, and sends events to one guest or, with no guest ID, to all admitted.
   rpcResponse({ guestId }, liveMethod),
   rpcEvent({ guestId: guestId.optional() }),
-  presenceUpdate
+  presenceUpdate,
+  activityEdit
 ]);
 
 const RELAY_TO_HOST = z.discriminatedUnion('type', [
@@ -317,12 +364,13 @@ const RELAY_TO_HOST = z.discriminatedUnion('type', [
   // The relay names the guest a request came from; the host never takes a guest's word for it.
   msg('rpc:request', { guestId, requestId, method: liveMethod, args }),
   presenceChanged,
+  spotlightPointed,
   protocolError
 ]);
 
-const GUEST_TO_RELAY = z.discriminatedUnion('type', [guestJoin, guestLeave, msg('rpc:request', { requestId, method, args }), presenceUpdate]);
+const GUEST_TO_RELAY = z.discriminatedUnion('type', [guestJoin, guestLeave, msg('rpc:request', { requestId, method, args }), presenceUpdate, spotlightPoint]);
 
-const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, hostAvailability, guestRoster, previewReload, rpcResponse({}, method), rpcEvent({}), presenceChanged, protocolError]);
+const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, hostAvailability, guestRoster, previewReload, rpcResponse({}, method), rpcEvent({}), presenceChanged, activityEdited, protocolError]);
 
 export const FRAME_SCHEMAS = { 'host-to-relay': HOST_TO_RELAY, 'relay-to-host': RELAY_TO_HOST, 'guest-to-relay': GUEST_TO_RELAY, 'relay-to-guest': RELAY_TO_GUEST } as const;
 export type Direction = keyof typeof FRAME_SCHEMAS;
@@ -334,6 +382,8 @@ export type FrameOf<D extends Direction> = z.infer<(typeof FRAME_SCHEMAS)[D]>;
 /** One frame type of a direction, such as `Frame<'relay-to-host', 'rpc:request'>`. */
 export type Frame<D extends Direction, T extends FrameOf<D>['type']> = Extract<FrameOf<D>, { type: T }>;
 export type Presence = z.infer<typeof presence>;
+export type Spotlight = z.infer<typeof spotlight>;
+export type ElementTarget = z.infer<typeof elementRef>;
 export type Participant = z.infer<typeof participant>;
 
 /** The `type` values a union's options carry; an option that is itself a union (guest:status, rpc:response) has one. */
@@ -409,7 +459,13 @@ function validateFrame<D extends Direction>(direction: D, value: unknown): Frame
   const type = (value as { type?: unknown }).type;
   if (typeof type !== 'string' || !FRAME_TYPES[direction].has(type)) return fail('UNKNOWN_TYPE', `${typeof type === 'string' ? `"${type.slice(0, 40)}"` : 'A frame with no type'} is not a frame sent ${direction.replace(/-/g, ' ')}.`, 'type');
   const parsed = FRAME_SCHEMAS[direction].safeParse(value);
-  if (parsed.success) return { ok: true, frame: parsed.data as FrameOf<D> };
+  if (parsed.success) {
+    const frame = parsed.data as FrameOf<D>;
+    // An event about one guest alone (its AI access, its own AI request) never goes to everyone.
+    if (direction === 'host-to-relay' && frame.type === 'rpc:event' && (frame as { guestId?: string }).guestId === undefined && PRIVATE_LIVE_EVENTS.includes((frame as { event: LiveEvent }).event))
+      return fail('INVALID', 'guestId: This event goes to one guest: name it.', 'guestId');
+    return { ok: true, frame };
+  }
   const issue = parsed.error.issues[0];
   const path = issue.path.map(String).join('.');
   return fail('INVALID', `${path || 'frame'}: ${issue.message}`.slice(0, MAX_MESSAGE_LENGTH), path || undefined);

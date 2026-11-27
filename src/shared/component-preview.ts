@@ -16,11 +16,25 @@ export interface ComponentPreviewSpec {
   /** Sample property values, by property name, in place of the definition's defaults. */
   props?: Record<string, unknown>;
   /**
+   * Or a placement of the definition whose own content to show, as it is saved (Component Studio's view of a real
+   * page's edge case): with `definitionId` only, never with `props`. A placement gone since shows the starting content.
+   */
+  placement?: PreviewPlacement;
+  /**
    * The value each named UI state variable starts at, in place of the one the design declares (a hidden tab chosen, a
    * drawer open), by state name: a dialog or drawer open in it shows in place while editing.
    */
   states?: Record<string, boolean | string | number>;
 }
+
+/** A placement, by the tree it is in (a page, the shared header or footer, a design, a layout) and its node there. */
+export interface PreviewPlacement {
+  owner: { kind: PreviewOwnerKind; id: string };
+  nodeId: string;
+}
+/** The kinds of tree a placement can be in (the project's OwnerKind, repeated here so this module imports nothing). */
+export type PreviewOwnerKind = 'page' | 'shell' | 'component' | 'template' | 'archive';
+export const PREVIEW_OWNER_KINDS: readonly PreviewOwnerKind[] = ['page', 'shell', 'component', 'template', 'archive'];
 
 /** Where the preview server shows a prepared preview: this, then its key, then "/". A page's address never starts with "_". */
 export const COMPONENT_PREVIEW_ROUTE = '/__siteorigin/component/';

@@ -260,10 +260,21 @@ export function documentGraph(state: ProjectState, subject: SeoSubject): SeoGrap
  */
 export function graphScript(state: ProjectState, subject: SeoSubject): string | null {
   const key = subject.kind === 'page' ? `seo-graph:page:${subject.pageId}` : `seo-graph:entry:${subject.collectionId}:${subject.entryId}`;
-  return derived(state, key, (s) => {
-    const graph = documentGraph(s, subject);
-    return graph ? `<script type="application/ld+json">${graphScriptText(graph)}</script>` : null;
-  });
+  // Without a public URL there is no graph (graphOf): only the site's address is read. With one, each document's graph
+  // reads the whole site's listing for its trail, so it is worked out for every state.
+  return derived(state, key, (s) =>
+    publicUrl(s.site)
+      ? derived(
+          s,
+          `${key}:script`,
+          (t) => {
+            const graph = documentGraph(t, subject);
+            return graph ? `<script type="application/ld+json">${graphScriptText(graph)}</script>` : null;
+          },
+          { opaque: true }
+        )
+      : null
+  );
 }
 
 /**
@@ -283,12 +294,22 @@ function archiveAt(state: ProjectState, resolver: SeoResolver, collectionId: str
  * made from, so a run never reuses another state's series.
  */
 export function archiveGraphScript(state: ProjectState, collectionId: string, route: string): string | null {
-  return derived(state, `seo-graph:archive:${collectionId}:${route}`, (s) => {
-    // Without a public URL there is no graph, and the series need not be worked out at all.
-    if (!publicUrl(s.site)) return null;
-    const resolver = resolverFor(s);
-    const archive = archiveAt(s, resolver, collectionId, route);
-    const graph = archive ? buildArchiveGraph(s, resolver, archiveMetadata(s, archive), SITE_CONTRIBUTORS) : null;
-    return graph ? `<script type="application/ld+json">${graphScriptText(graph)}</script>` : null;
-  });
+  const key = `seo-graph:archive:${collectionId}:${route}`;
+  // Without a public URL there is no graph, and the series need not be worked out at all. With one, the graph reads
+  // the whole site's listing, so it is worked out for every state.
+  return derived(state, key, (s) =>
+    publicUrl(s.site)
+      ? derived(
+          s,
+          `${key}:script`,
+          (t) => {
+            const resolver = resolverFor(t);
+            const archive = archiveAt(t, resolver, collectionId, route);
+            const graph = archive ? buildArchiveGraph(t, resolver, archiveMetadata(t, archive), SITE_CONTRIBUTORS) : null;
+            return graph ? `<script type="application/ld+json">${graphScriptText(graph)}</script>` : null;
+          },
+          { opaque: true }
+        )
+      : null
+  );
 }

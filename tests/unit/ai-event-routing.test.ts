@@ -7,13 +7,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AiEvent, ChatContext, ChatMessage, Conversation, RunStatus } from '@shared/api';
+import type { AiEvent, ChatContext, ChatMessage, ChatMode, Conversation, ConversationState, RunStatus } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { turnState } from '@shared/turns';
 import { ProjectSession } from '../../src/main/project/session';
 import { undoableId } from '../../src/renderer/src/lib/result';
+import { waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
 
 vi.stubGlobal('window', { builder: { platform: 'test' } });
 
@@ -23,6 +24,7 @@ interface ChatState {
   conversation: Conversation | null;
   runStatus: RunStatus | null;
   activeRunId: string | null;
+  runMode: ChatMode | null;
   runConversationId: string | null;
 }
 const load = (path: string) => import(/* @vite-ignore */ path);
@@ -32,6 +34,7 @@ const store = (await load('../../src/renderer/src/store')) as {
   setState: (p: Partial<ChatState>) => void;
   shownRun: (s: ChatState) => { runId: string; status: RunStatus; mode: 'edit' | 'ask' } | null;
   detachedRun: () => Partial<ChatState>;
+  showConversation: (fallback: Conversation, opening: string, current: () => boolean) => Promise<void>;
 };
 
 /**
@@ -70,7 +73,7 @@ afterEach(async () => {
   for (const o of orchestrators.splice(0)) await o.clearHistory().catch(() => undefined);
   for (const s of sessions.splice(0)) await s.close().catch(() => undefined);
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
-  store.setState({ conversation: null, runStatus: null, activeRunId: null, runConversationId: null });
+  store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, runConversationId: null });
 });
 
 async function until(cond: () => boolean, what: string) {
@@ -307,11 +310,12 @@ describe('a streamed reply is sent as the pieces it gains (#974)', () => {
 
     // Main's answers, each held until the test lets it go.
     const answers: Array<(c: Conversation) => void> = [];
-    const conversations = vi.fn(() => new Promise<{ active: Conversation; list: [] }>((resolve) => answers.push((active) => resolve({ active, list: [] }))));
+    const readConversation = vi.fn((_id: string, _key: string) => new Promise<ConversationState>((resolve) => answers.push((conversation) => resolve({ conversation, run: null }))));
     const openConversation = vi.fn();
     const w = (globalThis as unknown as { window: { builder: Record<string, unknown> } }).window;
-    w.builder.ai = { conversations, openConversation };
-    const asked = (n: number) => until(() => conversations.mock.calls.length === n, `read ${n} of the conversation`);
+    // Read by this opening and this conversation's ID, never as whichever thread main has open.
+    w.builder.ai = { readConversation, openConversation };
+    const asked = (n: number) => until(() => readConversation.mock.calls.length === n, `read ${n} of the conversation`);
     const settle = () => new Promise((r) => setTimeout(r, 10));
     const withText = (text: string, more: Partial<ChatMessage> = {}): Conversation => ({ ...shown, messages: [shown.messages[0], { ...reply, text, ...more }] });
     try {
@@ -321,7 +325,8 @@ describe('a streamed reply is sent as the pieces it gains (#974)', () => {
       store.applyAiEvent({ ...base, kind: 'text', text: 'ld', at: 10 });
       await asked(1);
       await settle();
-      expect(conversations).toHaveBeenCalledTimes(1);
+      expect(readConversation).toHaveBeenCalledTimes(1);
+      expect(readConversation).toHaveBeenCalledWith('c_live', 'w1');
       expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello']);
       answers[0](withText('Hello, world'));
       await until(() => said(store.getState().conversation?.messages).at(-1) === 'assistant: Hello, world', 'main’s copy to be shown');
@@ -330,7 +335,7 @@ describe('a streamed reply is sent as the pieces it gains (#974)', () => {
       await asked(2);
       answers[1](withText('Hello, world'));
       await settle();
-      expect(conversations).toHaveBeenCalledTimes(2);
+      expect(readConversation).toHaveBeenCalledTimes(2);
       // The pieces after it follow main's copy.
       store.applyAiEvent({ ...base, kind: 'text', text: '.', at: 12 });
       expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello, world.']);
@@ -461,5 +466,116 @@ describe('a background run reaches only its own thread (#1124)', () => {
     const after = store.getState().conversation;
     store.applyAiEvent({ ...next, kind: 'text', text: 'Late' });
     expect(store.getState().conversation).toBe(after);
+  });
+});
+
+describe('a reloaded window shows the conversation by its ID, with the request running in it (#1123)', () => {
+  const w = () => (globalThis as unknown as { window: { builder: Record<string, unknown> } }).window;
+  afterEach(() => {
+    delete w().builder.ai;
+    store.setState({ snapshot: null } as Partial<ChatState>);
+  });
+
+  it('shows a new conversation’s unsaved first turn as it streams, with its status, and follows it to its end', async () => {
+    const env = await setup();
+    const id = (await env.orch.loadConversations()).active.id;
+    const r = await env.orch.send('Write an About page', env.ctx, id);
+    await env.streaming();
+    // The window reloads: nothing on screen, no status, and the turn has no file yet.
+    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    expect(existsSync(join(env.session.dir, '.siteorigin', 'sessions', 'chat', `${id}.json`))).toBe(false);
+    const asked: Array<[string, string]> = [];
+    w().builder.ai = {
+      readConversation: async (cid: string, key: string) => {
+        asked.push([cid, key]);
+        return structuredClone(await env.orch.readConversation(cid));
+      }
+    };
+    await store.showConversation({ id, title: 'New conversation', createdAt: '', messages: [] }, 'w1', () => true);
+    expect(asked).toEqual([[id, 'w1']]);
+    expect(said(store.getState().conversation?.messages)).toEqual(['user: Write an About page', 'assistant: Working on it.']);
+    expect(store.getState()).toMatchObject({ runStatus: 'running', activeRunId: r.runId, runMode: 'edit' });
+
+    // The rest of the reply lands in it, and the run ends there.
+    env.adapter.late = ' Done.';
+    env.adapter.release();
+    await env.finished();
+    expect(store.getState().conversation?.messages.at(-1)).toMatchObject({ text: 'Working on it. Done.', result: { status: 'no-changes' } });
+    expect(store.getState().runStatus).toBeNull();
+  });
+
+  it('a read answered after the run ended never brings it back: the newer status stays, and the final turn is read again', async () => {
+    const time = '2026-11-24T00:00:00.000Z';
+    const user: ChatMessage = { id: 'm_q', role: 'user', text: 'Hi', time };
+    const streaming: ChatMessage = { id: 'm_reply', role: 'assistant', text: 'Hel', time, runId: 'r_live' };
+    const final: ChatMessage = { ...streaming, text: 'Hello.', result: { status: 'no-changes', summary: 'Hello.', changes: [], validation: [], canUndo: false } };
+    const conv = (messages: ChatMessage[]): Conversation => ({ id: 'c_live', title: 'Live', createdAt: time, messages });
+    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    const answers: Array<(s: ConversationState) => void> = [];
+    const readConversation = vi.fn(() => new Promise<ConversationState>((resolve) => answers.push(resolve)));
+    w().builder.ai = { readConversation };
+    const showing = store.showConversation(conv([]), 'w1', () => true);
+    await until(() => answers.length === 1, 'the read');
+    // Main read the turn mid-reply; before its answer arrives, the run ends and its final turn is sent, with nothing shown.
+    store.applyAiEvent({ runId: 'r_live', conversationId: 'c_live', kind: 'status', status: 'no-changes', mode: 'edit' });
+    store.applyAiEvent({ runId: 'r_live', conversationId: 'c_live', kind: 'message', message: final });
+    answers[0]({ conversation: conv([user, streaming]), run: { runId: 'r_live', status: 'running', mode: 'edit' } });
+    await showing;
+    expect(store.getState()).toMatchObject({ runStatus: null, activeRunId: null });
+    // The final turn it missed is read again, as main has it now.
+    await until(() => answers.length === 2, 'the read again');
+    answers[1]({ conversation: conv([user, final]), run: null });
+    await until(() => store.getState().conversation?.messages.at(-1)?.text === 'Hello.', 'the final turn');
+    expect(store.getState().conversation?.messages).toEqual([user, final]);
+    expect(store.getState().runStatus).toBeNull();
+  });
+
+  it('keeps text streamed after it shows over the older copy the read again brings', async () => {
+    // Its own run ID: an earlier test ended r_live, and pieces of a run that has ended are dropped (#1124).
+    const time = '2026-11-24T00:00:00.000Z';
+    const user: ChatMessage = { id: 'm_q', role: 'user', text: 'Hi', time };
+    const reply = (text: string): ChatMessage => ({ id: 'm_reply', role: 'assistant', text, time, runId: 'r_stream' });
+    const conv = (messages: ChatMessage[]): Conversation => ({ id: 'c_live', title: 'Live', createdAt: time, messages });
+    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    const answers: Array<(s: ConversationState) => void> = [];
+    w().builder.ai = { readConversation: vi.fn(() => new Promise<ConversationState>((resolve) => answers.push(resolve))) };
+    const showing = store.showConversation(conv([]), 'w1', () => true);
+    await until(() => answers.length === 1, 'the read');
+    // Text arrives while it is read, with nothing to land in; main's answer already has it.
+    store.applyAiEvent({ runId: 'r_stream', conversationId: 'c_live', kind: 'text', text: 'Hel' });
+    answers[0]({ conversation: conv([user, reply('Hel')]), run: { runId: 'r_stream', status: 'running', mode: 'edit' } });
+    await showing;
+    expect(store.getState()).toMatchObject({ runStatus: 'running', activeRunId: 'r_stream' });
+    await until(() => answers.length === 2, 'the read again');
+    // The next piece follows what is shown; the read again, taken before it, is older and leaves it.
+    store.applyAiEvent({ runId: 'r_stream', conversationId: 'c_live', kind: 'text', text: 'lo', at: 3 });
+    answers[1]({ conversation: conv([user, reply('Hel')]), run: { runId: 'r_stream', status: 'running', mode: 'edit' } });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello']);
+  });
+
+  it('shows a question waiting for an answer as waiting, and nothing from another opening or a read that failed', async () => {
+    const time = '2026-11-24T00:00:00.000Z';
+    const asking: Conversation = { id: 'c_live', title: 'Live', createdAt: time, messages: [{ id: 'm_reply', role: 'assistant', text: '', time, runId: 'r_ask', questions: [{ id: 'q_1', text: 'Which page?', choices: ['Home', 'About'] }] }] };
+    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    w().builder.ai = { readConversation: async () => ({ conversation: asking, run: { runId: 'r_ask', status: 'awaiting-input', mode: 'ask' } }) };
+    await store.showConversation({ ...asking, messages: [] }, 'w1', () => true);
+    expect(store.getState()).toMatchObject({ conversation: asking, runStatus: 'awaiting-input', activeRunId: 'r_ask', runMode: 'ask', runConversationId: 'c_live' });
+    // Restored in its own thread, so the run shows there with its answer box (#1124).
+    expect(store.shownRun(store.getState())).toEqual({ runId: 'r_ask', status: 'awaiting-input', mode: 'ask' });
+    // The composer answers it again.
+    const s = store.getState();
+    expect(waitingQuestion(s.conversation, s.activeRunId, s.runStatus)).toMatchObject({ runId: 'r_ask', messageId: 'm_reply', question: { id: 'q_1' } });
+
+    // A restore overtaken by a newer one, or by another opening, shows nothing.
+    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null });
+    await store.showConversation({ ...asking, messages: [] }, 'w1', () => false);
+    await store.showConversation({ ...asking, messages: [] }, 'w0', () => true);
+    expect(store.getState()).toMatchObject({ conversation: null, runStatus: null });
+
+    // One that cannot be read shows what the restore had, with no run.
+    w().builder.ai = { readConversation: async () => Promise.reject(new Error('The project changed, so the conversation was not read.')) };
+    await store.showConversation({ ...asking, messages: [] }, 'w1', () => true);
+    expect(store.getState()).toMatchObject({ conversation: { id: 'c_live', messages: [] }, runStatus: null });
   });
 });

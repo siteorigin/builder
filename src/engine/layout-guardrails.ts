@@ -8,6 +8,7 @@ import { detachedClasses, nodeAxes, nodeClass, pageNodeClass, variantClass } fro
 import { allTrees, childLists, displayName } from './tree';
 import { themeLayoutRules, type ThemeLayoutRules } from './theme-layout-rules';
 import type { Diagnostic } from './validate';
+import type { Keeper } from './validation-cache';
 
 /*
  * Layout guardrails (#668): three CSS combinations that quietly break a layout, said in plain words.
@@ -92,6 +93,13 @@ function spanOf(props: StyleProps): number | undefined {
   const raw = written(props, 'columnSpan');
   const n = raw === undefined || raw === 'full' ? NaN : Number(raw);
   return Number.isInteger(n) && n > 1 ? n : undefined;
+}
+
+/** The column line a grid child starts on at a size, when it names one; Full width always starts on line 1. */
+function startOf(props: StyleProps): number | undefined {
+  if (written(props, 'columnSpan') === 'full') return undefined;
+  const n = Number(written(props, 'columnStart'));
+  return Number.isInteger(n) && n >= 1 ? n : undefined;
 }
 
 /** An offset a browser surely keeps: zero, a length or a percentage (math is not read, since it may not type-check). */
@@ -242,7 +250,7 @@ interface Shared {
  * Diagnostics for every page, header, footer, collection layout and project component, read against the project
  * theme's stylesheet (or `themeCss`).
  */
-export function layoutGuardrailDiagnostics(state: ProjectState, themeCss?: string): Diagnostic[] {
+export function layoutGuardrailDiagnostics(state: ProjectState, themeCss?: string, keep?: Keeper): Diagnostic[] {
   const out: Diagnostic[] = [];
   let theme: ThemeLayoutRules;
   try {
@@ -257,11 +265,16 @@ export function layoutGuardrailDiagnostics(state: ProjectState, themeCss?: strin
     // Theme components are fixed theme data, though their styles count where they are placed; a code component
     // renders its source, whatever tree it was saved with.
     if (def && (def.owner === 'theme' || def.kind !== 'managed')) continue;
-    try {
-      for (const d of treeGuardrails(state, owner, tree, label, def, shared)) out.push(d);
-    } catch {
-      /* a document damaged by hand: the structural checks say what is wrong with it */
-    }
+    // A session's validation keeps each document's own (its stylesheet is the theme's, which the keeper's context holds).
+    const guardrails = () => {
+      try {
+        return treeGuardrails(state, owner, tree, label, def, shared);
+      } catch {
+        /* a document damaged by hand: the structural checks say what is wrong with it */
+        return [];
+      }
+    };
+    for (const d of keep && themeCss === undefined ? keep.tree({ owner, tree, label }, 'guardrails', guardrails) : guardrails()) out.push(d);
   }
   return out;
 }
@@ -334,16 +347,23 @@ function treeGuardrails(state: ProjectState, owner: OwnerRef, tree: NodeTree, la
       // A grid child in the grid's flow: one placed absolutely makes no columns, custom CSS may move either, and a
       // disclosure lays out its content in a box of its own.
       const span = spanOf(b.at[size]);
-      if (span === undefined || position === 'absolute' || parent?.kind !== 'box' || parent.tag === undefined || parent.tag === 'details') continue;
+      const start = startOf(b.at[size]);
+      if ((span === undefined && start === undefined) || position === 'absolute' || parent?.kind !== 'box' || parent.tag === undefined || parent.tag === 'details') continue;
       if (customSets(b, /^(position|grid)/) || customSets(parent, /^grid/)) continue;
       const columns = explicitColumns(parent.at[size]);
-      if (columns === undefined || span <= columns) continue;
-      record(JSON.stringify(['span', subject.id, span, columns]), size, () => ({
+      // The last column it covers; with no start of its own, the earliest it could be.
+      const last = (start ?? 1) + (span ?? 1) - 1;
+      if (columns === undefined || last <= columns) continue;
+      const count = (n: number) => (n === 1 ? '1 column' : `${n} columns`);
+      const added = last - columns === 1 ? 'a column' : `${last - columns} columns`;
+      record(JSON.stringify(['span', subject.id, start ?? null, span ?? 1, columns]), size, () => ({
         code: 'LAYOUT_SPAN_OVERFLOW',
         nodeId: subject.id,
         site: JSON.stringify([subject.id, parent.key]),
         message: (where) =>
-          `${label}: ${where}${subject.name} spans ${span} columns, but its grid has only ${columns === 1 ? '1 column' : `${columns} columns`}, so the grid adds ${span - columns === 1 ? 'a column' : `${span - columns} columns`} of its own to fit it, squeezing the others. Lower its Column span to ${columns}, or give the grid more columns.`
+          start === undefined
+            ? `${label}: ${where}${subject.name} spans ${span} columns, but its grid has only ${count(columns)}, so the grid adds ${added} of its own to fit it, squeezing the others. Lower its Column span to ${columns}, or give the grid more columns.`
+            : `${label}: ${where}${subject.name} starts on line ${start} and spans ${count(span ?? 1)}, but its grid has only ${count(columns)}, so the grid adds ${added} of its own to fit it, squeezing the others. Lower its Column start or Column span, or give the grid more columns.`
       }));
     }
   };

@@ -115,20 +115,14 @@ Page text and structure go to the provider you choose: **OpenAI**, **Anthropic**
 
 ### Themes and site styles
 
-Three themes ship with Builder. They share one set of component contracts, so you can switch themes and keep all of your content.
+One theme, **Foundation**, ships with Builder: clean and restrained, for service businesses, studios and personal sites. A theme is a set of component contracts, so more can be added later and a site can switch between themes and keep all of its content.
 
-| Theme | Character |
-| --- | --- |
-| **Foundation** | Clean and restrained, for service businesses, studios and personal sites. |
-| **Editorial** | High-contrast and typographic, for magazines, architects and studios: a display serif, hairline rules and asymmetric columns. |
-| **Signal** | Geometric and crisp, for product teams, consultancies and modern trades. |
-
-Each covers more than thirty sections and blocks, from heroes, galleries and carousels to pricing tables, FAQs, contact forms and blog layouts. Colours, fonts, text styles, spacing, radii, shadows and borders live in **Site styles** as site-wide tokens. Change the brand colour once and every button and link that uses it follows, with contrast checked as you go.
+Foundation covers more than thirty sections and blocks, from heroes, galleries and carousels to pricing tables, FAQs, contact forms and blog layouts. Colours, fonts, text styles, spacing, radii, shadows and borders live in **Site styles** as site-wide tokens. Change the brand colour once and every button and link that uses it follows, with contrast checked as you go.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/site-styles-dark.webp">
-    <img src="docs/images/readme/site-styles.webp" alt="The Site styles panel showing the Signal theme and the amber brand colour with its contrast checks, beside the lodge site's story and statistics sections" width="100%">
+    <img src="docs/images/readme/site-styles.webp" alt="The Site styles panel showing the amber brand colour with its contrast checks, beside the lodge site's story and statistics sections" width="100%">
   </picture>
   <br>
   <sub>Site styles. Button text on the amber brand colour is checked at 10.18:1.</sub>
@@ -252,4 +246,4 @@ flowchart LR
 
 ## Licence
 
-SiteOrigin Builder is released under the [Apache License 2.0](LICENSE). The three built-in themes are MIT-0, so the code they generate in your site is yours to do whatever you like with. Icons are from Lucide (ISC). The bundled fonts (DM Sans, Fraunces, Inter, JetBrains Mono, Lora, Playfair Display, Plus Jakarta Sans, Sora and Space Grotesk) are under the SIL Open Font License 1.1. The starter sample images are original, and free to use, modify and redistribute in websites built with SiteOrigin Builder (see `resources/starter-assets/NOTICE.md`).
+SiteOrigin Builder is released under the [Apache License 2.0](LICENSE). The built-in theme is MIT-0, so the code it generates in your site is yours to do whatever you like with. Icons are from Lucide (ISC). The bundled fonts (DM Sans, Fraunces, Inter, Lora, Playfair Display, Plus Jakarta Sans and Space Grotesk) are under the SIL Open Font License 1.1. The starter sample images are original, and free to use, modify and redistribute in websites built with SiteOrigin Builder (see `resources/starter-assets/NOTICE.md`).

@@ -28,7 +28,7 @@ export function archiveFile(route: string): string {
  * series and the entries it lists, not on every entry of every collection.
  */
 export function collectionArchives(state: ProjectState, collectionId: string): ArchivePage[] {
-  return derived(state, `archivePages:${collectionId}`, (s) => archivePages(s).filter((p) => p.collectionId === collectionId));
+  return derived(state, `archivePages:${collectionId}`, (s) => siteArchives(s).filter((p) => p.collectionId === collectionId));
 }
 
 /** Every archive page of the site (see shared/archives.ts), worked out once per state in a cached run. */

@@ -31,9 +31,9 @@ export function developerModeReason(state: ProjectState, op: EditOperation): str
     what = 'Duplicating it';
   } else if (op.type === 'component.fork') {
     def = definition(state, op.definitionId);
-    // A project's own definition is already its own: forking it copies nothing.
-    if (def?.owner === 'project') return null;
-    what = 'Editing it everywhere';
+    // A project's own definition is already its own: forking all of it copies nothing. Some placements get a copy.
+    if (def?.owner === 'project' && !op.placements) return null;
+    what = op.placements ? 'Copying it for these placements' : 'Editing it everywhere';
   } else if (op.type === 'component.makeUnique') {
     try {
       const n = getTree(state, op.owner).nodes[op.nodeId];

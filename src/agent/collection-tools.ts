@@ -10,10 +10,11 @@ import { z } from 'zod';
 import type { Collection, CollectionFieldSchema, CollectionFieldValue, EntryDoc, ProjectState } from '@shared/types';
 import { COLLECTION_FIELD_TYPES } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { assignedTermIds, collectionKind, entryRoute, hasDetailPages, isCollectionId, isSyncedCollection, orderedEntries, termIdFor } from '@shared/collections';
+import { assignedTermIds, collectionKind, entryRoute, hasDetailPages, inSiteFeed, isCollectionId, isSyncedCollection, orderedEntries, termIdFor } from '@shared/collections';
 import { syncedRefusal } from '@shared/collection-grant';
 import { ENTRY_LINK_PREFIX, isImageBlock, richTextToMarkdown, type RichBlock, type RichText } from '@shared/richtext';
-import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS } from '@engine/values';
+import { sha256Hex } from '@shared/sha256';
+import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS, normalizeRichText } from '@engine/values';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -49,7 +50,9 @@ export const UPSERT_ENTRY_ARGS = z
     entryId: z.string().min(1).max(40).optional().describe('The entry to edit; leave it out to create a new draft.'),
     title: z.string().min(1).max(200).optional().describe('Required for a new entry.'),
     publishedAt: z.string().max(10).optional().describe('YYYY-MM-DD.'),
+    updatedAt: z.string().max(10).optional().describe('When it was last revised, YYYY-MM-DD. "" removes it.'),
     draft: z.boolean().optional().describe('false publishes it.'),
+    author: z.string().max(80).optional().describe('The byline. "" removes it.'),
     excerpt: z.string().max(320).optional().describe('"" removes it.'),
     categories: z.array(z.string().min(1).max(80)).max(20).optional().describe('Category names; replaces its categories, [] removes them. A name the collection lacks is added.'),
     terms: z
@@ -67,28 +70,42 @@ export const UPSERT_ENTRY_ARGS = z
       .array(z.string().max(MAX_BODY_LINE))
       .max(MAX_BODY_LINES)
       .optional()
-      .describe('The whole text, replacing it: one block per line.')
+      .describe('The whole text, replacing it: one block per line.'),
+    blockEdit: z
+      .object({
+        block: z.number().int().min(0).max(MAX_BODY_LINES).describe('The block to change: its number in blocks, from read_collection_entry.'),
+        hash: z.string().min(1).max(16).describe("That block's hash, as read."),
+        revision: z.number().int().min(0).describe('The revision of that read (or of a block edit of this entry since, whose result names it).'),
+        // Markdown escapes literal marks, so a block the engine holds can take up to twice its length to send back.
+        text: z.string().min(1).max(2 * MAX_BODY_LINE).describe('The whole block again as Markdown, with the change made: one paragraph, heading, quote or list.')
+      })
+      .strict()
+      .optional()
+      .describe('Change one block of the text alone, in place of body: every other block, pictures included, stays as it is.')
   })
   .strict();
 export type ListEntriesArgs = z.infer<typeof LIST_ENTRIES_ARGS>;
 export type ReadEntryArgs = z.infer<typeof READ_ENTRY_ARGS>;
 export type UpsertEntryArgs = z.infer<typeof UPSERT_ENTRY_ARGS>;
 
+/** How one block is changed alone (#1120): the locator a read returns, checked against the revision it was read at. */
+const BLOCK_EDIT_FORMAT =
+  "To change one paragraph, heading, quote or list alone, send blockEdit: its block and hash from the read's blocks, that read's revision, and the whole block again as Markdown with the change made, once you have read it to its end. Every other block, pictures included, stays as it is, with its block and hash, at the revision the result gives; text after the block moves, so read again for any part not yet read. After STALE_REVISION, read that part again and use what it returns.";
 const BODY_FORMAT =
   'Each line of body is a block: a paragraph, "## " or "### " a heading, "- " or "1. " a list item, "> " a quote, with **bold**, *italic* and [label](/route/, https://… or entry:en_…) links. A picture line (![…](asset:…)) is placed by the author: keep each one exactly as read (its alt text and caption cannot be changed here), on a line of its own, where it belongs.';
 
 export const LIST_ENTRIES_DESCRIPTION = `List a collection's entries (blog posts, projects), ${ENTRY_LIST_PAGE} at a time in the collection's order, drafts included: each entry's ID, title, date and whether it is a draft. Call again with offset set to next for more.`;
 export const LIST_ENTRIES_BRIEF = `${ENTRY_LIST_PAGE} entries at a time: ID, title, date, draft. More: offset=next.`;
 export const READ_ENTRY_DESCRIPTION =
-  "Read one entry of a collection: its title, date, draft status, excerpt, featured image, categories, other terms and custom field values, and its text as Markdown a part at a time. Call again with offset set to next until next is null before rewriting the text: body replaces it whole. A value shown cut short (clipped) is read whole with field, the same way, before it is rewritten; one marked editorOnly is the author's to change in the editor: leave it out of values to keep it.";
-export const READ_ENTRY_BRIEF = 'Its details, and its text as Markdown a part at a time: offset=next until next is null, before rewriting it whole. A clipped value: field, the same way. editorOnly: leave it out.';
-export const UPSERT_ENTRY_DESCRIPTION = `Create a draft entry of a collection (a blog post, a team member), or change one by its entryId: only the fields given change, the rest stays as it is. categories files it under categories by name, adding any the collection lacks, and terms under the terms of its other groupings, by name too. values sets its custom fields (read_project collections lists them); featuredImage is its picture. ${BODY_FORMAT} Send body only to change the text, after reading all of it. A collection synced from an external source (readOnly) cannot be written.`;
-export const UPSERT_ENTRY_BRIEF = `Only the fields given change. categories and terms by name; values for custom fields. ${BODY_FORMAT} Send body only after reading all the text. Never for a readOnly collection.`;
+  "Read one entry of a collection: its title, date, last-revised date and author when it has them, draft status, excerpt, featured image, categories, other terms and custom field values, and its text as Markdown a part at a time. blocks locates each block of the part in the text (from start to end), with a hash for each one blockEdit can change. Call again with offset set to next until next is null before rewriting the text: body replaces it whole. A value shown cut short (clipped) is read whole with field, the same way, before it is rewritten; one marked editorOnly is the author's to change in the editor: leave it out of values to keep it.";
+export const READ_ENTRY_BRIEF = 'Its details, and its text as Markdown a part at a time, with blocks (number, start, end, hash): offset=next until next is null, before rewriting it whole. A clipped value: field, the same way. editorOnly: leave it out.';
+export const UPSERT_ENTRY_DESCRIPTION = `Create a draft entry of a collection (a blog post, a team member), or change one by its entryId: only the fields given change, the rest stays as it is. categories files it under categories by name, adding any the collection lacks, and terms under the terms of its other groupings, by name too. values sets its custom fields (read_project collections lists them); featuredImage is its picture. ${BODY_FORMAT} Send body only to rewrite the whole text, after reading all of it. ${BLOCK_EDIT_FORMAT} A collection synced from an external source (readOnly) cannot be written.`;
+export const UPSERT_ENTRY_BRIEF = `Only the fields given change. categories and terms by name; values for custom fields. ${BODY_FORMAT} Send body only after reading all the text; blockEdit (block, hash, revision, text) changes one block alone. Never for a readOnly collection.`;
 /** The same tool in a run limited to one post, which may not create an entry or add a category (scope.ts). */
 const PINNED_CATEGORIES = 'Category names the collection already has; replaces its categories, [] removes them. A new category is more than this request may change: ask to widen the scope first.';
 const PINNED_TERMS = 'Terms its other groupings already have, by name: each grouping given replaces its terms. A new term is more than this request may change: ask to widen the scope first.';
-export const UPSERT_PINNED_ENTRY_DESCRIPTION = `Change this post: only the fields given change, the rest stays as it is. categories files it under categories its collection already has, by name. ${BODY_FORMAT} Send body only to change the text, after reading all of it.`;
-export const UPSERT_PINNED_ENTRY_BRIEF = `Only the fields given change; categories only by names the collection has. ${BODY_FORMAT} Send body only after reading all the text.`;
+export const UPSERT_PINNED_ENTRY_DESCRIPTION = `Change this post: only the fields given change, the rest stays as it is. categories files it under categories its collection already has, by name. ${BODY_FORMAT} Send body only to rewrite the whole text, after reading all of it. ${BLOCK_EDIT_FORMAT}`;
+export const UPSERT_PINNED_ENTRY_BRIEF = `Only the fields given change; categories only by names the collection has. ${BODY_FORMAT} Send body only after reading all the text; blockEdit (block, hash, revision, text) changes one block alone.`;
 
 /** The collection a call names, with its IDs listed when there is none. */
 function collectionFor(state: ProjectState, id: string): { collection: Collection } | { error: FieldIssue } {
@@ -189,10 +206,10 @@ function entryValues(collection: Collection, entry: EntryDoc, pages: ProjectStat
  * Why a run limited to one post may not read what a call names, or null. Such a run reads only its post: another
  * post's words are not what the author asked about, and stay out of the request until the author allows more.
  */
-function outsidePost(host: ToolHost, collectionId: string, entryId?: string): FieldIssue | null {
+function outsidePost(host: ToolHost, collectionId: string, entryId?: string, verb = 'read'): FieldIssue | null {
   const limit = host.entryLimit?.() ?? null;
   if (!limit || (collectionId === limit.collectionId && entryId === limit.entryId)) return null;
-  return { field: entryId === undefined ? 'collectionId' : 'entryId', message: `this request is about ${limit.label} (${limit.collectionId}/${limit.entryId}) alone, so only it can be read` };
+  return { field: entryId === undefined ? 'collectionId' : 'entryId', message: `this request is about ${limit.label} (${limit.collectionId}/${limit.entryId}) alone, so only it can be ${verb}` };
 }
 
 export function runListEntries(args: ListEntriesArgs, host: ToolHost): ToolOutcome {
@@ -218,6 +235,49 @@ export function textPart(text: string, offset: number, room: number): { start: n
   return { start, end, next: end < text.length ? end : null };
 }
 
+/** JSON with object keys in order, so a block stored with its keys in another order hashes the same. */
+const sortedJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+
+/**
+ * The hash a read gives one block of an entry's text, and a block edit sends back (#1120): of the block as stored, at its
+ * place in its entry, so a hash read for one of two identical paragraphs never passes for the other, nor for a block of
+ * another entry.
+ */
+export function entryBlockHash(collectionId: string, entryId: string, index: number, block: RichBlock): string {
+  return sha256Hex(sortedJson([collectionId, entryId, index, block])).slice(0, 16);
+}
+
+/** Where one block of an entry's text sits in its Markdown, as a read lists it: a prose block with its hash, a picture marked as one. */
+type BlockRow = { block: number; start: number; end: number; hash: string } | { block: number; start: number; end: number; picture: true };
+
+/**
+ * One part of an entry's text from `offset`, with a row for each block it shows any of. The rows count toward the part's
+ * size with the text, so a text of many short paragraphs still reads in parts of about the same size.
+ */
+export function bodyPart(body: RichText, pages: ProjectState['pages'], collectionId: string, entryId: string, offset: number): { text: string; length: number; start: number; end: number; next: number | null; blocks: BlockRow[] } {
+  // The text is its blocks' Markdown joined by a blank line, as richTextToMarkdown writes it whole.
+  const ranges: BlockRow[] = [];
+  let at = 0;
+  const shown = body.map((b, i) => {
+    const md = richTextToMarkdown([b], pages);
+    ranges.push(isImageBlock(b) ? { block: i, start: at, end: at + md.length, picture: true } : { block: i, start: at, end: at + md.length, hash: entryBlockHash(collectionId, entryId, i, b) });
+    at += md.length + 2;
+    return md;
+  });
+  const text = shown.join('\n\n');
+  // A block whose text is empty is shown by the part it starts in.
+  const rowsFor = (start: number, end: number) => ranges.filter((r) => r.start < end && (r.end > start || r.start >= start));
+  let room = ENTRY_PART_CHARS;
+  for (;;) {
+    const part = textPart(text, offset, room);
+    const blocks = rowsFor(part.start, part.end);
+    const size = JSON.stringify(text.slice(part.start, part.end)).length - 2 + JSON.stringify(blocks).length;
+    if (size <= ENTRY_PART_CHARS || room <= 1) return { text: text.slice(part.start, part.end), length: text.length, ...part, blocks };
+    room = Math.max(1, Math.min(room - 1, Math.floor((room * ENTRY_PART_CHARS) / size)));
+  }
+}
+
 export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
   const outside = outsidePost(host, args.collectionId, args.entryId);
   if (outside) return fieldError([outside], 'Nothing was read.');
@@ -240,8 +300,8 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
     const at = textPart(whole, args.offset ?? 0, ENTRY_PART_CHARS);
     return { ok: true, content: { revision: host.revision(), collectionId: collection.settings.id, entryId: entry.id, field: args.field, format: schema!.type === 'richtext' ? 'markdown' : 'text', length: whole.length, offset: at.start, next: at.next, text: whole.slice(at.start, at.end) } };
   }
-  const text = richTextToMarkdown(Array.isArray(entry.body) ? entry.body : [], state.pages);
-  const part = textPart(text, args.offset ?? 0, ENTRY_PART_CHARS);
+  const body = Array.isArray(entry.body) ? entry.body : [];
+  const part = bodyPart(body, state.pages, collection.settings.id, entry.id, args.offset ?? 0);
   return {
     ok: true,
     content: {
@@ -253,6 +313,8 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
         ? {
             title: entry.title,
             publishedAt: entry.publishedAt,
+            ...(entry.updatedAt ? { updatedAt: entry.updatedAt } : {}),
+            ...(entry.author ? { author: entry.author } : {}),
             draft: entry.draft !== false,
             ...(entry.excerpt ? { excerpt: entry.excerpt } : {}),
             ...(entry.featuredImage ? { featuredImage: entry.featuredImage } : {}),
@@ -267,10 +329,11 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
           }
         : {}),
       format: 'markdown',
-      length: text.length,
+      length: part.length,
       offset: part.start,
       next: part.next,
-      text: text.slice(part.start, part.end)
+      text: part.text,
+      blocks: part.blocks
     }
   };
 }
@@ -314,6 +377,37 @@ function bodyValue(lines: string[], current: RichText, pages: ProjectState['page
     });
     return raw;
   });
+}
+
+/**
+ * The text with one block replaced (#1120): every other block exactly as stored, and the new one as the engine will
+ * store it. Null, with the problem said, when the Markdown is not one prose block, or when storing it would also change
+ * a neighbour (a list sent between two lists joins them into one).
+ */
+function blockEditValue(edit: NonNullable<UpsertEntryArgs['blockEdit']>, body: RichText, state: ProjectState, issues: FieldIssue[]): RichText | null {
+  const issue = (message: string) => (issues.push({ field: 'blockEdit.text', message }), null);
+  if (pictureIn(edit.text) !== null) return issue('a picture is placed by the author, never typed: send the block of text alone, and leave the pictures to stay where they are');
+  const store = (v: unknown): RichText | string => {
+    try {
+      return normalizeRichText(v, state, 'the block', undefined, { entries: true });
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const made = store(edit.text);
+  if (typeof made === 'string') return issue(made.replace(/\.$/, ''));
+  if (!made.length) return issue('the block is empty. To take a block out, send body with the whole text without it');
+  if (made.length > 1) return issue(`this Markdown makes ${made.length} blocks, and blockEdit changes one. Send the one block (its lines are one block when they are items of one list), or body to add blocks`);
+  const next = body.slice();
+  next[edit.block] = made[0];
+  const stored = store(next);
+  if (typeof stored === 'string') return issue(stored.replace(/\.$/, ''));
+  // Every other block as any write stores it: one kept in a form the engine writes more simply (two spans with the same
+  // marks, left by a link pointed elsewhere) is no change of the author's, and does not stand in the way.
+  const was = store(body);
+  const expected = typeof was === 'string' || was.length !== body.length ? null : was.map((b, i) => (i === edit.block ? made[0] : b));
+  if (!expected || sortedJson(stored) !== sortedJson(expected)) return issue('stored there, this block would join or change the block next to it (a list beside a list becomes one). Send another kind of block, or body with the whole text');
+  return stored;
 }
 
 /**
@@ -439,6 +533,9 @@ const given = <T extends object>(v: T): Partial<T> => Object.fromEntries(Object.
 const entryNoun = (collection: Collection) => (collection.settings.singularName?.trim() || (collectionKind(collection.settings) === 'structured' ? 'entry' : 'post')).toLowerCase();
 
 export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, callId: string): Promise<ToolOutcome> {
+  // A block edit in a run limited to one post names that post, before anything says whether another has such a block.
+  const outside = args.blockEdit ? outsidePost(host, args.collectionId, args.entryId, 'changed') : null;
+  if (outside) return toolError('SCOPE_MISMATCH', `${outside.field}: ${outside.message}. Nothing was applied. Change this post's blocks, or ask with request_clarification (widenScope: true) to change another.`);
   const state = host.state();
   const revision = host.revision();
   const found = collectionFor(state, args.collectionId);
@@ -446,7 +543,7 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
   const { collection } = found;
   // A synced collection's entries are its source's: nothing is planned for them, and the author detaches it to edit them.
   if (isSyncedCollection(collection.settings)) return toolError('SCOPE_MISMATCH', `${syncedRefusal(collection.settings.name)} Nothing was applied.`, { details: { collectionId: collection.settings.id, sourceId: collection.settings.sourceId } });
-  const { collectionId: _c, entryId: id, categories, terms: groupings, values, body, title, ...rest } = args;
+  const { collectionId: _c, entryId: id, categories, terms: groupings, values, body, blockEdit, title, ...rest } = args;
   const issues: FieldIssue[] = [];
   let entry: EntryDoc | undefined;
   if (id !== undefined) {
@@ -454,15 +551,36 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
     if ('error' in hit) return fieldError([hit.error], 'Nothing was applied.');
     entry = hit.entry;
   } else if (!title?.trim()) issues.push({ field: 'title', message: 'a new entry needs a title' });
+  let edited: RichText | null = null;
+  if (blockEdit) {
+    if (!entry) return fieldError([{ field: 'blockEdit', message: 'a block edit changes a block of an entry that exists: send its entryId, or body for a new entry' }], 'Nothing was applied.');
+    if (body) return fieldError([{ field: 'blockEdit', message: 'send blockEdit or body, not both: body replaces the whole text' }], 'Nothing was applied.');
+    const where = `block ${blockEdit.block} of ${collection.settings.id}/${entry.id}`;
+    const reread = 'Nothing was applied. Read that part of the entry again with read_collection_entry, and send the block, hash and revision it returns.';
+    if (blockEdit.revision !== revision) return toolError('STALE_REVISION', `The read of ${where} was at revision ${blockEdit.revision}, and the project is at ${revision} now. ${reread}`, { revision });
+    const current = Array.isArray(entry.body) ? entry.body : [];
+    if (!current.some((b) => !isImageBlock(b))) return fieldError([{ field: 'blockEdit', message: `the entry's text has no block of text to change: send body with the whole text${current.length ? ', keeping each picture line as read' : ''}` }], 'Nothing was applied.');
+    if (blockEdit.block >= current.length) return fieldError([{ field: 'blockEdit.block', message: `the entry's text has ${current.length} block${current.length === 1 ? '' : 's'} (0 to ${current.length - 1}): use a block number its blocks list` }], 'Nothing was applied.');
+    if (isImageBlock(current[blockEdit.block])) return fieldError([{ field: 'blockEdit.block', message: `${where} is a picture, which the author changes in the editor: choose a block of text` }], 'Nothing was applied.');
+    if (entryBlockHash(collection.settings.id, entry.id, blockEdit.block, current[blockEdit.block]) !== blockEdit.hash) return toolError('STALE_REVISION', `${where} does not have the hash "${blockEdit.hash}". ${reread}`, { revision });
+    edited = blockEditValue(blockEdit, current, state, issues);
+  }
   const fields: Record<string, unknown> = given(rest);
   if (title !== undefined) fields.title = title.trim();
   if (fields.publishedAt !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(fields.publishedAt))) issues.push({ field: 'publishedAt', message: `"${String(fields.publishedAt)}" is not a date written YYYY-MM-DD` });
-  // An emptied excerpt is the operation's null: the entry keeps none.
+  if (fields.updatedAt !== undefined) {
+    // "" removes the revision date: the operation's null.
+    if (!String(fields.updatedAt).trim()) fields.updatedAt = null;
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fields.updatedAt))) issues.push({ field: 'updatedAt', message: `"${String(fields.updatedAt)}" is not a date written YYYY-MM-DD` });
+  }
+  // An emptied author or excerpt is the operation's null: the entry keeps none.
   if (fields.excerpt !== undefined && !String(fields.excerpt).trim()) fields.excerpt = null;
+  if (fields.author !== undefined) fields.author = String(fields.author).trim() || null;
   const terms = termsValue(collection, categories, groupings, issues);
   if (terms) fields.terms = terms.terms;
   if (values?.length) fields.values = valuesOf(collection, values, issues, entry, state.assets.assets);
   if (body) fields.body = bodyValue(body, Array.isArray(entry?.body) ? entry.body : [], state.pages, issues);
+  if (edited) fields.body = edited;
   if (entry && !Object.keys(fields).length) issues.push({ field: 'arguments', message: 'send at least one field to change' });
   if (issues.length) return fieldError(issues, 'Nothing was applied.');
 
@@ -473,7 +591,7 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
   const noun = entryNoun(collection);
   const label = entry ? `Edit ${noun} “${String(fields.title ?? entry.title).slice(0, 60)}”` : `Draft ${noun} “${String(fields.title).slice(0, 60)}”`;
   const res = await host.apply(ops, revision, label, callId, { collectionWrite: { kind: 'entry', collectionId: collection.settings.id, ...(entry ? { entryId: entry.id } : {}) } });
-  if (!res.ok) return applyFailure(res);
+  if (!res.ok) return applyFailure(res, blockEdit && res.error?.code === 'STALE_REVISION' ? 'Read that part of the entry again with read_collection_entry, and send the block, hash and revision it returns.' : undefined);
   const written = (res.results?.at(-1) ?? {}) as { entryId?: string; slug?: string; route?: string };
   const added = (taxonomyId: string) => (terms?.create ?? []).filter((t) => t.taxonomyId === taxonomyId).map((t) => t.label);
   const addedTerms = Object.fromEntries([...new Set((terms?.create ?? []).map((t) => t.taxonomyId))].filter((t) => t !== 'categories').map((t) => [t, added(t)]));
@@ -490,6 +608,8 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
       ...(written.route ? { route: written.route } : {}),
       ...(added('categories').length ? { addedCategories: added('categories') } : {}),
       ...(Object.keys(addedTerms).length ? { addedTerms } : {}),
+      // The block as it is now: the entry's other blocks keep the number and hash they were read with, at this revision.
+      ...(blockEdit && edited ? { block: { block: blockEdit.block, hash: entryBlockHash(collection.settings.id, entry!.id, blockEdit.block, edited[blockEdit.block]) } } : {}),
       ...(!entry ? { draft: fields.draft === false ? false : true } : {})
     }
   };
@@ -559,6 +679,7 @@ export const DEFINE_COLLECTION_ARGS = z
       .optional()
       .describe('Its pages on the website: one per entry (detail) and an index (archive, which needs detail). Default both; neither makes it data that other pages show.'),
     route: z.string().min(1).max(200).optional().describe('The address its pages start with ("/team/"). Only with pages.'),
+    rss: z.boolean().nullable().optional().describe('Whether its published entries are listed in the website\'s RSS feed. Default: editorial yes, structured no (so staff or listings never join a blog\'s feed); null goes back to that default.'),
     fields: z.array(FIELD_ROW).max(30).optional().describe('Custom fields each entry fills in. update: a field named here is added, or relabelled (an enum also gains the options given); every field it has stays, with its values.'),
     taxonomies: z
       .array(z.object({ id: z.string().min(1).max(60).describe('Stable lowercase ID ("departments").'), label: z.string().min(1).max(60) }).strict())
@@ -617,7 +738,7 @@ export async function runDefineCollection(args: DefineCollectionArgs, host: Tool
   if (collection && isSyncedCollection(collection.settings)) return toolError('SCOPE_MISMATCH', `${syncedRefusal(collection.settings.name)} Nothing was applied.`, { details: { collectionId: id, sourceId: collection.settings.sourceId } });
 
   const issues: FieldIssue[] = [];
-  const settings: Record<string, unknown> = given({ name: args.name?.trim(), kind: args.kind, hasBody: args.hasBody, pages: args.pages, route: args.route?.trim() });
+  const settings: Record<string, unknown> = given({ name: args.name?.trim(), kind: args.kind, hasBody: args.hasBody, pages: args.pages, route: args.route?.trim(), rss: args.rss });
   if (args.singularName !== undefined) settings.singularName = args.singularName.trim() || (collection ? null : undefined);
   if (settings.singularName === undefined) delete settings.singularName;
   if (args.fields) {
@@ -666,7 +787,7 @@ export async function runDefineCollection(args: DefineCollectionArgs, host: Tool
       ok: true,
       revision: res.revision,
       collectionId: id,
-      ...(now ? { name: now.name, kind: collectionKind(now), fields: Object.keys(now.fields ?? {}), taxonomies: Object.keys(now.taxonomies ?? {}), ...(hasDetailPages(now) && now.route ? { route: now.route } : {}) } : {})
+      ...(now ? { name: now.name, kind: collectionKind(now), inRss: hasDetailPages(now) && inSiteFeed(now), fields: Object.keys(now.fields ?? {}), taxonomies: Object.keys(now.taxonomies ?? {}), ...(hasDetailPages(now) && now.route ? { route: now.route } : {}) } : {})
     }
   };
 }

@@ -120,6 +120,25 @@ describe('define_collection', () => {
     expect(now().collections.team.settings.name).toBe('Team');
   });
 
+  it('puts a collection in or out of the RSS feed, records out by default, and says which it is', async () => {
+    const { h, now } = host(team());
+    const inRss = () => projectSummary(now(), 1).collections?.find((c: { id: string }) => c.id === 'team')?.inRss;
+    expect(inRss()).toBe(false);
+    const opted = await tool(h, 'define_collection', { action: 'update', collectionId: 'team', rss: true });
+    expect(opted.content).toMatchObject({ ok: true, inRss: true });
+    expect(now().collections.team.settings.rss).toBe(true);
+    expect(inRss()).toBe(true);
+    // null leaves it to its kind again.
+    expect((await tool(h, 'define_collection', { action: 'update', collectionId: 'team', rss: null })).content).toMatchObject({ ok: true, inRss: false });
+    expect(Object.hasOwn(now().collections.team.settings, 'rss')).toBe(false);
+    // A blog taken out of the feed, and records opted in without pages of their own: neither is in it.
+    expect((await tool(h, 'define_collection', { action: 'create', collectionId: 'posts', name: 'Posts', rss: false })).content).toMatchObject({ ok: true, inRss: false });
+    expect(now().collections.posts.settings.rss).toBe(false);
+    expect((await tool(h, 'define_collection', { action: 'update', collectionId: 'team', rss: true, pages: { detail: false, archive: false } })).content).toMatchObject({ ok: true, inRss: false });
+    expect(now().collections.team.settings.rss).toBe(true);
+    expect(inRss()).toBe(false);
+  });
+
   it('only adds and relabels on update: every field, option, grouping, term and entry value stays', async () => {
     const start = team();
     const { h, now } = host(start);
@@ -180,6 +199,24 @@ describe('upsert_collection_entry with custom fields and groupings', () => {
     // Read back as it is written, with every field it can fill in, so a run limited to it can name them.
     const read = await tool(h, 'read_collection_entry', { collectionId: 'team', entryId: bo.id });
     expect(read.content).toMatchObject({ featuredImage: BO.id, terms: [{ taxonomyId: 'departments', names: ['Studio', 'Lab'] }], values: [{ field: 'role', value: 'Glaze chemist' }, { field: 'level', value: 'junior' }], fields: [{ name: 'role', type: 'string' }, { name: 'level', type: 'enum' }] });
+  });
+
+  it('reads and writes the author and the revision date, setting or clearing each while the draft state and text stay', async () => {
+    const { h, now } = host(team());
+    const before = now().collections.team.entries.en_ana;
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', author: ' Ana Reyes ', updatedAt: '2026-03-04' })).ok).toBe(true);
+    expect(now().collections.team.entries.en_ana).toMatchObject({ author: 'Ana Reyes', updatedAt: '2026-03-04', draft: before.draft, body: before.body, title: before.title });
+    expect((await tool(h, 'read_collection_entry', { collectionId: 'team', entryId: 'en_ana' })).content).toMatchObject({ author: 'Ana Reyes', updatedAt: '2026-03-04' });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', author: '', updatedAt: '' })).ok).toBe(true);
+    const cleared = now().collections.team.entries.en_ana;
+    expect(cleared).not.toHaveProperty('author');
+    expect(cleared).not.toHaveProperty('updatedAt');
+    expect(cleared).toMatchObject({ draft: before.draft, body: before.body });
+    const read = (await tool(h, 'read_collection_entry', { collectionId: 'team', entryId: 'en_ana' })).content as Record<string, unknown>;
+    expect(read).not.toHaveProperty('author');
+    expect(read).not.toHaveProperty('updatedAt');
+    const bad = await tool(h, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', updatedAt: 'yesterday' });
+    expect(bad.content).toMatchObject({ ok: false, error: { message: expect.stringMatching(/YYYY-MM-DD/) } });
   });
 
   it('refuses a value of the wrong kind, a field or grouping the collection lacks, and categories sent as terms, applying nothing', async () => {

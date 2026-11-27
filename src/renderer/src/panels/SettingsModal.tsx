@@ -1,8 +1,8 @@
 import './SettingsModal.css';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
-import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
-import { api, setState, useStore, confirmDialog, refreshProviders, setProviders } from '../store';
+import type { AppSettings, GitRuntimeInfo, SettingsPatch, ProviderId } from '@shared/api';
+import { api, setState, useStore, confirmDialog, refreshProviders, saveSettings, setProviders } from '../store';
 import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } from './LocalModelSettings';
 import { checkLocalBaseURL, keyDoubt, localKeyProblem } from '@shared/local';
@@ -38,10 +38,11 @@ const openPicker = (id: string) => {
 
 export function SettingsModal() {
   const settings = useStore((s) => s.settings);
-  // The provider whose settings are on screen. Looking at one never changes the one the assistant uses.
-  const [viewed, setViewed] = useState<ProviderId | null>(null);
   const providers = useStore((s) => s.providers);
   const modal = useStore((s) => s.modal);
+  // The provider whose setup is on screen: the one asked for (Add key in the composer's model menu), else the one in
+  // use. Looking at one never changes the one the assistant uses; the composer's model menu chooses that (#954).
+  const [viewed, setViewed] = useState<ProviderId | null>(modal?.kind === 'settings' && modal.provider ? modal.provider : null);
   const [tab, setTab] = useState<string>(modal?.kind === 'settings' && modal.tab ? modal.tab : 'general');
   const [showKey, setShowKey] = useState(false);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({ openai: '', anthropic: '', local: '' });
@@ -77,16 +78,10 @@ export function SettingsModal() {
   const [keyBusy, setKeyBusy] = useState(false);
   const keyWrite = useRef(false);
   const [replacing, setReplacing] = useState<Partial<Record<ProviderId, boolean>>>({});
-  // Per provider: whether the model is typed as a custom ID. Unset follows the saved model (an unlisted ID
-  // shows as typed text until the user asks for the list).
-  const [customMode, setCustomMode] = useState<Partial<Record<ProviderId, boolean>>>({});
   const [modelDrafts, setModelDrafts] = useState<Partial<Record<ProviderId, string>>>({});
   useEffect(() => void refreshProviders(), []);
   // Each change can change what Chat shows (the provider, the local server, its model or its last check).
-  const updateSettings = useCallback(async (patch: SettingsPatch) => {
-    setState({ settings: await api.app.setSettings(patch) });
-    void refreshProviders();
-  }, []);
+  const updateSettings = useCallback(async (patch: SettingsPatch) => void (await saveSettings(patch)), []);
   // Opened straight to a section (from chat, say), focus starts on that section's tab rather than the first one.
   const loaded = !!settings;
   useEffect(() => {
@@ -184,9 +179,8 @@ export function SettingsModal() {
   const status = providers.find((p) => p.id === provider);
   const model = settings.ai.models[provider];
   const known = !!status?.models.some((m) => m.id === model);
-  // A new custom ID needs Developer mode; a saved ID that is not in the list can always be edited.
-  const canTypeModel = settings.developerMode || (!!status && !known);
-  const custom = canTypeModel && (customMode[provider] ?? (!!status && !known));
+  // Models are chosen in the composer's model menu. Developer mode adds a field for a model ID the list doesn't have.
+  const custom = settings.developerMode;
   const modelDraft = modelDrafts[provider] ?? model;
   // Only this provider's model: the local one is kept per server, and the screen may not have the latest of it.
   const setModel = (id: string) => update({ ai: { models: { [provider]: id } } });
@@ -195,12 +189,6 @@ export function SettingsModal() {
     if (id && id !== model) void setModel(id);
     // An emptied field goes back to showing the saved model.
     if (!id) setModelDrafts({ ...modelDrafts, [provider]: undefined });
-  };
-  // The saved model stays in use (and in the list) until another one is picked.
-  const chooseFromList = () => {
-    setCustomMode({ ...customMode, [provider]: false });
-    setModelDrafts({ ...modelDrafts, [provider]: undefined });
-    focusById('settings-model');
   };
   const isLocal = provider === 'local';
   const saveKey = async () => {
@@ -352,7 +340,7 @@ export function SettingsModal() {
     if (server?.phase === 'pending')
       return neutral(
         server.proposedHost ? `Switch to ${server.proposedHost}?` : 'New address not applied yet',
-        server.proposedHost ? `If you switch, ${provider === activeProvider ? 'the assistant sends' : 'Local model will send'} your requests and page content${keySaved ? ', and your saved server key,' : ''} to ${server.proposedHost}. Current server: ${server.url ? hostOf(server.url) : 'none'}.` : server.url ? `Still using ${server.url}.` : 'Apply it to connect.',
+        server.proposedHost ? `If you switch, Local model sends your requests and page content${keySaved ? ', and your saved server key,' : ''} to ${server.proposedHost}. Current server: ${server.url ? hostOf(server.url) : 'none'}.` : server.url ? `Still using ${server.url}.` : 'Apply it to connect.',
         server.proposedHost ? <TriangleAlert /> : undefined
       );
     if (testingNow) return busy('Testing the connection…', isLocal ? `Listing the models at ${server?.url}, then sending ${model || 'the first one'} a short chat request.` : testedName);
@@ -591,75 +579,35 @@ export function SettingsModal() {
       <Shield aria-hidden="true" />
       <span>
         {!isLocal ? (
-          `${provider === activeProvider ? 'Your request' : `With ${label} in use, your request`} and the relevant page text go to ${label}, which bills your account for usage.`
+          `When you use ${label}, your request and the relevant page text go to ${label}, which bills your account for usage.`
         ) : localRemoteHost ? (
           <>
-            {provider === activeProvider ? 'When you use the assistant' : 'With Local model in use'}, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
+            When you use Local model, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
           </>
         ) : (
-          provider === activeProvider ? 'Your requests and page content stay on this computer.' : 'With Local model in use, your requests and page content stay on this computer.'
+          'When you use Local model, your requests and page content stay on this computer.'
         )}{' '}
         {AI_IMAGE_PRIVACY}
       </span>
     </div>
   );
 
-  const modelRow = (
-    <StackedRow
-      controlId="settings-model"
-      label={custom ? 'Custom model ID' : 'Model'}
-      side={
-        (settings.developerMode || custom || !known) && (
-          <button
-            id="settings-model-mode"
-            className="link-btn settings-row-link"
-            // Keep focus in the model field so its blur does not save the typed ID on the way to the list.
-            onMouseDown={(e) => custom && e.preventDefault()}
-            onClick={() => {
-              if (custom) chooseFromList();
-              else {
-                setCustomMode({ ...customMode, [provider]: true });
-                focusById('settings-model');
-              }
-            }}
-          >
-            {custom ? 'Choose from list' : 'Use another model ID'}
-          </button>
-        )
-      }
-      hint={custom ? 'Saved when you press Enter or leave the field.' : undefined}
-    >
-      {custom ? (
-        <input
-          id="settings-model"
-          key={provider}
-          className="input mono"
-          value={modelDraft}
-          onChange={(e) => setModelDrafts({ ...modelDrafts, [provider]: e.target.value })}
-          // Moving to "Choose from list" leaves the typed ID unsaved, by pointer or by Tab.
-          onBlur={(e) => e.relatedTarget?.id !== 'settings-model-mode' && commitModelDraft()}
-          onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitModelDraft()}
-          aria-describedby="settings-model-note"
-          spellCheck={false}
-        />
-      ) : (
-        <select id="settings-model" key={provider} className="select" value={model} onChange={(e) => void setModel(e.target.value)}>
-          {!known && status && <option value={model}>{model} (custom)</option>}
-          {status?.models.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-              {m.note ? ` — ${m.note}` : ''}
-            </option>
-          ))}
-        </select>
-      )}
+  const modelRow = custom && (
+    <StackedRow controlId="settings-model" label="Model ID" hint="Saved when you press Enter or leave the field. Choose models from the menu on the chat’s message box; choosing a listed one there replaces this ID.">
+      <input
+        id="settings-model"
+        key={provider}
+        className="input mono"
+        value={modelDraft}
+        onChange={(e) => setModelDrafts({ ...modelDrafts, [provider]: e.target.value })}
+        onBlur={commitModelDraft}
+        onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitModelDraft()}
+        aria-describedby="settings-model-note"
+        spellCheck={false}
+      />
     </StackedRow>
   );
 
-  // Using the provider on screen is the next step only once its setup has passed a test; before that the card's own
-  // next step is the page's one primary, so a server that isn't answering is never urged on chat.
-  // A test that passed for a typed key is not the setup chat would use until that key is saved.
-  const useReady = !unsavedKey && (isLocal ? !!localServer && connectionView(localServer).tone === 'ready' : connectionView().tone === 'ready');
   return (
     <Modal
       title="Settings"
@@ -707,6 +655,15 @@ export function SettingsModal() {
                     <div className="settings-row">
                       <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte. Code is checked before it’s saved." />
                     </div>
+                    <div className="settings-row">
+                      <SwitchRow
+                        checked={settings.gitSnapshots}
+                        onChange={(v) => void update({ gitSnapshots: v })}
+                        label="Git snapshots"
+                        hint="Saved versions keep a snapshot of the whole site in a Git repository inside the project, made with the Git built into SiteOrigin Builder. Versions saved before stay listed and can still be restored."
+                      />
+                      {settings.gitSnapshots && <GitStatus />}
+                    </div>
                   </div>
                   <div className="settings-group-title">Keyboard shortcuts</div>
                   <div className="settings-group">
@@ -729,7 +686,7 @@ export function SettingsModal() {
                     <div className="settings-group-title" id="settings-provider-label">
                       Provider
                     </div>
-                    {/* Choosing one shows its settings; "Use" below is what switches the assistant to it. */}
+                    {/* Choosing one shows its setup; the composer's model menu is what switches the assistant to it. */}
                     <Segmented<ProviderId>
                       tabs
                       full
@@ -743,14 +700,6 @@ export function SettingsModal() {
                       options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.id === 'local' ? <Laptop /> : <Cloud />, controls: p.id === provider ? `settings-provider-${p.id}` : undefined }))}
                     />
                     {providerNote}
-                    {provider !== activeProvider && (
-                      <div className="row">
-                        <span className="grow">The assistant is using {providers.find((x) => x.id === activeProvider)?.label ?? activeProvider}.</span>
-                        <button className={`btn${useReady ? ' btn-primary' : ''}`} onClick={() => void update({ ai: { provider } })}>
-                          Use {label}
-                        </button>
-                      </div>
-                    )}
                   </div>
                   <div role="tabpanel" id={`settings-provider-${provider}`} aria-labelledby={`settings-provider-${provider}-tab`}>
                   {isLocal ? (
@@ -776,5 +725,41 @@ export function SettingsModal() {
         />
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Which Git saved versions use while Git snapshots are on (#1153): the one built in, which needs nothing installed, and
+ * the computer's own Git when it has one. Asked only while shown: asking starts the built-in Git.
+ */
+function GitStatus() {
+  const [status, setStatus] = useState<GitRuntimeInfo | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api.app.gitRuntime().then(
+      (s) => live && setStatus(s),
+      () => live && setFailed(true)
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (failed) return <span className="field-error">SiteOrigin Builder couldn’t check its built-in Git.</span>;
+  if (!status)
+    return (
+      <span className="field-hint settings-git-status" role="status">
+        <Spinner decorative /> Checking Git…
+      </span>
+    );
+  const system = status.system;
+  return (
+    <span className="field-hint settings-git-status" role="status" data-testid="git-status">
+      {status.bundled.ready ? <Check aria-hidden="true" /> : <CircleAlert aria-hidden="true" />}
+      <span>
+        {status.bundled.ready ? `Built-in Git ${status.bundled.version} is ready. ` : `The built-in Git couldn’t start, so versions can’t be saved until it can: ${status.bundled.reason} `}
+        {system.status === 'present' ? `Git ${system.version} is also installed on this computer.` : system.status === 'unusable' ? 'A Git found on this computer couldn’t be used.' : 'No other Git is needed.'}
+      </span>
+    </span>
   );
 }

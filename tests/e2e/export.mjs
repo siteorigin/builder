@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { createHash } from 'node:crypto';
 import { basename, delimiter, join, sep } from 'node:path';
 import sharp from 'sharp';
-import { answerChoosers, choosersShown, createProject, desktopCursor, desktopIntents, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { answerChoosers, choosersShown, copiesMade, createProject, desktopCursor, desktopIntents, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 // ---------------------------------------------------------------------------
 // A phone photo's metadata, written and read back by hand (little-endian EXIF and an XMP packet)
@@ -213,7 +213,7 @@ const photoHash = createHash('sha256').update(readFileSync(photoPath)).digest('h
 const photoImport = await win.evaluate((p) => window.builder.project.importAssets([p]), photoPath);
 assert.equal(photoImport.ok, true, `the photo imports: ${photoImport.message}`);
 const photoId = photoImport.assetIds[0];
-const photo = (await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets[photoId];
+const photo = (await copiesMade(win, [photoId])).state.assets.assets[photoId];
 assert.deepEqual([photo.width, photo.height], [2000, 1200], 'the photo is recorded as it is displayed');
 assert.deepEqual(widthsIn(photo, 'jpg'), [160, 480, 960, 1440], 'the photo has four smaller JPEG copies');
 assert.deepEqual(widthsIn(photo, 'webp'), [160, 480, 960, 1440, 2000], 'the photo has a WebP set to its full width');
@@ -598,6 +598,21 @@ assert.ok(!stat.warnings.some((w) => /placeholder/.test(w)), `no placeholder war
 assert.ok(stat.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website export names the draft it left out: ${stat.warnings.join(' ')}`);
 assert.ok(stat.warnings.some((w) => w.includes(photo.name) && /leaves out where/.test(w)), `the website export says it left out where the photo was taken: ${stat.warnings.join(' ')}`);
 assert.ok(src.warnings.some((w) => w.includes(photo.name) && /still records where/.test(w)), `the source export says the photo keeps its location: ${src.warnings.join(' ')}`);
+
+step('#1154: the publication, cloned with stock Git into an empty folder, is the published site alone');
+const prepared = await withTimeout(win.evaluate(() => window.builderTest.preparePublication()), 120000, 'Prepare the publication');
+assert.equal(prepared.ok, true, `the publication is prepared: ${prepared.message}`);
+assert.deepEqual(await win.evaluate(() => window.builderTest.publicationStatus()), { ok: true, prepared: prepared.commit, changed: false }, 'the website is as it was prepared');
+const publishOut = join(exportsDir, 'harbour-lane-studio-publication');
+const hasGit = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
+if (hasGit) {
+  const cloned = spawnSync('git', ['clone', '--quiet', '--no-local', '--single-branch', '--branch', 'siteorigin-publish', join(dir, '.siteorigin', 'versions.git'), publishOut], { encoding: 'utf8' });
+  assert.equal(cloned.status, 0, `the publication clones: ${cloned.stderr}`);
+  const published = files(publishOut).filter((f) => !f.startsWith('.git/'));
+  for (const f of ['package.json', 'package-lock.json', 'vite.config.js', 'src/routes/+page.svelte']) assert.ok(published.includes(f), `the publication has ${f}`);
+  assert.deepEqual(published.filter((f) => draftNames.includes(basename(f))), [], 'the publication has no library picture the website does not use');
+  assert.deepEqual(published.filter((f) => /^siteorigin\/(brief|sources\/)|^\.siteorigin\/|^node_modules\//i.test(f)), [], 'the publication has no brief, source settings, editor state or tools');
+} else console.log('\n(skipping the publication clone: no git on this computer)');
 
 // Issue 212: the first proof is opened in a browser tab now, before any later export, as the author did.
 assert.ok(stat.previewUrl, 'the first website export starts a preview');
@@ -1226,6 +1241,19 @@ assert.ok(!srcFiles.includes('.npmrc'), 'no engine-strict .npmrc in the export')
 assert.equal(JSON.parse(readFileSync(join(sourceOut, 'package.json'), 'utf8')).engines.node, '>=22.17.0');
 assert.match(readFileSync(join(sourceOut, 'README.md'), 'utf8'), /^# Harbour Lane Studio\n[^]*Node\.js 22\.17/);
 
+if (hasGit) {
+  step('#1154: scan the publication');
+  const pubFiles = scan(publishOut, 'publication').filter((f) => !f.startsWith('.git/'));
+  noDeletedImage(pubFiles, 'publication');
+  for (const f of draftFiles) assert.ok(!pubFiles.includes(f), `the publication leaves out the unused picture (${f})`);
+  const pubAssets = JSON.parse(readFileSync(join(publishOut, 'siteorigin', 'assets.json'), 'utf8')).assets;
+  assert.ok(!Object.hasOwn(pubAssets, draft.id), 'the publication’s library has no record of the unused picture');
+  assert.ok(Object.hasOwn(pubAssets, used.id), 'the publication’s library has the picture the site uses');
+  assert.deepEqual(pubFiles.filter((f) => f.includes('en_secret01') || f.includes('secret-plans')), [], 'the publication has no document or page of the draft post');
+  assert.deepEqual(pubFiles.filter((f) => readFileSync(join(publishOut, f)).includes(DRAFT_MARK)), [], 'no file of the publication holds the draft post’s words');
+  assert.ok(pubFiles.includes('src/routes/blog/opening-times/+page.svelte'), 'the publication has the published post');
+}
+
 step('I09: scan the static export');
 const staticFiles = scan(staticOut, 'static');
 scan(staticOut2, 'second static');
@@ -1279,6 +1307,16 @@ if (BUILD) {
   assert.ok(files(join(sourceOut, 'build')).some((f) => /lora.*\.woff2$/i.test(f)), 'the standalone build includes the chosen font');
   checkBuiltPosts(join(sourceOut, 'build'), 'standalone build');
   checkBuiltArchives(join(sourceOut, 'build'), 'standalone build');
+  step('#1154: npm ci && npm run build in the publication, cloned into an empty folder');
+  if (hasGit) {
+    for (const args of [['ci', '--no-audit', '--no-fund'], ['run', 'build']]) {
+      const r = spawnSync(npm, args, { cwd: publishOut, env, encoding: 'utf8', shell: process.platform === 'win32', timeout: 600000 });
+      assert.equal(r.status, 0, `npm ${args.join(' ')} succeeds in the publication:\n${(r.stdout ?? '').slice(-3000)}\n${(r.stderr ?? '').slice(-3000)}`);
+    }
+    assert.ok(existsSync(join(publishOut, 'build', 'index.html')), 'the publication builds build/index.html');
+    assert.ok(existsSync(join(publishOut, 'build', 'about', 'index.html')), 'the publication prerenders nested routes');
+    checkBuiltPosts(join(publishOut, 'build'), 'publication build');
+  }
 } else console.log('\n(skipping the standalone npm ci && npm run build; pass --build to run it)');
 
 cleanup();

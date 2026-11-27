@@ -31,7 +31,7 @@ describe('holding a socketless room', () => {
 
 describe('deadlines', () => {
   it('takes the earliest of the session’s end, the host’s grace, guests’ access and kept places, and handshakes', () => {
-    const admitted: GuestRecord = { guestId: 'g2', displayName: 'Bea', status: 'admitted', role: 'viewer', guestExpiresAt: T + 20_000, grantVersion: 1, ticket: null, ticketUntil: null, connectionId: 'c', reconnectUntil: null, resumeToken: 's'.repeat(43) };
+    const admitted: GuestRecord = { guestId: 'g2', displayName: 'Bea', status: 'admitted', role: 'viewer', guestExpiresAt: T + 20_000, grantVersion: 1, ticket: null, ticketUntil: null, colorSlot: 0, connectionId: 'c', reconnectUntil: null, resumeToken: 's'.repeat(43) };
     expect(nextDeadline(room(), [])).toBe(T + 60_000);
     expect(nextDeadline(room({}, [admitted]), [])).toBe(T + 20_000);
     expect(nextDeadline(room(away, [admitted]), [])).toBe(T + 20_000);

@@ -2,7 +2,7 @@ import './SavedVersions.css';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArchiveRestore, ArrowLeft, Bookmark, BookmarkPlus, Check, CircleAlert, Pencil, Trash2 } from 'lucide-react';
-import type { SavedVersionInfo, VersionReview } from '@shared/api';
+import type { RestoreVersionResult, SavedVersionInfo, VersionReview } from '@shared/api';
 import { api, confirmDialog, getState, setState, toast, undoAction, useStore } from '../store';
 import { Spinner } from '../components/ui';
 import { BlockedNote, BlockedStatus, projectBlock, type Blocked } from '../components/BlockedNote';
@@ -168,8 +168,10 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
     const m = getState().modal;
     if (m?.kind === 'history' && m.tab === 'versions') close();
     if ('unchanged' in r && r.unchanged) return toast(`Your site already matches “${version.name}”.`, 'info');
-    const done = r as { entryId?: string; revision?: number; backup?: { name: string }; replaced?: number; left?: string[] };
-    toast(restoredNotice(version.name, !!done.backup, done.replaced ?? 0, done.left ?? []), 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
+    const done = r as RestoreVersionResult;
+    // A restore done whose own saved version is not (or not yet) saved says so, with its Undo all the same.
+    const said = [restoredNotice(version.name, !!done.backup, done.replaced ?? 0, done.left ?? []), ...(done.notice ? [done.notice] : [])].join(' ');
+    toast(said, done.notice ? 'info' : 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
   };
 
   /** Focus a row's control again once the list has settled (after a rename, or a cancelled one). */
@@ -218,12 +220,14 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
   const remove = async (version: SavedVersionInfo) => {
     const key = getState().snapshot?.workspaceKey;
     if (!key || busy) return;
+    // A version saved with Git snapshots on leaves its snapshot in the project's version history when deleted (#1153).
+    const inHistory = version.bytes === null;
     const yes = await confirmDialog({
       title: 'Delete saved version?',
-      body: 'This saved version is deleted from the project.',
+      body: inHistory ? 'This saved version is removed from Saved versions.' : 'This saved version is deleted from the project.',
       subject: version.name,
       subjectKind: 'version',
-      subjectNote: version.bytes ? `Frees up to ${formatBytes(version.bytes)}` : undefined,
+      subjectNote: inHistory ? 'Its snapshot stays in the project’s version history' : version.bytes ? `Frees up to ${formatBytes(version.bytes)}` : undefined,
       details: [
         { kind: 'keep', text: 'Your site and its undo history stay as they are.' },
         { kind: 'final', text: 'A deleted version can’t be brought back.' }
@@ -284,10 +288,19 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
     </>
   ) : (
     <>
-      {list.length > 0 && (
-        <span className="history-foot-note" title="Saved versions share the images and fonts they have in common, so each is stored once.">
+      {list.length > 0 ? (
+        <span
+          className="history-foot-note"
+          title={`Saved versions share the images and fonts they have in common, so each is stored once.${info?.historyBytes ? ' Snapshots stay in the project’s version history when a version is deleted.' : ''}`}
+        >
           {plural(list.length, 'saved version uses', 'saved versions use')} {formatBytes(info?.bytes ?? 0)}
         </span>
+      ) : (
+        !!info?.historyBytes && (
+          <span className="history-foot-note" title="Snapshots stay in the project’s version history when a version is deleted.">
+            Version history uses {formatBytes(info.historyBytes)}
+          </span>
+        )
       )}
       <span className="spacer" />
       <button className="btn" onClick={close} disabled={busy}>
@@ -310,7 +323,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
             <span>{open.version.name}</span>
           </h3>
           <p className="muted version-review-when" title={fullWhen(open.version.time)}>
-            {open.version.auto ? 'Saved automatically before a restore, ' : 'Saved '}
+            {open.version.restored ? 'Saved automatically after a restore, ' : open.version.auto ? 'Saved automatically before a restore, ' : 'Saved '}
             {lowerDay(savedAt(open.version.time))}
           </p>
           {note}
@@ -372,7 +385,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
                   const editing = renaming?.id === v.id;
                   return (
                     <li key={v.id} data-version={v.id} className={editing ? 'renaming' : undefined}>
-                      {v.auto ? <ArchiveRestore aria-label="Saved automatically before a restore" /> : <Bookmark aria-label="Saved by you" />}
+                      {v.auto ? <ArchiveRestore aria-label={v.restored ? 'Saved automatically after a restore' : 'Saved automatically before a restore'} /> : <Bookmark aria-label="Saved by you" />}
                       <span className="grow version-text">
                         {editing ? (
                           <input

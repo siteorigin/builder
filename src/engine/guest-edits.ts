@@ -4,14 +4,12 @@
  * whatever design passes its settings on, or add a dated article (copying one included). The form's own destinations
  * (FORM_DESTINATIONS) are also refused by name before a guest's batch runs (shared/live/capabilities.ts).
  */
-import type { ComponentDefinition, GraphNode, OwnerKind, ProjectState } from '@shared/types';
-import { formDestinationProps } from './form-destinations';
+import type { GraphNode, OwnerKind, ProjectState } from '@shared/types';
+import { EMPTY_ROUTING as EMPTY, formDestinationProps, propDefault as defaultOf, routingText as text } from './form-destinations';
 import { allTrees } from './tree';
 
 type Instance = Extract<GraphNode, { kind: 'instance' }>;
 
-const text = (value: unknown) => (value === undefined ? 'undefined' : JSON.stringify(value));
-const defaultOf = (def: ComponentDefinition | undefined, prop: string): unknown => (def && Object.hasOwn(def.properties, prop) ? (def.properties[prop] as { default?: unknown }).default : undefined);
 
 /**
  * A placement's value of a property, as text to compare: its own or its design's default, and the collection a list
@@ -23,8 +21,6 @@ function valueOf(state: ProjectState, n: Instance, prop: string): string {
   const source = n.listSources && Object.hasOwn(n.listSources, prop) ? n.listSources[prop] : undefined;
   return source === undefined ? value : `${value}\u0000${JSON.stringify(source)}`;
 }
-
-const EMPTY = new Set(['undefined', 'null', '""']);
 
 /**
  * Why `after` changes where a contact form on a page or in the header or footer sends its messages, or null when it

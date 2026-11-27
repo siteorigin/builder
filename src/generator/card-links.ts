@@ -109,15 +109,20 @@ interface Pass {
   cardSlots: Map<string, Map<string, CardRef[]>>;
   /** Definitions being worked out: one that contains itself (refused by validation) counts as empty. */
   open: Set<string>;
+  /** How many times a definition containing itself was met: what was worked out then depends on where the pass began. */
+  cycles: number;
 }
 
-const newPass = (state: ProjectState): Pass => ({ state, intrinsic: new Map(), rendered: new Map(), cardSlots: new Map(), open: new Set() });
+const newPass = (state: ProjectState): Pass => ({ state, intrinsic: new Map(), rendered: new Map(), cardSlots: new Map(), open: new Set(), cycles: 0 });
 
 /** Memoized per definition, with a definition that contains itself given `empty`. */
 function once<T>(pass: Pass, memo: Map<string, T>, key: string, empty: T, work: () => T): T {
   if (memo.has(key)) return memo.get(key)!;
   const guard = `${memo === pass.intrinsic ? 'i' : memo === pass.rendered ? 'r' : 'c'}:${key}`;
-  if (pass.open.has(guard)) return empty;
+  if (pass.open.has(guard)) {
+    pass.cycles++;
+    return empty;
+  }
   pass.open.add(guard);
   try {
     const out = work();
@@ -261,25 +266,38 @@ function cardSlots(pass: Pass, def: ComponentDefinition): Map<string, CardRef[]>
 
 /** Every card that has interactive content rendering inside it, from its own tree or from a placement's slot. */
 export function cardLinkProblems(state: ProjectState): CardProblem[] {
-  const out: CardProblem[] = [];
+  const checker = cardLinkChecker(state);
+  return allTrees(state).flatMap((t) => checker.check(t));
+}
+
+/**
+ * cardLinkProblems one tree at a time, in one pass over the project: each tree's problems read only that tree and the
+ * components. `cycles` says whether the pass so far met a definition that contains itself, after which each tree's
+ * problems depend on the trees read before it.
+ */
+export function cardLinkChecker(state: ProjectState): { check: (t: { owner: OwnerRef; tree: NodeTree; label: string }) => CardProblem[]; cycles: () => boolean } {
   const pass = newPass(state);
-  for (const { owner, tree, label } of allTrees(state)) {
-    const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
-    for (const n of Object.values(tree.nodes)) {
-      if (n.kind === 'element' && isCardLink(n)) {
-        const what = firstInteractive(pass, def, tree, n.children);
-        if (what) out.push({ owner, label, nodeId: n.id, cards: [{ owner, cardId: n.id }], what });
+  return {
+    check: ({ owner, tree, label }) => {
+      const out: CardProblem[] = [];
+      const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
+      for (const n of Object.values(tree.nodes)) {
+        if (n.kind === 'element' && isCardLink(n)) {
+          const what = firstInteractive(pass, def, tree, n.children);
+          if (what) out.push({ owner, label, nodeId: n.id, cards: [{ owner, cardId: n.id }], what });
+        }
+        if (n.kind !== 'instance') continue;
+        const placed = state.components[n.definitionId];
+        if (!placed) continue;
+        for (const [slot, cards] of cardSlots(pass, placed)) {
+          const what = firstInteractive(pass, def, tree, slotChildren(n, slot));
+          if (what) out.push({ owner, label, nodeId: n.id, cards, what });
+        }
       }
-      if (n.kind !== 'instance') continue;
-      const placed = state.components[n.definitionId];
-      if (!placed) continue;
-      for (const [slot, cards] of cardSlots(pass, placed)) {
-        const what = firstInteractive(pass, def, tree, slotChildren(n, slot));
-        if (what) out.push({ owner, label, nodeId: n.id, cards, what });
-      }
-    }
-  }
-  return out;
+      return out;
+    },
+    cycles: () => pass.cycles > 0
+  };
 }
 
 /** Keys of the cards that must render as their plain container (`owner kind:owner id:node id`). */

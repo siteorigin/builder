@@ -17,6 +17,7 @@ import { api, applyOps, claimRefusals, commitOps, dismissToast, getState, setSta
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
+import { useJumpMark } from '../lib/use-jump-mark';
 import { ChoiceField, Disclosure, DisclosureMark, DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
@@ -56,7 +57,9 @@ const FOUNDATION_USES: Record<string, string> = {
   'color.inverse': 'Dark sections and panels',
   'color.on-inverse': 'Text in dark sections',
   'color.border': 'Dividers',
-  'color.focus': 'Focus outline for keyboard users'
+  'color.focus': 'Focus outline for keyboard users',
+  'color.error': 'Form errors and the fields to put right',
+  'color.error-on-inverse': 'Form errors in dark sections'
 };
 
 /** What Foundation's layout values that are not self-explanatory do, so an owner can predict the effect. */
@@ -88,8 +91,20 @@ const COLOR_GROUPS: Array<{ label: string; ids: string[] }> = [
   { label: 'Backgrounds', ids: ['color.background', 'color.surface', 'color.surface-alt'] },
   { label: 'Text', ids: ['color.text', 'color.muted'] },
   { label: 'Dark areas', ids: ['color.inverse', 'color.on-inverse'] },
-  { label: 'Lines and focus', ids: ['color.border', 'color.focus'] }
+  { label: 'Lines and focus', ids: ['color.border', 'color.focus'] },
+  { label: 'Form errors', ids: ['color.error', 'color.error-on-inverse'] }
 ];
+
+/** The jump links under the panel's header, one for each section in order. */
+const JUMPS = [
+  { id: 'tok-basics', label: 'Basics' },
+  { id: 'tok-color', label: 'Colors' },
+  { id: 'tok-text', label: 'Text' },
+  { id: 'tok-layout', label: 'Layout' },
+  { id: 'tok-custom', label: 'Yours' },
+  { id: 'site-settings', label: 'Site' }
+];
+const JUMP_IDS = JUMPS.map((j) => j.id);
 
 /**
  * Says a change out loud in the panel's status region (WCAG 2.2 SC 4.1.3): a reset happens away from where focus
@@ -1123,8 +1138,9 @@ export function SiteStyles() {
   const contrastStatus = useContrastStatus(contrast);
   // What a reset just did, for the status region; a repeat of the same words still changes the text, so it is read again.
   const [said, setSaid] = useState('');
-  // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings.
-  const [here, setHere] = useState(0);
+  // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings; a jump link's
+  // own section stays marked through the scroll it starts (lib/use-jump-mark).
+  const { here, jump, panel } = useJumpMark(JUMP_IDS, '.ss-head');
   // Layout groups whose sizes are shown as CSS, switched from the group's heading.
   const [cssGroups, setCssGroups] = useState<Set<string>>(() => new Set());
   const say = useCallback((text: string) => setSaid((prev) => (prev === text ? `${text} ` : text)), []);
@@ -1651,7 +1667,7 @@ export function SiteStyles() {
             <span className="ss-name">
               <NameWithReset label={t.label} reset={changed(t.id) && <ResetDot label={name} theme={`value, ${show(g, null, themeValue(t.id))}`} onReset={() => set(t.id, null)} />} />
             </span>
-            {desc && <span className="ss-desc">{desc}</span>}
+            {g === 'shadow' && value.trim().toLowerCase() === 'none' ? <span className="ss-desc">No shadow</span> : desc && <span className="ss-desc">{desc}</span>}
           </span>
         </div>
         {follows ? (
@@ -1799,14 +1815,6 @@ export function SiteStyles() {
     })
   );
 
-  const jumps = [
-    { id: 'tok-basics', label: 'Basics' },
-    { id: 'tok-color', label: 'Colors' },
-    { id: 'tok-text', label: 'Text' },
-    { id: 'tok-layout', label: 'Layout' },
-    { id: 'tok-custom', label: 'Yours' },
-    { id: 'site-settings', label: 'Site' }
-  ];
   const redirectCount = redirectRecords(st).length;
   const reviewId = `${uid}-review`;
 
@@ -1814,18 +1822,7 @@ export function SiteStyles() {
     <SayContext.Provider value={say}>
     <div
       className="panel-body ss"
-      onScroll={(e) => {
-        const box = e.currentTarget;
-        // The section that owns the upper third of what is in view below the header is the one being read.
-        const head = box.querySelector<HTMLElement>('.ss-head')?.offsetHeight ?? 0;
-        const line = box.getBoundingClientRect().top + head + (box.clientHeight - head) / 3;
-        const sections = [...box.querySelectorAll<HTMLElement>(':scope > .section')];
-        let i = 0;
-        sections.forEach((sec, n) => sec.getBoundingClientRect().top <= line && (i = n));
-        const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
-        const next = atEnd ? jumps.length - 1 : Math.min(i, jumps.length - 1);
-        if (next !== here) setHere(next);
-      }}
+      {...panel}
     >
       <div className="sr-only" role="status" aria-live="polite">
         {contrastStatus}
@@ -1840,8 +1837,8 @@ export function SiteStyles() {
           <h3>Site styles</h3>
         </div>
         <nav className="insp-jump" aria-label="Jump to section">
-          {jumps.map((j) => (
-            <button key={j.id} aria-current={jumps[here]?.id === j.id ? 'location' : undefined} onClick={() => openSection(j.id)}>
+          {JUMPS.map((j, i) => (
+            <button key={j.id} aria-current={here === i ? 'location' : undefined} onClick={() => jump(i)}>
               {j.label}
             </button>
           ))}

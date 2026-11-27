@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { LiveHostState, LiveJoinRequest, LivePresence, LiveRun } from '../../src/shared/api';
+import type { AiEvent, ChatMessage, LiveHostState, LiveJoinRequest, LivePresence, LiveRun } from '../../src/shared/api';
+import type { RunDelegation } from '../../src/agent/orchestrator';
+import type { LiveAiContext } from '../../src/shared/live/ai';
 import { LIVE_CLOSE_CODES } from '../../src/shared/live/close-codes';
 import { newNonce, newRoomId, verifyHostChallenge } from '../../src/shared/live/crypto';
 import type { GuestRole } from '../../src/shared/live/limits';
 import type { FrameOf, Participant, Presence } from '../../src/shared/live/messages';
 import type { LiveApplyResult, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { resolveRelayUrl, type ResolvedRelayUrl } from '../../src/shared/live/relay-url';
-import { GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostTimings } from '../../src/main/live/host';
+import { editTarget, GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_GUEST_NOTE_CALLS, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostNotes, type LiveHostTimings, type LiveNotesAnswer } from '../../src/main/live/host';
+import { GUEST_NOTE_BURST, GUEST_NOTE_LIMIT, NOTE_KEPT, NOTES_CHANGED, type LiveNote, type NoteDraft } from '../../src/shared/live/notes';
+import type { LiveMethod } from '../../src/shared/live/roles';
+import type { RpcError } from '../../src/shared/live/messages';
 
 /**
  * The host's live session manager against sockets the test drives frame by frame, for the orderings a real relay
@@ -52,7 +57,7 @@ class FakeSocket extends EventTarget {
 }
 
 const RELAY = 'http://relay.localhost:8787';
-const ANN: Participant = { guestId: 'g1', displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null };
+const ANN: Participant = { guestId: 'g1', displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true };
 const managers: LiveHostManager[] = [];
 afterEach(async () => {
   // No relay answers a test's last room:end: each is let go at a short deadline.
@@ -62,7 +67,7 @@ afterEach(async () => {
   }
 });
 
-function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<ResolvedRelayUrl>; preview?: { port: number } | null; publishing?: () => boolean } & Pick<LiveHostContext, 'guestSnapshot' | 'applyGuest'> = {}) {
+function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<ResolvedRelayUrl>; preview?: { port: number } | null; publishing?: () => boolean } & Pick<LiveHostContext, 'guestSnapshot' | 'applyGuest' | 'hostPaths' | 'notes'> = {}) {
   const sockets: FakeSocket[] = [];
   const states: LiveHostState[] = [];
   const requests: LiveJoinRequest[] = [];
@@ -75,6 +80,8 @@ function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<
       publishing: opts.publishing,
       guestSnapshot: opts.guestSnapshot,
       applyGuest: opts.applyGuest,
+      hostPaths: opts.hostPaths,
+      notes: opts.notes,
       emit: (channel, payload) =>
         void (channel === 'live:state' ? states.push(payload as LiveHostState) : channel === 'live:presence' ? presence.push(payload as LivePresence) : requests.push(payload as LiveJoinRequest))
     },
@@ -111,7 +118,7 @@ function tracked<T>(promise: Promise<T>) {
 }
 
 const sentOf = <T extends FrameOf<'host-to-relay'>['type']>(socket: FakeSocket, type: T) => socket.sent.find((f) => f.type === type) as Extract<FrameOf<'host-to-relay'>, { type: T }> | undefined;
-const ready = (roomId: string, now = Date.now(), extra: Partial<{ expiresAt: number; locked: boolean }> = {}): FrameOf<'relay-to-host'> => ({ type: 'room:ready', version: 1, roomId, startedAt: now, expiresAt: extra.expiresAt ?? now + 2 * 3600_000, locked: extra.locked ?? false, now });
+const ready = (roomId: string, now = Date.now(), extra: Partial<{ expiresAt: number; locked: boolean }> = {}): FrameOf<'relay-to-host'> => ({ type: 'room:ready', version: 2, roomId, startedAt: now, expiresAt: extra.expiresAt ?? now + 2 * 3600_000, locked: extra.locked ?? false, now });
 
 /** Answer the room:create the manager sends on its first socket, as the relay would. */
 async function opened(h: ReturnType<typeof host>, participants: Participant[] = [ANN]) {
@@ -134,7 +141,7 @@ async function opened(h: ReturnType<typeof host>, participants: Participant[] = 
 /** Prove the host on a reconnect socket, as the relay would, checking its signature against the room's key. */
 async function reclaimed(socket: FakeSocket, roomId: string, publicKey: string, extra: Partial<{ expiresAt: number; locked: boolean }> = {}) {
   socket.open();
-  expect(sentOf(socket, 'host:reconnect')).toEqual({ type: 'host:reconnect', version: 1, roomId });
+  expect(sentOf(socket, 'host:reconnect')).toEqual({ type: 'host:reconnect', version: 2, roomId });
   const nonce = newNonce();
   socket.receive({ type: 'host:challenge', roomId, nonce });
   const proof = await until(() => sentOf(socket, 'host:proof'), 'the proof');
@@ -538,13 +545,15 @@ describe('ending', () => {
 
 const SNAPSHOT: LiveProjectSnapshot = { revision: 3, state: {} as LiveProjectSnapshot['state'], readOnly: false, aiBusy: false, runtime: { state: 'ready' } };
 const EDIT = { operations: [{ type: 'node.setContent', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title', field: 'text', value: 'Hello' }] };
+/** A layout edit: one a collaborator may make, and a copy editor may not. */
+const LAYOUT = { operations: [{ type: 'node.remove', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title' }] };
 const HERE: Presence = { pageId: 'pg_home', viewportWidth: 1280, selection: null, previewPath: '/' };
 
 /**
  * A host whose editor answers guests: a snapshot (the same object until `env.snapshot` is replaced), and edits that
  * are held until the test lets each one go, as a busy write queue would hold them, then checked as the editor checks.
  */
-function editor(opts: { timings?: Partial<LiveHostTimings> } = {}) {
+function editor(opts: { timings?: Partial<LiveHostTimings> } & Pick<LiveHostContext, 'hostPaths'> = {}) {
   const env = { snapshot: SNAPSHOT as LiveProjectSnapshot | null };
   const edits: Array<{ guest: LiveGuestEdit; batch: unknown; release: () => void; result: Promise<LiveApplyResult> }> = [];
   const h = host({
@@ -572,9 +581,9 @@ async function letIn(h: ReturnType<typeof editor>, role: GuestRole = 'collaborat
   return o;
 }
 
-const admittedAs = (guestId: string, displayName: string, role: GuestRole, guestExpiresAt: number | null = null): Participant => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt });
+const admittedAs = (guestId: string, displayName: string, role: GuestRole, guestExpiresAt: number | null = null, connected = true): Participant => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt, colorSlot: 0, connected });
 const roster = (role: GuestRole, guestExpiresAt: number | null = null): FrameOf<'relay-to-host'> => ({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', role, guestExpiresAt)] });
-const call = (socket: FakeSocket, requestId: string, method: 'project.snapshot' | 'project.apply', args: unknown[] = []) => socket.receive({ type: 'rpc:request', guestId: 'g1', requestId, method, args });
+const call = (socket: FakeSocket, requestId: string, method: LiveMethod, args: unknown[] = []) => socket.receive({ type: 'rpc:request', guestId: 'g1', requestId, method, args });
 const answerTo = (socket: FakeSocket, requestId: string) => until(() => socket.sent.find((f) => f.type === 'rpc:response' && f.requestId === requestId) as Extract<FrameOf<'host-to-relay'>, { type: 'rpc:response' }> | undefined, `the answer to ${requestId}`);
 
 describe('guests’ editor calls', () => {
@@ -771,10 +780,10 @@ describe('guests’ editor calls', () => {
     const h = editor();
     const { socket, run } = await letIn(h);
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
-    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE } });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE }, spotlights: {}, activity: {} });
     // Made a viewer: gone from the editor at once, and what a viewer sends is not shown.
     h.manager.setRole(run, 'g1', 'viewer');
-    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {} });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {}, spotlights: {}, activity: {} });
     const shown = h.presence.length;
     socket.receive(roster('viewer'));
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
@@ -820,6 +829,115 @@ describe('guests’ editor calls', () => {
     call(socket, 'q2', 'project.apply', [EDIT]);
     (await until(() => h.edits[0], 'the edit')).release();
     expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true });
+  });
+
+  it('holds a guest to the least of every role change still unconfirmed, not only the first', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    // The change waiting first is to a copy editor, which may make this edit; the one behind it, to a viewer, may not.
+    for (const role of ['copy-editor', 'viewer', 'collaborator'] as const) h.manager.setRole(run, 'g1', role);
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    socket.receive(roster('copy-editor'));
+    call(socket, 'q2', 'project.apply', [EDIT]);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    socket.receive(roster('viewer'));
+    socket.receive(roster('collaborator'));
+    call(socket, 'q3', 'project.apply', [EDIT]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: true });
+  });
+
+  it('holds a copy editor to its own edits, and hands the editor each with the role it was checked as', async () => {
+    const h = editor();
+    const { socket } = await letIn(h, 'copy-editor');
+    call(socket, 'q1', 'project.apply', [LAYOUT]);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    expect(h.edits).toEqual([]);
+    call(socket, 'q2', 'project.apply', [EDIT]);
+    const edit = await until(() => h.edits[0], 'the edit');
+    expect(edit.guest).toMatchObject({ guestId: 'g1', displayName: 'Ann', role: 'copy-editor' });
+    edit.release();
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true });
+  });
+
+  it('never lands a layout edit asked for before a collaborator was made a copy editor, though made a collaborator again', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    // Ann's layout edit is waiting its turn when the host makes her a copy editor, then a collaborator again.
+    call(socket, 'q1', 'project.apply', [LAYOUT]);
+    const queued = await until(() => h.edits[0], 'the queued edit');
+    expect(queued.guest.role).toBe('collaborator');
+    expect(h.manager.setRole(run, 'g1', 'copy-editor')).toEqual({ ok: true });
+    expect(h.manager.setRole(run, 'g1', 'collaborator')).toEqual({ ok: true });
+    // One arriving before the relay confirms either may have been forwarded before the first: a copy editor's.
+    call(socket, 'q2', 'project.apply', [LAYOUT]);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    // A roster the relay sent before it had either still shows a collaborator: still a copy editor's.
+    socket.receive(roster('collaborator'));
+    call(socket, 'q3', 'project.apply', [LAYOUT]);
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    // Meanwhile her copy edits are made, as a copy editor's.
+    call(socket, 'q4', 'project.apply', [EDIT]);
+    const copy = await until(() => h.edits[1], 'the copy edit');
+    expect(copy.guest.role).toBe('copy-editor');
+    socket.receive(roster('copy-editor'));
+    socket.receive(roster('collaborator'));
+    // Both confirmed, and Ann a collaborator again: the edit asked for before the demotion still lands nothing.
+    queued.release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    copy.release();
+    expect(await answerTo(socket, 'q4')).toMatchObject({ ok: true });
+    // Her layout edits from now on are a collaborator's.
+    call(socket, 'q5', 'project.apply', [LAYOUT]);
+    const later = await until(() => h.edits[2], 'the later edit');
+    expect(later.guest.role).toBe('collaborator');
+    later.release();
+    expect(await answerTo(socket, 'q5')).toMatchObject({ ok: true });
+  });
+
+  it('keeps a copy editor’s waiting edit to its grant when made a collaborator, and refuses it when made a viewer', async () => {
+    for (const role of ['collaborator', 'viewer'] as const) {
+      const h = editor();
+      const { socket, run } = await letIn(h, 'copy-editor');
+      call(socket, 'q1', 'project.apply', [EDIT]);
+      const edit = await until(() => h.edits[0], 'the edit');
+      h.manager.setRole(run, 'g1', role);
+      socket.receive(roster(role));
+      // The editor still holds it to what a copy editor may change.
+      expect(edit.guest.role).toBe('copy-editor');
+      edit.release();
+      expect(await answerTo(socket, 'q1'), role).toMatchObject(role === 'collaborator' ? { ok: true } : { ok: false, error: { code: 'PERMISSION_DENIED' } });
+    }
+  });
+
+  it('refuses a waiting edit when the relay says the guest holds less than it was asked as, whatever the host decided', async () => {
+    for (const restored of [false, true]) {
+      const h = editor();
+      const { socket } = await letIn(h);
+      call(socket, 'q1', 'project.apply', [LAYOUT]);
+      const edit = await until(() => h.edits[0], 'the edit');
+      // A roster that lists Ann as a copy editor, which the host never asked for, and perhaps one giving it back.
+      socket.receive(roster('copy-editor'));
+      if (restored) socket.receive(roster('collaborator'));
+      edit.release();
+      expect(await answerTo(socket, 'q1'), `restored: ${restored}`).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    }
+  });
+
+  it('stops showing where a collaborator is once made a copy editor', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE }, spotlights: {}, activity: {} });
+    h.manager.setRole(run, 'g1', 'copy-editor');
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {}, spotlights: {}, activity: {} });
+    const shown = h.presence.length;
+    // Neither before the relay confirms it nor after.
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    socket.receive(roster('copy-editor'));
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    expect(h.presence.length).toBe(shown);
   });
 
   it('sends the project only to guests it still lets in, when the relay lists one it has removed', async () => {
@@ -891,5 +1009,689 @@ describe('guests’ editor calls', () => {
     next.receive({ type: 'room:roster', participants: [{ guestId: 'g1', displayName: 'Ann', status: 'pending' }] });
     expect(next.sent.filter((f) => f.type === 'guest:kick')).toEqual([{ type: 'guest:kick', guestId: 'g1' }]);
     void publicKey;
+  });
+});
+
+describe('spotlights, edits and connections in the editor (#768)', () => {
+  const spotlight = { previewPath: '/about/', target: { owner: { kind: 'page' as const, id: 'pg_home' }, instancePath: [], nodeId: 'n_title' }, x: 0.5, y: 0.25 };
+  const pointed = (guestId = 'g1'): FrameOf<'relay-to-host'> => ({ type: 'spotlight:pointed', guestId, spotlight });
+  const last = (h: { presence: LivePresence[] }) => h.presence.at(-1)!;
+
+  it('shows a spotlight from a guest let in, a viewer too, for a while, then takes it off', async () => {
+    const h = editor({ timings: { spotlightMs: 60 } });
+    const { socket, run } = await letIn(h, 'viewer');
+    socket.receive(pointed());
+    expect(last(h)).toMatchObject({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {}, spotlights: { g1: { seq: expect.any(Number), spotlight } }, activity: {} });
+    // A newer one replaces it, under a new number, so the editor draws it from its start.
+    const first = last(h).spotlights.g1.seq;
+    socket.receive(pointed());
+    expect(last(h).spotlights.g1.seq).toBeGreaterThan(first);
+    await until(() => Object.keys(last(h).spotlights).length === 0, 'the spotlight to go');
+    // Nobody the relay does not list as let in is shown.
+    const shown = h.presence.length;
+    socket.receive(pointed('g9'));
+    expect(h.presence.length).toBe(shown);
+  });
+
+  it('takes a guest’s spotlight and presence off at once when it is removed', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    socket.receive(pointed());
+    expect(Object.keys(last(h).spotlights)).toEqual(['g1']);
+    h.manager.kick(run, 'g1');
+    expect(last(h)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {}, spotlights: {}, activity: {} });
+    // What arrives from it before the relay has removed it is not shown.
+    const shown = h.presence.length;
+    socket.receive(pointed());
+    expect(h.presence.length).toBe(shown);
+  });
+
+  it('keeps a demoted guest’s spotlight but not where it was, nor its edit', async () => {
+    // Made a viewer or a copy editor: either may still point, and neither shows anybody where it is.
+    for (const role of ['viewer', 'copy-editor'] as const) {
+      const h = editor();
+      const { socket, run } = await letIn(h);
+      socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+      call(socket, 'q1', 'project.apply', [EDIT]);
+      (await until(() => h.edits[0], 'the edit')).release();
+      await answerTo(socket, 'q1');
+      socket.receive(pointed());
+      expect(Object.keys(last(h).activity)).toEqual(['g1']);
+      h.manager.setRole(run, 'g1', role);
+      expect(last(h).guests, role).toEqual({});
+      expect(last(h).activity, role).toEqual({});
+      expect(Object.keys(last(h).spotlights), role).toEqual(['g1']);
+    }
+  });
+
+  it('takes each spotlight and edit off at its own time, one after another', async () => {
+    const h = editor({ timings: { spotlightMs: 400, activityMs: 40 } });
+    const { socket } = await letIn(h);
+    socket.receive(pointed());
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    await answerTo(socket, 'q1');
+    expect(Object.keys(last(h).activity)).toEqual(['g1']);
+    await until(() => Object.keys(last(h).activity).length === 0, 'the edit’s cue to go');
+    // The spotlight, due later, is still shown, and goes at its own time.
+    expect(Object.keys(last(h).spotlights)).toEqual(['g1']);
+    await until(() => Object.keys(last(h).spotlights).length === 0, 'the spotlight to go');
+  });
+
+  it('tells an editor that starts following the session, a reloaded one too, where everyone is', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    h.manager.setPresence(run, HERE);
+    const shown = h.presence.length;
+    // The same place again, as a reloaded editor says it.
+    expect(h.manager.setPresence(run, HERE)).toEqual({ ok: true });
+    expect(h.presence.length).toBe(shown + 1);
+    expect(last(h).guests).toEqual({ g1: HERE });
+  });
+
+  it('stops showing a guest whose connection dropped, until it is back and says where it is again', async () => {
+    const h = editor();
+    const { socket } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    socket.receive(pointed());
+    socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'collaborator', null, false)] });
+    expect(last(h)).toEqual(expect.objectContaining({ guests: {}, spotlights: {}, activity: {} }));
+    const shown = h.presence.length;
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    socket.receive(pointed());
+    expect(h.presence.length).toBe(shown);
+    socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'collaborator', null, true)] });
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    expect(last(h).guests).toEqual({ g1: HERE });
+  });
+
+  it('shows a collaborator editing what its edit changed once the edit is made, and tells the other collaborators', async () => {
+    const h = editor({ timings: { activityMs: 60 } });
+    const { socket } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    const edit = await until(() => h.edits[0], 'the edit');
+    // Nothing is shown while the edit waits its turn.
+    expect(h.presence.some((p) => Object.keys(p.activity).length)).toBe(false);
+    edit.release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: true });
+    const target = { owner: { kind: 'page', id: 'pg_home' }, instancePath: [], nodeId: 'n_title' };
+    expect(last(h).activity).toEqual({ g1: { seq: expect.any(Number), target } });
+    expect(socket.sent.filter((f) => f.type === 'activity:edit')).toEqual([{ type: 'activity:edit', guestId: 'g1', target }]);
+    await until(() => Object.keys(last(h).activity).length === 0, 'the edit’s cue to go');
+  });
+
+  it('shows no edit for a copy, whose operations name what it was copied from', async () => {
+    const h = editor();
+    const { socket } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [{ operations: [{ type: 'node.duplicate', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title' }] }]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: true });
+    expect(h.presence.some((p) => Object.keys(p.activity).length)).toBe(false);
+    expect(socket.sent.some((f) => f.type === 'activity:edit')).toBe(false);
+  });
+
+  it('shows nothing for an edit that was not made', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    const edit = await until(() => h.edits[0], 'the edit');
+    h.manager.setRole(run, 'g1', 'viewer');
+    edit.release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false });
+    expect(h.presence.some((p) => Object.keys(p.activity).length)).toBe(false);
+    expect(socket.sent.some((f) => f.type === 'activity:edit')).toBe(false);
+  });
+
+  it('names the one element a batch changed, and nothing for any other batch', () => {
+    const op = (owner: { kind: string; id: string }, nodeId: string) => ({ type: 'node.setContent', owner, nodeId, field: 'text', value: 'x' });
+    const home = { kind: 'page', id: 'pg_home' };
+    expect(editTarget({ operations: [op(home, 'n1'), op(home, 'n1')] })).toEqual({ owner: home, instancePath: [], nodeId: 'n1' });
+    expect(editTarget({ operations: [op({ kind: 'shell', id: 'header' }, 'n_logo')] })).toEqual({ owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: 'n_logo' });
+    expect(editTarget({ operations: [op(home, 'n1'), op(home, 'n2')] })).toBeNull();
+    expect(editTarget({ operations: [op(home, 'n1'), op({ kind: 'page', id: 'pg_about' }, 'n1')] })).toBeNull();
+    expect(editTarget({ operations: [op({ kind: 'component', id: 'c_card' }, 'n1')] })).toBeNull();
+    expect(editTarget({ operations: [{ type: 'site.setName', name: 'Acme' }] })).toBeNull();
+    // A copy or a duplicate leaves the element it names as it was: no edit is shown for it at all.
+    expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.copy', toOwner: { kind: 'page', id: 'pg_about' } }] })).toBeUndefined();
+    expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
+    expect(editTarget({ operations: [op(home, 'n1'), { ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
+    expect(editTarget({ operations: [{ type: 'page.update', pageId: 'pg_home', title: 'Home' }, { ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
+    expect(editTarget({ operations: [op({ kind: 'page', id: 'p'.repeat(129) }, 'n1')] })).toBeNull();
+    expect(editTarget({ operations: [op(home, 'n'.repeat(129))] })).toBeNull();
+    expect(editTarget({ operations: [] })).toBeNull();
+    expect(editTarget(null)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The host's AI for collaborators (#769)
+
+/**
+ * A host whose AI takes collaborators' requests the way the app's does: each request waits until the test starts it,
+ * which asks the delegation whether it may still run, as the assistant asks just before installing the run.
+ */
+function withAi(h: ReturnType<typeof editor>) {
+  const sends: Array<{ opening: string; text: string; context: LiveAiContext; delegation: RunDelegation; start: (runId?: string) => string | null }> = [];
+  const stops: string[] = [];
+  const answers: Array<[string, string, string]> = [];
+  h.manager.ai = {
+    send: (opening, text, context, delegation) =>
+      new Promise((resolve) => {
+        sends.push({
+          opening,
+          text,
+          context,
+          delegation,
+          start: (runId = `run-${sends.length}`) => {
+            const refused = delegation.accept(runId);
+            resolve(refused ? { ok: false, message: refused } : { ok: true, runId });
+            return refused;
+          }
+        });
+      }),
+    stop: async (runId) => void stops.push(runId),
+    answer: (runId, questionId, answer) => (answers.push([runId, questionId, answer]), true)
+  };
+  return { sends, stops, answers };
+}
+
+const PAGE_REQUEST: LiveAiContext = { scope: 'page', pageId: 'pg_home', selection: null, viewport: 1280 };
+const aiCall = (socket: FakeSocket, requestId: string, method: 'ai.send' | 'ai.stop' | 'ai.answer', args: unknown[], guestId = 'g1') => socket.receive({ type: 'rpc:request', guestId, requestId, method, args });
+const aiEvents = (socket: FakeSocket, event: 'ai:access' | 'ai:turn') => socket.sent.filter((f) => f.type === 'rpc:event' && f.event === event) as Array<Extract<FrameOf<'host-to-relay'>, { type: 'rpc:event' }>>;
+const userMessage = (runId: string, text: string): ChatMessage => ({ id: `u-${runId}`, role: 'user', text, time: '', runId });
+const reply = (runId: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ id: `a-${runId}`, role: 'assistant', text, time: '', runId, activities: [], ...extra });
+const event = (runId: string, e: Omit<AiEvent, 'runId' | 'conversationId'>): AiEvent => ({ runId, conversationId: 'conv-1', ...e });
+
+/** Ann in as a collaborator, AI allowed (with `turnLimit`), and one request of hers asked for and started. */
+async function running(opts: { turnLimit?: number | null; hostPaths?: string[] } = {}) {
+  const h = editor({ hostPaths: opts.hostPaths ? () => opts.hostPaths! : undefined });
+  const ai = withAi(h);
+  const o = await letIn(h);
+  expect(h.manager.setAi(o.run, 'g1', { allowed: true, turnLimit: opts.turnLimit ?? null })).toEqual({ ok: true });
+  aiCall(o.socket, 's1', 'ai.send', ['Make the heading bigger', PAGE_REQUEST]);
+  const sent = await until(() => ai.sends[0], 'the request');
+  expect(sent.start('run-1')).toBeNull();
+  expect(await answerTo(o.socket, 's1')).toMatchObject({ ok: true, result: { runId: 'run-1' } });
+  return { h, ai, ...o, sent };
+}
+
+describe('the host’s AI for collaborators (#769)', () => {
+  it('refuses a collaborator’s AI requests until the host allows them, and never asks the AI', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket } = await letIn(h);
+    expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: false, turnLimit: null, turnsUsed: 0 } } });
+    aiCall(socket, 'q1', 'ai.send', ['Make the heading bigger', PAGE_REQUEST]);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    aiCall(socket, 'q2', 'ai.stop', ['run-1']);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(ai.sends).toEqual([]);
+    // Nobody but a collaborator is ever allowed, nor anyone at all while this computer has no AI to offer.
+    const v = editor();
+    withAi(v);
+    const viewer = await letIn(v, 'viewer');
+    expect(v.manager.setAi(viewer.run, 'g1', { allowed: true, turnLimit: null })).toMatchObject({ ok: false });
+    const none = editor();
+    const alone = await letIn(none);
+    expect(none.manager.setAi(alone.run, 'g1', { allowed: true, turnLimit: null })).toMatchObject({ ok: false });
+    // A limit that is not a number of requests is refused, whoever it is for.
+    for (const turnLimit of [-1, 1.5, 101, '3']) expect(h.manager.setAi((h.manager.state as LiveRun & object) as LiveRun, 'g1', { allowed: true, turnLimit })).toMatchObject({ ok: false });
+  });
+
+  it('runs an allowed collaborator’s request in the host’s AI, tells only that guest, and counts it against its limit', async () => {
+    const { h, socket, run, sent } = await running({ turnLimit: 2 });
+    expect(sent).toMatchObject({ opening: '/sites/acme#1', text: 'Make the heading bigger', context: PAGE_REQUEST, delegation: { guestName: 'Ann' } });
+    // Told when it was turned on, and again once its request was taken.
+    expect(aiEvents(socket, 'ai:access').map((f) => [f.guestId, f.payload])).toEqual([
+      ['g1', { allowed: true, turnsLeft: 2 }],
+      ['g1', { allowed: true, turnsLeft: 1 }]
+    ]);
+    expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: true, turnLimit: 2, turnsUsed: 1 } } });
+    expect(sent.delegation.check()).toBeNull();
+    // Another admission of the same guest would hear another conversation.
+    expect(sent.delegation.grantId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(run).toBeTruthy();
+  });
+
+  it('streams the guest’s own request to it alone, made safe to share, and nothing of anyone else’s', async () => {
+    const { h, socket } = await running({ hostPaths: ['/Users/host/site', '/Volumes/Private Work/Acme', '/Volumes', '/Volumes/Private Work/Acme/Secret Plans'] });
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: userMessage('run-1', 'Make the heading bigger') }));
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', '') }));
+    h.manager.aiEvent(event('run-1', { kind: 'status', status: 'running', mode: 'edit' }));
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'Reading /Users/host/site/pages ' }));
+    // A path part way written is held back until it can be taken out whole.
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'and /Users/host/si', at: 31 }));
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'te/x now', at: 49 }));
+    // A path with a space in it is held back whole too, however the pieces fall.
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: '. Saved in /Volumes/Private ', at: 57 }));
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'Work/Acme today.', at: 85 }));
+    // The host's own request, run after or beside it, is never the guest's to see.
+    h.manager.aiEvent(event('run-host', { kind: 'message', message: reply('run-host', 'Host secret') }));
+    const turns = aiEvents(socket, 'ai:turn');
+    expect(turns.every((f) => f.guestId === 'g1')).toBe(true);
+    const payloads = turns.map((f) => f.payload as { kind: string; turn?: { reply: string; status: string | null; request: string }; text?: string; at?: number });
+    expect(payloads[0]).toMatchObject({ kind: 'turn', turn: { request: 'Make the heading bigger', reply: '', status: null } });
+    expect(payloads.slice(-4)).toEqual([
+      { kind: 'text', runId: 'run-1', at: 'Reading …/pages '.length, text: 'and ' },
+      { kind: 'text', runId: 'run-1', at: 'Reading …/pages and '.length, text: '…/x now' },
+      { kind: 'text', runId: 'run-1', at: 'Reading …/pages and …/x now'.length, text: '. Saved in ' },
+      { kind: 'text', runId: 'run-1', at: 'Reading …/pages and …/x now. Saved in '.length, text: '… today.' }
+    ]);
+    expect(JSON.stringify(payloads)).not.toContain('/Users/host');
+    expect(JSON.stringify(payloads)).not.toContain('Private');
+    // A longer path written over a shorter one is held back whole, and an address on the host's network never goes.
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: ' See /Volumes/Private Work/Acme/Secret ', at: 101 }));
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'Plans and http://192.168.1.9:1234/v1 ', at: 140 }));
+    const later = JSON.stringify(aiEvents(socket, 'ai:turn').map((f) => f.payload));
+    expect(later).not.toContain('Secret');
+    expect(later).not.toContain('192.168');
+    expect(JSON.stringify(payloads)).not.toContain('Host secret');
+    // Its end, with how it went, and nothing of it after: it can no longer be stopped or answered.
+    h.manager.aiEvent(event('run-1', { kind: 'status', status: 'completed', mode: 'edit' }));
+    // A reply that ends part way through a path has that end taken out.
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Done at /Users/host/site. Copied to /Volumes/Priv', { result: { status: 'completed', summary: 'Made it bigger.', changes: [{ label: 'Heading size', operations: ['node.setStyle'] }], validation: [], canUndo: true } }) }));
+    const last = aiEvents(socket, 'ai:turn').at(-1)!.payload;
+    expect(last).toMatchObject({ kind: 'turn', turn: { reply: 'Done at …. Copied to …', result: { status: 'completed', summary: 'Made it bigger.', changes: ['Heading size'] } } });
+    expect(JSON.stringify(last)).not.toContain('node.setStyle');
+    const count = aiEvents(socket, 'ai:turn').length;
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'late' }));
+    expect(aiEvents(socket, 'ai:turn')).toHaveLength(count);
+    aiCall(socket, 'q9', 'ai.stop', ['run-1']);
+    expect(await answerTo(socket, 'q9')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+  });
+
+  it('tells a guest coming back how its request stands, and ends it when the host loses the relay', async () => {
+    const { h, socket, ai, roomId } = await running({ hostPaths: ['/Users/host/site'] });
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: userMessage('run-1', 'Make the heading bigger') }));
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Which heading? ', { questions: [{ id: 'q1', text: 'Which one?', choices: ['Top', 'Bottom'] }] }) }));
+    // The guest asks for the project on coming back: it is told its access and its request again, question and all.
+    const before = aiEvents(socket, 'ai:turn').length;
+    call(socket, 'q1', 'project.snapshot');
+    await answerTo(socket, 'q1');
+    expect(aiEvents(socket, 'ai:turn').slice(before).map((f) => f.payload)).toEqual([{ kind: 'turn', turn: expect.objectContaining({ runId: 'run-1', question: { id: 'q1', text: 'Which one?', choices: ['Top', 'Bottom'] }, result: null }) }]);
+    // The relay drops: the host cannot hear whether the guest is still there, so its request is stopped.
+    socket.drop(1006);
+    expect(ai.stops).toEqual(['run-1']);
+    const next = await until(() => h.sockets[1], 'the reconnect socket');
+    next.open();
+    next.receive({ type: 'host:challenge', roomId, nonce: newNonce() });
+    await until(() => sentOf(next, 'host:proof'), 'the proof');
+    next.receive(ready(roomId));
+    next.receive(roster('collaborator'));
+    // Taken back, the guest is told its request ended, and why, and that it may ask again.
+    await until(() => aiEvents(next, 'ai:turn').length, 'the ending sent again');
+    expect(aiEvents(next, 'ai:turn').at(-1)!.payload).toMatchObject({ kind: 'turn', turn: { runId: 'run-1', question: null, result: { status: 'cancelled', summary: expect.stringContaining('connection') } } });
+    expect(aiEvents(next, 'ai:access').at(-1)!.payload).toEqual({ allowed: true, turnsLeft: null });
+  });
+
+  it('never starts a request whose acceptance finds the connection gone, nor one asked for on a connection let go', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket, run, roomId } = await letIn(h);
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: null })).toEqual({ ok: true });
+    aiCall(socket, 'q1', 'ai.send', ['One', PAGE_REQUEST]);
+    const first = await until(() => ai.sends[0], 'the request');
+    // Telling the guest its access gives the connection up (it has stopped moving).
+    socket.bufferedAmount = MAX_SOCKET_BACKLOG_BYTES + 1;
+    expect(first.start('run-1')).not.toBeNull();
+    expect(h.manager.state).toMatchObject({ ai: { g1: { turnsUsed: 0 } } });
+    // A request that never started never shows as one, stopped or otherwise.
+    expect(aiEvents(socket, 'ai:turn')).toEqual([]);
+    // A request asked for before the drop and accepted once the room is taken back never runs either.
+    const next = await until(() => h.sockets[1], 'the reconnect socket');
+    next.open();
+    next.receive({ type: 'host:challenge', roomId, nonce: newNonce() });
+    await until(() => sentOf(next, 'host:proof'), 'the proof');
+    next.receive(ready(roomId));
+    next.receive(roster('collaborator'));
+    aiCall(next, 'q2', 'ai.send', ['Two', PAGE_REQUEST]);
+    const second = await until(() => ai.sends[1], 'the second request');
+    expect(second.start('run-2')).toBeNull();
+    expect(h.manager.state).toMatchObject({ ai: { g1: { turnsUsed: 1 } } });
+  });
+
+  it('tells a guest how a request it lost access to really ended, when it was more than a stop', async () => {
+    const { h, socket, run } = await running();
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', '') }));
+    // A bare ending is never sent ahead of the message that says what the request did.
+    const before = aiEvents(socket, 'ai:turn').length;
+    h.manager.aiEvent(event('run-1', { kind: 'status', status: 'completed', mode: 'edit' }));
+    expect(aiEvents(socket, 'ai:turn')).toHaveLength(before);
+    // Taken away as it finished: the guest is told it stopped, then that its changes were in fact kept.
+    expect(h.manager.setAi(run, 'g1', { allowed: false, turnLimit: null })).toEqual({ ok: true });
+    expect(aiEvents(socket, 'ai:turn').at(-1)!.payload).toMatchObject({ turn: { result: { status: 'cancelled' } } });
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'progress after the stop' }));
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Done.', { result: { status: 'completed', summary: 'Done.', changes: [{ label: 'Heading' }], validation: [], canUndo: true } }) }));
+    const turns = aiEvents(socket, 'ai:turn').map((f) => f.payload);
+    expect(JSON.stringify(turns)).not.toContain('progress after the stop');
+    expect(turns.at(-1)).toMatchObject({ kind: 'turn', turn: { runId: 'run-1', result: { status: 'completed', changes: ['Heading'] } } });
+    // A stop that was only a stop keeps the reason the guest was given.
+    const again = await running();
+    expect(again.h.manager.setRole(again.run, 'g1', 'viewer')).toEqual({ ok: true });
+    const told = aiEvents(again.socket, 'ai:turn').length;
+    again.h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Stopped.', { result: { status: 'cancelled', summary: 'Stopped.', changes: [], validation: [], canUndo: false } }) }));
+    expect(aiEvents(again.socket, 'ai:turn')).toHaveLength(told);
+  });
+
+  it('keeps a request’s real ending when the connection gives way as it is sent', async () => {
+    const { h, socket, roomId } = await running();
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', '') }));
+    socket.bufferedAmount = MAX_SOCKET_BACKLOG_BYTES + 1;
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Done.', { result: { status: 'completed', summary: 'Done.', changes: [{ label: 'Heading' }], validation: [], canUndo: true } }) }));
+    const next = await until(() => h.sockets[1], 'the reconnect socket');
+    next.open();
+    next.receive({ type: 'host:challenge', roomId, nonce: newNonce() });
+    await until(() => sentOf(next, 'host:proof'), 'the proof');
+    next.receive(ready(roomId));
+    next.receive(roster('collaborator'));
+    await until(() => aiEvents(next, 'ai:turn').length, 'the ending sent again');
+    expect(aiEvents(next, 'ai:turn').at(-1)!.payload).toMatchObject({ kind: 'turn', turn: { runId: 'run-1', result: { status: 'completed', changes: ['Heading'] } } });
+  });
+
+  it('never lets a guest start a request while the host is away from the relay', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket, run } = await letIn(h);
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: null })).toEqual({ ok: true });
+    aiCall(socket, 'q1', 'ai.send', ['Make the heading bigger', PAGE_REQUEST]);
+    const late = await until(() => ai.sends[0], 'the request');
+    socket.drop(1006);
+    expect(late.start('run-1')).not.toBeNull();
+    expect(h.manager.state).toMatchObject({ ai: { g1: { turnsUsed: 0 } } });
+  });
+
+  it('lets a guest stop or answer only its own request while it runs', async () => {
+    const { socket, ai } = await running();
+    aiCall(socket, 'q1', 'ai.stop', ['run-host']);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    aiCall(socket, 'q2', 'ai.answer', ['run-host', 'qn', 'Yes']);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    aiCall(socket, 'q3', 'ai.answer', ['run-1', 'qn', 'Yes']);
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: true, result: true });
+    expect(ai.answers).toEqual([['run-1', 'qn', 'Yes']]);
+    aiCall(socket, 'q4', 'ai.stop', ['run-1']);
+    expect(await answerTo(socket, 'q4')).toMatchObject({ ok: true });
+    expect(ai.stops).toEqual(['run-1']);
+  });
+
+  for (const how of ['AI turned off', 'made a viewer', 'removed', 'gone from the room'] as const)
+    it(`stops the guest’s request and refuses the next when it is ${how}`, async () => {
+      const { h, socket, run, ai, sent } = await running();
+      const before = aiEvents(socket, 'ai:turn').length;
+      if (how === 'AI turned off') expect(h.manager.setAi(run, 'g1', { allowed: false, turnLimit: null })).toEqual({ ok: true });
+      else if (how === 'made a viewer') expect(h.manager.setRole(run, 'g1', 'viewer')).toEqual({ ok: true });
+      else if (how === 'removed') expect(h.manager.kick(run, 'g1')).toEqual({ ok: true });
+      else socket.receive({ type: 'room:roster', participants: [] });
+      expect(ai.stops).toEqual(['run-1']);
+      // The guest is told its request ended, and why, never that its changes were taken back; nothing more of it
+      // reaches the guest, and nothing more it does lands.
+      expect(aiEvents(socket, 'ai:turn')).toHaveLength(before + 1);
+      expect(aiEvents(socket, 'ai:turn').at(-1)!.payload).toMatchObject({ kind: 'turn', turn: { runId: 'run-1', result: { status: 'cancelled', summary: expect.stringMatching(/stopped\.$/) } } });
+      h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Still going') }));
+      expect(aiEvents(socket, 'ai:turn')).toHaveLength(before + 1);
+      expect(sent.delegation.check()).not.toBeNull();
+      if (how === 'AI turned off' || how === 'made a viewer') expect(aiEvents(socket, 'ai:access').at(-1)!.payload).toEqual({ allowed: false, turnsLeft: null });
+      aiCall(socket, 'q2', 'ai.send', ['Again', PAGE_REQUEST]);
+      expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+      expect(ai.sends).toHaveLength(1);
+      if (how === 'gone from the room') expect(h.manager.state).not.toHaveProperty('ai.g1');
+      // AI given back after being turned off starts from the requests already made.
+      if (how === 'AI turned off') {
+        expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 1 })).toEqual({ ok: true });
+        expect(aiEvents(socket, 'ai:access').at(-1)!.payload).toEqual({ allowed: true, turnsLeft: 0 });
+      }
+      // A collaborator again has no AI until the host turns it on again.
+      if (how === 'made a viewer') {
+        expect(h.manager.setRole(run, 'g1', 'collaborator')).toEqual({ ok: true });
+        socket.receive(roster('collaborator'));
+        expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: false } } });
+      }
+    });
+
+  it('never lets one guest stop or answer another’s request', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const o = await opened(h, [
+      { guestId: 'g1', displayName: 'Ann', status: 'pending' },
+      { guestId: 'g2', displayName: 'Bo', status: 'pending' }
+    ]);
+    expect(h.manager.admit(o.run, 'g1', 'collaborator')).toEqual({ ok: true });
+    expect(h.manager.admit(o.run, 'g2', 'collaborator')).toEqual({ ok: true });
+    o.socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'collaborator'), admittedAs('g2', 'Bo', 'collaborator')] });
+    for (const id of ['g1', 'g2']) expect(h.manager.setAi(o.run, id, { allowed: true, turnLimit: null })).toEqual({ ok: true });
+    aiCall(o.socket, 's1', 'ai.send', ['Bigger', PAGE_REQUEST]);
+    (await until(() => ai.sends[0], 'Ann’s request')).start('run-1');
+    expect(await answerTo(o.socket, 's1')).toMatchObject({ ok: true });
+    aiCall(o.socket, 'q1', 'ai.stop', ['run-1'], 'g2');
+    expect(await answerTo(o.socket, 'q1')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    aiCall(o.socket, 'q2', 'ai.answer', ['run-1', 'qn', 'Yes'], 'g2');
+    expect(await answerTo(o.socket, 'q2')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(ai.stops).toEqual([]);
+    expect(ai.answers).toEqual([]);
+    // Each admission hears its own turns alone.
+    expect(ai.sends[0].delegation.grantId).not.toBe((h.manager as unknown as { run: { grants: Map<string, { id: string }> } }).run.grants.get('g2')!.id);
+    // Turning one guest's AI off leaves the other's as it was.
+    expect(h.manager.setRole(o.run, 'g2', 'viewer')).toEqual({ ok: true });
+    expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: true }, g2: { allowed: false } } });
+    expect(ai.stops).toEqual([]);
+  });
+
+  it('never runs a request asked for before AI was taken away, even once it is given back, and spends nothing on it', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket, run } = await letIn(h);
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 1 })).toEqual({ ok: true });
+    aiCall(socket, 'q1', 'ai.send', ['Make the heading bigger', PAGE_REQUEST]);
+    const late = await until(() => ai.sends[0], 'the request');
+    // While the assistant reads the conversation, the host takes AI away and gives it back.
+    expect(h.manager.setAi(run, 'g1', { allowed: false, turnLimit: 1 })).toEqual({ ok: true });
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 1 })).toEqual({ ok: true });
+    expect(late.start('run-1')).not.toBeNull();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: true, turnsUsed: 0 } } });
+    // No request of hers is running, so no event of the run that did start instead reaches her.
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Host run') }));
+    expect(aiEvents(socket, 'ai:turn')).toEqual([]);
+    // Refused, it is no longer on its way: her next request reaches the AI.
+    aiCall(socket, 'q2', 'ai.send', ['Again', PAGE_REQUEST]);
+    await until(() => ai.sends[1], 'the next request');
+    // And a limit lowered to none while it is on its way keeps it from running, spending nothing.
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 0 })).toEqual({ ok: true });
+    expect(ai.sends[1].start('run-2')).not.toBeNull();
+    expect(h.manager.state).toMatchObject({ ai: { g1: { turnsUsed: 0 } } });
+  });
+
+  it('holds a guest to its limit on requests, and to one on its way at a time', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket, run } = await letIn(h);
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 1 })).toEqual({ ok: true });
+    aiCall(socket, 'q1', 'ai.send', ['One', PAGE_REQUEST]);
+    aiCall(socket, 'q2', 'ai.send', ['Two', PAGE_REQUEST]);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'BUSY' } });
+    (await until(() => ai.sends[0], 'the request')).start('run-1');
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: true });
+    expect(aiEvents(socket, 'ai:access').at(-1)!.payload).toEqual({ allowed: true, turnsLeft: 0 });
+    aiCall(socket, 'q3', 'ai.send', ['Three', PAGE_REQUEST]);
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(ai.sends).toHaveLength(1);
+    // Its request still running can be stopped once the limit is spent.
+    aiCall(socket, 'q4', 'ai.stop', ['run-1']);
+    expect(await answerTo(socket, 'q4')).toMatchObject({ ok: true });
+  });
+
+  it('stops the guest’s request when the session ends', async () => {
+    const { h, ai } = await running();
+    (h.manager as unknown as { timings: LiveHostTimings }).timings.stopMs = 20;
+    await h.manager.end();
+    expect(ai.stops).toEqual(['run-1']);
+  });
+});
+
+/**
+ * A host whose notes are kept in memory. Each change is held until the test lets it go, as the notes file's queue
+ * would hold it, then checked as the keeper checks it just before writing.
+ */
+function noteKeeper(opts: { timings?: Partial<LiveHostTimings> } = {}) {
+  const kept: LiveNote[] = [];
+  const changes: Array<{ kind: string; args: unknown[]; release: () => void; result: Promise<LiveNotesAnswer> }> = [];
+  const hold = (kind: string, args: unknown[], check: () => RpcError | null, make: () => void) => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const result = held.then((): LiveNotesAnswer => {
+      const refused = check();
+      if (refused) return { ok: false, error: refused };
+      make();
+      return { ok: true, notes: { notes: [...kept], guestNotes: true } };
+    });
+    changes.push({ kind, args, release, result });
+    return result;
+  };
+  const notes: LiveHostNotes = {
+      list: async () => ({ ok: true, notes: { notes: [...kept], guestNotes: true } }),
+      add: (_opening, author, draft, check) =>
+        hold('add', [author, draft], check, () => kept.unshift({ id: `n${kept.length + 1}`, text: draft.text, authorName: author.name, authorRole: author.role, createdAt: 1, pageId: 'p_home', target: null, resolved: false })),
+      resolve: (_opening, id, resolved, check) => hold('resolve', [id, resolved], check, () => kept.forEach((n) => n.id === id && (n.resolved = resolved))),
+      delete: (_opening, id, check) => hold('delete', [id], check, () => kept.splice(kept.findIndex((n) => n.id === id), 1))
+  };
+  const h = editor({ ...opts, notes } as never);
+  return { ...h, kept, changes };
+}
+
+const NOTE: NoteDraft = { text: 'Swap this hero photo', previewPath: '/' };
+const releaseAll = (h: ReturnType<typeof noteKeeper>) => h.changes.forEach((c) => c.release());
+
+describe('guests’ notes (#770)', () => {
+  it('lets a viewer read the notes and leave one, naming them, and nothing more', async () => {
+    const h = noteKeeper();
+    const { socket } = await letIn(h, 'viewer');
+    call(socket, 'q1', 'notes.add', [NOTE]);
+    const add = await until(() => h.changes[0], 'the note');
+    expect(add.args).toEqual([{ name: 'Ann', role: 'viewer' }, NOTE]);
+    add.release();
+    expect(await answerTo(socket, 'q1')).toEqual({ type: 'rpc:response', guestId: 'g1', requestId: 'q1', method: 'notes.add', ok: true, result: NOTE_KEPT });
+    call(socket, 'q2', 'notes.list');
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true, result: { notes: [{ text: 'Swap this hero photo', authorName: 'Ann', authorRole: 'viewer' }], guestNotes: true } });
+    for (const [method, args] of [['notes.resolve', ['n1', true]], ['notes.delete', ['n1']]] as const) {
+      const id = method.replace('.', '-');
+      call(socket, id, method, [...args]);
+      expect(await answerTo(socket, id), method).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    }
+    expect(h.changes.map((c) => c.kind)).toEqual(['add']);
+  });
+
+  it('lets a collaborator resolve and delete notes', async () => {
+    const h = noteKeeper();
+    const { socket } = await letIn(h, 'collaborator');
+    call(socket, 'q1', 'notes.add', [NOTE]);
+    (await until(() => h.changes[0], 'the note')).release();
+    await answerTo(socket, 'q1');
+    call(socket, 'q2', 'notes.resolve', ['n1', true]);
+    (await until(() => h.changes[1], 'the resolve')).release();
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true, result: NOTE_KEPT });
+    expect(h.kept[0].resolved).toBe(true);
+    call(socket, 'q3', 'notes.delete', ['n1']);
+    (await until(() => h.changes[2], 'the delete')).release();
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: true });
+    expect(h.kept).toEqual([]);
+  });
+
+  it('refuses a malformed note, or one with fields a guest may not set, before the keeper sees it', async () => {
+    const h = noteKeeper();
+    const { socket } = await letIn(h, 'viewer');
+    const bad = [[], [NOTE, NOTE], [{ ...NOTE, authorName: 'Host' }], [{ ...NOTE, resolved: true }], [{ text: 'x' }], [{ text: 'x', pageId: 'p', previewPath: '/' }], [{ text: 'x'.repeat(2000), previewPath: '/' }], [{ ...NOTE, target: { nodeId: 'n' } }]];
+    for (const [i, args] of bad.entries()) {
+      call(socket, `b${i}`, 'notes.add', args);
+      expect(await answerTo(socket, `b${i}`), JSON.stringify(args).slice(0, 80)).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    }
+    expect(h.changes).toEqual([]);
+  });
+
+  it('holds guests to Allow guest notes, a burst, and a count for the session', async () => {
+    const h = noteKeeper();
+    const { socket, run } = await letIn(h, 'viewer');
+    // Only so many wait their turn at once.
+    for (let i = 0; i < MAX_GUEST_NOTE_CALLS; i++) call(socket, `w${i}`, 'notes.add', [NOTE]);
+    call(socket, 'waiting', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'waiting')).toMatchObject({ ok: false, error: { code: 'BUSY', recoverable: true } });
+    releaseAll(h);
+    await answerTo(socket, `w${MAX_GUEST_NOTE_CALLS - 1}`);
+    // And only so many in a burst, one after another.
+    for (let i = MAX_GUEST_NOTE_CALLS; i < GUEST_NOTE_BURST; i++) {
+      call(socket, `a${i}`, 'notes.add', [NOTE]);
+      (await until(() => h.changes[i], `note ${i}`)).release();
+      expect(await answerTo(socket, `a${i}`)).toMatchObject({ ok: true });
+    }
+    call(socket, 'fast', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'fast')).toMatchObject({ ok: false, error: { code: 'BUSY', recoverable: true } });
+    expect(h.changes.length).toBe(GUEST_NOTE_BURST);
+    expect(h.manager.setGuestNotes(run, false)).toEqual({ ok: true });
+    expect(h.manager.state).toMatchObject({ guestNotes: false });
+    expect(socket.sent).toContainEqual({ type: 'rpc:event', event: 'notes:changed', payload: NOTES_CHANGED });
+    call(socket, 'off', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'off')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    // Reading is still allowed.
+    call(socket, 'read', 'notes.list');
+    expect(await answerTo(socket, 'read')).toMatchObject({ ok: true });
+    // The count: a guest that has left GUEST_NOTE_LIMIT notes this session leaves no more, however slowly.
+    const internal = (h.manager as unknown as { run: { notesLeft: Map<string, number>; noteWrites: Map<string, { tokens: number }> } }).run;
+    h.manager.setGuestNotes(run, true);
+    internal.notesLeft.set('g1', GUEST_NOTE_LIMIT);
+    internal.noteWrites.set('g1', { tokens: GUEST_NOTE_BURST, at: performance.now() } as never);
+    call(socket, 'many', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'many')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+  });
+
+  it('counts notes sent together against the session’s count, and gives back one that was not kept', async () => {
+    const h = noteKeeper();
+    const { socket } = await letIn(h, 'viewer');
+    const internal = (h.manager as unknown as { run: { notesLeft: Map<string, number> } }).run;
+    internal.notesLeft.set('g1', GUEST_NOTE_LIMIT - 1);
+    call(socket, 'last', 'notes.add', [NOTE]);
+    call(socket, 'over', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'over')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(h.changes.length).toBe(1);
+    // Turned off before the one waiting is written: it is not kept, and does not count.
+    h.manager.setGuestNotes((h.manager.state as LiveRun), false);
+    h.changes[0].release();
+    expect(await answerTo(socket, 'last')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(internal.notesLeft.get('g1')).toBe(GUEST_NOTE_LIMIT - 1);
+  });
+
+  it('keeps no change a guest asked for once it was made a viewer, removed, or its connection dropped', async () => {
+    for (const change of ['demote and restore', 'kick', 'drop'] as const) {
+      const h = noteKeeper();
+      const { socket, run } = await letIn(h, 'collaborator');
+      h.kept.push({ id: 'n1', text: 'Fix', authorName: 'Bo', authorRole: 'viewer', createdAt: 1, pageId: 'p_home', target: null, resolved: false });
+      call(socket, 'q1', 'notes.delete', ['n1']);
+      const del = await until(() => h.changes[0], 'the delete');
+      if (change === 'kick') h.manager.kick(run, 'g1');
+      else if (change === 'drop') socket.drop(1006);
+      else {
+        h.manager.setRole(run, 'g1', 'viewer');
+        socket.receive(roster('viewer'));
+        h.manager.setRole(run, 'g1', 'collaborator');
+        socket.receive(roster('collaborator'));
+      }
+      del.release();
+      expect(await del.result, change).toMatchObject({ ok: false });
+      expect(h.kept.length, change).toBe(1);
+    }
+  });
+
+  it('tells only guests it still lets in that the notes changed', async () => {
+    const h = noteKeeper();
+    const o = await opened(h, [{ guestId: 'g1', displayName: 'Ann', status: 'pending' }, { guestId: 'g2', displayName: 'Bo', status: 'pending' }]);
+    h.manager.admit(o.run, 'g1', 'viewer');
+    h.manager.admit(o.run, 'g2', 'viewer');
+    o.socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'viewer'), admittedAs('g2', 'Bo', 'viewer')] });
+    h.manager.notesChanged();
+    expect(o.socket.sent.filter((f) => f.type === 'rpc:event')).toEqual([{ type: 'rpc:event', event: 'notes:changed', payload: NOTES_CHANGED }]);
+    h.manager.kick(o.run, 'g2');
+    o.socket.sent.length = 0;
+    h.manager.notesChanged();
+    expect(o.socket.sent.filter((f) => f.type === 'rpc:event')).toEqual([{ type: 'rpc:event', event: 'notes:changed', payload: NOTES_CHANGED, guestId: 'g1' }]);
   });
 });

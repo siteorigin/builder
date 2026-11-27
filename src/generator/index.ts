@@ -44,6 +44,7 @@ import type {
   UiStateSchema
 } from '@shared/types';
 import { COPYRIGHT_PROP, copyrightYearParts } from '@shared/site-name';
+import { CODE_TEXT_HOOK, CODE_TEXT_HOOK_JS } from '@shared/code-text';
 import { isCollectionLoop, repeatProp, CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, slotFallback, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
 import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
@@ -63,6 +64,7 @@ import {
   linkOf,
   resolveVisibility,
   styleDeclOrder,
+  COLUMN_START_DECL,
   styleFallbackCss,
   styleReducedMotionCss,
   styleToCss,
@@ -96,7 +98,7 @@ import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToPara
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, codeAxisProps, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
-import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
+import { itemOverrideClass, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
 import { feedLimit, isArticleDate, pageArticle } from '@shared/articles';
@@ -305,7 +307,8 @@ function placedRows(ctx: ResolveContext, schema: Pick<ListProp, 'feed' | 'max'>,
   const max = Number.isFinite(limit) ? limit : undefined;
   const entry = ctx.entry;
   const key = `entryRows:${entryQueryKey(q, max)}:${entry ? `${entry.collectionId}/${entry.entryId}` : ''}`;
-  return derived(ctx.state, key, (s) => feedRows(s, { feed: 'entries', ...(max !== undefined ? { max } : {}) }, { entry, query: q }));
+  // One for each entry's page a layout's feed is on, each reading its whole collection: worked out for every state.
+  return derived(ctx.state, key, (s) => feedRows(s, { feed: 'entries', ...(max !== undefined ? { max } : {}) }, { entry, query: q }), { opaque: true });
 }
 
 /**
@@ -575,8 +578,9 @@ const inComment = (text: string) => text.replace(/\*\//g, '* /');
 const USED_FONTS = 'fonts';
 /** The theme fonts this site uses, which the editor copies into the project from the theme's pack. */
 function usedFonts(state: ProjectState) {
-  // Any string in any document may name a font: a file that depends on the answer, not on every document.
-  return derived(state, USED_FONTS, (s) => usedPackFonts(s, effectiveTokens(s).map((t) => t.value)));
+  // Any string in any document may name a font: a file that depends on the answer, not on every document. Its reads
+  // are every document whole, so it is searched for every state (each frozen document once, usedPackFonts).
+  return derived(state, USED_FONTS, (s) => usedPackFonts(s, effectiveTokens(s).map((t) => t.value)), { opaque: true });
 }
 
 /** The pack files a site needs beside its generated source: project path → the file inside the theme's pack. */
@@ -890,6 +894,8 @@ function addBackgroundImage(rules: RuleSet, selector: string, value: StyleValue,
 const lastCopies = (decls: string[]) => decls.filter((d, i) => decls.lastIndexOf(d) === i);
 /** Both shift axes write the same translate: once is enough. Nothing else is touched, so no value can shift onto another. */
 const oneTranslate = (decls: string[]) => decls.filter((d, i) => d !== TRANSLATE_DECL || decls.lastIndexOf(d) === i);
+/** A rule that sets both a column start and a span composes the start line once. */
+const oneStartLine = (decls: string[]) => decls.filter((d, i) => d !== COLUMN_START_DECL || decls.lastIndexOf(d) === i);
 
 function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefined, opts: RuleOpts = {}) {
   if (!input) return;
@@ -939,7 +945,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       reduced.push(...styleReducedMotionCss(k, props[k]).filter(safeDecl));
     }
     if (fallback.length) rules[scope].push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
-    if (decls.length) rules[scope].push(rule(oneTranslate(decls)));
+    if (decls.length) rules[scope].push(rule(oneStartLine(oneTranslate(decls))));
     // The hide right after the rule it came from, per size, so it keeps its place in the cascade.
     if (gated && scope === 'base') for (const size of ['phone', 'tablet', 'desktop'] as const) rules.base.push(`@media ${MEDIA_QUERIES[size]} {\n\t${wrap(shownGate(raw, size, opts.gateHides!))} {\n\t\tdisplay: none;\n\t}\n}`);
     else if (gated && scope !== 'base') rules[scope].push(`${wrap(shownGate(raw, scope, opts.gateHides!))} {\n\tdisplay: none;\n}`);
@@ -954,7 +960,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       }
     // Custom CSS has the last word in the wide range too, where these values land after the base rule.
     if (wide.length && props.customCss !== undefined) wide.push(...styleToCss('customCss', props.customCss).filter(safeDecl));
-    if (wide.length) rules.wide.push(rule(wide));
+    if (wide.length) rules.wide.push(rule(oneStartLine(wide)));
   }
   addContainerRules(rules, raw, styles, input, opts);
   addStateRules(rules, raw, input, opts);
@@ -1000,7 +1006,7 @@ function addContainerRules(rules: RuleSet, raw: string, styles: ResponsiveStyles
     }
     const list = rules.container[scope];
     if (fallback.length) list.push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
-    if (decls.length) list.push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
+    if (decls.length) list.push(`${selector} {\n${oneStartLine(oneTranslate(decls)).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
     if (reduced.length) rules.reduced.push(`${opts.important ? selector : quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
     if (decls.some((d) => /^display\s*:/i.test(d))) {
       // Hidden at a screen size by this layer's own rules there: hidden in every container too. A stronger layer's
@@ -1569,11 +1575,16 @@ export function generateSiteCss(state: ProjectState): string {
           addRules(rules, sel, n.overrides![partId], { ...overrideOpts(state, def, n, partId), grouped: partInInteractionGroup(def, partId, placed, lookups) });
         }
         for (const partId of Object.keys(n.itemOverrides ?? {}).sort()) {
+          // A part the code converted from a design added is its code's own (see calledFor).
+          const def = placedDef ? calledFor(placedDef, design, partId) : undefined;
           const entry = liveItemStyles(def, n, partId);
           if (!entry) continue;
-          const target = def!.tree!.nodes[def!.parts[partId].nodeId];
+          // A code component's list connected to a collection shows its entries, which take no item classes.
+          if (def!.kind === 'code' && Object.hasOwn(n.listSources ?? {}, entry.list)) continue;
+          // A code component has no tree: its part is an element of its own markup.
+          const target = def!.tree?.nodes[def!.parts[partId].nodeId];
           // One class more than the part's shared override, so an item's own value wins over it at every size.
-          const times = target?.kind === 'instance' ? 5 : 3;
+          const times = target?.kind === 'instance' ? 5 : def!.kind === 'code' ? 4 : 3;
           for (const itemId of Object.keys(entry.items).sort()) {
             const cls = itemOverrideClass(n.id, partId, itemId);
             const own = entry.items[itemId];
@@ -2954,6 +2965,7 @@ function sizingBoxes(walk: SizingWalk, tree: NodeTree, nodeId: string, placement
 function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRange): number {
   const raw = item ? boxStyle(item, 'columnSpan', range) : undefined;
   const spanValue = typeof raw === 'string' ? raw.trim() : raw;
+  const start = Number(item ? boxStyle(item, 'columnStart', range) : undefined) || 1;
   const span = (tracks: number[]): number => {
     // Shares are read against their own total, even below one: gaps and implicit columns other items add can
     // widen a share past its part of the whole, so this stays the upper estimate.
@@ -2961,8 +2973,8 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
     if (!(total > 0) || spanValue === 'full') return 1;
     const count = typeof spanValue === 'number' || typeof spanValue === 'string' ? Number(spanValue) : NaN;
     const k = Math.max(1, Math.floor(count) || 1);
-    // Spanning past the last column adds implicit ones, which can stretch into whatever the shares leave.
-    if (k >= tracks.length) return 1;
+    // Spanning (or starting) past the last column adds implicit ones, which can stretch into whatever the shares leave.
+    if (k >= tracks.length || start - 1 + k > tracks.length) return 1;
     let widest = 0;
     for (let i = 0; i + k <= tracks.length; i++) widest = Math.max(widest, tracks.slice(i, i + k).reduce((a, b) => a + b, 0));
     return widest / total;
@@ -2985,7 +2997,7 @@ const PAINT_ONLY_CSS = /^(filter|backdrop-filter|opacity|color|background(-[a-z]
 /** The styles of an image that decide how much of its picture a crop needs. */
 const CROP_PROPS = ['height', 'minHeight', 'maxHeight', 'aspectRatio', 'objectFit'];
 /** The styles that decide how wide an element, or the elements inside it, can be. */
-const SIZING_PROPS = ['layout', 'columns', 'gridTemplate', 'columnSpan', 'width', 'minWidth', 'maxWidth', 'flexGrow', 'position', 'inset', 'marginInlineStart', 'marginInlineEnd', 'customCss'];
+const SIZING_PROPS = ['layout', 'columns', 'gridTemplate', 'columnStart', 'columnSpan', 'width', 'minWidth', 'maxWidth', 'flexGrow', 'position', 'inset', 'marginInlineStart', 'marginInlineEnd', 'customCss'];
 
 /**
  * A realistic `sizes` hint for an image: in each range, its share of the grids around it (through the
@@ -3556,17 +3568,32 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     if (code && map.root && !Object.hasOwn(def.properties, 'class')) pageClasses.unshift(map.root);
   }
   if (pageClasses.length) attrs.push(`class=${attrJs(pageClasses.join(' '))}`);
+  // The editor's preview gives a code placement the hook its code marks typed-over text with (see shared/code-text),
+  // where the placement's own properties are what the page edits. The website is given none, so it carries no marker.
+  if (ctx.instrument && !ctx.def && def.kind === 'code' && !Object.hasOwn(def.properties, CODE_TEXT_HOOK) && new RegExp(`\\b${CODE_TEXT_HOOK}\\b`).test(def.source ?? '')) attrs.push(`${CODE_TEXT_HOOK}={${CODE_TEXT_HOOK_JS}}`);
   // Styles of single list items: each item's parts get a class of their own, looked up by the item's ID.
-  if (!ctx.def && node.itemOverrides) {
+  /** In the editor's preview, the item each class names for a code placement's repeated parts (see codeItemMarks). */
+  let partItems: Record<string, [string, string]> | undefined;
+  if (!ctx.def && (node.itemOverrides || (ctx.instrument && def.kind === 'code'))) {
     const byItem: Record<string, Record<string, string>> = {};
-    for (const partId of Object.keys(node.itemOverrides).sort()) {
-      const entry = liveItemStyles(design ?? def, node, partId);
+    const give = (partId: string, itemId: string) => {
+      // Own keys only: an item ID can be any word, "toString" included.
+      if (!Object.hasOwn(byItem, itemId)) byItem[itemId] = {};
+      byItem[itemId][partId] = itemOverrideClass(node.id, partId, itemId);
+    };
+    for (const partId of Object.keys(node.itemOverrides ?? {}).sort()) {
+      const owner = calledFor(def, design, partId);
+      const entry = liveItemStyles(owner, node, partId);
+      // A code placement's list connected to a collection shows its entries, not the items these were set for.
+      if (owner.kind === 'code' && entry && Object.hasOwn(node.listSources ?? {}, entry.list)) continue;
       for (const itemId of Object.keys(entry?.items ?? {}).sort()) {
         if (!entry!.items[itemId] || typeof entry!.items[itemId] !== 'object') continue;
-        // Own keys only: an item ID can be any word, "toString" included.
-        if (!Object.hasOwn(byItem, itemId)) byItem[itemId] = {};
-        byItem[itemId][partId] = itemOverrideClass(node.id, partId, itemId);
+        give(partId, itemId);
       }
+    }
+    if (ctx.instrument && def.kind === 'code') {
+      partItems = codeItemMarks(def, node, design);
+      for (const [partId, itemId] of Object.values(partItems)) give(partId, itemId);
     }
     if (Object.keys(byItem).length) attrs.push(`so_oi={${js(byItem)}}`);
   }
@@ -3644,9 +3671,29 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   let markup = [...beside, slotContent ? `${open}>\n${slotContent}\n${p}</${name}>` : `${open}/>`].join('\n');
   if (ctx.instrument && def.kind === 'code') {
     const c = ctx.def ? '{__so}' : attrJs(ctx.ctxExpr);
-    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
+    // Which item of which repeated part each item class names, so the canvas picks one card (see codeItemMarks).
+    const marks = partItems && Object.keys(partItems).length ? ` data-so-part-items=${attrJs(JSON.stringify(partItems))}` : '';
+    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
   }
   return markup;
+}
+
+/**
+ * The editor's preview gives every item of a code placement's repeated parts its item class (`so_oi`), styled or not,
+ * so the canvas can tell one card from the next by the class alone: the class each item's part takes, with the part
+ * and the item it names. The classes are the ones the item's own styles use, so they follow the item when the list
+ * is reordered. A list connected to a collection shows entries, not its own items, and takes none.
+ */
+function codeItemMarks(def: ComponentDefinition, node: InstanceNode, design?: ComponentDefinition): Record<string, [string, string]> {
+  const out: Record<string, [string, string]> = {};
+  // Code converted from a design's file shows the design's own parts as the design did; only its code's own are marked.
+  for (const partId of Object.keys(def.parts).sort()) {
+    if (calledFor(def, design, partId) !== def) continue;
+    const list = repeatedPartList(def, partId);
+    if (!list || Object.hasOwn(node.listSources ?? {}, list)) continue;
+    for (const item of placementItems(def, node, list)) out[itemOverrideClass(node.id, partId, item.id)] = [partId, item.id];
+  }
+  return out;
 }
 
 /** Whether a managed design shows content of its own in a slot a placement leaves empty. */
@@ -4268,9 +4315,10 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
  * One instance on its own, as the editor's isolated preview shows it: a Svelte module at `file` that renders the
  * instance inside a <main> of its own, as a page renders its first section, with no header or footer. Its props,
  * variants and identity attributes are emitted as a page placement's are, under the identity context `ctx`.
- * Editor-only: generateProject never makes one.
+ * Editor-only: generateProject never makes one. Its computed lists (news, an article's header) are worked out for
+ * `pageId` when it shows a placement of that page.
  */
-export function generateIsolatedInstance(state: ProjectState, file: string, node: InstanceNode, ctx: string): string {
+export function generateIsolatedInstance(state: ProjectState, file: string, node: InstanceNode, ctx: string, pageId?: string): string {
   const ectx: EmitCtx = {
     state,
     file,
@@ -4280,7 +4328,7 @@ export function generateIsolatedInstance(state: ProjectState, file: string, node
     tree: { rootIds: [node.id], nodes: { [node.id]: node } },
     ctxExpr: ctx,
     items: [],
-    rctx: { state },
+    rctx: pageId ? { state, pageId } : { state },
     indent: 1,
     locals: new Map(),
     firstSection: true,
@@ -4464,7 +4512,7 @@ function routeLanguagesJs(state: ProjectState, indent = ''): string {
 }
 
 /** The route IDs of the site's archive pages (see shared/archives.ts), worked out once per state in a cached run. */
-const archiveRouteIds = (state: ProjectState): ReadonlySet<string> => new Set(derived(state, 'archiveRouteIds', (s) => archivePages(s).map((p) => routeId(p.route))));
+const archiveRouteIds = (state: ProjectState): ReadonlySet<string> => new Set(derived(state, 'archiveRouteIds', (s) => siteArchives(s).map((p) => routeId(p.route))));
 
 /** routeLanguages as a file depends on it: on the list alone, not on every page that goes into it. */
 const languagesByRoute = (state: ProjectState) => derived(state, 'routeLanguages', routeLanguages);
@@ -5173,65 +5221,83 @@ export function generatePathsJson(state: ProjectState): string {
 // ---------------------------------------------------------------------------
 
 /** Makes a state-dependent file under a cache key, or gives back the copy an earlier run made from the same inputs. */
-type FileMaker = (key: string, make: (state: ProjectState) => string) => string;
+export type FileMaker = (key: string, make: (state: ProjectState) => string) => string;
+
+/** One file of the library, made only when asked for; null when the site has no such file. */
+export type LibraryFile = () => string | null;
 
 /**
  * The library every page reads, under src/lib/siteorigin: the runtime helpers, the styles and a file for every
- * component definition, whether a page places it or not.
+ * component definition, whether a page places it or not. Each file is made only when its maker is called, so a caller
+ * that needs a few of them (a component's isolated preview) makes those alone; addLibrary makes them all, in order.
  */
-function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, file: FileMaker): void {
+export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: FileMaker): Map<string, LibraryFile> {
+  const files = new Map<string, LibraryFile>();
   const theme = getTheme(state.site.themeId);
   const mode = opts.instrument ? '#dev' : '#clean';
+  // Two definitions whose files share a path (IDs a hand edit made alike) are both made, the later one kept, as ever.
+  const put = (path: string, make: LibraryFile) => {
+    const before = files.get(path);
+    files.set(path, before ? () => (before(), make()) : make);
+  };
   // What the site says on its own, ahead of every helper and component that imports it.
-  files.set(`${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`, file('visitor-text.js', generateVisitorTextJs));
-  files.set(`${RUNTIME_DIR}/Link.svelte`, linkSvelte(!!opts.instrument));
-  files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
-  files.set(`${RUNTIME_DIR}/Action.svelte`, ACTION_SVELTE);
-  files.set(`${RUNTIME_DIR}/Carousel.svelte`, CAROUSEL_SVELTE);
-  files.set(`${RUNTIME_DIR}/carousel.js`, CAROUSEL_JS);
-  files.set(`${RUNTIME_DIR}/RichText.svelte`, RICHTEXT_SVELTE);
-  files.set(`${RUNTIME_DIR}/Icon.svelte`, iconSvelte());
-  files.set(`${RUNTIME_DIR}/icons.js`, file('icons.js', iconsJs));
-  files.set(`${RUNTIME_DIR}/util.js`, UTIL_JS);
-  files.set(`${RUNTIME_DIR}/drafts.js`, DRAFTS_JS);
+  put(`${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`, () => file('visitor-text.js', generateVisitorTextJs));
+  put(`${RUNTIME_DIR}/Link.svelte`, () => linkSvelte(!!opts.instrument));
+  put(`${RUNTIME_DIR}/Image.svelte`, () => IMAGE_SVELTE);
+  put(`${RUNTIME_DIR}/Action.svelte`, () => ACTION_SVELTE);
+  put(`${RUNTIME_DIR}/Carousel.svelte`, () => CAROUSEL_SVELTE);
+  put(`${RUNTIME_DIR}/carousel.js`, () => CAROUSEL_JS);
+  put(`${RUNTIME_DIR}/RichText.svelte`, () => RICHTEXT_SVELTE);
+  put(`${RUNTIME_DIR}/Icon.svelte`, () => iconSvelte());
+  put(`${RUNTIME_DIR}/icons.js`, () => file('icons.js', iconsJs));
+  put(`${RUNTIME_DIR}/util.js`, () => UTIL_JS);
+  put(`${RUNTIME_DIR}/drafts.js`, () => DRAFTS_JS);
   // Site search and the pages it finds, while a component of the site searches. Written before the components and
   // pages that import them, so a preview never loads a component whose search code is not there yet. Whether the
   // site searches decides only which files exist, so it is asked of the plain state, as for redirects and the favicon.
   if (usesSiteSearch(state)) {
-    files.set(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, SEARCH_JS);
-    files.set(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, file('search-index.js', generateSearchIndex));
+    put(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, () => SEARCH_JS);
+    put(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, () => file('search-index.js', generateSearchIndex));
   }
   // The video player, while a component of the site shows a video; also written ahead of what imports it. Like
   // search, whether the site shows one decides only which files exist, and the files themselves read nothing else.
   if (usesVideo(state)) {
-    files.set(`${RUNTIME_DIR}/${VIDEO_HELPER_FILE}`, VIDEO_JS);
-    files.set(`${RUNTIME_DIR}/${VIDEO_PLAYER_FILE}`, videoPlayerSvelte(!!opts.instrument));
+    put(`${RUNTIME_DIR}/${VIDEO_HELPER_FILE}`, () => VIDEO_JS);
+    put(`${RUNTIME_DIR}/${VIDEO_PLAYER_FILE}`, () => videoPlayerSvelte(!!opts.instrument));
   }
   // The entrance observer, while a page of the site can show an entrance (see generator/appear.ts); the layout that
   // starts it is written after it. Like search, asked of the plain state: it decides only whether the file exists.
-  if (usesAppear(state)) files.set(`${RUNTIME_DIR}/${APPEAR_FILE}`, appearJs(!!opts.instrument));
+  if (usesAppear(state)) put(`${RUNTIME_DIR}/${APPEAR_FILE}`, () => appearJs(!!opts.instrument));
   // The visitor's Light/Dark switch, while the site's palettes have one; the layout that starts it is written after it.
-  if (usesThemeToggle(state)) files.set(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`, themeToggleJs(themeStorageKey(state), !!opts.instrument));
-  files.set(`${RUNTIME_DIR}/not-found.js`, NOT_FOUND_JS);
-  files.set(`${STYLES_DIR}/tokens.css`, file('tokens.css', generateTokensCss));
-  const fontNotice = file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '');
-  if (fontNotice) files.set(`${FONTS_DIR}/NOTICE.txt`, fontNotice);
-  files.set(`${STYLES_DIR}/theme.css`, theme.baseCss);
-  files.set(`${STYLES_DIR}/components.css`, file('components.css', generateComponentsCss));
-  files.set(`${STYLES_DIR}/site.css`, file('site.css', generateSiteCss));
+  if (usesThemeToggle(state)) put(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`, () => themeToggleJs(themeStorageKey(state), !!opts.instrument));
+  put(`${RUNTIME_DIR}/not-found.js`, () => NOT_FOUND_JS);
+  put(`${STYLES_DIR}/tokens.css`, () => file('tokens.css', generateTokensCss));
+  put(`${FONTS_DIR}/NOTICE.txt`, () => file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '') || null);
+  put(`${STYLES_DIR}/theme.css`, () => theme.baseCss);
+  put(`${STYLES_DIR}/components.css`, () => file('components.css', generateComponentsCss));
+  put(`${STYLES_DIR}/site.css`, () => file('site.css', generateSiteCss));
   for (const def of sortedDefs(state)) {
-    if (def.kind === 'managed' && def.tree) files.set(defFile(def), file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
+    if (def.kind === 'managed' && def.tree) put(defFile(def), () => file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
     // A theme component installed before links had relationships renders them too (see withAuthoredRel).
-    else if (def.kind === 'code' && def.source) files.set(defFile(def), def.owner === 'theme' ? withAuthoredRel(def.source) : def.source);
+    else if (def.kind === 'code' && def.source) put(defFile(def), () => (def.owner === 'theme' ? withAuthoredRel(def.source!) : def.source!));
   }
   // While the site declares WebMCP tools, each contact form's code that can declare one has a copy that does, which the
   // visitor's website places (see generator/webmcp.ts). Never in the editor's preview, and never with WebMCP off.
   if (!opts.instrument && webMcpOn(state.site)) {
-    for (const def of sortedDefs(state)) if (declaresFormTool(def)) files.set(webMcpFormFile(def), adaptedForm(def.source!)!);
+    for (const def of sortedDefs(state)) if (declaresFormTool(def)) put(webMcpFormFile(def), () => adaptedForm(def.source!)!);
     // The search tool, beside the search code. Whether the layout starts it depends on what published pages show, which
     // leaving drafts out of an export can change; whether the file is there depends only on the components, as the
     // search code's own does, so the layout never names a file a draft-free copy of the site lacks.
-    if (usesSiteSearch(state)) files.set(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`, webMcpSearchJs());
+    if (usesSiteSearch(state)) put(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`, () => webMcpSearchJs());
+  }
+  return files;
+}
+
+/** Every file of the library (see libraryFiles), made in order. */
+function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, file: FileMaker): void {
+  for (const [path, make] of libraryFiles(state, opts, file)) {
+    const content = make();
+    if (content !== null) files.set(path, content);
   }
 }
 

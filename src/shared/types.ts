@@ -73,7 +73,7 @@ export type StyleTokenRef = { token: string; alpha?: number };
  * optional scrim, a colour or one gradient painted over it so text on top stays readable. Only the `backgroundImage`
  * style property holds one (see shared/background-image.ts); it never names a token.
  */
-export type BackgroundImageValue = { assetId: string; size?: 'cover' | 'contain'; position?: string; scrim?: string; token?: never };
+export type BackgroundImageValue = { assetId: string; size?: 'cover' | 'contain' | 'tile'; tileSize?: number; position?: string; scrim?: string; token?: never };
 /** A literal style value, a reference to a site token, or a background image (`backgroundImage` only). */
 export type StyleValue = string | number | boolean | StyleTokenRef | BackgroundImageValue;
 export type StyleProps = Record<string, StyleValue>;
@@ -244,6 +244,13 @@ export interface StringProp extends PropBase {
   default: string;
   multiline?: boolean;
   maxLength?: number;
+  /**
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export interface RichTextProp extends PropBase {
   type: 'richtext';
@@ -257,6 +264,13 @@ export interface RichTextProp extends PropBase {
    * item, with **bold** and *italic*. Managed components always take blocks.
    */
   codeForm?: RichCodeForm;
+  /**
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export type RichCodeForm = 'blocks' | 'paragraphs';
 export const RICH_CODE_FORMS: readonly RichCodeForm[] = ['blocks', 'paragraphs'];
@@ -283,6 +297,13 @@ export interface LinkProp extends PropBase {
 export interface ImageProp extends PropBase {
   type: 'image';
   default: ImageValue;
+  /**
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export interface IconProp extends PropBase {
   type: 'icon';
@@ -704,6 +725,12 @@ export interface PartDef {
   label: string;
   /** Style properties offered for this part in the inspector. */
   styleControls?: string[];
+  /**
+   * Code components only: the list property this part is rendered once per item of (`{#each plans as plan (plan.id)}`),
+   * so one item's part can be styled on its own. The code places that item's class, `so_oi?.[plan.id]?.card`, beside
+   * the part's shared one. A managed component's repeated parts are read from its tree instead.
+   */
+  list?: string;
 }
 
 export interface VariantDef {
@@ -1158,6 +1185,11 @@ export interface AssetRecord {
    * Originals are always kept.
    */
   variants?: Array<{ width: number; file: string }>;
+  /**
+   * The picture's copies are still being made (#979): it was added as soon as its own file was stored, and shows at its
+   * own size until they arrive. The project records it, so copies a quit or a crash left unmade are made when it opens.
+   */
+  copiesPending?: true;
   description?: string;
   altSuggestion?: string;
   /** For a font: the family it provides and the weight (or variable range, "100 900") and style of this file. */
@@ -1458,6 +1490,11 @@ export interface CollectionDoc {
   pageSize?: number;
   /** Whether each category with a published entry gets an archive at `category/<term ID>/`. Absent: it does. */
   categoryArchives?: boolean;
+  /**
+   * Whether its published entries with pages of their own are listed in the website's RSS feed. Absent: as its kind
+   * says, so a blog's posts are and a structured collection's records (staff, listings) are not.
+   */
+  rss?: boolean;
   /**
    * The layout every entry's page is shown with: a tree of sections and elements, edited like a page's, whose nodes
    * and placed sections read the entry they are shown for through `{ $entry: field }` bindings. Editing it changes

@@ -1,7 +1,9 @@
-import type { BuilderApi, ProjectSnapshot, RemoteState } from '@shared/api';
+import type { BuilderApi, ProjectSnapshot, RemoteState, RunStatus } from '@shared/api';
+import type { GuestRole } from '@shared/live/limits';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { Presence } from '@shared/live/messages';
 import type { LiveProjectSnapshot } from '@shared/live/snapshot';
+import type { LiveNoteResult, NoteDraft } from '@shared/live/notes';
 import { LIVE_BATCH_LABEL_MAX } from '@shared/live/limits';
 import { refKey } from '@shared/types';
 import { api, confirmDialog, getState, setState, toast, transport, useStore, type State } from '../store';
@@ -40,8 +42,22 @@ export const isRemoteShell = (s: Pick<State, 'remote' | 'snapshot'>) => s.remote
 
 /** The sidebar views a guest has: the host's pages, their layers, and what can be inserted from the host's project. */
 export const REMOTE_LEFT_TABS: ReadonlySet<string> = new Set(['pages', 'layers', 'insert']);
-/** The right panel's views a guest has: the Inspector and Site styles. The AI and the project brief are the host's. */
+/** The right panel's views a guest has: the Inspector and Site styles. The project brief is the host's. */
 export const REMOTE_RIGHT_TABS: ReadonlySet<string> = new Set(['inspect', 'styles']);
+/**
+ * A collaborator also has the AI view (#769): its own requests to the host's AI, which says when the host has not
+ * allowed them. A viewer never has it.
+ */
+export const COLLABORATOR_RIGHT_TABS: ReadonlySet<string> = new Set(['chat', ...REMOTE_RIGHT_TABS]);
+/** How this collaborator's own request to the host's AI stands, while one runs (#769); null when none does. */
+export function remoteRunStatus(s: Pick<State, 'remoteAi'>): RunStatus | null {
+  const ai = s.remoteAi;
+  if (!ai?.activeRunId) return null;
+  const turn = ai.turns.find((t) => t.runId === ai.activeRunId);
+  return turn?.result ? null : (turn?.status ?? 'preparing');
+}
+/** The right panel's views a guest holding `role` has. */
+export const remoteRightTabs = (role: GuestRole | null | undefined): ReadonlySet<string> => (role === 'collaborator' ? COLLABORATOR_RIGHT_TABS : REMOTE_RIGHT_TABS);
 /**
  * The dialogs a guest can open over the host's project: this computer's own Settings, and those whose edits a
  * collaborator may make. Every other dialog (export, code, history and versions, components, imports, health) is
@@ -83,6 +99,13 @@ export function followRemote(): Array<() => void> {
     api.on('remote:presence', (presence) => {
       const remote = getState().remote;
       if (remote.phase !== 'idle' && remote.joinId === presence.joinId) setState({ remotePresence: presence });
+    }),
+    api.on('remote:ai', (ai) => {
+      if (shown?.joinId === ai.joinId) setState({ remoteAi: ai });
+    }),
+    // The host's pinned notes (#770) reach the editor as the shown project's own.
+    api.on('remote:notes', ({ joinId, notes }) => {
+      if (shown?.joinId === joinId) transport.emit(shown.remote, 'notes:changed', notes);
     })
   ];
   let gone = false;
@@ -117,7 +140,12 @@ async function show(admitted: AdmittedRemote): Promise<void> {
   transport.use(entry.remote);
   // Nothing of this computer's own live session is shown over the host's project (none runs: no project is open),
   // and no dialog or mode of another opening is left open over it.
-  setState({ live: IDLE_LIVE, liveClock: null, remoteReload: { seq: 0, revision: null }, modal: null, definitionMode: null, templateMode: null });
+  setState({ live: IDLE_LIVE, liveClock: null, remoteReload: { seq: 0, revision: null }, remoteAi: null, modal: null, definitionMode: null, templateMode: null });
+  // This join's own AI requests, as the main process holds them (an editor page loaded part way through a join).
+  void api.remote
+    .ai(joinId)
+    .then((ai) => shown === entry && ai && setState({ remoteAi: ai }))
+    .catch(() => undefined);
   const live = await api.remote.snapshot(joinId).catch(() => null);
   if (shown === entry && live) takeLive(entry, live);
 }
@@ -194,7 +222,7 @@ function end(ended: { reason: string; message: string } | null): void {
   else endEditingHold();
   transport.use(null);
   // A dialog about the host's project (Delete page, say) never stays open for whatever opens next.
-  setState({ remotePresence: null, remoteReload: { seq: 0, revision: null }, modal: null });
+  setState({ remotePresence: null, remoteAi: null, remoteReload: { seq: 0, revision: null }, modal: null });
   if (ended && ended.reason !== 'left') toast(ended.message, 'info');
 }
 
@@ -272,6 +300,7 @@ export function remoteApi(joinId: string): RemoteApi {
   const mine = () => (shown?.joinId === joinId ? shown : null);
   const revision = () => mine()?.snapshot?.revision ?? 0;
   const local = () => window.builder;
+  const ended = async (): Promise<LiveNoteResult> => ({ ok: false, message: 'That live session has ended.' });
   const historyRefused = async (): Promise<ApplyResult> => ({
     ok: false,
     revision: revision(),
@@ -340,6 +369,13 @@ export function remoteApi(joinId: string): RemoteApi {
     live: {
       state: async () => IDLE_LIVE,
       presence: async () => ({ ok: true as const })
+    },
+    // The host's pinned notes (#770), as far as this guest's role allows; the host checks every call again.
+    notes: {
+      list: async (key: string) => (key === opening ? api.remote.notes(joinId) : null),
+      add: (key: string, draft: NoteDraft) => (key === opening ? api.remote.addNote(joinId, draft) : ended()),
+      resolve: (key: string, id: string, resolved: boolean) => (key === opening ? api.remote.resolveNote(joinId, id, resolved) : ended()),
+      delete: (key: string, id: string) => (key === opening ? api.remote.deleteNote(joinId, id) : ended())
     }
   } as unknown as RemoteApi;
 }

@@ -82,6 +82,8 @@ function computed(rules: Rule[], el: El, width: number, property: string): strin
     // Rules for print, and the screen-only ones hiding what a category filter or UI state hides, set nothing on the parts
     // compared here, which never carry those classes.
     if (r.media && /\bprint\b/.test(r.media)) continue;
+    // A rule that never sets the property says nothing about it (a :where() of starting values among them).
+    if (!r.decls.some(([p]) => p === property)) continue;
     if (!mediaMatches(r.media, width) || !r.selector.includes('so-') || !matches(r.selector, el)) continue;
     const specificity = compounds(r.selector).flat().length;
     r.decls.forEach(([p, value], i) => {
@@ -96,7 +98,8 @@ function computed(rules: Rule[], el: El, width: number, property: string): strin
 const SIZES = ['phone', 'tablet', 'desktop'] as const;
 const WIDTH = { phone: VIEWPORT_PRESETS.phone, tablet: VIEWPORT_PRESETS.tablet, desktop: VIEWPORT_PRESETS.desktop };
 const cssOf = (prop: string, value: unknown) => {
-  const decl = styleToCss(prop, value as never)[0];
+  // A span's own declaration is its end line; its first two compose the start (grid-column-placement.test.ts).
+  const decl = styleToCss(prop, value as never).at(-1)!;
   return decl.slice(decl.indexOf(':') + 1).trim();
 };
 
@@ -196,7 +199,7 @@ describe('the Inspector’s inherited styles match the generated CSS', () => {
     const template = compare(state, def, 'grid', 'gridTemplate', 'grid-template-columns');
     expect(template.map((r) => r.rendered)).toEqual([undefined, cssOf('gridTemplate', '2fr 1fr'), cssOf('gridTemplate', '2fr 1fr')]);
     agree(template);
-    const span = compare(state, def, 'heading', 'columnSpan', 'grid-column');
+    const span = compare(state, def, 'heading', 'columnSpan', 'grid-column-end');
     expect(span.map((r) => r.rendered)).toEqual([undefined, cssOf('columnSpan', 2), cssOf('columnSpan', 2)]);
     agree(span);
   });

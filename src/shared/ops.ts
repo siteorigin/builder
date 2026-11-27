@@ -61,7 +61,7 @@ const FONT_FACE = z.object({
 /** A style's token link: `{ token }`, or a colour token at part strength, `{ token, alpha }` (checked by validateStyleValue). */
 export const STYLE_TOKEN_REF = z.object({ token: z.string(), alpha: z.number().optional() }).strict();
 /** backgroundImage's value: a library image by asset ID, how it fills the box, its focus and a scrim (checked by validateStyleValue). */
-export const BACKGROUND_IMAGE = z.object({ assetId: z.string(), size: z.enum(['cover', 'contain']).optional(), position: z.string().optional(), scrim: z.string().optional() }).strict();
+export const BACKGROUND_IMAGE = z.object({ assetId: z.string(), size: z.enum(['cover', 'contain', 'tile']).optional(), tileSize: z.number().optional(), position: z.string().optional(), scrim: z.string().optional() }).strict();
 /** Any style property's value: a literal, a token link, or (backgroundImage only) a library image. */
 export const STYLE_VALUE = z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE]);
 const styleValue = STYLE_VALUE;
@@ -80,7 +80,7 @@ export const MODEL_BINDING = z
 export const LAYOUT_BINDING = z
   .union([...contentBinding, z.object({ $state: z.string() }).strict(), z.object({ $entry: z.string().max(80) }).strict()])
   .nullable()
-  .describe('{"$entry": field} shows the entry the page is for: "title", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>" or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
+  .describe('{"$entry": field} shows the entry the page is for: "title", "slug", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>" or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
 /** What a button does to its component's UI state (see `StateAction` in shared/types). */
 const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),
@@ -217,6 +217,18 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
       slot: z.string().describe('The declared slot whose content shows here.'),
       children: DESIGN_CHILDREN.describe('IDs of the nodes shown here instead while a placement leaves the slot empty, in order.')
     })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('instance'),
+      ...DESIGN_NODE_BASE,
+      definitionId: z.string().min(1).max(120).describe('An installed component to place in the design, such as a project component of the site.'),
+      props: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe('Its property values by name, each a literal or the property ({"$prop"}) or list item field ({"$item"}) of this design it shows. Left out, a property starts at its default (or, on a rebuild, keeps what the placement holds).'),
+      variants: z.record(z.string(), z.string()).optional().describe('The option it shows on each of its variant axes, by axis. An axis left out uses its default (or, on a rebuild, keeps the option the placement shows).')
+    })
     .strict()
 ]);
 
@@ -271,6 +283,11 @@ const COLLECTION_SETTINGS = {
     .optional()
     .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options), image, link, richtext, date (YYYY-MM-DD) or reference (collection: the ID of the collection whose entries it names; multiple: true for a list of them). Replaces the whole set: a field left out is removed from every entry.'),
   pageSize: z.number().int().min(1).max(100).optional().describe('How many entries each page of the collection\'s index and category archives lists, newest first (later pages at page/2/, page/3/...). Default 10.'),
+  rss: z
+    .boolean()
+    .nullable()
+    .optional()
+    .describe('Whether its published entries are listed in the website\'s RSS feed (rss.xml). Default: as its kind says, editorial yes and structured no. null goes back to that default.'),
   categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.'),
   archiveTemplate: z
     .union([z.object({ rootIds: z.array(z.string()), nodes: z.record(z.string(), z.unknown()) }), z.literal('start'), z.null()])
@@ -497,7 +514,7 @@ export const OPERATION_SCHEMAS = {
     scope,
     state: styleState.optional(),
     property: z.string().describe('Style property ID, e.g. paddingBlock, background, textStyle, gap, columns.'),
-    value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. color and background also take a color token at part strength, {"token": "color.surface", "alpha": 0.7} for 70%, for a see-through surface (with backdropBlur, frosted glass); a plain {"token"} sets it back to full strength. objectPosition also takes a focal point "X% Y%" (each 0 to 100). backgroundImage (containers and sections) takes a library image: {"assetId": "...", "size": "cover" or "contain", "position": "50% 30%", "scrim": "rgba(0, 0, 0, 0.55)" or one linear-gradient()}; size, position and scrim are optional, and a scrim keeps text over the picture readable. gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem" or "repeat(auto-fit, minmax(18rem, 1fr))"; rowSpan 1 to 6. On a grid, gridAutoFlow "dense" fills holes with later items, and gridAutoRows takes one row size such as "minmax(12rem, auto)" or "1fr". null removes the override.')
+    value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. color and background also take a color token at part strength, {"token": "color.surface", "alpha": 0.7} for 70%, for a see-through surface (with backdropBlur, frosted glass); a plain {"token"} sets it back to full strength. objectPosition also takes a focal point "X% Y%" (each 0 to 100). backgroundImage (containers and sections) takes a library image: {"assetId": "...", "size": "cover", "contain" or "tile" (repeat it, for a pattern or grain), "tileSize": 24, "position": "50% 30%", "scrim": "rgba(0, 0, 0, 0.55)" or one linear-gradient()}; size, tileSize (one tile\'s width in whole CSS pixels, only used by "tile"; without it the picture keeps its own size), position and scrim are optional, and a scrim keeps text over the picture readable. gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem" or "repeat(auto-fit, minmax(18rem, 1fr))"; rowSpan 1 to 6. On a grid, gridAutoFlow "dense" fills holes with later items, and gridAutoRows takes one row size such as "minmax(12rem, auto)" or "1fr". null removes the override.')
   }),
   'node.resetStyles': z.object({
     type: z.literal('node.resetStyles'),
@@ -844,7 +861,17 @@ export const OPERATION_SCHEMAS = {
   'component.setInsertAs': z
     .object({ type: z.literal('component.setInsertAs'), definitionId: z.string(), insertAs: z.enum(['section', 'element']).nullable() })
     .describe('Where Insert puts a new placement: one of a page\'s sections, or an element inside a layout; null lets the editor tell from the design.'),
-  'component.fork': z.object({ type: z.literal('component.fork'), definitionId: z.string() }),
+  // A project copy of a component that can be changed on its own (§8.4): for every placement, or only some.
+  'component.fork': z.object({
+    type: z.literal('component.fork'),
+    definitionId: z.string(),
+    placements: z
+      .array(z.object({ owner, nodeId: z.string() }))
+      .min(1)
+      .max(60)
+      .optional()
+      .describe('Only these move to the copy, sharing it; the rest keep the original. Without it, every placement moves.')
+  }),
   'component.convertToCode': z.object({ type: z.literal('component.convertToCode'), owner, nodeId: z.string(), name: z.string().max(60).optional() }),
   'component.createCode': z.object({
     type: z.literal('component.createCode'),
@@ -1060,7 +1087,7 @@ export const OPERATION_SCHEMAS = {
     asset: z.object({
       id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,60}$/), name: z.string().max(200),
       file: ASSET_FILE, mime: z.string(), bytes: z.number(), width: z.number().optional(), height: z.number().optional(),
-      hash: z.string(), kind: z.enum(['image', 'font', 'document']), createdAt: z.string(), variants: ASSET_VARIANTS.optional(), description: z.string().optional(), altSuggestion: z.string().optional(),
+      hash: z.string(), kind: z.enum(['image', 'font', 'document']), createdAt: z.string(), variants: ASSET_VARIANTS.optional(), copiesPending: z.literal(true).optional(), description: z.string().optional(), altSuggestion: z.string().optional(),
       font: FONT_FACE.optional(), originalName: z.string().max(255).optional()
     })
   }),

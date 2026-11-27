@@ -23,7 +23,9 @@ const SHOWN: Array<[PaletteRole, string]> = [
   ['color.accent', 'Accent'],
   ['color.inverse', 'Dark sections'],
   ['color.on-inverse', 'Text on dark'],
-  ['color.focus', 'Focus outline']
+  ['color.focus', 'Focus outline'],
+  ['color.error', 'Errors'],
+  ['color.error-on-inverse', 'Errors on dark']
 ];
 
 const luminance = (hex: string) => relativeLuminance(parseColor(hex)!);

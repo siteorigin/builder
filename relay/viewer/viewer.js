@@ -7,8 +7,12 @@
  * then is the frame made. The page keeps no cookies of its own; its place in the room (the name and the resume token
  * the relay gave it) lives in this tab's sessionStorage, so a reload or a dropped connection takes the same place
  * back. When the guest's access ends for any reason, the frame is removed at once.
+ *
+ * Notes (#770): the host's pinned notes are listed in the Notes panel, and a guest leaves one on the page its frame
+ * shows, through the relay as a call to the host (`notes.list`, `notes.add`). The host checks and keeps them; this page
+ * keeps nothing of them once the guest's access ends.
  */
-import { BRIDGE_MESSAGES, CLOSE_CODES, isFramePath, normalizeDisplayName, PREVIEW_ADMISSION_PATH, VIEWPORTS } from './shared.js';
+import { BRIDGE_MESSAGES, CLOSE_CODES, isFramePath, isSpotlightPath, MAX_ID_LENGTH, MAX_SELECTION_DEPTH, normalizeDisplayName, PREVIEW_ADMISSION_PATH, VIEWPORTS } from './shared.js';
 
 const root = /** @type {HTMLElement} */ (document.getElementById('live-session'));
 const config = {
@@ -17,7 +21,8 @@ const config = {
   previewOrigin: root.dataset.previewOrigin ?? '',
   inviteLink: root.dataset.inviteLink ?? '',
   version: Number(root.dataset.protocolVersion),
-  nameMax: Number(root.dataset.nameMax)
+  nameMax: Number(root.dataset.nameMax),
+  noteMax: Number(root.dataset.noteMax)
 };
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const ui = {
@@ -32,6 +37,8 @@ const ui = {
   role: $('role'),
   time: $('time'),
   follow: /** @type {HTMLInputElement} */ ($('follow')),
+  point: /** @type {HTMLButtonElement} */ ($('point')),
+  pointHint: $('point-hint'),
   viewports: /** @type {HTMLButtonElement[]} */ ([...root.querySelectorAll('[data-viewport]')]),
   openInBuilder: $('copy-invite'),
   handoff: $('handoff'),
@@ -61,7 +68,20 @@ const ui = {
   actions: $('screen-actions'),
   action: /** @type {HTMLButtonElement} */ ($('screen-action')),
   cancel: /** @type {HTMLButtonElement} */ ($('screen-cancel')),
-  announcer: $('announce')
+  announcer: $('announce'),
+  notesButton: $('notes-button'),
+  notesCount: $('notes-count'),
+  notes: $('notes'),
+  notesTitle: $('notes-title'),
+  notesClose: $('notes-close'),
+  noteForm: /** @type {HTMLFormElement} */ ($('note-form')),
+  noteWhere: $('note-where'),
+  noteText: /** @type {HTMLTextAreaElement} */ ($('note-text')),
+  noteLength: $('note-length'),
+  noteSend: /** @type {HTMLButtonElement} */ ($('note-send')),
+  noteError: $('note-error'),
+  notesOff: $('notes-off'),
+  noteList: $('note-list')
 };
 
 /** How long the viewer keeps trying to take its place back after its socket drops: a little past the relay's grace. */
@@ -70,6 +90,11 @@ const RECONNECT_FOR_MS = 150_000;
 const RELOAD_FALLBACK_MS = 1500;
 /** How long a ticket's redemption may take before it is given up; a ticket is good for a minute. */
 const REDEEM_TIMEOUT_MS = 15_000;
+/**
+ * The least time between two spotlights this page sends (#768): a click at a time, never a stream. The relay drops
+ * any that come faster still.
+ */
+const POINT_GAP_MS = 500;
 /** What the preview frame may do: run the site as its own origin, but never navigate the viewer away. */
 const FRAME_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox';
 
@@ -118,6 +143,12 @@ let frameSlow = false;
 let frameShownFallback;
 /** The page the frame is on, as its bridge last said or as the viewer last pointed it. */
 let framePath = '/';
+/** Whether the guest's next click on the site points at what it lands on, for the host (#768). */
+let pointing = false;
+/** Whether the page in the frame has said its bridge is there, so pointing can work on it: a page without one cannot point. */
+let bridgeReady = false;
+/** When this page last sent a spotlight (performance.now()), so the next waits POINT_GAP_MS. */
+let pointedAt = -Infinity;
 /** @type {string | null} */
 let queuedTicket = null;
 let redeeming = false;
@@ -157,6 +188,44 @@ let veilShown = '';
 /** The deadline warnings already given (minutes left), so each is announced once, and the deadline they were for. */
 let warned = new Set();
 let warnedFor = 0;
+
+/** The page the frame shows, as its bridge last said (never where it was only pointed); null until it says. */
+/** @type {string | null} */
+let shownPath = null;
+
+/**
+ * The host's notes as last read, while the guest is in the room (null before they are read, and once it leaves), and
+ * whether the host lets guests leave notes now. A note being written is pinned to the page shown when writing began.
+ * @type {Array<{ id: string; text: string; authorName: string; createdAt: number; resolved: boolean }> | null}
+ */
+let notesList = null;
+let guestNotes = true;
+/** The notes are kept read while the guest is in: set on coming in, so a change told of during the first read counts. */
+let notesWanted = false;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let notesRetry;
+/**
+ * How long a read of the notes the host refused (busy, or the relay's backlog) waits before it is asked again, doubling
+ * each time, and how many times it is: a host that keeps refusing is asked no more until the next change it tells of.
+ */
+const NOTES_RETRY_MS = 1500;
+const NOTES_RETRIES = 5;
+let notesRetries = 0;
+/** @type {Promise<void> | null} */
+let notesLoading = null;
+let notesAgain = false;
+/** @type {string | null} */
+let notePath = null;
+let noteSending = false;
+/**
+ * Calls to the host waiting for their answer, by request ID. IDs are never reused, so an answer to a call made on an
+ * earlier socket can never be taken for one made since.
+ * @type {Map<string, { method: string; resolve: (answer: any) => void; timer: ReturnType<typeof setTimeout> }>}
+ */
+const calls = new Map();
+let callSeq = 0;
+/** How long a call to the host may take before it is given up. */
+const CALL_TIMEOUT_MS = 20_000;
 
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let reconnectTimer;
@@ -265,6 +334,9 @@ function onFrame(frame) {
       hostConnected = frame.connected === true;
       // Whatever the frame loaded while the host was away failed; show the host's work again now it is back.
       if (back) refreshFrame();
+      // The host answers nothing asked of the connection it lost: a note on its way may or may not have been kept.
+      if (!hostConnected) failCalls('The host’s connection dropped.', true);
+      if (back && notesWanted) void loadNotes();
       return render();
     }
     case 'room:state':
@@ -282,6 +354,22 @@ function onFrame(frame) {
       if (frame.code === 'AUTH_FAILED' && place?.resumeToken) refusal = 'resume';
       else if (frame.code === 'ROOM_FULL') refusal = 'full';
       return;
+    case 'rpc:response': {
+      const call = calls.get(frame.requestId);
+      if (!call || call.method !== frame.method) return;
+      calls.delete(frame.requestId);
+      clearTimeout(call.timer);
+      // The host's own UNAVAILABLE may come after the change was saved (the disk failed as it finished): it counts as an
+      // answer lost, so the guest looks before sending again.
+      return call.resolve(frame.ok === true ? { ok: true, result: frame.result } : { ok: false, message: String(frame.error?.message ?? 'The host could not do that.'), lost: frame.error?.code === 'UNAVAILABLE' });
+    }
+    case 'rpc:event':
+      // The notes changed, or whether guests may leave them: read again, once they have been read at all.
+      if (frame.event === 'notes:changed' && phase === 'admitted' && notesWanted) {
+        notesRetries = 0;
+        void loadNotes();
+      }
+      return;
   }
 }
 
@@ -295,6 +383,7 @@ function onStatus(frame) {
       guest = null;
       return setPhase('pending');
     case 'admitted': {
+      const back = reconnecting;
       settle();
       pastDeadline = false;
       const before = guest?.role;
@@ -305,6 +394,8 @@ function onStatus(frame) {
       siteTitle = guest.projectName;
       if (typeof frame.previewTicket === 'string') redeem(frame.previewTicket);
       setPhase('admitted');
+      // The host's notes are read on coming in, and again on coming back: changes may have been missed meanwhile.
+      if (!notesList || back) void loadNotes();
       // A guest who becomes a collaborator is told they can edit; the bar's "How to edit" says how.
       if (guest.role === 'collaborator' && before !== 'collaborator') {
         if (before) announce('You can now edit this site with the host. How to edit says how.');
@@ -398,6 +489,8 @@ function markLost() {
   }, RECONNECT_FOR_MS);
   // This tab may now miss a revocation, so nothing is loaded into the frame until the relay has let it back in.
   grant++;
+  failCalls('The connection to the live session dropped.', true);
+  clearTimeout(notesRetry);
   previewReady = false;
   queuedTicket = null;
   redemption?.abort();
@@ -438,6 +531,18 @@ function endAccess() {
   ticker = undefined;
   ui.handoff.hidden = true;
   ui.openInBuilder.setAttribute('aria-expanded', 'false');
+  failCalls('You are no longer in the live session.');
+  clearTimeout(notesRetry);
+  notesWanted = false;
+  notesRetries = 0;
+  notesList = null;
+  notesAgain = false;
+  guestNotes = true;
+  notePath = null;
+  ui.noteText.value = '';
+  ui.noteList.replaceChildren();
+  ui.notes.hidden = true;
+  ui.notesButton.setAttribute('aria-expanded', 'false');
   unmountFrame();
 }
 
@@ -526,6 +631,7 @@ function mountFrame() {
   iframe.referrerPolicy = 'no-referrer';
   iframe.setAttribute('sandbox', FRAME_SANDBOX);
   framePath = start;
+  bridgeReady = false;
   frameShown = false;
   frameSlow = false;
   // The site counts as on screen once its first page has loaded, or once the page's bridge says it is ready (a page
@@ -554,8 +660,11 @@ function frameReady() {
 
 function unmountFrame() {
   if (!iframe) return;
+  setPointing(false);
+  bridgeReady = false;
   iframe.remove();
   iframe = null;
+  shownPath = null;
   clearTimeout(reloadFallback);
   frameShown = false;
   frameSlow = false;
@@ -567,6 +676,10 @@ function unmountFrame() {
 function navigate(path) {
   if (!iframe || !isFramePath(path)) return;
   framePath = path;
+  // The next page's bridge says when it is there; until then nothing can point at it.
+  bridgeReady = false;
+  setPointing(false);
+  render();
   iframe.src = `${config.previewOrigin}${path}`;
 }
 
@@ -599,10 +712,24 @@ function reloadPreview() {
 }
 
 window.addEventListener('message', (event) => {
-  if (!iframe || event.source !== iframe.contentWindow || event.origin !== config.previewOrigin) return;
+  if (!iframe || event.origin !== config.previewOrigin || !event.data || typeof event.data !== 'object') return;
+  // A page saying it is going posts as it unloads, when its window is no longer the frame's: it is taken from the
+  // preview's origin alone, since all it can do is stop pointing until the next page's bridge is there.
+  if (event.data.type === BRIDGE_MESSAGES.leaving) {
+    bridgeReady = false;
+    setPointing(false);
+    render();
+    return;
+  }
+  if (event.source !== iframe.contentWindow) return;
   const data = event.data;
-  if (!data || typeof data !== 'object') return;
-  if (data.type === BRIDGE_MESSAGES.reloading) clearTimeout(reloadFallback);
+  if (data.type === BRIDGE_MESSAGES.reloading) {
+    clearTimeout(reloadFallback);
+    // The page is going: pointing stops with it, and waits for the bridge of the page that replaces it.
+    bridgeReady = false;
+    setPointing(false);
+    render();
+  }
   else if (data.type === BRIDGE_MESSAGES.refused) {
     // The relay turned the frame's page away: the preview is not open, whatever the frame loaded. Try again takes the
     // guest's place back for a fresh ticket. A refusal of a page asked for under an older grant, while a newer one is
@@ -618,9 +745,83 @@ window.addEventListener('message', (event) => {
   }
   else if (data.type === BRIDGE_MESSAGES.ready && isFramePath(data.path)) {
     framePath = data.path;
+    shownPath = data.path;
+    const first = !bridgeReady;
+    bridgeReady = true;
     frameReady();
+    if (!ui.notes.hidden) renderNotes();
+    // A page the site's own router moved to keeps its bridge: still pointing, it is told so again.
+    if (pointing) iframe.contentWindow?.postMessage({ type: BRIDGE_MESSAGES.point, on: true }, config.previewOrigin);
+    else if (first) render();
+  }
+  else if (data.type === BRIDGE_MESSAGES.pointed && pointing) {
+    setPointing(false);
+    const spotlight = spotlightOf(data);
+    if (!spotlight) return announce('That spot couldn’t be pointed out. Try somewhere else on the page.');
+    const now = performance.now();
+    if (now - pointedAt < POINT_GAP_MS) return announce('Wait a moment before pointing again.');
+    pointedAt = now;
+    send({ type: 'spotlight:point', spotlight });
+    flashPointed();
+  }
+  else if (data.type === BRIDGE_MESSAGES.pointCancelled && pointing) {
+    setPointing(false);
+    ui.point.focus({ preventScroll: true });
   }
 });
+
+/**
+ * A spotlight as the relay reads it, from what the bridge reported: the page's address, the element when the page
+ * named one within the contract's bounds (null otherwise), and the point. Null when the address cannot be sent.
+ * @param {any} data
+ */
+function spotlightOf(data) {
+  if (!isSpotlightPath(data.path)) return null;
+  const share = (/** @type {unknown} */ n) => (typeof n === 'number' && Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : null);
+  const x = share(data.x);
+  const y = share(data.y);
+  if (x === null || y === null) return null;
+  return { previewPath: data.path, target: targetOf(data.target), x, y };
+}
+
+/** @param {any} t */
+function targetOf(t) {
+  const id = (/** @type {unknown} */ v) => typeof v === 'string' && v.length > 0 && v.length <= MAX_ID_LENGTH;
+  const ids = (/** @type {unknown} */ v) => Array.isArray(v) && v.length <= MAX_SELECTION_DEPTH && v.every(id);
+  if (!t || typeof t !== 'object' || !t.owner || !['page', 'shell', 'component', 'template', 'archive'].includes(t.owner.kind) || !id(t.owner.id) || !ids(t.instancePath) || !id(t.nodeId)) return null;
+  if (t.itemPath !== undefined && !ids(t.itemPath)) return null;
+  return { owner: { kind: t.owner.kind, id: t.owner.id }, instancePath: [...t.instancePath], nodeId: t.nodeId, ...(t.itemPath?.length ? { itemPath: [...t.itemPath] } : {}) };
+}
+
+/** Whether the guest can point now: let in, the site on screen, and the host there to see it. */
+function canPoint() {
+  return phase === 'admitted' && !!iframe && bridgeReady && roomState() === 'live';
+}
+
+/** Start or stop pointing, and tell the frame's bridge. Only pointing the guest can do now is started. */
+function setPointing(/** @type {boolean} */ on) {
+  const next = on && canPoint();
+  if (next === pointing) return;
+  pointing = next;
+  ui.point.setAttribute('aria-pressed', String(pointing));
+  ui.stage.dataset.pointing = String(pointing);
+  ui.pointHint.hidden = !pointing;
+  iframe?.contentWindow?.postMessage({ type: BRIDGE_MESSAGES.point, on: pointing }, config.previewOrigin);
+  if (pointing) {
+    announce('Click anything on the site to point it out to the host. Press Escape to cancel.');
+    // The click is the site's to take: focus goes to the frame, so Escape reaches its bridge as well.
+    iframe?.focus({ preventScroll: true });
+  }
+}
+
+let pointedTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
+/** Say a spotlight went: on the button for a moment, and to a screen reader. */
+function flashPointed() {
+  announce('Pointed out to the host.');
+  ui.point.dataset.sent = 'true';
+  clearTimeout(pointedTimer);
+  pointedTimer = setTimeout(() => delete ui.point.dataset.sent, 1500);
+}
 
 /** Following the host: show the host's page (at the host's width too, when that is the width chosen). */
 function applyFollow() {
@@ -983,6 +1184,8 @@ function renderRoom() {
     closeHandoff(false);
     if (held && started) (ui.barMore.offsetParent ? ui.barMore : ui.title).focus({ preventScroll: true });
   }
+  // Nor do notes, once the guest's time is up.
+  if (state === 'time-up' && !ui.notes.hidden) closeNotes(false);
   const { word } = ROOM[state];
   let veil = ROOM[state].veil;
   // At the session's own deadline, the whole session is over, not only this guest's time.
@@ -991,6 +1194,9 @@ function renderRoom() {
   ui.connection.textContent = word;
   ui.bar.dataset.state = state;
   ui.follow.checked = follow;
+  // Pointing waits for the site to be on screen with the host there; anything else stops it.
+  ui.point.disabled = !canPoint();
+  if (pointing && !canPoint()) setPointing(false);
   renderTime();
   ui.hostNote.hidden = state !== 'host-away';
   ui.hostNote.textContent = 'The host’s connection dropped. The site will update when they’re back.';
@@ -1033,6 +1239,8 @@ function showHandoff(moveFocus = false) {
   clearTimeout(copiedTimer);
   ui.handoff.hidden = false;
   ui.openInBuilder.setAttribute('aria-expanded', 'true');
+  // One panel over the site at a time.
+  if (!ui.notes.hidden) closeNotes(false);
   closeOptions();
   if (moveFocus) ui.handoffTitle.focus();
 }
@@ -1051,6 +1259,186 @@ function closeHandoff(returnFocus = true) {
 function closeOptions() {
   ui.bar.dataset.open = 'false';
   ui.barMore.setAttribute('aria-expanded', 'false');
+}
+
+// ---------------------------------------------------------------------------
+// Notes (#770)
+
+/**
+ * Call the host's editor through the relay; resolves with its answer, or with why there is none (the connection
+ * dropped, the guest left, or the host took too long). Never rejects.
+ * @param {string} method @param {unknown[]} args
+ * `lost`: the call went out, and its answer never came: what it asked for may have been done.
+ * @returns {Promise<{ ok: true; result: any } | { ok: false; message: string; lost?: boolean }>}
+ */
+function callHost(method, args) {
+  if (phase !== 'admitted' || reconnecting || socket?.readyState !== WebSocket.OPEN) return Promise.resolve({ ok: false, message: 'The connection to the live session is down. Try again once it is back.' });
+  // Nothing is sent while the host is away: the relay would only refuse it, and nobody need wonder whether it landed.
+  if (!hostConnected) return Promise.resolve({ ok: false, message: 'The host is reconnecting. Try again in a moment.' });
+  const requestId = `v${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}-${++callSeq}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (calls.delete(requestId)) resolve({ ok: false, message: 'The host did not answer in time.', lost: true });
+    }, CALL_TIMEOUT_MS);
+    calls.set(requestId, { method, resolve, timer });
+    send({ type: 'rpc:request', requestId, method, args });
+  });
+}
+
+/** Every call still waiting is answered with `message`: the relay answers nothing for a socket it let go. */
+function failCalls(/** @type {string} */ message, lost = false) {
+  const waiting = [...calls.values()];
+  calls.clear();
+  for (const call of waiting) {
+    clearTimeout(call.timer);
+    call.resolve({ ok: false, message, lost });
+  }
+}
+
+/** @param {any} note */
+function isNote(note) {
+  return !!note && typeof note.id === 'string' && typeof note.text === 'string' && typeof note.authorName === 'string' && typeof note.createdAt === 'number' && typeof note.resolved === 'boolean';
+}
+
+/** Read the host's notes: one request at a time, and once more after it when they changed again meanwhile. */
+function loadNotes() {
+  if (notesLoading) {
+    notesAgain = true;
+    return notesLoading;
+  }
+  const at = grant;
+  notesWanted = true;
+  clearTimeout(notesRetry);
+  notesLoading = (async () => {
+    do {
+      notesAgain = false;
+      const answer = await callHost('notes.list', []);
+      if (at !== grant || phase !== 'admitted') return;
+      if (answer.ok && Array.isArray(answer.result?.notes)) {
+        notesList = answer.result.notes.filter(isNote);
+        guestNotes = answer.result.guestNotes !== false;
+        notesRetries = 0;
+        renderNotes();
+      } else if (!notesAgain && hostConnected && !reconnecting && notesRetries < NOTES_RETRIES) {
+        // Not read (the host was busy, or the relay held it back): asked again shortly, so a change is never missed for
+        // good. While the host or this connection is away, its return asks instead.
+        notesRetry = setTimeout(() => {
+          if (at === grant && phase === 'admitted') void loadNotes();
+        }, NOTES_RETRY_MS * 2 ** notesRetries++);
+      }
+    } while (notesAgain);
+  })().finally(() => {
+    notesLoading = null;
+  });
+  return notesLoading;
+}
+
+/** A note's length as the host counts it: characters once spaces are run together and the ends trimmed. */
+function noteLength(/** @type {string} */ text) {
+  return [...text.normalize('NFC').replace(/\s+/gu, ' ').trim()].length;
+}
+
+/** How long ago a note was left, on this device's clock (the host's stamp is only shown, never trusted for access). */
+function noteAge(/** @type {number} */ at) {
+  const mins = Math.floor(Math.max(0, Date.now() - at) / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 24 * 60) return `${Math.floor(mins / 60)} h ago`;
+  return new Date(at).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/** The page a note will be left on: where writing began, else the page shown now. */
+function notePage() {
+  return notePath ?? shownPath;
+}
+
+function renderNotes() {
+  const open = (notesList ?? []).filter((n) => !n.resolved);
+  ui.notesCount.hidden = open.length === 0;
+  ui.notesCount.textContent = String(open.length);
+  ui.notesButton.setAttribute('aria-label', open.length ? `Notes, ${open.length} open` : 'Notes');
+  if (ui.notes.hidden) return;
+  ui.noteForm.hidden = !guestNotes;
+  ui.notesOff.hidden = guestNotes;
+  const page = notePage();
+  ui.noteWhere.textContent = page ? `Leave a note on this page (${page})` : 'Leave a note on this page';
+  const length = noteLength(ui.noteText.value);
+  ui.noteLength.textContent = `${length}/${config.noteMax}`;
+  ui.noteLength.dataset.over = String(length > config.noteMax);
+  ui.noteSend.disabled = noteSending || !page || length === 0 || length > config.noteMax;
+  // What is typed while a note is being sent would be lost when the field empties for it.
+  ui.noteText.readOnly = noteSending;
+  ui.noteSend.textContent = noteSending ? 'Sending…' : 'Send note';
+  const items = open.map((note) => {
+    const li = document.createElement('li');
+    const text = document.createElement('p');
+    text.className = 'note-text';
+    // Notes are other people's words: always text, never markup.
+    text.textContent = note.text;
+    const meta = document.createElement('p');
+    meta.className = 'note-meta';
+    meta.textContent = `${note.authorName} · ${noteAge(note.createdAt)}`;
+    li.append(text, meta);
+    return li;
+  });
+  if (!items.length) {
+    const li = document.createElement('li');
+    li.className = 'note-empty';
+    li.textContent = notesList ? 'No open notes yet.' : 'Reading the notes…';
+    items.push(li);
+  }
+  ui.noteList.replaceChildren(...items);
+}
+
+function showNotes() {
+  ui.notes.hidden = false;
+  ui.notesButton.setAttribute('aria-expanded', 'true');
+  closeOptions();
+  if (!ui.handoff.hidden) closeHandoff(false);
+  // Read again on opening: whatever the last read missed is shown now.
+  notesRetries = 0;
+  void loadNotes();
+  renderNotes();
+  ui.notesTitle.focus();
+}
+
+/** @param {boolean} [returnFocus] */
+function closeNotes(returnFocus = true) {
+  ui.notes.hidden = true;
+  ui.notesButton.setAttribute('aria-expanded', 'false');
+  if (!returnFocus) return;
+  if (ui.notesButton.offsetParent) ui.notesButton.focus();
+  else if (ui.barMore.offsetParent) ui.barMore.focus();
+}
+
+async function sendNote() {
+  const text = normalizeDisplayName(ui.noteText.value, config.noteMax);
+  const page = notePage();
+  if (noteSending || !page) return;
+  if (!text) {
+    const typed = ui.noteText.value.trim();
+    ui.noteError.textContent = !typed ? 'Write something in the note first.' : noteLength(typed) > config.noteMax ? `Keep a note to ${config.noteMax} characters.` : 'Type the note again without hidden or special characters.';
+    ui.noteError.hidden = false;
+    ui.noteText.focus();
+    return;
+  }
+  ui.noteError.hidden = true;
+  noteSending = true;
+  renderNotes();
+  const answer = await callHost('notes.add', [{ text, previewPath: page }]);
+  noteSending = false;
+  if (answer.ok) {
+    ui.noteText.value = '';
+    notePath = null;
+    announce('Note sent to the host.');
+    void loadNotes();
+  } else {
+    // An answer that never came may still have been a note kept: the guest looks before sending it again.
+    ui.noteError.textContent = answer.lost ? `${answer.message} Your note may have been sent: look at the notes before sending it again.` : answer.message;
+    ui.noteError.hidden = false;
+    if (answer.lost) void loadNotes();
+  }
+  renderNotes();
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1507,8 @@ ui.cancel.addEventListener('click', () => {
   setPhase('name');
 });
 
+ui.point.addEventListener('click', () => setPointing(!pointing));
+
 ui.follow.addEventListener('change', () => {
   follow = ui.follow.checked;
   if (follow) applyFollow();
@@ -1145,12 +1535,31 @@ for (const query of [narrow, midsize])
 ui.barMore.addEventListener('click', () => {
   const open = ui.bar.dataset.open !== 'true';
   ui.bar.dataset.open = String(open);
+  if (open && !ui.notes.hidden) closeNotes(false);
   delete ui.barMore.dataset.attention;
   ui.barMore.setAttribute('aria-expanded', String(open));
 });
 
 ui.openInBuilder.addEventListener('click', () => (ui.handoff.hidden ? showHandoff(true) : closeHandoff()));
 ui.handoffClose.addEventListener('click', () => closeHandoff());
+ui.notesButton.addEventListener('click', () => (ui.notes.hidden ? showNotes() : closeNotes()));
+ui.notesClose.addEventListener('click', () => closeNotes());
+ui.noteText.addEventListener('input', () => {
+  // The note is pinned to the page shown when writing began, even if the frame follows the host elsewhere meanwhile.
+  notePath = ui.noteText.value.trim() ? (notePath ?? shownPath) : null;
+  if (!ui.noteError.hidden) ui.noteError.hidden = true;
+  renderNotes();
+});
+ui.noteText.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    void sendNote();
+  }
+});
+ui.noteForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  void sendNote();
+});
 ui.handoffCopy.addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(config.inviteLink);
@@ -1173,16 +1582,22 @@ document.addEventListener('pointerdown', (event) => {
   const target = /** @type {Node} */ (event.target);
   if (ui.bar.dataset.open === 'true' && !ui.barControls.contains(target) && !ui.barMore.contains(target)) closeOptions();
   if (!ui.handoff.hidden && !ui.handoff.contains(target) && !ui.openInBuilder.contains(target)) closeHandoff(false);
+  if (!ui.notes.hidden && !ui.notes.contains(target) && !ui.notesButton.contains(target)) closeNotes(false);
 });
 window.addEventListener('blur', () => {
   if (!iframe || document.activeElement !== iframe) return;
   closeOptions();
   if (!ui.handoff.hidden) closeHandoff(false);
+  if (!ui.notes.hidden) closeNotes(false);
 });
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (!ui.handoff.hidden) closeHandoff();
+  if (pointing) {
+    setPointing(false);
+    ui.point.focus({ preventScroll: true });
+  } else if (!ui.handoff.hidden) closeHandoff();
+  else if (!ui.notes.hidden) closeNotes();
   else if (ui.bar.dataset.open === 'true') {
     closeOptions();
     ui.barMore.focus();

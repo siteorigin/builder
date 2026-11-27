@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import type { RemoteEnding, RemoteJoinResult, RemoteParticipant, RemotePresence, RemoteState, RuntimeState } from '@shared/api';
+import type { LiveActivity, RemoteAi, RemoteAiSendResult, RemoteEnding, RemoteJoinResult, RemoteParticipant, RemotePresence, RemoteState, RuntimeState } from '@shared/api';
+import { NO_AI_ACCESS, readAiAccess, readAiTurnEvent, type LiveAiAccess, type LiveAiTurn } from '@shared/live/ai';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { LIVE_PROTOCOL_VERSION, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type FrameOf, type GuestToRelay, type Presence, type RpcError } from '@shared/live/messages';
 import type { LiveApplyResult, LiveProjectChanged, LiveProjectSnapshot } from '@shared/live/snapshot';
+import { isLiveNotes, type LiveNoteResult, type LiveNotes } from '@shared/live/notes';
 import { parseInviteLink, relaySocketUrl, roomPreviewOrigin, roomSocketPath } from '@shared/live/relay-url';
+import { canCall, type LiveMethod } from '@shared/live/roles';
 import { GuestPreviewServer, redeemPreviewTicket, REMOTE_PREVIEW_HEADER, type RedeemResult } from './guest-preview';
 import type { LiveSocketFactory } from './host';
 
@@ -14,7 +17,8 @@ import type { LiveSocketFactory } from './host';
  * One outbound WebSocket to the room's socket on the relay carries the guest's place (the waiting room, admission,
  * role changes and every ending), the host's project as it changes, the others' presence, and the guest's calls into
  * the host's editor (`project.snapshot`, and a collaborator's `project.apply`), which the host checks again before
- * anything runs (host.ts). A dropped connection takes the same place back with the relay's resume token for as long
+ * anything runs (host.ts). A collaborator the host allows AI editing also asks the host's AI from here (#769); its own
+ * requests' progress comes back to it alone, and is kept here while the join lasts. A dropped connection takes the same place back with the relay's resume token for as long
  * as the relay keeps it.
  *
  * The host's preview is shown through this computer's own loopback server (guest-preview.ts): each preview ticket the
@@ -24,14 +28,22 @@ import type { LiveSocketFactory } from './host';
  * presence never reach the next.
  */
 
-export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence';
+/** How many times notes the host would not give are asked for again, before the next change it tells of. */
+const NOTES_RETRIES = 5;
+
+export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence' | 'remote:ai' | 'remote:notes';
 
 export interface LiveGuestContext {
   emit(channel: 'remote:state', payload: RemoteState): void;
   emit(channel: 'remote:changed', payload: { joinId: string; snapshot: LiveProjectSnapshot }): void;
   emit(channel: 'remote:reload', payload: { joinId: string; revision: number | null }): void;
   emit(channel: 'remote:presence', payload: RemotePresence): void;
+  emit(channel: 'remote:ai', payload: RemoteAi): void;
+  emit(channel: 'remote:notes', payload: { joinId: string; notes: LiveNotes }): void;
 }
+
+/** How many of its own AI requests a join keeps, newest last. */
+export const REMOTE_AI_TURNS = 50;
 
 export interface LiveGuestTimings {
   /** How long a new connection has to be told its place before it is given up. */
@@ -47,6 +59,8 @@ export interface LiveGuestTimings {
   presenceMs: number;
   /** How long a snapshot the host was too busy to send waits before it is asked for again. */
   busyRetryMs: number;
+  /** How long another collaborator's edit shows it as editing (#768). */
+  activityMs: number;
 }
 
 export const LIVE_GUEST_TIMINGS: LiveGuestTimings = {
@@ -56,7 +70,8 @@ export const LIVE_GUEST_TIMINGS: LiveGuestTimings = {
   backoffMaxMs: 10_000,
   reconnectForMs: 150_000,
   presenceMs: 150,
-  busyRetryMs: 1_000
+  busyRetryMs: 1_000,
+  activityMs: 3_000
 };
 
 /** What the guest manager needs that tests replace: the socket, the preview server and ticket redemption. */
@@ -82,6 +97,8 @@ export interface RemotePreviewAccess {
 const OPEN = 1;
 /** How long an `ended` status waits for the close after it, which may say the host stayed away too long. */
 const ENDING_CLOSE_WAIT_MS = 1_000;
+/** Numbers each edit shown, so the editor tells a new one from one it already shows. */
+let activitySeq = 0;
 /** The code the guest closes a connection it gives up on with (one of the codes a client may send). */
 const ABANDONED = 4000;
 
@@ -134,6 +151,8 @@ interface Join {
   handshakeTimer: ReturnType<typeof setTimeout> | null;
   /** What the last join on the current socket ran into, for the close that follows. */
   refusal: 'resume' | 'full' | null;
+  /** This guest's requests to the host's AI (#769): what the host allows, the requests made, and the one running. */
+  ai: { access: LiveAiAccess; turns: LiveAiTurn[]; activeRunId: string | null };
   calls: Map<string, PendingCall>;
   nextCall: number;
   participants: RemoteParticipant[];
@@ -143,6 +162,11 @@ interface Join {
   ownPresence: Presence | null;
   presenceSent: string | null;
   presenceTimer: ReturnType<typeof setTimeout> | null;
+  /** The others connected when this app's presence was last sent with them listed, so one who arrives or comes back is sent it. */
+  presentedTo: Set<string>;
+  /** Each other collaborator's latest edit (#768), until it is no longer shown, and the one timer that takes them off. */
+  activity: Map<string, LiveActivity & { until: number }>;
+  activityTimer: ReturnType<typeof setTimeout> | null;
   /** The host's project as last received, and the snapshot being asked for. */
   latest: LiveProjectSnapshot | null;
   /**
@@ -155,6 +179,20 @@ interface Join {
   fetching: Promise<LiveProjectSnapshot | null> | null;
   refetch: boolean;
   busyTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The host's pinned notes (#770) as last received, once the editor has asked for them (null before), and the request
+   * for them under way: asked again whenever the host says they changed, and on coming back.
+   */
+  notes: LiveNotes | null;
+  /** The editor has asked for the notes this join: from then on they are kept read, also after a read that failed. */
+  notesWanted: boolean;
+  notesFetch: Promise<LiveNotes | null> | null;
+  notesRefetch: boolean;
+  /** Asks again for notes that could not be read (BUSY, the relay's backlog), a few times, each later than the last. */
+  notesTimer: ReturnType<typeof setTimeout> | null;
+  notesRetries: number;
+  /** The last read of the notes failed: what is kept may be behind the host's. */
+  notesStale: boolean;
   tooLarge: boolean;
   hostRuntime: RuntimeState['state'] | null;
   /** The latest project revision the host said its preview serves (preview:reload), or null before it said one. */
@@ -301,6 +339,7 @@ export class LiveGuestManager {
       retryTimer: null,
       handshakeTimer: null,
       refusal: null,
+      ai: { access: NO_AI_ACCESS, turns: [], activeRunId: null },
       calls: new Map(),
       nextCall: 0,
       participants: [],
@@ -309,12 +348,22 @@ export class LiveGuestManager {
       ownPresence: null,
       presenceSent: null,
       presenceTimer: null,
+      presentedTo: new Set(),
+      activity: new Map(),
+      activityTimer: null,
       latest: null,
       opened: false,
       fetchFailed: false,
       fetching: null,
       refetch: false,
       busyTimer: null,
+      notes: null,
+      notesWanted: false,
+      notesFetch: null,
+      notesRefetch: false,
+      notesTimer: null,
+      notesRetries: 0,
+      notesStale: false,
       tooLarge: false,
       hostRuntime: null,
       previewRevision: null,
@@ -447,18 +496,35 @@ export class LiveGuestManager {
         // Whatever the host changed while it was away reaches the editor now.
         if (back && join.phase === 'admitted') {
           void this.fetchSnapshot(join);
+          if (join.notesWanted) {
+            join.notesRetries = 0;
+            void this.fetchNotes(join);
+          }
           this.reload(join);
+        }
+        // A host back, or on a connection that replaced one still open, may not have heard where this app is: told
+        // again, as it is now.
+        if (frame.connected && join.phase === 'admitted') {
+          join.presenceSent = null;
+          this.schedulePresence(join);
         }
         return this.publish();
       }
       case 'room:roster': {
-        join.participants = frame.participants.map((p) => ({ guestId: p.guestId, displayName: p.displayName, role: p.role }));
-        // Only collaborators share where they are: anyone gone, or made a viewer, is no longer shown anywhere.
+        join.participants = frame.participants.map((p) => ({ guestId: p.guestId, displayName: p.displayName, role: p.role, colorSlot: p.colorSlot, connected: p.connected }));
+        // Only collaborators share where they are, and only while connected: anyone gone, away, or made a viewer, is no
+        // longer shown anywhere.
+        const shown = (id: string) => join.participants.some((p) => p.guestId === id && p.role === 'collaborator' && p.connected);
         let dropped = false;
-        for (const id of [...join.guestPresence.keys()]) {
-          if (!join.participants.some((p) => p.guestId === id && p.role === 'collaborator')) dropped = join.guestPresence.delete(id) || dropped;
-        }
+        for (const marks of [join.guestPresence, join.activity]) for (const id of [...marks.keys()]) if (!shown(id)) dropped = marks.delete(id) || dropped;
         if (dropped) this.publishPresence(join);
+        // Someone who has just arrived, or come back, has heard nothing of where this app is: told once, as it is now.
+        const others = join.participants.filter((p) => p.guestId !== join.guestId && p.connected).map((p) => p.guestId);
+        if (others.some((id) => !join.presentedTo.has(id))) {
+          join.presenceSent = null;
+          this.schedulePresence(join);
+        }
+        join.presentedTo = new Set(others);
         return this.publish();
       }
       case 'preview:reload':
@@ -479,6 +545,14 @@ export class LiveGuestManager {
         if (frame.participant.kind === 'host') join.hostPresence = frame.presence;
         else if (frame.participant.guestId !== join.guestId) join.guestPresence.set(frame.participant.guestId, frame.presence);
         return this.publishPresence(join);
+      }
+      case 'activity:edited': {
+        // Another collaborator's edit, shown for a moment while the roster lists them connected.
+        const editor = join.participants.find((p) => p.guestId === frame.guestId);
+        if (frame.guestId === join.guestId || join.role !== 'collaborator' || editor?.role !== 'collaborator' || !editor.connected) return;
+        join.activity.set(frame.guestId, { seq: ++activitySeq, target: frame.target, until: performance.now() + this.timings.activityMs });
+        this.publishPresence(join);
+        return this.armActivity(join);
       }
       case 'protocol:error': {
         if (frame.code === 'AUTH_FAILED' && join.resumeToken) join.refusal = 'resume';
@@ -508,7 +582,8 @@ export class LiveGuestManager {
         const back = join.reconnecting;
         this.placed(join);
         const returning = join.phase === 'admitted';
-        const demoted = join.role === 'collaborator' && frame.role === 'viewer';
+        // Only a collaborator shares where it is: any other role stops sending it.
+        const demoted = join.role === 'collaborator' && frame.role !== 'collaborator';
         join.phase = 'admitted';
         join.guestId = frame.guestId;
         join.role = frame.role;
@@ -517,11 +592,24 @@ export class LiveGuestManager {
         join.sessionExpiresAt = frame.sessionExpiresAt;
         this.readClock(join, frame.now);
         if (frame.previewTicket) this.queueTicket(join, frame.previewTicket);
-        if (demoted) this.clearOwnPresence(join);
-        else this.schedulePresence(join);
+        if (demoted) {
+          this.clearOwnPresence(join);
+          // Only a collaborator is shown the others' edits.
+          if (join.activity.size) {
+            join.activity.clear();
+            this.publishPresence(join);
+          }
+          // Only a collaborator has AI: the host has stopped this guest's request, and turned AI off until it says otherwise.
+          this.loseAi(join, `The host made you ${frame.role === 'viewer' ? 'a viewer' : 'a copy editor'}, so this request was stopped.`);
+        } else this.schedulePresence(join);
         // On first admission, and on taking the place back after a drop (changes may have been missed), the host's
         // project is asked for; a role or deadline changing on a live connection needs no new copy.
         if (!returning || back || !join.latest) void this.fetchSnapshot(join);
+        // Notes the editor already holds may have changed while the connection was down.
+        if (join.notesWanted && back) {
+          join.notesRetries = 0;
+          void this.fetchNotes(join);
+        }
         this.answerJoin(join);
         return this.publish();
       }
@@ -563,6 +651,21 @@ export class LiveGuestManager {
 
   private onEvent(join: Join, frame: Frame<'relay-to-guest', 'rpc:event'>): void {
     if (join.phase !== 'admitted') return;
+    if (frame.event === 'ai:access') {
+      const access = readAiAccess(frame.payload);
+      if (!access) return;
+      // Only a collaborator is ever allowed: one that says otherwise to a viewer is taken as no.
+      if (access.allowed && join.role === 'collaborator') this.setAi(join, { ...join.ai, access });
+      else this.loseAi(join, 'The host turned off AI editing for you, so this request was stopped.');
+      return;
+    }
+    if (frame.event === 'ai:turn') return this.onAiTurn(join, frame.payload);
+    // The notes changed: asked for again, once the editor has wanted them.
+    if (frame.event === 'notes:changed') {
+      join.notesRetries = 0;
+      if (join.notesWanted) void this.fetchNotes(join);
+      return;
+    }
     if (frame.event === 'runtime:status') {
       const state = (frame.payload as { state?: unknown } | null)?.state;
       if (typeof state === 'string') {
@@ -645,7 +748,7 @@ export class LiveGuestManager {
   // -------------------------------------------------------------------------
   // Calls into the host's editor
 
-  private call(join: Join, method: 'project.snapshot' | 'project.apply', args: unknown[]): Promise<{ ok: true; result: unknown } | { ok: false; error: RpcError }> {
+  private call(join: Join, method: LiveMethod, args: unknown[]): Promise<{ ok: true; result: unknown } | { ok: false; error: RpcError }> {
     if (join.ended || join.phase !== 'admitted') return Promise.resolve({ ok: false, error: unavailable('You are not in the live session.') });
     const requestId = `g${++join.nextCall}`;
     return new Promise((resolve) => {
@@ -689,11 +792,11 @@ export class LiveGuestManager {
     return join.latest;
   }
 
-  /** Make a collaborator's edit in the host's project. The host checks it again, and it lands through the host's own pipeline. */
+  /** Make a collaborator's or copy editor's edit in the host's project. The host checks it again, and it lands through the host's own pipeline. */
   async apply(joinId: unknown, batch: unknown): Promise<LiveApplyResult> {
     const join = this.current;
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, error: unavailable('You are no longer in that live session.') };
-    if (join.role !== 'collaborator') return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'The host has made you a viewer: you can watch, but not edit.', recoverable: false } };
+    if (!canCall(join.role, 'project.apply')) return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'The host has made you a viewer: you can watch, but not edit.', recoverable: false } };
     if (!join.hostConnected) return { ok: false, error: unavailable('The host is reconnecting. Try again in a moment.') };
     // An edit to a project this guest cannot see as it is now would land blind.
     if (join.tooLarge) return { ok: false, error: { code: 'TOO_LARGE', message: 'The host’s project is too large to share in a live session right now, so editing is paused.', recoverable: true } };
@@ -702,6 +805,178 @@ export class LiveGuestManager {
     const result = answer.result as { revision?: unknown; results?: unknown } | null;
     if (!result || !Number.isSafeInteger(result.revision)) return { ok: false, error: { code: 'INTERNAL', message: 'The host’s answer could not be read. Check the page before trying again.', recoverable: false } };
     return { ok: true, revision: result.revision as number, results: Array.isArray(result.results) ? (result.results as Array<Record<string, string | string[]>>) : [] };
+  }
+
+  // -------------------------------------------------------------------------
+  // The host's AI (#769)
+
+  /** This app's requests to the host's AI in the join named, or null when not admitted. */
+  ai(joinId: unknown): RemoteAi | null {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
+    return this.aiState(join);
+  }
+
+  /**
+   * Ask the host's AI to edit the page or selection named. The host checks again whether it allows this guest, and how
+   * many requests it has left; the request runs on the host's computer. Resolves once it is running, or refused.
+   */
+  async aiSend(joinId: unknown, text: unknown, context: unknown): Promise<RemoteAiSendResult> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, message: 'You are no longer in that live session.' };
+    if (join.role !== 'collaborator' || !join.ai.access.allowed) return { ok: false, message: 'The host hasn’t allowed you to use its AI.' };
+    if (join.ai.access.turnsLeft === 0) return { ok: false, message: 'You have made all the AI requests the host allowed.' };
+    if (!join.hostConnected) return { ok: false, message: 'The host is reconnecting. Try again in a moment.' };
+    if (join.ai.activeRunId) return { ok: false, message: 'Your last request is still running.' };
+    const answer = await this.call(join, 'ai.send', [text, context]);
+    if (!answer.ok) return { ok: false, message: answer.error.message };
+    const runId = (answer.result as { runId?: unknown } | null)?.runId;
+    if (typeof runId !== 'string' || !runId) return { ok: false, message: 'The host’s answer could not be read.' };
+    // Its turn may already be here; until it ends, it is the request this guest has running.
+    if (this.current === join && !join.ai.turns.find((t) => t.runId === runId)?.result) this.setAi(join, { ...join.ai, activeRunId: runId });
+    return { ok: true, runId };
+  }
+
+  /** Stop this guest's own request, as the host would; false when it was not running. */
+  async aiStop(joinId: unknown, runId: unknown): Promise<boolean> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted' || typeof runId !== 'string') return false;
+    const answer = await this.call(join, 'ai.stop', [runId]);
+    return answer.ok;
+  }
+
+  /** Answer the question this guest's request is waiting on; false when it is no longer waiting. */
+  async aiAnswer(joinId: unknown, runId: unknown, questionId: unknown, text: unknown): Promise<boolean> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted' || typeof runId !== 'string' || typeof questionId !== 'string' || typeof text !== 'string') return false;
+    const answer = await this.call(join, 'ai.answer', [runId, questionId, text]);
+    return answer.ok && answer.result === true;
+  }
+
+  /** The host sent this guest's request as it stands, or a piece of its reply. */
+  private onAiTurn(join: Join, payload: unknown): void {
+    const event = readAiTurnEvent(payload);
+    if (!event) return;
+    const turns = join.ai.turns;
+    const runId = event.kind === 'text' ? event.runId : event.turn.runId;
+    const at = turns.findIndex((t) => t.runId === runId);
+    // A request that has ended here stays ended, whatever late word of it still comes.
+    if (turns[at]?.result && (event.kind === 'text' || !event.turn.result)) return;
+    if (event.kind === 'text') {
+      const turn = turns[at];
+      // A piece that does not follow the reply as held was sent after something missed: the next whole turn mends it.
+      if (!turn || turn.reply.length !== event.at) return;
+      const next = [...turns];
+      next[at] = { ...turn, reply: turn.reply + event.text };
+      return this.setAi(join, { ...join.ai, turns: next });
+    }
+    const turn = event.turn;
+    const next = at >= 0 ? turns.map((t, i) => (i === at ? turn : t)) : [...turns, turn].slice(-REMOTE_AI_TURNS);
+    const activeRunId = turn.result ? (join.ai.activeRunId === turn.runId ? null : join.ai.activeRunId) : turn.runId;
+    this.setAi(join, { ...join.ai, turns: next, activeRunId });
+  }
+
+  /**
+   * The host took this guest's AI away: the request it had running was stopped there, and nothing more of it comes, so
+   * it ends here with why.
+   */
+  private loseAi(join: Join, why: string): void {
+    const turns = join.ai.turns.map((t): LiveAiTurn => (t.result ? t : { ...t, status: 'cancelled', question: null, result: { status: 'cancelled', summary: why, changes: [] } }));
+    this.setAi(join, { access: NO_AI_ACCESS, turns, activeRunId: null });
+  }
+
+  private aiState(join: Join): RemoteAi {
+    return { joinId: join.joinId, access: join.ai.access, turns: join.ai.turns, activeRunId: join.ai.activeRunId };
+  }
+
+  private setAi(join: Join, ai: Join['ai']): void {
+    join.ai = ai;
+    if (this.current === join && !join.ended) this.ctx.emit('remote:ai', this.aiState(join));
+  }
+
+  // -------------------------------------------------------------------------
+  // Pinned notes (#770)
+
+  /** Ask the host for its notes now, one request at a time; asked for again meanwhile, once more after. */
+  private fetchNotes(join: Join): Promise<LiveNotes | null> {
+    if (join.notesFetch) {
+      join.notesRefetch = true;
+      return join.notesFetch;
+    }
+    const run = (async (): Promise<LiveNotes | null> => {
+      for (;;) {
+        join.notesRefetch = false;
+        const answer = await this.call(join, 'notes.list', []);
+        if (join.ended || this.current !== join) return null;
+        const read = answer.ok && isLiveNotes(answer.result);
+        join.notesStale = !read;
+        if (read) {
+          join.notesRetries = 0;
+          this.takeNotes(join, answer.result as LiveNotes);
+        }
+        // Not read: asked again shortly, so a change the host told of is never missed for good. While the host or this
+        // connection is away, its return asks instead.
+        // A host that keeps refusing is asked no more until the next change it tells of.
+        else if (!join.notesTimer && join.phase === 'admitted' && join.hostConnected && !join.reconnecting && join.notesRetries < NOTES_RETRIES)
+          join.notesTimer = setTimeout(() => {
+            join.notesTimer = null;
+            if (!join.ended && this.current === join && join.phase === 'admitted') void this.fetchNotes(join);
+          }, this.timings.busyRetryMs * 2 ** join.notesRetries++);
+        if (!join.notesRefetch) return read ? join.notes : null;
+      }
+    })();
+    join.notesFetch = run;
+    void run.finally(() => {
+      if (join.notesFetch === run) join.notesFetch = null;
+    });
+    return run;
+  }
+
+  private takeNotes(join: Join, notes: LiveNotes): void {
+    join.notes = notes;
+    this.ctx.emit('remote:notes', { joinId: join.joinId, notes });
+  }
+
+  /** The host's notes: the copy last received, else asked for now. Null when not in a session, or they could not be read. */
+  async notes(joinId: unknown): Promise<LiveNotes | null> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
+    join.notesWanted = true;
+    // Asked again by the editor (its Notes opened): notes that could not be read last time are asked for now.
+    if (join.notesStale) join.notesRetries = 0;
+    return join.notes && !join.notesStale ? join.notes : ((await this.fetchNotes(join)) ?? join.notes);
+  }
+
+  addNote(joinId: unknown, draft: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.add', [draft], false);
+  }
+
+  resolveNote(joinId: unknown, id: unknown, resolved: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.resolve', [id, resolved], true);
+  }
+
+  deleteNote(joinId: unknown, id: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.delete', [id], true);
+  }
+
+  /** A change to the host's notes; the host checks it again, and keeps it. */
+  private async noteCall(joinId: unknown, method: LiveMethod, args: unknown[], collaborator: boolean): Promise<LiveNoteResult> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, message: 'You are no longer in that live session.' };
+    if (collaborator && join.role !== 'collaborator') return { ok: false, message: 'Only the host and collaborators can resolve or delete notes.' };
+    if (!join.hostConnected) return { ok: false, message: 'The host is reconnecting. Try again in a moment.' };
+    join.notesWanted = true;
+    const answer = await this.call(join, method, args);
+    if (!answer.ok) {
+      // A change the host may have made before the connection let go: the notes are read again, and nobody sends a
+      // note twice without looking.
+      if (answer.error.code !== 'UNAVAILABLE') return { ok: false, message: answer.error.message };
+      if (this.current === join) void this.fetchNotes(join);
+      return { ok: false, message: `${answer.error.message.replace(/\s*Try again.*$/, '')} The change may have been made: look at the notes before trying again.` };
+    }
+    // The host answers that the change was made; the notes as they are now are read again.
+    const notes = this.current === join ? await this.fetchNotes(join) : null;
+    return notes ? { ok: true, notes } : { ok: true };
   }
 
   // -------------------------------------------------------------------------
@@ -738,7 +1013,25 @@ export class LiveGuestManager {
 
   private publishPresence(join: Join): void {
     if (this.current !== join) return;
-    this.ctx.emit('remote:presence', { joinId: join.joinId, host: join.hostPresence, guests: Object.fromEntries(join.guestPresence) });
+    const activity = Object.fromEntries([...join.activity].map(([guestId, { until: _until, ...shown }]) => [guestId, shown]));
+    this.ctx.emit('remote:presence', { joinId: join.joinId, host: join.hostPresence, guests: Object.fromEntries(join.guestPresence), activity });
+  }
+
+  /** Take edits off once their time is up: one timer, for the soonest. */
+  private armActivity(join: Join): void {
+    if (join.activityTimer) clearTimeout(join.activityTimer);
+    join.activityTimer = null;
+    const due = Math.min(...[...join.activity.values()].map((a) => a.until));
+    if (!Number.isFinite(due)) return;
+    join.activityTimer = setTimeout(() => {
+      join.activityTimer = null;
+      if (join.ended) return;
+      const now = performance.now();
+      let changed = false;
+      for (const [id, a] of join.activity) if (a.until <= now) changed = join.activity.delete(id) || changed;
+      if (changed) this.publishPresence(join);
+      this.armActivity(join);
+    }, Math.max(0, due - performance.now()));
   }
 
   // -------------------------------------------------------------------------
@@ -872,8 +1165,8 @@ export class LiveGuestManager {
     if (join.ended) return;
     join.ended = true;
     this.closeSocket(join);
-    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer]) if (timer) clearTimeout(timer);
-    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = null;
+    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer, join.activityTimer, join.notesTimer]) if (timer) clearTimeout(timer);
+    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = join.activityTimer = join.notesTimer = null;
     this.failCalls(join, reason === 'left' ? 'You left the live session.' : ENDING_MESSAGES[reason]);
     join.preview.abort?.abort();
     join.preview.queued = null;

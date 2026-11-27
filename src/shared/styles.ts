@@ -97,6 +97,9 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'gap', label: 'Gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px' },
   { id: 'rowGap', label: 'Row gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px', advanced: true },
   { id: 'columnGap', label: 'Column gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px', advanced: true },
+  { id: 'columnStart', label: 'Column start', group: 'layout', kind: 'enum', advanced: true, description: 'Grid column line this starts on inside a grid; Auto places it in the next free spot. A line applies from tablet up unless a phone value is set, and Full width always starts on line 1. Reading and keyboard order do not change.', options: [
+    { value: 'auto', label: 'Auto' }, ...Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }))
+  ] },
   { id: 'columnSpan', label: 'Column span', group: 'layout', kind: 'enum', advanced: true, description: 'Columns this takes up inside a grid. Applies from tablet up unless a phone value is set.', options: [
     ...Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) })), { value: 'full', label: 'Full width' }
   ] },
@@ -162,14 +165,14 @@ export const STYLE_PROPS: StylePropDef[] = [
   ] },
   { id: 'color', label: 'Text color', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'background', label: 'Background', description: 'A color, or a linear-, radial- or conic-gradient(). A Site styles color can be made see-through.', group: 'appearance', kind: 'color', tokenGroup: 'color' },
-  { id: 'backgroundImage', label: 'Background image', group: 'appearance', kind: 'media', description: 'A picture from the library behind the content: filling the box, cropped around its focus, or shown whole. A scrim (a color or gradient over the picture) keeps text on top readable. The background color shows wherever the picture does not reach.' },
+  { id: 'backgroundImage', label: 'Background image', group: 'appearance', kind: 'media', description: 'A picture from the library behind the content: filling the box, cropped around its focus, shown whole, or repeated as a tile. A scrim (a color or gradient over the picture) keeps text on top readable. The background color shows wherever the picture does not reach.' },
   { id: 'border', label: 'Border', group: 'appearance', kind: 'border', tokenGroup: 'border' },
   edge('borderBlockStart', 'Border top', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderBlockEnd', 'Border bottom', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderInlineStart', 'Border left', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderInlineEnd', 'Border right', 'appearance', 'border', 'border', '1px solid #ddd'),
   { id: 'radius', label: 'Corner radius', group: 'appearance', kind: 'length', tokenGroup: 'radius', placeholder: '8px' },
-  { id: 'shadow', label: 'Shadow', group: 'appearance', kind: 'shadow', tokenGroup: 'shadow' },
+  { id: 'shadow', label: 'Shadow', group: 'appearance', kind: 'shadow', tokenGroup: 'shadow', options: [{ value: 'none', label: 'None' }] },
   { id: 'opacity', label: 'Opacity', group: 'appearance', kind: 'number', min: 0, max: 1, step: 0.05 },
   { id: 'backdropBlur', label: 'Backdrop blur', group: 'appearance', kind: 'length', advanced: true, placeholder: '12px', description: `Blurs what shows through a see-through background, for frosted glass: pair it with a background at less than full strength. 0 or one length in px, rem or em, at most ${BLUR_LIMITS.px}px.`, options: [
     { value: '0', label: 'None' }, { value: '4px', label: 'Light' }, { value: '12px', label: 'Frosted' }, { value: '24px', label: 'Heavy' }
@@ -258,7 +261,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
   // A box that holds content can show a picture behind it.
   const boxAppearance = ['color', 'background', 'backgroundImage', ...borders, 'radius', 'shadow', 'opacity', 'backdropBlur'];
   // How an item sits inside a grid or stack parent.
-  const child = ['columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
+  const child = ['columnStart', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
   const placed = ['position', 'inset', 'zIndex'];
   const motion = ['translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'];
   const end = [...motion, 'hidden', 'customCss'];
@@ -717,6 +720,17 @@ export function gridTemplateShares(value: unknown): number[] | null {
  * A style's value with its links to other styles followed to the end, for showing it or copying it out.
  * Undefined when a link names a style that does not exist, or the links loop.
  */
+/** The Site styles a style menu lists: the property's token groups, leaving out any shadow that resolves to none (the menu's own None covers it). */
+export function menuTokens(tokens: TokenDef[], group: StylePropDef['tokenGroup']): TokenDef[] {
+  const groups = Array.isArray(group) ? group : group ? [group] : [];
+  return tokens.filter((t) => {
+    if (!groups.includes(t.group)) return false;
+    if (t.group !== 'shadow') return true;
+    const v = followToken(tokens, t.id);
+    return !(typeof v === 'string' && v.trim().toLowerCase() === 'none');
+  });
+}
+
 export function followToken(tokens: TokenDef[], id: string): TokenValue | undefined {
   const byId = new Map(tokens.map((t) => [t.id, t]));
   const seen = new Set<string>();
@@ -824,7 +838,7 @@ const CUSTOM_CSS_PROPS = new Set(
     'background-image background-position background-repeat background-size border-color border-radius border-style border-width ' +
     'box-shadow caret-color clip-path color column-count column-gap columns display filter flex flex-basis flex-direction flex-flow ' +
     'flex-grow flex-shrink flex-wrap font-size font-stretch font-style font-variant font-variant-numeric font-weight gap ' +
-    'grid-auto-columns grid-auto-flow grid-auto-rows grid-column grid-row grid-template-columns grid-template-rows height hyphens ' +
+    'grid-auto-columns grid-auto-flow grid-auto-rows grid-column grid-column-end grid-column-start grid-row grid-template-columns grid-template-rows height hyphens ' +
     'isolation justify-content justify-items justify-self letter-spacing line-height list-style-type margin margin-block ' +
     'margin-block-end margin-block-start margin-inline margin-inline-end margin-inline-start max-height max-width min-height ' +
     'min-width mix-blend-mode object-fit object-position opacity order outline outline-color outline-offset outline-style ' +
@@ -1117,9 +1131,32 @@ function cssValue(v: StyleValue): string {
 
 /** Fixed-grammar properties: a hand-edited document that breaks the grammar writes nothing. */
 const CHECKED_AT_OUTPUT = new Set([
-  'containerType', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
+  'containerType', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'columnStart', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
   'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing', 'backdropBlur'
 ]);
+
+/**
+ * Where a grid item starts is composed on the element itself, so a start and a span set by different rules (sizes,
+ * looks, placements) each keep their winner: a start writes its line, Full width claims line 1, and every rule of
+ * either property reads the two the same way. A `grid-column` shorthand would undo a start set elsewhere.
+ */
+const COLUMN_LINE_VAR = '--_so-column-line';
+const COLUMN_FULL_VAR = '--_so-full-start';
+export const COLUMN_START_DECL = `grid-column-start: var(${COLUMN_FULL_VAR}, var(${COLUMN_LINE_VAR}, auto))`;
+
+/**
+ * One property's declarations in the form custom CSS can hold, for a rule written again after a weaker custom
+ * shorthand. A grid item's start line is written as the start and span that won at that size compose it.
+ */
+function literalCss(prop: string, value: StyleValue, won: { columnStart?: StyleValue; columnSpan?: StyleValue }): string[] {
+  const out = styleToCss(prop, value);
+  if (!out.length || (prop !== 'columnStart' && prop !== 'columnSpan')) return out;
+  const read = (v: StyleValue | undefined) => String(v ?? '').trim();
+  const span = read(won.columnSpan);
+  const line = Number(read(won.columnStart)) || undefined;
+  if (prop === 'columnStart') return [`grid-column-start: ${span === 'full' ? 1 : (line ?? 'auto')}`];
+  return [span === 'full' ? 'grid-column: 1 / -1' : `grid-column: ${line ?? `span ${Number(span)}`} / span ${Number(span)}`];
+}
 
 /**
  * Convert one style property into CSS declarations. A background image writes nothing here: only the generator
@@ -1161,8 +1198,13 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
       const size = parseRowSize(v);
       return size ? [`grid-auto-rows: ${size}`] : [];
     }
+    case 'columnStart':
+      return [`${COLUMN_LINE_VAR}: ${value === 'auto' ? 'auto' : Number(value)}`, COLUMN_START_DECL];
     case 'columnSpan':
-      return [value === 'full' ? 'grid-column: 1 / -1' : `grid-column: span ${Number(value)} / span ${Number(value)}`];
+      // Full width starts on line 1 whatever start a weaker rule chose; a count after it lets that start back.
+      return value === 'full'
+        ? [`${COLUMN_FULL_VAR}: 1`, COLUMN_START_DECL, 'grid-column-end: -1']
+        : [`${COLUMN_FULL_VAR}: initial`, COLUMN_START_DECL, `grid-column-end: span ${Number(value)}`];
     case 'rowSpan':
       return [`grid-row: span ${Number(value)} / span ${Number(value)}`];
     case 'alignSelf':
@@ -1319,6 +1361,8 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
  */
 export function styleFallbackCss(propId: string, raw: StyleValue): string[] {
   if (!styleToCss(propId, raw).length) return [];
+  // Neither comes from a grid item around this one.
+  if (propId === 'columnStart' || propId === 'columnSpan') return [`${COLUMN_LINE_VAR}: initial`, `${COLUMN_FULL_VAR}: initial`];
   if (propId === 'translateX' || propId === 'translateY') return [`${TRANSLATE_VARS.translateX}: 0px`, `${TRANSLATE_VARS.translateY}: 0px`];
   if (propId === 'transition' && String(raw).trim() !== 'none') return [`transition-duration: ${TRANSITION_DEFAULT_DURATION}`];
   return [];
@@ -1396,6 +1440,8 @@ export function wideOnlyStyle(prop: string, value: unknown, wideColumns = false)
   // Only text and numbers read as a count: a hand-edited object is no span (and Number() can throw on one).
   const n = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
   if (prop === 'columnSpan') return n > 1;
+  // Any line, the first too, pins an item a phone's own columns would place.
+  if (prop === 'columnStart') return n >= 1;
   // A phone's single column has no room to lay a tall card beside others: it keeps one row.
   if (prop === 'rowSpan') return n > 1;
   // Column sizes for all sizes are uneven or as-many-as-fit tracks: a phone keeps its own column count.
@@ -1614,6 +1660,9 @@ function covers(short: string, long: string): boolean {
  */
 const paintedApart = (a: string, b: string) => (a === 'background' && b === 'backgroundImage') || (a === 'backgroundImage' && b === 'background');
 
+/** A column start and a column span both write the start line, composed so that neither undoes the other. */
+const placedApart = (a: string, b: string) => (a === 'columnStart' && b === 'columnSpan') || (a === 'columnSpan' && b === 'columnStart');
+
 /** Whether two sets of CSS properties set any property in common. */
 const overlap = (a: string[], b: string[]) => a.some((x) => b.some((y) => x === y || covers(x, y) || covers(y, x)));
 
@@ -1661,6 +1710,7 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
     best.delete('customCss');
     best.delete('hidden');
     const named = [...best.values()];
+    const wonAt = new Map(named.map((d) => [d.prop, d.value]));
     // A layer with a value kept off phones writes its custom CSS again in that tablet-and-up rule, after it.
     const wideAgain = (d: CascadeDecl): CascadeDecl =>
       size !== 'phone' && d.bucket === 'base' && decls.some((x) => x.index === d.index && x.bucket === 'wide' && styleToCss(x.prop, x.value).length) ? { ...d, bucket: 'wide' } : d;
@@ -1681,9 +1731,11 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
         const under = stronger.filter((n) => names(n).some((q) => covers(p, q))).sort((a, b) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop));
         // A background image cannot be written in custom CSS: it keeps its picture, and the shorthand over it goes.
         if (under.some((n) => n.prop === 'backgroundImage')) continue;
-        const again = under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display') && !parseCustomCss(d).error);
+        const won = { columnStart: wonAt.get('columnStart'), columnSpan: wonAt.get('columnSpan') };
+        const replayed = under.flatMap((n) => literalCss(n.prop, n.value, won)).filter((d) => !d.startsWith('--') && !d.startsWith('display'));
+        const again = replayed.filter((d) => !parseCustomCss(d).error);
         // What the stronger property writes cannot go in custom CSS: it keeps its value, and the shorthand goes.
-        if (again.length < under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display')).length) continue;
+        if (again.length < replayed.length) continue;
         written.push(decl, ...again);
       }
     }
@@ -1693,8 +1745,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
     const ownWins = named.filter(own);
     const ownCustom = custom.filter(own);
     for (const q of named.filter((d) => !own(d))) {
-      if (!ownWins.some((p) => p !== q && !paintedApart(p.prop, q.prop) && overlap(names(p), names(q)) && beats(q, p))) continue;
-      if ([...ownWins, ...ownCustom].some((r) => !paintedApart(r.prop, q.prop) && overlap(names(r), names(q)) && beats(r, q))) continue;
+      if (!ownWins.some((p) => p !== q && !paintedApart(p.prop, q.prop) && !placedApart(p.prop, q.prop) && overlap(names(p), names(q)) && beats(q, p))) continue;
+      if ([...ownWins, ...ownCustom].some((r) => !paintedApart(r.prop, q.prop) && !placedApart(r.prop, q.prop) && overlap(names(r), names(q)) && beats(r, q))) continue;
       best.set(q.prop, { ...q, index: beneath });
     }
     // Display: every declaration that sets it at this size, ranked as the stylesheets rank them. A show writes its
@@ -1792,7 +1844,7 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
   // The two shift axes write one translate through a variable each, so one never overrides the other.
   const axes = (a: Decl, b: Decl) => (a.prop === 'translateX' && b.prop === 'translateY') || (a.prop === 'translateY' && b.prop === 'translateX');
-  const touch = (a: Decl, b: Decl) => !axes(a, b) && !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y))));
+  const touch = (a: Decl, b: Decl) => !axes(a, b) && !paintedApart(a.prop, b.prop) && !placedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y))));
   const order = (d: Decl) => STYLE_STATES.indexOf(d.state!);
   const own = (d: Decl) => d.index >= beneath;
   for (const a of states) {
@@ -1905,7 +1957,7 @@ export function flattenContainers(layers: StyleLayer[], opts: Pick<FlattenOption
   const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
   const axes = (a: Decl, b: Decl) => (a.prop === 'translateX' && b.prop === 'translateY') || (a.prop === 'translateY' && b.prop === 'translateX');
   // Custom CSS is compared by the declarations it writes, not by its name: two that set nothing in common both apply.
-  const touch = (a: Decl, b: Decl) => (a.prop === b.prop && a.prop !== 'customCss') || (!axes(a, b) && !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y)))));
+  const touch = (a: Decl, b: Decl) => (a.prop === b.prop && a.prop !== 'customCss') || (!axes(a, b) && !paintedApart(a.prop, b.prop) && !placedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y)))));
   const stateRank = (d: Decl) => (d.state ? 1 + STYLE_STATES.indexOf(d.state) : 0);
   const own = (d: Decl) => d.index >= beneath;
   const order = (a: number[], b: number[]) => later(a, b);

@@ -43,7 +43,51 @@ export const CLOSE_CODES = Object.freeze({
 export const PREVIEW_ADMISSION_PATH = '/__siteorigin/admission';
 
 /** The messages between the viewer and the reload bridge in its preview frame (preview-bridge.js). */
-export const BRIDGE_MESSAGES = Object.freeze({ ready: 'siteorigin-live:ready', reload: 'siteorigin-live:reload', reloading: 'siteorigin-live:reloading', refused: 'siteorigin-live:refused' });
+export const BRIDGE_MESSAGES = Object.freeze({
+  ready: 'siteorigin-live:ready',
+  reload: 'siteorigin-live:reload',
+  reloading: 'siteorigin-live:reloading',
+  refused: 'siteorigin-live:refused',
+  point: 'siteorigin-live:point',
+  pointed: 'siteorigin-live:pointed',
+  pointCancelled: 'siteorigin-live:point-cancelled',
+  leaving: 'siteorigin-live:leaving'
+});
+
+/** As in src/shared/live/limits.ts: the longest ID a spotlight's element names, and how deep its path may reach. */
+export const MAX_ID_LENGTH = 128;
+export const MAX_SELECTION_DEPTH = 16;
+
+/** As in src/shared/live/preview.ts: the development server's own routes, which are never a place in the preview. */
+const HOST_ACTION_ROUTES = ['__open-in-editor', '__inspect'];
+const SVELTEKIT_FILES = ['__data.json', '__route.js'];
+
+/**
+ * Whether `path` may be sent as a spotlight's address (the presence path rule in src/shared/live/messages.ts, with
+ * isPreviewTarget in src/shared/live/preview.ts): printable ASCII with nothing a URL serializer would percent-encode,
+ * within the preview, each segment decoding to something other than `.`, `..`, a slash or a server route of its own.
+ * @param {unknown} path
+ * @returns {path is string}
+ */
+export function isSpotlightPath(path) {
+  if (!isFramePath(path) || !/^[\x21-\x7e]+$/.test(path) || /["<>`{}]/.test(path)) return false;
+  return path
+    .split('?', 1)[0]
+    .split('/')
+    .slice(1)
+    .every((segment, i) => {
+      let decoded;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        return false;
+      }
+      if (decoded === '.' || decoded === '..' || /[/\\\u0000]/.test(decoded)) return false;
+      const lower = decoded.toLowerCase();
+      if (HOST_ACTION_ROUTES.some((route) => lower === route || lower.startsWith(`${route}.`))) return false;
+      return !(i === 0 && decoded.startsWith('__') && !SVELTEKIT_FILES.includes(decoded));
+    });
+}
 
 /**
  * Whether `path` is a path (and query) on the preview origin the viewer may point its frame at: one leading slash,

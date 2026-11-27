@@ -14,6 +14,7 @@ import { PreviewTunnel } from './preview-tunnel';
 import { randomToken, sameSecret } from './tokens';
 import {
   accessEndsAt,
+  freeColorSlot,
   guestRoster,
   holdUntil,
   hostRoster,
@@ -52,6 +53,12 @@ const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
  */
 const PRESENCE_BURST = 20;
 const PRESENCE_PER_SECOND = 10;
+/**
+ * How many spotlights a guest may send in a burst, and how many a second after that (#768). A spotlight is a click,
+ * never a pointer's every move: what comes faster is dropped, and the guest clicks again.
+ */
+const SPOTLIGHT_BURST = 3;
+const SPOTLIGHT_PER_SECOND = 2;
 const OPEN = 1;
 
 /** Why a whole session ends, and what each kind of socket is told. */
@@ -83,6 +90,8 @@ export class SessionRoom extends DurableObject<Env> {
   private readonly tunnel: PreviewTunnel;
   /** Each guest's presence budget (PRESENCE_BURST), and when it was last counted, kept while it holds its place. */
   private readonly presenceBudget = new Map<string, { tokens: number; at: number }>();
+  /** Each guest's spotlight budget (SPOTLIGHT_BURST), kept as the presence budget is. */
+  private readonly spotlightBudget = new Map<string, { tokens: number; at: number }>();
   /** The alarm as last set, or undefined when unknown (after waking, once it has fired, or after a failed write). */
   private alarmAt: number | null | undefined = undefined;
   /** The latest write of the alarm, so the alarm handler can wait for it and fail (to be retried) if it failed. */
@@ -297,8 +306,9 @@ export class SessionRoom extends DurableObject<Env> {
     }
     this.changed();
     this.sendRoomReady(ws, now);
-    // A host taking over from a live connection was never away; one coming back from its grace was.
-    if (previous === null) this.sendHostAvailability();
+    // Guests are told the host is here whether it was away or took over from a connection still open: what they sent
+    // that connection may never have reached it, so they tell it again where they are.
+    this.sendHostAvailability();
     this.scheduleAlarm();
   }
 
@@ -323,7 +333,16 @@ export class SessionRoom extends DurableObject<Env> {
       if (guest.status === 'pending') this.send(ws, 'relay-to-guest', { type: 'guest:status', status: 'pending', guestId: guest.guestId, resumeToken: guest.resumeToken });
       else {
         this.sendAdmitted(guest, now);
-        this.send(ws, 'relay-to-guest', { type: 'room:roster', participants: guestRoster(room) });
+        // A guest taking its place over from a connection still open (one that dropped without the relay hearing yet)
+        // is announced as gone and then back, as one that dropped is: the others let go of whatever its old connection
+        // showed them, and tell the new one where they are.
+        if (previous !== null && previous !== attachment.connectionId) {
+          guest.connectionId = null;
+          this.sendRosters();
+          guest.connectionId = attachment.connectionId;
+        }
+        // Everyone is told it is back (the roster says who is connected), the returning guest too.
+        this.sendRosters();
         this.sendHostPage(guest);
       }
       this.sendHostAvailability(ws);
@@ -404,9 +423,9 @@ export class SessionRoom extends DurableObject<Env> {
         const { guestId, ...reply } = frame;
         const target = this.admittedSocket(guestId);
         if (!target) return;
-        // A guest too far behind to take a whole project is told so instead, in a few bytes. Any other answer is small and
-        // goes as it is: an edit's says it was saved.
-        if (backedUp(target) && reply.ok && reply.method === 'project.snapshot')
+        // A guest too far behind to take a whole project, or the whole list of notes, is told so instead, in a few bytes.
+        // Any other answer is small and goes as it is: an edit's says it was saved, and so does a note's.
+        if (backedUp(target) && reply.ok && (reply.method === 'project.snapshot' || reply.method === 'notes.list'))
           return void this.send(target, 'relay-to-guest', { type: 'rpc:response', requestId: reply.requestId, method: reply.method, ok: false, error: { code: 'UNAVAILABLE', message: 'Your connection is too far behind. Try again shortly.', recoverable: true } });
         this.send(target, 'relay-to-guest', reply);
         return;
@@ -430,6 +449,18 @@ export class SessionRoom extends DurableObject<Env> {
         for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', { type: 'presence:changed', participant: { kind: 'host' }, presence: frame.presence });
         return;
       }
+      case 'activity:edit': {
+        // Only the other collaborators are told who is editing what: a viewer is shown none of it, and the editor knows.
+        const editor = room.guests.find((g) => g.guestId === frame.guestId);
+        if (editor?.status !== 'admitted') return;
+        const edited = { type: 'activity:edited', guestId: frame.guestId, target: frame.target } as const;
+        for (const guest of room.guests) {
+          if (guest === editor || guest.status !== 'admitted' || guest.role !== 'collaborator' || !guest.connectionId) continue;
+          const target = this.socket(guest.connectionId);
+          if (target && !backedUp(target)) this.send(target, 'relay-to-guest', edited);
+        }
+        return;
+      }
     }
   }
 
@@ -441,7 +472,7 @@ export class SessionRoom extends DurableObject<Env> {
         if (guest.status !== 'pending') return this.refuse(ws, 'relay-to-host', 'WRONG_STATE', 'That guest is already admitted.', false);
         const check = checkGuestExpiry(frame.guestExpiresAt, room.expiresAt, now);
         if (!check.ok) return this.refuse(ws, 'relay-to-host', expiryCode(check), check.message, false);
-        const admitted: AdmittedGuest = { ...guest, status: 'admitted', role: frame.role, guestExpiresAt: check.expiresAt, grantVersion: 1, ticket: null, ticketUntil: null };
+        const admitted: AdmittedGuest = { ...guest, status: 'admitted', role: frame.role, guestExpiresAt: check.expiresAt, grantVersion: 1, ticket: null, ticketUntil: null, colorSlot: freeColorSlot(room) };
         room.guests[room.guests.indexOf(guest)] = admitted;
         this.issueTicket(admitted, now);
         this.changed();
@@ -502,11 +533,19 @@ export class SessionRoom extends DurableObject<Env> {
         if (guest.status !== 'admitted') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'The host has not let you in yet.', false);
         // Viewers follow the session; collaborators show the others where they are and what they have selected (#765).
         if (guest.role !== 'collaborator') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'Only collaborators share where they are.', false);
-        if (!this.spendPresence(guest.guestId)) return;
+        if (!this.spend(this.presenceBudget, guest.guestId, PRESENCE_BURST, PRESENCE_PER_SECOND)) return;
         const changed = { type: 'presence:changed', participant: { kind: 'guest', guestId: guest.guestId }, presence: frame.presence } as const;
         const host = this.hostSocket();
         if (host && !backedUp(host)) this.send(host, 'relay-to-host', changed);
         for (const target of this.admittedSockets()) if (target !== ws && !backedUp(target)) this.send(target, 'relay-to-guest', changed);
+        return;
+      }
+      case 'spotlight:point': {
+        // Any guest let in may point, a viewer too: only the host is shown it (#768).
+        if (guest.status !== 'admitted') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'The host has not let you in yet.', false);
+        if (!this.spend(this.spotlightBudget, guest.guestId, SPOTLIGHT_BURST, SPOTLIGHT_PER_SECOND)) return;
+        const host = this.hostSocket();
+        if (host && !backedUp(host)) this.send(host, 'relay-to-host', { type: 'spotlight:pointed', guestId: guest.guestId, spotlight: frame.spotlight });
         return;
       }
       case 'rpc:request': {
@@ -523,13 +562,13 @@ export class SessionRoom extends DurableObject<Env> {
     }
   }
 
-  /** Take one of a guest's presence budget, refilled over time; false when none is left. */
-  private spendPresence(guestId: string): boolean {
+  /** Take one of a guest's budget (`burst` at most, refilled `perSecond` a second); false when none is left. */
+  private spend(budgets: Map<string, { tokens: number; at: number }>, guestId: string, burst: number, perSecond: number): boolean {
     const now = Date.now();
-    const budget = this.presenceBudget.get(guestId) ?? { tokens: PRESENCE_BURST, at: now };
-    budget.tokens = Math.min(PRESENCE_BURST, budget.tokens + ((now - budget.at) * PRESENCE_PER_SECOND) / 1000);
+    const budget = budgets.get(guestId) ?? { tokens: burst, at: now };
+    budget.tokens = Math.min(burst, budget.tokens + ((now - budget.at) * perSecond) / 1000);
     budget.at = now;
-    this.presenceBudget.set(guestId, budget);
+    budgets.set(guestId, budget);
     if (budget.tokens < 1) return false;
     budget.tokens--;
     return true;
@@ -718,6 +757,8 @@ export class SessionRoom extends DurableObject<Env> {
       guest.connectionId = null;
       guest.reconnectUntil = now + this.config.guestGraceMs;
       this.changed();
+      // Its place is kept, but the others stop showing where it was at once: the roster says it is not connected.
+      if (guest.status === 'admitted') this.sendRosters();
     }
   }
 
@@ -726,6 +767,7 @@ export class SessionRoom extends DurableObject<Env> {
     const room = this.room!;
     room.guests = room.guests.filter((g) => g !== guest);
     this.presenceBudget.delete(guest.guestId);
+    this.spotlightBudget.delete(guest.guestId);
     this.tunnel.abortGuest(guest.guestId);
     const ws = guest.connectionId ? this.socket(guest.connectionId) : null;
     if (!ws) return;

@@ -1,3 +1,4 @@
+import type { ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
@@ -13,9 +14,11 @@ import type { Recipient, TurnModel } from './turn-model';
 import type { EarlierSummary } from './earlier-summary';
 import type { SessionDuration } from './live/expiry';
 import type { GuestRole } from './live/limits';
-import type { Participant, Presence } from './live/messages';
+import type { ElementTarget, Participant, Presence, Spotlight } from './live/messages';
 import type { LiveEditBatch } from './live/capabilities';
 import type { LiveApplyResult, LiveProjectSnapshot } from './live/snapshot';
+import type { LiveAiAccess, LiveAiContext, LiveAiTurn } from './live/ai';
+import type { LiveNoteResult, LiveNotes, NoteDraft } from './live/notes';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -60,6 +63,12 @@ export interface AppSettings {
   /** Shows code components and source editing. Off by default: most users never need code. */
   developerMode: boolean;
   /**
+   * Saved versions are stored as snapshots of the whole site in a Git repository of the project's own
+   * (`.siteorigin/versions.git/`), written by the bundled Git. Off by default: versions then use the plain store, and no
+   * repository is made. Versions saved either way stay listed and restorable whichever this is.
+   */
+  gitSnapshots: boolean;
+  /**
    * Advanced: the live session relay to use instead of the production one, as a normalized http(s) origin, or null
    * for the default. `SITEORIGIN_LIVE_RELAY_URL` wins over it (see shared/live/relay-url.ts).
    */
@@ -73,6 +82,12 @@ export interface AppSettings {
     sendOnEnter: boolean;
     setupAcknowledged: boolean;
   };
+}
+
+/** What Git the app has for saved versions: the bundled one, which needs nothing installed, and the computer's own. */
+export interface GitRuntimeInfo {
+  bundled: { engine: 'isomorphic-git'; ready: true; version: string } | { engine: 'isomorphic-git'; ready: false; reason: string };
+  system: { status: 'present'; path: string; version: string } | { status: 'missing' } | { status: 'unusable'; path: string; reason: 'failed' | 'timeout' | 'unrecognised' };
 }
 
 /**
@@ -215,12 +230,18 @@ export interface SavedVersionInfo {
   name: string;
   /** When it was saved (ISO time). */
   time: string;
-  /** Saved by the app before a restore, as the way back to the work that restore replaced. */
+  /** Saved by the app, not the author: before a restore, as the way back to the work it replaced, or after one. */
   auto: boolean;
+  /** Saved by the app after a restore, with Git snapshots on: the site as that restore left it (#1155). */
+  restored?: boolean;
   /** How many pages it holds. */
   pages: number;
-  /** What deleting it frees: what no other saved version also holds. */
-  bytes: number;
+  /**
+   * What deleting it frees: what no other saved version also holds. Null for a version saved with Git snapshots on,
+   * whose snapshot stays in the project's version history when it is deleted from the list: at most the few files kept
+   * beside the history (an external source's settings) are freed.
+   */
+  bytes: number | null;
   /** Files its documents name that were missing from the project folder when it was saved. */
   missing: string[];
 }
@@ -231,6 +252,11 @@ export interface VersionsInfo {
   list: SavedVersionInfo[];
   /** What all saved versions take together, each file counted once. */
   bytes: number;
+  /**
+   * Of `bytes`, what the project's version history takes (versions saved with Git snapshots on): kept for good, since
+   * deleting a version from the list leaves its snapshot there. Absent when the project has none.
+   */
+  historyBytes?: number;
   /** Why versions can't be saved or deleted (their list could not be read), if so. */
   problem?: string;
 }
@@ -279,6 +305,11 @@ export interface RestoreVersionResult {
   replaced?: number;
   /** Files an earlier restore put back that this one leaves in the project folder. */
   left?: string[];
+  /**
+   * With Git snapshots on: why the site as restored is not, or not yet, a saved version of its own, though the restore
+   * itself is done (#1155).
+   */
+  notice?: string;
 }
 
 export type RuntimeState =
@@ -396,7 +427,7 @@ export interface LocalWorkspaceState {
 export interface CreateProjectOptions {
   name: string;
   parentDir: string;
-  starter: 'business' | 'blank';
+  starter: 'business' | 'blank' | 'showcase';
   sampleImages: boolean;
   /** The theme the site starts with; without one, the default theme. It can be changed any time in Site styles. */
   themeId?: string;
@@ -480,8 +511,11 @@ export interface StorageInfo {
   kept: StorageSize;
   /** The saved document versions Undo and Redo restore. */
   history: { steps: number; bytes: number };
-  /** Named versions saved in History, with the documents and files each holds. Only deleting a version frees them. */
-  versions: { count: number; bytes: number };
+  /**
+   * Named versions saved in History, with the documents and files each holds. Only deleting a version frees them, but
+   * for `historyBytes` (as VersionsInfo), which deleting never frees.
+   */
+  versions: { count: number; bytes: number; historyBytes?: number };
   /** What freeing up space would do; null when there is nothing to free. */
   reclaim: ReclaimPlan | null;
   /** Why space cannot be freed right now, if so. */
@@ -533,6 +567,8 @@ export interface ExportResult {
   assetId?: string;
   /** A review build's base path (the site's subfolder, or ''), from the snapshot it was built from: where to serve it. */
   basePath?: string;
+  /** A review build's pages, with their titles, from the snapshot it was built from: what a review edition can capture. */
+  pages?: ReviewPage[];
 }
 
 /** An export the open project made since it was opened, so the author can find and compare what they handed off. */
@@ -724,6 +760,11 @@ export interface ChatMessage {
   question?: ChatQuestion;
   /** A request's attached library images, as they were when it was sent (its context holds their IDs). */
   images?: ChatImageRef[];
+  /**
+   * The live-session collaborator the turn was for (#769), on both of its messages: its name as the host let it in, and
+   * the admission it came under (a guest's later requests hear that admission's turns alone).
+   */
+  guest?: { name: string; id: string };
 }
 
 /** A version of a code component's source that an AI run wrote, kept after the project let it go. */
@@ -771,6 +812,15 @@ export interface Conversation {
 }
 
 /** A stored conversation as Earlier conversations lists it (see shared/conversations). */
+/**
+ * A conversation as main has it now, read by its ID without opening it: the live thread while a request is filed in it
+ * (its newest turn included, saved or not), otherwise its stored file. `run`: that request while it is still going.
+ */
+export interface ConversationState {
+  conversation: Conversation;
+  run: { runId: string; status: RunStatus; mode: ChatMode } | null;
+}
+
 export interface ConversationSummary {
   id: string;
   title: string;
@@ -1022,6 +1072,8 @@ export interface LiveRoom {
   relayClockOffsetMs: number;
   /** A locked room turns away new join requests. */
   locked: boolean;
+  /** Whether guests may leave pinned notes (#770): Allow guest notes, on until the host turns it off. */
+  guestNotes: boolean;
   /** Everyone in the room: those waiting to be let in, and those admitted with their role and access. */
   participants: Participant[];
 }
@@ -1035,14 +1087,40 @@ export interface LiveRoom {
 export type LiveHostState =
   | { phase: 'idle'; lastError: string | null }
   | (LiveRun & { phase: 'starting' | 'stopping' })
-  | (LiveRun & LiveRoom & { phase: 'active' | 'reconnecting'; previewReady: boolean; lastError: string | null });
+  | (LiveRun & LiveRoom & { phase: 'active' | 'reconnecting'; previewReady: boolean; lastError: string | null; ai: Record<string, LiveAiGrant> });
 
 /**
- * Where the live session's collaborators are in the project, as each last said, by guest ID (`live:presence`): sent
- * whenever one moves, and when one leaves or stops being a collaborator.
+ * What the host lets one admitted guest do with its AI (#769), by guest ID in LiveHostState: off for every guest until
+ * the host turns it on for a collaborator, and off again whenever it stops being one. `turnLimit` is how many requests
+ * it may make while it is in the session (null: no limit), and `turnsUsed` how many it has made.
+ */
+export interface LiveAiGrant {
+  allowed: boolean;
+  turnLimit: number | null;
+  turnsUsed: number;
+}
+
+/** Where a guest just pointed (#768). `seq` tells a new spotlight from one already shown. */
+export interface LiveSpotlight {
+  seq: number;
+  spotlight: Spotlight;
+}
+
+/** A collaborator's edit just made (#768): the one element it changed, or null for more or other than one. */
+export interface LiveActivity {
+  seq: number;
+  target: ElementTarget | null;
+}
+
+/**
+ * Where the live session's collaborators are in the project, as each last said, by guest ID (`live:presence`), with
+ * each guest's latest spotlight and each collaborator's latest edit while they are shown: sent whenever any of them
+ * changes, and when a guest leaves, drops its connection, or stops being a collaborator.
  */
 export interface LivePresence extends LiveRun {
   guests: Record<string, Presence>;
+  spotlights: Record<string, LiveSpotlight>;
+  activity: Record<string, LiveActivity>;
 }
 
 /** A guest asking to join, sent once when it starts waiting (`live:request`). */
@@ -1058,11 +1136,16 @@ export interface LiveJoinRequest extends LiveRun {
  */
 export type RemoteEnding = 'left' | 'declined' | 'kicked' | 'expired-guest' | 'expired-session' | 'ended' | 'host-gone' | 'locked' | 'full' | 'replaced' | 'lost' | 'unavailable' | 'refused';
 
-/** Someone admitted to the live session this app is a guest in, as the relay lists them. */
+/**
+ * Someone admitted to the live session this app is a guest in, as the relay lists them: with their place in the
+ * session's palette, and whether their connection is up now.
+ */
 export interface RemoteParticipant {
   guestId: string;
   displayName: string;
   role: GuestRole;
+  colorSlot: number;
+  connected: boolean;
 }
 
 /** One join of a live session, so a late event from an earlier join never reaches the next. */
@@ -1108,14 +1191,33 @@ export type RemoteState =
       participants: RemoteParticipant[];
     });
 
-/** Where the others in the live session are, as each last said (`remote:presence`): the host, and collaborators by guest ID. */
+/**
+ * Where the others in the live session are, as each last said (`remote:presence`): the host, and collaborators by guest
+ * ID, with each other collaborator's latest edit while it is shown (#768).
+ */
 export interface RemotePresence {
   joinId: string;
   host: Presence | null;
   guests: Record<string, Presence>;
+  activity: Record<string, LiveActivity>;
 }
 
 export type RemoteJoinResult = { ok: true; state: RemoteState } | { ok: false; message: string };
+
+/**
+ * This app's own requests to the host's AI, as a collaborator in its live session (#769): whether the host allows them
+ * and how many are left, the requests made in this join (kept on this computer only while it lasts), and the one
+ * running now. Every request runs on the host's computer, with its AI provider.
+ */
+export interface RemoteAi {
+  joinId: string;
+  access: LiveAiAccess;
+  turns: LiveAiTurn[];
+  /** This app's request the host's AI is working on, until it ends. */
+  activeRunId: string | null;
+}
+
+export type RemoteAiSendResult = { ok: true; runId: string } | { ok: false; message: string };
 
 export type LiveStartResult = { ok: true; inviteUrl: string; state: LiveHostState } | { ok: false; message: string };
 /** Whether a host command was sent: the relay's next roster or room state shows it taking effect. */
@@ -1134,6 +1236,14 @@ export type SourceSyncResult =
   | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number }
   | { ok: false; message: string; code?: string };
 
+/** The manifest a code component's source is checked against in the code editor (see BuilderApi.project.validateSource). */
+export interface SourceManifest {
+  /** The component being edited, for its variant axes and, without `properties`, its stored properties. */
+  definitionId?: string;
+  /** The properties as edited, not yet saved (the editor's draft, which may not be complete). */
+  properties?: Record<string, unknown>;
+}
+
 export interface BuilderApi {
   platform: string;
   app: {
@@ -1144,6 +1254,8 @@ export interface BuilderApi {
     packPreview(packId: string, file: string): Promise<string | null>;
     getSettings(): Promise<AppSettings>;
     setSettings(patch: SettingsPatch): Promise<AppSettings>;
+    /** The Git saved versions use (#1153): the bundled one, ready or why not, and the computer's own if it has one. */
+    gitRuntime(): Promise<GitRuntimeInfo>;
     openExternal(url: string): Promise<void>;
     /** Which build this is, as Help > Copy Build Details copies it, to quote in a report. */
     buildDetails(): Promise<string>;
@@ -1326,6 +1438,15 @@ export interface BuilderApi {
      * snapshot would publish other pages stops instead, so a page shown as a draft is never published unseen.
      */
     exportStatic(format?: ExportFormat, published?: string[]): Promise<ExportResult>;
+    /** The project's review editions (#1133), newest first. */
+    reviewEditions(): Promise<ReviewEditionManifest[]>;
+    /**
+     * Build the site for review and picture each page at `routes` at each of `widths` (a desktop and a phone width when
+     * none are given), keeping the pictures as a new review edition in the project.
+     */
+    captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }> }): Promise<ReviewEditionResult>;
+    /** Save review edition `editionId` as one HTML file that opens from disk with no Builder, server or network (#1134); the chooser says where. */
+    exportReviewSheet(editionId: string): Promise<ReviewSheetResult>;
     retryPreview(): Promise<void>;
     /**
      * Prepare an isolated preview of one component (a definition of the project, or a component of the theme's
@@ -1364,7 +1485,11 @@ export interface BuilderApi {
     unlock(): Promise<{ ok: boolean; message?: string }>;
     /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
     saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;
-    validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
+    /**
+     * Checks a code component's source as saving it would. With `manifest`, the props the code takes are held to the
+     * properties given (the editor's draft), or else those of the component `definitionId` names, and to its axes.
+     */
+    validateSource(source: string, manifest?: SourceManifest): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
     /** Resolves once the writes queued for the project have finished: whether they all reached the disk, in the
      *  opening given (its snapshot's workspaceKey). */
     flush(opening?: string): Promise<boolean>;
@@ -1383,6 +1508,11 @@ export interface BuilderApi {
     conversations(): Promise<{ active: Conversation; list: ConversationSummary[] }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;
+    /**
+     * Read a conversation of the opening `workspaceKey` without opening it (see ConversationState): main's open thread
+     * stays as it is. Refused once that opening has closed.
+     */
+    readConversation(id: string, workspaceKey: string): Promise<ConversationState>;
     /**
      * Name a stored conversation (or the open one). `workspaceKey` is the opening of the project it was renamed in;
      * main refuses any other. Resolves with its new title.
@@ -1412,6 +1542,20 @@ export interface BuilderApi {
     cancelFix(): Promise<void>;
   };
   /**
+   * The open project's pinned notes (#770): short feedback left on a page or an element, kept in the project's local
+   * state (never its documents or export) as a checklist. Guests of a live session leave them too; in the remote shell
+   * these reach the host's project, as far as the guest's role allows.
+   */
+  notes: {
+    /** The notes as they are now, newest first, in the opening named (its snapshot's workspaceKey); null when that is not the project open. */
+    list(opening: string): Promise<LiveNotes | null>;
+    /** Leave a note, on the page and element named. */
+    add(opening: string, draft: NoteDraft): Promise<LiveNoteResult>;
+    /** Mark a note done, or open it again. */
+    resolve(opening: string, id: string, resolved: boolean): Promise<LiveNoteResult>;
+    delete(opening: string, id: string): Promise<LiveNoteResult>;
+  };
+  /**
    * Host a live session of the open project. It belongs to that opening: closing the project, switching to another or
    * quitting ends it. Times are on the relay's clock (LiveRoom.relayClockOffsetMs).
    */
@@ -1427,10 +1571,17 @@ export interface BuilderApi {
     setGuestExpiry(run: LiveRun, guestId: string, guestExpiresAt: number | null): Promise<LiveCommandResult>;
     kick(run: LiveRun, guestId: string): Promise<LiveCommandResult>;
     setLocked(run: LiveRun, locked: boolean): Promise<LiveCommandResult>;
+    /** Allow guest notes, or stop guests leaving any more; notes already left stay. */
+    setGuestNotes(run: LiveRun, allowed: boolean): Promise<LiveCommandResult>;
     /** Move the session's end later, to `expiresAt` on the relay's clock, at most 24 hours after it started. */
     extend(run: LiveRun, expiresAt: number): Promise<LiveCommandResult>;
     /** Where the host is in the editor (its page and preview width), for guests following it. The latest is kept and resent. */
     presence(run: LiveRun, presence: Presence): Promise<LiveCommandResult>;
+    /**
+     * Let a collaborator ask this computer's AI to edit (#769), or stop letting it, with a limit on its requests (null:
+     * none). Its requests run here, with this computer's provider; turning it off stops the one it has running.
+     */
+    setAi(run: LiveRun, guestId: string, grant: { allowed: boolean; turnLimit: number | null }): Promise<LiveCommandResult>;
     state(): Promise<LiveHostState>;
   };
   /**
@@ -1453,6 +1604,20 @@ export interface BuilderApi {
     apply(joinId: string, batch: LiveEditBatch): Promise<LiveApplyResult>;
     /** Where this app is in the editor, for the others: shared while a collaborator. False when it could not be. */
     presence(joinId: string, presence: Presence): Promise<boolean>;
+    /** This app's requests to the host's AI in the join named (#769); null when not admitted. */
+    ai(joinId: string): Promise<RemoteAi | null>;
+    /** Ask the host's AI to edit the page or selection named, when the host allows it. Runs on the host's computer. */
+    aiSend(joinId: string, text: string, context: LiveAiContext): Promise<RemoteAiSendResult>;
+    /** Stop this app's own request; false when it is no longer running. */
+    aiStop(joinId: string, runId: string): Promise<boolean>;
+    /** Answer the question this app's request is waiting on; false when it is no longer waiting. */
+    aiAnswer(joinId: string, runId: string, questionId: string, answer: string): Promise<boolean>;
+    /** The host's pinned notes: the copy last received, or asked for now. Null when not admitted. */
+    notes(joinId: string): Promise<LiveNotes | null>;
+    /** Leave, resolve or delete a note in the host's project, as far as this guest's role allows. */
+    addNote(joinId: string, draft: NoteDraft): Promise<LiveNoteResult>;
+    resolveNote(joinId: string, id: string, resolved: boolean): Promise<LiveNoteResult>;
+    deleteNote(joinId: string, id: string): Promise<LiveNoteResult>;
   };
   /**
    * The project as it is now. Over IPC (`window.builder`) it comes as a `ProjectChange` from the copy sent before
@@ -1498,6 +1663,12 @@ export interface BuilderApi {
   on(channel: 'remote:reload', cb: (reload: { joinId: string; revision: number | null }) => void): () => void;
   /** Where the host and the other collaborators are. */
   on(channel: 'remote:presence', cb: (presence: RemotePresence) => void): () => void;
+  /** This app's requests to the host's AI changed: access, a request's progress, or its end (#769). */
+  on(channel: 'remote:ai', cb: (ai: RemoteAi) => void): () => void;
+  /** The host's pinned notes changed, or whether guests may leave them. */
+  on(channel: 'remote:notes', cb: (notes: { joinId: string; notes: LiveNotes }) => void): () => void;
+  /** The shown project's pinned notes changed, or whether guests may leave them (#770). */
+  on(channel: 'notes:changed', cb: (notes: LiveNotes) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */

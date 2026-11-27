@@ -11,10 +11,13 @@
  *    text at the other, dark sections black, their text white). On those ends only the brand itself can fail,
  *    as text on the grounds, and for any colour one of white and black gives it at least 4.58:1, so the brand is
  *    kept exactly, on light grounds when it reads there and on dark ones when only those work.
- * 2. When neither works (a mid-tone brand under Signal's tinted eyebrow pill), the brand's lightness moves the
+ * 2. When neither works (a mid-tone brand under a tinted eyebrow pill), the brand's lightness moves the
  *    least it must, keeping its hue, and the palette says so.
  * 3. The colours then move from those ends towards the mood's targets, a group at a time; a target that would spoil
  *    a pair is approached only as far as every pair still passes.
+ *
+ * Errors stay red whatever the brand, at a lightness that reads on the light grounds (`color.error`) and one that reads
+ * in dark sections (`color.error-on-inverse`): no one red is 4.5:1 against both.
  *
  * Pure and deterministic: the same brand, mood and theme always make the same palette.
  */
@@ -51,7 +54,9 @@ export const PALETTE_ROLES = [
   'color.accent',
   'color.inverse',
   'color.on-inverse',
-  'color.focus'
+  'color.focus',
+  'color.error',
+  'color.error-on-inverse'
 ] as const;
 export type PaletteRole = (typeof PALETTE_ROLES)[number];
 
@@ -160,6 +165,8 @@ interface Ramp {
   text: number;
   muted: number;
   focus: number;
+  /** Error messages and the edges of fields to put right, in red. */
+  error: number;
 }
 
 interface Mood {
@@ -174,32 +181,32 @@ interface Mood {
 
 const MOODS: Record<PaletteMood, Mood> = {
   neutral: {
-    light: { background: 0.985, surface: 0.998, alt: 0.955, border: 0.86, text: 0.22, muted: 0.45, focus: 0.5 },
-    dark: { background: 0.17, surface: 0.21, alt: 0.25, border: 0.4, text: 0.95, muted: 0.77, focus: 0.78 },
+    light: { background: 0.985, surface: 0.998, alt: 0.955, border: 0.86, text: 0.22, muted: 0.45, focus: 0.5, error: 0.5 },
+    dark: { background: 0.17, surface: 0.21, alt: 0.25, border: 0.4, text: 0.95, muted: 0.77, focus: 0.78, error: 0.72 },
     chroma: 0.008,
     inverse: 0.2,
     onInverse: 0.96,
     accent: 0.76
   },
   tinted: {
-    light: { background: 0.975, surface: 0.995, alt: 0.935, border: 0.82, text: 0.22, muted: 0.44, focus: 0.5 },
-    dark: { background: 0.17, surface: 0.22, alt: 0.27, border: 0.43, text: 0.95, muted: 0.79, focus: 0.78 },
+    light: { background: 0.975, surface: 0.995, alt: 0.935, border: 0.82, text: 0.22, muted: 0.44, focus: 0.5, error: 0.5 },
+    dark: { background: 0.17, surface: 0.22, alt: 0.27, border: 0.43, text: 0.95, muted: 0.79, focus: 0.78, error: 0.72 },
     chroma: 0.035,
     inverse: 0.2,
     onInverse: 0.96,
     accent: 0.76
   },
   warm: {
-    light: { background: 0.98, surface: 0.995, alt: 0.945, border: 0.83, text: 0.23, muted: 0.45, focus: 0.5 },
-    dark: { background: 0.18, surface: 0.22, alt: 0.26, border: 0.42, text: 0.95, muted: 0.78, focus: 0.78 },
+    light: { background: 0.98, surface: 0.995, alt: 0.945, border: 0.83, text: 0.23, muted: 0.45, focus: 0.5, error: 0.5 },
+    dark: { background: 0.18, surface: 0.22, alt: 0.26, border: 0.42, text: 0.95, muted: 0.78, focus: 0.78, error: 0.72 },
     chroma: 0.025,
     inverse: 0.2,
     onInverse: 0.96,
     accent: 0.76
   },
   'high-contrast': {
-    light: { background: 0.995, surface: 1, alt: 0.97, border: 0.68, text: 0.1, muted: 0.34, focus: 0.42 },
-    dark: { background: 0.08, surface: 0.12, alt: 0.16, border: 0.55, text: 0.99, muted: 0.86, focus: 0.85 },
+    light: { background: 0.995, surface: 1, alt: 0.97, border: 0.68, text: 0.1, muted: 0.34, focus: 0.42, error: 0.44 },
+    dark: { background: 0.08, surface: 0.12, alt: 0.16, border: 0.55, text: 0.99, muted: 0.86, focus: 0.85, error: 0.76 },
     chroma: 0.005,
     inverse: 0.12,
     onInverse: 0.99,
@@ -211,6 +218,11 @@ const MOODS: Record<PaletteMood, Mood> = {
 const WARM_HUE = 75;
 /** The focus outline's hue for a grey brand: the blue browsers draw it in. */
 const FOCUS_HUE = 260;
+/** Errors are red whatever the brand: the hue people read as "put this right", at a chroma that stays clear of pink and orange. */
+const ERROR_HUE = 27;
+const ERROR_CHROMA = 0.19;
+/** How light errors in dark sections are (OKLCH): a light red that reads on the section like its text does. */
+const ERROR_ON_INVERSE = 0.78;
 
 /** The signed shortest turn from hue `a` to hue `b`, in degrees. */
 const turn = (a: number, b: number) => ((((b - a) % 360) + 540) % 360) - 180;
@@ -246,7 +258,9 @@ function targets(brand: string, mood: PaletteMood, page: 'light' | 'dark'): Reco
     'color.accent': oklchHex(m.accent, accentChroma, accentHue),
     'color.inverse': darkSection(brand, onInverse, m.inverse),
     'color.on-inverse': onInverse,
-    'color.focus': oklchHex(ramp.focus, 0.14, grey ? FOCUS_HUE : b.h)
+    'color.focus': oklchHex(ramp.focus, 0.14, grey ? FOCUS_HUE : b.h),
+    'color.error': oklchHex(ramp.error, ERROR_CHROMA, ERROR_HUE),
+    'color.error-on-inverse': oklchHex(ERROR_ON_INVERSE, ERROR_CHROMA, ERROR_HUE)
   };
 }
 
@@ -269,7 +283,9 @@ function extremes(brand: string, page: 'light' | 'dark', accent: string | undefi
     'color.accent': accent ?? WHITE,
     'color.inverse': BLACK,
     'color.on-inverse': WHITE,
-    'color.focus': ink
+    'color.focus': ink,
+    'color.error': ink,
+    'color.error-on-inverse': WHITE
   };
 }
 
@@ -277,8 +293,8 @@ function extremes(brand: string, page: 'light' | 'dark', accent: string | undefi
 const STAGES: PaletteRole[][] = [
   ['color.background', 'color.surface', 'color.surface-alt', 'color.border'],
   ['color.on-brand', 'color.brand-strong'],
-  ['color.text', 'color.muted', 'color.focus'],
-  ['color.inverse', 'color.on-inverse', 'color.accent']
+  ['color.text', 'color.muted', 'color.focus', 'color.error'],
+  ['color.inverse', 'color.on-inverse', 'color.accent', 'color.error-on-inverse']
 ];
 
 /** How finely the brand's lightness is searched when it has to move (OKLCH lightness). */

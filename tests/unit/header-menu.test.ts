@@ -25,7 +25,7 @@ const LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="10
 const PHONES = [320, 360, 390];
 /** The issue's case: a 33-character name beside the ten links the menu allows and the Book a call action. */
 const WIDE_BRAND = 'Harbourside Interior Design Group';
-const THEMES = ['foundation', 'editorial', 'signal'] as const;
+const THEMES = ['foundation', 'foundation-alt'] as const;
 const WIDTHS = [768, 820, 900, 1024, 1100, 1180, 1280, 1366, 1440, 1600, 1920];
 /** A menu that fits beside the name on every screen wider than a phone. */
 const SHORT_LABELS = ['Home', 'About', 'Contact'];

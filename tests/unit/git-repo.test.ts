@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepo, type RepoOptions } from '../../src/main/git/repo';
 import { GitError, VERSIONS_BRANCH, type FileInput, type Identity } from '../../src/main/git/protocol';
@@ -192,6 +193,71 @@ describe('writing and reading versions', () => {
       author: APP,
       committer: { ...APP, timestamp: APP.timestamp + 1, timezoneOffset: -600 }
     });
+  });
+
+  it('stores a project file only while it holds the bytes the caller hashed (#1153)', async () => {
+    const repo = openRepo(root);
+    await repo.init();
+    mkdirSync(join(root, 'static', 'assets'), { recursive: true });
+    const before = Buffer.from('picture A, as it was hashed');
+    const sha256 = createHash('sha256').update(before).digest('hex');
+    writeFileSync(join(root, 'static', 'assets', 'photo.jpg'), before);
+    const tree = await repo.writeFiles([{ path: 'static/assets/photo.jpg', source: 'static/assets/photo.jpg', sha256 }]);
+    expect(Buffer.from(await repo.readBlob(tree, 'static/assets/photo.jpg')).equals(before)).toBe(true);
+    // Replaced in place by a picture of the same size after it was hashed: refused, and nothing of it stored.
+    const after = Buffer.from('picture B, put there later!');
+    expect(after.length).toBe(before.length);
+    writeFileSync(join(root, 'static', 'assets', 'photo.jpg'), after);
+    const held = objects();
+    await expect(repo.writeFiles([{ path: 'static/assets/photo.jpg', source: 'static/assets/photo.jpg', sha256 }])).rejects.toMatchObject({ code: 'changed' });
+    expect(objects()).toEqual(held);
+    expect(objects()).not.toContain(blobOid(after));
+    await expect(repo.writeFiles([{ path: 'x', source: 'static/assets/photo.jpg', sha256: 'not-a-hash' }])).rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('writes again an object it would reuse when the copy there is damaged, and keeps a file’s executable mode (#1153)', async () => {
+    const repo = openRepo(root);
+    await repo.init();
+    const bytes = text('a picture, stored once');
+    const tree = await repo.writeFiles([{ path: 'static/photo.jpg', bytes }]);
+    const oid = blobOid(bytes);
+    const path = join(gitdir(), 'objects', oid.slice(0, 2), oid.slice(2));
+    // Cut short in place, as a disk that lost its last write would leave it.
+    writeFileSync(path, readFileSync(path).subarray(0, 6));
+    // A worker that has not read it back yet (a fresh one) finds it damaged and stores it again.
+    const again = openRepo(root);
+    expect(await again.writeFiles([{ path: 'static/photo.jpg', bytes }])).toBe(tree);
+    expect(Buffer.from(await again.readBlob(tree, 'static/photo.jpg')).equals(Buffer.from(bytes))).toBe(true);
+    const run = await again.writeFiles([{ path: 'scripts/run.sh', bytes: text('#!/bin/sh'), mode: '100755' }, { path: 'scripts/notes.txt', bytes: text('notes') }]);
+    const [scripts] = await again.readTree(run);
+    expect((await again.readTree(scripts.oid)).map((e) => [e.path, e.mode])).toEqual([
+      ['notes.txt', '100644'],
+      ['run.sh', '100755']
+    ]);
+    await expect(again.writeFiles([{ path: 'x', bytes: text('x'), mode: '120000' as '100644' }])).rejects.toMatchObject({ code: 'invalid' });
+    // Whole, but other content under its name (it inflates, and is still not this object): written again too, by the
+    // same worker that found it whole before, since the file is not the one it read back then.
+    writeFileSync(path, deflateSync(Buffer.from('blob 5\0other')));
+    expect(await again.writeFiles([{ path: 'static/photo.jpg', bytes }])).toBe(tree);
+    expect(Buffer.from(await openRepo(root).readBlob(tree, 'static/photo.jpg')).equals(Buffer.from(bytes))).toBe(true);
+  });
+
+  it('writes again a folder’s tree it would reuse when the copy there is damaged (#1153)', async () => {
+    const repo = openRepo(root);
+    await repo.init();
+    const files: FileInput[] = [
+      { path: 'siteorigin/pages/home.json', bytes: text('{"title":"Home"}') },
+      { path: 'siteorigin/site.json', bytes: text('{"name":"Site"}') }
+    ];
+    const top = await repo.writeFiles(files);
+    const siteorigin = (await repo.readTree(top)).find((e) => e.path === 'siteorigin')!.oid;
+    const pages = (await repo.readTree(siteorigin)).find((e) => e.path === 'pages')!.oid;
+    const path = join(gitdir(), 'objects', pages.slice(0, 2), pages.slice(2));
+    writeFileSync(path, readFileSync(path).subarray(0, 4));
+    // Another save of the same pages, by a fresh worker: the tree is whole again, and every page reads back.
+    const again = openRepo(root);
+    expect(await again.writeFiles(files)).toBe(top);
+    expect(decode(await openRepo(root).readBlob(top, 'siteorigin/pages/home.json'))).toBe('{"title":"Home"}');
   });
 
   it('publishes commits to a branch, lists them newest first, and keeps a second history with its own root', async () => {

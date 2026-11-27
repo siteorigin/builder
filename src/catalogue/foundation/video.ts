@@ -17,7 +17,7 @@ const VIDEO_SOURCE = `<script>
 	 */
 	import VideoPlayer from '../runtime/VideoPlayer.svelte';
 
-	let { eyebrow = '', heading = '', lead = '', title = '', url = '', variant = 'default', class: className = '' } = $props();
+	let { eyebrow = '', heading, lead = '', title = '', url = '', variant = 'default', class: className = '' } = $props();
 	const text = (v) => (typeof v === 'string' ? v : '');
 	const headingText = $derived(text(heading).trim());
 </script>

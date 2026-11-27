@@ -280,7 +280,7 @@ export async function openRoom(relay: Relay, options: { duration?: SessionDurati
   const keys = await generateHostKeyPair();
   // Each room comes from its own address unless a test says otherwise, so the creation rate limit only bites when meant to.
   const host = await relay.socket<'relay-to-host', 'host-to-relay'>('/ws/host', { 'cf-connecting-ip': options.ip ?? randomAddress() });
-  host.send('host-to-relay', { type: 'room:create', version: 1, publicKey: keys.publicKey, duration: options.duration ?? '2h', projectName: options.projectName ?? 'Test site' });
+  host.send('host-to-relay', { type: 'room:create', version: 2, publicKey: keys.publicKey, duration: options.duration ?? '2h', projectName: options.projectName ?? 'Test site' });
   const ready = await host.next('room:ready');
   await host.next('room:roster');
   return { host, keys, roomId: ready.roomId, previewOrigin: await previewOrigin(ready.roomId), ready };
@@ -289,7 +289,7 @@ export async function openRoom(relay: Relay, options: { duration?: SessionDurati
 /** Take a room back as its host: host:reconnect, sign the challenge, room:ready back. */
 export async function reconnectHost(relay: Relay, roomId: string, keys: HostKeyPair, headers: Record<string, string> = {}): Promise<{ host: HostPeer; ready: Frame<'relay-to-host', 'room:ready'> }> {
   const host = await relay.socket<'relay-to-host', 'host-to-relay'>(`/s/${roomId}/ws`, headers);
-  host.send('host-to-relay', { type: 'host:reconnect', version: 1, roomId });
+  host.send('host-to-relay', { type: 'host:reconnect', version: 2, roomId });
   const challenge = await host.next('host:challenge');
   host.send('host-to-relay', { type: 'host:proof', roomId, nonce: challenge.nonce, signature: await signHostChallenge(keys.privateKey, challenge) });
   return { host, ready: await host.next('room:ready') };
@@ -304,7 +304,7 @@ export interface JoinedGuest {
 /** Ask to join a room as a guest; resolves once the relay says the guest is waiting. */
 export async function joinGuest(relay: Relay, roomId: string, displayName = 'Ann'): Promise<JoinedGuest> {
   const guest = await relay.socket(`/s/${roomId}/ws`);
-  guest.send('guest-to-relay', { type: 'guest:join', version: 1, displayName });
+  guest.send('guest-to-relay', { type: 'guest:join', version: 2, displayName });
   const status = await guest.next('guest:status');
   if (status.status !== 'pending') throw new Error(`Expected to wait in the room, got ${status.status}`);
   return { guest, guestId: status.guestId, resumeToken: status.resumeToken };

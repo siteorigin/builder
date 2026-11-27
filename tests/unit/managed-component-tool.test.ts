@@ -11,7 +11,9 @@ import { compile } from 'svelte/compiler';
 import type { ElementNode, InstanceNode, ListItem, ProjectState, RepeatNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
+import { drafts } from '@engine/draft';
 import { defFile, generateManagedComponent } from '@generator/index';
+import { renderedContent } from '@generator/checks';
 import { executeTool, toolsForRun, type ToolHost } from '@agent/tools';
 import { newMacroMemory } from '@agent/macros';
 import { managedComponentSchema, MANAGED_COMPONENT_ARGS } from '@agent/managed-component';
@@ -426,6 +428,22 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(fields(out.content)).toEqual(['nodes[1]']);
   });
 
+  it('builds and places a component with the project copied no more often than the same batch from the editor, and once more', async () => {
+    const tool = await session();
+    const start = drafts.made;
+    const out = await tool.call(pricing({ placeOnPage: { pageId: tool.home } }));
+    const made = drafts.made - start;
+    expect(out.ok).toBe(true);
+    // The same operations from the editor, on a project of its own: the batch applied once.
+    const editor = await session();
+    const before = drafts.made;
+    const ops = out.ops!.map((o) => (o.type === 'node.insert' ? { ...o, owner: { kind: 'page' as const, id: editor.home } } : o));
+    expect((await editor.s.apply({ operations: ops }, { label: 'Build' })).ok).toBe(true);
+    const manual = drafts.made - before;
+    expect(manual).toBe(1);
+    expect(made).toBeLessThanOrEqual(manual + 1);
+  });
+
   it('names the root part pointed at another node by its row, and a placement outside the page by placeOnPage', async () => {
     const { s, call, home } = await session();
     const args = pricing();
@@ -654,6 +672,17 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(s.state.components[id].slots!.notes).toMatchObject({ label: 'Small print', categories: ['media'] });
   });
 
+  it('keeps through a rebuild a property the host offered to a live Copy Editor', async () => {
+    const { s, call } = await session();
+    const made = await call(pricing());
+    expect(made.ok).toBe(true);
+    const id = made.content.definitionId;
+    const r = await s.apply({ operations: [{ type: 'component.setPropSchema', definitionId: id, prop: 'heading', schema: { ...s.state.components[id].properties.heading, copyEditable: true } }] }, { label: 'Mark' });
+    expect(r.ok).toBe(true);
+    expect((await call(pricing({ definitionId: id, description: 'Prices.' }))).ok).toBe(true);
+    expect(s.state.components[id].properties.heading).toMatchObject({ copyEditable: true });
+  });
+
   it('rebuilds a placed component whole, keeping its placement values, and places it again', async () => {
     const { s, call, home } = await session();
     const made = await call(pricing({ placeOnPage: { pageId: home } }));
@@ -861,5 +890,194 @@ describe('UI state in one call (#377)', () => {
     expect(reread.ok, JSON.stringify(reread.content)).toBe(true);
     expect(s.state.components[definitionId].tree!.nodes.annual.unless).toEqual({ ref: { $state: 'plan' }, ne: 'annual' });
     expect(Object.keys(s.state.components[definitionId].state!)).toEqual(['plan', 'open']);
+  });
+});
+
+describe('upsert_managed_component: reusing components the site already has (#1146)', () => {
+  /** A badge subcomponent: a label shown in a pill, with a tone axis. */
+  const badge = (extra: Record<string, unknown> = {}): Record<string, any> => ({
+    name: 'Badge',
+    insertAs: 'element',
+    properties: [{ type: 'string', name: 'label', label: 'Label', default: 'New' }],
+    nodes: [
+      { kind: 'element', id: 'pill', tag: 'div', children: ['label'], styles: [{ property: 'paddingInline', value: tok('space.sm') }] },
+      { kind: 'text', id: 'label', tag: 'span', text: { $prop: 'label' } }
+    ],
+    variantAxes: [{ name: 'tone', label: 'Tone', options: [{ id: 'plain', label: 'Plain' }, { id: 'loud', label: 'Loud', styles: [{ nodeId: 'pill', property: 'background', value: tok('color.brand') }] }] }],
+    ...extra
+  });
+  /** A card that places the badge, showing its own badgeText property through it. */
+  const card = (badgeId: string, extra: Record<string, unknown> = {}): Record<string, any> => ({
+    name: 'Offer card',
+    insertAs: 'element',
+    properties: [
+      { type: 'string', name: 'title', label: 'Title', default: 'Spring sale' },
+      { type: 'string', name: 'badgeText', label: 'Badge text', default: 'Hot' }
+    ],
+    nodes: [
+      { kind: 'element', id: 'root', tag: 'article', children: ['badge', 'title'] },
+      { kind: 'instance', id: 'badge', definitionId: badgeId, props: [{ name: 'label', value: { $prop: 'badgeText' } }], variants: [{ axis: 'tone', option: 'loud' }], styles: [{ property: 'marginBlockEnd', value: tok('space.sm') }] },
+      { kind: 'text', id: 'title', tag: 'h3', text: { $prop: 'title' } }
+    ],
+    ...extra
+  });
+  const texts = (st: ProjectState, pageId: string) => renderedContent(st, st.pages[pageId]).filter((c) => c.kind === 'text').map((c) => c.value);
+
+  it('places an existing component in a new design, bound to its properties, and the result renders and validates', async () => {
+    const { s, call, home } = await session();
+    const b = await call(badge());
+    expect(b.ok).toBe(true);
+    const made = await call(card(b.content.definitionId, { placeOnPage: { pageId: home } }));
+    expect(made.ok, JSON.stringify(made.content)).toBe(true);
+    const def = s.state.components[made.content.definitionId];
+    const inst = def.tree!.nodes.badge as InstanceNode;
+    expect(inst).toMatchObject({ kind: 'instance', definitionId: b.content.definitionId, props: { label: { $prop: 'badgeText' } }, variants: { tone: 'loud' }, overrides: { root: { base: { marginBlockEnd: { token: 'space.sm' } } } } });
+    expect(errors(s.state)).toEqual([]);
+    compiles(s.state, made.content.definitionId);
+    expect(texts(s.state, home)).toEqual(expect.arrayContaining(['Hot', 'Spring sale']));
+  });
+
+  it('shows a later change to the reused component wherever the new design places it', async () => {
+    const { s, call, home } = await session();
+    const b = await call(badge());
+    const badgeId = b.content.definitionId as string;
+    await call(card(badgeId, { placeOnPage: { pageId: home } }));
+    expect(texts(s.state, home)).not.toContain('Limited');
+    // The badge gains a second line of text and a new style: the card shows both, through the same placement.
+    const next = badge({ definitionId: badgeId });
+    next.nodes = [{ ...next.nodes[0], children: ['label', 'note'], styles: [{ property: 'paddingInline', value: tok('space.lg') }] }, next.nodes[1], { kind: 'text', id: 'note', tag: 'span', text: 'Limited' }];
+    const rebuilt = await call(next);
+    expect(rebuilt.ok, JSON.stringify(rebuilt.content)).toBe(true);
+    expect(texts(s.state, home)).toEqual(expect.arrayContaining(['Hot', 'Limited']));
+    const cardId = Object.values(s.state.components).find((d) => d.name === 'Offer card')!.id;
+    // The card's own code names the badge's, so the badge's new design is what it renders.
+    const badgeFile = defFile(s.state.components[badgeId]).split('/').pop()!;
+    expect(generateManagedComponent(s.state, s.state.components[cardId], { instrument: false })).toContain(badgeFile);
+    expect(s.state.components[badgeId].tree!.nodes.pill.styles?.base?.paddingInline).toEqual({ token: 'space.lg' });
+    expect(errors(s.state)).toEqual([]);
+  });
+
+  it('refuses a component the site does not have, the component itself, and one that already places it, applying nothing', async () => {
+    const { s, call, applies } = await session();
+    const b = await call(badge());
+    const badgeId = b.content.definitionId as string;
+    const c = await call(card(badgeId));
+    const cardId = c.content.definitionId as string;
+    const before = applies();
+    const missing = await call(card('proj.nothing-abcde', { name: 'Other card' }));
+    expect(missing.ok).toBe(false);
+    expect(fields(missing.content)).toEqual(['nodes[1].definitionId']);
+    // The card rebuilt to place itself, and the badge rebuilt to place the card that places it.
+    const self = await call(card(cardId, { definitionId: cardId }));
+    expect(fields(self.content)).toEqual(['nodes[1].definitionId']);
+    expect(JSON.stringify(self.content)).toMatch(/cannot contain itself/);
+    const loop = badge({ definitionId: badgeId });
+    loop.nodes = [{ ...loop.nodes[0], children: ['label', 'inner'] }, loop.nodes[1], { kind: 'instance', id: 'inner', definitionId: cardId }];
+    const cycle = await call(loop);
+    expect(fields(cycle.content)).toEqual(['nodes[2].definitionId']);
+    expect(JSON.stringify(cycle.content)).toMatch(/already places it/);
+    // The shared header cannot be placed in a component.
+    const header = Object.values(s.state.components).find((d) => d.category === 'shell')!;
+    const shell = await call(card(header.id, { name: 'Shell card' }));
+    expect(fields(shell.content)).toContain('nodes[1].definitionId');
+    expect(applies()).toBe(before);
+    expect(Object.keys(s.state.components[badgeId].tree!.nodes)).toEqual(['pill', 'label']);
+  });
+
+  it('names a property, an option or a binding the placed component cannot take by its row', async () => {
+    const { call, applies } = await session();
+    const b = await call(badge());
+    const before = applies();
+    const bad = card(b.content.definitionId, {
+      nodes: [
+        { kind: 'element', id: 'root', tag: 'article', children: ['badge', 'title'] },
+        { kind: 'instance', id: 'badge', definitionId: b.content.definitionId, props: [{ name: 'colour', value: 'red' }, { name: 'label', value: { $item: 'name' } }], variants: [{ axis: 'tone', option: 'quiet' }] },
+        { kind: 'text', id: 'title', tag: 'h3', text: { $prop: 'title' } }
+      ]
+    });
+    const r = await call(bad);
+    expect(r.ok).toBe(false);
+    expect(fields(r.content)).toEqual(['nodes[1].props[0].name', 'nodes[1].props[1].value', 'nodes[1].variants[0]']);
+    // A property bound to one of a type the badge's cannot show is named by the engine, by the node.
+    const typed = card(b.content.definitionId, { properties: [{ type: 'boolean', name: 'badgeText', label: 'Badge', default: true }, { type: 'string', name: 'title', label: 'Title' }] });
+    const t = await call(typed);
+    expect(t.ok).toBe(false);
+    expect(fields(t.content)).toEqual(['nodes[1]']);
+    // A literal the badge's property cannot take is named by the node, as the engine settles it.
+    const literal = card(b.content.definitionId);
+    literal.nodes[1] = { kind: 'instance', id: 'badge', definitionId: b.content.definitionId, props: [{ name: 'label', value: true }] };
+    const l = await call(literal);
+    expect(l.ok).toBe(false);
+    expect(fields(l.content)).toEqual(['nodes[1]']);
+    // An item field inside a repeat of the design's own list is one a placement inside it can show.
+    const listed = card(b.content.definitionId, {
+      properties: [{ type: 'list', name: 'offers', label: 'Offers', fields: [{ type: 'string', name: 'tag', label: 'Tag' }], default: [{ values: [{ field: 'tag', value: 'Sale' }] }] }],
+      nodes: [
+        { kind: 'element', id: 'root', tag: 'ul', children: ['offers'] },
+        { kind: 'repeat', id: 'offers', list: 'offers', children: ['item'] },
+        { kind: 'element', id: 'item', tag: 'li', children: ['badge'] },
+        { kind: 'instance', id: 'badge', definitionId: b.content.definitionId, props: [{ name: 'label', value: { $item: 'tag' } }] }
+      ]
+    });
+    const okList = await call(listed);
+    expect(okList.ok, JSON.stringify(okList.content)).toBe(true);
+    expect(applies()).toBe(before + 1);
+  });
+
+  it('keeps through a rebuild what a placed component holds that the call leaves out, and refuses one whose slot holds content', async () => {
+    const { s, call } = await session();
+    const b = await call(badge({ slots: [{ name: 'extra', label: 'Extra', primitives: ['text'] }], nodes: [...badge().nodes.map((n: Record<string, any>) => (n.id === 'pill' ? { ...n, children: ['label', 'extra'] } : n)), { kind: 'slot', id: 'extra', slot: 'extra' }] }));
+    const badgeId = b.content.definitionId as string;
+    const c = await call(card(badgeId));
+    const cardId = c.content.definitionId as string;
+    const owner = { kind: 'component' as const, id: cardId };
+    // A style on the badge's inner part, which the tool has no field for, set by hand.
+    const r = await s.apply({ operations: [{ type: 'component.setPart', definitionId: badgeId, partId: 'label', nodeId: 'label', label: 'Label' }, { type: 'node.setStyle', owner, nodeId: 'badge', partId: 'label', scope: 'base', property: 'color', value: { token: 'color.brand' } }] }, { label: 'Style' });
+    expect(r.ok, JSON.stringify(r.error)).toBe(true);
+    // A long label set by hand, which a read shows shortened.
+    const long = 'Limited offer '.repeat(20).trim();
+    const longCall = card(badgeId, { definitionId: cardId });
+    longCall.nodes[1] = { kind: 'instance', id: 'badge', definitionId: badgeId, props: [{ name: 'label', value: long }] };
+    expect((await call(longCall)).ok).toBe(true);
+    const shortened = `${long.slice(0, 219)}…`;
+    const back = card(badgeId, { definitionId: cardId });
+    back.nodes[1] = { kind: 'instance', id: 'badge', definitionId: badgeId, props: [{ name: 'label', value: shortened }] };
+    const restored = await call(back);
+    expect(restored.ok, JSON.stringify(restored.content)).toBe(true);
+    expect((s.state.components[cardId].tree!.nodes.badge as InstanceNode).props.label).toBe(long);
+    // Sent again by id and definitionId alone: its values, its option and its styles stay.
+    const again = card(badgeId, { definitionId: cardId, name: 'Offer tile' });
+    again.nodes[1] = { kind: 'instance', id: 'badge', definitionId: badgeId };
+    const rebuilt = await call(again);
+    expect(rebuilt.ok, JSON.stringify(rebuilt.content)).toBe(true);
+    const inst = s.state.components[cardId].tree!.nodes.badge as InstanceNode;
+    expect(inst.props.label).toBe(long);
+    expect(inst.variants).toEqual({ tone: 'loud' });
+    expect(inst.overrides).toEqual({ root: { base: { marginBlockEnd: { token: 'space.sm' } } }, label: { base: { color: { token: 'color.brand' } } } });
+    // Another component at the same node ID is a new placement: none of the badge's values or styles go with it.
+    const other = await call(badge({ name: 'Ribbon' }));
+    const swapped = card(badgeId, { definitionId: cardId });
+    swapped.nodes[1] = { kind: 'instance', id: 'badge', definitionId: other.content.definitionId };
+    const sw = await call(swapped);
+    expect(sw.ok, JSON.stringify(sw.content)).toBe(true);
+    const fresh = s.state.components[cardId].tree!.nodes.badge as InstanceNode;
+    expect(fresh).toMatchObject({ definitionId: other.content.definitionId, props: { label: 'New' } });
+    expect(fresh.overrides).toBeUndefined();
+    expect(fresh.variants).toBeUndefined();
+    const reset = await call(again);
+    expect(reset.ok, JSON.stringify(reset.content)).toBe(true);
+    // Content placed in its slot lives in the card's design, which a rebuild replaces whole: refused, never dropped.
+    const filled = await s.apply({ operations: [{ type: 'node.insert', owner, parentId: 'badge', slot: 'extra', primitive: 'paragraph', text: 'Ends Friday' }] }, { label: 'Fill' });
+    expect(filled.ok, JSON.stringify(filled.error)).toBe(true);
+    const refused = await call(again);
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused.content)).toMatch(/holds content in the \\"extra\\" slot/);
+    expect((s.state.components[cardId].tree!.nodes.badge as InstanceNode).slots?.extra).toHaveLength(1);
+  });
+
+  it('fits the strict schema a constrained model is held to', () => {
+    const strict = toStrictSchema(managedComponentSchema());
+    expect(accepts(strict, JSON.parse(JSON.stringify(card('proj.badge-abcde'))))).toBe(true);
+    expect(accepts(strict, { name: 'X', nodes: [{ kind: 'instance', id: 'b', definitionId: 'proj.badge-abcde', children: ['x'] }] })).toBe(false);
   });
 });

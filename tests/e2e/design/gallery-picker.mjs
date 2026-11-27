@@ -238,11 +238,16 @@ await cancel();
 
 // A full gallery: every place left taken, the rest can't be chosen, and the order is long.
 await openPicker();
-const count = await tiles.count();
+// The grid draws only the rows near its view: the images are counted by the list's size, and chosen from the
+// keyboard, which brings each next one into view.
+const count = Number(await tiles.first().getAttribute('aria-setsize'));
 if (count < 25) throw new Error(`only ${count} images to choose from; a full gallery needs 25`);
+await tiles.first().focus();
 for (let i = 0; i < count; i++) {
-  if ((await tiles.nth(i).getAttribute('aria-disabled')) === 'true') break;
-  await tiles.nth(i).click();
+  const at = picker.locator('.insp-pick-tile:focus');
+  if ((await at.getAttribute('aria-disabled')) === 'true') break;
+  await win.keyboard.press('Space');
+  await win.keyboard.press('ArrowRight');
 }
 await picker.locator('.insp-pick-grid').evaluate((el) => el.scrollTo(0, 0));
 await pause(300);

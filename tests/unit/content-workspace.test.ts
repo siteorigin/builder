@@ -16,6 +16,8 @@ import {
   STARTER_COLLECTIONS,
   contentRows,
   customCollectionOps,
+  draftFeedChoice,
+  draftInFeed,
   entryNoun,
   entryNounLower,
   fieldNameFor,
@@ -164,6 +166,39 @@ describe('the schema dialog', () => {
   it('saves nothing when nothing changed', () => {
     const s = team();
     expect(schemaUpdateOp(s.collections.team, schemaDraftOf(s.collections.team))).toBeNull();
+  });
+
+  it('puts records in the RSS feed only when chosen, keeps the choice through a change of kind, and can leave it to the kind', () => {
+    // With a page for each entry, as the dialog shows the switch.
+    const s = run(team(), [{ type: 'collection.update', collectionId: 'team', pages: { detail: true, archive: false }, route: '/team/' } as EditOperation]);
+    const c = s.collections.team;
+    const draft = schemaDraftOf(c);
+    expect(draft.detail).toBe(true);
+    expect(draftInFeed(draft)).toBe(false);
+    const on = { ...draft, ...draftFeedChoice(true) };
+    expect(draftInFeed(on)).toBe(true);
+    expect(schemaUpdateOp(c, on)).toEqual({ type: 'collection.update', collectionId: 'team', rss: true });
+    const opted = run(s, [schemaUpdateOp(c, on)!]);
+    expect(opted.collections.team.settings.rss).toBe(true);
+    // Turned off, then made articles, or the other way round: off either way, as the author chose.
+    const was = schemaDraftOf(opted.collections.team);
+    const offThenKind = { ...was, ...draftFeedChoice(false), kind: 'editorial' as const };
+    const kindThenOff = { ...{ ...was, kind: 'editorial' as const }, ...draftFeedChoice(false) };
+    for (const d of [offThenKind, kindThenOff]) {
+      expect(draftInFeed(d)).toBe(false);
+      expect(schemaUpdateOp(opted.collections.team, d)).toEqual({ type: 'collection.update', collectionId: 'team', kind: 'editorial', rss: false });
+    }
+    // Switched off and on again, the choice it opened with is saved as it was: nothing changes.
+    expect(schemaUpdateOp(opted.collections.team, { ...was, ...draftFeedChoice(false), ...draftFeedChoice(true) })).toBeNull();
+    // Left to the kind: null, and the records leave the feed again.
+    const left = { ...was, rss: undefined };
+    expect(draftInFeed(left)).toBe(false);
+    expect(schemaUpdateOp(opted.collections.team, left)).toEqual({ type: 'collection.update', collectionId: 'team', rss: null });
+    expect(Object.hasOwn(run(opted, [schemaUpdateOp(opted.collections.team, left)!]).collections.team.settings, 'rss')).toBe(false);
+    // Made articles in the same draft, with no choice of its own, it follows its new kind into the feed.
+    const articles = { ...draft, kind: 'editorial' as const };
+    expect(draftInFeed(articles)).toBe(true);
+    expect(schemaUpdateOp(c, articles)).not.toHaveProperty('rss');
   });
 
   it('adds a field of every kind, and a grouping, in one change', () => {

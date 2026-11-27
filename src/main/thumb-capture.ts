@@ -8,6 +8,7 @@
 import { BrowserWindow, session as electronSession } from 'electron';
 import { THUMB_SIZE, THUMB_VIEW, thumbCrop, type Box, type CaptureResult } from './runtime/component-thumbs';
 import { sameOrigin } from './player-frames';
+import { parseReads, STILL_CSS, thumbReads, THUMB_READS_WORLD } from './runtime/thumb-reads';
 import { previewKeyOf } from '@shared/component-preview';
 
 /** How long a preview gets to load, mount, settle and be measured; one that takes longer is not pictured. */
@@ -45,8 +46,15 @@ const MEASURE = `(async () => {
   return p && typeof p === 'object' ? { key: String(p.key || ''), mounted: p.mounted === true, error: p.error ? String(p.error) : undefined } : null;
 })()`;
 
-/** Every animation and transition at its end at once, so nothing is photographed half way. */
-const STILL_CSS = 'html { scroll-behavior: auto !important; } *, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition: none !important; }';
+
+/** The custom properties the page in `w` can show (see ./runtime/thumb-reads), or null when it cannot tell. */
+async function reads(w: BrowserWindow, phase: 'before' | 'after'): Promise<string[] | null> {
+  try {
+    return parseReads(await w.webContents.executeJavaScriptInIsolatedWorld(THUMB_READS_WORLD, [{ code: thumbReads(phase) }]));
+  } catch {
+    return null;
+  }
+}
 
 export interface ThumbCapturer {
   /** Photograph the prepared preview at `path` on the preview server at `server`. */
@@ -173,9 +181,14 @@ export function createThumbCapturer(): ThumbCapturer {
       if (measured.loaded !== true) return { ok: false, message: 'The component was still loading.', transient: true };
       const crop = thumbCrop(measured.bounds ?? null, measured.ink ?? null);
       if (!crop) return { ok: false, message: 'The component shows nothing to picture.' };
+      // Which of the site's custom properties the picture can show, read just before and just after it is taken: a
+      // page that changed meanwhile, or what it reads, is not told apart by them (null).
+      const before = await reads(w, 'before');
       const image = await w.webContents.capturePage(crop, { stayHidden: true });
       if (image.isEmpty()) return { ok: false, message: 'The component could not be pictured.', transient: true };
-      return { ok: true, png: image.resize({ ...THUMB_SIZE, quality: 'best' }).toPNG() };
+      const after = before ? await reads(w, 'after') : null;
+      const same = !!before && !!after && before.length === after.length && before.every((n, i) => n === after[i]);
+      return { ok: true, png: image.resize({ ...THUMB_SIZE, quality: 'best' }).toPNG(), reads: same ? before : null };
     };
     try {
       const result = await Promise.race([shoot().catch((e: unknown): CaptureResult => ({ ok: false, message: `The component could not be pictured: ${e instanceof Error ? e.message : String(e)}`, transient: true })), ended]);

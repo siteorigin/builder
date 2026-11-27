@@ -317,23 +317,25 @@ describe('a grid child spanning more columns than its grid has', () => {
   });
 
   it('says nothing where the theme’s own rules may place a detached copy of its design', () => {
-    // Editorial gives a text section's heading the whole row when it is alone, detached copies included.
+    // A theme that gives a text section's heading the whole row when it is alone, detached copies included.
+    const themeCss = ':is(.so-demo-content-text__heading, .so--d-demo-content-text__heading):only-child { grid-column: 1 / -1; }';
+    const themed = (s: ProjectState) => layoutGuardrailDiagnostics(s, themeCss);
     const loneHeading = (detachedFrom?: unknown) => {
-      const s = createStarterState('blank', 'Blank', false, 'editorial');
+      const s = createStarterState('blank', 'Blank', false);
       return page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_heading']), el('n_heading', 'Heading', { base: { columnSpan: '3' } }, [], detachedFrom ? ({ detachedFrom } as Partial<ElementNode>) : {})], s);
     };
-    expect(guardrails(loneHeading()).map((d) => d.code)).toEqual([SPAN]);
-    expect(guardrails(loneHeading({ component: 'editorial-content-text', node: 'heading' }))).toEqual([]);
+    expect(themed(loneHeading()).map((d) => d.code)).toEqual([SPAN]);
+    expect(themed(loneHeading({ component: 'demo-content-text', node: 'heading' }))).toEqual([]);
     // A copy of a node no theme rule hooks is read as usual.
-    expect(guardrails(loneHeading({ component: 'editorial-content-text', node: 'nothing-hooks-this' })).map((d) => d.code)).toEqual([SPAN]);
+    expect(themed(loneHeading({ component: 'demo-content-text', node: 'nothing-hooks-this' })).map((d) => d.code)).toEqual([SPAN]);
     // A placement carries its detached classes on its design's root.
     const placed = (detachedFrom?: unknown) => {
-      const s = createStarterState('blank', 'Blank', false, 'editorial');
+      const s = createStarterState('blank', 'Blank', false);
       addDesign(s, 'c_tile', [el('n_root', 'Tile')], { slots: {} });
       return page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_place']), placement('n_place', 'c_tile', { overrides: { root: { base: { columnSpan: '3' } } }, ...(detachedFrom ? { detachedFrom } : {}) } as Partial<InstanceNode>)], s);
     };
-    expect(guardrails(placed()).map((d) => d.code)).toEqual([SPAN]);
-    expect(guardrails(placed({ component: 'editorial-content-text', node: 'heading' }))).toEqual([]);
+    expect(themed(placed()).map((d) => d.code)).toEqual([SPAN]);
+    expect(themed(placed({ component: 'demo-content-text', node: 'heading' }))).toEqual([]);
   });
 
   it('reads a repeat’s items as the grid’s own children, in a project component’s design', () => {
@@ -566,5 +568,24 @@ describe('the guardrails as diagnostics', () => {
         page([el('n_badge', 'Badge', { base: { position: 'absolute' } })], s);
         expect(guardrails(s).map((d) => d.code), `${theme.id} badge`).toEqual([ABSOLUTE]);
       }
+  });
+});
+
+describe('a grid child starting where its columns run out (#1136)', () => {
+  const at = (styles: ResponsiveStyles) =>
+    guardrails(page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 3 } }, ['n_card']), el('n_card', 'Card', styles)]), SPAN).map((d) => d.message.replace(/^[^:]+: /, ''));
+
+  it('is a warning when its start and span pass the last column, and not when they end on it', () => {
+    expect(at({ desktop: { columnStart: '3', columnSpan: '2' } })).toEqual([
+      'on desktops, “Card” starts on line 3 and spans 2 columns, but its grid has only 3 columns, so the grid adds a column of its own to fit it, squeezing the others. Lower its Column start or Column span, or give the grid more columns.'
+    ]);
+    expect(at({ desktop: { columnStart: '2', columnSpan: '2' } })).toEqual([]);
+    expect(at({ desktop: { columnStart: '3' } })).toEqual([]);
+    expect(at({ desktop: { columnStart: '5' } })[0]).toContain('starts on line 5 and spans 1 column, but its grid has only 3 columns, so the grid adds 2 columns');
+  });
+
+  it('leaves out Auto, and Full width, which always starts on line 1', () => {
+    expect(at({ desktop: { columnStart: 'auto', columnSpan: '3' } })).toEqual([]);
+    expect(at({ desktop: { columnStart: '5', columnSpan: 'full' } })).toEqual([]);
   });
 });

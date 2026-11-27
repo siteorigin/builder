@@ -51,7 +51,7 @@ function serve(host: () => HostPeer, site: Site) {
         asked.push(request.target);
         const html = site.get(request.target.split('?')[0]);
         if (html === undefined) answerPreview(host(), request.requestId, { status: 404, headers: [['content-type', 'text/plain']], body: enc('Not found') });
-        else answerPreview(host(), request.requestId, { headers: [['content-type', 'text/html; charset=utf-8']], body: enc(html) });
+        else answerPreview(host(), request.requestId, { headers: [['content-type', request.target.endsWith('.txt') ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8']], body: enc(html) });
       }
       await wait(10);
     }
@@ -118,6 +118,15 @@ async function preview(s: Scene): Promise<Frame> {
     await wait(25);
   }
   throw new Error('No preview frame');
+}
+
+/** Wait for `check`, asked from here: the viewer's policy refuses the eval a page-side wait needs. */
+async function poll(check: () => Promise<boolean>, what: string) {
+  for (let i = 0; i < 200; i++) {
+    if (await check()) return;
+    await wait(25);
+  }
+  throw new Error(`Timed out waiting for ${what}`);
 }
 
 const heading = async (s: Scene) => (await preview(s)).textContent('h1');
@@ -400,6 +409,56 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
     }
   });
 
+  it('points at what the guest clicks, for the host alone, without the click doing anything else, and stops on Escape (#768)', async () => {
+    // The editor's preview marks each element with where it is in the project (src/generator, idAttrs).
+    const marked = `<!doctype html><html><head><title>Home</title></head><body style="margin:0"><h1>Home</h1><div style="height:1200px"></div><section data-so-ctx="page:pg_home|n_card" data-so-node="n_title" data-so-items="it%2C1,it_2"><a id="go" href="/about/" style="display:block;height:40px">About</a></section><div style="height:1200px"></div></body></html>`;
+    const s = await scene({ site: new Map([['/', marked], ['/about/', page('About', '<a id="notes" href="/notes.txt">Notes</a>')], ['/notes.txt', 'Plain notes']]) });
+    try {
+      const guestId = await ask(s);
+      const frame = await admit(s, guestId);
+      expect(await s.tab.isDisabled('#point')).toBe(false);
+      await s.tab.click('#point');
+      expect(await s.tab.getAttribute('#point', 'aria-pressed')).toBe('true');
+      expect(await s.tab.isVisible('#point-hint')).toBe(true);
+      await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'attached' });
+      await frame.click('#go');
+      const pointed = await s.host.next('spotlight:pointed');
+      expect(pointed).toMatchObject({ guestId, spotlight: { previewPath: '/', target: { owner: { kind: 'page', id: 'pg_home' }, instancePath: ['n_card'], nodeId: 'n_title', itemPath: ['it,1', 'it_2'] } } });
+      // The point is where the click landed, as shares of the whole page.
+      const expected = (await frame.evaluate(`(() => { const r = document.getElementById('go').getBoundingClientRect(); const d = document.documentElement; return { x: (r.left + r.width / 2 + scrollX) / d.scrollWidth, y: (r.top + r.height / 2 + scrollY) / d.scrollHeight }; })()`)) as { x: number; y: number };
+      expect(pointed.spotlight.x).toBeCloseTo(expected.x, 2);
+      expect(pointed.spotlight.y).toBeCloseTo(expected.y, 2);
+      // One click: the link was not followed, and pointing is over.
+      expect(new URL(frame.url()).pathname).toBe('/');
+      expect(await s.tab.getAttribute('#point', 'aria-pressed')).toBe('false');
+      expect(await frame.$('html[data-siteorigin-pointing]')).toBeNull();
+
+      // Somewhere the page names nothing is pointed at as a point alone.
+      await wait(600);
+      await s.tab.click('#point');
+      await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'attached' });
+      await frame.click('h1');
+      expect((await s.host.next('spotlight:pointed')).spotlight).toMatchObject({ previewPath: '/', target: null });
+
+      // Escape stops pointing, and the next click is the site's own again.
+      await s.tab.click('#point');
+      await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'attached' });
+      await s.tab.keyboard.press('Escape');
+      await s.tab.waitForSelector('#point[aria-pressed="false"]');
+      await frame.click('#go');
+      await frame.waitForURL(/\/about\/$/);
+      await wait(200);
+      expect(s.host.has('spotlight:pointed')).toBe(false);
+
+      // A page the site goes on to that has no bridge (a plain file) cannot be pointed at: Point waits for one that has.
+      await s.tab.waitForSelector('#point:not([disabled])');
+      await frame.click('#notes');
+      await s.tab.waitForSelector('#point[disabled]');
+    } finally {
+      await s.done();
+    }
+  });
+
   it('offers a collaborator the invite link for SiteOrigin Builder', async () => {
     const s = await scene();
     try {
@@ -412,6 +471,96 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       expect(await s.tab.inputValue('#handoff-link')).toBe(`${origin}/s/${s.room.roomId}`);
       await s.tab.click('#handoff-copy');
       expect(await s.tab.evaluate<string>(`navigator.clipboard.readText()`)).toBe(`${origin}/s/${s.room.roomId}`);
+    } finally {
+      await s.done();
+    }
+  });
+
+  it('lists the host’s notes and leaves one on the page the guest is on, as text, until the host turns notes off (#770)', async () => {
+    const s = await scene();
+    try {
+      const guestId = await ask(s);
+      const note = (id: string, text: string) => ({ id, text, authorName: 'Bo', authorRole: 'collaborator', createdAt: Date.now() - 120_000, pageId: 'p_home', target: null, resolved: false });
+      const answer = (requestId: string, method: string, result: unknown) => s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId, method: method as never, ok: true, result });
+      let frame = await admit(s, guestId);
+      // Let in, the viewer reads the notes once.
+      const list = await s.host.next('rpc:request');
+      expect(list).toMatchObject({ guestId, method: 'notes.list', args: [] });
+      answer(list.requestId, 'notes.list', { notes: [note('n1', '<b>Check</b> the price'), { ...note('n2', 'Done already'), resolved: true }], guestNotes: true });
+      await s.tab.waitForSelector('#notes-count:not([hidden])');
+      expect(await s.tab.textContent('#notes-count')).toBe('1');
+      await s.tab.click('#notes-button');
+      await s.tab.waitForSelector('#notes:not([hidden])');
+      // Opening the panel reads the notes again, so it never shows what an earlier read missed.
+      const opened = await s.host.next('rpc:request');
+      expect(opened.method).toBe('notes.list');
+      answer(opened.requestId, 'notes.list', { notes: [note('n1', '<b>Check</b> the price'), { ...note('n2', 'Done already'), resolved: true }], guestNotes: true });
+      // Other people's words are shown as they wrote them, never as markup; only open notes are listed.
+      expect(await s.tab.locator('#note-list li').count()).toBe(1);
+      expect(await s.tab.textContent('#note-list .note-text')).toBe('<b>Check</b> the price');
+      expect(await s.tab.locator('#note-list b').count()).toBe(0);
+      expect(await s.tab.textContent('#note-list .note-meta')).toBe('Bo · 2 min ago');
+
+      // On another page of the site, the guest writes a note: it is pinned to that page.
+      await frame.click('a[href="/about/"]');
+      frame = await preview(s);
+      await frame.waitForFunction(`document.querySelector('h1')?.textContent === 'About'`);
+      // Going into the site put the panel away, as for any panel over it; it opens again on the page now shown.
+      expect(await s.tab.isVisible('#notes')).toBe(false);
+      await s.tab.click('#notes-button');
+      const reopened = await s.host.next('rpc:request');
+      expect(reopened.method).toBe('notes.list');
+      answer(reopened.requestId, 'notes.list', { notes: [note('n1', '<b>Check</b> the price')], guestNotes: true });
+      await poll(async () => !!(await s.tab.textContent('#note-where'))?.includes('/about/'), 'the note pinned to the page shown');
+      await s.tab.fill('#note-text', '  Swap   this hero photo ');
+      expect(await s.tab.textContent('#note-length')).toBe('20/280');
+      await s.tab.click('#note-send');
+      const add = await s.host.next('rpc:request');
+      expect(add).toMatchObject({ guestId, method: 'notes.add', args: [{ text: 'Swap this hero photo', previewPath: '/about/' }] });
+      answer(add.requestId, 'notes.add', { kept: true });
+      await poll(async () => (await s.tab.inputValue('#note-text')) === '', 'the note sent');
+      const again = await s.host.next('rpc:request');
+      expect(again.method).toBe('notes.list');
+      answer(again.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo'), note('n1', '<b>Check</b> the price')], guestNotes: true });
+      await poll(async () => (await s.tab.locator('#note-list li').count()) === 2, 'the notes read again');
+
+      // The host could not say the note was kept (the disk failed as it finished): the guest is told it may have been.
+      await s.tab.fill('#note-text', 'Second note');
+      await s.tab.click('#note-send');
+      const unsure = await s.host.next('rpc:request');
+      expect(unsure.method).toBe('notes.add');
+      s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId: unsure.requestId, method: 'notes.add', ok: false, error: { code: 'UNAVAILABLE', message: 'The project’s notes could not be saved.', recoverable: true } });
+      await poll(async () => !!(await s.tab.textContent('#note-error'))?.includes('may have been sent'), 'the guest told the note may have been sent');
+      expect(await s.tab.inputValue('#note-text')).toBe('Second note');
+      const look = await s.host.next('rpc:request');
+      expect(look.method).toBe('notes.list');
+      answer(look.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo'), note('n1', '<b>Check</b> the price')], guestNotes: true });
+      await s.tab.fill('#note-text', '');
+
+      // Too long a note is never sent.
+      await s.tab.fill('#note-text', 'x'.repeat(281));
+      expect(await s.tab.isDisabled('#note-send')).toBe(true);
+      await s.tab.fill('#note-text', '');
+
+      // The host says the notes changed, turning guest notes off: the form goes, the list stays.
+      s.host.send('host-to-relay', { type: 'rpc:event', event: 'notes:changed', payload: { kind: 'notes' } });
+      const changed = await s.host.next('rpc:request');
+      expect(changed.method).toBe('notes.list');
+      answer(changed.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo')], guestNotes: false });
+      await s.tab.waitForSelector('#notes-off:not([hidden])');
+      expect(await s.tab.isVisible('#note-form')).toBe(false);
+      expect(await s.tab.locator('#note-list li').count()).toBe(1);
+      // A read the host turns away (busy) is asked again by itself, so the change is not missed for good.
+      s.host.send('host-to-relay', { type: 'rpc:event', event: 'notes:changed', payload: { kind: 'notes' } });
+      const busy = await s.host.next('rpc:request');
+      expect(busy.method).toBe('notes.list');
+      s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId: busy.requestId, method: 'notes.list', ok: false, error: { code: 'BUSY', message: 'Too many requests for the notes. Try again shortly.', recoverable: true } });
+      const retried = await s.host.next('rpc:request');
+      expect(retried.method).toBe('notes.list');
+      answer(retried.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo'), note('n4', 'Brighter photo')], guestNotes: false });
+      await poll(async () => (await s.tab.locator('#note-list li').count()) === 2, 'the notes read again after a refusal');
+      await s.tab.keyboard.press('Escape');
+      expect(await s.tab.isVisible('#notes')).toBe(false);
     } finally {
       await s.done();
     }

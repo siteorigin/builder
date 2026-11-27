@@ -7,7 +7,7 @@ import { mkdir } from 'node:fs/promises';
 // First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
 import { perf } from './perf';
 import { PERF_ARG, PERF_GLOBAL } from '@shared/perf';
-import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceSettingsDraft } from '@shared/api';
+import type { Appearance, ChatContext, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceManifest, SourceSettingsDraft } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
@@ -23,12 +23,15 @@ import { buildDetailsText, buildLabel, buildVersion, type BuildStamp } from './b
 import { captureMainErrors, createMainLog } from './main-log';
 import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
-import { Orchestrator } from '@agent/orchestrator';
+import { Orchestrator, type RunDelegation } from '@agent/orchestrator';
+import { liveHostAi } from './live/host-ai';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { CompileCache, compileProject } from './compile';
 import { createCompilePool } from './compile-client';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
+import { designCalled } from '@generator/index';
+import { normalizeProperties } from '@engine/schema';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
 import { setSiteIconRenderer } from './project/site-icons';
 import { setToolsCheck } from './runtime/manager';
@@ -36,10 +39,12 @@ import { stopToolsChecks, toolsChecker } from './runtime/tools-process';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
 import { stopSourceSyncs } from './sources/process';
-import { stopGitWorker } from './git/process';
+import { gitClient, gitRuntime, stopGitWorker } from './git/process';
+import { useVersionsGit } from './project/versions-git';
 import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navigationAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
+import { createReviewShooter } from './review-capture';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
 import { installAiJournal } from './ai-journal';
 import { windowIcon } from './window-icon';
@@ -104,8 +109,15 @@ const packs = createPacksGate(async () => {
 const thumbCapturer = createThumbCapturer();
 controller.thumbCapture = (server, path) =>
   win && !win.isDestroyed() ? thumbCapturer.capture(server, path) : Promise.resolve({ ok: false as const, message: 'The editor is closed.', transient: true });
-// The hidden window belongs to the project's previews: it closes with the project, not only with the editor.
-controller.onSessionClosed = () => thumbCapturer.dispose();
+/** Photographs the pages of a review edition (#1133), each in a hidden window of its own, while the editor is open. */
+const reviewShooter = createReviewShooter();
+controller.reviewShoot = (url, width, signal) =>
+  win && !win.isDestroyed() ? reviewShooter.shoot(url, width, signal) : Promise.resolve({ ok: false as const, reason: 'failed' as const, detail: 'The editor is closed.' });
+// The hidden windows belong to the project's previews: they close with the project, not only with the editor.
+controller.onSessionClosed = () => {
+  thumbCapturer.dispose();
+  reviewShooter.dispose();
+};
 
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
 app.commandLine.appendSwitch('use-mock-keychain');
@@ -416,6 +428,8 @@ const orchestrator = new Orchestrator({
   emit: (e) => {
     aiJournal?.record(e);
     controller.send('ai:event', e);
+    // A live-session collaborator's request is followed by that guest too (#769), as far as it is safe to share.
+    controller.live.aiEvent(e);
   },
   compileAll: async (): Promise<Diagnostic[]> => {
     const session = controller.session;
@@ -455,6 +469,32 @@ controller.onSessionOpened = async (s) => {
 };
 /** A read-only project (newer format, or another app is editing it) refuses anything that writes to it. */
 const readOnlyReason = () => controller.session?.readOnly?.reason ?? null;
+
+/**
+ * Send a request to the assistant: the author's from the editor, or a live-session collaborator's (`delegation`,
+ * #769), which goes through the same checks and the same test limit on requests, with this computer's provider.
+ */
+async function sendAi(text: string, ctx: unknown, conversationId?: string, recipient?: unknown, delegation?: RunDelegation): Promise<{ ok: boolean; runId?: string; message?: string }> {
+  perf.mark('ai.send', { mode: (ctx as { mode?: unknown } | null)?.mode === 'ask' ? 'ask' : 'edit' });
+  if (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock)) return { ok: false, message: readOnlyReason()! };
+  // A test may cap the requests the assistant starts (ai-journal.ts): one past the cap never reaches a model.
+  if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
+  const sent = await orchestrator.send(text, ctx as ChatContext, conversationId, recipient, delegation);
+  if (!sent.ok) aiJournal?.giveBack();
+  // Admitted just before the deadline, but started after it stopped everything: stopped now.
+  else if (aiJournal?.turns().spent && sent.runId) void orchestrator.stopRun(sent.runId);
+  return sent;
+}
+
+// A live-session collaborator the host allows AI editing asks the assistant here (#769), with this computer's
+// provider and the same checks and test limit as the author's own requests (live/host-ai.ts).
+controller.live.ai = liveHostAi({
+  state: () => controller.session?.state ?? null,
+  opening: () => controller.openingKey,
+  send: (text, context, delegation) => sendAi(text, context, undefined, undefined, delegation),
+  stop: (runId) => orchestrator.stopRun(runId),
+  answer: (runId, questionId, answer) => orchestrator.answer(runId, questionId, answer)
+});
 
 /** An import review's confirmed choices from the renderer, kept only as far as they are well formed. */
 function importChoices(v: unknown): ImportChoices | undefined {
@@ -522,6 +562,8 @@ function registerIpc() {
   handle('app:quit', () => app.quit(), { anytime: true });
   handle('packs:preview', (packId: unknown, file: unknown) => packPreview(packId, file));
   handle('app:getSettings', async () => (await loadSettings()).settings);
+  // Asked by Settings only while it shows Git snapshots: the first ask starts the Git worker and looks for the computer's Git.
+  handle('app:gitRuntime', () => gitRuntime());
   handle('app:setSettings', async (patch: SettingsPatch) => {
     const before = (await loadSettings()).settings.ai;
     // Withdrawing permission ends work in progress at once, which would otherwise keep sending to that server. The
@@ -603,8 +645,10 @@ function registerIpc() {
   handle('live:setGuestExpiry', (run: unknown, guestId: unknown, guestExpiresAt: unknown) => controller.live.setGuestExpiry(run, guestId, guestExpiresAt));
   handle('live:kick', (run: unknown, guestId: unknown) => controller.live.kick(run, guestId));
   handle('live:setLocked', (run: unknown, locked: unknown) => controller.live.setLocked(run, locked));
+  handle('live:setGuestNotes', (run: unknown, allowed: unknown) => controller.live.setGuestNotes(run, allowed));
   handle('live:extend', (run: unknown, expiresAt: unknown) => controller.live.extend(run, expiresAt));
   handle('live:presence', (run: unknown, presence: unknown) => controller.live.setPresence(run, presence));
+  handle('live:setAi', (run: unknown, guestId: unknown, grant: unknown) => controller.live.setAi(run, guestId, grant));
   handle('live:state', () => controller.live.state);
   // This app as a guest in another computer's live session (#766). Joining needs no project open here; each call
   // names the join it is for, so one meant for a join that has ended reaches no other.
@@ -614,6 +658,19 @@ function registerIpc() {
   handle('remote:snapshot', (joinId: unknown, fresh?: unknown) => controller.remote.snapshot(joinId, fresh === true));
   handle('remote:apply', (joinId: unknown, batch: unknown) => controller.remote.apply(joinId, batch));
   handle('remote:presence', (joinId: unknown, presence: unknown) => controller.remote.presence(joinId, presence));
+  handle('remote:ai', (joinId: unknown) => controller.remote.ai(joinId));
+  handle('remote:aiSend', (joinId: unknown, text: unknown, context: unknown) => controller.remote.aiSend(joinId, text, context));
+  handle('remote:aiStop', (joinId: unknown, runId: unknown) => controller.remote.aiStop(joinId, runId));
+  handle('remote:aiAnswer', (joinId: unknown, runId: unknown, questionId: unknown, answer: unknown) => controller.remote.aiAnswer(joinId, runId, questionId, answer));
+  handle('remote:notes', (joinId: unknown) => controller.remote.notes(joinId));
+  handle('remote:addNote', (joinId: unknown, draft: unknown) => controller.remote.addNote(joinId, draft));
+  handle('remote:resolveNote', (joinId: unknown, id: unknown, resolved: unknown) => controller.remote.resolveNote(joinId, id, resolved));
+  handle('remote:deleteNote', (joinId: unknown, id: unknown) => controller.remote.deleteNote(joinId, id));
+  // The open project's pinned notes (#770), in the opening each call names.
+  handle('notes:list', (opening: unknown) => controller.listNotes(opening));
+  handle('notes:add', (opening: unknown, draft: unknown) => controller.addNote(opening, draft));
+  handle('notes:resolve', (opening: unknown, id: unknown, resolved: unknown) => controller.resolveNote(opening, id, resolved));
+  handle('notes:delete', (opening: unknown, id: unknown) => controller.deleteNote(opening, id));
   handle('project:snapshot', () => controller.snapshot(), { anytime: true });
   // The editor's copy of the project (shared/project-feed.ts): a page that has just loaded is given it whole, and
   // the changes that follow are made against it; one that missed a change is sent it whole on project:changed.
@@ -734,6 +791,15 @@ function registerIpc() {
       ? { ok: false, message: readOnlyReason(), warnings: [] }
       : controller.exportStatic(format === 'zip' ? 'zip' : 'folder', Array.isArray(published) ? published.filter((id): id is string => typeof id === 'string') : undefined)
   );
+  // Client review (#1133, #1134): capturing an edition builds the site as an export does, so it needs the writer lock;
+  // saving one as its offline sheet only reads the project.
+  handle('project:reviewEditions', () => controller.reviewEditions());
+  handle('project:captureReviewEdition', (request: unknown) => {
+    if (readOnlyReason()) return { ok: false, message: readOnlyReason() };
+    const r = request && typeof request === 'object' ? (request as { routes?: unknown; widths?: unknown }) : {};
+    return controller.captureReviewEdition({ routes: r.routes, ...(r.widths === undefined ? {} : { widths: r.widths }) });
+  });
+  handle('project:exportReviewSheet', (editionId: unknown) => controller.exportReviewSheet(editionId));
   handle('project:retryPreview', () => controller.startRuntime());
   handle('project:prepareComponentPreview', (spec: unknown) => controller.prepareComponentPreview(spec));
   handle('project:releaseComponentPreview', (key: unknown) => controller.releaseComponentPreview(key));
@@ -749,12 +815,26 @@ function registerIpc() {
   handle('project:restoreSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.restoreSavedCopy(id) : { ok: false, message: 'That saved copy can’t be put back on the list.' }));
   handle('project:unlock', () => controller.unlock());
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
-  handle('project:validateSource', async (source: string) => {
+  handle('project:validateSource', async (source: string, manifest?: unknown) => {
     // The slots and parts the code declares by itself, as saving it declares them, so a slot it shows is checked.
     const contract: Pick<ComponentDefinition, 'kind' | 'parts' | 'slots'> = { kind: 'code', parts: { root: { nodeId: 'root', label: 'Root' } } };
     const names = await codeContractNames(String(source));
     if (names) declareCodeNames(contract, names);
-    const problems = await checkSvelteSource(String(source), { contract });
+    // The properties being edited (or the component's own) and its axes, which a user's code is warned against.
+    const given = manifest && typeof manifest === 'object' ? (manifest as SourceManifest) : {};
+    const state = controller.session?.state;
+    const def = typeof given.definitionId === 'string' && state && Object.hasOwn(state.components, given.definitionId) ? state.components[given.definitionId] : undefined;
+    const draft = given.properties && typeof given.properties === 'object' && !Array.isArray(given.properties) ? (given.properties as Record<string, unknown>) : undefined;
+    // The draft as saving would store it, its defaults filled in; one saving would refuse is checked as it stands.
+    let properties = draft ? (draft as ComponentDefinition['properties']) : def?.properties;
+    if (draft && state)
+      try {
+        properties = normalizeProperties(draft, state);
+      } catch {
+        // Saving refuses the draft and says why; the code is still held to what the draft names.
+      }
+    const held = properties ? { manifest: { properties, variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) } } : {};
+    const problems = await checkSvelteSource(String(source), { contract, ...held });
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
   });
@@ -764,6 +844,9 @@ function registerIpc() {
   if (!app.isPackaged) {
     handle('test:exportStatic', (dest: string, format?: unknown) => controller.buildStaticTo(dest, format === 'zip' ? 'zip' : 'folder'));
     handle('test:exportSource', (dest: string, format?: unknown) => controller.exportSourceTo(dest, format === 'zip' ? 'zip' : 'folder'));
+    // The publication history (#1154) has no window of its own yet: the export script prepares one to build it.
+    handle('test:preparePublication', () => controller.preparePublication());
+    handle('test:publicationStatus', () => controller.publicationStatus());
     handle('test:previewComponent', (steps: unknown) => previewComponents(Array.isArray(steps) ? (steps as ComponentPreviewStep[]) : []));
     handle('test:thumbCaptures', () => controller.thumbs.captures);
     handle('test:exportComponent', (id: unknown, dest: unknown) => controller.exportComponent(String(id), String(dest)));
@@ -832,6 +915,16 @@ function registerIpc() {
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());
   handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));
+  // Read only for the opening of the project it was asked about, and answered only while that opening lasts.
+  handle('ai:readConversation', async (id: unknown, key?: unknown) => {
+    const changed = 'The project changed, so the conversation was not read.';
+    if (typeof key !== 'string' || key !== controller.openingKey) throw new Error(changed);
+    const read = await orchestrator.readConversation(id).catch((e: unknown) => {
+      throw key === controller.openingKey ? e : new Error(changed);
+    });
+    if (key !== controller.openingKey) throw new Error(changed);
+    return read;
+  });
   // Renamed or deleted only in the opening of the project the author did it in; a read-only view changes neither.
   handle('ai:renameConversation', (id: string, title: unknown, key?: string) => {
     if (typeof key !== 'string' || key !== controller.openingKey) throw new Error('The project changed, so the conversation was not renamed.');
@@ -860,17 +953,7 @@ function registerIpc() {
     return readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory();
   });
   // A question may be asked of a project another app is editing; the orchestrator decides (it writes nothing).
-  handle('ai:send', async (text: string, ctx, conversationId?: string, recipient?: unknown) => {
-    perf.mark('ai.send', { mode: (ctx as { mode?: unknown } | null)?.mode === 'ask' ? 'ask' : 'edit' });
-    if (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock)) return { ok: false, message: readOnlyReason() };
-    // A test may cap the requests the assistant starts (ai-journal.ts): one past the cap never reaches a model.
-    if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
-    const sent = await orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined, recipient);
-    if (!sent.ok) aiJournal?.giveBack();
-    // Admitted just before the deadline, but started after it stopped everything: stopped now.
-    else if (aiJournal?.turns().spent && sent.runId) void orchestrator.stopRun(sent.runId);
-    return sent;
-  });
+  handle('ai:send', (text: string, ctx, conversationId?: string, recipient?: unknown) => sendAi(text, ctx, typeof conversationId === 'string' ? conversationId : undefined, recipient));
   // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.
   handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
   handle('ai:answer', (runId: string, questionId: string, answer: string | { assetId: string }) => orchestrator.answer(runId, questionId, answer));
@@ -1148,6 +1231,9 @@ async function createWindow() {
     // The thumbnails' hidden window goes with the editor: it must never keep the app running, or stand in for the
     // editor when macOS asks whether a window is left to show.
     thumbCapturer.dispose();
+    // A review edition being captured is called off first: pictures the closed editor could not take are not kept.
+    controller.cancelReviewCapture();
+    reviewShooter.dispose();
     menuCommands.closed(self);
     leaveGate.editorGone();
     controller.cancelOpen();
@@ -1329,6 +1415,9 @@ app.whenReady().then(async () => {
   });
   // What a new project's website tools need is worked out in a process of its own, never on this one (#961).
   setToolsCheck((req, signal) => toolsChecker.check(req, signal));
+  // Saved versions go to Git while Git snapshots are on in Settings (#1153), asked at each save; a version already in
+  // Git is read through the same worker whatever the setting. Nothing starts the worker until one is.
+  useVersionsGit({ enabled: async () => (await loadSettings()).settings.gitSnapshots, repository: (root) => gitClient.repository(root) });
   // Theme packs are verified once the first window is loading (createWindow): every request waits for them (handle()).
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;

@@ -20,7 +20,7 @@ import { planReplay, summaryText } from '@shared/earlier-summary';
  * native set takes about 17,000 tokens, under half the window, so the half is what counts. Measured on the business
  * starter's Home page and rounded up (tests/unit/chat-headroom.test.ts keeps them honest).
  */
-export const LOCAL_OVERHEAD_TOKENS = { constrained: 3584, focused: 10_752 } as const;
+export const LOCAL_OVERHEAD_TOKENS = { constrained: 3584, focused: 11_264 } as const;
 /**
  * About what a request without the page tools takes before its message: a selection's, a component's or a question's.
  * Measured on an edit of Home's first section with the small native tools (the larger kind) and rounded up.

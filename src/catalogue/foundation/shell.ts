@@ -253,8 +253,8 @@ const HEADER_SOURCE = `<script>
 		const root = el.ownerDocument.documentElement;
 		const style = getComputedStyle(el);
 		const box = el.getBoundingClientRect();
-		const top = parseFloat(style.top);
-		const pinned = style.position === 'sticky' && Number.isFinite(top) ? top : style.position === 'fixed' ? box.top : NaN;
+		const inset = parseFloat(style.top);
+		const pinned = style.position === 'sticky' && Number.isFinite(inset) ? inset : style.position === 'fixed' ? box.top : NaN;
 		const bottom = pinned + box.height;
 		const reach = box.height > 0 && pinned < el.ownerDocument.defaultView.innerHeight - bottom ? Math.max(bottom, 0) : 0;
 		const value = Math.ceil(reach) + 'px';
@@ -394,12 +394,12 @@ const HEADER_SOURCE = `<script>
 		const settle = () => {
 			let last = NaN;
 			let still = 0;
-			let frames = 0;
+			let steps = 0;
 			const step = () => {
 				if (done) return;
 				still = win.scrollY === last ? still + 1 : 0;
 				last = win.scrollY;
-				if (still >= 3 || ++frames >= 120) reveal();
+				if (still >= 3 || ++steps >= 120) reveal();
 				else frame = win.requestAnimationFrame(step);
 			};
 			win.cancelAnimationFrame(frame);

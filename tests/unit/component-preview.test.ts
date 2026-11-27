@@ -4,15 +4,16 @@ import { join, posix, sep } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { catalogueComponent } from '@catalogue/index';
+import { catalogueComponent, listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { installComponent } from '@engine/install';
 import { compile } from 'svelte/compiler';
 import { COMPONENT_PREVIEW_ROUTE, PREVIEW_COMPONENT_STYLES, PREVIEW_KEY, PREVIEW_META, PREVIEW_MODULE, previewKeyOf } from '@shared/component-preview';
 import { devPlugin } from '@runtime/dev-plugin';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from '../../src/main/runtime/component-preview';
-import { generateComponentPreview, PREVIEW_NODE_ID } from '@generator/preview';
-import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
+import { generateComponentPreview, PREVIEW_NODE_ID, relativeImports } from '@generator/preview';
+import { FONTS_DIR, RUNTIME_DIR, STYLES_DIR, defFile, effectiveTokens, generateLibrary, generateProject } from '@generator/index';
+import { brandParts, colourProjection } from '../../src/main/runtime/component-thumbs';
 
 const starter = () => createStarterState('blank', 'Preview Studio', false);
 
@@ -202,6 +203,138 @@ describe('isolated component preview files', () => {
     const out = preview(state, { componentId: 'content.media' });
     expect(out).toMatchObject({ definitionId: id, name: 'Our media' });
     expect(out.files.get(PREVIEW_MODULE)).toContain('heading={"Our own heading"}');
+  });
+});
+
+describe('what a preview is made of', () => {
+  /** The library as every preview was given it before: the whole of it, less the project's own styles and fonts. */
+  const wholeLibrary = (state: ProjectState, definitionId: string) =>
+    new Map([...generateLibrary(state, { instrument: true, previewOpen: definitionId })].filter(([path]) => path !== `${RUNTIME_DIR}/icons.js` && !path.startsWith(`${FONTS_DIR}/`) && !(path.startsWith(`${STYLES_DIR}/`) && path !== PREVIEW_COMPONENT_STYLES)));
+  /** Every library file a preview's files import is in the preview. */
+  const missingImports = (files: Map<string, string>, library: Map<string, string>) =>
+    [...files].flatMap(([path, content]) => relativeImports(path, content).filter((dep) => library.has(dep) && !files.has(dep)).map((dep) => `${path} -> ${dep}`));
+
+  it('makes only the library files the preview imports, each as the whole library has it', () => {
+    const state = createStarterState('business', 'Preview Studio', false);
+    const managed = Object.values(state.components).filter((d) => d.kind === 'managed' && d.tree);
+    expect(managed.length).toBeGreaterThan(5);
+    let fewer = 0;
+    for (const def of managed) {
+      const out = generateComponentPreview(state, { definitionId: def.id });
+      if ('error' in out) continue;
+      const whole = wholeLibrary(state, def.id);
+      const reached = new Set(Object.values(state.components).filter((d) => d.kind === 'code').map(defFile));
+      if ([...out.files.keys()].some((p) => reached.has(p))) continue;
+      // The same bytes for every file both have, and nothing the whole library lacks.
+      for (const [path, content] of out.files) if (path !== PREVIEW_MODULE && path !== PREVIEW_META && path !== `${RUNTIME_DIR}/icons.js`) expect(whole.get(path), `${def.name}: ${path}`).toBe(content);
+      expect(missingImports(out.files, whole), def.name).toEqual([]);
+      expect(out.files.has(PREVIEW_COMPONENT_STYLES)).toBe(true);
+      expect(out.files.has(defFile(def))).toBe(true);
+      // The site's own styles are the project's: never made for a preview.
+      expect([...out.files.keys()].filter((p) => p.startsWith(`${STYLES_DIR}/`))).toEqual([PREVIEW_COMPONENT_STYLES]);
+      if (out.files.size < whole.size) fewer++;
+    }
+    expect(fewer).toBeGreaterThan(5);
+  });
+
+  it('makes no other component’s file for a card that places none', () => {
+    const made = applyOperations(createStarterState('business', 'Preview Studio', false), [
+      { type: 'component.upsert', name: 'Plain card', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'article', children: ['title'] }, { kind: 'text', id: 'title', tag: 'h3', text: 'Card' }] }
+    ] as never);
+    const id = made.results[0].definitionId as string;
+    const out = preview(made.state, { definitionId: id });
+    // Exactly the card's own file, the component styles, the icons and the preview's own two.
+    expect([...out.files.keys()].sort()).toEqual([defFile(made.state.components[id]), PREVIEW_COMPONENT_STYLES, `${RUNTIME_DIR}/icons.js`, PREVIEW_MODULE, PREVIEW_META].sort());
+    expect(missingImports(out.files, wholeLibrary(made.state, id))).toEqual([]);
+    // A card that shows an image and a link takes the helpers that draw them, and the ones those import.
+    const media = preview(createStarterState('blank', 'Preview Studio', false), { componentId: 'content.media', variants: { layout: 'media-end' } });
+    expect([...media.files.keys()].filter((p) => p.startsWith(`${RUNTIME_DIR}/`)).sort()).toEqual(['Image.svelte', 'Link.svelte', 'RichText.svelte', 'icons.js', 'util.js'].map((f) => `${RUNTIME_DIR}/${f}`));
+  });
+
+  it('has the whole library when it reaches a code component, which can import any of it', () => {
+    const { state, id: codeId } = withCodeComponent(starter());
+    const card = applyOperations(state, [{ type: 'component.upsert', name: 'Wrapper', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section', children: [] }] }] as never);
+    const wrapper = card.results[0].definitionId as string;
+    const root = card.state.components[wrapper].tree!.rootIds[0];
+    const made = applyOperations(card.state, [{ type: 'node.insert', owner: { kind: 'component', id: wrapper }, parentId: root, definitionId: codeId } as never]);
+    expect(Object.values(made.state.components[wrapper].tree!.nodes).some((n) => n.kind === 'instance' && n.definitionId === codeId)).toBe(true);
+    const whole = wholeLibrary(made.state, wrapper);
+    for (const definitionId of [codeId, wrapper]) {
+      const out = preview(made.state, { definitionId });
+      for (const path of whole.keys()) expect(out.files.has(path), `${definitionId}: ${path}`).toBe(true);
+    }
+  });
+
+  it('finds the library files a generated file imports, from its own folder', () => {
+    const file = 'src/lib/siteorigin/generated/Card.svelte';
+    const content = `<script>\n\timport SoLink from '../runtime/Link.svelte';\n\timport {\n\t\thas,\n\t\titemKey\n\t} from "../runtime/util.js";\n\timport Other from './Other.svelte';\n\timport { mount } from 'svelte';\n\timport '../styles/side.css';\n\texport { thing } from './thing.js';\n\tconst later = () => import('../runtime/carousel.js');\n</script>\n`;
+    expect(relativeImports(file, content)).toEqual(['src/lib/siteorigin/runtime/Link.svelte', 'src/lib/siteorigin/runtime/util.js', 'src/lib/siteorigin/generated/Other.svelte', 'src/lib/siteorigin/styles/side.css', 'src/lib/siteorigin/generated/thing.js', 'src/lib/siteorigin/runtime/carousel.js']);
+  });
+
+  it('makes the component styles once for each project state and theme', () => {
+    const made = applyOperations(createStarterState('business', 'Preview Studio', false), [
+      { type: 'component.upsert', name: 'Card A', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'article', children: ['title'] }, { kind: 'text', id: 'title', tag: 'h3', text: 'A' }] },
+      { type: 'component.upsert', name: 'Card B', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'article', children: ['title'] }, { kind: 'text', id: 'title', tag: 'h3', text: 'B' }] }
+    ] as never);
+    const state = made.state;
+    const [a, b] = made.results.map((r) => state.components[r.definitionId as string]);
+    const first = preview(state, { definitionId: a.id }).files.get(PREVIEW_COMPONENT_STYLES)!;
+    const second = preview(state, { definitionId: b.id }).files.get(PREVIEW_COMPONENT_STYLES)!;
+    expect(second).toBe(first);
+    // A changed project is a new state: its styles are its own.
+    const changed = applyOperations(state, [{ type: 'node.setStyle', owner: { kind: 'component', id: a.id }, nodeId: a.tree!.rootIds[0], scope: 'base', property: 'background', value: { token: 'color.brand' } }] as never).state;
+    const after = preview(changed, { definitionId: b.id }).files.get(PREVIEW_COMPONENT_STYLES)!;
+    expect(after).not.toBe(first);
+    expect(after).toBe(wholeLibrary(changed, b.id).get(PREVIEW_COMPONENT_STYLES));
+  });
+});
+
+describe('a preview and the site’s colours', () => {
+  it('is the same whatever the site’s colours, in every theme, which reach it only through the token stylesheet', () => {
+    const themes = listThemes().filter((t) => !t.devOnly);
+    expect(themes.length).toBeGreaterThan(0);
+    const unshown: string[] = [];
+    let checked = 0;
+    let expected = 0;
+    for (const theme of themes) {
+      const started = applyOperations(createStarterState('business', 'Preview Studio', false, theme.id), [
+        { type: 'token.setColorScheme', mode: 'toggle' },
+        { type: 'component.upsert', name: 'Brand card', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'article', children: ['title'] }, { kind: 'text', id: 'title', tag: 'h3', text: 'On the brand' }] }
+      ] as never);
+      const card = started.results[1].definitionId as string;
+      const base = applyOperations(started.state, [{ type: 'node.setStyle', owner: { kind: 'component', id: card }, nodeId: started.state.components[card].tree!.rootIds[0], scope: 'base', property: 'background', value: { token: 'color.brand' } }] as never).state;
+      // Every colour of the site given another value, in both palettes.
+      const recoloured = structuredClone(base);
+      effectiveTokens(base)
+        .filter((t) => t.group === 'color')
+        .forEach((t, i) => {
+          recoloured.tokens.overrides[t.id] = `#${(0x102030 + i * 0x010203).toString(16).padStart(6, '0')}`;
+          recoloured.tokens.darkOverrides = { ...(recoloured.tokens.darkOverrides ?? {}), [t.id]: `#${(0x302010 + i * 0x030201).toString(16).padStart(6, '0')}` };
+        });
+      const specs = [...Object.values(base.components).filter((d) => d.owner === 'project').map((d) => ({ definitionId: d.id })), ...theme.components.map((c) => ({ componentId: c.componentId }))];
+      // The brand card and every component the theme ships.
+      expect(specs.length).toBe(1 + theme.components.length);
+      expect(new Set(specs.map((s) => JSON.stringify(s))).size, theme.id).toBe(specs.length);
+      expected += specs.length;
+      for (const spec of specs) {
+        const a = generateComponentPreview(base, spec);
+        const b = generateComponentPreview(recoloured, spec);
+        // One that cannot be shown cannot be shown whatever the colours, and for the same reason.
+        if ('error' in a || 'error' in b) {
+          expect(b, JSON.stringify(spec)).toEqual(a);
+          unshown.push(`${theme.id}: ${JSON.stringify(spec)}`);
+          continue;
+        }
+        expect([...b.files], JSON.stringify(spec)).toEqual([...a.files]);
+        checked++;
+      }
+      const [pa, pb] = [brandParts(base), brandParts(recoloured)];
+      expect(pb.tokens).not.toBe(pa.tokens);
+      expect(colourProjection(pb.tokens, pb.colours, new Set())).toBe(colourProjection(pa.tokens, pa.colours, new Set()));
+    }
+    // Every one of them is shown and compared, so none is passed over unseen.
+    expect(unshown).toEqual([]);
+    expect(checked).toBe(expected);
   });
 });
 
@@ -447,10 +580,11 @@ describe('serving an isolated preview', () => {
       }
     };
     const resolve = (id: string, from: string) => plugin.resolveId.call(vite, id, from);
-    // Relative imports and $lib (a project path once Vite has applied the alias) reach the preview's own copy.
-    expect(await resolve('../runtime/Icon.svelte', importer)).toBe(at('src/lib/siteorigin/runtime/Icon.svelte'));
+    // Relative imports and $lib (a project path once Vite has applied the alias) reach the preview's own copy (of a
+    // helper the component imports, as only those are in it).
+    expect(await resolve('../runtime/Image.svelte', importer)).toBe(at('src/lib/siteorigin/runtime/Image.svelte'));
     expect(await resolve(`${dir}/src/lib/siteorigin/runtime/icons.js`, note)).toBe(at('src/lib/siteorigin/runtime/icons.js'));
-    expect(await resolve('../runtime/Icon.svelte?svelte&type=style&lang.css', importer)).toBe(`${at('src/lib/siteorigin/runtime/Icon.svelte')}?svelte&type=style&lang.css`);
+    expect(await resolve('../runtime/Image.svelte?svelte&type=style&lang.css', importer)).toBe(`${at('src/lib/siteorigin/runtime/Image.svelte')}?svelte&type=style&lang.css`);
     // Without its extension too, whether the project has the file as well or not: the preview's copy carries what only
     // its sample values need.
     mkdirSync(join(dir, 'src/lib/siteorigin/runtime'), { recursive: true });
@@ -482,6 +616,18 @@ describe('serving an isolated preview', () => {
     expect(previewSpec({ definitionId: 'c1', states: { open: true } })).toEqual({ definitionId: 'c1', states: { open: true } });
     expect(previewSpec({ definitionId: 'd'.repeat(200) })).not.toBeNull();
     expect(previewSpec({ componentId: 'c'.repeat(200) })).not.toBeNull();
+    // A placement's content, named by its tree and node, for one of the project's own definitions and never with sample values.
+    const placement = { owner: { kind: 'page', id: 'pg1' }, nodeId: 'n1' };
+    expect(previewSpec({ definitionId: 'c1', placement: { ...placement, extra: 1 } })).toEqual({ definitionId: 'c1', placement });
+    for (const p of [null, 'n1', { owner: { kind: 'site', id: 'pg1' }, nodeId: 'n1' }, { owner: { kind: 'page' }, nodeId: 'n1' }, { owner: { kind: 'page', id: 'pg1' } }, { owner: { kind: 'page', id: 'pg1' }, nodeId: 'n'.repeat(201) }])
+      expect(previewSpec({ definitionId: 'c1', placement: p })).toBeNull();
+    expect(previewSpec({ definitionId: 'c1', placement, props: { heading: 'Hi' } })).toBeNull();
+    expect(previewSpec({ componentId: 'content.media', placement })).toBeNull();
+    expect(previewSpec({ definitionId: 'c1', componentId: 'content.media', placement })).toBeNull();
+    // Every kind of tree a placement can be in; of the shared trees only the header and footer.
+    for (const owner of [{ kind: 'shell', id: 'header' }, { kind: 'shell', id: 'footer' }, { kind: 'component', id: 'c2' }, { kind: 'template', id: 'col' }, { kind: 'archive', id: 'col' }])
+      expect(previewSpec({ definitionId: 'c1', placement: { owner, nodeId: 'n1' } })).toEqual({ definitionId: 'c1', placement: { owner, nodeId: 'n1' } });
+    expect(previewSpec({ definitionId: 'c1', placement: { owner: { kind: 'shell', id: 'sidebar' }, nodeId: 'n1' } })).toBeNull();
     for (const bad of [null, 'c1', [], { definitionId: 3 }, { definitionId: '' }, { definitionId: 'd'.repeat(201) }, { componentId: 'c'.repeat(201) }, { variants: { tone: 2 } }, { props: [] }, { states: [] }, { states: { open: -1 } }, { states: { open: 1.5 } }, { states: { open: Number.MAX_SAFE_INTEGER + 1 } }, { states: { plan: { value: 'annual' } } }, { props: { big: 'x'.repeat(300_000) } }]) expect(previewSpec(bad)).toBeNull();
   });
 });

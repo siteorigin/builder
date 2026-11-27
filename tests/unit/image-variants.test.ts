@@ -70,6 +70,22 @@ async function photo(width: number, height: number, format: 'jpeg' | 'png' | 'we
 }
 
 describe('responsive copies', () => {
+  it('makes each copy from pixels decoded once per width, byte for byte as a pipeline of its own makes it (#979)', async () => {
+    // A turned JPEG in a wide colour profile, and a PNG with see-through pixels.
+    const p3 = await sharp(await photo(2400, 1600)).withIccProfile('p3').withMetadata({ orientation: 6 }).jpeg({ quality: 90 }).toBuffer();
+    const clear = await sharp(await photo(1800, 1200, 'png')).ensureAlpha(0.6).png().toBuffer();
+    for (const [buf, mime, width] of [[p3, 'image/jpeg', 1600], [clear, 'image/png', 1800]] as const) {
+      const shared = await renderVariants(buf, mime, width);
+      // The whole set: its own format, WebP and AVIF (this photo is one AVIF saves well on).
+      expect(pairs(shared).filter((p) => p.endsWith('avif'))).toEqual(pairs(shared).filter((p) => p.endsWith('webp')).map((p) => p.replace('webp', 'avif')));
+      expect(shared.length).toBeGreaterThan(8);
+      // Copies asked for by name are each made by a pipeline of their own, from the picture.
+      const own = await renderVariants(buf, mime, width, shared.map((v) => ({ width: v.width, mime: v.mime })));
+      expect(own.map((v) => `${v.width} ${v.mime}`)).toEqual(shared.map((v) => `${v.width} ${v.mime}`));
+      for (const [i, v] of shared.entries()) expect(v.data.equals(own[i].data), `${mime} ${v.width} ${v.mime}`).toBe(true);
+    }
+  }, 60_000);
+
   it('makes each width meaningfully smaller than the picture as JPEG without metadata, and WebP and AVIF sets to its full width', async () => {
     const variants = await renderVariants(await photo(2000, 1000), 'image/jpeg', 2000);
     // Narrowest first; at one width the picture's own format, then WebP, then AVIF.

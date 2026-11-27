@@ -114,7 +114,7 @@ describe.skipIf(!GIT && !process.env.CI)('the versions repository read by stock 
     const expected = join(root, 'expected');
     for (const f of [...FILES.filter((f) => f.path !== 'static/empty.txt'), { path: 'static/new.txt', bytes: text('new') }]) {
       mkdirSync(join(expected, f.path, '..'), { recursive: true });
-      writeFileSync(join(expected, f.path), 'bytes' in f ? f.bytes : MEDIA[f.source]);
+      writeFileSync(join(expected, f.path), 'bytes' in f ? f.bytes : 'source' in f ? MEDIA[f.source] : '');
     }
     expect(files(out)).toEqual(files(expected));
     git(['checkout', '--quiet', first], { cwd: out });

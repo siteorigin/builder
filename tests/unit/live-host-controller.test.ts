@@ -6,7 +6,7 @@
 import { EventEmitter } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -57,6 +57,7 @@ const { Controller } = await import('../../src/main/controller');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 const { sha } = await import('../../src/main/project/fsutil');
+const { copyProjectSource } = await import('../../src/main/export');
 
 let relay: Relay;
 let vite: Server;
@@ -319,6 +320,95 @@ describe('a live session hosted by the open project', () => {
     }
   });
 
+  it('lets a copy editor reword the pages over the live protocol, and refuses at commit what its grant does not reach', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { guest } = await hosting(c, sent, dir, 'copy-editor');
+    const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
+    const host = async (operations: unknown[]) => {
+      const r = await c.apply({ operations } as never);
+      if (!r.ok) throw new Error(r.error?.message);
+      return r.results!;
+    };
+    // The host's page: a split hero, whose heading and eyebrow are marked as copy, and a section of text.
+    const hero = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }]))[0].nodeId as string;
+    const section = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]))[0].nodeId as string;
+    const paragraph = (await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Opening hours vary.' }]))[0].nodeId as string;
+    const rich = (await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'richtext' }]))[0].nodeId as string;
+    await host([{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: 'Call us or [read the FAQ](https://example.com/faq).' }]);
+    const file = join(dir, `siteorigin/pages/${owner.id}.json`);
+
+    // Its copy lands through the host's own pipeline, as a step of its own that names it.
+    const before = c.session!.revision;
+    const reword = [
+      { type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open every day.' },
+      { type: 'instance.setProp', owner, nodeId: hero, prop: 'heading', value: 'Fresh bread daily' }
+    ];
+    expect(await rpc(guest, 'project.apply', [{ operations: reword, expectedRevision: before, label: 'Reword' }])).toMatchObject({ ok: true, result: { revision: before + 1 } });
+    expect(readFileSync(file, 'utf8')).toContain('Open every day.');
+    expect(readFileSync(file, 'utf8')).toContain('Fresh bread daily');
+    expect(c.snapshot()!.history.entries.at(-1)).toMatchObject({ label: 'Reword (Ann)', guestName: 'Ann', applied: true });
+
+    const saved = readFileSync(file, 'utf8');
+    const revision = c.session!.revision;
+    const steps = c.snapshot()!.history.entries.length;
+    // A layout edit is refused before the editor sees it.
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'node.remove', owner, nodeId: section }] }])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    // Each of these passes every check of the operations alone, sent straight over the protocol: the project as the
+    // batch would leave it refuses them as it is saved, the whole batch with them.
+    const refusals: Array<{ operations: unknown[]; message: RegExp; operationIndex?: number }> = [
+      {
+        operations: [
+          { type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open on Sundays.' },
+          { type: 'instance.setProp', owner, nodeId: hero, prop: 'primaryLabel', value: 'Buy now' }
+        ],
+        message: /Primary button label/,
+        operationIndex: 1
+      },
+      { operations: [{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: 'Call us or [read the FAQ](https://evil.example/faq).' }], message: /links/ },
+      { operations: [{ type: 'instance.setProp', owner, nodeId: hero, prop: 'eyebrow', value: '   ' }], message: /clearing/ }
+    ];
+    for (const { operations, message, operationIndex } of refusals) {
+      const answer = await rpc(guest, 'project.apply', [{ operations }]);
+      expect(answer, message.source).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', message: expect.stringMatching(message) } });
+      if (operationIndex !== undefined) expect(answer).toMatchObject({ error: { operationIndex } });
+    }
+    expect(c.session!.revision).toBe(revision);
+    expect(readFileSync(file, 'utf8')).toBe(saved);
+    expect(c.snapshot()!.history.entries.length).toBe(steps);
+    expect(c.snapshot()!.saveFailure ?? null).toBeNull();
+  });
+
+  it('holds a copy editor made a collaborator to its new grant only once its edits are a collaborator’s', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { run, guest } = await hosting(c, sent, dir, 'copy-editor');
+    const home = c.session!.state.site.homePageId;
+    const rename = [{ operations: [{ type: 'page.update', pageId: home, title: 'Fresh bread daily' }] }];
+    expect(await rpc(guest, 'project.apply', rename)).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    expect(c.live.setRole(run, guest.guestId, 'collaborator')).toEqual({ ok: true });
+    await guest.guest.next('guest:status');
+    await until(() => (c.live.state as { participants?: Array<{ guestId: string; role?: string }> }).participants?.some((p) => p.guestId === guest.guestId && p.role === 'collaborator'), 'the role confirmed');
+    expect(await rpc(guest, 'project.apply', rename)).toMatchObject({ ok: true });
+    expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+  });
+
+  it('lands nothing of a guest whose access the host has changed by the time its edit would be saved', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    await hosting(c, sent, dir, 'collaborator');
+    const opening = c.snapshot()!.workspaceKey;
+    const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
+    const revision = c.session!.revision;
+    // The live host's check, asked as the edit's turn comes and again as it is saved: still allowed at first, then not.
+    let asked = 0;
+    const check = () => (++asked > 1 ? { code: 'PERMISSION_DENIED' as const, message: 'The host changed your access before your edit was made.', recoverable: false } : null);
+    const result = await c.applyGuest(opening, { guestId: 'g_test', displayName: 'Ann', role: 'collaborator', check }, { operations: [{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }] as never });
+    expect(result).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('changed your access') } });
+    expect(asked).toBeGreaterThan(1);
+    expect(c.session!.revision).toBe(revision);
+  });
+
   it('never lets a collaborator change where a contact form sends, however a design passes it on', async () => {
     const dir = await makeProject('acme');
     const { c, sent } = controller();
@@ -351,5 +441,79 @@ describe('a live session hosted by the open project', () => {
     expect(c.snapshot()!.saveFailure ?? null).toBeNull();
     // Its other edits are ordinary.
     expect((await rpc(guest, 'project.apply', [{ operations: [{ type: 'node.duplicate', owner, nodeId: sales }] }])).ok).toBe(true);
+  });
+});
+
+/** Every file under `dir` and what it holds, by its path there. */
+function filesIn(dir: string, base = dir): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) Object.assign(out, filesIn(p, base));
+    else out[p.slice(base.length + 1)] = readFileSync(p, 'latin1');
+  }
+  return out;
+}
+
+describe('pinned notes (#770)', () => {
+  it('keeps a viewer’s note in the project’s local state alone, shows it to the editor at once, and keeps it after the session', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { run, guest } = await hosting(c, sent, dir, 'viewer');
+    const documents = filesIn(join(dir, 'siteorigin'));
+    const revision = c.session!.revision;
+    const SENTINEL = 'Swap this hero photo zq770';
+    expect(await rpc(guest, 'notes.add', [{ text: `  ${SENTINEL} `, previewPath: '/' }])).toMatchObject({ ok: true, result: { kept: true } });
+    // The editor is shown it, with who left it, on the page whose address the guest's preview showed.
+    const [, shown] = await until(() => sent.find(([ch]) => ch === 'notes:changed'), 'the editor told');
+    const note = (shown as { notes: Array<Record<string, unknown>> }).notes[0];
+    expect(note).toMatchObject({ text: SENTINEL, authorName: 'Ann', authorRole: 'viewer', pageId: c.session!.state.site.homePageId, target: null, resolved: false });
+    // Every guest is told the notes changed, and reads them.
+    for (;;) if ((await guest.guest.next('rpc:event')).event === 'notes:changed') break;
+    expect(await rpc(guest, 'notes.list')).toMatchObject({ ok: true, result: { notes: [{ text: SENTINEL, authorName: 'Ann' }], guestNotes: true } });
+    // A viewer resolves and deletes nothing: the relay refuses it before the host sees it.
+    expect(await rpc(guest, 'notes.delete', [note.id])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(await rpc(guest, 'notes.add', [{ text: 'x'.repeat(281), previewPath: '/' }])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(await rpc(guest, 'notes.add', [{ text: 'On no page', previewPath: '/nowhere/' }])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+
+    // Kept in .siteorigin/notes.json, and nowhere in the site's documents, its revision or what an export copies.
+    expect(readFileSync(join(dir, '.siteorigin/notes.json'), 'utf8')).toContain(SENTINEL);
+    expect(filesIn(join(dir, 'siteorigin'))).toEqual(documents);
+    expect(c.session!.revision).toBe(revision);
+    const exported = temp('export');
+    await copyProjectSource(dir, exported);
+    expect(existsSync(join(exported, '.siteorigin'))).toBe(false);
+    for (const [path, text] of Object.entries(filesIn(exported))) expect(text.includes(SENTINEL), path).toBe(false);
+
+    // The host turns guest notes off: the next is refused, and what was left stays.
+    expect(c.live.setGuestNotes(run, false)).toEqual({ ok: true });
+    expect(await rpc(guest, 'notes.add', [{ text: 'One more', previewPath: '/' }])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+
+    // The session ends; the host still has the note, resolves it, and has it on opening the project again.
+    expect(await c.live.stop(run)).toEqual({ ok: true });
+    const opening = c.snapshot()!.workspaceKey;
+    expect(await c.resolveNote(opening, note.id, true)).toMatchObject({ ok: true, notes: { notes: [{ id: note.id, resolved: true }] } });
+    expect(await c.closeProject()).toEqual({ ok: true });
+    expect((await c.trustAndOpen(dir)).ok).toBe(true);
+    expect(await c.listNotes(c.snapshot()!.workspaceKey)).toMatchObject({ notes: [{ id: note.id, text: SENTINEL, resolved: true }] });
+    // A note for an opening that is no longer the open one changes nothing.
+    expect(await c.deleteNote(opening, note.id)).toMatchObject({ ok: false });
+  });
+
+  it('lets a collaborator resolve and delete notes, and the host’s own too', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { guest } = await hosting(c, sent, dir, 'collaborator');
+    const opening = c.snapshot()!.workspaceKey;
+    const home = c.session!.state.site.homePageId;
+    const left = await c.addNote(opening, { text: 'Confirm pricing copy', pageId: home });
+    if (!left.ok || !left.notes) throw new Error('The host’s note was not kept');
+    const id = left.notes.notes[0].id;
+    expect(left.notes.notes[0]).toMatchObject({ authorName: 'Host', authorRole: 'host' });
+    expect(await rpc(guest, 'notes.resolve', [id, true])).toMatchObject({ ok: true });
+    expect((await c.listNotes(opening))!.notes[0].resolved).toBe(true);
+    expect(await rpc(guest, 'notes.delete', [id])).toMatchObject({ ok: true });
+    expect((await c.listNotes(opening))!.notes).toEqual([]);
+    expect(await rpc(guest, 'notes.delete', [id])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
   });
 });

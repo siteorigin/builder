@@ -1,10 +1,11 @@
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type InputHTMLAttributes, type KeyboardEvent } from 'react';
-import { ArrowRight, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleAlert, CircleCheck, FileText, Link2, ListChecks, ListX, Lock, PanelBottom, PanelRightOpen, PanelTop, Replace, Search, SearchX, Undo2 } from 'lucide-react';
+import { ArrowRight, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleAlert, CircleCheck, FileText, Link2, ListChecks, ListX, Lock, Newspaper, PanelBottom, PanelRightOpen, PanelTop, Replace, Search, SearchX, Undo2 } from 'lucide-react';
 import { Modal, openSection } from '../components/ui';
 import { BlockedNote, BlockedStatus, useProjectBlock } from '../components/BlockedNote';
 import { api, commitOps, getState, setState, toast, trackHistory, undoAction, undoAvailable, useStore } from '../store';
 import { pageOutOfSight, selectPage } from '../lib/actions';
-import { contentFields, contentTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
+import { openEntryField } from '../lib/open-destination';
+import { contentFields, contentTarget, entryTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
 import type { SampleContactKind } from '@shared/sample-contact';
 import { pagesShowing } from '@shared/page-shell';
 import { refKey, type ElementRef } from '@shared/types';
@@ -40,12 +41,18 @@ const anchor = (name: string) => `[data-field="${CSS.escape(name)}"]`;
 /**
  * Show where a match is: its page (for the shared header and footer, the page on screen when it shows them), the
  * element in the inspector with its Content open, and the field itself, focused. A list item's field the selection
- * alone does not show (a code component's) is opened in its list.
+ * alone does not show (a code component's) is opened in its list. An entry's title or excerpt opens in the writer,
+ * once the post open there is saved: the promise says whether it did (the dialog stays open when it did not).
  */
-export function openContentMatch(field: ContentField) {
+export function openContentMatch(field: ContentField): Promise<boolean> | void {
   const s = getState();
   const state = s.snapshot?.state;
   if (!state) return;
+  if (field.entry) {
+    const at = entryTarget(state, field);
+    if (!at) return toast('That entry is no longer on the site.', 'error');
+    return openEntryField(at.collectionId, at.entryId, at.field);
+  }
   const target = contentTarget(state, field, s.pageId);
   if (!target) return toast('That content is no longer on the site.', 'error');
   if (s.modal) setState({ modal: null });
@@ -74,8 +81,9 @@ export function openContentMatch(field: ContentField) {
   );
 }
 
-/** Where a field is shown: on its own page, or on every page that shows the shared header or footer. */
+/** Where a field is shown: on its own page, on every page that shows the shared header or footer, or an entry's. */
 function reach(f: ContentField): string {
+  if (f.entry) return `${f.section} entry${f.entry.draft ? ' · draft' : ''}${f.entry.synced ? ' · synced' : ''}`;
   if (f.sharedPages === undefined) return 'This page only';
   return `Shared ${f.owner.id} · on ${f.sharedPages} page${f.sharedPages === 1 ? '' : 's'}`;
 }
@@ -85,19 +93,21 @@ interface MatchGroup {
   where: string;
   reach: string;
   shared: boolean;
+  /** A collection entry's title and excerpt. */
+  entry: boolean;
   shell?: string;
   /** For a shared part: how many pages show it. */
   pages?: number;
   matches: ContentMatch[];
 }
 
-/** The result groups: one per page or shared part, in reading order. */
+/** The result groups: one per page, shared part or entry, in reading order. */
 function groupsOf(matches: ContentMatch[]): MatchGroup[] {
   const out = new Map<string, MatchGroup>();
   for (const m of matches) {
     const key = `${m.field.owner.kind}:${m.field.owner.id}`;
     const shared = m.field.sharedPages !== undefined;
-    const g = out.get(key) ?? { key, where: m.field.where, reach: reach(m.field), shared, ...(shared ? { shell: m.field.owner.id, pages: m.field.sharedPages } : {}), matches: [] };
+    const g = out.get(key) ?? { key, where: m.field.where, reach: reach(m.field), shared, entry: !!m.field.entry, ...(shared ? { shell: m.field.owner.id, pages: m.field.sharedPages } : {}), matches: [] };
     g.matches.push(m);
     out.set(key, g);
   }
@@ -108,16 +118,17 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 const clip = (t: string, max = 90) => (t.length > max ? `${t.slice(0, max).replace(/\s+\S*$/, '')}…` : t);
 const matchCount = (n: number) => plural(n, 'match', 'matches');
 
-/** Where the matches are, in words: "on 3 pages and the shared footer", with how far a shared part reaches if asked. */
+/** Where the matches are, in words: "on 3 pages, 2 entries and the shared footer", with how far a shared part reaches if asked. */
 function placesText(groups: MatchGroup[], withReach = false, samePages = false): string {
-  const pages = groups.filter((g) => !g.shared).length;
+  const pages = groups.filter((g) => !g.shared && !g.entry).length;
+  const entries = groups.filter((g) => g.entry).length;
   const shared = groups.filter((g) => g.shared);
   const reachOf = (g: MatchGroup) => (withReach ? ` (shown on ${plural(g.pages ?? 0, 'page')})` : '');
   // The header and footer read as one place only when they show on the same pages.
   const sharedPlaces = shared.length === 2 && samePages ? [`the shared header and footer${reachOf(shared[0])}`] : shared.map((g) => `the shared ${g.shell}${reachOf(g)}`);
-  const places = [...(pages ? [plural(pages, 'page')] : []), ...sharedPlaces];
+  const places = [...(pages ? [plural(pages, 'page')] : []), ...(entries ? [plural(entries, 'entry', 'entries')] : []), ...sharedPlaces];
   const list = places.length > 1 ? `${places.slice(0, -1).join(', ')} and ${places[places.length - 1]}` : places[0];
-  return `${pages ? 'on' : 'in'} ${list}`;
+  return `${pages || entries ? 'on' : 'in'} ${list}`;
 }
 
 /** A field's path inside its group, without repeating the group or the section. */
@@ -313,6 +324,8 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const [expanded, setExpanded] = useState(() => !!resumed);
   const findRef = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLInputElement>(null);
+  /** An entry's Open waiting for the post writer to switch posts. */
+  const entryOpening = useRef(false);
   const actionRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef('');
@@ -352,7 +365,9 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const refused = useMemo(() => (state && plan?.error && replacement === '' ? new Set(chosen.filter((m) => m.kind === 'link' && planReplace(state, [m], '').error).map((m) => m.id)) : new Set<string>()), [state, plan?.error, replacement, chosen]);
   const groups = groupsOf(matches);
   const replaceable = matches.filter((m) => !m.blocked).length;
-  const needInspector = matches.length - replaceable;
+  // A synced entry's match is read-only: it changes at the source, not in the inspector.
+  const syncedOnly = matches.filter((m) => m.blocked && m.field.entry?.synced).length;
+  const needInspector = matches.length - replaceable - syncedOnly;
   const readOnly = !!snap?.readOnly;
   const aiBusy = !!snap?.aiBusy;
   // Read-only or the AI at work holds every replacement: said once, on its own row above the buttons.
@@ -448,9 +463,19 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
     setState({ modal: null });
   };
   const openMatch = (m: ContentMatch) => {
-    openContentMatch(m.field);
+    // While an entry waits for the open post to save, another Open would be overtaken when that save lands.
+    if (entryOpening.current) return;
+    const opening = openContentMatch(m.field);
+    // An entry opens once the post open in the writer is saved; one that cannot be leaves the dialog as it is.
+    if (opening) {
+      entryOpening.current = true;
+      return void opening.then((ok) => ok && openedMatch(m)).finally(() => (entryOpening.current = false));
+    }
     // A match that has gone says so and leaves the dialog open, with nothing to hand over.
     if (getState().modal) return;
+    openedMatch(m);
+  };
+  const openedMatch = (m: ContentMatch) => {
     handOffUndo();
     // A replacement's Undo has gone to the toast and the site may change in the inspector, so no receipt comes back.
     kept = snap?.workspaceKey ? { workspaceKey: snap.workspaceKey, query, sample, matchCase, replacement, replacing, touched, picked, finished: null, collapsed, opened: m.id } : null;
@@ -608,13 +633,14 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
         leftOut > 0 && chosen.length > 0 ? `${leftOut} left out` : '',
         already ? `${already} already ${already === 1 ? 'reads' : 'read'} this way` : '',
         needInspector ? `${needInspector} ${needInspector === 1 ? 'needs' : 'need'} the inspector` : '',
+        syncedOnly ? `${syncedOnly} read-only` : '',
         refusedCount ? `${plural(refusedCount, 'link')} ${refusedCount === 1 ? 'needs' : 'need'} an address` : '',
         needAnotherLook ? `the site changed, so ${needAnotherLook === 1 ? '1 choice needs' : `${needAnotherLook} choices need`} another look` : ''
       ].filter(Boolean)
     : [];
   const emptyHead = doneHere ? `No matches left for “${q}”.` : `Nothing on the site matches “${q}”.`;
   const summary = !q ? (
-    'Search the words on every page, the shared header and footer, and where their links go.'
+    'Search the words on every page, the shared header and footer and each entry’s title and excerpt, and where their links go.'
   ) : !settled ? (
     'Searching…'
   ) : !matches.length ? (
@@ -641,7 +667,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const inspectorHint = (
     <span className="find-foot-note">
       <Lock aria-hidden />
-      {inspectBlock ? 'Open each match to see it in the inspector.' : 'Open each match to change it in the inspector.'}
+      {matches.every((m) => m.field.entry?.synced) ? 'These are synced from an external source. Change them there.' : inspectBlock ? 'Open each match to see it in the inspector.' : 'Open each match to change it in the inspector.'}
     </span>
   );
   const footNote = !replacing ? (
@@ -865,7 +891,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
           <nav className="find-jump" aria-label="Places with matches">
             {groups.map((g) => {
               const allLocked = g.matches.every((m) => m.blocked);
-              const JumpIcon = allLocked ? Lock : !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
+              const JumpIcon = allLocked ? Lock : g.entry ? Newspaper : !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
               return (
                 <button key={g.key} className={`find-jump-item${g.shared ? ' shared' : ''}`} disabled={!settled} onClick={() => jumpTo(g.key)} title={g.where} aria-label={`${g.where}, ${matchCount(g.matches.length)}${allLocked ? ', all need the inspector' : ''}`}>
                   <JumpIcon aria-hidden />
@@ -882,7 +908,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
               <div className="find-empty">
                 <Search aria-hidden />
                 <p className="find-empty-head">Search the whole site</p>
-                <p>Type words or an address to find them on every page, the shared header and footer, and where their links go.</p>
+                <p>Type words or an address to find them on every page, the shared header and footer and each entry’s title and excerpt, and where their links go.</p>
               </div>
             )}
             {empty && (
@@ -938,10 +964,10 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
               const eligible = g.matches.filter((m) => !m.blocked);
               const on = eligible.filter((m) => ticked.has(keyOf(m))).length;
               const locked = g.matches.length - eligible.length;
-              const lockedText = `${locked} ${locked === 1 ? 'needs' : 'need'} the inspector`;
+              const lockedText = g.entry ? `${locked} read-only` : `${locked} ${locked === 1 ? 'needs' : 'need'} the inspector`;
               const refusedIn = hasRefused ? g.matches.filter((m) => refused.has(m.id)).length : 0;
               const count = !replacing ? matchCount(g.matches.length) : !eligible.length ? lockedText : `${on} of ${eligible.length} chosen${locked ? ` · ${lockedText}` : ''}${refusedIn ? ` · ${refusedIn} ${refusedIn === 1 ? 'needs' : 'need'} an address` : ''}`;
-              const GroupIcon = !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
+              const GroupIcon = g.entry ? Newspaper : !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
               return (
                 <section key={g.key} data-group={g.key} className="find-group" aria-label={`${g.where}, ${g.reach.toLowerCase()}`}>
                   <h3 className={`find-group-head${!eligible.length ? ' locked' : ''}`}>
@@ -969,6 +995,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
                       <span className="find-group-name">{g.where}</span>
                       <span className="find-count">{count}</span>
                     </button>
+                    {g.entry && <span className="badge">{g.reach}</span>}
                     {g.shared && (
                       <span className="badge green">
                         <GroupIcon aria-hidden />
@@ -1041,7 +1068,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
                               </span>
                             )}
                           </div>
-                          <button className="btn btn-sm btn-ghost" disabled={busy || finished?.phase === 'undoing'} aria-label={`Open ${name} in the inspector`} aria-describedby={rowId} onClick={() => openMatch(m)} title="Show it on the page and in the inspector">
+                          <button className="btn btn-sm btn-ghost" disabled={busy || finished?.phase === 'undoing'} aria-label={m.field.entry ? `Open ${name} in the post writer` : `Open ${name} in the inspector`} aria-describedby={rowId} onClick={() => openMatch(m)} title={m.field.entry ? 'Show it in the post writer' : 'Show it on the page and in the inspector'}>
                             <PanelRightOpen /> Open
                           </button>
                         </li>

@@ -105,6 +105,18 @@ describe('a collection layout', () => {
     expect(Object.values(template(s).nodes).some((n) => n.id === cta)).toBe(true);
   });
 
+  it('shows an entry’s slug where a text is bound to it, and follows a rename', () => {
+    let s = blog();
+    const slugText = bound(s, 'excerpt');
+    s = run(s, { type: 'node.setBinding', owner: POSTS, nodeId: slugText.id, field: 'text', binding: { $entry: 'slug' } });
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+    expect(pageOf(generateProject(publishedState(s)), 'winter-workshop')).toContain('{"winter-workshop"}');
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', slug: 'winter-class' });
+    const page = pageOf(generateProject(publishedState(s)), 'winter-class');
+    expect(page).toContain('{"winter-class"}');
+    expect(page).not.toContain('{"winter-workshop"}');
+  });
+
   it('writes the editor’s identity for the layout’s elements in the preview, and nothing of it in the website', () => {
     const s = blog();
     const dev = pageOf(generateProject(s, { instrument: true }), 'winter-workshop');
@@ -121,10 +133,15 @@ describe('entry fields', () => {
     const s = blog();
     const c = s.collections.posts;
     const fields = entryFieldSchemas(c);
-    expect(Object.keys(fields)).toEqual(expect.arrayContaining(['title', 'publishedAt', 'updatedAt', 'author', 'excerpt', 'featuredImage', 'categories', 'body', 'readingTime', 'prevEntry', 'nextEntry', 'terms.tags', 'field.price', 'field.seats']));
+    expect(Object.keys(fields)).toEqual(expect.arrayContaining(['title', 'slug', 'publishedAt', 'updatedAt', 'author', 'excerpt', 'featuredImage', 'categories', 'body', 'readingTime', 'prevEntry', 'nextEntry', 'terms.tags', 'field.price', 'field.seats']));
     const read = (id: string) => ({ state: s, collection: c, entry: c.entries[id], neighbours: entryNeighbours(s, 'posts', id) });
     expect(entryFieldValue(read('en_winter'), 'publishedAt', 'raw')).toBe('2026-01-12');
     expect(entryFieldValue(read('en_winter'), 'categories')).toBe('Craft, News');
+    expect(entryFieldValue(read('en_winter'), 'slug')).toBe(c.entries.en_winter.slug);
+    // Never empty, so it can fill a property that requires text, as the title can.
+    expect(fields.slug.required).toBe(true);
+    expect(Object.keys(fields).indexOf('slug')).toBe(Object.keys(fields).indexOf('title') + 1);
+    expect(entryFieldValue({ ...read('en_winter'), entry: { ...c.entries.en_winter, slug: 'renamed' } }, 'slug')).toBe('renamed');
     expect(entryFieldValue(read('en_winter'), 'field.price')).toBe('Free');
     expect(entryFieldValue(read('en_spring'), 'field.price')).toBe('£10');
     expect(entryFieldValue(read('en_spring'), 'featuredImage')).toEqual({ assetId: null, alt: '' });
@@ -163,7 +180,7 @@ describe('entry fields', () => {
     expect(pageOf(files, 'winter-workshop')).toContain('{"Next: Spring open studio"}');
   });
 
-  it.each(['foundation', 'editorial', 'signal'])('names the links to the posts beside one, as two links of one kind, in a named nav (%s)', (theme) => {
+  it.each(['foundation', 'foundation-alt'])('names the links to the posts beside one, as two links of one kind, in a named nav (%s)', (theme) => {
     const s = run(blog(theme), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false });
     expect(s.site.themeId).toBe(theme);
     const c = s.collections.posts;

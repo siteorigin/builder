@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
-import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, grownImages } from '../../scripts/perf/scenarios';
+import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, ASSET_PICKERS, grownImages } from '../../scripts/perf/scenarios';
 
 let seq = 0;
 const m = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
@@ -45,6 +45,9 @@ describe('the scenario chain', () => {
     expect(chainFor(['switch', 'assets']).map((s) => s.name)).toEqual(['launch', 'open', 'assets', 'switch']);
     // Before import, which adds to the library assets measures at the fixture's own size.
     expect(chainFor(['import', 'assets']).map((s) => s.name)).toEqual(['launch', 'open', 'assets', 'import']);
+    // After every other scenario that edits the fixture's own copy, since it leaves the site a favicon and a new font.
+    expect(chainFor(['editBranded', 'edit', 'import']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'import', 'editBranded']);
+    expect(chainFor(['switch', 'editBranded']).map((s) => s.name)).toEqual(['launch', 'open', 'editBranded', 'switch']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -388,9 +391,9 @@ describe('edit metrics', () => {
         span('session.check', 10_019, 4, { attrs: { check: 'saving' } }),
         span('session.validateState', 10_020, 5),
         span('session.generate', 10_030, 4, { attrs: { variant: 'clean' } }),
-        m('session.generateCheck', 10_030, { attrs: { variant: 'clean', ms: 1.5, files: 40 } }),
+        m('session.generateCheck', 10_030, { attrs: { variant: 'clean', ms: 1.5, files: 40, looked: 900, derived: 30 } }),
         span('session.generate', 10_034, 3, { attrs: { variant: 'dev' } }),
-        m('session.generateCheck', 10_034, { attrs: { variant: 'dev', ms: 1, files: 40 } }),
+        m('session.generateCheck', 10_034, { attrs: { variant: 'dev', ms: 1, files: 40, looked: 12, derived: 0 } }),
         span('session.changedDocs', 10_036, 2, { attrs: { docs: 20, changed: 1 } }),
         span('session.publish', 10_080, 30, { dc: { 'files.read': 1, 'files.hashed': 13, 'files.hashedBytes': 52_000, 'fs.writes': 5, 'fs.durableWrites': 3, 'fs.fsyncs': 6, 'fs.syncCalls': 410, 'files.stats': 120 } }),
         m('runtime.release', 10_082),
@@ -442,6 +445,8 @@ describe('edit metrics', () => {
       'edit.validate': '5 ms',
       'edit.generate': '7 ms',
       'edit.generateCheck': '2.5 ms',
+      'edit.generateLooked': '912 count',
+      'edit.generateDerived': '30 count',
       'edit.changedDocs': '2 ms',
       'edit.docsCopied': '20 count',
       'edit.docsSerialized': '20 count',
@@ -526,6 +531,10 @@ describe('edit metrics', () => {
     // So would a dependency check of one variant, or a document search that is not there.
     expect(edit.measure(trace((x) => x.name === 'session.generateCheck' && x.attrs?.variant === 'dev'), facts).missing).toEqual(['session.generateCheck (both variants)']);
     expect(edit.measure(trace((x) => x.name === 'session.generateCheck' && x.attrs?.variant === 'dev'), facts).metrics['edit.generateCheck']).toBeUndefined();
+    // A check that does not say what it looked up and worked out has no count of them, never a count of nothing.
+    const uncounted = new Trace(trace().records.map((x) => (x.name === 'session.generateCheck' && x.attrs?.variant === 'dev' ? { ...x, attrs: { variant: 'dev', ms: 1, files: 40 } } : x)));
+    expect(edit.measure(uncounted, facts).missing).toEqual(['session.generateCheck (looked)', 'session.generateCheck (derived)']);
+    expect(edit.measure(uncounted, facts).metrics['edit.generateDerived']).toBeUndefined();
     expect(without('session.changedDocs').missing).toEqual(['session.changedDocs']);
   });
 
@@ -559,6 +568,45 @@ describe('edit metrics', () => {
     expect(Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k.replace(/^editFullHistory\./, 'edit.'), v]))).toEqual(plain.metrics);
     // Another scenario's boundaries are not its own.
     expect(editFullHistory.measure(trace(), facts).missing).toContain('edit.requested');
+  });
+
+  it('time the save after one that copied a font in by its own boundary marks, with the favicon’s reads', () => {
+    // The favicon's new file read by the saves before the edit, as the main process counted at the scenario's start.
+    const renamed = (favicon: Record<string, number>, readBefore = 2) =>
+      new Trace(
+        trace().records.map((x) => {
+          if (x.name === 'scenario.start' && x.proc === 'main') return { ...x, attrs: { scenario: 'editBranded' }, c: { ...x.c, 'favicon.read': readBefore } };
+          if (x.name.startsWith('scenario.')) return { ...x, attrs: { scenario: 'editBranded' } };
+          if (x.name === 'session.publish') return { ...x, dc: { ...x.dc, ...favicon } };
+          return x;
+        })
+      );
+    const got = editBranded.measure(renamed({ 'favicon.read': 1, 'favicon.hashedBytes': 196_000 }), facts);
+    expect(got.missing).toEqual([]);
+    expect(got.metrics['editBranded.publishFaviconReads']).toEqual({ unit: 'count', value: 1 });
+    expect(got.metrics['editBranded.publishFaviconBytesHashed']).toEqual({ unit: 'bytes', value: 196_000 });
+    // A publication that read no favicon counts none, never missing.
+    const none = editBranded.measure(renamed({}), facts);
+    expect(none.missing).toEqual([]);
+    expect(none.metrics['editBranded.publishFaviconReads']).toEqual({ unit: 'count', value: 0 });
+    const plain = edit.measure(trace(), facts);
+    const own = Object.fromEntries(Object.entries(got.metrics).filter(([k]) => !k.includes('Favicon')).map(([k, v]) => [k.replace(/^editBranded\./, 'edit.'), v]));
+    expect(own).toEqual(plain.metrics);
+    // Another scenario's boundaries are not its own, and a publication outside the edit is not the edit's.
+    expect(editBranded.measure(trace(), facts).missing).toContain('edit.requested');
+    const outside = new Trace(renamed({ 'favicon.read': 1 }).records.map((x) => (x.name === 'session.publish' ? { ...x, t: 9_800 } : x)));
+    expect(editBranded.measure(outside, facts).missing).toContain('session.publish');
+    expect(editBranded.measure(outside, facts).metrics['editBranded.publishFaviconReads']).toBeUndefined();
+    // A build that never counted the favicon's reads cannot pass as one that did not need to read it.
+    expect(editBranded.measure(renamed({}, 0), facts).missing).toEqual(['favicon.read (counted before the edit)']);
+    const unmarked = new Trace(renamed({}).records.filter((x) => !(x.name === 'scenario.start' && x.proc === 'main')));
+    expect(editBranded.measure(unmarked, facts).missing).toEqual(['scenario.start (main)', 'favicon.read (counted before the edit)']);
+  });
+
+  it('find the faces of a font the website’s styles name', () => {
+    const css = "@font-face {\n\tsrc: url('../fonts/lora-latin-wght-normal.woff2') format('woff2');\n}\n@font-face {\n\tsrc: url('../fonts/inter-latin-wght-normal.woff2') format('woff2');\n}\n@font-face { src: url('../fonts/lora-cyrillic-wght-normal.woff2') format('woff2'); }";
+    expect(namedFaces(css, /^lora-/)).toEqual(['lora-latin-wght-normal.woff2', 'lora-cyrillic-wght-normal.woff2']);
+    expect(namedFaces('', /^lora-/)).toEqual([]);
   });
 
   it('count no sweep the edit waited on when every one ran after it was acknowledged', () => {
@@ -681,9 +729,9 @@ describe('batch metrics', () => {
         span('session.applyOperations', 1110, 6),
         span('session.validateState', 1120, 9),
         span('session.generate', 1130, 8, { attrs: { variant: 'clean' } }),
-        m('session.generateCheck', 1130, { attrs: { variant: 'clean', ms: 3, files: 40 } }),
+        m('session.generateCheck', 1130, { attrs: { variant: 'clean', ms: 3, files: 40, looked: 700, derived: 20 } }),
         span('session.generate', 1140, 7, { attrs: { variant: 'dev' } }),
-        m('session.generateCheck', 1140, { attrs: { variant: 'dev', ms: 2, files: 40 } }),
+        m('session.generateCheck', 1140, { attrs: { variant: 'dev', ms: 2, files: 40, looked: 5, derived: 1 } }),
         span('session.changedDocs', 1142, 2),
         span('session.runMarker', 1150, 4, { attrs: { paths: 1 } }),
         m('controller.snapshotSent', 1160, { attrs: { revision: 3, bytes: 200 } }),
@@ -716,6 +764,8 @@ describe('batch metrics', () => {
       'batch.validate': '9 ms',
       'batch.generate': '15 ms',
       'batch.generateCheck': '5 ms',
+      'batch.generateLooked': '705 count',
+      'batch.generateDerived': '21 count',
       'batch.changedDocs': '2 ms',
       'batch.persist': '38 ms',
       'batch.publish': '15 ms',
@@ -1439,7 +1489,7 @@ describe('import metrics', () => {
     ...Array.from({ length: PHOTO_COUNT }, (_, n) => photo(n + 1, at0 + 600 + n * 500)).flat(),
     span('session.apply', at0 + 10_900, 200),
     span('main.stall', at0 + 10_700, 80),
-    span('controller.importAssets', at0 + 11_000, 10_400, { dc: { 'fs.writes': 220, 'fs.durableWrites': 220, 'fs.fsyncs': 440 } }),
+    span('controller.importAssets', at0 + 11_000, 10_400, { dc: { 'fs.writes': 220, 'fs.durableWrites': 220, 'fs.fsyncs': 440, 'ipc.projectChanged.sends': 1, 'ipc.projectChanged.bytes': 52_000 } }),
     r('renderer.commit', at0 + 11_050, { attrs: { revision: 5 } }),
     r('import.done', at0 + 11_200, { attrs: { scenario: 'import', revision: 5, images: 20, variants: 280 } }),
     m('import.done', at0 + 11_200, { attrs: { scenario: 'import', revision: 5, images: 20, variants: 280 } }),
@@ -1460,6 +1510,7 @@ describe('import metrics', () => {
       'import.firstShown': '10550 ms',
       'import.main': '10400 ms',
       'import.apply': '200 ms',
+      'import.applies': '1 count',
       'import.image.ms': '440 ms',
       'import.image.webMs': '100 ms',
       'import.image.webDecodeMs': '40.5 ms',
@@ -1478,6 +1529,8 @@ describe('import metrics', () => {
       'import.fileWrites': '220 count',
       'import.durableWrites': '220 count',
       'import.fsyncs': '440 count',
+      'import.snapshotsSent': '1 count',
+      'import.snapshotBytes': '52000 bytes',
       'import.images': '20 count',
       'import.variants': '280 count',
       'import.mainStallMax': '80 ms'
@@ -1498,6 +1551,53 @@ describe('import metrics', () => {
     // Each worker's CPU from its first request's start to its last answer: 0 to 17,000 and 150 to 16,150.
     expect(got.metrics['import.workerCpuMs'].value).toBe(17_000 + 16_000);
     expect(got.metrics['import.workerPeakRss'].value).toBe(300_000_020 + 300_000_019);
+  });
+
+  it('time the change that adds the photos, the first of the import, and count the ones after it', () => {
+    // The photos land first, with their copies following in two more changes.
+    const later = new Trace([...records(), span('session.apply', at0 + 2_300, 120), span('session.apply', at0 + 6_100, 90)].sort((a, b) => a.t - b.t));
+    const got = importPhotos.measure(later, facts);
+    expect(got.missing).toEqual([]);
+    expect(got.metrics['import.apply'].value).toBe(120);
+    expect(got.metrics['import.applies'].value).toBe(3);
+    // A change outside the import's own span is none of its.
+    expect(importPhotos.measure(new Trace([...records(), span('session.apply', at0 + 12_500, 70)].sort((a, b) => a.t - b.t)), facts).metrics['import.applies'].value).toBe(1);
+  });
+
+  /** The same import under another of the scenario's modes: its own name on the marks, and `drop` left out. */
+  const asMode = (scenario: string, drop: (x: PerfRecord) => boolean = () => false) =>
+    new Trace(records().filter((x) => !drop(x)).map((x) => (x.attrs?.scenario === 'import' ? { ...x, attrs: { ...x.attrs, scenario } } : x)));
+
+  it('measure kept originals without web-sized copies, and HEIC photos with them, each under its own name', () => {
+    const originals = importOriginals.measure(asMode('importOriginals', (x) => x.name === 'media.request' && x.attrs?.kind === 'web'), facts);
+    expect(originals.missing).toEqual([]);
+    expect(Object.keys(originals.metrics).every((k) => k.startsWith('importOriginals.'))).toBe(true);
+    expect(originals.metrics['importOriginals.image.webMs']).toBeUndefined();
+    expect([originals.metrics['importOriginals.total'].value, originals.metrics['importOriginals.workerRequests'].value, originals.metrics['importOriginals.image.copiesMs'].value]).toEqual([10_550, 20, 300]);
+    // A kept original is never given a web-sized copy by the import: one the editor asks for meanwhile is not the import's.
+    const weighed = importOriginals.measure(asMode('importOriginals', (x) => x.name === 'media.request' && x.attrs?.kind === 'web' && x.t > at0 + 1000), facts);
+    expect(weighed.missing).toEqual([]);
+    expect(weighed.metrics['importOriginals.image.webMs']).toBeUndefined();
+    expect(weighed.metrics['importOriginals.workerRequests'].value).toBe(PHOTO_COUNT + 1);
+    // A picture only checked, encoding nothing, is no photo's copies: the copies of each photo are still needed.
+    const checked = (x: PerfRecord) => (x.name === 'media.request' && x.attrs?.kind === 'variants' && x.t < at0 + 2000 ? { ...x, attrs: { ...x.attrs, encodes: 0 } } : x);
+    expect(importPhotos.measure(new Trace(records().map(checked)), facts).missing).toEqual([`media.request marks (${PHOTO_COUNT} web-sized and ${PHOTO_COUNT - 2} copies of ${PHOTO_COUNT} photos)`]);
+    const alsoChecked = new Trace([...records(), m('media.request', at0 + 700, { attrs: { kind: 'variants', ms: 5, workMs: 5, cpuMs: 5, cpuStart: 1, cpuEnd: 6, peakRss: 1, worker: 7, decodes: 1, encodes: 0, decodeMs: 4, webCopyMs: 0, jpegMs: 0, pngMs: 0, webpMs: 0, avifMs: 0 } })].sort((a, b) => a.t - b.t));
+    const withCheck = importPhotos.measure(alsoChecked, facts);
+    expect(withCheck.missing).toEqual([]);
+    expect([withCheck.metrics['import.workerRequests'].value, withCheck.metrics['import.decodes'].value, withCheck.metrics['import.image.copiesDecodeMs'].value]).toEqual([41, 341, 5]);
+    const heic = importHeic.measure(asMode('importHeic'), facts);
+    expect(heic.missing).toEqual([]);
+    expect([heic.metrics['importHeic.image.webMs'].value, heic.metrics['importHeic.workerRequests'].value]).toEqual([100, 40]);
+    // Each mode reads only its own marks: the web-sized import's are not the HEIC one's.
+    expect(importHeic.measure(trace(), facts).missing).toEqual(expect.arrayContaining(['scenario.start (renderer)', 'import.done']));
+  });
+
+  it('expect each photo at the size it is stored at, upright', () => {
+    expect(storedPhotoSize('web', false)).toEqual([2560, 1920]);
+    expect(storedPhotoSize('heic', true)).toEqual([1920, 2560]);
+    expect(storedPhotoSize('originals', false)).toEqual([4032, 3024]);
+    expect(storedPhotoSize('originals', true)).toEqual([3024, 4032]);
   });
 
   it('name what is missing instead of reporting an import with less in it', () => {
@@ -1909,7 +2009,8 @@ describe('thumbs metrics', () => {
   ];
   const asked = (t: number, id: string) => m('thumbs.asked', t, { attrs: { definitionId: id } });
   const answered = (t: number, ms: number, id: string, picture: boolean) => span('thumbs.answered', t, ms, { attrs: { definitionId: id, state: 'ready', picture, bytes: picture ? 5000 : 100 } });
-  const shot = (t: number, ms: number, id: string) => span('thumbs.capture', t, ms, { attrs: { definitionId: id } });
+  /** A photograph, after the preview it is of was made and written (as a build with those marks has them). */
+  const shot = (t: number, ms: number, id: string) => [span('componentPreview.generate', t - ms - 9, 2), span('thumbs.prepare', t - ms - 5, 5, { attrs: { definitionId: id } }), span('thumbs.capture', t, ms, { attrs: { definitionId: id } })];
   /** Counters as the main process's marks carry them. */
   const c = (requests: number, bytes: number, captures: number, keys: number, keyMs: number, brands = keys) => ({ 'thumbs.requests': requests, 'thumbs.bytes': bytes, 'thumbs.captures': captures, 'thumbs.keys': keys, 'thumbs.keyMs': keyMs, 'thumbs.brands': brands });
 
@@ -1921,10 +2022,10 @@ describe('thumbs metrics', () => {
       asked(1011, 'b'),
       asked(1012, 'a'),
       span('main.stall', 1500, 70),
-      shot(1400, 300, 'a'),
+      ...shot(1400, 300, 'a'),
       answered(1410, 400, 'a', true),
       ...point('filled', 1600, {}, { inView: 1 }),
-      shot(1800, 350, 'b'),
+      ...shot(1800, 350, 'b'),
       answered(1810, 800, 'b', true),
       ...point('fillQuiet', 5400, c(3, 10000, 2, 6, 3, 1)),
       // The check after the window is not the window's.
@@ -1940,7 +2041,7 @@ describe('thumbs metrics', () => {
       // colour: one asked for and photographed again.
       ...point('colour', 11000, c(6, 15200, 2, 9, 4.5, 2)),
       asked(11600, 'a'),
-      shot(12000, 300, 'a'),
+      ...shot(12000, 300, 'a'),
       answered(12010, 410, 'a', true),
       ...point('coloured', 15600, c(7, 20200, 3, 12, 6, 3)),
       // scroll: one tile newly in view, from memory.
@@ -1963,6 +2064,53 @@ describe('thumbs metrics', () => {
     expect(row('scroll')).toEqual([1, 1, 5000, 1, 0, 0, 1, 0, 0.5, 25]);
     // The stall in the fill is the fill's alone.
     expect(THUMB_WINDOWS.map((w) => v(w.name, 'mainStallMax'))).toEqual([70, 0, 0, 0]);
+  });
+
+  it('time and size the preview each photograph is made from, window by window', () => {
+    const prepare = (t: number, ms: number, id: string) => span('thumbs.prepare', t, ms, { attrs: { definitionId: id } });
+    const generate = (t: number, ms: number) => span('componentPreview.generate', t, ms);
+    const made = (files: number, bytes: number, captures: number) => ({ ...c(0, 0, captures, 0, 0), 'componentPreview.files': files, 'componentPreview.bytes': bytes });
+    const trace = new Trace([
+      // fill: two previews made, of 63 files each, and photographed.
+      ...point('fill', 1000, made(0, 0, 0)),
+      asked(1010, 'a'),
+      generate(1040, 30),
+      prepare(1050, 38, 'a'),
+      // The editor's own records are not the main process's.
+      span('thumbs.prepare', 1060, 500, { proc: 'renderer', pid: 2 }),
+      span('componentPreview.generate', 1060, 500, { proc: 'renderer', pid: 2 }),
+      ...shot(1200, 140, 'a').slice(2),
+      generate(1240, 33),
+      prepare(1250, 40, 'b'),
+      ...shot(1400, 140, 'b').slice(2),
+      ...point('filled', 1500, {}, { inView: 2 }),
+      ...point('fillQuiet', 5000, made(126, 540000, 2)),
+      // edit: none made.
+      ...point('edit', 6000, made(126, 540000, 2)),
+      ...point('edited', 9600, made(126, 540000, 2)),
+      // colour: one made and photographed, after the window's start (one made before it is not the window's).
+      generate(9900, 31),
+      ...point('colour', 10000, made(189, 810000, 2)),
+      generate(10040, 32),
+      prepare(10050, 39, 'a'),
+      ...shot(10200, 140, 'a').slice(2),
+      ...point('coloured', 14000, made(252, 1080000, 3)),
+      ...point('scroll', 15000, made(252, 1080000, 3)),
+      ...point('scrolled', 15100, {}, { inView: 1 }),
+      ...point('scrollQuiet', 18600, made(252, 1080000, 3))
+    ]);
+    const got = thumbs.measure(trace, facts);
+    expect(got.missing).toEqual([]);
+    const v = (w: string, metric: string) => got.metrics[`thumbs.${w}.${metric}`]?.value;
+    const row = (w: string) => ['prepareMs', 'generateMs', 'previewFiles', 'previewBytes'].map((x) => v(w, x));
+    expect(row('fill')).toEqual([78, 63, 126, 540000]);
+    expect(row('edit')).toEqual([0, 0, 0, 0]);
+    expect(row('colour')).toEqual([39, 32, 63, 270000]);
+    expect(row('scroll')).toEqual([0, 0, 0, 0]);
+    expect(got.metrics['thumbs.fill.previewBytes']?.unit).toBe('bytes');
+    // A build that photographs without marking what it made them from reports nothing for it, rather than none.
+    const unmarked = thumbs.measure(new Trace([...point('fill', 1000, made(0, 0, 0)), asked(1010, 'a'), ...shot(1200, 140, 'a').slice(2), ...point('filled', 1500, {}, { inView: 1 }), ...point('fillQuiet', 5000, made(0, 0, 1))]), facts);
+    expect(unmarked.missing).toContain('thumbs.prepare and componentPreview.generate (none in fill, which took photographs)');
   });
 
   it('name a window that never ended instead of reporting one that did less', () => {
@@ -2034,7 +2182,12 @@ describe('assets metrics', () => {
       w(at, 'edit', 'end', t + 3000, 3, { revision }),
       w(at, 'scroll', 'start', t + 4000, 3),
       w(at, 'scroll', 'end', t + 6000, 7, { ...frames, notches: 30 }),
-      r('assets.held', t + 7000, { attrs: { scenario: 'assets', at, pictures: 300, pictureBytes: 300 * 96 * 72 * 4 } })
+      r('assets.held', t + 7000, { attrs: { scenario: 'assets', at, pictures: 300, pictureBytes: 300 * 96 * 72 * 4 } }),
+      ...ASSET_PICKERS.flatMap(({ key }, k) => [
+        w(at, key, 'start', t + 8000 + k * 2000, 7 + k * 4),
+        w(at, key, 'end', t + 8500 + k * 2000, 9 + k * 4, { tiles: at === 'at300' ? 300 : 1000 }),
+        r('assets.pickerHeld', t + 9000 + k * 2000, { attrs: { scenario: 'assets', at, picker: key, pictures: 240 + k, pictureBytes: (240 + k) * 96 * 72 * 4 } })
+      ])
     ];
   }
   it('measure each library’s show, edit and scroll windows, and the pictures it holds', () => {
@@ -2047,10 +2200,13 @@ describe('assets metrics', () => {
       expect([v(`assets.${key}.scroll.ms`), v(`assets.${key}.scroll.notches`), v(`assets.${key}.scroll.droppedFrames`), v(`assets.${key}.scroll.renders`), v(`assets.${key}.picturesHeld`), v(`assets.${key}.pictureBytes`)]).toEqual([2000, 30, 3, 400, 300, 300 * 96 * 72 * 4]);
     }
     expect([v('assets.at300.tiles'), v('assets.at1000.tiles')]).toEqual([300, 1000]);
+    for (const { key } of ASSET_LIBRARIES)
+      ASSET_PICKERS.forEach(({ key: pk }, k) => expect([v(`assets.${key}.${pk}.renders`), v(`assets.${key}.${pk}.rendererCommits`), v(`assets.${key}.${pk}.picturesHeld`), v(`assets.${key}.${pk}.pictureBytes`)]).toEqual([200, 2, 240 + k, (240 + k) * 96 * 72 * 4]));
+    expect([v('assets.at300.imagePicker.tiles'), v('assets.at1000.imagePicker.tiles'), v('assets.at1000.galleryPicker.tiles')]).toEqual([300, 1000, 1000]);
   });
   it('name what is missing instead of reporting a library that was not measured', () => {
     const got = assets.measure(new Trace([r('scenario.start', 10, { attrs: { scenario: 'assets' } }), ...library('at300', 100, 5)]), facts);
-    expect(got.missing).toEqual(['assets.window at1000 show start', 'assets.window at1000 show end', 'assets.window at1000 edit start', 'assets.window at1000 edit end', 'assets.window at1000 scroll start', 'assets.window at1000 scroll end', 'assets.held at1000']);
+    expect(got.missing).toEqual(['assets.window at1000 show start', 'assets.window at1000 show end', 'assets.window at1000 edit start', 'assets.window at1000 edit end', 'assets.window at1000 scroll start', 'assets.window at1000 scroll end', 'assets.held at1000', 'assets.window at1000 imagePicker start', 'assets.window at1000 imagePicker end', 'assets.pickerHeld at1000 imagePicker', 'assets.window at1000 galleryPicker start', 'assets.window at1000 galleryPicker end', 'assets.pickerHeld at1000 galleryPicker']);
     const blind = assets.measure(new Trace(library('at300', 100, 5).map((x) => (x.attrs?.window === 'show' && x.attrs?.edge === 'end' ? { ...x, attrs: { ...x.attrs, picturesMs: -1 } } : x))), facts);
     expect(blind.missing).toContain('assets.at300.picturesMs (the show watch)');
   });

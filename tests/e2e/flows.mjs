@@ -192,6 +192,93 @@ for (const long of ['<p>' + 'x'.repeat(20001) + '</p>', '<p>' + 'x'.repeat(10001
   });
 }
 
+step('a code component’s marked heading and list item title are typed over on the canvas (#1074)');
+{
+  const SOURCE = `<script>
+\tlet { heading = '', features = [], so_text } = $props();
+</script>
+
+<section class="code-services">
+\t<h2 class="code-services__heading" data-so-text={so_text?.('heading')}>{heading}</h2>
+\t<ul>
+\t\t{#each features as feature (feature.id)}
+\t\t\t<li><h3 data-so-text={so_text?.('features.title', feature.id)}>{feature.title}</h3></li>
+\t\t{/each}
+\t</ul>
+</section>
+`;
+  const properties = {
+    heading: { type: 'string', label: 'Heading', default: 'What we do' },
+    features: { type: 'list', label: 'Features', itemLabel: 'Feature', fields: { title: { type: 'string', label: 'Title', default: 'A feature' } }, default: [{ id: 'f1', title: 'Planning' }, { id: 'f2', title: 'Building' }] }
+  };
+  const apply = (operations, label) =>
+    win.evaluate(async ([operations, label]) => {
+      const r = await window.builder.project.apply({ operations, label });
+      if (!r.ok) throw new Error(`${label}: ${r.error?.message}`);
+      return r.results;
+    }, [operations, label]);
+  await win.evaluate(() => window.builder.app.setSettings({ developerMode: true }));
+  const pageId = (await projectSnapshot()).state.site.homePageId;
+  const owner = { kind: 'page', id: pageId };
+  const [{ definitionId }] = await apply([{ type: 'component.createCode', name: 'Code services', source: SOURCE, properties }], 'Create code component');
+  const at = (await projectSnapshot()).state.pages[pageId].rootIds.length;
+  const [{ nodeId: services }] = await apply([{ type: 'node.insert', owner, parentId: null, index: at, definitionId }], 'Insert Code services');
+  const props = async () => (await projectSnapshot()).state.pages[pageId].nodes[services].props;
+  const second = (await props()).features[1].id;
+  const heading = frame.locator('.code-services__heading');
+  const title = frame.locator(`.code-services [data-so-text="features.title#${second}"]`);
+  await eventually(async () => assert.equal(await title.count(), 1, 'the preview marks each item’s title with its item'), 30000);
+  const labels = async () => (await projectSnapshot()).history.entries.map((e) => e.label);
+  /**
+   * A double-click near the start of an element in the page, where the author's pointer would be, scrolled into the
+   * frame's view first (at once: the site scrolls smoothly). The preview is scaled to fit, which Playwright's own boxes
+   * for elements in the frame leave out.
+   */
+  const dblclickOn = async (locator) => {
+    await locator.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+    await win.waitForTimeout(300);
+    const at = await locator.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { x: b.x + Math.min(12, b.width / 2), y: b.y + b.height / 2, vw: window.innerWidth };
+    });
+    const f = await win.locator('.frame-box iframe').boundingBox();
+    const k = f.width / at.vw;
+    await win.mouse.dblclick(f.x + at.x * k, f.y + at.y * k);
+  };
+
+  await dblclickOn(heading);
+  await eventually(async () => assert.equal(await heading.getAttribute('contenteditable'), 'plaintext-only', 'the code component’s heading is being edited'));
+  await win.keyboard.press(`${MOD}+a`);
+  await win.keyboard.type('Services we offer');
+  await win.keyboard.press('Enter');
+  await eventually(async () => assert.equal((await props()).heading, 'Services we offer', 'the heading property holds the words typed'));
+  await eventually(async () => assert.equal(await heading.innerText(), 'Services we offer', 'the preview shows the new heading'));
+
+  await dblclickOn(title);
+  await eventually(async () => assert.equal(await title.getAttribute('contenteditable'), 'plaintext-only', 'the second item’s title is being edited'));
+  await win.keyboard.press(`${MOD}+a`);
+  await win.keyboard.type('Building to last');
+  await win.keyboard.press('Enter');
+  await eventually(async () => assert.deepEqual((await props()).features.map((it) => it.title), ['Planning', 'Building to last'], 'only the second item’s title changes'));
+  await eventually(async () => assert.equal(await title.innerText(), 'Building to last', 'the preview shows the new title'));
+  const [headingStep, titleStep] = (await labels()).slice(-2);
+  assert.equal(headingStep, 'Edit Heading in Code services on Home', 'the heading is one step of History, named as the inspector names it');
+  assert.match(titleStep, /^Edit Title of “Building” in Features \(Code services on Home\)$/, 'the title is the next step, named by its item and list');
+  assert.ok(!read('src/routes/+page.svelte').includes('so_text'), 'the website’s page gives the code no marker hook');
+
+  // One Undo takes back the title alone.
+  await win.locator('[aria-label^="Undo"]').first().click();
+  await eventually(async () => {
+    const p = await props();
+    assert.deepEqual(p.features.map((it) => it.title), ['Planning', 'Building'], 'undo puts the title back');
+    assert.equal(p.heading, 'Services we offer', 'and leaves the heading as typed');
+  });
+  await win.screenshot({ path: join(OUT, '10b-code-text.png') });
+  // The later steps work on Home as it was.
+  await apply([{ type: 'node.remove', owner, nodeId: services }], 'Remove Code services');
+  await win.evaluate(() => window.builder.app.setSettings({ developerMode: false }));
+}
+
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
 await win.getByRole('button', { name: 'Pricing', exact: true }).click();
@@ -222,7 +309,7 @@ const plans = frame.locator('li[class*="__plan"]');
 await eventually(async () => assert.equal(await plans.count(), 3, 'three plan cards are shown'));
 const fills = () => plans.evaluateAll((els) => els.map((el) => getComputedStyle(el).backgroundColor));
 const shared = (await fills())[0];
-const reach = win.locator('#dock-panel-inspect').getByRole('group', { name: 'Style which plan cards' });
+const reach = win.locator('#dock-panel-inspect').getByRole('radiogroup', { name: /style which plan cards/ });
 // The preview can swap its elements while it settles after earlier edits: click again until the card is selected.
 const selectPlan = (i) =>
   eventually(async () => {
@@ -231,7 +318,7 @@ const selectPlan = (i) =>
   });
 await selectPlan(1);
 assert.equal(await reach.getByRole('radio', { name: /^All 3 plan cards$/ }).getAttribute('aria-checked'), 'true', 'all cards is the default');
-await reach.getByRole('button', { name: 'This plan card' }).click();
+await reach.getByRole('radio', { name: 'This plan card' }).click();
 await win.locator('#dock-panel-inspect .style-row', { hasText: 'Background' }).first().locator('select').selectOption('token:color.brand');
 const onlyDesign = async () => {
   const [a, b, c] = await fills();
@@ -267,6 +354,78 @@ await selectPlan(1);
 await win.locator('#dock-panel-inspect').getByRole('button', { name: /Reset to shared style/ }).first().click();
 await eventually(async () => assert.deepEqual(await fills(), [shared, shared, shared], 'reset returns the plan to the shared fill'));
 assert.equal((await pricingNode()).itemOverrides, undefined, 'nothing is left of the plan’s own style');
+
+step('style one card of a code component’s list without restyling the others (#1075)');
+// A code component that repeats its card over a list, giving each card its item's class: saving it declares that.
+const PLAN_SOURCE = `<script>
+	let { plans = [], class: className = '', so_o = undefined, so_oi = undefined } = $props();
+</script>
+
+<section class={['code-plans', className]}>
+	<ul style="display: flex; gap: 12px; list-style: none; padding: 24px; margin: 0">
+		{#each plans as plan (plan.id)}
+			<li class={['code-plan', so_o?.card, so_oi?.[plan.id]?.card]} style="padding: 24px; min-width: 120px">{plan.name}</li>
+		{/each}
+	</ul>
+</section>
+`;
+const applyOps = (operations, label) =>
+  win.evaluate(
+    async ([operations, label]) => {
+      const r = await window.builder.project.apply({ operations, label });
+      if (!r.ok) throw new Error(`${label}: ${r.error?.message}`);
+      return r.results;
+    },
+    [operations, label]
+  );
+await win.evaluate(() => window.builder.app.setSettings({ developerMode: true }));
+const planList = { type: 'list', label: 'Plans', itemLabel: 'Plan', titleField: 'name', fields: { name: { type: 'string', label: 'Name', default: '' } }, default: [] };
+const [{ definitionId: codeDefId }] = await applyOps([{ type: 'component.createCode', name: 'Code plans', source: PLAN_SOURCE, properties: { plans: planList } }], 'Create code plans');
+const codeHome = (await projectSnapshot()).state.site.homePageId;
+const codeOwner = { kind: 'page', id: codeHome };
+const [{ nodeId: codePlans }] = await applyOps([{ type: 'node.insert', owner: codeOwner, parentId: null, index: 0, definitionId: codeDefId }], 'Insert code plans');
+const planIds = ['cp_basic', 'cp_plus', 'cp_pro'];
+await applyOps([{ type: 'instance.setProp', owner: codeOwner, nodeId: codePlans, prop: 'plans', value: planIds.map((id, i) => ({ id, name: ['Basic', 'Plus', 'Pro'][i] })) }], 'Set code plans');
+assert.deepEqual((await projectSnapshot()).state.components[codeDefId].parts.card, { nodeId: 'card', label: 'Card', list: 'plans' }, 'saving the code declares the list the card repeats over');
+const codeCards = frame.locator('li.code-plan');
+await eventually(async () => assert.equal(await codeCards.count(), 3, 'three code cards are shown'), 30000);
+const codeFills = () => codeCards.evaluateAll((els) => els.map((el) => getComputedStyle(el).backgroundColor));
+const codeShared = (await codeFills())[0];
+const codeReach = win.locator('#dock-panel-inspect').getByRole('radiogroup', { name: /style which cards/ });
+// Click the card until the Inspector offers this card alone: the preview can still be settling after the insert.
+await eventually(async () => {
+  await codeCards.nth(1).click({ position: { x: 6, y: 6 }, timeout: 3000 });
+  await codeReach.waitFor({ timeout: 3000 });
+}, 30000);
+assert.equal(await codeReach.getByRole('radio', { name: 'All 3 cards' }).getAttribute('aria-checked'), 'true', 'all cards is the default');
+await codeReach.getByRole('radio', { name: 'This card' }).click();
+await win.locator('#dock-panel-inspect .style-row', { hasText: 'Background' }).first().locator('select').selectOption('token:color.brand');
+const codeNode = async () => (await projectSnapshot()).state.pages[codeHome].nodes[codePlans];
+const onlyPlus = async (order) => {
+  const fills = await codeFills();
+  const names = await codeCards.allInnerTexts();
+  for (let i = 0; i < 3; i++) {
+    if (names[i] === 'Plus') assert.notEqual(fills[i], codeShared, 'the chosen card has its own fill');
+    else assert.equal(fills[i], codeShared, `${names[i]} keeps the shared fill`);
+  }
+  assert.deepEqual(names, order, 'the cards show in the list’s order');
+};
+await eventually(() => onlyPlus(['Basic', 'Plus', 'Pro']));
+assert.deepEqual(Object.keys((await codeNode()).itemOverrides.card.items), ['cp_plus'], 'only the chosen card has its own style');
+// The style follows its card when the list is reordered.
+await applyOps([{ type: 'instance.listMove', owner: codeOwner, nodeId: codePlans, prop: 'plans', itemId: 'cp_plus', index: 2 }], 'Move code plan');
+await eventually(() => onlyPlus(['Basic', 'Pro', 'Plus']));
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(() => onlyPlus(['Basic', 'Plus', 'Pro']));
+// Reset from the card's own style returns it to the shared one.
+await eventually(async () => {
+  await codeCards.nth(1).click({ position: { x: 6, y: 6 }, timeout: 3000 });
+  await codeReach.waitFor({ timeout: 3000 });
+}, 30000);
+await win.locator('#dock-panel-inspect').getByRole('button', { name: /Reset to shared style/ }).first().click();
+await eventually(async () => assert.deepEqual(await codeFills(), [codeShared, codeShared, codeShared], 'reset returns the card to the shared fill'));
+assert.equal((await codeNode()).itemOverrides, undefined, 'nothing is left of the card’s own style');
+await applyOps([{ type: 'node.remove', owner: codeOwner, nodeId: codePlans }], 'Remove code plans');
 
 step('copy a section, delete it, then paste it on another page');
 const sectionsOn = (title) =>
