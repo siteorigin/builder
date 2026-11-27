@@ -1851,7 +1851,16 @@ export class Controller {
     if (!this.stage && session.readOnly) return { ok: false, message: 'The preview is not running.' };
     const spec = previewSpec(request);
     if (!spec) return { ok: false, message: 'That is not a component preview request.' };
+    // What one preview costs the main process to make, and what it is made of (scripts/perf: the thumbs scenario).
+    const endGenerate = perf.span('componentPreview.generate');
     const made = generateComponentPreview(session.state, spec);
+    endGenerate({ files: 'error' in made ? 0 : made.files.size });
+    if (perf.on && !('error' in made)) {
+      let bytes = 0;
+      for (const content of made.files.values()) bytes += Buffer.byteLength(content);
+      perf.count('componentPreview.files', made.files.size);
+      perf.count('componentPreview.bytes', bytes);
+    }
     if ('error' in made) return { ok: false, message: made.error };
     const root = this.stage ?? session.dir;
     // The lock is read again before writing into the project: a takeover the heartbeat has not seen yet gets nothing.

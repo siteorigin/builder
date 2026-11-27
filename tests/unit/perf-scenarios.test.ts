@@ -2001,7 +2001,8 @@ describe('thumbs metrics', () => {
   ];
   const asked = (t: number, id: string) => m('thumbs.asked', t, { attrs: { definitionId: id } });
   const answered = (t: number, ms: number, id: string, picture: boolean) => span('thumbs.answered', t, ms, { attrs: { definitionId: id, state: 'ready', picture, bytes: picture ? 5000 : 100 } });
-  const shot = (t: number, ms: number, id: string) => span('thumbs.capture', t, ms, { attrs: { definitionId: id } });
+  /** A photograph, after the preview it is of was made and written (as a build with those marks has them). */
+  const shot = (t: number, ms: number, id: string) => [span('componentPreview.generate', t - ms - 9, 2), span('thumbs.prepare', t - ms - 5, 5, { attrs: { definitionId: id } }), span('thumbs.capture', t, ms, { attrs: { definitionId: id } })];
   /** Counters as the main process's marks carry them. */
   const c = (requests: number, bytes: number, captures: number, keys: number, keyMs: number, brands = keys) => ({ 'thumbs.requests': requests, 'thumbs.bytes': bytes, 'thumbs.captures': captures, 'thumbs.keys': keys, 'thumbs.keyMs': keyMs, 'thumbs.brands': brands });
 
@@ -2013,10 +2014,10 @@ describe('thumbs metrics', () => {
       asked(1011, 'b'),
       asked(1012, 'a'),
       span('main.stall', 1500, 70),
-      shot(1400, 300, 'a'),
+      ...shot(1400, 300, 'a'),
       answered(1410, 400, 'a', true),
       ...point('filled', 1600, {}, { inView: 1 }),
-      shot(1800, 350, 'b'),
+      ...shot(1800, 350, 'b'),
       answered(1810, 800, 'b', true),
       ...point('fillQuiet', 5400, c(3, 10000, 2, 6, 3, 1)),
       // The check after the window is not the window's.
@@ -2032,7 +2033,7 @@ describe('thumbs metrics', () => {
       // colour: one asked for and photographed again.
       ...point('colour', 11000, c(6, 15200, 2, 9, 4.5, 2)),
       asked(11600, 'a'),
-      shot(12000, 300, 'a'),
+      ...shot(12000, 300, 'a'),
       answered(12010, 410, 'a', true),
       ...point('coloured', 15600, c(7, 20200, 3, 12, 6, 3)),
       // scroll: one tile newly in view, from memory.
@@ -2055,6 +2056,53 @@ describe('thumbs metrics', () => {
     expect(row('scroll')).toEqual([1, 1, 5000, 1, 0, 0, 1, 0, 0.5, 25]);
     // The stall in the fill is the fill's alone.
     expect(THUMB_WINDOWS.map((w) => v(w.name, 'mainStallMax'))).toEqual([70, 0, 0, 0]);
+  });
+
+  it('time and size the preview each photograph is made from, window by window', () => {
+    const prepare = (t: number, ms: number, id: string) => span('thumbs.prepare', t, ms, { attrs: { definitionId: id } });
+    const generate = (t: number, ms: number) => span('componentPreview.generate', t, ms);
+    const made = (files: number, bytes: number, captures: number) => ({ ...c(0, 0, captures, 0, 0), 'componentPreview.files': files, 'componentPreview.bytes': bytes });
+    const trace = new Trace([
+      // fill: two previews made, of 63 files each, and photographed.
+      ...point('fill', 1000, made(0, 0, 0)),
+      asked(1010, 'a'),
+      generate(1040, 30),
+      prepare(1050, 38, 'a'),
+      // The editor's own records are not the main process's.
+      span('thumbs.prepare', 1060, 500, { proc: 'renderer', pid: 2 }),
+      span('componentPreview.generate', 1060, 500, { proc: 'renderer', pid: 2 }),
+      ...shot(1200, 140, 'a').slice(2),
+      generate(1240, 33),
+      prepare(1250, 40, 'b'),
+      ...shot(1400, 140, 'b').slice(2),
+      ...point('filled', 1500, {}, { inView: 2 }),
+      ...point('fillQuiet', 5000, made(126, 540000, 2)),
+      // edit: none made.
+      ...point('edit', 6000, made(126, 540000, 2)),
+      ...point('edited', 9600, made(126, 540000, 2)),
+      // colour: one made and photographed, after the window's start (one made before it is not the window's).
+      generate(9900, 31),
+      ...point('colour', 10000, made(189, 810000, 2)),
+      generate(10040, 32),
+      prepare(10050, 39, 'a'),
+      ...shot(10200, 140, 'a').slice(2),
+      ...point('coloured', 14000, made(252, 1080000, 3)),
+      ...point('scroll', 15000, made(252, 1080000, 3)),
+      ...point('scrolled', 15100, {}, { inView: 1 }),
+      ...point('scrollQuiet', 18600, made(252, 1080000, 3))
+    ]);
+    const got = thumbs.measure(trace, facts);
+    expect(got.missing).toEqual([]);
+    const v = (w: string, metric: string) => got.metrics[`thumbs.${w}.${metric}`]?.value;
+    const row = (w: string) => ['prepareMs', 'generateMs', 'previewFiles', 'previewBytes'].map((x) => v(w, x));
+    expect(row('fill')).toEqual([78, 63, 126, 540000]);
+    expect(row('edit')).toEqual([0, 0, 0, 0]);
+    expect(row('colour')).toEqual([39, 32, 63, 270000]);
+    expect(row('scroll')).toEqual([0, 0, 0, 0]);
+    expect(got.metrics['thumbs.fill.previewBytes']?.unit).toBe('bytes');
+    // A build that photographs without marking what it made them from reports nothing for it, rather than none.
+    const unmarked = thumbs.measure(new Trace([...point('fill', 1000, made(0, 0, 0)), asked(1010, 'a'), ...shot(1200, 140, 'a').slice(2), ...point('filled', 1500, {}, { inView: 1 }), ...point('fillQuiet', 5000, made(0, 0, 1))]), facts);
+    expect(unmarked.missing).toContain('thumbs.prepare and componentPreview.generate (none in fill, which took photographs)');
   });
 
   it('name a window that never ended instead of reporting one that did less', () => {

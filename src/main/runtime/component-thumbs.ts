@@ -393,7 +393,10 @@ export class ComponentThumbs {
       keep(this.failed, key, { message, ...(transient ? { server } : {}) }, FAILURES_KEPT);
       return { state: 'failed', key, message };
     };
+    // Making and writing the preview's files (scripts/perf: the thumbs scenario).
+    const endPrepare = perf.span('thumbs.prepare', { definitionId });
     const prepared = await this.host.prepare(definitionId);
+    endPrepare();
     if (!prepared.ok) return same() ? fail(prepared.message, true) : gone;
     let shot: CaptureResult;
     try {

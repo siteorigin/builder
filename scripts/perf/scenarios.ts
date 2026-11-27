@@ -4766,7 +4766,7 @@ export const thumbs: Scenario = {
       await sleep(100);
     }
     // The card on the brand colour is drawn again (the window lasts until it is, then until quiet).
-    for (const until = Date.now() + THUMBS_WINDOW_MS; (await brandPicture()) === wasPainted; ) {
+    for (const until = Date.now() + THUMBS_WINDOW_MS; [wasPainted, null].includes(await brandPicture()); ) {
       expect(Date.now() < until, `${THUMBS_BRAND_CARD}, painted on the brand colour, still shows its picture from before the colour change`);
       await sleep(16);
     }
@@ -4826,6 +4826,15 @@ export const thumbs: Scenario = {
       m.count(name('keys'), gained('thumbs.keys'));
       m.count(name('brands'), gained('thumbs.brands'));
       m.ms(name('keyMs'), gained('thumbs.keyMs'));
+      // Each photograph's preview: made (synchronously, on main) and written, and what it came to.
+      const prepares = trace.all('thumbs.prepare', inProc('main'), start.t, end.t);
+      const generated = trace.all('componentPreview.generate', inProc('main'), start.t, end.t);
+      // A photograph is of a preview made for it: a build that marks photographs but none of that did not mark it.
+      if (gained('thumbs.captures') > 0 && (!prepares.length || !generated.length)) m.need(`thumbs.prepare and componentPreview.generate (none in ${w.name}, which took photographs)`, undefined);
+      m.ms(name('prepareMs'), prepares.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      m.ms(name('generateMs'), generated.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      m.count(name('previewFiles'), gained('componentPreview.files'));
+      m.count(name('previewBytes'), gained('componentPreview.bytes'), 'bytes');
       // How long the thumbnails kept the main process working after the window began: to the last of them.
       const last = Math.max(start.t, ...[...asked, ...answered, ...shots].map((r) => r.t));
       m.ms(name('busyMs'), last - start.t);
