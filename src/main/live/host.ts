@@ -83,6 +83,8 @@ export interface LiveHostContext {
    * tells this manager (notesChanged) once it is kept. Absent: guests' note calls are unavailable.
    */
   notes?: LiveHostNotes;
+  /** The session has ended: whatever was kept for its guests (the project as they were given it) can go. */
+  ended?(): void;
   emit(channel: 'live:state' | 'live:request' | 'live:presence', payload: LiveHostState | LiveJoinRequest | LivePresence): void;
 }
 
@@ -632,9 +634,12 @@ export class LiveHostManager {
     run.started?.({ ok: false, message: lastError ?? 'The live session ended before it started.' });
     run.started = null;
     run.keys = null;
+    // The project as guests were last sent it goes now, whatever still holds the run (a closing connection's handlers).
+    run.sentSnapshot = run.sentRuntime = null;
     if (this.run !== run) return;
     this.run = null;
     this.lastEnded = lastError;
+    this.ctx.ended?.();
     this.publish();
   }
 

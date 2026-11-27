@@ -14,6 +14,7 @@ import type { LiveHostState, LiveJoinRequest, LiveRun } from '../../src/shared/a
 import type { GuestRole } from '../../src/shared/live/limits';
 import type { LiveProjectChanged, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { joinGuest, previewOrigin, randomAddress, redeemTicket, startRelay, wait, type JoinedGuest, type Relay } from './relay-harness';
+import { collected } from './collect-garbage';
 
 /**
  * A stand-in for Electron's utility process that reports the test's preview server as ready, holds a save's updates
@@ -207,6 +208,20 @@ describe('a live session hosted by the open project', () => {
     const idleAt = sent.findIndex(([ch, p]) => ch === 'live:state' && (p as LiveHostState).phase === 'idle');
     expect(idleAt).toBeGreaterThan(-1);
     expect(idleAt).toBeLessThan(sent.findIndex(([ch]) => ch === 'project:closed'));
+  });
+
+  it('lets go of the copy of the project its guests were given once it ends, with the project still open (#1039)', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { run, guest } = await hosting(c, sent, dir, 'collaborator');
+    expect((await rpc(guest, 'project.snapshot')).ok).toBe(true);
+    // The very copy the controller keeps for the next guest who asks.
+    const copy = new WeakRef(c.guestSnapshot(run.workspaceKey)!);
+    expect(c.guestSnapshot(run.workspaceKey)).toBe(copy.deref());
+    expect((await c.live.stop(run)).ok).toBe(true);
+    await until(() => c.live.state.phase === 'idle', 'the session ended');
+    expect(c.session?.dir).toBe(dir);
+    expect(await collected(copy), 'the copy given to guests is still reachable').toBe(true);
   });
 
   it('ends when another project is opened in its place, which starts with none', async () => {

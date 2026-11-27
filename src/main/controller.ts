@@ -462,8 +462,9 @@ export class Controller {
   /** Watches over the files the copy is made from, as the project's own dev server would watch them. */
   private stageWatchers: FolderWatch[] = [];
   private stageTimer: NodeJS.Timeout | null = null;
-  /** The project whose copy was already replaced once after a mirror failed, so a lasting failure cannot loop. */
-  private restaged: ProjectSession | null = null;
+  /** The projects whose copy was already replaced once after a mirror failed, so a lasting failure cannot loop: held
+   *  weakly, so a closed project is never kept for it (#1039). */
+  private restaged = new WeakSet<ProjectSession>();
   /** The last preview status sent while no preview process runs (setting up, copying, or why it cannot start). */
   private pendingStatus: RuntimeState | null = null;
   /** Isolated component previews prepared for the preview server running now, by key, with the folder each is in. */
@@ -544,6 +545,8 @@ export class Controller {
       resolve: (opening, id, resolved, check) => this.guestNoteChange(opening, check, (_s, store, authorize) => store.resolve(id, resolved, authorize)),
       delete: (opening, id, check) => this.guestNoteChange(opening, check, (_s, store, authorize) => store.delete(id, authorize))
     },
+    // The copy of the project its guests were given goes with the session.
+    ended: () => void (this.shared = null),
     emit: (channel, payload) => {
       this.send(channel, payload);
       // A session that starts or ends with no window open changes who can see the preview (settlePreview).
@@ -575,14 +578,16 @@ export class Controller {
   private publishedTicket = 0;
   /** The open project's pinned notes (#770), for the session they were read in. */
   private notesStore: { session: ProjectSession; store: NotesStore } | null = null;
-  /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
+  /** The snapshot guests were last given, and what it was made from (guestSnapshot): a copy of the whole project, let
+   *  go as soon as the live session ends and when the project closes (#1039). */
   private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
   /**
-   * The open project's documents as of its last change that finished, with that change's revision. A save installs
+   * Each open project's documents as of its last change that finished, with that change's revision. A save installs
    * its documents before its files have all landed and its revision moves on, so guests are given these instead:
-   * never the documents of one revision under the number of the one before (#766).
+   * never the documents of one revision under the number of the one before (#766). Keyed weakly by the session, so an
+   * entry goes with its project once it is closed, and never keeps it (#1039).
    */
-  private settled: { session: ProjectSession; state: ProjectState; revision: number } | null = null;
+  private settled = new WeakMap<ProjectSession, { state: ProjectState; revision: number }>();
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
   private closing: Promise<void> | null = null;
@@ -736,7 +741,7 @@ export class Controller {
   guestSnapshot(opening: string): LiveProjectSnapshot | null {
     const s = this.session;
     if (!s || !this.workspaceKey || opening !== this.workspaceKey) return null;
-    const settled = this.settled?.session === s ? this.settled : { state: s.state, revision: s.revision };
+    const settled = this.settled.get(s) ?? { state: s.state, revision: s.revision };
     const source: LiveSnapshotSource = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
     const last = this.shared;
     if (last && last.state === source.state && last.revision === source.revision && last.readOnly === source.readOnly && last.aiBusy === source.aiBusy && last.runtime === source.runtime) return last.snapshot;
@@ -1599,9 +1604,9 @@ export class Controller {
     // The Recent projects entry follows a rename as soon as it is made, and an undo of one, or one made outside. A
     // working copy keeps its own name through them (#176).
     let listedName = projectDisplayName(session.state);
-    this.settled = { session, state: session.state, revision: session.revision };
+    this.settled.set(session, { state: session.state, revision: session.revision });
     session.on('changed', (ev) => {
-      this.settled = { session, state: session.state, revision: session.revision };
+      this.settled.set(session, { state: session.state, revision: session.revision });
       if (!session.readOnly && projectDisplayName(session.state) !== listedName) {
         listedName = projectDisplayName(session.state);
         void renameRecent(session.dir, listedName).catch(() => undefined);
@@ -2058,8 +2063,8 @@ export class Controller {
         }
       })
       .catch(() => {
-        if (this.stage !== stage || this.session !== session || this.restaged === session) return;
-        this.restaged = session;
+        if (this.stage !== stage || this.session !== session || this.restaged.has(session)) return;
+        this.restaged.add(session);
         void this.startRuntime().catch(() => undefined);
       });
   }
@@ -2558,12 +2563,15 @@ export class Controller {
       // for another project. A list that cannot be saved never stops the close.
       if (!s.readOnly) await renameRecent(s.dir, projectDisplayName(s.state)).catch(() => undefined);
     } finally {
-      // The next project loads its own workspace state, or starts empty.
+      // The next project loads its own workspace state, or starts empty. Nothing of this one is kept for guests (the
+      // live session has ended, which let go of it too).
       this.localState = {};
       // A preview at rest went with the project.
       this.previewRest = 'none';
-      this.send('project:closed');
+      this.shared = null;
+      // The editor's copy is let go of before the editor is told, so a send that fails cannot keep it.
       this.forgetEditorCopy();
+      this.send('project:closed');
     }
   }
 
