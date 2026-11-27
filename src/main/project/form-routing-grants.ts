@@ -3,13 +3,22 @@
  * A refusal at commit files what the batch would change as a review; only the app, once the user allows it when asked
  * (agent/orchestrator.ts), turns that review into a grant. A grant is a token the session made up, good once, at the
  * revision the batch was refused at, for exactly the batch it was refused for and exactly the changes the user was
- * shown: each placement it reaches, and each setting's value whole (engine/form-routing keys). Nothing a model writes,
- * a reply says or a page holds can make one: no value of a review, or of the batch, is a grant.
+ * shown: each placement it reaches, and each setting's value whole (engine/form-routing keys). The batch then lands as
+ * it was when the user was shown it (`candidate`), never made again with new IDs. Nothing a model writes, a reply says
+ * or a page holds can make one: no value of a review, or of the batch, is a grant.
  */
 import { randomBytes } from 'node:crypto';
+import type { ProjectState } from '@shared/types';
 import type { FormRoutingChange, FormRoutingGrant, FormRoutingReview } from '@engine/form-routing';
 
-interface Filed {
+/** What the batch made of the project when it was refused: the project it was made from, and what it left. */
+export interface Candidate {
+  base: ProjectState;
+  state: ProjectState;
+  results: Array<Record<string, unknown>>;
+}
+
+export interface Filed {
   revision: number;
   /** The AI run the batch was sent under, or null for one sent outside a run. */
   run: string | null;
@@ -17,10 +26,11 @@ interface Filed {
   operations: string;
   /** Its changes' keys, sorted. */
   keys: string[];
+  candidate: Candidate;
 }
 
 /** Reviews and grants kept at once: a run asks about one batch at a time, so only a handful ever wait. */
-const KEPT = 8;
+const KEPT = 4;
 
 const keysOf = (changes: readonly FormRoutingChange[]) => [...new Set(changes.map((c) => c.key))].sort();
 const token = () => randomBytes(32).toString('hex');
@@ -30,10 +40,10 @@ export class FormRoutingGrants {
   private grants = new Map<string, Filed>();
 
   /** Files a refused batch's changes, at `revision` and under `run`, as a review the app may ask the user about. */
-  review(revision: number, run: string | null, operations: string, changes: FormRoutingChange[]): FormRoutingReview {
+  review(revision: number, run: string | null, operations: string, changes: FormRoutingChange[], candidate: Candidate): FormRoutingReview {
     this.forget(revision);
     const id = token();
-    this.reviews.set(id, { revision, run, operations, keys: keysOf(changes) });
+    this.reviews.set(id, { revision, run, operations, keys: keysOf(changes), candidate });
     trim(this.reviews);
     return { id, operations, changes };
   }
@@ -70,6 +80,15 @@ export class FormRoutingGrants {
   forget(revision: number): void {
     for (const map of [this.reviews, this.grants]) for (const [k, f] of map) if (f.revision !== revision) map.delete(k);
   }
+}
+
+/**
+ * What an allowed batch lands as: the project it made when it was refused, while the grant is for this batch, at this
+ * revision, under this run, and the project is still the one it was made from. Null otherwise: the batch is made again
+ * and checked as any other.
+ */
+export function reviewed(filed: Filed | null, base: ProjectState, revision: number, run: string | null, operations: string): Candidate | null {
+  return filed && filed.revision === revision && filed.run === run && filed.operations === operations && filed.candidate.base === base ? filed.candidate : null;
 }
 
 /**

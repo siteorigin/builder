@@ -255,10 +255,15 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   }
 
   // The same goes for where a binding is read: a page or design the batch makes is named by what it is called.
+  // Two made with the same name (a page duplicated twice) are told apart by the order they come in, which the same
+  // batch made again keeps.
   const owners = new Set(allTrees(before).map(({ owner }) => `${owner.kind}:${owner.id}`));
+  const named = new Map<string, number>();
   for (const { owner, tree, label } of allTrees(after)) {
     const made = !owners.has(`${owner.kind}:${owner.id}`);
-    const scope = made ? `${owner.kind}:\u0001new\u0000${label}` : `${owner.kind}:${owner.id}`;
+    const nth = made ? (named.get(`${owner.kind}:${label}`) ?? 0) : 0;
+    if (made) named.set(`${owner.kind}:${label}`, nth + 1);
+    const scope = made ? `${owner.kind}:\u0001new\u0000${label}${nth ? `\u0000${nth}` : ''}` : `${owner.kind}:${owner.id}`;
     const where = owner.kind === 'page' ? `on “${label}”` : owner.kind === 'shell' ? `in the ${label.toLowerCase()}` : owner.kind === 'component' ? `in the “${label}” design` : `in “${label}”`;
     // New placements are counted in the order the tree holds them, which the same batch made again keeps.
     let added = 0;
@@ -336,9 +341,11 @@ function describe(c: FormRoutingChange): string {
  * words, naming every change, never the model's. `allow` is the answer that allows it.
  */
 export function formRoutingQuestion(changes: readonly FormRoutingChange[]): { text: string; choices: [keep: string, allow: string]; allow: string } {
-  // Every change is named, each once: Allow allows exactly what the question says.
-  const listed = [...new Set(changes.map(describe))];
-  const many = listed.length > 1;
+  // Every change is named, each once, with how many forms it reaches: Allow allows exactly what the question says.
+  const counts = new Map<string, number>();
+  for (const c of changes) counts.set(describe(c), (counts.get(describe(c)) ?? 0) + 1);
+  const listed = [...counts].map(([text, n]) => (n > 1 ? `${text.slice(0, -1)}, on ${n} forms.` : text));
+  const many = listed.length > 1 || [...counts.values()].some((n) => n > 1);
   const allow = many ? 'Allow these changes' : 'Allow this change';
   return { text: `Let the assistant change where your contact ${many ? 'forms send' : 'form sends'} visitors’ messages? ${listed.join(' ')}`, choices: ['Keep it as it is', allow], allow };
 }

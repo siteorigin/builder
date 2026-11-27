@@ -27,7 +27,7 @@ import { pageLinkUses } from '@engine/page-links';
 import { syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
 import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
-import { admits, FormRoutingGrants } from './form-routing-grants';
+import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
@@ -3099,10 +3099,10 @@ export class ProjectSession extends EventEmitter {
     batch: EditBatch,
     opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; formRouting?: FormRoutingGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
+    // A form routing grant is good for one call at most, whichever way it goes, even one that never gets its turn.
+    const routingGrant = opts.formRouting ? this.routingGrants.take(opts.formRouting) : null;
     // An edit's own work, once it is its turn (src/shared/perf.ts): the wait for that is the rest of controller.apply.
     return this.serialize(timed('session.apply', async (): Promise<ApplyResult> => {
-      // A form routing grant is good for one call at most, whichever way it goes.
-      const routingGrant = opts.formRouting ? this.routingGrants.take(opts.formRouting) : null;
       const refused = opts.guard?.(null);
       if (refused) return { ok: false, revision: this.revision, error: refused };
       const fingerprint = sha(JSON.stringify(batch.operations));
@@ -3202,8 +3202,12 @@ export class ProjectSession extends EventEmitter {
       let next: ProjectState;
       let results;
       const applying = perf.span('session.applyOperations');
+      // A batch the user allowed lands as it was when they were shown it (#1129): made again, it would have new IDs, and
+      // an item's ID is something a form's code may send by.
+      const run = this.activeRun?.id ?? null;
+      const allowed = ai ? reviewed(routingGrant, this.state, this.revision, run, fingerprint) : null;
       try {
-        ({ state: next, results } = applyOperations(this.state, ops, context));
+        ({ state: next, results } = allowed ? { state: allowed.state, results: allowed.results } : applyOperations(this.state, ops, context));
       } catch (e) {
         applying({ ok: false });
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
@@ -3320,9 +3324,8 @@ export class ProjectSession extends EventEmitter {
       // batch that could not land anyway.
       if (ai) {
         const routing = formRoutingChanges(this.state, next);
-        const run = this.activeRun?.id ?? null;
         if (!admits(routingGrant, this.revision, run, fingerprint, routing)) {
-          const review: FormRoutingReview = this.routingGrants.review(this.revision, run, fingerprint, routing);
+          const review: FormRoutingReview = this.routingGrants.review(this.revision, run, fingerprint, routing, { base: this.state, state: next, results });
           return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: formRoutingRefusal(routing), recoverable: true, details: { formRouting: review } } };
         }
       }
@@ -3338,6 +3341,8 @@ export class ProjectSession extends EventEmitter {
       } finally {
         persisting();
       }
+      // Nothing filed before this save can be granted or used now.
+      this.routingGrants.forget(this.revision);
       const result: ApplyResult = { ok: true, revision: this.revision, results, changed: ev.changedDocs, entryId: ev.entryId };
       if (opts.idempotencyKey) this.idempotency.set(opts.idempotencyKey, { fingerprint, result });
       return result;
