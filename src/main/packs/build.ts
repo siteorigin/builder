@@ -44,29 +44,31 @@ function moduleFile(root: string, spec: string): string {
   return file;
 }
 
-/** A font's faces and files, from the stylesheets the pack author named: its upright faces, then its italic ones. */
+/**
+ * A font's faces and files, from the stylesheets the pack author named: its main one, then the stylesheet of its italic
+ * faces when the family has one, which may declare only italic faces and must bring at least one in the chosen subsets.
+ */
 export function buildFont(font: PackFontSource, root: string): { font: PackFont; files: Map<string, string> } {
   const faces: PackFontFace[] = [];
   const files = new Map<string, string>();
-  const sheets: [string, PackFontFace['style']][] = [[font.css, 'normal'], ...(font.italicCss ? [[font.italicCss, 'italic'] as [string, PackFontFace['style']]] : [])];
-  for (const [css, style] of sheets) {
+  const sheets = [{ css: font.css, italic: false }, ...(font.italicCss ? [{ css: font.italicCss, italic: true }] : [])];
+  for (const { css, italic } of sheets) {
     const cssFile = moduleFile(root, css);
-    let declared = 0;
+    const before = faces.length;
     for (const f of parseFontFaces(readFileSync(cssFile, 'utf8'))) {
-      declared++;
       if (f.family !== font.family) throw new Error(`${css} declares "${f.family}", not "${font.family}".`);
       if (f.format !== 'woff2' && f.format !== 'woff2-variations') throw new Error(`${css}: only woff2 fonts can be bundled, not ${f.format}.`);
-      if (f.style !== style) throw new Error(`${css} declares a font-style: ${f.style} face, but it is the font's ${style === 'normal' ? 'upright' : 'italic'} stylesheet.`);
+      if (f.style !== 'normal' && f.style !== 'italic') throw new Error(`${css}: unsupported font-style ${f.style}.`);
+      if (italic && f.style !== 'italic') throw new Error(`${css} declares a font-style: ${f.style} face, but it is the font's italic stylesheet.`);
       const file = `fonts/${basename(f.url)}`;
       if (font.subsets && !font.subsets.some((s) => basename(f.url).includes(`-${s}-wght-`))) continue;
       if (!PACK_FILE_RE.test(file)) throw new Error(`${css}: ${f.url} is not a usable font file name.`);
       if (files.has(file)) throw new Error(`${css}: ${basename(f.url)} is already a face of ${font.name}.`);
       files.set(file, join(dirname(cssFile), f.url));
-      faces.push({ file, weight: f.weight, style, ...(f.unicodeRange ? { unicodeRange: f.unicodeRange } : {}), format: f.format });
+      faces.push({ file, weight: f.weight, style: f.style, ...(f.unicodeRange ? { unicodeRange: f.unicodeRange } : {}), format: f.format });
     }
-    if (!declared) throw new Error(`${css} declares no fonts.`);
+    if (faces.length === before) throw new Error(`${css} declares no fonts${font.subsets ? ` in the subsets ${font.subsets.join(', ')}` : ''}.`);
   }
-  if (!faces.length) throw new Error(`${font.css} declares no fonts in the subsets ${font.subsets?.join(', ')}.`);
   const { css: _css, italicCss: _italicCss, noticeFile, subsets: _subsets, ...rest } = font;
   void _css;
   void _italicCss;

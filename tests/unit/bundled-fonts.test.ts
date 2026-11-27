@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ProjectState, TextStyleValue } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme, listThemes, registerPacks } from '@catalogue/index';
@@ -64,11 +66,32 @@ describe('italic faces', () => {
     expect(grotesk).not.toContain("font-family: 'Space Grotesk Variable';\n\tfont-style: italic;");
   });
 
-  it('come only from the stylesheet named for them, so a sheet of the wrong style is refused', () => {
+  it('come only from the stylesheet named for them, which must bring a face in the chosen subsets', () => {
     const lora = builtinFont('Lora');
-    expect(() => buildFont({ ...lora, css: lora.italicCss! }, process.cwd())).toThrow(/wght-italic\.css declares a font-style: italic face, but it is the font's upright stylesheet/);
     expect(() => buildFont({ ...lora, italicCss: lora.css }, process.cwd())).toThrow(/index\.css declares a font-style: normal face, but it is the font's italic stylesheet/);
     expect(() => buildFont({ ...lora, italicCss: '@fontsource-variable/lora/missing.css' }, process.cwd())).toThrow(/is not installed/);
+    expect(() => buildFont({ ...lora, subsets: ['latin'], italicCss: '@fontsource-variable/sora/index.css' }, process.cwd())).toThrow(/declares "Sora Variable"/);
+    // An italic sheet with nothing in the subsets the pack ships would leave the font upright only, without a word.
+    const root = mkdtempSync(join(tmpdir(), 'italic-fonts-'));
+    const face = (style: string, subset: string) => `@font-face {\n  font-family: 'Fixture Variable';\n  font-style: ${style};\n  font-weight: 100 900;\n  src: url(./files/fixture-${subset}-wght-${style}.woff2) format('woff2-variations');\n}\n`;
+    mkdirSync(join(root, 'node_modules', 'fixture'), { recursive: true });
+    writeFileSync(join(root, 'node_modules', 'fixture', 'index.css'), face('normal', 'latin') + face('normal', 'greek'));
+    writeFileSync(join(root, 'node_modules', 'fixture', 'italic.css'), face('italic', 'greek'));
+    writeFileSync(join(root, 'node_modules', 'fixture', 'LICENSE'), 'SIL Open Font License');
+    const fixture = { family: 'Fixture Variable', name: 'Fixture', category: 'serif' as const, stack: "'Fixture Variable', serif", license: 'OFL-1.1', css: 'fixture/index.css', italicCss: 'fixture/italic.css', noticeFile: 'fixture/LICENSE' };
+    try {
+      expect(buildFont(fixture, root).font.faces.map((f) => f.file)).toEqual(['fonts/fixture-latin-wght-normal.woff2', 'fonts/fixture-greek-wght-normal.woff2', 'fonts/fixture-greek-wght-italic.woff2']);
+      expect(() => buildFont({ ...fixture, subsets: ['latin'] }, root)).toThrow(/fixture\/italic\.css declares no fonts in the subsets latin/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('may sit in the main stylesheet too, as a vendor sheet that declares both styles', () => {
+    const lora = builtinFont('Lora');
+    const { font: both } = buildFont({ ...lora, css: lora.italicCss!, italicCss: undefined }, process.cwd());
+    expect(both.faces.length).toBeGreaterThan(0);
+    expect(both.faces.every((f) => f.style === 'italic')).toBe(true);
   });
 });
 
