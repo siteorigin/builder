@@ -115,6 +115,7 @@ const J = 'tests/e2e/journeys.mjs';
 const L_SHARE = 'tests/e2e/live-share.mjs';
 const L_COLLAB = 'tests/e2e/live-collaborator.mjs';
 const L_VIEWER = 'tests/e2e/live-viewer.mjs';
+const L_RECOVER = 'tests/e2e/live-recovery.mjs';
 
 export const INTERACTIONS: Interaction[] = [
   {
@@ -1923,8 +1924,8 @@ export const INTERACTIONS: Interaction[] = [
     area: 'preview',
     intent: 'Share the project live: start a session, send the link, let people in as viewers or collaborators, and manage who is in it until it ends',
     start: 'A project open, no live session, the relay in its local simulator',
-    routes: ['toolbar:Share', 'dialog:Share a live session › Session length', 'dialog:Share a live session › Start live session', 'dialog:Live session › Copy', 'status:Join requests › Admit as Viewer', 'status:Join requests › Admit as Collaborator', 'dialog:Live session › Decline', 'dialog:Live session › Role', 'dialog:Live session › Access', 'dialog:Live session › Remove', 'dialog:Live session › Lock room', 'dialog:Live session › Extend', 'item:SharePopover:<data>', 'dialog:Live session › End session', 'dialog:Live session › Escape'],
-    outcome: 'The invite link points at the configured relay and is copied on start and on Copy; a waiting guest is announced and is let in with the chosen role, or declined; role, a guest’s own end of access, the lock, an extension and a removal reach the guests; guests follow the host’s page and width; ending the session, or closing the project, ends it for every guest and leaves Share as it was',
+    routes: ['toolbar:Share', 'dialog:Share a live session › Session length', 'dialog:Share a live session › Start live session', 'dialog:Live session › Copy', 'status:Join requests › Admit as Viewer', 'status:Join requests › Admit as Collaborator', 'dialog:Live session › Decline', 'dialog:Live session › Role', 'dialog:Live session › Access', 'dialog:Live session › Remove', 'dialog:Live session › Lock room', 'dialog:Live session › Extend', 'dialog:Live session › Allow AI editing', 'item:SharePopover:<data>', 'dialog:Live session › End session', 'dialog:Live session › Escape'],
+    outcome: 'The invite link points at the configured relay and is copied on start and on Copy; a waiting guest is announced and is let in with the chosen role, or declined; role, a guest’s own end of access, the lock, an extension and a removal reach the guests; a removed guest’s socket closes and its preview cookie is refused at once; Allow AI editing lets a collaborator’s requests run on the host’s AI, and turning it off stops one running and refuses the next; a dropped relay connection is taken back with the session’s signed key, every admitted guest still in the room; guests follow the host’s page and width; ending the session, or closing the project, ends it for every guest and leaves Share as it was',
     scenario: 'business · none · relay simulator',
     proof: [
       { test: L_SHARE, kind: 'e2e', step: 'Share starts a live session and copies its invite link' },
@@ -1942,19 +1943,24 @@ export const INTERACTIONS: Interaction[] = [
       { test: L_VIEWER, kind: 'e2e', step: 'a spotlight the viewer points shows on the host’s canvas' },
       { test: L_VIEWER, kind: 'e2e', step: 'a note the viewer pins shows to the host, on the page the viewer is on' },
       { test: L_VIEWER, kind: 'e2e', step: 'one browser profile let in to two rooms cannot read either room’s preview from the other’s origin' },
+      { test: L_RECOVER, kind: 'e2e', step: 'with Allow AI editing on, the collaborator’s request runs on the host’s AI and lands as hers' },
+      { test: L_RECOVER, kind: 'e2e', step: 'turning AI editing off stops the request the host is running, and the host refuses the next' },
+      { test: L_RECOVER, kind: 'e2e', step: 'the host’s connection drops, and it takes the room back with its signed key, every guest still in it' },
+      { test: L_RECOVER, kind: 'e2e', step: 'a removed guest’s socket closes and its preview origin refuses it straight away' },
       { test: 'tests/unit/live-share.test.ts', kind: 'unit' },
+      { test: 'tests/unit/live-ai.test.ts', kind: 'unit' },
       { test: 'tests/unit/live-host-relay.test.ts', kind: 'unit', step: 'reaches a guest let in later, and every admitted guest as the host moves' }
     ],
-    gaps: [{ missing: 'A dropped relay connection (Reconnecting, then Live again or ended) is proven only below the editor, in tests/unit/live-host-relay.test.ts', owner: 'preview' }]
+    gaps: [{ missing: 'A relay connection that stays down past its budget, ending the session, is proven only below the editor, in tests/unit/live-host-relay.test.ts', owner: 'preview' }]
   },
   {
     id: 'preview.remote-shell',
     area: 'preview',
     intent: 'Join someone else’s live session from my own copy of Builder, and edit their site with them, or watch it, until I leave or the session ends',
     start: 'Welcome or a project of my own open, a host’s invite link, the relay in its local simulator',
-    routes: ['welcome:Join live session', 'menu:File > Join Live Session…', 'dialog:Join live session › Ask to join', 'dialog:Join live session › Stop asking', 'toolbar:Live session', 'item:RemoteSession:*: *', 'item:RemoteSession:Leave session…', 'item:Toolbar:Leave live session…', 'toolbar:Leave session'],
+    routes: ['welcome:Join live session', 'menu:File > Join Live Session…', 'dialog:Join live session › Ask to join', 'dialog:Join live session › Stop asking', 'toolbar:Live session', 'item:RemoteSession:*: *', 'item:RemoteSession:Leave session…', 'item:Toolbar:Leave live session…', 'toolbar:Leave session', 'chat:Ask the host’s AI', 'chat:Send'],
     outcome:
-      'The host is asked under the name given, and once it admits the guest the editor shows the host’s project and its preview; a collaborator’s selection is outlined on the host’s canvas; its edits land on the host’s disk as the guest’s own History steps, come back to the guest and reach the room’s viewers; it resolves the room’s pinned notes; the host refuses a code edit from it, and the remote shell blocks Export; a viewer, or a guest made one, cannot edit; leaving, being removed, an expiry or the host ending the session puts the editor back on Welcome, saying why, with this computer’s projects as they were',
+      'The host is asked under the name given, and once it admits the guest the editor shows the host’s project and its preview; a collaborator’s selection is outlined on the host’s canvas; its edits land on the host’s disk as the guest’s own History steps, come back to the guest and reach the room’s viewers; it resolves the room’s pinned notes; once the host allows it, its AI requests run on the host’s AI and their changes are the guest’s History steps, and one the host stops says so; the host refuses a code edit from it, and the remote shell blocks Export; a viewer, or a guest made one, cannot edit; it stays in the room while the host’s connection drops and comes back; leaving, being removed, an expiry or the host ending the session puts the editor back on Welcome, saying why, with this computer’s projects as they were',
     scenario: 'blank · none · relay simulator; business · none · relay simulator, two apps',
     proof: [
       { test: L_COLLAB, kind: 'e2e', step: 'the second app joins through the invite link and waits for the host' },
@@ -1964,6 +1970,11 @@ export const INTERACTIONS: Interaction[] = [
       { test: L_COLLAB, kind: 'e2e', step: 'the collaborator resolves a note pinned in the room' },
       { test: L_COLLAB, kind: 'e2e', step: 'the host refuses the collaborator’s code edit, and the remote shell blocks Export' },
       { test: L_COLLAB, kind: 'e2e', step: 'made a Viewer, the collaborator’s next edit is refused at once' },
+      { test: L_RECOVER, kind: 'e2e', step: 'the host starts a live session, and the second app joins as a Collaborator' },
+      { test: L_RECOVER, kind: 'e2e', step: 'with Allow AI editing on, the collaborator’s request runs on the host’s AI and lands as hers' },
+      { test: L_RECOVER, kind: 'e2e', step: 'turning AI editing off stops the request the host is running, and the host refuses the next' },
+      { test: L_RECOVER, kind: 'e2e', step: 'the host’s connection drops, and it takes the room back with its signed key, every guest still in it' },
+      { test: L_RECOVER, kind: 'e2e', step: 'ending the session sends the second app back to Welcome, saying why' },
       { test: 'tests/unit/live-remote-shell.test.ts', kind: 'unit', step: 'joins as a collaborator, shows the host’s project and preview, and edits it through the host' },
       { test: 'tests/unit/live-remote-shell.test.ts', kind: 'unit', step: 'ends at once when the host removes the guest, and its preview goes with it' },
       { test: 'tests/unit/live-guest.test.ts', kind: 'unit' },
@@ -1971,7 +1982,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/remote-shell-editor.test.ts', kind: 'unit' },
       { test: 'tests/unit/canvas-navigation.test.ts', kind: 'unit' }
     ],
-    gaps: [{ missing: 'The second app going back to Welcome when it leaves, is removed, its access expires or the host ends the session is proven by unit tests only (leaving and removal in tests/unit/live-remote-shell.test.ts and tests/unit/remote-shell-editor.test.ts, expiry in tests/unit/live-guest.test.ts and tests/unit/relay-expiry.test.ts); the two-app script ends with the guest still in the room', owner: 'preview' }]
+    gaps: [{ missing: 'The second app going back to Welcome when it leaves, is removed or its access expires is proven by unit tests only (leaving and removal in tests/unit/live-remote-shell.test.ts and tests/unit/remote-shell-editor.test.ts, expiry in tests/unit/live-guest.test.ts and tests/unit/relay-expiry.test.ts); the two-app scripts prove it only for the host ending the session', owner: 'preview' }]
   },
   // ---- export ----
   {
@@ -2097,11 +2108,12 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Ship a site with nothing of the editor or my credentials in it, that builds without Builder',
     start: 'Business site with a saved API key, private files and deleted images',
     routes: ['menu:File > Export…', 'dialog:Export › Source'],
-    outcome: 'The static and source exports are scanned and hold no editor state, credentials, editor markup or deleted images; library images kept for later are only in the editable project; with --build, plain npm ci && npm run build succeeds in the exported source',
-    scenario: 'Business starter · none',
+    outcome: 'The static and source exports are scanned and hold no editor state, credentials, editor markup or deleted images; one made after a live session holds none of its notes, spotlight, live-session or editor code; library images kept for later are only in the editable project; with --build, plain npm ci && npm run build succeeds in the exported source',
+    scenario: 'Business starter · none; business · none · relay simulator, two apps',
     proof: [
       { test: 'tests/e2e/export.mjs', kind: 'e2e', step: 'I09: scan the source export' },
       { test: 'tests/e2e/export.mjs', kind: 'e2e', step: 'I09: scan the static export' },
+      { test: L_RECOVER, kind: 'e2e', step: 'an export made after the session holds nothing of it' },
       { test: 'tests/e2e/snapshot.mjs', kind: 'driver', step: 'the projects carry none of the editor’s markers' },
       { test: 'tests/unit/security.test.ts', kind: 'unit' },
       { test: 'tests/e2e/export.mjs', kind: 'e2e', step: 'I07: npm ci && npm run build in the exported source, outside the app' }
