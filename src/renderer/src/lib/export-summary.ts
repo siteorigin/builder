@@ -6,7 +6,7 @@ import { diagnosticKey } from '@engine/validate';
 
 /** More pages than this are counted, with the full lists one click away, so they never push the export choices out of view. */
 const LONG_PAGE_LIST = 6;
-/** Page titles longer than this in all are counted too, however few pages there are. */
+/** Pages whose names (titles, and the addresses that tell alike titles apart) run longer than this in all are counted too, however few there are. */
 const LONG_TITLES = 110;
 
 /** More collections than this are totalled ("12 entries from 8 collections") rather than named, so the line stays short. */
@@ -82,8 +82,9 @@ export interface PagesSummaryText {
 export function pagesSummaryText(plan: { published: PageDoc[]; drafts: PageDoc[]; publishedEntries: SiteEntry[]; draftEntries: SiteEntry[] }): PagesSummaryText {
   const { published, drafts, publishedEntries, draftEntries } = plan;
   const all = [...published, ...drafts];
-  // Counted, not named, when there are many pages or their titles would run long.
-  const long = all.length > LONG_PAGE_LIST || all.reduce((n, p) => n + p.title.length, 0) > LONG_TITLES;
+  // Counted, not named, when there are many pages or their names, as the summary would write them, would run long: the
+  // website card it is written on stays in view in the dialog's footer.
+  const long = all.length > LONG_PAGE_LIST || listTitles(published, all).length + listTitles(drafts, all).length > LONG_TITLES;
   const alsoPublished = publishedEntriesSentence(publishedEntries);
   const line: SummaryLine = {
     lead: `The website publishes ${published.length === 1 ? '1 page' : `${published.length} pages`}${long ? '.' : ':'}`,
@@ -127,7 +128,12 @@ export interface HealthNotes {
   seo: number;
   /** Everything else Project health lists: the search audit's suggestions and the project's own diagnostics. */
   other: number;
-  /** Project health opens at Search & AI readiness: it holds what the line leads with, or all there is. */
+  /** The project's own problems and warnings among `other`: worth checking before publishing, unlike a suggestion. */
+  otherDue: number;
+  /**
+   * Project health opens at Search & AI readiness: it holds what the line leads with, or all there is. A problem of the
+   * project's own comes first, in the summary above it.
+   */
   atSeo: boolean;
 }
 
@@ -141,7 +147,8 @@ export function healthNotes({ seo, diagnostics, shown }: { seo: readonly SeoFind
   const shownKeys = new Set(shown.map(formKey));
   const rest = diagnostics.filter((d) => d.code !== 'CONFLICT' && !seoKeys.has(diagnosticKey(d)) && !shownKeys.has(formKey(d)));
   const due = seo.filter((f) => f.severity !== 'info').length;
-  return { seo: due, other: seo.length - due + rest.length, atSeo: due > 0 || rest.length === 0 };
+  const restDue = rest.filter((d) => d.severity !== 'info');
+  return { seo: due, other: seo.length - due + rest.length, otherDue: restDue.length, atSeo: !restDue.some((d) => d.severity === 'error') && (due > 0 || rest.length === 0) };
 }
 
 const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -155,11 +162,13 @@ export function healthNotesText({ seo, other }: Pick<HealthNotes, 'seo' | 'other
 
 /**
  * What the Export dialog still listed to fix when an export started, beside the export's own notes, in the dialog's
- * words: the sample contact details left to review and the search and sharing findings in Project health. Suggestions
- * are not something to fix, so an export's result says "Nothing to fix." over them, and only when this is empty.
+ * words: the sample contact details left to review, and the search and sharing findings and the project's own problems
+ * and warnings in Project health. Suggestions are not something to fix, so an export's result says "Nothing to fix."
+ * over them, and only when this is empty.
  */
-export function dialogFixes({ samples, seo }: { samples: string[]; seo: number }): string[] {
-  return [...(samples.length ? [sampleContactsLine(samples)] : []), ...(seo ? [`${count(seo, 'search and sharing suggestion')} ${seo === 1 ? 'is' : 'are'} in Project health.`] : [])];
+export function dialogFixes({ samples, seo, other = 0 }: { samples: string[]; seo: number; other?: number }): string[] {
+  const inHealth = (n: number) => (n === 1 ? 'is' : 'are') + ' in Project health.';
+  return [...(samples.length ? [sampleContactsLine(samples)] : []), ...(seo ? [`${count(seo, 'search and sharing suggestion')} ${inHealth(seo)}`] : []), ...(other ? [`${count(other, 'note')} to check ${inHealth(other)}`] : [])];
 }
 
 /** What a website export says it published: "3 pages", "3 pages and 3 entries from Posts", as the dialog counts them. */

@@ -68,6 +68,7 @@ try {
   // Exported as it is, the Contact page sends enquiries to the sample address, as reported.
   const asStarted = await exportWebsite('business-as-started');
   assert.equal((readFileSync(join(asStarted, 'contact', 'index.html'), 'utf8').match(/mailto:hello@example\.com/g) ?? []).length, 3, 'the export went ahead with the details under review');
+  assert.match(await exportDialog.locator('.export-result').innerText(), /hello@example\.com, \+1 555 0134 and 12 Harbor Lane, Millbrook are sample details from the starter\./, 'the result repeats the details the dialog listed');
   await closeDialog(exportDialog);
 
   step('Keep it sets aside one detail, listed beside the ones still under review');

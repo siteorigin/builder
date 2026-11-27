@@ -3,7 +3,7 @@ import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FolderCode, Globe,
 import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } from '@generator/checks';
 import type { PageDoc, ProjectState } from '@shared/types';
 import type { SiteEntry } from '@shared/collections';
-import type { ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
+import type { Diagnostic, ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
 import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout } from '../lib/actions';
@@ -203,7 +203,7 @@ function VisitorReview({ forms, groups, kept, disabled, readOnly, onSettle }: { 
       <CircleCheck aria-hidden />
       <span>
         {kept.length === 1 ? `${kept[0].value} is kept as you chose.` : `${kept.length} sample contact details are kept as you chose.`}{' '}
-        <button className="link-btn" disabled={disabled || readOnly} onClick={() => (keepSamples(kept.map((g) => g.value), false), setSamplesOpen(true), settle(() => usable('.export-samples-list .btn')[0]))}>
+        <button className="link-btn" disabled={disabled || readOnly} onClick={() => (keepSamples(kept.map((g) => g.value), false), setSamplesOpen(true), settle(() => usable(`.export-samples-list > [data-testid="export-sample-${kept[0].kind}"] .export-review-actions .btn`)[0] ?? usable('.export-samples-list .btn')[0]))}>
           Review {kept.length === 1 ? 'it' : 'them'} again
         </button>
       </span>
@@ -410,9 +410,15 @@ function BuildDetails({ text, fix }: { text: string; fix?: ReactNode }) {
  * What the dialog lists to fix besides the export's own notes: the starter's sample contact details not kept on purpose,
  * and what keeps the website from being found or shared. A result never says "Nothing to fix." over them.
  */
-function listedFixes(state: ProjectState, kept: readonly string[]): string[] {
+function listedFixes(state: ProjectState, kept: readonly string[], diagnostics: readonly Diagnostic[]): string[] {
+  const notes = healthNotesOf(state, diagnostics);
+  return dialogFixes({ samples: sampleContactMatches(state).flatMap((g) => (kept.includes(g.value) ? [] : [g.value])), seo: notes.seo, other: notes.otherDue });
+}
+
+/** What Project health lists beside what the dialog shows itself, counted once each (healthNotes). */
+function healthNotesOf(state: ProjectState, diagnostics: readonly Diagnostic[]): HealthNotes {
   const audit = auditForHealth(state);
-  return dialogFixes({ samples: sampleContactMatches(state).flatMap((g) => (kept.includes(g.value) ? [] : [g.value])), seo: audit.ok ? audit.findings.filter((f) => f.severity !== 'info').length : 0 });
+  return healthNotes({ seo: audit.ok ? audit.findings : [], diagnostics, shown: websiteFormProblems(state) });
 }
 
 export function ExportModal() {
@@ -441,11 +447,7 @@ export function ExportModal() {
   // What else Project health lists, counted once each beside the forms named here: what keeps the website from being
   // found or shared (as its Search & AI readiness says it), its suggestions, and the project's other notes.
   const diagnostics = useStore((s) => s.snapshot?.diagnostics);
-  const health = useMemo(() => {
-    if (!state) return null;
-    const audit = auditForHealth(state);
-    return healthNotes({ seo: audit.ok ? audit.findings : [], diagnostics: diagnostics ?? [], shown: websiteFormProblems(state) });
-  }, [state, diagnostics]);
+  const health = useMemo(() => (state ? healthNotesOf(state, diagnostics ?? []) : null), [state, diagnostics]);
   // What the website card says it publishes: pages named when the list is short and counted when it is long.
   const pagesText = useMemo(() => (plan ? pagesSummaryText(plan) : null), [plan]);
   // What the website shows now, read once for every note about an earlier export.
@@ -534,7 +536,9 @@ export function ExportModal() {
     // A control that went away with its blocker, or with what a note or the form review named (fixed meanwhile), leaves
     // focus nowhere.
     if (document.activeElement === document.body) firstControl()?.focus();
-  }, [availability, longLinks, state]);
+    // The count line goes too once Project health has nothing left, which can change without the project (a missing
+    // file restored on disk).
+  }, [availability, longLinks, state, health?.seo, health?.other]);
   const resultRef = useRef<HTMLDivElement>(null);
   const buttons = useRef<Record<ExportKind, HTMLButtonElement | null>>({ static: null, source: null });
   // Where focus goes once the job ends: the result when there is one to read, else back on the button used.
@@ -570,7 +574,7 @@ export function ExportModal() {
       // read once the export returns, from the project as it is then, so an edit made while the folder was being chosen
       // or the edits were saving (which the export carries) is never contradicted.
       const now = getState();
-      if (r.message) setResult({ ...r, report: newReportId(), fixesListed: r.ok && now.snapshot ? listedFixes(now.snapshot.state, now.keptSamples) : undefined });
+      if (r.message) setResult({ ...r, report: newReportId(), fixesListed: r.ok && now.snapshot ? listedFixes(now.snapshot.state, now.keptSamples, now.snapshot.diagnostics) : undefined });
       settle.current = r.message ? 'result' : kind;
     } catch (e) {
       settle.current = 'result';

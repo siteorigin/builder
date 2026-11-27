@@ -960,7 +960,13 @@ for (let open = 0; open < 2; open++) {
   // Eight pages are counted, not named; the sentence on the posts follows them in the same line.
   assert.match((await modal.locator('.export-card').getByTestId('export-pages').innerText()).trim(), new RegExp(`^The website publishes ${livePages} pages\\. It also publishes ${live} entries from Posts\\.$`), 'the summary counts the published posts');
   const heldPhrase = held === 1 ? '1 draft entry from Posts is' : `${held} draft entries from Posts are`;
-  assert.equal((await modal.getByTestId('export-drafts').innerText()).trim(), `${heldPhrase} left out. Drafts stay in the editable project.`, 'the summary says the draft posts are left out');
+  // Counted on the card, the pages themselves are one click away in the body (#1288).
+  const allPages = modal.getByTestId('export-page-lists').getByRole('button', { name: 'Review all pages' });
+  assert.equal(await allPages.getAttribute('aria-expanded'), 'false', 'the full lists start folded');
+  await allPages.click();
+  assert.equal(await modal.getByTestId('export-page-lists').getByRole('heading', { name: 'Published' }).count(), 1, 'the published pages are listed');
+  await allPages.click();
+  assert.equal((await modal.locator('.export-card').getByTestId('export-drafts').innerText()).trim(), `${heldPhrase} left out. Drafts stay in the editable project.`, 'the summary says the draft posts are left out');
   for (const [i, e] of recent.entries()) {
     const item = items.nth(i);
     const text = await item.innerText();
