@@ -214,13 +214,26 @@ describe('the code check holds text markers to the hook and to the component’s
     const aliased = SOURCE.replace(', so_text }', ', so_text: mark }').replaceAll('so_text?.(', 'mark?.(');
     expect(await errors(aliased)).toEqual([]);
     expect(await errors(aliased.replace(`mark?.('heading')`, `mark('heading')`))).toEqual([expect.stringContaining('Call mark with ?.')]);
-    // Handed to a component the code places, or reused, it could write a marker into the published site.
-    const placed = SOURCE.replace('</section>', '\t<SoRichText value={body} so_text={so_text} />\n</section>');
-    expect(await errors(placed)).toEqual(expect.arrayContaining([expect.stringContaining("don't give it to a component"), expect.stringContaining('Use so_text only to mark text')]));
-    expect(await errors(SOURCE.replace('</section>', '\t<SoRichText value={body} so_text={(p) => p} />\n</section>'))).toEqual([expect.stringContaining("don't give it to a component")]);
-    expect(await errors(SOURCE.replace('</script>', '\tso_text ??= (p) => p;\n</script>'))).toEqual([expect.stringContaining('Use so_text only to mark text')]);
-    // Only the name is shared by a property of something else.
+    // Handed to a component the code places (by name, in a spread), replaced, or passed on, it could write a marker
+    // into the published site or have that component's text name this one's properties.
+    const onward = "never pass it on or replace it";
+    for (const [what, source] of [
+      ['given by name', SOURCE.replace('</section>', '\t<SoRichText value={body} so_text={so_text} />\n</section>')],
+      ['a stand-in', SOURCE.replace('</section>', '\t<SoRichText value={body} so_text={(p) => p} />\n</section>')],
+      ['in a spread', SOURCE.replace('</section>', '\t<SoRichText value={body} {...{ so_text }} />\n</section>')],
+      ['replaced', SOURCE.replace('</script>', '\tso_text ??= (p) => p;\n</script>')],
+      ['passed to a function', SOURCE.replace('</script>', '\tconst keep = (f) => f;\n\tconst kept = keep(so_text);\n</script>')]
+    ] as const) {
+      const found = await errors(source);
+      expect(found.length, what).toBeGreaterThan(0);
+      for (const m of found) expect(m, what).toContain(onward);
+    }
+    // Only the name is shared: a property of something else, a name the code gives its own values under the hook's
+    // alias, or a type.
     expect(await errors(SOURCE.replace('</script>', '\tconst note = { so_text: 1 };\n\tconst other = note.so_text;\n</script>'))).toEqual([]);
+    expect(await errors(aliased.replace('</script>', '\tconst titles = $derived(features.map((mark) => mark.title));\n</script>'))).toEqual([]);
+    const typed = SOURCE.replace('<script>', '<script lang="ts">\n\ttype Hook = (path: string, item?: string) => string;\n\tinterface Marks { so_text?: Hook }\n\tconst none: Marks = {};');
+    expect(await errors(typed)).toEqual([]);
   });
 
   it('names a marker naming no text property or field, with or without its item, or not written out', async () => {

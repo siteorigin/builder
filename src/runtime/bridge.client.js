@@ -183,9 +183,12 @@ function textBindAt(target) {
  * whose marker Svelte writes in place. What the page writes there then is that item's, never what was typed.
  */
 const markMoved = (e) => !!e.desc.bind && e.el.getAttribute(TEXT_ATTR) !== e.desc.bind;
-/** What was typed over marked text, as the last input left it: kept for an edit whose element the page reuses. */
+/**
+ * What was typed over marked text, as the last input left it: kept for an edit whose element the page reuses. Its
+ * words are read while the element is still laid out, as a commit reads them (a copy's would run lines together).
+ */
 function keepTyped() {
-  if (editing && !markMoved(editing)) editing.typed = editing.el.cloneNode(true);
+  if (editing && editing.desc.bind && !markMoved(editing)) editing.typed = { el: editing.el.cloneNode(true), text: editing.el.innerText };
 }
 /** Whether `el` is the text `desc` names: its marker, inside the markup of the code placement `desc` names. */
 function marksText(el, desc) {
@@ -2343,6 +2346,8 @@ function linkChecked(payload) {
       if (newTab) a.setAttribute('target', '_blank');
       if (rels.length) a.setAttribute('rel', rels.join(' '));
     }
+  // The link's options are set after the browser's input: what is kept of the edit has them too.
+  keepTyped();
 }
 /** The part of a text node's words a range covers: a range that only reaches an element's edge covers none of it. */
 function coveredText(range, t) {
@@ -2993,7 +2998,7 @@ function commitEdit(detached = false) {
   // nothing is put back into it.
   const moved = markMoved(editing);
   if (moved) detached = true;
-  const left = moved ? editing.typed : el;
+  const left = moved ? editing.typed && editing.typed.el : el;
   // A destination still being checked in the link field is not applied: the editor is told, as saving does.
   if (linkEditor && linkEditor.check) send('linkDropped', { desc, editId });
   // Nothing changed: end the edit without a commit, so no history entry or rebuild follows.
@@ -3003,7 +3008,7 @@ function commitEdit(detached = false) {
   }
   // Rich text goes back as a small copy of its structure (blocks, lists, breaks, marks, links) for the editor
   // to turn into its stored form; plain text as its words.
-  const payload = rich ? { desc, editId, rich: richCopy(left) } : { desc, editId, text: left.innerText.replace(/\s+/g, ' ').trim() };
+  const payload = rich ? { desc, editId, rich: richCopy(left) } : { desc, editId, text: (moved ? editing.typed.text : el.innerText).replace(/\s+/g, ' ').trim() };
   if (detached) Object.assign(payload, { detached: true }, typeof before === 'string' ? { before } : {});
   // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
   if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
@@ -3012,7 +3017,7 @@ function commitEdit(detached = false) {
     return send('textCancel', { desc, editId, reason: 'too-large' });
   }
   endEdit();
-  if (!moved) committed.set(editId, { el, original, left: el.innerHTML });
+  if (!moved) committed.set(editId, { el, original, left: el.innerHTML, bind: desc.bind });
   // Only the last few can still be answered: older ones are let go.
   while (committed.size > 8) committed.delete(committed.keys().next().value);
   send('textCommit', payload);
@@ -5205,7 +5210,9 @@ window.addEventListener('message', async (e) => {
       {
         // Each edit's own record, so a reply for one never answers (or forgets) another.
         const c = committed.get(m.payload.editId);
-        if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
+        // Marked text whose row the page has given another item since is that item's now.
+        if (c && c.bind && c.el.getAttribute(TEXT_ATTR) !== c.bind) committed.delete(m.payload.editId);
+        else if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
         else if (c && editing?.el === c.el && editing.original === c.left) {
           // Edited again before the answer came, from the text that was not kept: with nothing typed yet the saved
           // text comes back, to edit from; anything typed since is the new edit's, and Escape goes back to the saved text.

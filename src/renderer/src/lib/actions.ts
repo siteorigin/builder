@@ -1041,6 +1041,12 @@ function codeTextIn(snapshot: ProjectSnapshot, t: CodeTextTarget): CodeTextTarge
   return now && now.rich === t.rich ? now : null;
 }
 
+/** Whether a code placement's list is connected to a collection in the project as it is now. */
+function connectedNow(t: CodeTextTarget): boolean {
+  const node = getState().snapshot ? treeFor(getState().snapshot!.state, t.owner)?.nodes[t.nodeId] : undefined;
+  return node?.kind === 'instance' && Object.hasOwn(node.listSources ?? {}, t.prop);
+}
+
 /** Whether the plain text a code placement's marked element showed (`shown`) is what its property holds in `snapshot`. */
 export function showsCodeText(snapshot: ProjectSnapshot, t: CodeTextTarget, shown: string): boolean {
   if (!codeTextIn(snapshot, t)) return false;
@@ -1056,10 +1062,13 @@ export function showsCodeText(snapshot: ProjectSnapshot, t: CodeTextTarget, show
  */
 export async function commitCodeText(t: CodeTextTarget, text: string | RichText, snapshot = getState().snapshot): Promise<'restore' | void> {
   if (!snapshot) return;
-  // Still text the page can be typed into, as the edit began and as the project is now: a list connected to a
-  // collection meanwhile (which keeps its stored items) shows the collection's entries instead.
-  const now = getState().snapshot;
-  if (!codeTextIn(snapshot, t) || (now && now !== snapshot && !codeTextIn(now, t))) return 'restore';
+  if (!codeTextIn(snapshot, t)) return 'restore';
+  // A list connected to a collection since the edit began keeps its stored items, which the engine would still
+  // write, but shows the collection's entries: the words typed would change items no one sees.
+  if (t.field !== undefined && connectedNow(t)) {
+    toast('This list now shows entries from a collection, so its words are changed in the collection.', 'info');
+    return 'restore';
+  }
   const current = codeTextShown(snapshot.state, t);
   if (sameValue(current, text)) return 'restore';
   if (typeof text === 'string' && !text.trim() && codeTextFollowsPage(snapshot.state, t)) {

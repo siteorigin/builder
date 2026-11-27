@@ -122,12 +122,15 @@ describe.skipIf(!browserInstalled)('marked text of a code component in the previ
     await post('beginTextEdit', { desc: desc('features.title#a'), editId: 'u1', rich: false });
     await expect.poll(() => editable('t1')).toBe('plaintext-only');
     await page.keyboard.type(' ahead');
+    await page.keyboard.press('Shift+Enter');
+    await page.keyboard.type('now');
     // A list shown without keys gives the row to the next item: its marker and words change in place.
     await frame.evaluate(`(() => { const el = document.getElementById('t1'); el.setAttribute('data-so-text', 'features.title#c'); el.firstChild.nodeValue = 'Launch'; })()`);
     // What was typed goes back, never the other item's words the page wrote over it, and nothing is put back there.
-    await expect.poll(() => lastOf('textCommit')).toEqual({ desc: desc('features.title#a'), editId: 'u1', text: 'Planning ahead', detached: true, before: 'Planning' });
+    await expect.poll(() => lastOf('textCommit')).toEqual({ desc: desc('features.title#a'), editId: 'u1', text: 'Planning ahead now', detached: true, before: 'Planning' });
     expect(await editable('t1')).toBeNull();
-    expect(await frame.evaluate(`document.getElementById('t1').textContent`)).toBe('Launch');
+    const shown = await frame.evaluate<string>(`document.getElementById('t1').textContent`);
+    expect(shown.startsWith('Launch') && !shown.includes('Planning'), shown).toBe(true);
   });
 
   it('ends an edit whose row only changed item, with the same words', async () => {
