@@ -19,7 +19,7 @@ The immediate objective is a usable editor with a coherent foundation. The initi
 
 ### Decisions changed during implementation
 
-The v0.1 implementation deliberately departs from this draft in six places. The sections concerned have been updated to match, and each is marked *(changed in implementation)*.
+The v0.1 implementation deliberately departs from this draft in seven places. The sections concerned have been updated to match, and each is marked *(changed in implementation)*.
 
 | Area | Draft | Implementation | Sections |
 | --- | --- | --- | --- |
@@ -27,7 +27,8 @@ The v0.1 implementation deliberately departs from this draft in six places. The 
 | Stored API keys | OS-backed protection (`safeStorage`), session-only on Linux without a secret backend. | A plain `api-keys.json` in the app's data folder, written with mode `0600` (user-only) on macOS and Linux; on Windows the data folder's permissions apply. The OS keychain is never used, so users never see keychain access prompts. | §21.4, I10 |
 | Source editor | Monaco. | CodeMirror 6 with Svelte language support and live compiler diagnostics: much smaller, and enough for project code components. | §15.1 |
 | Tool result payload | A tool's payload under `data` in `ToolResult`. | A tool's own fields sit beside `ok` and `revision`, which every result has, success or failure: write results always carried them there, and every reader of a result keeps one place to look. | §13.3 |
-| Catalogue location | A separate `siteorigin-builder-components` repository. | v0.1 bundles the Foundation theme from this repository (`src/catalogue/`, written in a small TypeScript DSL). A separate component repository and its build are future targets. | §9.1, §23 |
+| Component model | Built-in brochure sections are managed definitions wherever possible; hand-written code components are small reviewed leaves for behavior such as mobile navigation and accordions. | Every theme component is a Svelte 5 component plus a static manifest. The editor changes it only through the contract the manifest declares (properties, inline text, parts, single list items, slots and variants); structural changes happen in its source, by a person or the assistant. Pages and their layout stay structured documents built from the basic elements. Managed definitions remain only for project components made from a selection and the page-level elements. The craft of a section (state, keyboard handling, accessibility, motion, right-to-left and language rules) lives in its Svelte, which the managed format cannot express, and the project's own model learns transferable Svelte rather than a bespoke format. | §8.1–8.5, §9.1–9.3, §13.2, §13.4, §16.1, §16.4, §16.5, §17.3, §25.2 |
+| Catalogue location | A separate `siteorigin-builder-components` repository. | Theme components are authored in `siteorigin/builder-components` as Svelte components, and that repository builds its packs with this one's pack build. v0.1 still bundles a Foundation pack built from this repository (`src/catalogue/`, written in an earlier TypeScript definition DSL); that copy is being retired. | §9.1, §23 |
 | Unfinished runs | A run that reaches a budget limit is unsuccessful and is reverted, optionally keeping the attempted diff for inspection. | A run that reaches its turn, tool-call, time or context limit, or finishes with requested work still missing, after making valid changes, ends **Partly done** (`partial`), never Completed. Its validated work is kept as one undoable history group so the user can continue it. Work with new errors, or that breaks a changed page in the application's preview check, is still reverted and the run fails. A run that changed nothing is not partial: stopped at a limit it fails, and finished with work missing it reads as not finished with no changes. Reverting valid work would throw away model time the user already paid for, and Continue needs that work in place. | §11.3, §12.3, §12.5 |
 
 ## Contents
@@ -383,19 +384,32 @@ Theme defaults and project overrides are stored separately. Changing a theme mus
 
 ## 8. Components and the initial catalogue
 
-### 8.1 Two supported component kinds
+### 8.1 Svelte components and structured pages *(changed in implementation)*
 
-**Managed components** have an editable structured definition, property schema, slots and variants. The editor generates ordinary Svelte source from that definition. Their supported internal elements remain directly editable through the canvas and layer tree.
+Every theme component is a **Svelte component**: a hand-written Svelte 5 file plus a static manifest (`component.json`, §8.3). The Svelte is the implementation: its markup, its state, keyboard handling, accessibility, motion, right-to-left and language rules, and a scoped `<style>` block that reads the theme's `--so-*` tokens, so site styles restyle it and the exported site needs no extra build step. The manifest is its public contract: what the editor may change, and what a compatible theme must implement (§9.3). The exported site runs the same file, without the editor's markers (§17.3) and with no Builder runtime.
 
-**Code components** have hand-authored Svelte source plus a manifest describing editable properties and any supported named parts. They can use normal Svelte behavior. Their arbitrary internals are not automatically reversible into a managed definition.
+The editor changes a Svelte component only through that contract:
 
-Both kinds can be placed on pages and composed inside managed components. Both use stable component identities and declared dependencies. Built-in brochure sections should be managed components wherever possible. Small reviewed code leaves provide behavior such as mobile navigation and accordions.
+- **Properties.** The declared properties and their defaults, through inspector controls. Each placement's values arrive as props taken from `$props()`.
+- **Inline text.** An element the component marks as showing a text property, or one field of the list item it is showing (`data-so-text={so_text?.('heading')}`), can be typed over on the canvas. The edit is the same operation as the inspector's, rich text included.
+- **Parts.** The elements the manifest declares as parts, each with the style controls it allows. A placement's styles on a part reach the component as a class in `so_o`, which it puts on that element (`so_o?.heading`); `root` is its outer element.
+- **Single list items.** A part inside a repeat over a list property can be declared as repeating, keyed by the item's ID, so one card's part is selected and styled on its own and its style follows the item when the list is reordered.
+- **Slots.** Named places where a page puts other components and basic elements, each with what it accepts. Each slot's content arrives as a `slot_<name>` snippet.
+- **Variants.** Each variant axis declares the prop its selected option arrives in. How an option looks is the component's own CSS, never the manifest.
+
+Structural changes, such as putting a price above a plan's name or adding a second button, happen in the Svelte source: by a person in the source editor, or by the assistant (§8.5, §13.4). There is no round-trip visual editing of a component's internals, and the inspector never offers a control the contract does not declare.
+
+**Pages and layout stay structured documents.** A page is a managed tree (§16.4): the sections placed on it, the content of their slots, and the basic elements (container, stack, grid, heading, paragraph, image, link/button, icon and divider), all edited directly on the canvas and in the layer tree.
+
+**Managed definitions**, a structured definition from which the generator writes ordinary Svelte (§16.4), remain only where they are still used: project components made with Create component from selection (§8.4), and the page-level elements. A project can also hold Svelte components of its own, from New code component, Convert a copy to code or a fork of a theme component; they follow the same contract.
+
+Every component, of either kind, can be placed on pages and in slots, and has a stable component identity and declared dependencies.
 
 ### 8.2 Initial theme catalogue
 
 The initial theme is provisionally named **Foundation**. Its aesthetic is clean, restrained and suitable for service businesses, personal sites and small company websites. Use one consistent typography, spacing, radius and color system.
 
-Ship these 18 section/component families, with one good default and a few useful variants where indicated:
+Ship these 18 section/component families as Svelte components (§8.1), with one good default and a few useful variants where indicated:
 
 | Family | Minimum contents |
 | --- | --- |
@@ -420,9 +434,11 @@ Ship these 18 section/component families, with one good default and a few useful
 
 Also provide basic primitives: container, stack, grid, heading, paragraph, image, link/button, icon and divider. A component's displayed preview must come from its real implementation or a checked build, not unrelated artwork.
 
-### 8.3 Required component metadata
+### 8.3 The component manifest
 
-Each component declares a stable logical ID, version, display name, description, category, tags, kind, prop schema/defaults, variants, slots, semantic editable parts, dependencies and license/provenance. It includes representative examples for both users and AI context.
+Each component's manifest declares a stable logical ID (`componentId`), contract version, display name, description, category, tags, icon, whether Insert places it as a section or as an element inside a layout (`insertAs`), the property schema and defaults, its variant axes (each with a label, a default, its option labels and, for a Svelte component, the prop the selected option arrives in), its slots and what each accepts, its parts and the style controls each allows (including a part that repeats over a list property), dependencies and license/provenance. It includes representative examples for both users and AI context. It describes the contract, never how the component is built: how a part or an option looks is the component's own CSS. The props the editor passes every placement besides the declared ones (such as `so_o`, `so_text`, `so_id` and `class`) never appear in a manifest.
+
+A Svelte component and its manifest must agree. Every declared property is taken from `$props()` with the manifest's default; every prop the component takes is declared or is one of the editor's own; each variant axis's prop is taken; every marked part and marked text names a declared part, or a text property or list item field; and every declared slot is rendered. `codecheck` checks this with the Svelte compiler when a theme pack is built and when a project code component is saved: an error in the pack build and for the assistant's code, a warning in the source editor.
 
 Properties support string, structured rich text, number, boolean, enum, link, image, token reference, object and bounded array types. Arrays carry stable item IDs. Schema validation must enforce ranges, required fields and allowed enums.
 
@@ -436,23 +452,23 @@ The manifest is static data. Loading it must not execute JavaScript or load a pa
 
 **Duplicate component:** copy a definition under a new project component ID. Existing placements remain bound to the original.
 
-**Make unique:** copy the complete definition, bindings, all responsive rules and variants into a project component; preserve the selected instance's current variant and overrides, then rebind only that placement. Retain token references. Never bake only the current viewport's computed CSS into the new definition. Record provenance without keeping it subject to automatic theme replacement.
+**Make unique:** copy the selected placement's component into a project component, preserving its current variant, property values, part styles and slot content, then rebind only that placement. For a Svelte component the copy is its source and manifest; for a managed one, the complete definition, bindings, all responsive rules and variants. Retain token references. Never bake only the current viewport's computed CSS into the copy. Record provenance without keeping it subject to automatic theme replacement.
 
-**Edit definition:** enter an explicit component workspace using sample props. Changes apply to every instance except where an instance has its own override. Property removal or type changes require a usage-aware migration; version 0.1 may reject incompatible changes and offer a fork instead.
+**Edit definition** (managed project components): enter an explicit component workspace using sample props. Changes apply to every instance except where an instance has its own override. Property removal or type changes require a usage-aware migration; version 0.1 may reject incompatible changes and offer a fork instead.
 
-On the first shared edit of a theme-owned definition, create a project-owned fork and rebind all existing uses in the displayed scope to it. Show this ownership change and the affected-use count in the component-editing mode before applying changes. Preserve the original catalogue definition for future insertion. Further edits operate on the project-owned definition, which future theme switches leave intact.
+A theme component's structure is changed in its Svelte source and manifest. On the first shared edit of a theme-owned component, by a person or the assistant, create a project-owned fork and rebind all existing uses in the displayed scope to it. Show this ownership change and the affected-use count in the component-editing mode before applying changes. Preserve the original catalogue definition for future insertion. Further edits operate on the project-owned definition, which future theme switches leave intact.
 
 Create component, Make unique and Convert a copy to code must preserve appearance and behavior at every supported responsive range, including bindings, slot content and selected variants.
 
 ### 8.5 Source access and the honest editing boundary
 
-The Source view shows generated Svelte for a managed component. It is read-only while the managed definition remains authoritative.
+The Source view shows a Svelte component's source and manifest. A theme's component is read-only there until it is forked into the project (§8.4). For a managed project component the view shows the generated Svelte, read-only while the managed definition remains authoritative.
 
-**Convert a copy to code** creates a project-owned code component from the resolved generated source, preserves its current props/defaults and rebinds the selected instance or explicitly selected uses. The original managed definition remains available. The UI explains that internal structural editing now happens in source, while declared property controls remain available.
+**Convert a copy to code** creates a project-owned code component from a managed component's resolved generated source, preserves its current props/defaults and rebinds the selected instance or explicitly selected uses. The original managed definition remains available. The UI explains that internal structural editing now happens in source, while declared property controls remain available.
 
-Code components can be edited in a focused source editor with Svelte syntax highlighting, diagnostics, save/revert and manifest tabs. Reuse the same transaction and validation system. Do not add a full general-purpose IDE.
+Project-owned Svelte components can be edited in a focused source editor with Svelte syntax highlighting, diagnostics, save/revert and manifest tabs. Reuse the same transaction and validation system. Do not add a full general-purpose IDE.
 
-This satisfies advanced editing without promising lossless conversion of arbitrary Svelte logic into visual controls. Unsupported code internals can be inspected and opened in source; the inspector must not present controls it cannot safely apply.
+This satisfies advanced editing without promising lossless conversion of arbitrary Svelte logic into visual controls. A component's internals beyond its declared contract can be inspected and opened in source; the inspector must not present controls it cannot safely apply.
 
 ---
 
@@ -464,26 +480,26 @@ Use two repositories:
 
 | Repository | Responsibilities |
 | --- | --- |
-| `siteorigin-builder` | Electron application, React UI, shared schemas, edit engine, generator, agent, bundled project template and packaging. |
-| `siteorigin-builder-components` | Theme manifests, canonical managed component definitions, code leaves, prop schemas, assets, previews, examples and compatibility tests. |
+| `siteorigin/builder` | Electron application, React UI, shared schemas, edit engine, generator, agent, pack build, bundled project template and packaging. |
+| `siteorigin/builder-components` | Theme manifests and tokens, each theme's Svelte components and their manifests, assets, previews, examples and compatibility tests. |
 
-Names are proposed implementation defaults. *(Changed in implementation:)* v0.1 bundles Foundation from `siteorigin-builder` itself, under `src/catalogue/`. Its definition DSL uses the shared document types and schema version; starter assembly also uses the edit engine and ID helpers. The two-repository split, and the secondary-repository build in the implementation sequence, are future targets that follow once the definition format settles; the rest of this section describes that target. The component repository produces versioned release artifacts. The application bundles a pinned release of Foundation and can cache explicitly downloaded future packs. End users do not need Git or repository credentials.
+*(Changed in implementation:)* theme components are authored as Svelte components (§8.1) in `siteorigin/builder-components`, which builds its packs with this repository's pack build. v0.1 still bundles a Foundation pack built from this repository's `src/catalogue/`, written in an earlier TypeScript definition DSL; that copy is being retired, and the rest of this section describes the target. The component repository produces versioned release artifacts. The application bundles a pinned release of Foundation and can cache explicitly downloaded future packs. End users do not need Git or repository credentials.
 
 ### 9.2 Component copying
 
-Inserting a component copies its canonical definition or code source, schema and required dependency closure into the project. Deduplicate already installed definitions and shared assets. Record the exact pack version and content hashes in a lock file. Keep the common catalogue `componentId` separate from the unique installed `definitionId`; page instances and dependency edges reference the concrete installed definition.
+Inserting a component copies its Svelte source, manifest and required dependency closure into the project. Deduplicate already installed definitions and shared assets. Record the exact pack version and content hashes in a lock file. Keep the common catalogue `componentId` separate from the unique installed `definitionId`; page instances and dependency edges reference the concrete installed definition.
 
 Generated site components are local files. The project must not depend on a live catalogue server to render or build. Updating the application or catalogue must not silently rewrite existing projects.
 
 ### 9.3 Cross-theme compatibility
 
-All themes in a compatibility family implement the same public component IDs, property meanings, slot contracts, variant IDs and semantic part IDs. Layout and styling may differ. A theme cannot rename `hero.title` to an unrelated concept or drop a list field while claiming compatibility.
+All themes in a compatibility family implement the same manifest contract for each public component ID: property meanings, slot contracts, variant axes and option IDs, and part IDs, including which parts repeat over which list. The Svelte behind the contract, its markup, layout, styling and behavior, may differ. A theme cannot rename `hero.title` to an unrelated concept or drop a list field while claiming compatibility.
 
 A compatible theme switch must preserve page order, text, images, links, list IDs, user component instances and explicit overrides. Install the new theme definitions, then rebind eligible theme-owned references. Project-owned components keep their authored structure, content, defaults and pinned dependency closure. Their token references intentionally continue to resolve through the project's current tokens.
 
 Do not replace a concrete installed definition in place solely because a new theme uses the same logical catalogue ID. Retain old definitions and assets while a custom fork, another live component or retained history references them. This prevents a theme switch from indirectly modifying or breaking a custom fork through a nested dependency.
 
-If a part cannot be mapped, the switch is blocked or presents a concrete conflict report before applying. It must not silently discard content or pretend an incompatible pack is compatible. The whole switch is one undoable transaction.
+Before applying, check each placement against the new implementation: a filled slot its Svelte does not render (known from its manifest, cross-checked against the slot snippets its source takes and renders), or a styled part or single item's part it does not declare. If a part cannot be mapped, the switch is blocked or presents a concrete conflict report before applying. It must not silently discard content or pretend an incompatible pack is compatible. The whole switch is one undoable transaction.
 
 Version 0.1 ships one public theme. A development-only alternate implementation must cover the catalogue contracts sufficiently to exercise theme switching, including at least one changed internal layout with preserved semantic parts. A second polished public theme is not a release requirement.
 
@@ -702,7 +718,7 @@ Maintain one versioned operation union shared by manual controls and AI:
 | Content | Set property, set text, set link, set asset reference; insert/update/reorder/remove typed list items. |
 | Styles | Set supported property at a named responsive scope; unset override. |
 | Tokens | Create, rename, update, replace references and remove when safe. |
-| Components | Install from catalogue, create from subtree, create code component, duplicate, make unique, swap a placement to another compatible design in place (carrying its content), update managed definition and convert copy to code. |
+| Components | Install from catalogue, create from subtree, create code component, duplicate, make unique, fork a theme component into the project, swap a placement to another compatible design in place (carrying its content), update a project component's managed definition, update a code component's source and manifest, and convert a managed copy to code. |
 | Shared shell | Update shared instance properties and navigation entries. |
 | Themes | Apply an already available compatible pack through the theme service. |
 
@@ -775,7 +791,7 @@ The operation names above are normative examples; the complete implementation un
 
 ### 13.4 Source-edit restrictions
 
-The agent can read and patch registered project code components, their scoped CSS and their manifests. It cannot patch generated managed files, application files, package scripts, dependency locks, build configuration, credentials or arbitrary server routes.
+The agent can read the Svelte source and manifest of the components a project uses, and patch those of project-owned code components, scoped CSS included. A theme component's Svelte is changed only through a fork: when a request needs its implementation to change, the agent forks it into a project component, rebinding only the placements the request covers (§8.4), then patches the fork's Svelte and manifest together. Each patch must pass `codecheck` in strict mode, including the manifest check (§8.3), before it lands; the run is one undoable change, and its completion card names the fork. The original theme component stays available for insertion and theme switching. The agent cannot patch generated managed files, application files, package scripts, dependency locks, build configuration, credentials or arbitrary server routes.
 
 Source patches enforce the same authorized scope and expected revision as structured edits, in addition to the file hash. Changing a component's source affects every use of that definition. An instance-scoped request must first make an explicit project-owned copy and rebind only that instance, or the patch is rejected with a scope mismatch. Possessing an allowed file path does not authorize a shared change.
 
@@ -896,9 +912,9 @@ These are logical boundaries. They may start as folders in one workspace; do not
 | Material | Authoritative representation | Derived representation |
 | --- | --- | --- |
 | Pages and placed content | Managed page documents | Route Svelte files. |
-| Managed component structure | Managed component definitions | Generated reusable Svelte files. |
+| Project component structure (from a selection) | Managed component definitions | Generated reusable Svelte files. |
 | Tokens and visual overrides | Typed token/style documents | CSS variables and scoped rules. |
-| Code component internals | Authored Svelte/CSS source | Compiled JavaScript/CSS. |
+| Theme and code component internals | Svelte source and its scoped CSS, from the theme pack or owned by the project | Compiled JavaScript/CSS. |
 | Editable property contract | Versioned component manifest/schema | Inspector controls and agent context. |
 | Asset references | Asset manifest and local asset bytes | Generated sizes and public paths. |
 | Hover, selection and geometry | Ephemeral editor/preview state | Never authoritative site content. |
@@ -950,7 +966,7 @@ An exposed `partId` remains stable across compatible themes. Internal definition
 
 ### 16.4 Managed graph
 
-The graph supports a deliberately finite set of concepts:
+The managed graph describes pages and their layout, and the project components made from a selection; theme components are Svelte (§8.1). It supports a deliberately finite set of concepts:
 
 - Semantic elements and layout containers.
 - Text, image, link/button and icon primitives.
@@ -959,17 +975,17 @@ The graph supports a deliberately finite set of concepts:
 - A bounded repeat over a typed prop array, using stable item IDs.
 - Bindings to literals, component prop paths or current repeated-item fields.
 
-There is no arbitrary JavaScript expression, function, dynamic import or general programming language inside the managed JSON. Use predefined variants for structural alternatives. Interactive behavior lives in code leaves.
+There is no arbitrary JavaScript expression, function, dynamic import or general programming language inside the managed JSON. Use predefined variants for structural alternatives. Interactive behavior lives in Svelte components.
 
-Representative component definition, abbreviated to show the contract:
+Representative managed component definition, abbreviated to show the contract:
 
 ```json
 {
   "schemaVersion": 1,
-  "componentId": "section.hero-split",
+  "componentId": "project.intro-split",
   "contractVersion": 1,
   "kind": "managed",
-  "name": "Split hero",
+  "name": "Split introduction",
   "properties": {
     "heading": { "type": "string", "default": "A clear promise" },
     "image": { "type": "asset", "default": null }
@@ -1000,7 +1016,7 @@ Representative component definition, abbreviated to show the contract:
 }
 ```
 
-This example represents catalogue content; installation assigns its concrete `definitionId`. The complete schema additionally defines alt/decorative behavior, links, slots, variants, dependencies, provenance and responsive values. Produce it before building the full inspector. Example snippets in this specification illustrate semantics; they are not a replacement for that machine-validated schema.
+This example represents a project component made from a selection; creating it assigns its concrete `definitionId`. The complete schema additionally defines alt/decorative behavior, links, slots, variants, dependencies, provenance and responsive values. Produce it before building the full inspector. Example snippets in this specification illustrate semantics; they are not a replacement for that machine-validated schema.
 
 ### 16.5 Value resolution and property binding
 
@@ -1008,7 +1024,7 @@ Resolve token values first: theme defaults plus explicit project overrides. Reso
 
 A text node bound to `heading` edits the instance's `heading` value in page mode. Editing that text in definition mode edits its default or its binding deliberately. A page-owned literal can be edited directly. An unbound literal inside a shared instance cannot be edited as instance content until it has an explicit binding; offer Make unique or Edit definition instead of inventing an implicit override.
 
-For version 0.1, every bundled content-bearing part must have an explicit binding. Project component creation generates these bindings for supported text/image/link fields. Reject a visual edit when no valid target exists and offer definition editing or Make unique.
+For version 0.1, every content-bearing part of a managed definition must have an explicit binding. Project component creation generates these bindings for supported text/image/link fields. A Svelte component's text is typed over on the canvas only where the component marks it (§8.1); its other content is edited through its property controls. Reject a visual edit when no valid target exists and offer definition editing or Make unique.
 
 ### 16.6 Schema evolution
 
@@ -1038,7 +1054,7 @@ External changes to canonical JSON are accepted only after schema/reference vali
 
 Keep generated Svelte source on disk free of editor instrumentation. During an editor development session, an application-supplied Vite transform injects identity metadata and the bridge in memory before Svelte compilation, using the generator's mappings. Add the transform through the app-owned server configuration; do not write an import of an app-only plugin into the portable project configuration. Ordinary standalone development and production builds therefore do not load the bridge.
 
-Maintain an explicit mapping from rendered element identity to `ElementRef`, property binding and source origin. Code leaves expose only their declared parts. The injected implementation must carry nested instance and repeated-item identity, not only a static component-node ID.
+Maintain an explicit mapping from rendered element identity to `ElementRef`, property binding and source origin. A Svelte component exposes only what its manifest declares: its parts, its repeating parts' items and the text it marks. Its markers (`data-so-part`, `data-so-text`) reach only the editor's preview: a published site, static build and source export alike, carries none from any component, whoever owns it. The injected implementation must carry nested instance and repeated-item identity, not only a static component-node ID.
 
 The development bridge reports ready/revision, navigation, hover, selection, element geometry, runtime diagnostics and text proposals for an editor-initiated inline-edit session. It accepts only fixed editor commands such as highlight, scroll-to, inspect-layout and begin/end text edit.
 
@@ -1406,7 +1422,7 @@ Custom code generation can remain an optional stronger-model capability while sm
 | --- | --- |
 | Product spelling | Site Origin Builder. |
 | Editor/runtime frameworks | Electron + React/TypeScript; SvelteKit output. |
-| Visual source of truth | Managed documents; arbitrary Svelte has an explicit code-component boundary. |
+| Visual source of truth | Pages and layout: managed documents. Components: Svelte 5 source with a static manifest whose declared contract the editor edits *(changed in implementation)*. |
 | Initial website type | Static brochure sites with interactive client-side components. |
 | Initial theme | Foundation, with 18 section families and basic primitives. |
 | First AI implementation | OpenAI by default, with Anthropic through the same adapter contract *(changed in implementation)*. |
