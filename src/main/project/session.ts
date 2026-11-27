@@ -509,6 +509,9 @@ function heldRefusal(state: ProjectState, start: ProjectState, ops: EditOperatio
 
 const plainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** The step of a stateDelta path that names the order of a list's items: no item's ID makes it (those are `#{id}`). */
+const ORDER_STEP = '\u0001order';
+
 /** The items of a list each with an ID of their own, by ID, or null for any other list. */
 function itemsById(list: unknown[]): Map<string, unknown> | null {
   const out = new Map<string, unknown>();
@@ -523,7 +526,7 @@ function itemsById(list: unknown[]): Map<string, unknown> | null {
 /**
  * Every value that differs between two states, by its path through them, with its value in each. Parts the two share
  * are skipped unread (an edit copies only what it changes). A list whose items have IDs is compared item by item by ID,
- * with their order as a value of its own, so an edit of one item is told apart from a change to another, or a move;
+ * with their order as a value of its own (ORDER_STEP), so an edit of one item is told apart from a change to another, or a move;
  * any other two lists of the same length item by item; lists of different lengths are one value. A path is missing on
  * one side when its value is undefined there, so an object made on the way to a field is never told apart from the
  * field itself.
@@ -536,7 +539,7 @@ function stateDelta(a: unknown, b: unknown, at = '', out = new Map<string, [unkn
     if (x && y) {
       for (const id of new Set([...x.keys(), ...y.keys()])) stateDelta(x.get(id), y.get(id), `${at}\u0000#${id}`, out);
       const order = (m: Map<string, unknown>) => [...m.keys()];
-      if (!sameValue(order(x), order(y))) out.set(`${at}\u0000#order`, [order(x), order(y)]);
+      if (!sameValue(order(x), order(y))) out.set(`${at}\u0000${ORDER_STEP}`, [order(x), order(y)]);
       return out;
     }
     if (a.length === b.length) {
@@ -559,7 +562,7 @@ function valueAt(root: unknown, at: string): unknown {
   let v = root;
   for (const step of at.split('\u0000').slice(1)) {
     if (Array.isArray(v)) {
-      if (step === '#order') return itemsById(v) ? [...itemsById(v)!.keys()] : undefined;
+      if (step === ORDER_STEP) return itemsById(v) ? [...itemsById(v)!.keys()] : undefined;
       v = step.startsWith('#') ? itemsById(v)?.get(step.slice(1)) : v[Number(step)];
     } else v = plainObject(v) && Object.hasOwn(v, step) ? v[step] : undefined;
     if (v === undefined) return undefined;
