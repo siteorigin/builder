@@ -95,9 +95,6 @@
   :where(:root[data-appearance='dark']) .insp-mini[aria-expanded='true'] { background: var(--bg); }
   .insp-check { display: flex; align-items: flex-start; gap: 5px; color: var(--text-2); }
   .insp-check svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--amber); }
-  /* A description kept from the previous image: the problem and its one repair, read as one note. */
-  .insp-check-note { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 7px 9px; border-radius: var(--r-sm); background: var(--amber-soft); }
-  .insp-check-note .insp-check { color: var(--text); }
   .insp-part-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 280px; }
   /* Edit everywhere: what each placement fills in, styles and chooses (ContractControls). */
   .contract-bind { display: flex; flex-direction: column; gap: 6px; margin: -4px 0 2px; }
@@ -259,29 +256,65 @@
   .link-rel { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 24px; font-size: 12px; color: var(--text); }
   .link-rel input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
   .link-rel-term { color: var(--text-2); }
+  /* The image field: the picture, its name and what is wrong with it, Change and Remove; the description under them. */
   .insp-image { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
   .insp-group .insp-image { padding: 0; border: 0; background: none; }
-  .insp-image-top { display: flex; align-items: center; gap: 10px; }
-  .insp-image-top .btn[aria-expanded='true'] { background: var(--active); }
-  .insp-image-thumb { width: 72px; height: 54px; flex: none; display: grid; place-items: center; overflow: hidden; border-radius: var(--r-sm); background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  /* Its own name under a group's ("Media" › "Image"), as a button inside a declared group is. */
+  .insp-group .insp-image > .insp-group-title { font-weight: 500; color: var(--text-2); }
+  .insp-image-top { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; }
+  /* With what is wrong said under the name, the name starts level with the picture's top. */
+  .insp-image-top:has(.insp-image-state) { align-items: flex-start; }
+  .insp-image-top .btn[aria-expanded='true'] { background: var(--active); box-shadow: inset 0 0 0 1px var(--border-control); }
+  :where(:root[data-appearance='dark']) .insp-image-top .btn[aria-expanded='true'] { background: var(--bg); }
+  .insp-image-body { display: flex; flex: 1 1 auto; flex-direction: column; gap: 4px; min-width: 0; }
+  /* The buttons wrap under each other rather than squeezing at the narrowest panel. */
+  .insp-image-acts { display: flex; flex-wrap: wrap; gap: 4px; }
+  .insp-image-remove { color: var(--text-2); }
+  .insp-image-thumb { width: 72px; height: 54px; flex: none; display: grid; place-items: center; overflow: hidden; border-radius: var(--r-sm); background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border-strong); cursor: pointer; }
   .insp-image-thumb img { width: 100%; height: 100%; object-fit: cover; }
   .insp-image.plain-favicon .insp-image-thumb { width: 48px; height: 48px; }
   .insp-image.plain-favicon .insp-image-thumb img { object-fit: contain; }
   .insp-image.plain-logo .insp-image-thumb { width: 64px; height: 64px; }
   .insp-image.plain-logo .insp-image-thumb img { object-fit: contain; }
-  .insp-image.plain-social .insp-image-top { flex-direction: column; align-items: stretch; }
-  .insp-image.plain-social .insp-image-thumb { width: 100%; max-width: 300px; height: auto; aspect-ratio: 1200 / 630; }
+  /* The sharing image is shown at the shape link previews crop it to: full width once chosen, a small frame of that
+     shape while there is none, so the empty field is a row like the others. */
+  .insp-image.plain-social .insp-image-thumb { width: 92px; height: auto; aspect-ratio: 1200 / 630; }
+  .insp-image.plain-social.filled .insp-image-top { flex-direction: column; align-items: stretch; }
+  .insp-image.plain-social.filled .insp-image-thumb { width: 100%; max-width: 300px; }
   .insp-image-thumb.empty svg { width: 18px; height: 18px; color: var(--text-3); }
   .insp-image-name { overflow-wrap: anywhere; font-size: 12px; font-weight: 500; line-height: 1.35; color: var(--text); }
-  .insp-image-remove:hover:not(:disabled) { border-color: var(--red); background: var(--red-soft); color: var(--red); }
   .insp-image-name.none { font-weight: 400; color: var(--text-2); }
-  .insp-image-name.gone { font-weight: 400; color: var(--red); }
+  /* What is wrong with the picture: the Missing chip, then why, and the way to fix it. */
+  .insp-image-state { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .insp-image-state .link-btn { min-height: 24px; font-size: 12px; }
   .textarea.insp-alt { min-height: 52px; }
-  .insp-image.drop-over { outline: 2px dashed var(--accent); outline-offset: 2px; }
+  /* A description kept from the previous picture: the warning is the field's hint, its one repair under it. */
+  .insp-image .field-hint .insp-check { color: var(--text); }
+  .insp-image-fits { align-self: flex-start; margin-top: -2px; }
+  /* A file dragged over the card: the picture row becomes the Assets panel's drop target, saying what a drop does. */
+  .insp-image-drop { position: absolute; inset: -4px; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 10px; border-radius: var(--r-md); border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel-2)); color: var(--text); font-size: 12px; text-align: center; pointer-events: none; }
+  .insp-image-drop svg { flex: none; width: 18px; height: 18px; color: var(--accent-text); }
+  .insp-image-drop b { font-weight: 600; }
+  /* The library, in a popover under the card so the fields below stay put (as the icon picker's). */
+  .insp-image-pop { position: fixed; z-index: 1000; display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 16px); padding: 8px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out; outline: none; overflow: hidden; }
+  .insp-image-pop .insp-pick-grid { position: relative; flex: 0 1 auto; min-height: 96px; max-height: 312px; margin: 0 -4px; padding: 2px 4px; scroll-padding: 4px 0; }
+  /* The controls over the grid: a hairline and a soft lift while pictures are scrolled up under them. */
+  .insp-image-pop-head { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 8px; margin: -8px -8px -8px; padding: 8px; transition: box-shadow 120ms; }
+  .insp-image-pop-head.lifted { box-shadow: 0 1px 0 var(--border), 0 6px 8px -6px color-mix(in srgb, var(--text) 22%, transparent); }
+  .insp-image-pop .insp-pick-tile { position: relative; padding: 4px 4px 5px; }
+  /* A picture that can't be chosen (its file is gone) keeps its name readable; the Missing chip says why. */
+  .insp-image-pop .insp-pick-tile[aria-disabled='true'] { cursor: not-allowed; }
+  /* Two lines of name that keep the ending, so names that differ only there stay apart. */
+  .insp-image-pop .insp-pick-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; line-height: 16px; }
+  .insp-image-pop .insp-image-none { color: var(--text-2); }
+  .insp-image-echo { overflow-wrap: anywhere; }
+  /* What tells a same-named picture apart: wrapped to two lines, never cut where the two differ. */
+  .insp-image-pop .insp-image-twin { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; line-height: 16px; }
+  /* At the foot even while the popover keeps its opening size above the card. */
+  .insp-image-pop-foot { display: flex; align-items: center; gap: 6px; margin: auto -8px -8px; padding: 7px 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+  .insp-image-pop-foot svg { flex: none; width: 13px; height: 13px; color: var(--text-3); }
+  @media (prefers-reduced-motion: reduce) { .insp-image-pop { animation: fade-in 80ms ease-out; } .insp-image-pop-head { transition: none; } }
   .insp-pick { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); }
-  /* In the image card the browser is part of the card: a divider, not a second frame. */
-  .insp-image .insp-pick { padding: 10px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: none; }
-  .insp-image .insp-pick:not(:last-child) { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
   .insp-pick-tools { display: flex; align-items: center; gap: 6px; }
   .insp-pick-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; max-height: 260px; overflow: auto; padding: 2px; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
   .insp-pick-tile { display: flex; flex-direction: column; gap: 3px; padding: 4px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-2); font-size: 12px; text-align: left; cursor: pointer; min-width: 0; }

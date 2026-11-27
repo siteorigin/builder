@@ -76,14 +76,14 @@ const allSaved = () => eventually(async () => assert.equal(await win.locator('.t
 const siteSocial = () => win.locator('#dock-panel-styles .insp-image.plain-social');
 async function setSiteImage(name) {
   await siteSocial().getByRole('button', { name: /Choose image…|Change…/ }).click();
-  await siteSocial().locator('.insp-pick-tile', { hasText: new RegExp(`^${name}$`) }).click();
+  await win.locator('.insp-image-pop .insp-pick-tile', { hasText: new RegExp(`^${name}$`) }).click();
 }
 
 /** Choose an image from the library browser opened by the chooser. */
 async function choose(name) {
   await chooser().click();
-  await picker().locator('.insp-pick-tile', { hasText: new RegExp(`^${name}$`) }).click();
-  await eventually(async () => assert.equal(await picker().locator('.insp-pick').count(), 0, 'the library browser closes once an image is chosen'));
+  await win.locator('.insp-image-pop .insp-pick-tile', { hasText: new RegExp(`^${name}$`) }).click();
+  await eventually(async () => assert.equal(await win.locator('.insp-image-pop').count(), 0, 'the library browser closes once an image is chosen'));
 }
 
 step('a page whose own photo was set outside the panel: the panel shows it');
@@ -168,9 +168,9 @@ assert.equal(pageFile(kitchens).seo.socialImage, 'a_kitchen', 'Kitchens keeps it
 
 step('an open picker closes when another page opens');
 await chooser().click();
-await picker().locator('.insp-pick').waitFor();
+await win.locator('.insp-image-pop').waitFor();
 await openPage('Kitchens');
-assert.equal(await picker().locator('.insp-pick').count(), 0, 'Kitchens opens with its picker closed');
+assert.equal(await win.locator('.insp-image-pop').count(), 0, 'Kitchens opens with its picker closed');
 assert.equal(await imageName().innerText(), 'Kitchen');
 
 step('the site’s image and public URL, set from the page panel, and a page that follows them');

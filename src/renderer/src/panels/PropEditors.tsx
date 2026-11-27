@@ -1,8 +1,8 @@
 import './PropEditors.css';
 import { createElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Hash, Image as ImageIcon, ImageOff, ImagePlus, Images, List, Plus, Search, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkRel, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Hash, Image as ImageIcon, ImageOff, ImagePlus, Images, List, Plus, Search, Trash2, TriangleAlert, Upload } from 'lucide-react';
+import type { AssetRecord, ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkRel, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isEntryBinding, refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
@@ -21,10 +21,10 @@ import { applyChoiceAction, choiceText, sameChoice, staleRename, type ChoiceActi
 const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
 import { emptyPickNote, pickAnnouncement, pickRoom, sampleRows, startingSamples } from '../lib/gallery-picks';
-import { importAndPlace } from '../lib/place';
+import { importAndPlace, showAsset } from '../lib/place';
 import { AssetImage } from '../components/AssetImage';
 import { fitFor } from '../components/AssetPicture';
-import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
+import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
@@ -759,16 +759,6 @@ function chosen(from: ImageValue, assetId: string, suggestion?: string): { value
   return { value: { assetId, alt: suggestion || cur.alt || '', decorative: cur.decorative }, carried: !suggestion && !!cur.alt };
 }
 
-/** Scrolls a picker grid (only the grid, never the Inspector around it) so its chosen tile is in view. */
-function revealInGrid(grid: HTMLElement | null) {
-  const tile = grid?.querySelector<HTMLElement>('[aria-selected="true"]');
-  if (!grid || !tile) return;
-  const g = grid.getBoundingClientRect();
-  const r = tile.getBoundingClientRect();
-  if (r.bottom > g.bottom) grid.scrollTop += r.bottom - g.bottom + 4;
-  else if (r.top < g.top) grid.scrollTop -= g.top - r.top + 4;
-}
-
 /**
  * A site-level image that carries no description: the browser tab icon (shown square) or the picture shown when
  * the site is shared (shown at the 1.91:1 shape link previews crop it to), and a post's featured image.
@@ -780,16 +770,20 @@ export function SiteImageField({ value, onChange, state, title, plain, described
   return <ImageEditor value={{ assetId: value ?? null, alt: '' }} onChange={(v) => onChange(v.assetId ?? null)} state={state} title={title} plain={plain} describedBy={describedBy} />;
 }
 
-/** Images whose description was kept from the picture they replaced and not yet checked, by image and description:
- *  the flag outlives the editor (a list item closed and opened again) until the description is checked or changed. */
+/** Images whose description was kept from the picture they replaced and not yet checked, by field, image and
+ *  description: the flag outlives the editor (a list item closed and opened again) until the description is checked or
+ *  changed, and belongs to the one field it was raised in. */
 const carriedDescriptions = new Set<string>();
-const carryKey = (x: ImageValue | null | undefined, project: string | undefined) => (x?.assetId ? `${project ?? ''}\u0000${x.assetId}\u0000${x.alt}` : '');
+const carryKey = (x: ImageValue | null | undefined, project: string | undefined, field: string) => (x?.assetId ? `${project ?? ''}\u0000${field}\u0000${x.assetId}\u0000${x.alt}` : '');
 
 /**
  * Image editor: one card holding the picture, its description and whether it is decorative. `title` puts the
  * field's name inside the card (like the other field groups); a standalone image passes none. `picture` makes it a
  * picture and nothing else, with no description to write and never decorative (a page's sharing image; see
- * PictureStandIn).
+ * PictureStandIn). Change opens the library in a popover over the Inspector (as the icon picker does), so the fields
+ * under the card stay where they are while a picture is chosen; an image file dropped on the card or the popover is
+ * imported and used. The rule the pickers share: a tall grid that commits on one click opens in a popover (icons, one
+ * image); a short list (a page) or a choice that is reviewed before it is added (a gallery's images) opens in the flow.
  */
 export function ImageEditor({ value, onChange, state, title, plain, picture, mark, describedBy }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage; picture?: PictureStandIn; /** Said after the title (that the component requires a picture). */ mark?: ReactNode; describedBy?: string }) {
   const runtime = useStore((s) => s.runtime);
@@ -800,10 +794,10 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
   // Where this image sits in the project, so a description refused for being too long waits for it there.
   const home = useFieldHome();
   const v = value ?? { assetId: null, alt: '' };
-  // A picture-only field (a sharing image, a site image) shows only what the library has as an image: a saved ID that
-  // names a document or font, or is no record at all, is the same as an image that is gone.
+  // Only what the library has as an image is shown: a saved ID that names a document or font is said to be not an
+  // image, and one that is no record at all is an image that is gone.
   const named = v.assetId && Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : null;
-  const asset = picture || plain ? (named?.kind === 'image' && typeof named.file === 'string' && named.file ? named : null) : v.assetId ? state.assets.assets[v.assetId] : null;
+  const asset = named?.kind === 'image' && typeof named.file === 'string' && named.file ? named : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   // The value as it is now, for work that finishes later (an import).
   const latest = useRef(v);
@@ -811,13 +805,14 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
   // A description carried over from the previous image may no longer be true; say so until it is checked or edited.
   const [, redraw] = useState(0);
   const project = snapshot?.workspaceKey;
-  const carried = carriedDescriptions.has(carryKey(v, project));
+  const field = home?.key ?? '';
+  const carried = carriedDescriptions.has(carryKey(v, project, field));
   // Said once when a pick keeps the old description, since the note appears away from where focus goes.
   const [carriedSaid, setCarriedSaid] = useState({ text: '', count: 0 });
   const setCarried = (on: boolean, of: ImageValue = latest.current) => {
     // A site image carries no description, and must never clear the flag another field has for the same picture.
     if (plain) return;
-    const k = carryKey(of, project);
+    const k = carryKey(of, project, field);
     if (on && !of.decorative && !carriedDescriptions.has(k)) setCarriedSaid((s) => announcementText('The description was kept from the previous image. Check it still describes this one.', s.count) ?? s);
     if (!k) return;
     if (on) carriedDescriptions.add(k);
@@ -834,10 +829,10 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
     onChange(next.value);
   };
   const [browsing, setBrowsing] = useState(false);
-  const [q, setQ] = useState('');
   const [over, setOver] = useState(false);
   const [importing, setImporting] = useState(false);
   const browseId = useId();
+  const card = useRef<HTMLDivElement>(null);
   const chooseBtn = useRef<HTMLButtonElement>(null);
   const browser = useRef<HTMLDivElement>(null);
   const alive = useRef(true);
@@ -847,28 +842,8 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
       alive.current = false;
     };
   }, []);
-  // In the order Assets lists them, and changing the order here changes it there.
-  const assetSort = useStore((s) => s.assetSort);
-  const library = state.assets.assets;
-  const images = useMemo(() => sortAssets(Object.values(library).filter((a) => a.kind === 'image'), assetSort), [library, assetSort]);
-  const labels = useMemo(() => assetLabels(images), [images]);
-  const series = useAssetSeries(images, snapshot?.workspaceKey);
-  const needle = q.trim().toLowerCase();
-  const shown = images.filter((a) => (!series.key || inSeries(a, series.key)) && (!needle || `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)));
-  // The grid's one tab stop: the tile last moved to while it is still shown, else the image chosen, else the first.
-  const [rover, setRover] = useState<string | null>(null);
-  const tabStop = shown.some((a) => a.id === rover) ? rover : shown.some((a) => a.id === v.assetId) ? v.assetId : (shown[0]?.id ?? null);
-  const noMatch = q.trim() ? `No images ${series.key ? `in ${series.label} ` : ''}match “${q.trim()}”.` : `No images in ${series.label} yet.`;
-  // The browser opens on the image chosen, scrolled into view when it is further down.
-  const grid = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (browsing) requestAnimationFrame(() => revealInGrid(grid.current));
-  }, [browsing]);
   const closeBrowser = (focus = true) => {
     setBrowsing(false);
-    setQ('');
-    setRover(null);
-    series.choose('');
     if (focus) requestAnimationFrame(() => chooseBtn.current?.focus());
   };
   /**
@@ -919,6 +894,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
     }
   };
   const isFileDrag = (e: React.DragEvent) => [...e.dataTransfer.types].includes('Files');
+  // The popover is drawn over the Inspector but is part of this card: drags over it reach these handlers too.
   const dropProps = {
     onDragOver: (e: React.DragEvent) => {
       if (!isFileDrag(e)) return;
@@ -927,7 +903,8 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
       if (!over) setOver(true);
     },
     onDragLeave: (e: React.DragEvent) => {
-      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false);
+      const to = e.relatedTarget as Node | null;
+      if (!e.currentTarget.contains(to) && !browser.current?.contains(to)) setOver(false);
     },
     onDrop: (e: React.DragEvent) => {
       if (!isFileDrag(e)) return;
@@ -942,8 +919,14 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
   // An image the field still names but Assets no longer has: said, and removable, rather than shown as empty.
   const gone = !!v.assetId && !asset;
   // The image a picture with none of its own stands for, while the library still has it.
-  const fallback = picture && !v.assetId && picture.inherited && Object.hasOwn(library, picture.inherited) && library[picture.inherited].kind === 'image' ? library[picture.inherited] : null;
+  const fallback = picture && !v.assetId && picture.inherited && Object.hasOwn(state.assets.assets, picture.inherited) && state.assets.assets[picture.inherited].kind === 'image' ? state.assets.assets[picture.inherited] : null;
   const shownAsset = asset ?? fallback;
+  // Files gone from the project folder while Assets still has the picture: the original (nothing to show), or only
+  // some of its smaller copies (the picture still shows, and the site would lose sizes).
+  const damage = shownAsset ? snapshot?.missingAssets.find((m) => m.assetId === shownAsset.id) : undefined;
+  const fileGone = !!damage?.original;
+  const status = gone ? (named ? 'Not an image' : 'Missing') : damage ? (fileGone ? 'Missing' : 'Copy missing') : null;
+  const statusNote = gone ? (named ? 'Choose an image instead.' : 'Choose another image, or remove it.') : damage ? (fileGone ? 'Its file is not in the project folder.' : 'Some of its smaller copies are not in the project folder.') : null;
   // Remove takes its own button away: focus that was on it goes to the chooser once the image is gone.
   const removedAt = useRef(0);
   useEffect(() => {
@@ -953,14 +936,18 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
     const at = document.activeElement;
     if (recent && (!at || at === document.body)) chooseBtn.current?.focus();
   }, [asset, v.assetId]);
+  const thing = title ? title.toLowerCase() : 'image';
+  const emptyName = picture?.none ?? 'No image chosen';
+  const name = shownAsset ? (labels(state, shownAsset.id) ?? shownAsset.name) : gone ? (named ? named.name : 'Removed from Assets') : emptyName;
   return (
     <div
-      className={`insp-image${over ? ' drop-over' : ''}${plain ? ` plain-${plain}` : ''}`}
+      ref={card}
+      className={`insp-image${over ? ' drop-over' : ''}${plain ? ` plain-${plain}` : ''}${shownAsset ? ' filled' : ''}`}
       role={title ? 'group' : undefined}
       aria-labelledby={title ? titleId : undefined}
       aria-describedby={title ? describedBy : undefined}
       onKeyDown={(e) => {
-        if (e.key === 'Escape' && browsing) (e.stopPropagation(), closeBrowser());
+        if (e.key === 'Escape' && browsing && !e.defaultPrevented) (e.stopPropagation(), closeBrowser());
       }}
       {...dropProps}
     >
@@ -974,22 +961,50 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
         {carriedSaid.text}
       </span>
       <div className="insp-image-top">
-        <div className={`insp-image-thumb${shownAsset ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined}>{shownAsset && devUrl ? <AssetImage key={missingKey(snapshot, shownAsset.id)} asset={shownAsset} devUrl={devUrl} cover={!fitFor(shownAsset).contain} className={fitFor(shownAsset).contain ? 'contain' : undefined} alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
-        <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
-          <span className={`insp-image-name${shownAsset ? '' : gone ? ' gone' : ' none'}`} id={`${titleId}-now`} title={shownAsset?.name}>
-            {shownAsset ? (labels.get(shownAsset.id)?.label ?? shownAsset.name) : over ? 'Drop to use this image' : gone ? (named ? 'This file is not an image' : 'This image is no longer in Assets') : (picture?.none ?? (plain ? 'None' : 'No image chosen'))}
+        {/* A second way to open the library for a pointer; the button beside it is the one keyboard stop. */}
+        <div className={`insp-image-thumb${shownAsset && !fileGone ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined} aria-hidden="true" onClick={() => !importing && (browsing ? closeBrowser() : setBrowsing(true))}>
+          {shownAsset && devUrl && !fileGone ? <AssetImage key={missingKey(snapshot, shownAsset.id)} asset={shownAsset} devUrl={devUrl} cover={!fitFor(shownAsset).contain} className={fitFor(shownAsset).contain ? 'contain' : undefined} alt="" /> : gone || fileGone ? <ImageOff /> : <ImageIcon />}
+        </div>
+        <div className="insp-image-body">
+          <span className={`insp-image-name${shownAsset || gone ? '' : ' none'}`} id={`${titleId}-now`} title={shownAsset?.name}>
+            {name}
           </span>
           {/* Whose image this is, when it is not the field's own. */}
-          {fallback && !over && <span className="faint insp-note">{picture!.from}</span>}
-          <span className="row" style={{ gap: 4, flexWrap: picture ? 'wrap' : undefined }}>
-            <button ref={chooseBtn} className="btn btn-sm" aria-describedby={gone || plain ? `${titleId}-now` : undefined} aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>
+          {fallback && <span className="faint insp-note">{picture!.from}</span>}
+          {status && (
+            <span className="insp-image-state" id={`${titleId}-state`}>
+              <span className="insp-pick-gone">
+                <TriangleAlert aria-hidden="true" /> {status}
+              </span>
+              <span className="insp-image-state-note">{statusNote}</span>
+              {damage && snapshot && (
+                <button type="button" className="link-btn" onClick={() => showAsset(snapshot.workspaceKey, shownAsset!.id)}>
+                  Fix in Assets
+                </button>
+              )}
+            </span>
+          )}
+          <span className="insp-image-acts">
+            <button
+              ref={chooseBtn}
+              type="button"
+              className="btn btn-sm"
+              aria-describedby={`${titleId}-now${status ? ` ${titleId}-state` : ''}`}
+              aria-haspopup="dialog"
+              aria-expanded={browsing}
+              aria-controls={browsing ? browseId : undefined}
+              onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))}
+              disabled={importing}
+            >
               <ImagePlus />
               {importing ? 'Adding…' : asset || gone ? 'Change…' : 'Choose image…'}
             </button>
             {(asset || gone) && (
               <button
-                className={`btn btn-sm${picture?.inherited ? '' : ' insp-image-remove'}`}
-                aria-label={picture ? picture.back : `Remove ${title ? title.toLowerCase() : 'image'}`}
+                type="button"
+                className={`btn btn-sm${picture?.inherited ? '' : ' btn-ghost insp-image-remove'}`}
+                aria-label={picture ? picture.back : `Remove ${thing}`}
+                title={picture ? undefined : `Take the ${thing} out of this field. It stays in Assets.`}
                 onClick={() => {
                   if (!picture) setCarried(false);
                   removedAt.current = Date.now();
@@ -1001,59 +1016,48 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
             )}
           </span>
         </div>
+        {over && (
+          <div className="insp-image-drop" aria-hidden="true">
+            <Upload />
+            <b>{shownAsset || gone ? 'Drop to replace this image' : 'Drop to use this image'}</b>
+          </div>
+        )}
       </div>
       {browsing && (
-        <div
-          ref={browser}
-          className="insp-pick"
+        <ImageBrowser
           id={browseId}
-          role="group"
-          aria-label={title ? `Choose ${title.toLowerCase()}` : 'Choose an image'}
-        >
-          <div className="insp-pick-tools">
-            {/* Kept while a search is typed, so it can always be cleared. */}
-            {(images.length > 6 || !!q) && <input type="search" className="input sm grow" placeholder="Search images" aria-label="Search images" value={q} autoFocus onChange={(e) => setQ(e.target.value)} />}
-            <button className="btn btn-sm" onClick={() => void importAndPick()} disabled={importing} autoFocus={images.length <= 6}>
-              <Plus /> Import…
-            </button>
-          </div>
-          {/* Kept while a series is chosen, so it can always be cleared. */}
-          {(images.length > 6 || !!series.key) && <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />}
-          {shown.length > 0 ? (
-            <div ref={grid} className="insp-pick-grid" role="listbox" aria-label="Your images" onKeyDown={(e) => pickGridKeys(e, (to) => setRover(shown[to]?.id ?? null))}>
-              {shown.map((a) => (
-                <button
-                  key={a.id}
-                  role="option"
-                  aria-selected={a.id === v.assetId}
-                  tabIndex={a.id === tabStop ? 0 : -1}
-                  className={`insp-pick-tile${a.id === v.assetId ? ' current' : ''}`}
-                  title={labels.get(a.id)?.label}
-                  onClick={() => {
-                    pick(a.id, a.altSuggestion);
-                    closeBrowser();
-                  }}
-                >
-                  {devUrl ? <AssetImage key={missingKey(snapshot, a.id)} asset={a} devUrl={devUrl} cover={!fitFor(a).contain} className={fitFor(a).contain ? 'contain' : undefined} alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
-                  <span className="ellipsis">{labels.get(a.id)?.name}</span>
-                  {/* Another image has this name: its ID, on a line of its own, tells them apart. */}
-                  {labels.get(a.id)?.label !== labels.get(a.id)?.name && <span className="ellipsis insp-pick-id">{a.id}</span>}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="faint insp-note">{images.length ? noMatch : 'No images yet. Import one, or drop an image file here.'}</p>
-          )}
-          {/* Mounted with the browser, so the first time a search finds nothing it is announced. */}
-          <span className="sr-only" role="status">
-            {shown.length || !images.length ? '' : noMatch}
-          </span>
-          {images.length > 0 && <p className="faint insp-note">You can also drop an image file here.</p>}
-        </div>
+          box={browser}
+          anchor={card}
+          trigger={chooseBtn}
+          label={title ? `Choose ${title.toLowerCase()}` : 'Choose an image'}
+          state={state}
+          value={v.assetId}
+          importing={importing}
+          onImport={() => void importAndPick()}
+          onPick={(a) => {
+            pick(a.id, a.altSuggestion);
+            closeBrowser();
+          }}
+          onClose={closeBrowser}
+        />
       )}
       {details && !v.decorative && (
-        <div className="field">
-          <label htmlFor={altId}>Image description</label>
+        <Field
+          label="Image description"
+          hint={
+            carried ? (
+              // The problem under the field, and its one repair under that: not a box of its own inside the card.
+              <span className="insp-check">
+                <TriangleAlert aria-hidden="true" />
+                Kept from the previous image. Check it still describes this one.
+              </span>
+            ) : asset && !v.alt.trim() ? (
+              'Say what it shows, for screen readers and when it can’t load. Or mark it decorative.'
+            ) : (
+              'For screen readers, and shown if the image can’t load.'
+            )
+          }
+        >
           <DraftInput
             id={altId}
             multiline
@@ -1061,39 +1065,329 @@ export function ImageEditor({ value, onChange, state, title, plain, picture, mar
             className="textarea insp-alt"
             value={v.alt}
             placeholder="What the image shows"
-            aria-describedby={`${altId}-h`}
             limit={TEXT_LIMITS.imageAlt}
             keep={home ? `${home.key}|alt` : undefined}
             keepWhile={home?.alive}
             onCommit={(alt) => (setCarried(false), onChange({ ...v, alt }))}
           />
-          {carried ? (
-            // The problem and its one repair read as one note; a description that still fits is confirmed as it stands.
-            <div className="insp-check-note">
-              <span className="field-hint insp-check" id={`${altId}-h`}>
-                <TriangleAlert aria-hidden="true" />
-                Kept from the previous image. Check it still describes this one.
-              </span>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => {
-                  setCarried(false);
-                  requestAnimationFrame(() => document.getElementById(altId)?.focus());
-                }}
-              >
-                It still fits
-              </button>
-            </div>
-          ) : (
-            <span className="field-hint" id={`${altId}-h`}>
-              For screen readers, and shown if the image can’t load.
-            </span>
-          )}
-        </div>
+        </Field>
+      )}
+      {details && !v.decorative && carried && (
+        <button
+          type="button"
+          className="btn btn-sm insp-image-fits"
+          onClick={() => {
+            setCarried(false);
+            requestAnimationFrame(() => document.getElementById(altId)?.focus());
+          }}
+        >
+          It still fits
+        </button>
       )}
       {details && <SwitchRow checked={!!v.decorative} onChange={(d) => onChange({ ...v, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
     </div>
+  );
+}
+
+/** An image's name as the library shows it (with its ID when another image has the same name). */
+const labels = (state: ProjectState, id: string) => {
+  const images = Object.values(state.assets.assets).filter((a) => a.kind === 'image');
+  const own = assetLabels(images).get(id);
+  const twin = twinDetails(images).get(id);
+  return own && twin ? `${own.name} (${twin})` : own?.label;
+};
+const added = (iso: string, time: boolean) => {
+  const d = new Date(iso);
+  const day = `${d.getDate()} ${d.toLocaleString(undefined, { month: 'short' })}`;
+  return `added ${day}${time ? `, ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : ''}`;
+};
+/**
+ * What tells pictures with the same name apart, in the author's terms, for each picture that shares its name: the file
+ * it came from, else the day it was added (a starter sample or a copy made in Assets has no file of the author's), with
+ * the time when that is shared too, and its ID only when nothing else differs. The day comes first, so it survives.
+ */
+function twinDetails(images: readonly AssetRecord[]): Map<string, string> {
+  const named = assetLabels(images);
+  const groups = new Map<string, AssetRecord[]>();
+  for (const a of images) {
+    const n = named.get(a.id);
+    if (!n || n.label === n.name) continue;
+    const k = n.name.toLowerCase();
+    groups.set(k, [...(groups.get(k) ?? []), a]);
+  }
+  const out = new Map<string, string>();
+  const unique = (group: AssetRecord[], detail: (a: AssetRecord) => string) => {
+    const seen = new Map<string, number>();
+    for (const a of group) seen.set(detail(a), (seen.get(detail(a)) ?? 0) + 1);
+    return (a: AssetRecord) => seen.get(detail(a)) === 1;
+  };
+  for (const group of groups.values()) {
+    const first = (a: AssetRecord) => a.originalName || added(a.createdAt, false);
+    const second = (a: AssetRecord) => (a.originalName ? `${a.originalName}, ${added(a.createdAt, true)}` : added(a.createdAt, true));
+    const once = unique(group, first);
+    const twice = unique(group, second);
+    for (const a of group) out.set(a.id, once(a) ? first(a) : twice(a) ? second(a) : `${second(a)} · ${a.id}`);
+  }
+  return out;
+}
+
+/**
+ * The image library for one image field, in a popover under the card: search past six pictures, the order and series
+ * shared with Assets, Import, and the pictures as one listbox (arrow keys move, Enter or a click chooses). It opens on
+ * the search, else the chosen or first picture, else Import, with the chosen picture in view; Escape, a press
+ * elsewhere, or tabbing past either end puts it away. A picture whose file is gone says so and can't be chosen.
+ */
+function ImageBrowser({ id, box, anchor, trigger, label, state, value, importing, onImport, onPick, onClose }: { id: string; box: React.RefObject<HTMLDivElement | null>; anchor: React.RefObject<HTMLDivElement | null>; trigger: React.RefObject<HTMLButtonElement | null>; label: string; state: ProjectState; value: string | null; importing: boolean; onImport: () => void; onPick: (a: AssetRecord) => void; onClose: (focus?: boolean) => void }) {
+  const runtime = useStore((s) => s.runtime);
+  const snapshot = useStore((s) => s.snapshot);
+  const devUrl = runtime.state === 'ready' ? runtime.url : null;
+  const grid = useRef<HTMLDivElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const [q, setQ] = useState('');
+  // In the order Assets lists them, and changing the order here changes it there.
+  const assetSort = useStore((s) => s.assetSort);
+  const all = state.assets.assets;
+  const images = useMemo(() => sortAssets(Object.values(all).filter((a) => a.kind === 'image'), assetSort), [all, assetSort]);
+  const names = useMemo(() => assetLabels(images), [images]);
+  const twins = useMemo(() => twinDetails(images), [images]);
+  const series = useAssetSeries(images, snapshot?.workspaceKey);
+  const needle = q.trim().toLowerCase();
+  // What tells two same-named pictures apart is searched too, as it is shown.
+  const shown = images.filter((a) => (!series.key || inSeries(a, series.key)) && (!needle || `${a.name} ${twins.get(a.id) ?? ''} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)));
+  const searchable = images.length > 6 || !!q;
+  // The grid's one tab stop: the tile last moved to while it is still shown, else the image chosen, else the first.
+  const [rover, setRover] = useState<string | null>(null);
+  const tabStop = shown.some((a) => a.id === rover) ? rover : shown.some((a) => a.id === value) ? value : (shown[0]?.id ?? null);
+  const damageOf = (assetId: string) => snapshot?.missingAssets.find((m) => m.assetId === assetId);
+  const [pos, setPos] = useState<{ left: number; top: number; width: number; maxHeight?: number; minHeight?: number } | null>(null);
+  const natural = useRef(0);
+  // The side it opened on and its height then, kept while a search changes what it holds, so the search box never moves
+  // under the typing (above the card it keeps its opening size, standing on the card); a resized window starts again.
+  const side = useRef<'under' | 'over' | null>(null);
+  const opened = useRef(0);
+  // Pictures above the grid's top edge: the controls over it take a hairline and a soft lift (as the icon picker's do),
+  // so a row cut there reads as more to scroll to, and no picture or focus ring is dimmed.
+  const [cut, setCut] = useState(false);
+  const measure = () => setCut(!!grid.current && grid.current.scrollTop > 1);
+
+  // The editor's own shortcuts stay out of the way while it is open, as for a menu.
+  useEffect(() => {
+    openMenus.count++;
+    return () => void openMenus.count--;
+  }, []);
+  // A press anywhere else, or focus going into the preview frame, puts it away; the trigger toggles it itself.
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const t = e.target instanceof Node ? e.target : null;
+      if (t && !box.current?.contains(t) && !trigger.current?.contains(t) && !(t instanceof Element && t.closest('.insp-image-thumb') && anchor.current?.contains(t))) onClose(false);
+    };
+    const intoFrame = () => setTimeout(() => document.activeElement instanceof HTMLIFrameElement && onClose(false));
+    document.addEventListener('pointerdown', away, true);
+    window.addEventListener('blur', intoFrame);
+    return () => {
+      document.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('blur', intoFrame);
+    };
+  });
+  // Under the card's picture row, as wide as the card (236 to 440px), or above it when it only fits there; in a window
+  // too short for either it takes the roomier side and its grid shrinks. It follows the card as the Inspector scrolls,
+  // and goes when Change scrolls out of view.
+  useLayoutEffect(() => {
+    const place = () => {
+      const el = box.current;
+      const c = anchor.current?.getBoundingClientRect();
+      const row = anchor.current?.querySelector('.insp-image-top')?.getBoundingClientRect();
+      if (!el || !c || !row) return;
+      const width = Math.round(Math.min(Math.max(c.width, 236), 440, window.innerWidth - 16));
+      if (!el.style.maxHeight && !el.style.minHeight) natural.current = el.offsetHeight;
+      const h = natural.current;
+      const below = window.innerHeight - row.bottom - 14;
+      const above = row.top - 14;
+      if (!side.current) {
+        side.current = h <= below || (h > above && below >= above) ? 'under' : 'over';
+        opened.current = h;
+      }
+      const under = side.current === 'under';
+      const room = under ? below : above;
+      const tall = under ? h : Math.max(h, opened.current);
+      const maxHeight = tall > room ? Math.max(200, room) : undefined;
+      const minHeight = under ? undefined : (maxHeight ?? tall);
+      const top = under ? row.bottom + 6 : row.top - 6 - (maxHeight ?? tall);
+      const left = Math.max(8, Math.min(c.left, window.innerWidth - width - 8));
+      setPos((p) => (p && p.left === left && p.top === top && p.width === width && p.maxHeight === maxHeight && p.minHeight === minHeight ? p : { left, top, width, maxHeight, minHeight }));
+    };
+    const resized = () => {
+      side.current = null;
+      place();
+    };
+    const scrolled = (e: Event) => {
+      if (e.target instanceof Node && box.current?.contains(e.target)) return;
+      const a = trigger.current?.getBoundingClientRect();
+      const at = a && document.elementFromPoint(a.left + a.width / 2, a.top + a.height / 2);
+      if (!at || !(trigger.current?.contains(at) || box.current?.contains(at))) onClose(false);
+      else place();
+    };
+    place();
+    window.addEventListener('resize', resized);
+    document.addEventListener('scroll', scrolled, true);
+    return () => {
+      window.removeEventListener('resize', resized);
+      document.removeEventListener('scroll', scrolled, true);
+    };
+  });
+  // Opens on whole rows with the chosen picture in view (a cut row only at the bottom, where it reads as more), and
+  // focus on the first useful thing: once it has its place and size, since a short window shrinks the grid.
+  const revealed = useRef(false);
+  useLayoutEffect(() => {
+    if (!pos || revealed.current) return;
+    revealed.current = true;
+    const g = grid.current;
+    const tile = g?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (g && tile) {
+      const rows = [...new Set([...g.querySelectorAll<HTMLElement>('[role="option"]')].map((t) => t.offsetTop))].sort((a, b) => a - b);
+      const top = rows.find((r) => r + g.clientHeight >= tile.offsetTop + tile.offsetHeight + 2) ?? tile.offsetTop;
+      g.scrollTop = Math.max(0, top - 2);
+    }
+    measure();
+    (search.current ?? g?.querySelector<HTMLElement>('[role="option"][tabindex="0"]') ?? box.current?.querySelector<HTMLElement>('.insp-image-import'))?.focus({ preventScroll: true });
+  }, [pos]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clears the words only: a series chosen stays chosen, and says so in the result line.
+  const clear = () => {
+    setQ('');
+    search.current?.focus();
+  };
+  const noMatch = q.trim() ? `No images ${series.key ? `in ${series.label} ` : ''}match “${q.trim()}”.` : `No images in ${series.label}.`;
+  return createPortal(
+    <div
+      ref={box}
+      id={id}
+      className="insp-image-pop"
+      role="dialog"
+      aria-label={label}
+      tabIndex={-1}
+      style={pos ?? { left: 0, top: 0, width: 300, opacity: 0 }}
+      onBlur={(e) => {
+        const to = e.relatedTarget as Node | null;
+        // Tabbing or clicking away puts it away; the trigger is part of it.
+        if (to && !e.currentTarget.contains(to) && !trigger.current?.contains(to)) onClose(false);
+      }}
+      onKeyDown={(e) => {
+        // Tab past either end goes on from the trigger, so focus continues through the form rather than from the end
+        // of the document, where the popover is drawn.
+        if (e.key === 'Tab') {
+          const stops = [...e.currentTarget.querySelectorAll<HTMLElement>('input, select, button:not([tabindex="-1"]):not(:disabled), [role="option"][tabindex="0"]')];
+          const edge = e.shiftKey ? stops[0] : stops[stops.length - 1];
+          if (document.activeElement !== edge && document.activeElement !== e.currentTarget) return;
+          if (e.shiftKey) e.preventDefault();
+          trigger.current?.focus();
+          onClose(false);
+          return;
+        }
+        if (e.key !== 'Escape' || e.defaultPrevented || isImeComposing(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // One Escape closes from anywhere in it, as the icon picker's does; Clear search and the field's own × clear words.
+        onClose(true);
+      }}
+    >
+      <div className={`insp-image-pop-head${cut ? ' lifted' : ''}`}>
+        <div className="insp-pick-tools">
+          {/* Kept while a search is typed, so it can always be cleared. */}
+          {searchable && (
+            <input
+              ref={search}
+              type="search"
+              className="input sm grow"
+              placeholder="Search images"
+              aria-label="Search images"
+              value={q}
+              onChange={(e) => (setQ(e.target.value), setRover(null))}
+              onKeyDown={(e) => {
+                if (e.key !== 'ArrowDown' || isImeComposing(e)) return;
+                e.preventDefault();
+                grid.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]')?.focus();
+              }}
+            />
+          )}
+          <button type="button" className="btn btn-sm insp-image-import" onClick={() => !importing && onImport()} aria-disabled={importing || undefined}>
+            <Plus /> {importing ? 'Adding…' : 'Import…'}
+          </button>
+        </div>
+        {/* Kept while a series is chosen, so it can always be cleared. */}
+        {(images.length > 6 || !!series.key) && <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />}
+      </div>
+      {shown.length > 0 ? (
+        <div ref={grid} className="insp-pick-grid" role="listbox" aria-label="Your images" onScroll={measure} onKeyDown={(e) => pickGridKeys(e, (to) => setRover(shown[to]?.id ?? null))}>
+          {shown.map((a) => {
+            const hurt = damageOf(a.id);
+            const current = a.id === value;
+            // A picture whose file is gone can't be chosen here; the one already chosen keeps its place and says so.
+            const blocked = !!hurt?.original && !current;
+            const twin = twins.get(a.id);
+            const shownName = twin ? `${names.get(a.id)?.name ?? a.name} (${twin})` : (names.get(a.id)?.name ?? a.name);
+            const why = hurt ? (hurt.original ? 'its file is missing, so fix it in Assets first' : 'some of its smaller copies are missing') : '';
+            return (
+              <button
+                key={a.id}
+                type="button"
+                role="option"
+                aria-selected={current}
+                aria-disabled={blocked || undefined}
+                aria-label={why ? `${shownName}: ${why}` : shownName}
+                tabIndex={a.id === tabStop ? 0 : -1}
+                className={`insp-pick-tile${current ? ' current' : ''}`}
+                title={why ? `${shownName}: ${why}` : shownName}
+                onFocus={() => setRover(a.id)}
+                onClick={() => !blocked && onPick(a)}
+              >
+                {hurt?.original || !devUrl ? (
+                  <span className="insp-pick-frame" aria-hidden="true">
+                    <ImageOff />
+                  </span>
+                ) : (
+                  <AssetImage key={missingKey(snapshot, a.id)} asset={a} devUrl={devUrl} cover={!fitFor(a).contain} className={fitFor(a).contain ? 'contain' : undefined} alt="" loading="lazy" />
+                )}
+                <span className="insp-pick-name" aria-hidden="true">
+                  {shortName(names.get(a.id)?.name ?? a.name, 22)}
+                </span>
+                {/* Another image has this name: the file it came from, or when it was added, on a line of its own. */}
+                {twin && (
+                  // Shortened in the middle, so a file name keeps the ending that tells it from its twin.
+                  <span className="insp-pick-id insp-image-twin" aria-hidden="true">
+                    {shortName(twin, 30)}
+                  </span>
+                )}
+                {hurt && (
+                  <span className="insp-pick-gone" aria-hidden="true">
+                    <TriangleAlert /> {hurt.original ? 'Missing' : 'Copy missing'}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      ) : images.length ? (
+        <div className="insp-pick-nomatch">
+          <p className="faint insp-note insp-image-echo">{noMatch}</p>
+          {needle && (
+            <button type="button" className="btn btn-sm" onClick={clear}>
+              Clear search
+            </button>
+          )}
+        </div>
+      ) : (
+        <p className="insp-note insp-image-none">No images in Assets yet.</p>
+      )}
+      {/* Mounted with the browser, so each search's result is announced as it changes. */}
+      <p className={(needle || series.key) && shown.length ? 'faint insp-note insp-pick-result' : 'sr-only'} role="status">
+        {needle || series.key ? (shown.length ? `${shown.length} of ${images.length} ${images.length === 1 ? 'image' : 'images'}${series.key ? ` · ${series.label}` : ''}` : noMatch) : ''}
+      </p>
+      <p className="insp-image-pop-foot">
+        <Upload aria-hidden="true" /> Or drop an image file here to use it.
+      </p>
+    </div>,
+    document.body
   );
 }
 
