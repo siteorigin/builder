@@ -2933,10 +2933,10 @@ function atWidth(width, deadline) {
 }
 
 /**
- * Waits for the page's images, then its web fonts, then any finite animation under way and a frame; says how long each
- * took (ms: `frame` is the last two), for the editor's timing marks.
+ * Waits for the page's images, then its web fonts, then a frame (and, with `animations`, any finite animation under
+ * way); says how long each took (ms: `frame` is the last), for the editor's timing marks.
  */
-async function settled(deadline) {
+async function settled(deadline, animations = false) {
   const t0 = performance.now();
   // Asked for first: the browser can hold this until the page has loaded, which waits for its images.
   const fonts = document.fonts ? document.fonts.ready : Promise.resolve();
@@ -2953,13 +2953,15 @@ async function settled(deadline) {
   const t1 = performance.now();
   await until(deadline, fonts);
   const t2 = performance.now();
-  // The final layout, once what changes it has arrived: two frames, then any entrance or transition under way is let
-  // end where the page comes to rest (measured part way, a box sliding in would read as overflow), and two frames more,
-  // in which a step one sets off as it ends has started, and so on. One that never ends (a spinner) or waits to be
-  // started (an entrance below the screen) is not waited for.
+  // The final layout, once what changes it has arrived: two frames. A page check (`animations`) also lets any entrance
+  // or transition under way end where the page comes to rest (measured part way, a box sliding in would read as
+  // overflow), and waits two frames more, in which a step one sets off as it ends has started, and so on. One that never
+  // ends (a spinner) or waits to be started (an entrance below the screen) is not waited for. A preview sized as it
+  // shows (Insert, the Inspector) asks again every moment and takes only the latest answer, so it is not held up.
   const frames = () => until(deadline, new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   for (let round = 0; round < 4; round++) {
     await frames();
+    if (!animations) break;
     const ending = typeof document.getAnimations === 'function' ? document.getAnimations().filter((a) => a.playState === 'running' && Number.isFinite(a.effect?.getComputedTiming?.().endTime)) : [];
     if (!ending.length || Date.now() >= deadline) break;
     await until(deadline, Promise.all(ending.map((a) => a.finished.catch(() => undefined))));
@@ -5151,7 +5153,7 @@ window.addEventListener('message', async (e) => {
       try {
         // A frame the editor sized for this measurement (a component shown on its own) is measured at that width.
         await atWidth(m.payload.width, started + 2500);
-        const waited = await settled(started + 4000);
+        const waited = await settled(started + 4000, m.payload.animations === true);
         // The page's sections, as the editor lists them, when it asks for the notes on their rhythm.
         const ids = Array.isArray(m.payload.rootIds) ? m.payload.rootIds.filter((id) => typeof id === 'string') : null;
         const page = typeof m.payload.pageId === 'string' && ids ? { pageId: m.payload.pageId, rootIds: ids } : null;

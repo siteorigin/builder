@@ -97,7 +97,8 @@ async function measure(req: InspectRequest, attempt: number): Promise<unknown> {
         const targets = Array.isArray(req.targets) && state ? req.targets.map((t) => descOf(state, t)) : undefined;
         // `focus`: only findings on these elements are listed (validate_project narrowed to them).
         const focus = Array.isArray(req.focus) ? req.focus : undefined;
-        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], ...(perfOn ? { timing: true } : {}), ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) }, view);
+        // `animations`: an entrance under way is let end, so a box part way in is not measured as overflow.
+        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], animations: true, ...(perfOn ? { timing: true } : {}), ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) }, view);
       } else if (m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === req.requestId) done((m.payload as { report: unknown }).report);
     };
     let timer = setTimeout(() => done({ error: 'Timed out loading the page.' }), 12000);
@@ -276,7 +277,7 @@ export function componentFrame(): ComponentFrame {
     const measured = await next(
       (m) => m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === requestId,
       PREVIEW_MEASURE_MS,
-      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, width, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}) }, view)
+      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, width, animations: true, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}) }, view)
     );
     if (disposed) return fail('The component preview was closed.');
     if (!measured) return fail('Timed out measuring the component preview.');

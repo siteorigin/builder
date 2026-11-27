@@ -103,30 +103,38 @@ describe('the frame a page is measured in', () => {
     }
   }, 30000);
 
-  it.skipIf(!browserInstalled)('waits for an entrance under way to end, its next step too, and not for one that never does', async () => {
+  it.skipIf(!browserInstalled)('waits for an entrance under way to end, its next step too, and not for one that never does, when asked', async () => {
     const style =
       '<style>@keyframes in { from { transform: translateX(3000px); } } @keyframes again { from { transform: translateX(3000px); } } .in { animation: in 500ms linear; } .in.again { animation: again 500ms linear; } @keyframes spin { to { transform: rotate(1turn); } } .spin { width: 10px; height: 10px; animation: spin 1s linear infinite; }</style>';
     // The second step starts as the first ends, from the same place off to the right.
     const steps = `<script>addEventListener('animationend', (e) => { if (e.animationName === 'in') e.target.classList.add('again'); });</script>`;
     const { browser, page } = await previewPage(`${style}<main data-so-node="n" data-so-ctx="page:p"><div class="in">Sliding in</div><div class="spin"></div></main>${steps}`);
     try {
-      const report = await page.evaluate<{ documentWidth: number; viewportWidth: number; settled: { frame: number } }>(`new Promise((done, fail) => {
+      /** The report of a check of the page, which asks (or not) for animations under way to be let end. */
+      const inspect = (name: string, animations: boolean) =>
+        page.evaluate<{ documentWidth: number; viewportWidth: number; settled: { frame: number } }>(`new Promise((done, fail) => {
         const frame = document.createElement('iframe');
-        frame.name = 'so-entrance';
+        frame.name = ${JSON.stringify(name)};
         Object.assign(frame.style, ${JSON.stringify(measuringFrameStyle(1280))});
         frame.src = 'http://preview.test/page';
-        frame.onload = () => frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-entrance', type: 'inspect', payload: { requestId: 'r', timing: true } }, '*');
+        frame.onload = () => frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: ${JSON.stringify(name)}, type: 'inspect', payload: { requestId: 'r', timing: true, animations: ${animations} } }, '*');
         window.addEventListener('message', (e) => {
           if (e.source === frame.contentWindow && e.data?.type === 'inspectResult') done(e.data.payload.report);
         });
         setTimeout(() => fail(new Error('No inspection result.')), 12000);
         document.body.appendChild(frame);
       })`);
+      const report = await inspect('so-check', true);
       // Measured where the box comes to rest after both steps, not 3,000 px to its right, and before the 4 s deadline:
       // the spinner is not waited for.
       expect(report.documentWidth).toBeLessThanOrEqual(report.viewportWidth);
       expect(report.settled.frame).toBeGreaterThan(800);
       expect(report.settled.frame).toBeLessThan(3500);
+      // A preview sized as it shows (Insert, the Inspector) asks again every 600 ms and keeps only the latest answer:
+      // it is answered after its frames, well before the entrance's two steps are over.
+      const sizing = (await inspect('so-sizing', false)).settled.frame;
+      expect(sizing).toBeLessThan(report.settled.frame - 400);
+      expect(sizing).toBeLessThan(1500);
     } finally {
       await browser.close();
     }
