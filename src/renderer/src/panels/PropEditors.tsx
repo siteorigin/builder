@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Hash, Image as ImageIcon, ImageOff, ImagePlus, Images, List, Plus, Search, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import type { AssetRecord, ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkRel, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isEntryBinding, refKey } from '@shared/types';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';

@@ -5,7 +5,7 @@
  * an entry's text (written in the editor, or synced from an outside CMS) sends visitors' messages anywhere else.
  */
 import type { ComponentDefinition, ProjectState } from '@shared/types';
-import { FORM_DESTINATIONS, FORM_SERVICES, sendsFormMessages } from '@catalogue/foundation/form';
+import { FORM_DESTINATIONS, FORM_SERVICES, sendsFormMessages } from '@shared/form-contract';
 import { codeImports } from './code-imports';
 import { enclosingRepeatProp } from './tree';
 

@@ -1,7 +1,7 @@
 /** Keyword retrieval over the theme's worked examples (ai-profile), checked against the real catalogue. */
 import type { ComponentDefinition, ProjectState } from '@shared/types';
 import { catalogueComponent, getTheme } from '@catalogue/index';
-import type { AiExample } from '@catalogue/foundation/ai-examples';
+import type { AiExample } from '@catalogue/pack';
 import { declaredTokens } from '@engine/tokens';
 import { checkProps, chooseVariants, focusedListing, type FieldIssue } from './macros';
 import type { ManagedComponentArgs } from './managed-component';

@@ -1,5 +1,5 @@
 import type { ProjectState } from '@shared/types';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { derived } from './cache';
 
 /**

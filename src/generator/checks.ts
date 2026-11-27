@@ -14,7 +14,7 @@ import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { declaredState } from '@engine/schema';
-import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
+import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormName, offersFormChoices } from '@shared/form-contract';
 import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, optionalTabGates, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';

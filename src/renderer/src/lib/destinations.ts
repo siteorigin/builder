@@ -1,7 +1,7 @@
 import type { Diagnostic, EditorDestination, ExportNote } from '@shared/api';
 import type { ComponentDefinition, ListItem, OwnerRef, ProjectState } from '@shared/types';
 import { publicUrl } from '@shared/public-url';
-import { formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable, isFormContract } from '@catalogue/foundation/form';
+import { formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable, isFormContract } from '@shared/form-contract';
 import { websiteTrees } from '@engine/validate';
 import { publishedState } from '@generator/index';
 import { treeFor } from './model';

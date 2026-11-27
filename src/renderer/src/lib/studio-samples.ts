@@ -6,7 +6,7 @@
 import type { ComponentDefinition, ListItem, ListProp, ObjectProp, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isImageBlock, isListBlock, spanRuns, toRichText, type RichBlock, type RichSpan, type RichText } from '@shared/richtext';
 import { MAX_RICH_BLOCKS, MAX_RICH_CHARS } from '@engine/values';
-import { namesFormFields } from '@catalogue/foundation/form';
+import { namesFormFields } from '@shared/form-contract';
 
 /** What the studio fills the component with: its starting content, long copy, or nothing in the fields that can be empty. */
 export type StudioSample = 'defaults' | 'long' | 'empty';

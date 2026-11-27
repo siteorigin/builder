@@ -62,7 +62,7 @@ import { teaserFields } from '@shared/page-teasers';
 import { dropFontFamily, familyUses, fontAssetUsages, isValidFontAsset, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily, stackLeadsWith, withoutFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { resolveFontStack } from '@catalogue/fonts';
 import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
@@ -87,7 +87,7 @@ import { declaredTokens, findTokenCycle, findTokenCycleIn, forEachTokenRef, toke
 import { deriveDarkPalette, hasDarkPalette } from '@shared/color-scheme';
 import { slotAccepts, slotDecl, slotFill, slotLandingProblem, takesComponent } from './slots';
 import { formDefaults, settleFormKeys } from './form-keys';
-import { namesFormFields, type FormField } from '@catalogue/foundation/form';
+import { namesFormFields, type FormField } from '@shared/form-contract';
 import { addPageStarter } from './page-starters';
 import { codeImports } from './code-imports';
 import {

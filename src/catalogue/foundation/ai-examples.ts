@@ -1,7 +1,5 @@
 import type { AiExample } from '../pack';
 
-export type { AiExample };
-
 const NO_IMAGE = { assetId: null, alt: '' };
 
 export const FOUNDATION_EXAMPLES: AiExample[] = [

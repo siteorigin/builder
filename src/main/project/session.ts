@@ -36,7 +36,7 @@ import { HISTORY_LIMIT } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
 import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
-import { sendsFormMessages } from '@catalogue/foundation/form';
+import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';

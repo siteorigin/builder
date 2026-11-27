@@ -8,7 +8,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, ListItem, NodeTree, Pr
 import { isBinding, isStateRef } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { newId } from '@shared/ids';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 import { childLists, findParent, instancesOf, settledRoot } from '@engine/tree';
 import { slotDecl } from '@engine/slots';
 import { applyOperations } from '@engine/apply';

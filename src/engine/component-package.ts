@@ -21,7 +21,7 @@ import { getTheme } from '@catalogue/index';
 import { directDependencies } from './definitions';
 import { codeImports } from './code-imports';
 import { childLists, fail } from './tree';
-import { FORM_DESTINATIONS, sendsFormMessages } from '@catalogue/foundation/form';
+import { FORM_DESTINATIONS, sendsFormMessages } from '@shared/form-contract';
 import { clone, installComponent } from './install';
 import { definitionRequiredProblems } from './required';
 

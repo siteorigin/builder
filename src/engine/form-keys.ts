@@ -13,7 +13,7 @@
  * time and older forms that already clash still open.
  */
 import type { ComponentDefinition, ListItem } from '@shared/types';
-import { formFieldKey, formKeyFrom, formNameDecides, type FormField } from '@catalogue/foundation/form';
+import { formFieldKey, formKeyFrom, formNameDecides, type FormField } from '@shared/form-contract';
 
 /** The name and label a form field without its own gets on export. */
 export function formDefaults(def: ComponentDefinition): { name?: unknown; label?: unknown } {

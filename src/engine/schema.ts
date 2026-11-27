@@ -11,7 +11,7 @@ import { requiredGap } from '@shared/required';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 import { declaredTokens } from './tokens';
-import { ICONS } from '@catalogue/foundation/icons';
+import { ICONS } from '@shared/icons';
 
 const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'token', 'list', 'table', 'object'] as const;
 /** Token groups a token property can choose from. A text style is several values at once, so no style can bind one. */

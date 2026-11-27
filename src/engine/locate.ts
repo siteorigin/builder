@@ -2,7 +2,7 @@ import type { FieldLocation } from '@shared/api';
 import type { ListItem, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { groupFields, listItemImage, listRowTitle } from '@shared/fields';
 import { effectiveItem } from '@shared/page-teasers';
-import { formServiceSetup } from '@catalogue/foundation/form';
+import { formServiceSetup } from '@shared/form-contract';
 import { headerHiddenProps } from '@shared/header-logo';
 import { displayName } from './tree';
 import { pageShowing, partName } from '@shared/page-shell';
