@@ -6,6 +6,7 @@
 import { isAbsolute } from 'node:path';
 import git from 'isomorphic-git';
 import { openRepo, type Repo, type RepoOptions } from './repo';
+import { pushCommit, remoteTip, type RemoteOptions } from './remote';
 import { GitError, type GitOp, type GitReply, type GitRequest } from './protocol';
 
 export interface GitService {
@@ -13,16 +14,22 @@ export interface GitService {
   handle(message: GitRequest): Promise<void>;
 }
 
-export function createGitService(send: (reply: GitReply) => void, opts: RepoOptions = {}): GitService {
+/** A request in progress: told to stop when its cancel comes, which a push hears at once through its signal. */
+interface Running {
+  cancelled: boolean;
+  abort: AbortController;
+}
+
+export function createGitService(send: (reply: GitReply) => void, opts: RepoOptions & { remote?: RemoteOptions } = {}): GitService {
   const repos = new Map<string, Repo>();
-  const running = new Map<number, { cancelled: boolean }>();
+  const running = new Map<number, Running>();
   const repo = (root: unknown): Repo => {
     if (typeof root !== 'string' || !isAbsolute(root)) throw new GitError('invalid', 'A repository request needs the project’s folder.');
     let r = repos.get(root);
     if (!r) repos.set(root, (r = openRepo(root, opts)));
     return r;
   };
-  const run = (m: GitOp, token: { cancelled: boolean }): Promise<unknown> => {
+  const run = (m: GitOp, token: Running): Promise<unknown> => {
     switch (m.op) {
       case 'version':
         return Promise.resolve(git.version());
@@ -48,6 +55,10 @@ export function createGitService(send: (reply: GitReply) => void, opts: RepoOpti
         return repo(m.root).resolveRef(m.ref);
       case 'advanceRef':
         return repo(m.root).advanceRef(m.ref, m.next, m.expected, token);
+      case 'push':
+        return pushCommit(repo(m.root), m.target, m.commit, m.secrets, token.abort.signal, opts.remote);
+      case 'remoteTip':
+        return remoteTip(m.target, token.abort.signal, opts.remote);
       default:
         throw new GitError('invalid', 'The versions repository was asked for something it does not do.');
     }
@@ -57,10 +68,13 @@ export function createGitService(send: (reply: GitReply) => void, opts: RepoOpti
       if (!m || typeof m.id !== 'number') return;
       if (m.op === 'cancel') {
         const token = running.get(m.target);
-        if (token) token.cancelled = true;
+        if (token) {
+          token.cancelled = true;
+          token.abort.abort();
+        }
         return;
       }
-      const token = { cancelled: false };
+      const token: Running = { cancelled: false, abort: new AbortController() };
       running.set(m.id, token);
       let reply: GitReply;
       try {

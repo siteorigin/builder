@@ -15,6 +15,7 @@ import { pipeline } from 'node:stream/promises';
 import { createInflateRaw, crc32 } from 'node:zlib';
 import { replaceEmptyFolder } from './export';
 import { foldName } from './project/snapshot-inventory';
+import { isCredentialFile } from './project/private-files';
 
 const END_RECORD = 0x06054b50;
 const CENTRAL_HEADER = 0x02014b50;
@@ -376,9 +377,22 @@ export function isLocalState(rel: string): boolean {
   return parts[0] === '.siteorigin' || parts.includes('.git');
 }
 
+/**
+ * Whether an entry is a copy of one of the app's own credential files (`remote-credentials.json`, `api-keys (1).json`),
+ * by its name, anywhere in the archive (#1157): a ZIP file the app makes never holds one, and one put together
+ * elsewhere does not bring someone's tokens into a project.
+ */
+const isCredentialCopy = (rel: string) => isCredentialFile(rel.slice(rel.lastIndexOf('/') + 1));
+
 /** Whether an entry under `root` is one extraction writes (a folder or a file), rather than one it passes over. */
 const extracted = (e: ZipEntry, root: string) =>
-  !e.special && !isSystemClutter(e.path) && e.path.startsWith(root) && e.path.length > root.length && !isLocalState(e.path) && !isLocalState(e.path.slice(root.length));
+  !e.special &&
+  !isSystemClutter(e.path) &&
+  e.path.startsWith(root) &&
+  e.path.length > root.length &&
+  !isLocalState(e.path) &&
+  !isLocalState(e.path.slice(root.length)) &&
+  !(!e.directory && isCredentialCopy(e.path));
 
 /** How many files extracting `entries` under `root` writes, so the count of those written can be shown against it. */
 export const filesToWrite = (entries: ZipEntry[], root: string) => entries.filter((e) => !e.directory && extracted(e, root)).length;

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGitClient, type GitWorkerHandle } from '../../src/main/git/client';
 import { createGitService } from '../../src/main/git/service';
 import { gitRuntimeStatus } from '../../src/main/git/runtime';
-import { GIT_LIMITS, VERSIONS_BRANCH, type GitReply, type GitRequest, type Identity } from '../../src/main/git/protocol';
+import { GIT_LIMITS, PUBLISH_BRANCH, VERSIONS_BRANCH, type GitReply, type GitRequest, type Identity } from '../../src/main/git/protocol';
 
 const APP: Identity = { name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: 1_790_000_000, timezoneOffset: 0 };
 const ROOT = '/project';
@@ -208,6 +208,24 @@ describe('the Git worker client', () => {
       throw new Error('no process');
     }).repository(ROOT);
     await expect(never.advanceRef(VERSIONS_BRANCH, 'a'.repeat(40), null)).rejects.toMatchObject({ code: 'crashed' });
+  });
+
+  it('a push lost with its worker, crashed or ended for not stopping, may have reached the host: outcome-unknown (#1157)', async () => {
+    const target = { url: 'https://git.example/site.git', ref: PUBLISH_BRANCH, auth: null } as const;
+    const crashing = fakeWorkers((m, w) => m.op === 'push' && w.exit());
+    const git = createGitClient(crashing.spawn);
+    await expect(git.push(ROOT, target, 'a'.repeat(40), [])).rejects.toMatchObject({ code: 'outcome-unknown' });
+    // A look at the host's branch lost the same way moved nothing.
+    const looking = fakeWorkers((m, w) => m.op === 'remoteTip' && w.exit());
+    await expect(createGitClient(looking.spawn).remoteTip(target)).rejects.toMatchObject({ code: 'crashed' });
+    const stuck = fakeWorkers(() => undefined);
+    const controller = new AbortController();
+    const pushing = createGitClient(stuck.spawn, { cancelGraceMs: 10 }).push(ROOT, target, 'a'.repeat(40), [], { signal: controller.signal });
+    await tick(5);
+    controller.abort();
+    await expect(pushing).rejects.toMatchObject({ code: 'outcome-unknown' });
+    expect(stuck.spawned[0].sent.map((m) => m.op)).toEqual(['push', 'cancel']);
+    expect(stuck.spawned[0].killed).toBe(true);
   });
 
   it('a worker that crashes fails the request it had, and the next request gets a new worker', async () => {
