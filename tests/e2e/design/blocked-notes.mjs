@@ -114,9 +114,11 @@ const real = async () => {
 /** Push an agent event through the main process, exactly as a real run does. */
 const emit = (e) => send('ai:event', e);
 const conversationId = async () => (await win.evaluate(() => window.builder.ai.conversations())).active.id;
-const running = async () => emit({ runId: 'r_capture', conversationId: await conversationId(), kind: 'status', status: 'running' });
+/** Each run its own ID, as main gives it: a run that ended never runs again. */
+let runs = 0;
+const running = async () => emit({ runId: `r_capture_${runs}`, conversationId: await conversationId(), kind: 'status', status: 'running' });
 const stopped = async () => {
-  await emit({ runId: 'r_capture', conversationId: await conversationId(), kind: 'status', status: 'cancelled' });
+  await emit({ runId: `r_capture_${runs++}`, conversationId: await conversationId(), kind: 'status', status: 'cancelled' });
   await pause(300);
 };
 async function apply(operations, label) {

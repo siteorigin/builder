@@ -385,7 +385,7 @@ describe('a background run reaches only its own thread (#1124)', () => {
   const run = () => store.shownRun(store.getState());
   const ended = (runId: string) => ({ runId, conversationId: 'c_bg', kind: 'status', status: 'completed', mode: 'edit' }) as AiEvent;
 
-  it('keeps status, pieces, its question and its end off the conversation on screen, and the run state its own', () => {
+  it('keeps status, pieces, its question and its end off the conversation on screen, and the run state its own', async () => {
     store.setState({ conversation: structuredClone(mine), runStatus: null, activeRunId: null, runConversationId: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
     const shown = store.getState().conversation;
     const conversations = vi.fn(() => Promise.resolve({ active: { ...mine, id: 'c_bg' }, list: [] }));
@@ -411,6 +411,8 @@ describe('a background run reaches only its own thread (#1124)', () => {
       expect(store.getState().runStatus).toBe('awaiting-input');
       expect(run()).toBeNull();
       expect(store.getState().conversation).toBe(shown);
+      // A read for missed text would be under way by now.
+      await new Promise((r) => setTimeout(r, 10));
       expect(conversations).not.toHaveBeenCalled();
 
       // The end of a run that is not the one running never ends it.
@@ -454,5 +456,10 @@ describe('a background run reaches only its own thread (#1124)', () => {
     expect(store.getState().runStatus).toBe('stopping');
     store.applyAiEvent({ runId: 'r_next', conversationId: '', kind: 'status', status: 'cancelled', mode: 'ask' });
     expect(store.getState()).toMatchObject({ runStatus: null, activeRunId: null, runConversationId: null });
+
+    // Text that arrives for it after its end, even tagged with its own thread on screen, is no piece of it.
+    const after = store.getState().conversation;
+    store.applyAiEvent({ ...next, kind: 'text', text: 'Late' });
+    expect(store.getState().conversation).toBe(after);
   });
 });

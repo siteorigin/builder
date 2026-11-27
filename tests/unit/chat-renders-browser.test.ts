@@ -56,8 +56,12 @@ const ENTRY = [
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), questions: [{ id: 'q1', text: 'Which page should it go on?', choices: [] }] } });",
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
   '  }),',
-  // The running request was filed in another thread, which asks its question there.
-  "  elsewhere: () => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: 'c_elsewhere', kind: 'status', status: 'awaiting-input', mode: 'ask' })),",
+  // Another thread on screen while the running request, filed in this one, asks its question here.
+  "  elsewhere: () => flushSync(() => {",
+  "    useStore.setState({ conversation: { id: 'c_other', title: 'Other', createdAt: time, messages: [] } });",
+  "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
+  '  }),',
+  "  calls: (path) => window.calls.filter((c) => c[0] === path).map((c) => c[1]),",
   '};'
 ].join('\n');
 
@@ -67,11 +71,12 @@ const ENTRY = [
  */
 const BRIDGE = `
   window.perfRecords = [];
+  window.calls = [];
   window.builderPerf = { send: (record) => window.perfRecords.push(record) };
   const answers = { 'ai.localContext': { server: 'http://127.0.0.1:9/v1', reportedWindow: null }, 'ai.localModels': { ok: true, models: ['test-model'] }, 'ai.providers': ${PROVIDERS} };
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : key === 'platform' ? 'darwin' : any(path ? path + '.' + key : key)),
-    apply: () => (path === 'on' ? () => {} : Promise.resolve(answers[path]))
+    apply: (_, __, args) => (window.calls.push([path, args]), path === 'on' ? () => {} : Promise.resolve(answers[path]))
   });
   window.builder = any('');
 `;
@@ -202,7 +207,9 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
 
   it('shows another thread’s request as running elsewhere, with nothing here to stop or answer (#1124)', async () => {
     expect(await page.locator('.run-strip').getAttribute('data-run-id')).toBe('run_live');
-    expect(await page.getByRole('button', { name: /Stop/ }).count()).toBe(1);
+    // In its own thread it is stopped by its ID: a request that ended meanwhile is not followed by another being stopped.
+    await page.getByRole('button', { name: /Stop/ }).click();
+    expect(await page.evaluate("so.calls('ai.stop')")).toEqual([['run_live']]);
     await page.evaluate('so.elsewhere()');
     // The note says where the request is, and nothing here stops it or answers its question.
     expect(await page.locator('.run-strip.elsewhere').innerText()).toContain('Working in another conversation');
@@ -210,7 +217,8 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await page.getByRole('button', { name: /Stop/ }).count()).toBe(0);
     expect(await page.getByRole('textbox', { name: 'Your answer', exact: true }).count()).toBe(0);
     expect(await page.locator('.chat-log').getAttribute('aria-busy')).not.toBe('true');
-    // It still holds the app: nothing is sent until it ends.
+    // It still holds the app: nothing is sent until it ends, though a message is written.
+    await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Next, the footer');
     expect(await page.getByRole('button', { name: /^Send/ }).isDisabled()).toBe(true);
     expect(await page.getByRole('button', { name: 'Earlier conversations' }).isDisabled()).toBe(true);
     expect(await page.getByRole('button', { name: 'New conversation' }).isDisabled()).toBe(true);
