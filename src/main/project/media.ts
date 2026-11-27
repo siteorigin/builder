@@ -38,15 +38,41 @@ export function imageInfo(buf: Buffer, mime: string): ImageInfo | null {
     }
     // HEIC shares AVIF's container: the primary item's extent and rotation are read the same way.
     if (mime === 'image/avif' || mime === 'image/heic') return avifInfo(buf);
-    if (mime === 'image/svg+xml') {
-      const t = buf.toString('utf8', 0, 2000);
-      const vb = t.match(/viewBox=["']\s*[\d.-]+[\s,]+[\d.-]+[\s,]+([\d.]+)[\s,]+([\d.]+)/);
-      if (vb) return { width: Math.round(Number(vb[1])), height: Math.round(Number(vb[2])), orientation: 1 };
-    }
+    if (mime === 'image/svg+xml') return svgInfo(buf.toString('utf8', 0, 2000));
   } catch {
     return null;
   }
   return null;
+}
+
+/** CSS pixels in each unit an SVG can give its own size in; percentages and font units name no size of its own. */
+const SVG_UNITS: Record<string, number> = { '': 1, px: 1, pt: 4 / 3, pc: 16, in: 96, cm: 96 / 2.54, mm: 96 / 25.4 };
+
+/**
+ * An SVG's size as a browser takes it: the width and height its root element declares, one of them completed from the
+ * viewBox's shape; with neither, the viewBox's own numbers.
+ */
+function svgInfo(text: string): ImageInfo | null {
+  const root = /<svg(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*/.exec(text)?.[0];
+  if (!root) return null;
+  const attribute = (name: string) => {
+    const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(root);
+    return (m?.[1] ?? m?.[2])?.trim();
+  };
+  const length = (name: string) => {
+    const m = /^\+?((?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)([a-z]*)$/i.exec(attribute(name) ?? '');
+    const unit = m?.[2].toLowerCase();
+    const px = m && Object.hasOwn(SVG_UNITS, unit!) ? Number(m[1]) * SVG_UNITS[unit!] : 0;
+    return Number.isFinite(px) && px > 0 ? px : undefined;
+  };
+  const box = (attribute('viewBox') ?? '').split(/[\s,]+/).map(Number);
+  const ratio = box.length === 4 && box.every(Number.isFinite) && box[2] > 0 && box[3] > 0 ? box[2] / box[3] : undefined;
+  let width = length('width');
+  let height = length('height');
+  if (width === undefined && height === undefined && ratio !== undefined) [width, height] = [box[2], box[3]];
+  else if (ratio !== undefined) [width, height] = [width ?? height! * ratio, height ?? width! / ratio];
+  if (width === undefined || height === undefined) return null;
+  return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)), orientation: 1 };
 }
 
 /**

@@ -194,7 +194,7 @@ describe('the backgroundImage value', () => {
 
 describe('a tiled background image', () => {
   const GRAIN: AssetRecord = { ...OTHER, id: 'a_grain', name: 'Paper grain', file: 'static/assets/grain-11112222.png', mime: 'image/png', hash: 'h-grain', width: 128, height: 128 };
-  const DOTS: AssetRecord = { ...OTHER, id: 'a_dots', name: 'Dot grid', file: 'static/assets/dots-33334444.svg', mime: 'image/svg+xml', hash: 'h-dots', width: 24, height: 24 };
+  const DOTS: AssetRecord = { ...OTHER, id: 'a_dots', name: 'Dot grid', file: 'static/assets/dots-33334444.svg', mime: 'image/svg+xml', hash: 'h-dots', width: 24, height: 12 };
   const tiles = () => {
     const s = studio();
     s.assets.assets.a_grain = structuredClone(GRAIN);
@@ -216,6 +216,8 @@ describe('a tiled background image', () => {
     expect(canonicalStyleValue({ assetId: 'a_hero', size: 'cover', tileSize: 24 })).toEqual({ assetId: 'a_hero', tileSize: 24 });
     expect(validateOperation({ type: 'node.setStyle', owner: owner(studio()), nodeId: 'n_band', scope: 'base', property: 'backgroundImage', value: { assetId: 'a_hero', size: 'tile', tileSize: 24 } }).ok).toBe(true);
     expect(() => setBg(studio(), { assetId: 'a_hero', size: 'tile', tileSize: 0 })).toThrow(/tileSize/);
+    // A width waiting for the next tiling is held to the same rule.
+    for (const size of [undefined, 'cover', 'contain']) expect(validateStyleValue('backgroundImage', { assetId: 'a_hero', size, tileSize: 0 } as never), String(size)).toMatch(/tileSize/);
   });
 
   it('repeats only the picture, from the top left, under a scrim drawn once over the whole box', () => {
@@ -237,9 +239,24 @@ describe('a tiled background image', () => {
     const s = tiles();
     delete s.assets.assets.a_dots.width;
     expect(geometry(setBg(s, { assetId: 'a_dots', size: 'tile' }))[0]).toBe('auto');
-    // The width on record comes from the viewBox alone, so an SVG without one has only its own width and height.
-    expect(imageInfo(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"></svg>'), 'image/svg+xml')).toBeNull();
-    expect(imageInfo(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"></svg>'), 'image/svg+xml')).toMatchObject({ width: 24, height: 24 });
+  });
+
+  it('records an SVG at the size it declares, and at its viewBox’s only where it declares none', () => {
+    const size = (attributes: string) => {
+      const info = imageInfo(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" ${attributes}><rect width="3" height="3"/></svg>`), 'image/svg+xml');
+      return info && [info.width, info.height];
+    };
+    expect(size('viewBox="0 0 48 24"')).toEqual([48, 24]);
+    expect(size('viewBox="0e0 0 3.2e1 16"')).toEqual([32, 16]);
+    // A 16px pattern drawn on a 512-unit grid tiles at 16px.
+    expect(size('width="16" height="16" viewBox="0 0 512 512"')).toEqual([16, 16]);
+    expect(size("width='12pt' viewBox='0 0 200 100'")).toEqual([16, 8]);
+    expect(size('height="10px" viewBox="0 0 200 100"')).toEqual([20, 10]);
+    // A share of the box is no size of its own.
+    expect(size('width="100%" height="100%" viewBox="0 0 40 20"')).toEqual([40, 20]);
+    expect(size('width="20" height="20"')).toEqual([20, 20]);
+    expect(size('stroke-width="4"')).toBeNull();
+    expect(size('width="20"')).toBeNull();
   });
 
   it('keeps its width and scrim when the picture is replaced, and takes the new one’s own size without a width', () => {
@@ -256,7 +273,8 @@ describe('a tiled background image', () => {
     expect(css).not.toContain('image-set(');
     expect(css).not.toContain('-960w');
     // Each size still names the picture in its own rule, so it keeps winning over a weaker cropped one.
-    expect(css).toMatch(/@media \(max-width: 767\.98px\) \{\n\t\.so-n-n_band \{\n\t\t--so-bg-image: url\("\/assets\/harbour-1a2b3c4d\.jpg"\);/);
+    for (const query of ['\\(max-width: 767\\.98px\\)', '\\(min-width: 768px\\) and \\(max-width: 1023\\.98px\\)'])
+      expect(css).toMatch(new RegExp(`@media ${query} \\{\\n\\t\\.so-n-n_band \\{\\n\\t\\t--so-bg-image: url\\("/assets/harbour-1a2b3c4d\\.jpg"\\);`));
   });
 
   it('never shares a design’s file variable between a tiled and a cropped use of one picture', () => {

@@ -11,13 +11,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AssetRecord, BackgroundImageValue, ElementNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+// Imported as well as bundled below, so a run of the tests a change affects sees a change to the panel.
+import { describeBackgroundImage } from '../../src/renderer/src/panels/BackgroundImageControl';
 import { generateSiteCss, pageNodeClass } from '@generator/index';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://tile.test';
 
-/** A dot grid drawn to a viewBox alone: a red square in the top left quarter of each 20-unit tile, white elsewhere. */
-const DOTS_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="20" height="20" fill="#ffffff"/><rect width="10" height="10" fill="#ff0000"/></svg>';
+/** A dot grid drawn to a viewBox alone: a red 10 by 5 corner in each 20 by 10 tile, white elsewhere. */
+const DOTS_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"><rect width="20" height="10" fill="#ffffff"/><rect width="10" height="5" fill="#ff0000"/></svg>';
 
 /** An 8px grain: blue in its top left quarter, white elsewhere. */
 function grainPng(): Buffer {
@@ -38,12 +40,12 @@ function grainPng(): Buffer {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', head), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
 }
 
-const asset = (id: string, file: string, mime: string, side: number): AssetRecord => ({ id, name: id, file: `static/assets/${file}`, mime, bytes: 200, width: side, height: side, hash: id, kind: 'image', createdAt: '2026-01-01T00:00:00.000Z' });
+const asset = (id: string, file: string, mime: string, width: number, height: number): AssetRecord => ({ id, name: id, file: `static/assets/${file}`, mime, bytes: 200, width, height, hash: id, kind: 'image', createdAt: '2026-01-01T00:00:00.000Z' });
 
 /** A project whose home page has an empty band, with the two patterns in its library. */
 function studio(): ProjectState {
   const s = createStarterState('blank', 'Tiles', false);
-  s.assets.assets = { a_dots: asset('a_dots', 'dots.svg', 'image/svg+xml', 20), a_grain: asset('a_grain', 'grain.png', 'image/png', 8) };
+  s.assets.assets = { a_dots: asset('a_dots', 'dots.svg', 'image/svg+xml', 20, 10), a_grain: asset('a_grain', 'grain.png', 'image/png', 8, 8) };
   const page = s.pages[s.site.homePageId];
   page.nodes.n_band = { id: 'n_band', kind: 'element', tag: 'div', children: [] } as ElementNode;
   page.rootIds.push('n_band');
@@ -58,21 +60,21 @@ type Rgb = number[];
 describe.skipIf(!browserInstalled)('a tiled background image in a browser (#1137)', { timeout: 120_000 }, () => {
   let browser: Browser;
   beforeAll(async () => {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
   }, 60_000);
   afterAll(async () => {
     await browser?.close();
   }, 60_000);
 
-  /** The colours the site paints at these points of a 100 by 100 band. */
-  async function paint(s: ProjectState, points: Array<[number, number]>): Promise<Rgb[]> {
+  /** The colours the site paints at these points of a band 100 wide, 100 tall unless said. */
+  async function paint(s: ProjectState, points: Array<[number, number]>, height = 100): Promise<Rgb[]> {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
     try {
       await page.route(`${SITE}/**`, (route) => {
         const path = new URL(route.request().url()).pathname;
         if (path === '/assets/dots.svg') return route.fulfill({ contentType: 'image/svg+xml', body: DOTS_SVG });
         if (path === '/assets/grain.png') return route.fulfill({ contentType: 'image/png', body: grainPng() });
-        return route.fulfill({ contentType: 'text/html', body: `<!doctype html><style>${generateSiteCss(s)}</style><style>body{margin:0}.${pageNodeClass('n_band')}{width:100px;height:100px}</style><div class="${pageNodeClass('n_band')}"></div>` });
+        return route.fulfill({ contentType: 'text/html', body: `<!doctype html><style>${generateSiteCss(s)}</style><style>body{margin:0}.${pageNodeClass('n_band')}{width:100px;height:${height}px}</style><div class="${pageNodeClass('n_band')}"></div>` });
       });
       await page.goto(`${SITE}/`, { waitUntil: 'networkidle' });
       const shot = (await page.screenshot({ clip: { x: 0, y: 0, width: 100, height: 100 } })).toString('base64');
@@ -96,9 +98,11 @@ describe.skipIf(!browserInstalled)('a tiled background image in a browser (#1137
 
   it('repeats a viewBox-only SVG at its own width, and at the width set', async () => {
     const own = setBg(studio(), { assetId: 'a_dots', size: 'tile' });
-    expect(await paint(own, [[5, 5], [15, 5], [25, 5], [85, 85], [95, 95]])).toEqual([RED, WHITE, RED, RED, WHITE]);
+    // 20 across and 10 down.
+    expect(await paint(own, [[5, 2], [15, 2], [25, 2], [5, 7], [5, 12], [85, 92], [95, 97]])).toEqual([RED, WHITE, RED, WHITE, RED, RED, WHITE]);
+    // 40 across, and 20 down in proportion.
     const wide = setBg(studio(), { assetId: 'a_dots', size: 'tile', tileSize: 40 });
-    expect(await paint(wide, [[15, 15], [25, 5], [55, 15], [95, 95]])).toEqual([RED, WHITE, RED, RED]);
+    expect(await paint(wide, [[15, 7], [25, 7], [55, 7], [15, 15], [15, 27], [95, 87]])).toEqual([RED, WHITE, RED, WHITE, RED, RED]);
   });
 
   it('repeats a raster grain, takes its place on replacement, and stops repeating when it fills the box again', async () => {
@@ -107,9 +111,10 @@ describe.skipIf(!browserInstalled)('a tiled background image in a browser (#1137
     expect(await paint(grain, [[3, 3], [12, 3], [19, 3], [83, 83], [92, 92]])).toEqual([BLUE, WHITE, BLUE, BLUE, WHITE]);
     // Without a width, the grain keeps its own 8px.
     expect(await paint(setBg(studio(), { assetId: 'a_grain', size: 'tile' }), [[2, 2], [6, 2], [10, 2], [90, 90]])).toEqual([BLUE, WHITE, BLUE, BLUE]);
-    // Filling the box: one blue quarter, 50px across, and no second one.
+    // Filling a 100 by 60 box: the square grain drawn once at 100px, cropped top and bottom around its centre, so one
+    // blue corner 50 across and 30 deep, reaching the box's left edge (shown whole, it would start 20px in).
     const covered = setBg(grain, { assetId: 'a_grain', tileSize: 16 });
-    expect(await paint(covered, [[20, 20], [80, 20], [20, 80], [83, 83]])).toEqual([BLUE, WHITE, WHITE, WHITE]);
+    expect(await paint(covered, [[5, 10], [40, 20], [70, 10], [20, 45], [83, 53]], 60)).toEqual([BLUE, BLUE, WHITE, WHITE, WHITE]);
   });
 
   it('draws the scrim once over the whole box while the tile repeats under it', async () => {
@@ -118,7 +123,7 @@ describe.skipIf(!browserInstalled)('a tiled background image in a browser (#1137
     const down = (await paint(s, [[15, 5], [15, 25], [15, 45], [15, 65], [15, 85]])).map(([r]) => r);
     for (let i = 1; i < down.length; i++) expect(down[i]).toBeLessThan(down[i - 1] - 20);
     // And the pattern still repeats under it.
-    const [[r, g], [, white]] = await paint(s, [[5, 85], [15, 85]]);
+    const [[r, g], [, white]] = await paint(s, [[5, 82], [15, 82]]);
     expect(r).toBeGreaterThan(g);
     expect(white).toBeGreaterThan(0);
   });
@@ -136,8 +141,9 @@ const ENTRY = [
   "flushSync(() => useStore.setState({ screen: 'editor', snapshot: { state, revision: 1, workspaceKey: 'w1', conflicts: [], recentExports: [], diagnostics: [], missingAssets: [] } }));",
   'window.__saved = [];',
   'function Host() {',
-  "  const [value, setValue] = useState({ assetId: 'a_grain', position: '30% 20%', scrim: '#0008' });",
-  "  return h(BackgroundImageControl, { label: 'Background image', value, underText: '', scope: 'base', size: 'desktop', previewed: false, onSet: (v) => { window.__saved.push(v); setValue(v ?? undefined); return Promise.resolve({ ok: true, revision: 1 }); } });",
+  "  const inherited = location.search === '?inherited';",
+  "  const [value, setValue] = useState(inherited ? undefined : { assetId: 'a_grain', position: '30% 20%', scrim: '#0008' });",
+  "  return h(BackgroundImageControl, { label: 'Background image', value, underText: '', under: inherited ? { assetId: 'a_grain', size: 'tile', tileSize: 64 } : undefined, underFrom: 'From All sizes', scope: inherited ? 'phone' : 'base', size: 'desktop', previewed: false, onSet: (v) => { window.__saved.push(v); setValue(v ?? undefined); return Promise.resolve({ ok: true, revision: 1 }); } });",
   '}',
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Host)));"
 ].join('\n');
@@ -190,6 +196,21 @@ describe.skipIf(!browserInstalled)('the Tile option in the panel (#1137)', { tim
   const saved = () => page.evaluate<BackgroundImageValue[]>('window.__saved');
   const last = async () => (await saved()).at(-1);
 
+  it('names a tiled picture in its summary, with the width when one is set', () => {
+    expect(describeBackgroundImage({ assetId: 'a_grain', size: 'tile' })).toBe('Picture · tiled · no overlay');
+    expect(describeBackgroundImage({ assetId: 'a_grain', size: 'tile', tileSize: 24 })).toBe('Picture · tiled at 24px · no overlay');
+    expect(describeBackgroundImage({ assetId: 'a_grain', tileSize: 24 })).toBe('Picture · filling · no overlay');
+  });
+
+  it('shows an inherited tile’s width as it comes through', async () => {
+    await page.goto(`${SITE}/?inherited`);
+    const width = page.getByRole('textbox', { name: 'Background image: tile width in pixels' });
+    await width.waitFor();
+    expect(await width.inputValue()).toBe('64');
+    expect(await saved()).toEqual([]);
+    await page.goto(`${SITE}/`);
+  });
+
   it('sets the tile and its width, keeps the focus for Cover, and refuses a width it cannot save', async () => {
     const fill = page.getByLabel('Fill', { exact: true });
     const width = page.getByRole('textbox', { name: 'Background image: tile width in pixels' });
@@ -208,10 +229,12 @@ describe.skipIf(!browserInstalled)('the Tile option in the panel (#1137)', { tim
     await expect.poll(last).toEqual({ assetId: 'a_grain', size: 'tile', tileSize: 48, position: '30% 20%', scrim: '#0008' });
 
     const count = (await saved()).length;
-    await width.fill('0');
-    await width.press('Tab');
-    await page.getByRole('alert').filter({ hasText: 'whole number of pixels' }).waitFor();
-    expect((await saved()).length).toBe(count);
+    for (const refused of ['0', '1.5', '4001']) {
+      await width.fill(refused);
+      await width.press('Tab');
+      await page.getByRole('alert').filter({ hasText: 'whole number of pixels' }).waitFor();
+      expect((await saved()).length, refused).toBe(count);
+    }
 
     await width.fill('');
     await width.press('Enter');
@@ -225,6 +248,11 @@ describe.skipIf(!browserInstalled)('the Tile option in the panel (#1137)', { tim
     expect(await last()).toEqual({ assetId: 'a_grain', tileSize: 32, position: '30% 20%', scrim: '#0008' });
     expect(await width.count()).toBe(0);
     expect(await focus.count()).toBe(1);
+
+    // Nothing is cropped while the whole picture shows, either.
+    await fill.selectOption('contain');
+    expect(await focus.count()).toBe(0);
+    expect(await width.count()).toBe(0);
 
     // The width waited for the next tiling.
     await fill.selectOption('tile');

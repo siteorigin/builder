@@ -107,8 +107,8 @@ const spanFor = (value: BackgroundImageValue, span: number | undefined) => (valu
 
 /**
  * One tile's size: the width set, its height in proportion; else the picture's own size. An SVG drawn to a viewBox
- * alone has no size of its own, and "auto" would stretch one tile over the box, so it takes the width on record (its
- * viewBox's, even where the file also names another size). Without one on record, its own width and height size it.
+ * alone has no size of its own, and "auto" would stretch one tile over the box, so an SVG takes the width on record:
+ * the one it declares, or else its viewBox's (see imageInfo).
  */
 function tileGeometry(value: BackgroundImageValue, asset: AssetRecord): string {
   const width = value.tileSize ?? (asset.mime === 'image/svg+xml' && typeof asset.width === 'number' && Number.isFinite(asset.width) && asset.width > 0 ? asset.width : undefined);

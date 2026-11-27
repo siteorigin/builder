@@ -839,6 +839,8 @@ describe('what a constrained local run sends first (#364)', () => {
     // The room is made only where the tool is offered.
     expect(JSON.stringify(body.response_format).includes('"audit_seo"'), label).toBe(audit > 0);
     expect(JSON.stringify(body.response_format).includes('"backgroundImage"'), label).toBe(background > 0);
+    // Its tiling is in the grammar with it (#1137): the fill and one tile's width.
+    for (const id of ['"tile"', '"tileSize"']) expect(JSON.stringify(body.response_format).includes(id), label).toBe(background > 0);
     for (const id of ['"gridAutoFlow"', '"gridAutoRows"']) expect(JSON.stringify(body.response_format).includes(id), label).toBe(grid > 0);
     expect(JSON.stringify(body.response_format).includes('"columnStart"'), label).toBe(start > 0);
     for (const scope of ['"cq-narrow"', '"cq-medium"', '"cq-wide"']) expect(JSON.stringify(body.response_format).includes(scope), label).toBe(container > 0);
