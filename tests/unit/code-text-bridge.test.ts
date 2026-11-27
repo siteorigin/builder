@@ -83,7 +83,10 @@ describe.skipIf(!browserInstalled)('marked text of a code component in the previ
 
   it('edits the occurrence double-clicked, and commits it under the marker it was begun on', async () => {
     await dblclick('dup2');
-    const hit = await lastOf('dblclick').then((p) => p?.hit);
+    // The frame's message can reach the host after the click returns. Begun without its hit, the edit is of the first copy.
+    await expect.poll(() => lastOf('dblclick').then((p) => p?.bind)).toEqual(desc('tagline'));
+    const hit = (await lastOf('dblclick'))?.hit;
+    expect(hit).toEqual(expect.any(String));
     await post('beginTextEdit', { desc: desc('tagline'), editId: 'e1', hit, rich: false });
     await expect.poll(() => editable('dup2')).toBe('plaintext-only');
     expect(await editable('dup1')).toBeNull();
@@ -134,15 +137,17 @@ describe.skipIf(!browserInstalled)('marked text of a code component in the previ
   });
 
   it('ends an edit whose row only changed item, with the same words', async () => {
+    // The row's words as this test begins, whatever an earlier test typed in it.
+    await frame.evaluate(`document.getElementById('t2').textContent = 'Building'`);
     await post('beginTextEdit', { desc: desc('features.title#b'), editId: 'u2', rich: false });
     await expect.poll(() => editable('t2')).toBe('plaintext-only');
     await page.keyboard.press('End');
     await page.keyboard.type(' more');
     await frame.evaluate(`document.getElementById('t2').setAttribute('data-so-text', 'features.title#d')`);
-    await expect.poll(() => lastOf('textCommit')).toMatchObject({ desc: desc('features.title#b'), editId: 'u2', detached: true, before: 'Building things' });
+    await expect.poll(() => lastOf('textCommit')).toMatchObject({ desc: desc('features.title#b'), editId: 'u2', detached: true, before: 'Building' });
     expect((await lastOf('textCommit'))?.text).toMatch(/ more$/);
     expect(await editable('t2')).toBeNull();
     // The page wrote nothing over the typing (the other item's words are the ones shown): the row shows them again.
-    expect(await frame.evaluate(`document.getElementById('t2').textContent`)).toBe('Building things');
+    expect(await frame.evaluate(`document.getElementById('t2').textContent`)).toBe('Building');
   });
 });
