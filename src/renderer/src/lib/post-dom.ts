@@ -278,24 +278,18 @@ export function blockAtCaret(root: HTMLElement): HTMLElement | null {
 }
 
 /**
- * The block of the writer's root a drop at `x`, `y` on screen lands in (a direct child of `root`): the one holding the
- * place in the text nearest the point, as a click there would put the caret, without moving the caret. Between two
- * blocks it is the one before; above the first, null. `undefined` when the point is not over the text at all.
+ * The block of the writer's root a drop at height `y` on screen lands in (a direct child of `root`), without moving
+ * the caret: the one beside the point, or in a gap or the margin below, the one above it. Null above the first block,
+ * or in empty text.
  */
-export function blockAtPoint(root: HTMLElement, x: number, y: number): HTMLElement | null | undefined {
-  const doc = root.ownerDocument;
-  const pos = doc.caretPositionFromPoint?.(x, y);
-  const r = pos ? null : doc.caretRangeFromPoint?.(x, y);
-  const node = pos ? pos.offsetNode : r?.startContainer;
-  const offset = pos ? pos.offset : (r?.startOffset ?? 0);
-  if (!node || !root.contains(node)) return undefined;
-  if (node === root) {
-    const before = root.childNodes[Math.min(offset, root.childNodes.length) - 1];
-    return before instanceof HTMLElement ? before : null;
+export function blockAtPoint(root: HTMLElement, y: number): HTMLElement | null {
+  let at: HTMLElement | null = null;
+  for (const b of root.children) {
+    if (!(b instanceof HTMLElement)) continue;
+    if (b.getBoundingClientRect().top > y) break;
+    at = b;
   }
-  let top: Node = node;
-  while (top.parentNode && top.parentNode !== root) top = top.parentNode;
-  return top instanceof HTMLElement ? top : null;
+  return at;
 }
 
 /**

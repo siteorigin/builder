@@ -1230,10 +1230,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               const el = root.current;
               const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
               if (!el || !paths.length || dialog || !picturesOn()) return;
-              // Off the words (the text's margin): where the caret is, as the Picture button would.
-              const hit = blockAtPoint(el, e.clientX, e.clientY);
-              const at = hit === undefined ? blockAtCaret(el) : (hit ?? (el.firstElementChild as HTMLElement | null));
-              void dropImages(paths, at, hit === null);
+              // Above the first block, the picture goes before it.
+              const hit = blockAtPoint(el, e.clientY);
+              void dropImages(paths, hit ?? (el.firstElementChild as HTMLElement | null), !hit);
             }}
             onClick={(e) => {
               const fig = (e.target as HTMLElement).closest<HTMLElement>('figure.post-figure');
