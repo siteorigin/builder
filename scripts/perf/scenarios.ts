@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameS
 import { dirname, join } from 'node:path';
 import type { CDPSession, ElectronApplication, FrameLocator, Page } from 'playwright';
 import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
+import { editorWindow } from '../../tests/driver/session';
 import { HISTORY_LIMIT, type BuilderApi, type ProjectSnapshot } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
@@ -85,6 +86,8 @@ export function fixtureFacts(spec: FixtureSpec, state: ProjectState): FixtureFac
 
 export interface ScenarioContext {
   app: ElectronApplication;
+  /** The editor's window. A scenario that closes it and brings up another (`noWindow`) sets this to the new one: the
+   *  runner's marks and memory readings follow it. */
   win: Page;
   fixture: FixtureFacts;
   /** The project folder this iteration opens. */
@@ -2407,6 +2410,243 @@ export const memory: Scenario = {
     for (const [label, kind] of MEMORY_READINGS) readingMetrics(m, label, reading(label, kind));
     growthMetrics(m, 'edits', reading('edit1'), reading(`edit${MEMORY_EDITS}`));
     growthMetrics(m, 'close', reading('welcome'), reading('closed'));
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// noWindow
+// ---------------------------------------------------------------------------
+
+/** The readings `noWindow` takes, in order: a fresh Welcome, the fixture open on the canvas with the hero selected, the
+ *  app with the project still open and its window closed, and the canvas again in the window brought up after it. */
+export const NO_WINDOW_READINGS = ['welcome', 'canvas', 'noWindow', 'reopened'] as const;
+/** How long after the window closed `noWindow` is read: as `closed` is after a close, so a build that lets go of a
+ *  process later than another shows it (Chromium keeps the preview frame's renderer some 10 s). */
+export const NO_WINDOW_AFTER_MS = CLOSED_AFTER_MS;
+/** The heading `noWindow` writes into the home page's file outside the app while it has no window. */
+export const NO_WINDOW_OUTSIDE_HEADING = 'Benchmark heading changed with no window';
+/** How long the app has to take that change once a window is back, before the file is saved again. */
+const NO_WINDOW_OUTSIDE_WAIT_MS = 15_000;
+
+/** The editor's window, by its address, closed as Close Window or its close button closes it (through the editor's
+ *  leave check, which saves what is being typed), and gone. */
+async function closeEditorWindow(ctx: ScenarioContext): Promise<void> {
+  const page = ctx.win;
+  const gone = page.waitForEvent('close', { timeout: 60_000 });
+  await ctx.app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) if (w.webContents.getURL().startsWith('app://editor/')) w.close();
+  });
+  await gone;
+  const deadline = Date.now() + 15_000;
+  let left = -1;
+  while (Date.now() < deadline && (left = await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)) > 0) await sleep(100);
+  expect(left === 0, `${left} windows are still open after the editor's was closed`);
+}
+
+/** Bring a window up again as clicking the app in the Dock does (macOS activates it), and follow it from here on. */
+async function reopenEditorWindow(ctx: ScenarioContext): Promise<void> {
+  const next = editorWindow(ctx.app, 60_000);
+  await ctx.app.evaluate(({ app }) => void app.emit('activate'));
+  const win = await next;
+  // The size the runner gives the first window (tests/driver/session.ts), so the canvas is laid out the same.
+  await win.setViewportSize({ width: 1440, height: 900 });
+  ctx.win = win;
+}
+
+/** The project still open in the main process with no window: its lock in place and this app's. */
+async function lockHeldBy(ctx: ScenarioContext, pid: number): Promise<void> {
+  const file = lockFile(ctx.projectDir);
+  const lock = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { pid?: unknown }) : null;
+  expect(lock?.pid === pid, lock ? `the project's lock names another process (${String(lock.pid)}) with no window open` : 'the project is not locked with no window open');
+}
+
+/** Where the editor is: the selection as the canvas holds it (its page and element), and the name the Inspector gives it. */
+async function placeOf(win: Page): Promise<{ selected: string | null; named: string | null }> {
+  const selected = await win.locator('main.canvas').first().getAttribute('data-selected-ref');
+  // Only an Inspector on screen names anything: a panel kept mounted while hidden is not showing it.
+  const name = inspectorName(win).first();
+  const named = (await name.isVisible().catch(() => false)) ? (await name.textContent().catch(() => null))?.trim() || null : null;
+  return { selected, named };
+}
+
+/** The page `noWindow` leaves the editor on: the first by address other than home (the Business starter's About). */
+function otherPage(snap: NonNullable<Snapshot>, fixture: FixtureFacts): { id: string; route: string } {
+  const page = Object.values(snap.state.pages)
+    .filter((p) => p.id !== fixture.homePageId)
+    .sort((a, b) => a.route.localeCompare(b.route))[0];
+  expect(page, 'the fixture has no page but its home page');
+  return { id: page.id, route: page.route };
+}
+
+/** The canvas reporting the page at `route` ready to edit at `revision` (any revision when it is undefined). */
+const pageReady =
+  (route: string, revision?: unknown) =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.mode === 'edit' && r.attrs?.studio === false && r.attrs?.path === route && (revision === undefined || r.attrs?.revision === revision);
+
+export const noWindow: Scenario = {
+  name: 'noWindow',
+  after: 'launch',
+  memory: true,
+  deadlineMs: 10 * 60_000,
+  description: `The memory of every process of the app on a fresh Welcome, with the fixture open on the canvas, ${NO_WINDOW_AFTER_MS / 1000} s after its window closed with the project left open (macOS), and on the canvas again in the window brought up after it; the time from bringing it up to the canvas ready; and a change made outside the app with no window, taken when it comes back.`,
+  async run(ctx) {
+    const { fixture } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('the noWindow scenario was run without a memory probe');
+    if (process.platform !== 'darwin') throw new Error('the noWindow scenario needs macOS: elsewhere the last window closing quits the app');
+    await probe.rest('welcome');
+    // Opened as `open` opens it, after the files have settled, to the canvas reporting the home page ready to edit.
+    const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    await openFromWelcome(ctx);
+    const opened = (t: Trace) => {
+      const asked = t.first('open.requested', inProc('renderer'));
+      return asked ? t.first('canvas.ready', homeReady(fixture), asked.t) : undefined;
+    };
+    expect(opened(await ctx.waitTrace((t) => !!opened(t), 15_000)), 'the canvas never reported the home page ready to edit');
+    await checkOpened(ctx);
+    // The place a window brought up again must return to: a page other than home, chosen in Pages, its first section
+    // chosen in Layers, and the Inspector showing it. The workspace save the choices set off lands before the reading.
+    const shownFirst = (await snapshotOf(ctx.win))!;
+    const page = otherPage(shownFirst, fixture);
+    const pageHeading = findHeading(shownFirst.state.pages[page.id]);
+    expect(pageHeading, `${page.route} has no heading to show`);
+    await showSidebar(ctx.win, 'Pages');
+    const pageRow = ctx.win.locator(`.side-panel-view:not([hidden]) [data-page="${page.id}"]`).first();
+    await pageRow.click();
+    // Opened in the canvas's frame (a single click opens it once it is not a double click): its row is the open one,
+    // its first heading is on the page, and the frame is ready to edit.
+    await pageRow.and(ctx.win.locator('[aria-selected="true"]')).waitFor({ timeout: 15_000 });
+    await preview(ctx.win).getByText(pageHeading.heading, { exact: true }).first().waitFor({ timeout: 60_000 });
+    await ctx.win.locator('main.canvas[data-frame="ready"]').first().waitFor({ timeout: 30_000 });
+    await showSidebar(ctx.win, 'Layers');
+    // The page's own first section, not the shared header Layers lists above it.
+    const section = (shownFirst.state.pages[page.id] as { rootIds?: string[] }).rootIds?.[0];
+    expect(section, `${page.route} has no section to select`);
+    const row = ctx.win.locator(`.layers-tree [role="treeitem"][data-node="${section}"]`).first();
+    await row.waitFor({ timeout: 30_000 });
+    await row.locator('.layer-name').first().click();
+    await row.and(ctx.win.locator('[aria-selected="true"]')).waitFor({ timeout: 15_000 });
+    await ctx.win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+    await inspectorName(ctx.win).first().waitFor({ timeout: 15_000 });
+    const place = await placeOf(ctx.win);
+    expect(place.selected && place.named, `nothing is selected on ${page.route}, or the Inspector does not name it`);
+    expect(place.selected.includes(page.id), `the selection is not on ${page.route}: ${place.selected}`);
+    await sleep(WORKSPACE_SAVE_WAIT_MS);
+    await probe.rest('canvas');
+    const before = await snapshotOf(ctx.win);
+    expect(before, 'no project is open');
+    const pid = await ctx.app.evaluate(() => process.pid);
+    await lockHeldBy(ctx, pid);
+    // Closed, and left: the project stays open with no window.
+    await ctx.mark('noWindow.close', { scenario: 'noWindow' });
+    await closeEditorWindow(ctx);
+    await sleep(NO_WINDOW_AFTER_MS);
+    await lockHeldBy(ctx, pid);
+    await probe.rest('noWindow', { window: false });
+    await lockHeldBy(ctx, pid);
+    // Brought up again, timed to the canvas reporting the page it was left on ready in the new window.
+    await ctx.mark('noWindow.reopen', { scenario: 'noWindow', revision: before.revision, route: page.route });
+    await reopenEditorWindow(ctx);
+    const reopened = (t: Trace) => {
+      const asked = t.first('noWindow.reopen', forScenario('noWindow', 'main'));
+      return asked ? t.first('canvas.ready', pageReady(page.route, before.revision), asked.t) : undefined;
+    };
+    expect(reopened(await ctx.waitTrace((t) => !!reopened(t), 60_000)), `the canvas in the window brought up again never reported ${page.route} ready to edit`);
+    const back = await snapshotOf(ctx.win);
+    expect(back && back.dir === before.dir && back.revision === before.revision, `the window brought up again shows ${back ? `${back.dir} at revision ${back.revision}` : 'no project'}, not the project at revision ${before.revision}`);
+    expect(back.workspaceKey === before.workspaceKey, 'the window brought up again shows another opening of the project');
+    // The same selection, on the same page, and the Inspector naming it.
+    let now = await placeOf(ctx.win);
+    for (const until = Date.now() + 30_000; Date.now() < until && (now.selected !== place.selected || now.named !== place.named); ) {
+      await sleep(250);
+      now = await placeOf(ctx.win);
+    }
+    expect(now.selected === place.selected, `the window brought up again has ${now.selected ?? 'nothing'} selected, not ${place.selected}`);
+    expect(now.named === place.named, `the Inspector in the window brought up again names ${now.named ?? 'nothing'}, not ${place.named}`);
+    await ctx.mark('noWindow.shown', { scenario: 'noWindow' });
+    await probe.rest('reopened');
+    // A change made outside the app while it has no window is taken: written beside the page's file and renamed over
+    // it, as an editor saves (see `edits`), with the window still closed. A busy machine's file watch can lose the
+    // system's word of it (scripts/perf/README.md): then it is saved again, still with no window, as a person would;
+    // never when the app's watch went off for it and it was not taken, which is the app's failure. Then the window is
+    // brought back, which must show it, taken already or found on its return.
+    await closeEditorWindow(ctx);
+    const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${page.id}.json`);
+    const text = readFileSync(doc, 'utf8');
+    const target = findHeading(JSON.parse(text) as unknown);
+    expect(target, `${page.route} has no heading to change`);
+    const parts = text.split(JSON.stringify(target.heading));
+    expect(parts.length === 2, `${page.route}’s document holds its first heading other than once`);
+    const outside = `${NO_WINDOW_OUTSIDE_HEADING} ${ctx.iteration}`;
+    const changed = before.revision + 1;
+    let saves = 0;
+    const save = async () => {
+      saves++;
+      await ctx.mark('noWindow.outsideSave', { scenario: 'noWindow', save: saves });
+      const saving = `${doc}.${ctx.iteration}-${saves}.saving`;
+      writeFileSync(saving, parts.join(JSON.stringify(outside)));
+      renameSync(saving, doc);
+    };
+    // The project at the change's revision, as the main process puts it together for an editor (it does with none).
+    const takenIn = (t: Trace) => {
+      const first = t.first('noWindow.outsideSave', forScenario('noWindow', 'main'));
+      return first ? t.first('controller.snapshot', (r) => r.proc === 'main' && r.attrs?.revision === changed, first.t) : undefined;
+    };
+    for (;;) {
+      await save();
+      const mark = (await ctx.waitTrace((t) => !!t.first('noWindow.outsideSave', (r) => r.proc === 'main' && r.attrs?.save === saves), 10_000)).first('noWindow.outsideSave', (r) => r.proc === 'main' && r.attrs?.save === saves);
+      const t = await ctx.waitTrace((x) => !!takenIn(x), NO_WINDOW_OUTSIDE_WAIT_MS);
+      if (takenIn(t)) break;
+      expect(!(mark && t.first('controller.watchFired', inProc('main'), mark.t)), 'the file watch went off for the change made outside the app with no window, but the change was not taken');
+      if (saves >= OUTSIDE_SAVES) break;
+    }
+    const takenWithoutWindow = !!takenIn(await ctx.waitTrace(() => true, 0));
+    await lockHeldBy(ctx, pid);
+    await reopenEditorWindow(ctx);
+    const holds = async () => findHeading((await snapshotOf(ctx.win))?.state.pages[page.id], target.id)?.heading === outside;
+    for (const until = Date.now() + NO_WINDOW_OUTSIDE_WAIT_MS; Date.now() < until && !(await holds()); ) await sleep(250);
+    expect(await holds(), `the change made outside the app with no window was not taken, saved ${saves} times`);
+    // How many saves it took (one, unless the system lost word of it), and whether it was taken with no window.
+    await ctx.mark('noWindow.outsideTaken', { scenario: 'noWindow', saves, withoutWindow: takenWithoutWindow });
+    await preview(ctx.win).getByText(outside, { exact: true }).first().waitFor({ timeout: 60_000 });
+    const after = await snapshotOf(ctx.win);
+    expect(after && after.revision === before.revision + 1, `the change made outside the app left the project at revision ${after?.revision}, not ${before.revision + 1}`);
+    expect(after.history.undoLabel === 'External change', `the change made outside the app is not the step Undo takes back (${after.history.undoLabel ?? 'nothing to undo'})`);
+  },
+  measure(trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string) => readings.find((r) => r.label === label && r.kind === 'rest');
+    for (const label of NO_WINDOW_READINGS) readingMetrics(m, label, reading(label));
+    // What the project open costs over Welcome, what closing its window let go of, and what bringing it back took up.
+    growthMetrics(m, 'project', reading('welcome'), reading('canvas'));
+    growthMetrics(m, 'windowClosed', reading('canvas'), reading('noWindow'));
+    growthMetrics(m, 'restWithoutWindow', reading('welcome'), reading('noWindow'));
+    growthMetrics(m, 'windowBack', reading('canvas'), reading('reopened'));
+    // Bringing the window back: from asking for it (the Dock's activate) to the new window, its editor's first commit
+    // of the project, and the canvas reporting the home page ready to edit; with the preview's start when it needed one.
+    const asked = m.need('noWindow.reopen', trace.first('noWindow.reopen', forScenario('noWindow', 'main')));
+    const shown = m.need('noWindow.shown', trace.first('noWindow.shown', forScenario('noWindow', 'main')));
+    if (!asked) return m;
+    const revision = asked.attrs?.revision;
+    const route = asked.attrs?.route;
+    if (typeof route !== 'string') m.need('noWindow.reopen (with the page it was left on)', undefined);
+    const to = shown?.t ?? Infinity;
+    const ready = m.need('canvas.ready (window brought up again)', typeof route === 'string' ? trace.first('canvas.ready', pageReady(route, revision), asked.t, to) : undefined);
+    m.since('noWindow.reopen.windowCreated', asked, m.need('launch.windowCreated (window brought up again)', trace.first('launch.windowCreated', inProc('main'), asked.t, to)));
+    m.since('noWindow.reopen.editorShown', asked, m.need('renderer.commit (editor, window brought up again)', trace.first('renderer.commit', (r) => r.attrs?.screen === 'editor', asked.t, to)));
+    m.since('noWindow.reopen.canvasReady', asked, ready);
+    const forked = trace.first('runtime.forked', inProc('main'), asked.t, ready?.t);
+    m.count('noWindow.reopen.previewStarts', trace.all('runtime.forked', inProc('main'), asked.t, ready?.t).length);
+    if (forked) m.since('noWindow.reopen.runtimeReady', asked, trace.all('runtime.ready', inProc('main'), asked.t, ready?.t).at(-1));
+    // The saves the change made outside the app with no window took to be taken (1 unless the first was missed).
+    const taken = m.need('noWindow.outsideTaken', trace.first('noWindow.outsideTaken', forScenario('noWindow', 'main'), asked.t));
+    if (taken) {
+      m.count('noWindow.outside.saves', Number(taken.attrs?.saves));
+      m.count('noWindow.outside.takenWithoutWindow', taken.attrs?.withoutWindow === true ? 1 : 0);
+    }
     return m;
   }
 };
@@ -5051,7 +5291,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, editBranded, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, editBranded, switchProject, create, createAgain, memory, noWindow];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
@@ -5064,6 +5304,9 @@ export function chainFor(names: string[]): Scenario[] {
   const memoryAsked = names.filter((n) => byName.get(n)?.memory);
   if (memoryAsked.length && memoryAsked.length !== names.length && names.every((n) => byName.has(n)))
     throw new Error(`Memory scenarios (${memoryAsked.join(', ')}) are run on their own: their waits and garbage collections would change the numbers of ${names.filter((n) => !memoryAsked.includes(n)).join(', ')}. Run them in a separate perf:run.`);
+  // Each starts from the fixture as it is put back and a fresh Welcome: one after another would find what the first left.
+  const distinct = [...new Set(memoryAsked)];
+  if (distinct.length > 1) throw new Error(`Memory scenarios (${distinct.join(', ')}) are run one at a time: each reads the app from a fresh Welcome on the fixture as it was put back, and one run after another would start from what the one before left. Run each in its own perf:run.`);
   for (const name of names) {
     let s = byName.get(name);
     if (!s) throw new Error(`Unknown scenario "${name}". Scenarios: ${SCENARIOS.map((x) => x.name).join(', ')}.`);
