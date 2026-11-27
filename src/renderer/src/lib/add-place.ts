@@ -50,14 +50,23 @@ export function placeAdd(side: AddSide, b: AddBox, frame: { width: number; heigh
 /** How far an edge button's centre keeps from a header: past its 32px target, its hover growth and its focus ring. */
 const CLEAR = 19;
 
+/** Positions fall between pixels at some display scales, where a spot set CLEAR of a header can come out a rounding
+ *  error short of it. */
+const SLACK = 0.01;
+const reach = CLEAR - SLACK;
+
 const onHeader = (at: AddAt, headers: AddBox[]) =>
-  headers.filter((r) => at.left + CLEAR > r.left && at.left - CLEAR < r.left + r.width && at.top + CLEAR > r.top && at.top - CLEAR < r.top + r.height);
+  headers.filter((r) => at.left + reach > r.left && at.left - reach < r.left + r.width && at.top + reach > r.top && at.top - reach < r.top + r.height);
 
 /** The first spot past every header in the way, going down (`step` 1) or up (-1): one header can sit right under another. */
 function past(at: AddAt, headers: AddBox[], step: 1 | -1): AddAt {
   let spot = at;
-  for (let over = onHeader(spot, headers); over.length; over = onHeader(spot, headers))
+  let ahead = headers;
+  // Each header is passed once, so this ends whatever their positions are.
+  for (let over = onHeader(spot, ahead); over.length; over = onHeader(spot, ahead)) {
     spot = { left: at.left, top: step > 0 ? Math.max(...over.map((r) => r.top + r.height)) + CLEAR : Math.min(...over.map((r) => r.top)) - CLEAR };
+    ahead = ahead.filter((r) => !over.includes(r));
+  }
   return spot;
 }
 

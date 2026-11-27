@@ -57,6 +57,15 @@ describe('an edge Add button and the site header (#1141)', () => {
     expect(placeAdd('before', section(20), frame, false, [{ ...header, height: 50 }, { ...header, top: 50, height: 50 }])).toEqual({ left: 600, top: 119 });
   });
 
+  // 125% display scaling puts boxes between pixels: 111.2 + 19 - 19 comes out just under 111.2.
+  it('settles below a header whose foot falls between pixels, and counts that spot clear', () => {
+    const scaled = { ...header, height: 111.2 };
+    const at = placeAdd('before', section(111.2), frame, false, [scaled])!;
+    expect(at.top).toBeCloseTo(130.2);
+    const both = placeAdds([{ key: 'a', side: 'before' as const, box: section(111.2, 14) }, { key: 'b', side: 'after' as const, box: section(111.2, 14) }], frame, [scaled]);
+    expect(both.map((b) => b.at.left)).toEqual([600, 566]);
+  });
+
   it('draws neither edge of a section wholly under the header, nor an edge scrolled out of view', () => {
     expect(placeAdd('after', section(44, 15), frame, false, [header])).toBeNull();
     expect(placeAdd('before', section(-30), frame, false, [header])).toBeNull();
