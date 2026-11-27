@@ -58,7 +58,7 @@ try {
   step('while it waits, the editor says who must act and nothing keeps moving (issue #267)');
   const toolbarState = win.locator('.toolbar .save-state');
   assert.match(await toolbarState.innerText(), /AI is waiting for you/);
-  assert.match(await win.locator('.ai-veil').innerText(), /question for you/);
+  assert.match(await win.locator('.canvas-notice.ai-run').innerText(), /question for you/);
   assert.equal(await win.locator('.dock-tab .live').getAttribute('aria-label'), 'Waiting for your answer');
   assert.equal(await win.locator('.chat .spinner').count(), 0, 'no spinner in the chat while it waits');
   assert.equal(await log().getAttribute('aria-busy'), null, 'the log is ready while the question waits for the author');

@@ -55,7 +55,7 @@ async function shot(state, check, { themes = BOTH, area = 'canvas' } = {}) {
 
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 await pause(1500);
-const issue = win.locator('.ai-veil.issue');
+const issue = win.locator('.canvas-notice.issue');
 
 /** The page in the preview frame, as it is now (Try again replaces it). */
 async function page() {
@@ -90,12 +90,12 @@ await bridge('runtimeError', { message: 'Cannot read properties of undefined (re
 await issue.getByRole('button', { name: /^Revert/ }).waitFor({ timeout: 10000 });
 await issue.getByRole('button', { name: 'Open source' }).waitFor({ timeout: 10000 });
 await pause(500);
-await shot('problem-edit', '.ai-veil.issue');
+await shot('problem-edit', '.canvas-notice.issue');
 
 // The same bar on a narrow canvas: the window at a small laptop's width with both side panels open.
 await win.setViewportSize({ width: 1024, height: 760 });
 await pause(800);
-await shot('problem-edit-narrow', '.ai-veil.issue', { themes: LIGHT });
+await shot('problem-edit-narrow', '.canvas-notice.issue', { themes: LIGHT });
 await win.setViewportSize({ width: 1440, height: 900 });
 await pause(800);
 
@@ -110,7 +110,7 @@ const hold = async (route) => {
 await app.context().route(`${origin}/**`, hold);
 await issue.getByRole('button', { name: 'Try again' }).click();
 await pause(300);
-await shot('problem-restarting', '.ai-veil.issue.retrying', { themes: LIGHT, area: 'foot' });
+await shot('problem-restarting', '.canvas-notice.issue.retrying', { themes: LIGHT, area: 'foot' });
 release();
 await app.context().unroute(`${origin}/**`, hold);
 await issue.waitFor({ state: 'detached', timeout: 60000 });
@@ -123,7 +123,7 @@ await pause(1500);
 await bridge('runtimeError', { message: 'Cannot read properties of undefined (reading "title")' });
 await issue.getByRole('button', { name: 'Try again' }).waitFor({ timeout: 10000 });
 await pause(400);
-await shot('problem-preview', '.ai-veil.issue', { themes: BOTH, area: 'foot' });
+await shot('problem-preview', '.canvas-notice.issue', { themes: BOTH, area: 'foot' });
 await win.locator('.preview-pill button', { hasText: 'Back to editing' }).click();
 await pause(400);
 await bridge('revisionApplied', {}).catch(() => undefined);

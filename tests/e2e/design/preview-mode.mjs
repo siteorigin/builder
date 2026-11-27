@@ -66,7 +66,7 @@ await app.context().addInitScript(() => {
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 const pill = win.locator('.preview-pill');
 const panel = win.locator('.form-practice');
-const issue = win.locator('.ai-veil.issue');
+const issue = win.locator('.canvas-notice.issue');
 
 /** The page in the preview frame, as it is now (Try again replaces it). */
 async function page() {

@@ -65,8 +65,8 @@ try {
   );
   await message().fill('Read the actual Contact page and tell me the current studio hours exactly as written. Tell me where in the editor I can change those hours myself. Please leave the site unchanged.');
   await message().press('Enter');
-  await win.locator('.ai-veil', { hasText: 'reading the site' }).waitFor({ timeout: 15000 });
-  assert.doesNotMatch(await win.locator('.ai-veil').innerText(), /editing this site/);
+  await win.locator('.canvas-notice.ai-run', { hasText: 'reading the site' }).waitFor({ timeout: 15000 });
+  assert.doesNotMatch(await win.locator('.canvas-notice.ai-run').innerText(), /editing this site/);
   assert.equal(await win.locator('.dock-tab .live').getAttribute('aria-label'), 'Reading the site');
   assert.match(await win.locator('.run-strip .run-phase').innerText(), /Reading the site/);
   const edit = await apply([{ type: 'instance.setProp', owner, nodeId, prop: 'heading', value: 'Visit the studio' }]);

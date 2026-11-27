@@ -8,7 +8,7 @@ import { createProject, eventually, launch, scratch, step } from './harness.mjs'
 const { WORK, cleanup } = scratch('preview-error');
 const { app, win, errors } = await launch(WORK);
 await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
-const issue = win.locator('.ai-veil.issue');
+const issue = win.locator('.canvas-notice.issue');
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 
 async function frame() {
