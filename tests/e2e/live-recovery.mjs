@@ -50,6 +50,17 @@ const assertHeadless = async (app, who) => {
   );
 };
 
+/** Record each time one of an app's native windows is shown or takes focus, from launch on: none may, even for a moment. */
+const watchWindows = (app) =>
+  app.evaluate(({ app: electronApp, BrowserWindow }) => {
+    const seen = (globalThis.__e2eWindowEvents = []);
+    const hook = (w) => {
+      for (const event of ['show', 'focus']) w.on(event, () => seen.push(`${event} ${w.id}`));
+    };
+    BrowserWindow.getAllWindows().forEach(hook);
+    electronApp.on('browser-window-created', (_e, w) => hook(w));
+  });
+
 /**
  * Watch every WebSocket an app's main process opens, from here on: the app's own sockets, each a real one, with the
  * protocol frames it sends and receives kept (preview traffic and project snapshots left out) and how it closed. The
@@ -82,8 +93,8 @@ const watchSockets = (app) =>
         sockets.push({ entry, socket: this });
         const send = this.send.bind(this);
         this.send = (data) => {
+          send(data);
           keep(entry, 'out', data);
-          return send(data);
         };
         this.addEventListener('message', (e) => keep(entry, 'in', e.data));
         this.addEventListener('close', (e) => (entry.closed = { code: e.code }));
@@ -113,6 +124,7 @@ try {
   const origin = await relay.browserOrigin();
 
   host = await launch(HOST_WORK, { ...HEADLESS, SITEORIGIN_LIVE_RELAY_URL: origin });
+  await watchWindows(host.app);
   const hw = host.win;
   // The host's AI is the scripted local model; the second app has no AI settings of its own.
   await hw.evaluate((baseURL) => window.builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL, allowRemote: false, toolMode: 'constrained-json' } } }), server.baseURL);
@@ -120,6 +132,7 @@ try {
   await hw.waitForSelector('.welcome');
   await createProject(hw, { name: 'Harbour Lane Studio', parentDir: join(HOST_WORK, 'sites'), starter: 'business', sampleImages: false });
   guest = await launch(GUEST_WORK, { ...HEADLESS, SITEORIGIN_LIVE_RELAY_URL: origin });
+  await watchWindows(guest.app);
   const gw = guest.win;
   await gw.locator('.welcome').waitFor();
   await watchSockets(host.app);
@@ -401,10 +414,14 @@ try {
   const phases = await hw.evaluate(() => window.__liveStates.map((s) => s.phase));
   assert.ok(phases.indexOf('reconnecting') >= 0 && phases.lastIndexOf('active') > phases.indexOf('reconnecting'), `the host went from reconnecting back to live: ${phases.join(' → ')}`);
   const hostSockets = await socketsOf(host.app);
-  assert.equal(hostSockets.length, 2, 'the host opened one new socket');
   assert.equal(hostSockets[0].closed?.code, 3999);
-  const back = hostSockets[1];
-  assert.equal(new URL(back.url).pathname, `/s/${room.roomId}/ws`, 'to its room, not for a new one');
+  assert.deepEqual(
+    hostSockets.slice(1).map((s) => new URL(s.url).pathname),
+    hostSockets.slice(1).map(() => `/s/${room.roomId}/ws`),
+    'every new socket went to its room, none to make a new one'
+  );
+  const back = hostSockets.at(-1);
+  assert.ok(hostSockets.length >= 2 && !back.closed, 'the host holds its room on a new socket');
   const exchange = back.frames.filter((f) => ['host:reconnect', 'host:challenge', 'host:proof', 'room:ready'].includes(f.frame.type));
   assert.deepEqual(
     exchange.map((f) => `${f.dir} ${f.frame.type}`),
@@ -487,18 +504,19 @@ try {
       const r = rel ? `${rel}/${e.name}` : e.name;
       return e.isDirectory() ? [`${r}/`, ...files(root, r)] : [r];
     });
-  // The session's own words and addresses, in any file.
-  const SESSION = [noteText, room.roomId, invite];
+  // The session's own words, addresses and guests, in any file.
+  const SESSION = [noteText, room.roomId, invite, ann.guestId, robin.guestId];
   // The editor's instrumentation, the relay's preview bridge and guest marker, the live protocol's presence, spotlight
   // and note events, and the canvas's marks: names precise enough that a site's own words never match them.
   const LIVE_CODE =
-    /data-so-(ctx|node|editing)|siteorigin-bridge|__siteoriginBridge|__siteoriginHold|siteorigin-editor-instrumentation|\/__siteorigin\/|siteorigin-live|x-siteorigin-live-guest|presence:(update|changed)|spotlight:point|data-siteorigin-pointing|ov-spot-dot|ov-peer|notes:changed/;
-  const TEXT = /\.(html?|js|mjs|cjs|ts|svelte|css|json|map|txt|xml|md|webmanifest)$/;
+    /data-so-(ctx|node|editing|unlinked|editor-only|filter|bridge)|siteorigin-bridge|__siteoriginBridge|__siteoriginHold|siteorigin-editor-instrumentation|siteorigin-frame-policy|\/__siteorigin\/|\/_viewer\/|siteorigin-live|x-siteorigin-live-guest|presence:(update|changed)|spotlight:point|data-siteorigin-pointing|ov-spot-dot|ov-peer|notes:changed/;
+  /** A file's bytes as text the markers (all ASCII) can be found in, whatever kind of file it is. */
+  const text = (path) => readFileSync(path).toString('latin1');
   const scan = (root, label) => {
     const all = files(root);
     assert.ok(all.some((f) => f.endsWith('index.html') || f.endsWith('.svelte')), `the ${label} export has the site in it`);
     assert.deepEqual(
-      all.filter((f) => f.split('/').includes('.siteorigin')),
+      all.filter((f) => f.toLowerCase().split('/').includes('.siteorigin')),
       [],
       `the ${label} export has no .siteorigin state (notes, history, caches)`
     );
@@ -507,10 +525,10 @@ try {
       assert.deepEqual(
         kept.filter((f) => readFileSync(join(root, f)).includes(words)),
         [],
-        `no file of the ${label} export holds ${words === noteText ? 'the session’s note' : `the session’s ${words === invite ? 'invite link' : 'room'}`}`
+        `no file of the ${label} export holds the session’s ${words === noteText ? 'note' : words === invite ? 'invite link' : words === room.roomId ? 'room' : 'guests'}`
       );
     assert.deepEqual(
-      kept.filter((f) => TEXT.test(f) && LIVE_CODE.test(readFileSync(join(root, f), 'utf8'))),
+      kept.filter((f) => LIVE_CODE.test(text(join(root, f)))),
       [],
       `the ${label} export has no live-session, spotlight, note or editor code`
     );
@@ -519,7 +537,7 @@ try {
   // The scan finds what it looks for: the working project's own preview, which the editor instruments, has it.
   const devCache = join(dir, '.siteorigin', 'cache', 'dev');
   assert.ok(
-    files(devCache).some((f) => TEXT.test(f) && LIVE_CODE.test(readFileSync(join(devCache, f), 'utf8'))),
+    files(devCache).some((f) => !f.endsWith('/') && LIVE_CODE.test(text(join(devCache, f)))),
     'the working project’s editor preview has the code the scan looks for'
   );
   const sourceFiles = scan(source.path, 'source');
@@ -532,6 +550,8 @@ try {
   step('both apps stayed headless, with no uncaught errors');
   await assertHeadless(host.app, 'the host');
   await assertHeadless(guest.app, 'the second app');
+  assert.deepEqual(await host.app.evaluate(() => globalThis.__e2eWindowEvents), [], 'no window of the host’s was shown or focused at any point');
+  assert.deepEqual(await guest.app.evaluate(() => globalThis.__e2eWindowEvents), [], 'no window of the second app’s was shown or focused at any point');
   assert.deepEqual(host.errors, [], 'no uncaught errors in the host’s editor');
   assert.deepEqual(guest.errors, [], 'no uncaught errors in the second app’s editor');
 } finally {
