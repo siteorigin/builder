@@ -271,7 +271,7 @@ try {
   assert.ok(placement, 'and placed on the home page');
 
   step('the tabs work in the visitor preview');
-  await win.locator('.toolbar').getByRole('button', { name: 'Preview', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true }).click();
   const placed = (sel) => frame.locator(`[data-so-ctx$="|${placement.id}"] ${sel}`).first();
   await eventually(async () => assert.equal(await frame.locator('html').getAttribute('data-so-bridge'), 'preview', 'the page is previewed as visitors see it'), 30000);
   const annualTab = frame.getByRole('tab', { name: 'Annual' });
@@ -293,7 +293,7 @@ try {
     assert.equal(await placed('[data-so-node="annual"]').isVisible(), false, 'and Annual is hidden');
   });
   await win.screenshot({ path: join(SHOTS, 'ui-state-ai-preview.png') });
-  await win.locator('.toolbar').getByRole('button', { name: 'Edit', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Edit', exact: true }).click();
 
   step('one Undo takes back the component and its placement');
   await win.locator('.canvas').focus();

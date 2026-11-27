@@ -83,13 +83,13 @@ try {
   const placeholder = frame.locator('.extras [data-so-slot-empty="content"]');
   await eventually(async () => assert.equal(await placeholder.count(), 1, 'Edit marks where the slot’s content goes'), 30000);
   assert.equal(await frame.locator('.extras .fallback').count(), 0, 'the fallback gives way to the placeholder while editing');
-  await win.locator('.toolbar').getByRole('button', { name: 'Preview', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true }).click();
   await frame.locator('html:not([data-so-editing])').waitFor({ state: 'attached' });
   await eventually(async () => {
     assert.equal(await placeholder.count(), 0, 'Preview has no placeholder');
     assert.equal(await frame.locator('.extras .fallback').count(), 1, 'Preview shows what visitors see: the code’s own fallback');
   });
-  await win.locator('.toolbar').getByRole('button', { name: 'Edit', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Edit', exact: true }).click();
   await frame.locator('html[data-so-editing]').waitFor({ state: 'attached' });
 
   step('a Stack and a Button inserted on the canvas go into the code component’s slot');

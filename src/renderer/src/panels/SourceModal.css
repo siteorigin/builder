@@ -73,7 +73,8 @@
   /* Wrap is a toggle: pressed reads as the toolbar's pressed toggles do, raised with the control ring. */
   .code-status-toggle { color: var(--text-2); }
   .code-status-toggle:hover { background: var(--hover); color: var(--text); }
-  .code-status-toggle[aria-pressed='true'] { background: var(--raised); color: var(--text); font-weight: 500; box-shadow: inset 0 0 0 1px var(--border-control); }
+  /* Pressed takes the shared pressed face (primitives.css), at the status bar's weight. */
+  .code-status-toggle[aria-pressed='true'] { background: var(--raised); color: var(--text); font-weight: 500; box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
   .code-status-pos { flex: none; font-variant-numeric: tabular-nums; }
   /* In a narrow window the save hint gives way first; the way out of the editor (WCAG 2.1.2) always shows, and the
      finding's message truncates before it does. */

@@ -158,7 +158,7 @@ try {
   assert.match(live, /Second Shelf/, 'the header and footer show the site’s name');
 
   step('Preview shows the page as visitors get it, without the note');
-  await win.getByRole('button', { name: 'Preview', exact: true }).click();
+  await win.getByRole('radio', { name: 'Preview', exact: true }).click();
   await win.getByRole('group', { name: 'Preview', exact: true }).waitFor();
   assert.equal(await card.count(), 0, 'the note is for editing only');
   await win.getByRole('group', { name: 'Preview', exact: true }).getByRole('button', { name: 'Back to editing' }).click();

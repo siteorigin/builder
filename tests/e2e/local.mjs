@@ -74,7 +74,7 @@ try {
   await win.locator('[aria-label="Settings"]').click();
   const dialog = win.locator('.modal');
   await dialog.getByRole('tab', { name: 'AI assistant' }).click();
-  await dialog.getByRole('radio', { name: 'Local model' }).click();
+  await dialog.getByRole('tab', { name: 'Local model' }).click();
   // Looking at a provider's settings does not switch the one in use; the button does.
   assert.notEqual((await settings()).ai.provider, 'local');
   await dialog.getByRole('button', { name: 'Use Local model', exact: true }).click();
@@ -288,7 +288,7 @@ try {
   await win.evaluate(() => window.builder.ai.setKey('openai', `sk-proj-${'e2eNotARealKey0123456789'.repeat(2)}`));
   await win.locator('[aria-label="Settings"]').click();
   await dialog.getByRole('tab', { name: 'AI assistant' }).click();
-  await dialog.getByRole('radio', { name: 'OpenAI' }).click();
+  await dialog.getByRole('tab', { name: 'OpenAI' }).click();
   // Looking at a provider's settings does not switch the one in use; the button does.
   assert.notEqual((await settings()).ai.provider, 'openai');
   await dialog.getByRole('button', { name: 'Use OpenAI', exact: true }).click();
@@ -313,7 +313,7 @@ try {
   step("back on Local, with the first server's model chosen again, for the servers that follow");
   // The composer still names OpenAI (Settings changed underneath it), so Local is chosen where the author would.
   await openAi();
-  await dialog.getByRole('radio', { name: 'Local model' }).click();
+  await dialog.getByRole('tab', { name: 'Local model' }).click();
   await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
   await eventually(async () => assert.deepEqual(await modelOptions(), ['Automatic (first-model)', 'first-model', 'second-model']), 15000);
   await modelSelect.selectOption('second-model');

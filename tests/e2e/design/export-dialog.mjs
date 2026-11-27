@@ -98,13 +98,13 @@ await shot('rest', '.modal [data-testid="export-pages"]');
 await modal.getByTestId('export-sample-email').getByRole('button', { name: 'Show where' }).click();
 await shot('samples-where', '.modal [data-testid="export-sample-email"] li', LIGHT);
 await modal.getByTestId('export-sample-email').getByRole('button', { name: 'Show where' }).click();
-await modal.getByRole('button', { name: 'ZIP file', exact: true }).click();
+await modal.getByRole('radio', { name: 'ZIP file', exact: true }).click();
 await shot('format-zip', '.modal [aria-pressed="true"]:has-text("ZIP file")', LIGHT);
 // Keyboard: Tab from the format control lands on the first export choice.
-await modal.getByRole('button', { name: 'ZIP file', exact: true }).focus();
+await modal.getByRole('radio', { name: 'ZIP file', exact: true }).focus();
 await win.keyboard.press('Tab');
 await shot('keyboard-focus', '.modal :focus-visible', LIGHT);
-await modal.getByRole('button', { name: 'Folder', exact: true }).click();
+await modal.getByRole('radio', { name: 'Folder', exact: true }).click();
 await closeDialog();
 
 // ---- Published pages and drafts left out ----

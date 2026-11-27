@@ -107,7 +107,7 @@ const oneChange = (before, label) =>
 const inPage = (nodeId) => frame.locator(`[data-so-node="${nodeId}"], [data-so-ctx$="|${nodeId}"]`).first();
 
 step('Home: a Section with two empty columns, and a Proof section whose slot takes one piece of social proof');
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 const home = async () => (await snapshot()).pages[pageId];

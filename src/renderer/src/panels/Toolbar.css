@@ -26,7 +26,6 @@
   @container chrome-start (min-width: 360px) { .save-slot { min-width: 128px; } }
   .toolbar-group:has(.save-state:is(.ask, .wait, .error)) .project-title .site { min-width: 28px; }
   .toolbar .segmented button { transition: background 120ms, color 120ms, box-shadow 120ms; }
-  .toolbar .icon-btn[aria-pressed='true']:hover:not(:disabled), .rail .icon-btn.shortcut[aria-pressed='true']:hover { background: color-mix(in srgb, var(--text) 5%, var(--raised)); }
   .toolbar-start, .toolbar-end { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .toolbar-end { justify-content: flex-end; }
   /* 6px between neighbouring controls: a 2px focus ring drawn 2px out still clears the next control's edge. */
@@ -84,7 +83,7 @@
   /* The quiet AI states lead to the AI panel too; their chevron is the faintest cue that they go somewhere. */
   .save-state.ai .go { color: var(--text-3); }
   .width-field { position: relative; display: inline-flex; align-items: center; height: 28px; padding: 0 8px 0 6px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); font-size: 12px; transition: border-color 120ms, background 120ms; }
-  .width-field:hover { border-color: var(--text-3); }
+  .width-field:hover:not(:has(:disabled)) { border-color: var(--text-3); }
   /* The house focus outline, 2px out, like every other control in the bar; the edge underneath keeps its own colour,
      so an invalid width stays red while it is being corrected. */
   .width-field:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -93,6 +92,9 @@
   .width-input::-webkit-inner-spin-button, .width-input::-webkit-outer-spin-button { appearance: none; margin: 0; }
   .width-field .unit { color: var(--text-3); }
   .width-field:has([aria-invalid='true']) { border-color: var(--red); background: var(--red-soft); }
+  /* Unavailable (a view covers the canvas): drawn off, like the presets beside it. */
+  .width-field:has(:disabled) { background: var(--disabled-fill); border-color: var(--border-strong); }
+  .width-field:has(:disabled) :is(.width-input, .unit) { color: var(--disabled-ink); }
   /* Why a width was not applied, anchored under the field while it is being corrected. */
   .width-error { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-md); color: var(--text); font-size: 12px; white-space: nowrap; pointer-events: none; }
   .width-error svg { width: 14px; height: 14px; flex: none; color: var(--red); }
@@ -107,9 +109,6 @@
   /* Device options are icon-only, so they take less side padding than the labelled Edit and Preview (30px targets). */
   .toolbar .segmented[aria-label='Preview width'] button { padding: 0 7px; }
   .toolbar .segmented[aria-label='Preview width'] [aria-label='Phone'] svg { width: 14px; height: 14px; }
-  /* Pressed panel toggles in the title bar use the toolbar's own selected treatment (the segmented controls'
-     raised face, 3:1 ring and lift), so blue stays for focus and Export. */
-  .toolbar .icon-btn[aria-pressed='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
   .toolbar .export-btn { height: 28px; margin-left: 2px; padding: 0 12px 0 10px; }
   /* Below the full tier the history group follows the mode group across the 14px region gap; its divider sits
      midway (8px each side) instead of hugging Undo. */

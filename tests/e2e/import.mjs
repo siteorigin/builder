@@ -166,7 +166,7 @@ step('remove every unused image: the files stay, and the Assets panel says they 
 await win.getByRole('button', { name: 'Assets', exact: true }).click();
 const storage = win.getByTestId('asset-storage');
 await storage.getByText(`${FILES} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
-await win.getByRole('button', { name: /^Unused/ }).click();
+await win.getByRole('radio', { name: /^Unused/ }).click();
 await win.getByRole('button', { name: `Remove all ${PHOTOS}` }).click();
 await storage.getByText('Kept for Undo').waitFor({ timeout: 15000 });
 await storage.getByText(`${FILES} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });

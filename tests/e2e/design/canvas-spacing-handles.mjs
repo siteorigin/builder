@@ -154,7 +154,7 @@ await win.evaluate((dir) => window.builder.projects.create({ name: 'Harbour Lane
 await win.waitForSelector('.editor');
 await frame.locator('h1').first().waitFor({ timeout: 120000 });
 await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 30000 });
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 const [{ nodeId: section }] = await apply([{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' }], 'Insert section');
@@ -276,7 +276,7 @@ await selectPart('Split hero', 'Container');
 await shot('container-drag-width', '[data-testid="spacing-hud"]', { pad: 90, hold: drag('layout-width-right', -120, 0) });
 
 // ---- A phone-width page: the readout must fit a narrow canvas ----
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await frame.locator('html').evaluate(() => new Promise((r) => setTimeout(r, 800)));
 await select('Visit panel');
 {
@@ -284,7 +284,7 @@ await select('Visit panel');
   if (gap) await shot('phone-drag-gap', '[data-testid="spacing-hud"]', { pad: 60, hold: drag(gap, 0, 24) });
   else console.log('skipped phone-drag-gap: no gap handle on a phone');
 }
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 await pause(1200);
 
 // ---- The keyboard: a handle reached with Tab, shown focused ----

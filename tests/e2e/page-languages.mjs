@@ -170,7 +170,7 @@ try {
   // In Preview, a visitor's link clicks move through the site in the editor's own frame.
   await win.locator('.pages-list [role="option"]', { hasText: /^About/ }).click();
   await win.locator('button[title^="Preview:"]').click();
-  await eventually(async () => assert.equal(await win.locator('button[title^="Preview:"]').getAttribute('aria-pressed'), 'true', 'Preview is on'));
+  await eventually(async () => assert.equal(await win.locator('button[title^="Preview:"]').getAttribute('aria-checked'), 'true', 'Preview is on'));
   const frame = await (await win.locator('.frame-box iframe').elementHandle()).contentFrame();
   await eventually(async () => assert.equal(await frame.evaluate(() => location.pathname), '/about/'), 30000);
   assertWalk(await walk(frame), 'preview');

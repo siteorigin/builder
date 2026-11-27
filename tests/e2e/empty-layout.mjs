@@ -85,14 +85,14 @@ try {
   assert.equal(await win.locator('.ov-selected').count() >= 1, true, 'the Grid is outlined');
 
   step('Preview shows the Grid as visitors get it: no height, no frame, and no placeholder anywhere');
-  await win.locator('.toolbar').getByRole('button', { name: 'Preview', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true }).click();
   await frame.locator('html:not([data-so-editing])').waitFor({ state: 'attached' });
   await eventually(async () => {
     const b = await boxOf(gridId);
     assert.deepEqual([b.height, b.label, b.outline, b.rule], [0, 'none', 'none', 'none'], JSON.stringify(b));
     assert.equal(await at(gridId).evaluate((el) => el.matches(':empty')), true, 'the Grid holds nothing');
   });
-  await win.locator('.toolbar').getByRole('button', { name: 'Edit', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Edit', exact: true }).click();
   await frame.locator('html[data-so-editing]').waitFor({ state: 'attached' });
   await eventually(async () => assert.ok((await boxOf(gridId)).height >= 72, 'back in Edit the frame shows again'));
 
@@ -105,9 +105,9 @@ try {
     await window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: s.state.site.homePageId }, parentId: null, componentId: 'layout.section' }] }, { label: 'Add an empty section' });
   });
   await eventually(async () => assert.equal(await slotPlaceholders(), 1, 'the empty Section shows where its content goes'), 30000);
-  await win.locator('.toolbar').getByRole('button', { name: 'Preview', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true }).click();
   await eventually(async () => assert.equal(await slotPlaceholders(), 0, 'Preview has no placeholder in the page at all'));
-  await win.locator('.toolbar').getByRole('button', { name: 'Edit', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Edit', exact: true }).click();
   await eventually(async () => assert.equal(await slotPlaceholders(), 1, 'Edit shows it again'));
 
   step('the project’s own files and a source export hold none of it');

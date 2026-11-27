@@ -221,11 +221,11 @@ await pause(300);
 await waitThumbs();
 await shot('search', '[data-asset]', { themes: ['light'] });
 await win.locator('.side-panel-view:not([hidden]) input[type="search"]').fill('');
-await win.getByRole('button', { name: /^Unused/ }).click();
+await win.getByRole('radio', { name: /^Unused/ }).click();
 await pause(300);
 await waitThumbs();
 await shot('unused', '.asset-cleanup', { themes: ['light'] });
-await win.getByRole('group', { name: 'Filter images' }).getByRole('button', { name: /^All/ }).click();
+await win.getByRole('radiogroup', { name: 'Filter images' }).getByRole('radio', { name: /^All/ }).click();
 await pause(200);
 
 // An unused, oversized image with a long name.
@@ -335,7 +335,7 @@ await picker.waitFor({ state: 'detached', timeout: 5000 });
 await back();
 
 // Every unused image removed: their files are kept for Undo, and Free up space says what it would delete.
-await win.getByRole('button', { name: /^Unused/ }).click();
+await win.getByRole('radio', { name: /^Unused/ }).click();
 await pause(300);
 await win.locator('.asset-cleanup .btn-danger').click();
 const storage = win.getByTestId('asset-storage');
@@ -368,10 +368,10 @@ await scrollBody(0);
 await pause(800);
 await shot('missing', '.asset-gone');
 // Every damaged image at once, whatever the order: the Missing filter.
-await win.getByRole('button', { name: /^Missing/ }).click();
+await win.getByRole('radio', { name: /^Missing/ }).click();
 await pause(300);
 await shot('missing-filter', '.asset-gone', { themes: ['light'] });
-await win.getByRole('group', { name: 'Filter images' }).getByRole('button', { name: /^All/ }).click();
+await win.getByRole('radiogroup', { name: 'Filter images' }).getByRole('radio', { name: /^All/ }).click();
 await pause(300);
 await win.locator(`[data-asset="${lost.id}"]`).click();
 await pause(400);

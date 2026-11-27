@@ -1,6 +1,6 @@
 import './SettingsModal.css';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, EyeOff, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
 import { api, setState, useStore, confirmDialog, refreshProviders, setProviders } from '../store';
 import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
@@ -534,8 +534,8 @@ export function SettingsModal() {
             }}
             onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && !keyProblem && void saveKey()}
           />
-          <button type="button" className="btn settings-key-reveal" aria-pressed={showKey} aria-label={showKey ? 'Hide key' : 'Show key'} title={showKey ? 'Hide key' : 'Show key'} onClick={() => setShowKey((v) => !v)}>
-            {showKey ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+          <button type="button" className="icon-btn" aria-pressed={showKey} aria-label="Show key" title="Show key" onClick={() => setShowKey((v) => !v)}>
+            <Eye aria-hidden="true" />
           </button>
           {replacing[provider] && (
             <button
@@ -727,8 +727,9 @@ export function SettingsModal() {
                     <div className="settings-group-title" id="settings-provider-label">
                       Provider
                     </div>
+                    {/* Choosing one shows its settings; "Use" below is what switches the assistant to it. */}
                     <Segmented<ProviderId>
-                      radio
+                      tabs
                       full
                       labelledBy="settings-provider-label"
                       describedBy="settings-provider-note"
@@ -737,7 +738,7 @@ export function SettingsModal() {
                         setViewed(p);
                         setShowKey(false);
                       }}
-                      options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.id === 'local' ? <Laptop /> : <Cloud /> }))}
+                      options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.id === 'local' ? <Laptop /> : <Cloud />, controls: p.id === provider ? `settings-provider-${p.id}` : undefined }))}
                     />
                     {providerNote}
                     {provider !== activeProvider && (
@@ -749,6 +750,7 @@ export function SettingsModal() {
                       </div>
                     )}
                   </div>
+                  <div role="tabpanel" id={`settings-provider-${provider}`} aria-labelledby={`settings-provider-${provider}-tab`}>
                   {isLocal ? (
                     <LocalModelSettings settings={settings} update={update} keyRevision={keyRevision} keySaved={keySaved} revealKey={(keyNotice?.provider === 'local' && keyNotice.kind === 'failed') || !!keys.local.trim()} status={connection} keyField={keyField} onBlocked={setLocalBlocked} onStatus={setLocalServer} />
                   ) : (
@@ -758,6 +760,7 @@ export function SettingsModal() {
                       {modelRow}
                     </section>
                   )}
+                  </div>
                   <div className="settings-group-title">Chat</div>
                   <div className="settings-group">
                     <div className="settings-row">

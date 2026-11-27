@@ -250,7 +250,7 @@ await pause(500);
 await pickCardTitle();
 await win.locator('.dock .segmented button', { hasText: /^This / }).click();
 await pause(400);
-await shot('part-card-this', '.segmented button[aria-pressed="true"]', LIGHT);
+await shot('part-card-this', '.segmented button[aria-checked="true"]', LIGHT);
 await clearSelection();
 
 // Scrolled: the header stays while the sections move under it.

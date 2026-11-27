@@ -82,7 +82,7 @@ const rowSelector = (key: string) => `.outline-list .outline-row[data-heading="$
  * the first) takes Tab; ↑/↓/Home/End and typing a heading's first letters move between rows and select as they go;
  * and Tab from a focused row reaches its own next step before leaving the list.
  */
-export function OutlinePanel({ pageId }: { pageId: string }) {
+export function OutlinePanel({ pageId, id }: { pageId: string; /** For the Headings tab that shows it. */ id?: string }) {
   const snap = useStore((s) => s.snapshot);
   const selection = useStore((s) => s.selection);
   const state = snap?.state;
@@ -250,7 +250,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
   const titled = rows.some((r) => r.extraTitle);
 
   return (
-    <div className="panel-body outline-view" aria-label={`Headings on ${page.title}`} role="region" tabIndex={-1}>
+    <div id={id} className="panel-body outline-view" {...(id ? { role: 'tabpanel', 'aria-labelledby': `${id}-tab` } : { role: 'region', 'aria-label': `Headings on ${page.title}` })} tabIndex={-1}>
       {/* A fix that settles the last flag changes the summary while focus stays on the row: it is announced. */}
       {/* Said by its own status, outside the summary's live region, so it is heard once. */}
       <BlockedStatus block={hold} lifted="You can change heading levels now." />

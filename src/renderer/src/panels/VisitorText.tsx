@@ -4,7 +4,7 @@ import type { ProjectState, SiteDoc } from '@shared/types';
 import { isLanguageCode, pageLanguage, siteLanguage } from '@shared/languages';
 import { clipText } from '@shared/not-found';
 import { VISITOR_TEXT_GROUPS, VISITOR_TEXT_LIMIT, ownVisitorTextFor, visitorTextFor, visitorTextLanguage, type VisitorTextField, type VisitorTextKey } from '@shared/visitor-text';
-import { DraftInput, Field, type DraftHandle } from '../components/ui';
+import { DraftInput, Field, Segmented, type DraftHandle } from '../components/ui';
 
 /**
  * The languages the site's pages are in, the site's own first, then any other language the author has wording for
@@ -199,21 +199,20 @@ export function VisitorTextFields({ state, onCommit }: { state: Pick<ProjectStat
           </div>
         {/* Kept while the changed ones show, even once none is left, so there is always a way back to All. */}
         {(changedHere > 0 || showChanged) && (
-          <div className="segmented" role="group" aria-label="Show">
-            <button
-              aria-pressed={!showChanged}
-              onClick={() => {
-                view(false, query);
-                // With nothing changed, this control goes with the view: the find box takes focus instead.
-                if (!changedHere) findRef.current?.focus();
-              }}
-            >
-              All
-            </button>
-            <button aria-pressed={showChanged} onClick={() => view(true, query)}>
-              Changed {changedHere}
-            </button>
-          </div>
+          <Segmented
+            radio
+            label="Show"
+            value={showChanged ? 'changed' : 'all'}
+            onChange={(v) => {
+              view(v === 'changed', query);
+              // With nothing changed, this control goes with the view: the find box takes focus instead, once it has gone.
+              if (v === 'all' && !changedHere) requestAnimationFrame(() => findRef.current?.focus());
+            }}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'changed', label: `Changed ${changedHere}` }
+            ]}
+          />
         )}
         </div>
         {held && <div className="field-hint" id={`${findId}-held`}>Wording you just changed stays in view until you change the filter.</div>}

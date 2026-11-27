@@ -232,10 +232,10 @@ await win.evaluate(() => window.builder.ai.setKey('openai', null));
 
 // Phone viewport with a selection.
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await pause(1200);
 await shot('phone-viewport', '.frame-box');
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 await pause(800);
 
 // The smallest supported window, then the same with the right panel collapsed.

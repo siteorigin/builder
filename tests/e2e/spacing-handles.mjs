@@ -143,7 +143,7 @@ await win.getByRole('radiogroup', { name: 'Edit styles for' }).getByRole('radio'
 await eventually(async () => assert.equal(await win.locator('[data-testid^="spacing-"]').count(), 0));
 
 step('previewing Phone: an Alt drag writes exact pixels to the Phone override only');
-await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await handle.waitFor({ timeout: 15000 });
 await eventually(async () => assert.equal(await frame.locator('html').evaluate(() => innerWidth), 390));
 const phoneStart = await padding();
@@ -161,7 +161,7 @@ await eventually(async () => assert.equal(await previews(), 0), 15000);
 assert.deepEqual(await padding(), [37, 37], 'the phone padding shows');
 assert.notDeepEqual(phoneStart, [37, 37], 'it was another size before');
 await win.screenshot({ path: join(OUT, 'spacing-phone.png') });
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 await eventually(async () => assert.deepEqual(await padding(), start, 'desktop keeps its padding'), 15000);
 
 assert.deepEqual(errors, [], 'no page errors');

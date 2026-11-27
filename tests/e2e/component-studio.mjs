@@ -97,9 +97,9 @@ step('phone and desktop widths, with the same preview');
 await frame.locator(`.so-${defKey(defId)}--${axis}-${option}`).first().waitFor({ timeout: 30000 });
 const shownAt = await framePath();
 const innerWidth = () => frame.locator('html').evaluate((el) => el.ownerDocument.defaultView.innerWidth);
-await win.getByRole('button', { name: 'Phone', exact: true }).click();
+await win.getByRole('radio', { name: 'Phone', exact: true }).click();
 await eventually(async () => assert.equal(await innerWidth(), 390, 'phone width'));
-await win.getByRole('button', { name: 'Desktop', exact: true }).click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).click();
 await eventually(async () => assert.equal(await innerWidth(), 1280, 'desktop width'));
 assert.equal(await framePath(), shownAt, 'a width is not a new preview');
 

@@ -22,7 +22,8 @@ await win.locator('.pages-list [role="option"]', { hasText: title }).click();
 await eventually(async () => assert.match(await win.locator('.toolbar .project-title').innerText(), /Winter stock/, 'the long page is open'));
 
 const toolbar = win.locator('.toolbar');
-const button = (n) => toolbar.getByRole('button', { name: n, exact: typeof n === 'string' });
+// Width and mode are radios; everything else in the toolbar is a button.
+const button = (n) => toolbar.getByRole(['Edit', 'Preview', 'Desktop', 'Tablet', 'Phone'].includes(n) ? 'radio' : 'button', { name: n, exact: typeof n === 'string' });
 
 const layout = () =>
   win.evaluate(() => {
@@ -151,9 +152,9 @@ assert.equal(await button('More').count(), 0, 'nothing needs a More menu yet');
 assert.equal(await button('Edit').innerText(), '', 'Edit shows its icon only');
 assert.equal(await button('Preview').innerText(), '', 'Preview shows its icon only');
 await button('Preview').click();
-await eventually(async () => assert.equal(await button('Preview').getAttribute('aria-pressed'), 'true', 'the icon-only Preview button works'));
+await eventually(async () => assert.equal(await button('Preview').getAttribute('aria-checked'), 'true', 'the icon-only Preview button works'));
 await button('Edit').click();
-await eventually(async () => assert.equal(await button('Edit').getAttribute('aria-pressed'), 'true', 'the icon-only Edit button works'));
+await eventually(async () => assert.equal(await button('Edit').getAttribute('aria-checked'), 'true', 'the icon-only Edit button works'));
 
 step('the same with a file conflict notice, the widest save state');
 const pageFile = join(dir, 'src', 'routes', '+page.svelte');

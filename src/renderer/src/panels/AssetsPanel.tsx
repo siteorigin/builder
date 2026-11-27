@@ -1058,6 +1058,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />
       {!replacing && (unused.length > 0 || damaged.length > 0) && (
         <Segmented
+          radio
           full
           label="Filter images"
           value={mode}

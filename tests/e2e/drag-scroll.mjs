@@ -25,7 +25,7 @@ const dropLine = win.locator('[data-testid="insert-drop-line"]');
 const wait = (ms) => win.waitForTimeout(ms);
 
 step('select the first section and pick it up by its grip');
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 await wait(800);
 const before = await roots();
 assert.ok(before.length >= 4, 'the starter has sections to scroll past');

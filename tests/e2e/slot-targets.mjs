@@ -95,7 +95,7 @@ const pickUp = async (tile) => {
 };
 
 step('Corner cafe: a Section holding a Split that shows Main and Sidebar side by side, both empty');
-await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 const home = async () => (await snapshot()).pages[pageId];
@@ -385,10 +385,10 @@ step('an Image dragged over Sidebar, which takes only text, says so on Sidebar; 
 
 step('Preview shows no slot placeholder, and no slot address, anywhere on the page');
 {
-  await win.locator('.toolbar').getByRole('button', { name: 'Preview', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true }).click();
   await frame.locator('html:not([data-so-editing])').waitFor({ state: 'attached' });
   await eventually(async () => assert.equal(await frame.locator('[data-so-slot-empty], [data-so-slot-node], [data-so-slot-ctx]').count(), 0));
-  await win.locator('.toolbar').getByRole('button', { name: 'Edit', exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name: 'Edit', exact: true }).click();
   await frame.locator('html[data-so-editing]').waitFor({ state: 'attached' });
   await marker('main').waitFor({ timeout: 15000 });
 }

@@ -897,6 +897,7 @@ export function ExportModal() {
                   {/* A fieldset locks both format buttons during a build, and while a conflict stops both exports. */}
                   <fieldset className="export-format-control" role="presentation" disabled={!!busy || conflicts > 0}>
                     <Segmented
+                      radio
                       label="Save as"
                       value={format}
                       onChange={(v) => !busy && setFormat(v)}
