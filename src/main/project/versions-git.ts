@@ -41,7 +41,7 @@ export const keptOutOfGit = (path: string): boolean => snapshotPlace(path).kind 
 
 /** A commit's message: what kind of version it is, and the ID that ties it to its row. Never the author's own words. */
 export function commitMessage(id: string, auto: boolean): string {
-  return `${auto ? 'Before restoring' : 'Saved version'}\n\nSiteOrigin-Version: ${id}\n`;
+  return `${auto ? 'Saved automatically' : 'Saved version'}\n\nSiteOrigin-Version: ${id}\n`;
 }
 
 /** The app's identity at `time` (an ISO time), in UTC so the computer's time zone is never recorded. */
