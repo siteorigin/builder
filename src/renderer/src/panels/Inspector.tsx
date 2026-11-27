@@ -1166,7 +1166,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     title,
     [
       ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
-      ...(swappable ? [{ label: top && noun === 'section' ? 'Change section design…' : 'Change design…', icon: <ArrowRightLeft />, hint: 'Keeps its content', onSelect: swapDesign }] : []),
+      ...(swappable ? [{ label: top && noun === 'section' ? 'Change section design…' : 'Change design…', icon: <ArrowRightLeft />, hint: 'Keeps what fits', onSelect: swapDesign }] : []),
       ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, onSelect: makeUnique }] : []),
       ...(canDuplicate(def, dev) ? [{ label: 'Duplicate component…', icon: <Copy />, hint: 'This one keeps the original', onSelect: duplicateComponent }] : []),
       ...(create ? [{ label: 'Create component…', icon: <Component />, hint: 'With its content', onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
