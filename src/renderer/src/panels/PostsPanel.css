@@ -27,8 +27,10 @@
   .post-page { max-width: calc(68ch + 96px); margin: 28px auto 80px; padding: 36px 48px 56px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: 0 1px 3px rgb(17 24 39 / 0.06); }
   /* The title is a text field like any other: it shows the house focus outline, with room around its words for it. */
   .post-title-input.input { display: block; width: calc(100% + 16px); height: auto; min-height: 0; max-height: none; margin: 0 -8px; padding: 4px 8px; border: 0; border-radius: var(--r-sm); background: transparent; box-shadow: none; font-size: 32px; line-height: 1.2; font-weight: 700; color: var(--text); field-sizing: content; resize: none; overflow: hidden; overflow-wrap: anywhere; }
-  /* Its count says something only while it is being typed in, or once it is over. */
-  .post-title-input + .field-count { margin-top: 6px; }
+  /* Its count says something only while it is being typed in, or once it is over, under the title: a heading with no
+     hint keeps its words the full width rather than leaving room at its end for a count. */
+  .post-title-input + .field-count { margin-top: 1px; }
+  .post-title-input + .field-count:not(.field-error) { position: static; display: block; height: auto; }
   /* Off (a synced or deleted entry): quieter, not boxed, still readable and selectable as the entry's name. */
   .post-title-input.input:disabled { background: transparent; color: var(--text-2); }
   .post-title-input:not(:focus) + .field-count:not(.field-error) { visibility: hidden; }

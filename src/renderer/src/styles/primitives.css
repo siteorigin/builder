@@ -108,16 +108,43 @@
   /* A checked field's refusal: what is still saved reads as plain text, and the correction sits under it. */
   .field-error .field-saved { color: var(--text-2); }
   .field-error .field-fix { display: block; margin-top: 4px; font-size: 12px; }
-  /* A field with a limit counts against it under itself; text over it turns the count into an error (with its
-     glyph) saying why it is not saved. */
-  .field-count { margin-top: -2px; font-size: 12px; color: var(--text-3); text-align: right; font-variant-numeric: tabular-nums; }
-  .field-count.field-error { text-align: left; color: var(--red); }
-  /* A short name's count (DraftInput quietCount) shows only while its field is being edited, inside the field's
-     trailing edge so nothing around it moves; near or over the limit it is an ordinary count under the field. */
-  .field-quiet { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-  .field-quiet > .field-count.quiet { position: absolute; top: 0; right: 9px; height: 100%; display: flex; align-items: center; margin: 0; pointer-events: none; }
-  .field-quiet > .input:focus:has(+ .field-count.quiet) { padding-right: 60px; }
-  :is(.input, .textarea):not(:focus) + .field-count.quiet { display: none; }
+  /* A field with a limit counts against it inside itself, so a hint under the field stays with it (#1186); text
+     over the limit turns the count into an error (with its glyph) under the field, saying why it is not saved.
+     DraftInput sets --count-ch (the widest count, in characters) and --field-rows on .field-counted. */
+  .field-count { font-size: 12px; line-height: 16px; color: var(--text-3); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
+  .field-count.field-error { line-height: 1.4; text-align: left; color: var(--red); white-space: normal; pointer-events: auto; }
+  .field-counted { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  /* A single line (an input, or a line that wraps): the count at its right end, in padding kept for it, which
+     wrapped text never enters. */
+  .field-counted:not(.box) > .field-count:not(.field-error) { position: absolute; right: 9px; bottom: 0; height: min(100%, 30px); display: flex; align-items: center; }
+  .field-counted:not(.box) > :is(.input, .textarea):has(+ .field-count:not(.field-error, .quiet)) { padding-right: calc(var(--count-ch) * 1ch + 18px); }
+  /* A line that wraps grows with all its text rather than scrolling, so no scrollbar runs under its count; text over
+     the limit, its count under it, scrolls in the usual height. */
+  .field-counted:not(.box) > .textarea:has(+ .field-count:not(.field-error)) { max-height: none; }
+  /* A box: its border is drawn around the text and a footer holding the count, so the text scrolls above the count and
+     never under it. The box is resized by its grip, at the corner right of the count. It opens --field-rows lines tall
+     (4 for a limit of 300 or more) and grows with its text up to a textarea's tallest. */
+  .field-frame {
+    display: flex; flex-direction: column; min-height: calc(var(--field-rows) * 1lh + 31px); max-height: 260px; overflow: hidden; resize: vertical;
+    line-height: 1.5; border-radius: var(--r-sm); border: 1px solid var(--border-control); background: var(--raised);
+    transition: border-color 120ms; user-select: text;
+  }
+  .field-frame > .textarea { flex: 1 1 auto; min-height: 0; max-height: none; padding-bottom: 2px; border: 0; border-radius: inherit; background: transparent; resize: none; }
+  .field-frame > .textarea:focus { outline: none; }
+  .field-frame > .field-count { flex: none; align-self: flex-end; margin: 0 22px 4px 9px; }
+  .field-frame:has(> .textarea:focus) { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .field-frame:hover:not(:has(> .textarea:disabled, > .textarea[aria-invalid='true'])) { border-color: var(--text-3); }
+  .field-frame:has(> .textarea[aria-invalid='true']) { border-color: var(--red); }
+  .field-frame:has(> .textarea:disabled) { background-color: var(--disabled-fill); border-color: var(--border-strong); }
+  .field-frame:has(> .textarea:read-only:not(:disabled)) { background: var(--panel-2); }
+  /* A field that is off dims its count with its text. */
+  :is(.field-counted, .field-frame):has(> :is(.input, .textarea):disabled) > .field-count:not(.field-error) { color: var(--disabled-ink); }
+  :where(:root[data-appearance='dark']) { .field-frame:has(> .textarea:read-only:not(:disabled)) { background: var(--bg); } }
+  /* A short name's count (DraftInput quietCount) shows only while its field is being edited, so a list of names is
+     not a column of counts; near or over the limit it shows as any other. */
+  .field-counted:not(.box) > :is(.input, .textarea):focus:has(+ .field-count.quiet) { padding-right: calc(var(--count-ch) * 1ch + 18px); }
+  .field-counted:not(.box) > :is(.input, .textarea):not(:focus) + .field-count.quiet { display: none; }
+  .field-frame:not(:has(> .textarea:focus)) > .field-count.quiet { visibility: hidden; }
 
   /* ---------- Segmented, Switch, Badge, Kbd, Spinner ---------- */
   /* Segmented: a --r-sm tray with --r-xs options (concentric across its edge and 2px padding). The tray takes the

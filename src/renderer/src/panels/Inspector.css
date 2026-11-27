@@ -109,7 +109,6 @@
   /* Beside a 30px name (a state's), centred on it. */
   .field .contract-row > .icon-btn.sm { margin-top: 3px; }
   .contract-row-main { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-width: 0; }
-  .contract-row-main > .field-count { margin-top: 0; }
   .contract-row-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }
   .contract-row-line > .contract-meta { flex: 1 1 0; min-width: 0; }
   .contract-row-main .input { width: 100%; }
@@ -144,7 +143,6 @@
   .slot-kinds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
   .slot-kinds > legend { grid-column: 1 / -1; padding: 0; margin-bottom: 2px; }
   .slot-kinds label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; padding-block: max(0px, calc((24px - 1lh) / 2)); font-size: 12px; min-width: 0; }
-  .slot-desc-count { margin-top: -8px; }
   .contract-kind { flex: 0 0 auto; width: auto; }
   .contract-add > .contract-add-end { margin-left: auto; }
   .contract-uses > ul { margin: 0; padding-left: 34px; }
@@ -298,7 +296,6 @@
   /* What is wrong with the picture: the Missing chip, then why, and the way to fix it. */
   .insp-image-state { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
   .insp-image-state .link-btn { min-height: 24px; font-size: 12px; }
-  .textarea.insp-alt { min-height: 52px; }
   /* A description kept from the previous picture: the warning is the field's hint, its one repair under it. */
   .insp-image .field-hint .insp-check { color: var(--text); }
   .insp-image-fits { align-self: flex-start; margin-top: -2px; }

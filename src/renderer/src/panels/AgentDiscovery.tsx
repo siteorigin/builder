@@ -97,7 +97,7 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
         {preview !== null && (
           <div className="agents-sub">
             <Field label="Index summary" hint={summaryHint}>
-              <DraftInput multiline rows={2} limit={TEXT_LIMITS.siteDescription} quietCount keep="site:llmsSummary" value={own} placeholder={typeof site.description === 'string' ? site.description : ''} onDirty={shown} onCommit={(v) => onChange({ llmsSummary: v })} />
+              <DraftInput multiline rows={2} limit={TEXT_LIMITS.siteDescription} keep="site:llmsSummary" value={own} placeholder={typeof site.description === 'string' ? site.description : ''} onDirty={shown} onCommit={(v) => onChange({ llmsSummary: v })} />
             </Field>
             <div className="agents-file">
               <div className="agents-file-head">

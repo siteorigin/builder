@@ -19,8 +19,8 @@ const pageDoc = (id) => readJson(`siteorigin/pages/${id}.json`);
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const inspector = () => win.locator('#dock-panel-inspect');
 const status = () => win.locator('.toolbar .save-state');
-/** The count (or refusal) a limited field shows under itself. */
-const countOf = (field) => field.locator('xpath=following-sibling::div[contains(@class, "field-count")][1]');
+/** The count a limited field shows inside itself, or the refusal under it. */
+const countOf = (field) => field.locator('xpath=ancestor::span[contains(concat(" ", normalize-space(@class), " "), " field-counted ")][1]').locator('.field-count');
 /** Text of exactly `n` characters, ending a sentence, like copy pasted from elsewhere. */
 const sentence = (n) => 'Calm, practical rooms with oak, linen and clay, planned around how you live. '.repeat(10).slice(0, n - 1) + '.';
 /** Replace a field's text the way a paste does: one insertion, whatever its length. */

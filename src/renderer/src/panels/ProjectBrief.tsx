@@ -82,7 +82,7 @@ function BriefFields() {
         ) : (
           <>
             <Field label="Description" hint={hints.description}>
-              <DraftInput multiline rows={3} quietCount limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={description} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
+              <DraftInput multiline rows={3} limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={description} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
             </Field>
             <Field label="Working notes" hint={hints.notes}>
               <DraftInput multiline quietCount className="textarea brief-notes" limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={notes} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />

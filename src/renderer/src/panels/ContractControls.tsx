@@ -4,7 +4,7 @@
  * as it is when the author acts (lib/component-contract) and sends it against that revision, so a change planned on a
  * project that has moved on since is refused rather than misapplied. Every change is one Undo.
  */
-import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Paintbrush, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';
 import type { ComponentCategory, ComponentDefinition, GraphNode, ProjectState, PropSchema, SlotDef, SlotPrimitive } from '@shared/types';
@@ -904,11 +904,16 @@ function SlotForm({ def, name, decl, onDone }: { def: ComponentDefinition; name:
         <input id={`${id}-name`} className="input" value={draft.label} maxLength={SLOT_LABEL_MAX} onChange={(e) => set({ label: e.target.value })} onKeyDown={keys({ enter: () => void save(), escape: onDone })} autoFocus />
       </Field>
       <Field label="What belongs there" controlId={`${id}-desc`} hint="For you and the AI, when filling it in.">
-        <textarea id={`${id}-desc`} className="textarea" rows={2} value={draft.description} maxLength={SLOT_DESCRIPTION_MAX} aria-describedby={`${id}-desc-count ${id}-desc-note`} onChange={(e) => set({ description: e.target.value })} />
+        {/* Counted inside its box, as DraftInput counts (#1186), so the hint stays under it. */}
+        <span className="field-counted box" style={{ '--count-ch': `${SLOT_DESCRIPTION_MAX} / ${SLOT_DESCRIPTION_MAX}`.length, '--field-rows': SLOT_DESCRIPTION_MAX >= 300 ? 4 : 3 } as CSSProperties}>
+          <span className="field-frame">
+            <textarea id={`${id}-desc`} className="textarea" rows={2} value={draft.description} maxLength={SLOT_DESCRIPTION_MAX} aria-describedby={`${id}-desc-count ${id}-desc-note`} onChange={(e) => set({ description: e.target.value })} />
+            <div className="field-count" id={`${id}-desc-count`}>
+              {draft.description.length} / {SLOT_DESCRIPTION_MAX}
+            </div>
+          </span>
+        </span>
       </Field>
-      <div className="field-count slot-desc-count" id={`${id}-desc-count`}>
-        {draft.description.length} / {SLOT_DESCRIPTION_MAX}
-      </div>
       <Field label="Takes">
         <Segmented
           radio

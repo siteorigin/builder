@@ -947,7 +947,7 @@ const inspField = (id) => inspector.locator(`#page-seo-${id}`);
 const pageField = (id) => view.locator(`#seo-view-${id}`);
 const fieldAlert = (box) => box.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " field ")][1]').locator('[role="alert"]');
 const meter = (kind) => view.locator(`.seo-meter[data-meter="${kind}"]`);
-const countOf = (box) => box.locator('xpath=following-sibling::div[contains(@class, "field-count")][1]');
+const countOf = (box) => box.locator('xpath=ancestor::span[contains(concat(" ", normalize-space(@class), " "), " field-counted ")][1]').locator('.field-count');
 await eventually(async () => assert.equal(await inspected.innerText(), 'About', 'the Inspector shows About, the page on the canvas'));
 assert.equal(await inspField('title').inputValue(), documents[0].seoTitle);
 await rail('seo').click();

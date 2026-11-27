@@ -1,7 +1,7 @@
 import { isImeComposing } from '../lib/ime';
 import { oneLine } from '../lib/one-line';
 import { shortcutLabel } from '../lib/shortcut-keys';
-import { Children, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
+import { Children, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement, type ReactNode, type RefObject } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronUp, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
@@ -1438,21 +1438,34 @@ function DraftField({
       {note.text}
     </div>
   );
-  // A quiet count sits inside the field's trailing edge while it is focused, so focusing a name never moves the
-  // rows below it; near or over the limit it takes its line under the field. Always wrapped, so the field is not
-  // remounted (and focus lost) when the count changes place.
-  if (quietCount)
-    return (
-      <span className="field-quiet">
-        {control}
-        {count}
-      </span>
-    );
+  // The count sits inside the field, so a hint under it stays with it (#1186). A box keeps it in a footer inside its
+  // border, below the text's scroll area, so no line ever passes under it; a single line keeps it at its right end,
+  // in padding the text never enters. Over the limit it is the error sentence under the field. Always wrapped the same
+  // way, so the field is not remounted (and focus lost) when the count changes place.
+  const box = multiline && !wrap;
+  const room = { '--count-ch': `${limit} / ${limit}`.length, '--field-rows': limit! >= 300 ? 4 : 3 } as CSSProperties;
+  // The box's footer is inside its border but outside the textarea: pressing there keeps the caret in the text, as
+  // pressing anywhere else in a field does, rather than leaving the field (which saves it). The grip, in the corner
+  // right of the count, still resizes a box that can be resized.
+  const holdFocus = (e: React.MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const grip = getComputedStyle(e.currentTarget).resize !== 'none' && e.clientX > r.right - 22 && e.clientY > r.bottom - 22;
+    if (e.target !== e.currentTarget || grip || !input.current || input.current.disabled) return;
+    e.preventDefault();
+    input.current.focus();
+  };
   return (
-    <>
-      {control}
-      {count}
-    </>
+    <span className={`field-counted${box ? ' box' : ''}`} style={room}>
+      {box ? (
+        <span className="field-frame" onMouseDown={holdFocus}>
+          {control}
+          {!note.over && count}
+        </span>
+      ) : (
+        control
+      )}
+      {(!box || note.over) && count}
+    </span>
   );
 }
 
