@@ -1,5 +1,7 @@
 @layer components {
-  .toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: 20; }
+  /* A pixel of room above as well as the hairline below, so the 28px controls centre on whole pixels (12px from the
+     top) and their 1px edges draw crisp on a 1x display rather than smeared across two rows. */
+  .toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 14px; padding: 1px 10px 0; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: 20; }
   .toolbar.mac .toolbar-start { padding-left: 70px; }
   /* The centre group is centred on the window when there is room (from about 1400px on macOS). Narrower, the start
      column (identity and save state) keeps a floor and borrows from the empty space on the right instead. The tracks

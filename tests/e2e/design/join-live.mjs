@@ -68,8 +68,13 @@ async function shot(state, check, { themes = BOTH, area = 'dialog', keepPointer 
   for (const theme of themes) {
     await setTheme(theme);
     if (!keepPointer) await win.mouse.move(24, win.viewportSize().height - 60);
-    // A toolbar at rest: focus a menu handed back on Escape is not part of the state.
-    if (area === 'toolbar') await win.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+    // A toolbar at rest: focus a menu handed back on Escape is not part of the state, and a turning glyph is caught at
+    // its first frame rather than mid-turn (a colour still easing in is finished).
+    if (area === 'toolbar')
+      await win.evaluate(() => {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        for (const a of document.getAnimations()) a instanceof CSSTransition ? a.finish() : (a.pause(), (a.currentTime = 0));
+      });
     await pause(200);
     const visible = await win.locator(check).first().isVisible().catch(() => false);
     if (!visible) await win.screenshot({ path: join(OUT, `${state}--${theme}.failed.jpg`), type: 'jpeg' });
@@ -243,7 +248,7 @@ await shot('tb-viewer', '.toolbar .remote-pill', { area: 'toolbar', themes: ['li
 await remote({ role: 'collaborator', guestExpiresAt: null, reconnecting: true });
 await shot('tb-reconnecting', '.toolbar .remote-pill', { area: 'toolbar' });
 await remote({ reconnecting: false, hostConnected: false });
-await shot('tb-away', '.toolbar .remote-pill', { area: 'toolbar', themes: ['light'] });
+await shot('tb-away', '.toolbar .remote-pill', { area: 'toolbar' });
 // Its menu while the host is away: the longest connection line.
 await win.locator('.toolbar .remote-pill').click();
 await win.locator('[role="menu"]').waitFor();

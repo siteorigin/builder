@@ -1,9 +1,10 @@
 // Design capture harness for hosting a live session: the toolbar's Share button and its Live pill, the Share popover in
 // each of its phases (start, starting, live with nobody yet, a full room with guests waiting, a session that lasts until
 // the project closes, reconnecting, ending, a guest's removal and the session's end being confirmed), and the
-// join-request notices (one, a crowd, and with a dialog open). Host states are pushed through the editor's own
-// `live:state` channel, as the main process sends them, so no relay is needed. Drives the real (built) app and writes
-// crops of the toolbar's right end and the notices' band, in light and dark. Opt-in only, never part of `npm run test:e2e`:
+// join-request notices (one, a crowd, while reconnecting, and with a dialog open). Host states are pushed through the
+// editor's own `live:state` channel, as the main process sends them, so no relay is needed. Drives the real (built) app
+// and writes crops of the toolbar's right end and the notices' band, in light and dark. Opt-in only, never part of
+// `npm run test:e2e`:
 //
 //   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/share-popover.mjs
 //
@@ -60,6 +61,14 @@ async function shot(state, check, { themes = BOTH, area = 'popover', keepPointer
   for (const theme of themes) {
     await setTheme(theme);
     if (!keepPointer) await win.mouse.move(24, win.viewportSize().height - 60);
+    // The toolbar at rest: no focus ring left by the popover handing focus back, and a turning glyph caught at its first
+    // frame rather than wherever it happened to be (a colour still easing in is finished), so captures of the pill
+    // compare like with like.
+    if (area === 'toolbar')
+      await win.evaluate(() => {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        for (const a of document.getAnimations()) a instanceof CSSTransition ? a.finish() : (a.pause(), (a.currentTime = 0));
+      });
     await pause(200);
     const visible = await win.locator(check).first().isVisible().catch(() => false);
     if (!visible) throw new Error(`state "${state}" (${theme}) did not render "${check}"; refusing to write`);
@@ -230,7 +239,9 @@ await closeShare();
 
 // ---- Reconnecting, with an error ----
 await live(room({ phase: 'reconnecting', participants: crowd.slice(1, 4) }));
-await shot('tb-reconnecting', '.share-btn.reconnecting', { area: 'toolbar', themes: ['light'] });
+await shot('tb-reconnecting', '.share-btn.reconnecting', { area: 'toolbar' });
+// The request still waiting stays on the canvas, saying when it can be answered.
+await shot('notices-reconnecting', '.toast.live-request .live-request-paused', { area: 'notices' });
 await openShare();
 await shot('pop-reconnecting', '.share-popover .live-roster');
 await closeShare();

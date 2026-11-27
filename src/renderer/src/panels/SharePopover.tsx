@@ -1,7 +1,7 @@
 import './SharePopover.css';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Copy, Lock, Radio, Users, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, Lock, Radio, RefreshCw, Users, X } from 'lucide-react';
 import type { LiveHostState, LiveRun } from '@shared/api';
 import { GUEST_ROLES, type GuestRole } from '@shared/live/limits';
 import { SESSION_DURATIONS, type SessionDuration } from '@shared/live/expiry';
@@ -72,7 +72,15 @@ export function ShareControl({ compact }: { compact?: boolean }) {
         title={pill.label.replace(/^Share: /, '')}
         onClick={() => setState({ shareOpen: !open })}
       >
-        {pill.kind === 'busy' ? <Spinner decorative /> : pill.kind === 'idle' ? <Users aria-hidden="true" /> : <Radio aria-hidden="true" className="live-dot" />}
+        {pill.kind === 'busy' ? (
+          <Spinner decorative />
+        ) : pill.kind === 'idle' ? (
+          <Users aria-hidden="true" />
+        ) : pill.kind === 'reconnecting' ? (
+          <RefreshCw aria-hidden="true" className="live-glyph" />
+        ) : (
+          <Radio aria-hidden="true" className="live-glyph" />
+        )}
         {(!compact || pill.kind !== 'idle') && <span className="share-text">{pill.text}</span>}
         {hasRoom(live) && live.locked && <Lock aria-hidden="true" className="share-lock" />}
         {(pill.kind === 'live' || pill.kind === 'reconnecting') && people > 0 && (
@@ -387,7 +395,7 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
     <div className={`share-body${edges.above ? ' more-above' : ''}${edges.below ? ' more-below' : ''}`}>
       <div className="share-fixed">
         <p className={`share-status ${live.phase}`}>
-          <Radio aria-hidden="true" className="live-dot" />
+          {reconnecting ? <RefreshCw aria-hidden="true" className="live-glyph" /> : <Radio aria-hidden="true" className="live-glyph" />}
           {reconnecting ? 'Reconnecting…' : 'Live'}
           {live.locked && (
             <span className="share-locked">
