@@ -18,6 +18,8 @@ export const FOUNDATION_TOKENS: TokenDef[] = [
   { id: 'color.on-inverse', label: 'Text on dark sections', group: 'color', value: '#f1eee6' },
   { id: 'color.border', label: 'Border', group: 'color', value: '#e3dfd5' },
   { id: 'color.focus', label: 'Keyboard focus outline', group: 'color', value: '#2f6fed' },
+  { id: 'color.error', label: 'Errors', group: 'color', value: '#b3261e' },
+  { id: 'color.error-on-inverse', label: 'Errors on dark sections', group: 'color', value: '#ff8a80' },
 
   // Font families
   { id: 'font.body', label: 'Body font', group: 'font', value: "'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif" },

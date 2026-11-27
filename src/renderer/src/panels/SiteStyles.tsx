@@ -57,7 +57,9 @@ const FOUNDATION_USES: Record<string, string> = {
   'color.inverse': 'Dark sections and panels',
   'color.on-inverse': 'Text in dark sections',
   'color.border': 'Dividers',
-  'color.focus': 'Focus outline for keyboard users'
+  'color.focus': 'Focus outline for keyboard users',
+  'color.error': 'Form errors and the fields to put right',
+  'color.error-on-inverse': 'Form errors in dark sections'
 };
 
 /** What Foundation's layout values that are not self-explanatory do, so an owner can predict the effect. */
@@ -89,7 +91,8 @@ const COLOR_GROUPS: Array<{ label: string; ids: string[] }> = [
   { label: 'Backgrounds', ids: ['color.background', 'color.surface', 'color.surface-alt'] },
   { label: 'Text', ids: ['color.text', 'color.muted'] },
   { label: 'Dark areas', ids: ['color.inverse', 'color.on-inverse'] },
-  { label: 'Lines and focus', ids: ['color.border', 'color.focus'] }
+  { label: 'Lines and focus', ids: ['color.border', 'color.focus'] },
+  { label: 'Form errors', ids: ['color.error', 'color.error-on-inverse'] }
 ];
 
 /** The jump links under the panel's header, one for each section in order. */

@@ -98,6 +98,40 @@ describe('every pair readable, for any brand and mood (#357)', () => {
     }
   });
 
+  it('sets a red error colour for the light grounds and one for dark sections, readable on each, for any brand, mood and page (#1016)', () => {
+    const red = (hex: string) => {
+      const c = lch(hex);
+      // sRGB takes chroma away, never hue: the red stays within a few degrees of the one asked for.
+      return c.C > 0.08 && Math.abs(((c.h - 27 + 540) % 360) - 180) < 3;
+    };
+    const pages = new Set<string>();
+    for (const themeId of THEMES)
+      for (const mood of PALETTE_MOODS)
+        for (const brand of BRANDS) {
+          const h = make(brand, mood, themeId);
+          const v = h.values;
+          const at = `${themeId} ${mood} ${brand}`;
+          pages.add(h.page);
+          // Both roles are made on every theme that has them, as saved #rrggbb, and stay red whatever the brand.
+          expect(v['color.error'], at).toMatch(/^#[0-9a-f]{6}$/);
+          expect(v['color.error-on-inverse'], at).toMatch(/^#[0-9a-f]{6}$/);
+          expect(red(v['color.error']!), `${at} error ${v['color.error']}`).toBe(true);
+          expect(red(v['color.error-on-inverse']!), `${at} error-on-inverse ${v['color.error-on-inverse']}`).toBe(true);
+          // Measured again on the saved colours: text on the page, cards and alternate sections, and in dark sections.
+          for (const ground of ['color.background', 'color.surface', 'color.surface-alt'] as const) expect(ratio(v['color.error']!, v[ground]!), `${at} on ${ground}`).toBeGreaterThanOrEqual(4.5);
+          expect(ratio(v['color.error-on-inverse']!, v['color.inverse']!), `${at} in dark sections`).toBeGreaterThanOrEqual(4.5);
+        }
+    // Dark pages (a yellow brand) are among them: their error colour turns light with their grounds.
+    expect([...pages].sort()).toEqual(['dark', 'light']);
+    // Each page and mood at the lightness it asks for, where every pair allows it (Foundation keeps the targets here).
+    const L = (brand: string, mood: PaletteMood, id: 'color.error' | 'color.error-on-inverse') => lch(make(brand, mood).values[id]!).L;
+    expect(L('#ffff00', 'neutral', 'color.error')).toBeCloseTo(0.72, 2);
+    expect(L('#1f5a4c', 'neutral', 'color.error')).toBeCloseTo(0.5, 2);
+    expect(L('#1f5a4c', 'high-contrast', 'color.error')).toBeCloseTo(0.44, 2);
+    expect(L('#ffff00', 'high-contrast', 'color.error')).toBeCloseTo(0.76, 2);
+    for (const brand of ['#1f5a4c', '#ffff00']) expect(L(brand, 'tinted', 'color.error-on-inverse')).toBeCloseTo(0.78, 2);
+  });
+
   it('is deterministic', () => {
     for (const mood of PALETTE_MOODS) expect(make('#6b2d5c', mood, 'signal')).toEqual(make('#6b2d5c', mood, 'signal'));
   });

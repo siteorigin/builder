@@ -40,6 +40,13 @@ describe('the dark palette made from the light one', () => {
     // Dark grounds, light text, and the brand's hue kept.
     expect(dark['color.background']).toMatch(/^#[0-2]/);
     expect(dark['color.text']).toMatch(/^#[d-f]/);
+    // Both error colours turn light and stay red (#1016): one for the dark grounds, one for dark sections.
+    for (const id of ['color.error', 'color.error-on-inverse']) {
+      const [L, a, b] = rgbToOklab(parseColor(String(dark[id]))!);
+      expect(L, id).toBeCloseTo(0.78, 2);
+      expect(Math.hypot(a, b), id).toBeGreaterThan(0.06);
+      expect(Math.abs((((Math.atan2(b, a) * 180) / Math.PI - 27 + 540) % 360) - 180), id).toBeLessThan(20);
+    }
   });
 
   it('follows the brand the author chose, and stays readable for a bright one', () => {
