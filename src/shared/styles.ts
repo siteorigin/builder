@@ -379,6 +379,20 @@ export function tokenVar(tokenId: string): string {
   return `--so-${tokenId.replace(/[^a-zA-Z0-9]+/g, '-')}`;
 }
 
+/** The metrics tokens.css writes for a text style, each as its own variable (`--so-text-h1-size`). */
+const TEXT_VAR_SUFFIXES = ['family', 'size', 'line-height', 'weight', 'tracking', 'transform'];
+
+/** Every CSS variable tokens.css defines for these tokens: a text style as one variable per metric, any other as one. */
+export function tokenVarNames(tokens: ReadonlyArray<{ id: string; group: string }>): Set<string> {
+  const out = new Set<string>();
+  for (const t of tokens) {
+    const name = tokenVar(t.id);
+    if (t.group === 'text') for (const k of TEXT_VAR_SUFFIXES) out.add(`${name}-${k}`);
+    else out.add(name);
+  }
+  return out;
+}
+
 /** Whether a link paints its token at part strength: an alpha below 1. */
 export const partStrength = (ref: StyleTokenRef): boolean => typeof ref.alpha === 'number' && ref.alpha < 1;
 

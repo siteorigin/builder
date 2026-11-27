@@ -78,11 +78,11 @@ cookies are not sent on its subresources, and storage and `history.pushState` th
 - **Host.** The room is bound to the Ed25519 public key it was created with. Only the socket that created the room, or
   one that has since signed a fresh challenge with the matching private key, may admit, decline, kick, change roles or
   access, lock, or end. A newly proven host connection replaces the old one.
-- **Guests** wait as `pending` until the host admits them as a `viewer` or `collaborator`. Pending guests see nothing of
-  the room and cannot call anything. A guest keeps its place for a short grace after its socket drops and takes it back
-  with its resume token.
-- **Preview cookie.** On admission, and whenever the guest's role or end of access changes, the guest is sent a
-  single-use ticket valid for a minute. The viewer redeems it on the room's preview origin, which sets
+- **Guests** wait as `pending` until the host admits them as a `viewer`, `copy-editor` or `collaborator`. Pending guests
+  see nothing of the room and cannot call anything. A guest keeps its place for a short grace after its socket drops and
+  takes it back with its resume token.
+- **Preview cookie.** On admission, on resuming its place, and whenever its role or end of access changes, an admitted
+  guest is sent a single-use ticket valid for at most a minute. The viewer redeems it on the room's preview origin, which sets
   `__Host-so_preview` (plain `so_preview` over local HTTP), an HMAC-SHA256-signed (`SESSION_SIGNING_KEY`) cookie
   naming the room, the guest, its role, when its access ends and its grant version: host-only, `Path=/`, `HttpOnly`,
   `SameSite=Lax`, `Secure` over HTTPS, and expiring with the guest's access. Over HTTPS only the `__Host-` name is read,
@@ -119,18 +119,211 @@ Workers types, as part of `npm run typecheck`.
 
 ## Configuration
 
-`wrangler.toml` holds the bindings and the tunables (reconnect graces, handshake and preview timeouts). The only
-secret is `SESSION_SIGNING_KEY`, at least 32 characters; without it the relay refuses to open rooms or serve previews.
-For a deployment, set it with `wrangler secret put SESSION_SIGNING_KEY --config relay/wrangler.toml`.
+`wrangler.toml` holds the bindings and the tunables (reconnect graces, handshake and preview timeouts). Its default
+environment is the local one. The only secret is `SESSION_SIGNING_KEY`, at least 32 characters; without it the relay
+refuses to open rooms or serve previews. A deployment adds a `production` environment, below.
 
-A deployment also needs:
+## Deploying and operating
 
-- **A registrable domain of its own**, used for nothing but the relay (see above), with the viewer at its apex or one
-  subdomain and previews one level under that. Keep the previews at one level below a zone apex
-  (`p-….example.live`) and Cloudflare's free Universal SSL covers them; a deeper wildcard needs Advanced Certificate
-  Manager.
-- **`RELAY_ORIGIN`** set to the viewer's origin (for example `https://example.live`). The viewer's routes are then
-  served only there, and preview origins only directly under it. Unset, as locally, any host serves them.
-- **Routes for both**, `example.live/*` and `*.example.live/*`, with proxied DNS records for the apex and the
-  wildcard. Keep `routes` out of the default (local) configuration: with routes set, `wrangler dev` rewrites the
-  request's host to the route's, and previews are found by host.
+`example.live` stands for your domain throughout. You need a checkout of this repository, Node (24.15 or newer in the
+24 line, as [CONTRIBUTING.md](../CONTRIBUTING.md) recommends) with npm, and OpenSSL. With those ready, dependencies
+installed, and the domain already **active** on Cloudflare with its Universal SSL certificate issued, the steps below
+take under five minutes. Registering a domain, moving its nameservers and waiting for the first certificate take
+longer, so do those beforehand.
+
+### Before you start: the domain
+
+- **Use a registrable domain for the relay and nothing else.** Never `siteorigin.com` or any subdomain of it, or any
+  domain that serves another site. A preview runs its host's site code, and that code can set cookies for the parent
+  domain. The only cookies that belong there are the relay's. (Do not add the domain to the Public Suffix List: the
+  viewer and its previews must stay [the same site](#why-every-room-has-its-own-preview-origin).)
+- **Put the viewer at the apex**, `https://example.live`. Each room's preview is then one level below it,
+  `https://p-<label>.example.live`. Cloudflare's free Universal SSL covers a zone's apex and one wildcard level
+  (`*.example.live`). A viewer on `live.example.live` would put previews two levels down, which needs a paid or custom
+  certificate.
+
+In the zone's DNS settings, add two **proxied** records. `100::` is a placeholder address for a name that only a Worker
+answers:
+
+| Type | Name | Content | Proxy status |
+| --- | --- | --- | --- |
+| `AAAA` | `@` | `100::` | Proxied |
+| `AAAA` | `*` | `100::` | Proxied |
+
+### 1. Add the production environment
+
+Append this to `relay/wrangler.toml` in the checkout you deploy from, with your domain in place of every
+`example.live`:
+
+```toml
+[env.production]
+workers_dev = false   # no *.workers.dev address: the relay answers on its own domain only
+preview_urls = false
+routes = [
+  { pattern = "example.live/*", zone_name = "example.live" },
+  { pattern = "*.example.live/*", zone_name = "example.live" },
+]
+
+# Wrangler does not pass bindings or vars down to a named environment, so they are repeated here. The assets, the
+# Durable Object migration, the entry point and the compatibility date are inherited from the top of the file.
+[[env.production.durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SessionRoom"
+
+[[env.production.ratelimits]]
+name = "ROOM_CREATION_LIMITER"
+namespace_id = "7610"
+simple = { limit = 6, period = 60 }
+
+[[env.production.ratelimits]]
+name = "ROOM_CONNECT_LIMITER"
+namespace_id = "7611"
+simple = { limit = 30, period = 60 }
+
+# Off on purpose: stored request logs would hold request addresses, and an invite link's address holds its room ID.
+[env.production.observability]
+enabled = false
+
+[env.production.vars]
+RELAY_ORIGIN = "https://example.live"
+HOST_RECONNECT_GRACE_MS = "120000"
+GUEST_RECONNECT_GRACE_MS = "120000"
+HANDSHAKE_TIMEOUT_MS = "30000"
+PREVIEW_HEAD_TIMEOUT_MS = "30000"
+PREVIEW_IDLE_TIMEOUT_MS = "30000"
+```
+
+- **`RELAY_ORIGIN`** is the viewer's origin: scheme and host, no path. The viewer's routes are then served only there,
+  and preview origins only directly under it. Unset, as locally, any host serves them. Set to something that is not an
+  origin, the relay answers everything with `503`.
+- **Both routes are needed**: `*.example.live/*` does not match the apex. They are Workers Routes, which work with the
+  two DNS records above.
+- **`routes` stays out of the default environment** (the top of the file). With routes set there, `wrangler dev`
+  rewrites each request's host to the route's, and the relay finds a preview's room by its host, so local previews
+  stop working.
+
+### 2. Deploy the Worker
+
+From the repository root:
+
+```sh
+npm ci
+npx wrangler login
+npx wrangler deploy --config relay/wrangler.toml --env production
+```
+
+This provisions everything: one Worker, `siteorigin-live-relay-production`, with the viewer's files as its assets, its
+two rate limiters, and one SQLite-backed Durable Object class, `SessionRoom`, created by the `v1` migration. Each live
+session gets its own object of that class. There is no database, bucket or queue to create. WebSocket Hibernation needs
+no setting: the object accepts its sockets with `ctx.acceptWebSocket()`, so it can sleep between frames and restore the
+room from its sockets' attachments when it wakes.
+
+### 3. Set the signing key
+
+```sh
+openssl rand -base64 32 | npx wrangler secret put SESSION_SIGNING_KEY --config relay/wrangler.toml --env production
+```
+
+This sends 32 random bytes straight to Cloudflare, so the key is never written to a file. Give each relay you set up its
+own key, never the one in `.dev.vars.example`. Later deploys keep the secret, so run this again only to rotate it. Pass `--env production`: without it the secret goes to a different
+Worker, and the deployed relay still refuses to open rooms.
+
+### 4. Check it
+
+```sh
+curl -i https://example.live/_viewer/viewer.js                      # 200: the apex route and the viewer's files
+curl -i https://p-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.live/    # 401: the wildcard route and certificate
+```
+
+Neither needs a live session, and neither checks the key. For that, [point Builder at the
+relay](#pointing-the-app-at-a-deployed-relay), start a live session, open its invite link in a browser, admit the guest
+and see that the preview appears. This covers both kinds of host, the WebSockets and the preview cookie.
+
+### Rotating the signing key
+
+Run the command in step 3 again. Each room checks cookies against one key at a time, so no room accepts both the old
+and the new. **Rotate when no sessions are running if you can.**
+
+`wrangler secret put` deploys a new version of the Worker at once, and running rooms then change over as on any other
+deployment. By default Cloudflare [defers a Durable Object's code
+update](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/) for up to five
+minutes, on a best-effort basis, so there is no single moment of cutover: each room can go on using the old key for a
+while. What happens next differs from room to room:
+
+- **The room hibernates first and then picks up the new version.** Its sockets stay open and the room is restored. The
+  signing key signs only preview cookies, so the host's connection, waiting guests, guests' places and resume tokens
+  carry on, and an unused, unexpired ticket is redeemed with the new key. An admitted guest's old cookie stops
+  verifying, so its next preview request gets `401`. In a browser, **Try again**, where the viewer shows it, takes the
+  guest's place back and gets a new cookie. If part of the preview just stops loading and there is no button, reload the
+  invite page in the same tab. A guest in Builder leaves the session, joins again and is admitted again; if the room is locked, the host must
+  unlock it first.
+- **The room is reset before it hibernates.** Its sockets are disconnected, and the room, which lived only in memory and
+  on those sockets, is gone for good. The host must stop the session, start a new one and send the new link, and guests
+  must be admitted again. Left alone, the host's Builder keeps trying to reconnect for up to 15 minutes, because it
+  cannot tell a room that is gone from a network that is down. Guests also retry for a few minutes before saying the
+  connection was lost; reconnecting or reloading the old invite cannot bring the room back.
+
+Any `wrangler deploy` can reset rooms in the same way, so deploy between sessions too.
+
+**If the key may have leaked**, rotate it without waiting for sessions to finish. Until a room picks up the new key,
+someone holding the old one who also knows an admitted guest's current grant (the room and guest IDs, role, end of
+access and grant version) can sign a cookie and fetch the preview as that guest while the host is connected, even if the
+guest's own connection has dropped. To ask Cloudflare to apply the new key without the deferral, upload it as a version
+and deploy that version in immediate mode, in place of `secret put`. The new version is built on the latest *uploaded*
+one, so deploying it also ships any code uploaded but not serving (after a rollback, say). First check with
+`wrangler deployments status` and `wrangler versions list` (same `--config` and `--env` flags) that the latest upload
+is the version serving; if it is not, deploy the code you want live before these:
+
+```sh
+openssl rand -base64 32 | npx wrangler versions secret put SESSION_SIGNING_KEY --config relay/wrangler.toml --env production
+npx wrangler versions deploy --config relay/wrangler.toml --env production --durable-objects-code-update-mode immediate
+```
+
+The second command asks which version to deploy: choose the one just uploaded, at 100%. Do not treat this as proof that
+every room has ended or changed over. Where that matters, have the hosts end their sessions; no session lasts more than
+24 hours.
+
+### Pointing the app at a deployed relay
+
+Only the **host's** Builder needs configuring. Guests use the relay named in the invite link, in a browser or in
+Builder. The app takes the first of these that is set:
+
+1. The `SITEORIGIN_LIVE_RELAY_URL` environment variable. From a source checkout:
+   `SITEORIGIN_LIVE_RELAY_URL=https://example.live npm run dev`.
+2. `settings.liveRelayUrl` in `settings.json` in the app's user data folder (on macOS,
+   `~/Library/Application Support/SiteOrigin Builder/settings.json` by default; `SITEORIGIN_USER_DATA` moves the
+   folder). Settings has no field for it yet, so quit Builder, set `"liveRelayUrl": "https://example.live"` inside the
+   `settings` object (replacing any value there), and open Builder again. If the file does not exist yet, create it
+   containing `{"settings":{"liveRelayUrl":"https://example.live"}}`.
+3. The built-in default, `DEFAULT_RELAY_URL` in `src/shared/live/relay-url.ts`.
+
+Give the origin only, with no path. A value that is set but unusable stops a session from starting, with a message
+saying where it was set. Builder never falls back to the next one.
+
+### Self-hosting on another domain
+
+Anyone can run their own relay on their own Cloudflare account. Follow the steps above with your own dedicated domain
+in the DNS records, both route patterns, their `zone_name` and `RELAY_ORIGIN`, generate your own signing key, and point
+the hosting Builder at your origin. No source change is needed. If your account already uses the rate limiter
+`namespace_id`s `7610` or `7611`, choose others: limiters with the same ID share their counts.
+
+### Security and privacy
+
+- **No accounts.** A host is the holder of the room's Ed25519 key, made for that session. A guest gives a name and
+  waits for the host to let them in.
+- **The relay keeps no record of a session.** It writes no project content, guest records or names to Durable Object
+  storage, which holds only the room's alarm; ending a session clears it. A room lives in its object's memory and, to
+  survive hibernation, in its open sockets' attachments. Other things can outlast a session outside the relay: the host's
+  Builder saves guests' notes, with their names, alongside the project; a guest's tab can hold the name and resume token
+  in `sessionStorage` (for instance after a lost connection); and a guest's browser can hold the preview cookie, which
+  no longer opens an ended room, until its original expiry.
+- **Not end-to-end encrypted.** TLS protects traffic to and from the relay, but the Worker handles frames and preview
+  responses in readable form while it passes them on. Whoever operates a relay is trusted with them, and Cloudflare
+  carries them. The rate limiters count by client IP address.
+- **Capabilities are enforced by the host.** The host decides who gets in, with which role and for how long, and the
+  relay applies that decision: it refuses calls a role does not allow. For editor calls (reading the project, editing,
+  notes, AI requests), the host's Builder checks the guest's grant again before acting, so the relay's check is not the
+  only one. Preview requests are different: the relay alone checks the guest's grant for them, and the host answers what
+  it forwards, within limits on what a preview can reach.
+- **Previews are isolated by origin**, one per room, on a domain with nothing else on it. See
+  [why](#why-every-room-has-its-own-preview-origin), and [Access](#access) for the cookie and request rules.

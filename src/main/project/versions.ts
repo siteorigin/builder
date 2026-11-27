@@ -177,6 +177,13 @@ export class VersionStore {
   versions: readonly SavedVersion[] = [];
   /** Why the list can't be changed: it is unreadable, or from a newer app. Nothing is saved, deleted or collected. */
   problem: string | null = null;
+  /**
+   * Whether the project has a list of its own: one was read, or written since. A project without one has never had a
+   * version saved (the starting version is saved then, #1156); one whose versions were all deleted still has its list.
+   */
+  listed = false;
+  /** Versions captured and not yet listed (an export's, until it is delivered): collection keeps what they hold. */
+  private held = new Set<SavedVersion>();
   /** The size of every stored object, by hash. */
   private sizes = new Map<string, number>();
   /** Counts the changes to `sizes`, so what is worked out from them is known to be current. */
@@ -222,6 +229,7 @@ export class VersionStore {
   async load(): Promise<void> {
     this.versions = [];
     this.problem = null;
+    this.listed = false;
     let text: string | null = null;
     try {
       text = await fs.readFile(this.indexPath, 'utf8');
@@ -234,7 +242,10 @@ export class VersionStore {
         const ids = new Set(Array.isArray(file?.versions) ? file.versions.map((v) => (record(v) ? v.id : null)) : []);
         if (Number.isInteger(file?.format) && file.format! > VERSIONS_FORMAT) this.problem = VERSIONS_NEWER;
         else if (file?.format !== VERSIONS_FORMAT || !Array.isArray(file.versions) || !file.versions.every(validVersion) || ids.size !== file.versions.length) this.problem = VERSIONS_UNREADABLE;
-        else this.versions = file.versions;
+        else {
+          this.versions = file.versions;
+          this.listed = true;
+        }
       } catch {
         this.problem = VERSIONS_UNREADABLE;
       }
@@ -434,6 +445,28 @@ export class VersionStore {
       throw e;
     }
     this.versions = next;
+    this.listed = true;
+  }
+
+  /** Keep what `v`, captured and not yet listed, holds through any collection until the function given back is called. */
+  hold(v: SavedVersion): () => void {
+    this.held.add(v);
+    return () => void this.held.delete(v);
+  }
+
+  /**
+   * A listed version that holds exactly what `v` does, newest first (or with `oldest`, oldest first: a restore's way
+   * back), if there is one (and, with `name`, only one the app saved by that name, never the author's namesake): in the
+   * store `v` was saved to, and with Git snapshots on, of the whole site, its tree the same and its commit still there to
+   * read. Then it stands for `v`, which need not be listed beside it.
+   */
+  async sameAs(v: SavedVersion, name?: string, oldest = false): Promise<SavedVersion | undefined> {
+    for (const x of oldest ? this.versions : [...this.versions].reverse()) {
+      if ((name !== undefined && (x.name !== name || !x.auto)) || !sameContents(x, v) || (v.git ? x.git?.tree !== v.git.tree : !!x.git)) continue;
+      if (v.git && !(await this.holdsTree(x, v.git.tree))) continue;
+      return x;
+    }
+    return undefined;
   }
 
   /**
@@ -606,7 +639,7 @@ export class VersionStore {
     if (this.problem) return 0;
     // Only this project's own folders: one swapped for a link may hold another project's versions.
     for (const dir of [this.root, this.objectDir]) if (!(await fs.lstat(dir).catch(() => null))?.isDirectory()) return 0;
-    const keep = new Set(this.versions.flatMap((v) => [...localObjectsOf(v)]));
+    const keep = new Set([...this.versions, ...this.held].flatMap((v) => [...localObjectsOf(v)]));
     // A version still being recorded, or one set aside, holds what it holds until it is listed: a record that can't be
     // read might name anything, so nothing is collected while there is one.
     let names: string[];

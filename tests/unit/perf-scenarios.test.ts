@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
-import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, ASSET_PICKERS, grownImages } from '../../scripts/perf/scenarios';
+import { PROJECT_DEFINITION_ID } from '../../src/shared/component-ids';
+import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, ASSET_PICKERS, grownImages, GALLERY_PAGE, galleryComponent, galleryDefinitionId, galleryPlacements, galleryRecord, PREVIEW_IMAGE_READINGS, previewImages, windowPictures } from '../../scripts/perf/scenarios';
 
 let seq = 0;
 const m = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
@@ -18,6 +19,10 @@ describe('the scenario chain', () => {
   it('runs each scenario after the ones it follows', () => {
     expect(chainFor(['edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
     expect(chainFor(['edits']).map((s) => s.name)).toEqual(['launch', 'open', 'edits']);
+    expect(chainFor(['history']).map((s) => s.name)).toEqual(['launch', 'open', 'history']);
+    expect(chainFor(['history', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'history']);
+    // After the others that edit the fixture's own copy, so none of them inherits its saved versions; before editBranded.
+    expect(chainFor(['editBranded', 'history', 'batch']).map((s) => s.name)).toEqual(['launch', 'open', 'batch', 'history', 'editBranded']);
     expect(chainFor(['chat']).map((s) => s.name)).toEqual(['launch', 'open', 'chat']);
     expect(chainFor(['aiEdit']).map((s) => s.name)).toEqual(['launch', 'open', 'aiEdit']);
     expect(chainFor(['open']).map((s) => s.name)).toEqual(['launch', 'open']);
@@ -373,7 +378,7 @@ describe('edit metrics', () => {
         m('scenario.start', 9000, { attrs: { scenario: 'edit' } }),
         // Before the edit: none of its checks.
         span('session.check', 9500, 99, { attrs: { check: 'updates' } }),
-        r('edit.requested', 10_000, { attrs: { revision: base, operations: 1 }, c: { 'react.commits': 110 } }),
+        r('edit.requested', 10_000, { attrs: { revision: base, operations: 1 }, c: { 'react.commits': 110, 'collections.siteEntries': 4 } }),
         // Another revision's records inside the window: never taken for this edit.
         r('canvas.revisionApplied', 10_002, { attrs: { revision: base } }),
         m('session.changed', 10_003, { attrs: { revision: base } }),
@@ -423,7 +428,7 @@ describe('edit metrics', () => {
         // One run after the acknowledgement: counted as a sweep, not as one the edit waited on.
         span('session.sweep', 10_700, 5),
         m('scenario.end', 11_640, { attrs: { scenario: 'edit' } }),
-        r('scenario.end', 11_641, { attrs: { scenario: 'edit' }, c: { 'react.commits': 160 } }),
+        r('scenario.end', 11_641, { attrs: { scenario: 'edit' }, c: { 'react.commits': 160, 'collections.siteEntries': 7 } }),
         // After the scenario: none of its counts.
         m('session.reloadFromDisk', 12_000),
         span('session.check', 12_000.5, 50, { attrs: { check: 'diagnostics' } }),
@@ -483,6 +488,7 @@ describe('edit metrics', () => {
       'edit.snapshotBytes': '121005 bytes',
       'edit.reloadFromDisk': '1 count',
       'edit.rendererCommits': '50 count',
+      'edit.siteEntryWalks': '3 count',
       'edit.mainStallMax': '70 ms',
       'edit.batchChecks': '1 ms',
       'edit.batchSyncedEntries': '0.25 ms',
@@ -552,6 +558,13 @@ describe('edit metrics', () => {
     expect(got.metrics['edit.rendererCommits']).toBeUndefined();
   });
 
+  it('leave the editor’s walks of every entry missing when it never counted them, never a false zero', () => {
+    const uncounted = new Trace(trace().records.map((x) => (x.c ? { ...x, c: { 'react.commits': x.c['react.commits'] } } : x)));
+    const got = edit.measure(uncounted, facts);
+    expect(got.missing).toEqual(['edit.siteEntryWalks (the editor never counted its walks of every entry)']);
+    expect(got.metrics['edit.siteEntryWalks']).toBeUndefined();
+  });
+
   it('leave the bytes sent missing when a snapshot’s size could not be told, never short', () => {
     const unsized = new Trace(trace().records.map((x) => (x.name === 'controller.snapshotSent' && x.t === 10_600 ? { ...x, attrs: { revision: target, bytes: null } } : x)));
     const got = edit.measure(unsized, facts);
@@ -615,6 +628,87 @@ describe('edit metrics', () => {
     expect(got.metrics['edit.sweepsAwaited'].value).toBe(0);
     expect(got.metrics['edit.sweepAwaited'].value).toBe(0);
     expect(got.metrics['edit.sweeps'].value).toBe(2);
+  });
+});
+
+describe('history metrics', () => {
+  const h = { scenario: 'history' };
+  const counts = (commits: number, walks: number) => ({ c: { 'react.commits': commits, 'collections.siteEntries': walks } });
+  /** Undo (to revision 10), Redo (11) and a restore (12) whose version list went out first, at revision 11. */
+  function trace(drop: (x: PerfRecord) => boolean = () => false) {
+    return new Trace(
+      [
+        // Before the windows: the untimed edit's own send, never counted in one.
+        m('controller.snapshotSent', 19_000, { attrs: { revision: 9, bytes: 5000 } }),
+        r('scenario.start', 20_000, { attrs: h }),
+        m('scenario.start', 20_000, { attrs: h }),
+        r('scenario.phase', 20_000, { attrs: { ...h, phase: 'undo', target: 10 }, ...counts(10, 2) }),
+        m('scenario.phase', 20_000, { attrs: { ...h, phase: 'undo', target: 10 } }),
+        m('session.changed', 20_050, { attrs: { revision: 10 } }),
+        m('controller.snapshotSent', 20_052, { attrs: { revision: 10, bytes: 600 } }),
+        r('renderer.snapshotReceived', 20_053, { attrs: { revision: 10 } }),
+        r('renderer.commit', 20_056, { attrs: { revision: 10 } }),
+        span('main.stall', 20_060, 55),
+        r('canvas.revisionApplied', 20_100, { attrs: { revision: 10 } }),
+        m('scenario.phase', 21_600, { attrs: { ...h, phase: 'undone' } }),
+        r('scenario.phase', 21_600, { attrs: { ...h, phase: 'undone' }, ...counts(14, 3) }),
+        r('scenario.phase', 22_000, { attrs: { ...h, phase: 'redo', target: 11 }, ...counts(14, 3) }),
+        m('scenario.phase', 22_000, { attrs: { ...h, phase: 'redo', target: 11 } }),
+        m('session.changed', 22_030, { attrs: { revision: 11 } }),
+        m('controller.snapshotSent', 22_031, { attrs: { revision: 11, bytes: 610 } }),
+        r('renderer.snapshotReceived', 22_032, { attrs: { revision: 11 } }),
+        r('renderer.commit', 22_036, { attrs: { revision: 11 } }),
+        r('canvas.revisionApplied', 22_080, { attrs: { revision: 11 } }),
+        m('scenario.phase', 23_600, { attrs: { ...h, phase: 'redone' } }),
+        r('scenario.phase', 23_600, { attrs: { ...h, phase: 'redone' }, ...counts(20, 3) }),
+        r('scenario.phase', 24_000, { attrs: { ...h, phase: 'restore', target: 12 }, ...counts(20, 3) }),
+        m('scenario.phase', 24_000, { attrs: { ...h, phase: 'restore', target: 12 } }),
+        // The version list, with the work the restore replaced saved first: sent in the window, at the revision before.
+        m('controller.snapshotSent', 24_010, { attrs: { revision: 11, bytes: 300 } }),
+        m('session.changed', 24_400, { attrs: { revision: 12 } }),
+        m('controller.snapshotSent', 24_405, { attrs: { revision: 12, bytes: 120_000 } }),
+        r('renderer.snapshotReceived', 24_406, { attrs: { revision: 12 } }),
+        r('renderer.commit', 24_416, { attrs: { revision: 12 } }),
+        r('canvas.revisionApplied', 24_500, { attrs: { revision: 12 } }),
+        m('scenario.phase', 26_000, { attrs: { ...h, phase: 'restored' } }),
+        r('scenario.phase', 26_000, { attrs: { ...h, phase: 'restored' }, ...counts(30, 9) }),
+        m('scenario.end', 26_001, { attrs: h }),
+        r('scenario.end', 26_001, { attrs: h, ...counts(31, 9) }),
+        // After the scenario: none of its counts.
+        m('controller.snapshotSent', 27_000, { attrs: { revision: 12, bytes: 9999 } }),
+        span('main.stall', 27_001, 900)
+      ].filter((x) => !drop(x))
+    );
+  }
+
+  it('time each step and the restore by the revision it made, and count what each sent the editor', () => {
+    const got = history.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    const shown = Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k, `${v.value} ${v.unit}`]));
+    const window = (w: string, v: Record<string, string>) => Object.fromEntries(Object.entries(v).map(([k, x]) => [`history.${w}.${k}`, x]));
+    expect(shown).toEqual({
+      ...window('undo', { changed: '50 ms', changedToSent: '2 ms', sentToReceived: '1 ms', receivedToCommit: '3 ms', rendererCommit: '56 ms', previewApplied: '100 ms', snapshotsSent: '1 count', snapshotBytes: '600 bytes', rendererCommits: '4 count', siteEntryWalks: '1 count', mainStallMax: '55 ms' }),
+      ...window('redo', { changed: '30 ms', changedToSent: '1 ms', sentToReceived: '1 ms', receivedToCommit: '4 ms', rendererCommit: '36 ms', previewApplied: '80 ms', snapshotsSent: '1 count', snapshotBytes: '610 bytes', rendererCommits: '6 count', siteEntryWalks: '0 count', mainStallMax: '0 ms' }),
+      ...window('restore', { changed: '400 ms', changedToSent: '5 ms', sentToReceived: '1 ms', receivedToCommit: '10 ms', rendererCommit: '416 ms', previewApplied: '500 ms', snapshotsSent: '2 count', snapshotBytes: '120300 bytes', rendererCommits: '10 count', siteEntryWalks: '6 count', mainStallMax: '0 ms' })
+    });
+    expect(HISTORY_WINDOWS).toEqual(['undo', 'redo', 'restore']);
+  });
+
+  it('name what is missing instead of timing another revision or counting less', () => {
+    // The restore's own send gone: the version list's, at the revision before, is never taken for it.
+    const unsent = history.measure(trace((x) => x.name === 'controller.snapshotSent' && x.attrs?.revision === 12), facts);
+    expect(unsent.missing).toEqual(['controller.snapshotSent (restore)']);
+    expect(unsent.metrics['history.restore.changedToSent']).toBeUndefined();
+    const unshown = history.measure(trace((x) => x.name === 'canvas.revisionApplied' && x.attrs?.revision === 10), facts);
+    expect(unshown.missing).toEqual(['canvas.revisionApplied (undo)']);
+    expect(unshown.metrics['history.undo.previewApplied']).toBeUndefined();
+    const unmarked = history.measure(trace((x) => x.name === 'scenario.phase' && x.attrs?.phase === 'redone' && x.proc === 'renderer'), facts);
+    expect(unmarked.missing).toContain('scenario.phase redone (renderer)');
+    const uncounted = history.measure(new Trace(trace().records.map((x) => (x.c ? { ...x, c: { 'react.commits': x.c['react.commits'] } } : x))), facts);
+    expect(uncounted.missing).toEqual(HISTORY_WINDOWS.map((w) => `history.${w}.siteEntryWalks (the editor never counted its walks of every entry)`));
+    // A window whose opening mark never counted them is missing too, never the editor's total so far.
+    const unopened = history.measure(new Trace(trace().records.map((x) => (x.attrs?.phase === 'undo' && x.c ? { ...x, c: { 'react.commits': x.c['react.commits'] } } : x))), facts);
+    expect(unopened.missing).toEqual(['history.undo.siteEntryWalks (the editor never counted its walks of every entry)']);
   });
 });
 
@@ -1946,6 +2040,92 @@ describe('noWindow', () => {
     // A reopen mark that does not say which page the window was left on cannot be timed.
     const unnamed = noWindow.measure(new Trace([m('noWindow.reopen', 1000, { attrs: { ...at, revision: 4 } }), m('launch.windowCreated', 1010), r('renderer.commit', 1100, { pid: 3, attrs: { screen: 'editor' } }), ready(1300, 4), m('noWindow.shown', 2500, { attrs: at }), m('noWindow.outsideTaken', 9000, { attrs: { ...at, saves: 1 } })]), facts, all);
     expect(unnamed.missing).toEqual(['noWindow.reopen (with the page it was left on)', 'canvas.ready (window brought up again)']);
+  });
+});
+
+describe('previewImages', () => {
+  const MiB = 2 ** 20;
+  const reading = (label: string, previewMiB: number, kind: 'rest' | 'peak' = 'rest', extra: Record<string, number> = {}): MemoryReading => {
+    const roles = Object.fromEntries(Object.entries({ main: 200, preview: previewMiB, ...extra }).map(([k, v]) => [k, { processes: 1, bytes: v * MiB }]));
+    const total = Object.values(roles).reduce((n, x) => n + x.bytes, 0);
+    return { label, kind, at: 0, processes: [], roles, total, count: Object.keys(roles).length, ...(kind === 'rest' ? { heap: { main: 10 * MiB, editor: 20 * MiB } } : {}), how: {} as MemoryReading['how'] };
+  };
+  const readings = [reading('gallery', 300), reading('chat', 320, 'peak', { gpu: 580 }), reading('chatted', 302), reading('layout', 700, 'peak', { gpu: 670 }), reading('laidOut', 305), reading('component', 650, 'peak', { gpu: 650 }), reading('inspected', 320), reading('insertShown', 330, 'rest', { thumbnails: 80 }), reading('hover', 340, 'peak', { thumbnails: 80, gpu: 610 }), reading('hovered', 331, 'rest', { thumbnails: 80 }), reading('insert', 900, 'peak', { thumbnails: 120, gpu: 720 }), reading('peeked', 310, 'rest', { thumbnails: 90 })];
+  const at = (window: string, edge: string, t: number, canvasY?: number) => r('previewImages.window', t, { attrs: { scenario: 'previewImages', window, edge, ...(canvasY !== undefined ? { canvasY } : {}), ...(window === 'insert' && edge === 'end' ? { retried: 1 } : {}) } });
+  const trace = () =>
+    new Trace([
+      at('layout', 'start', 100),
+      r('inspect.done', 150, { attrs: { req: 'q1', attempt: 1, images: 40, fonts: 1, frame: 30, pictures: 20, pixels: 20 * 2560 * 1920 } }),
+      at('layout', 'end', 200, 0),
+      r('previewImages.checked', 210, { attrs: { scenario: 'previewImages', window: 'layout', digest: 123456, height: 23855 } }),
+      at('component', 'start', 300),
+      r('componentPreview.measured', 320, { attrs: { width: 390, pictures: 1, pixels: 960 * 720 } }),
+      r('componentPreview.measured', 340, { attrs: { width: 1280, pictures: 1, pixels: 2560 * 1920 } }),
+      at('component', 'end', 400, 0),
+      r('previewImages.checked', 410, { attrs: { scenario: 'previewImages', window: 'component', digest: 654321, height: -1 } }),
+      // A measurement outside every window is no window's.
+      r('inspect.done', 450, { attrs: { req: 'q2', attempt: 1, pictures: 20, pixels: 1 } }),
+      at('insert', 'start', 500),
+      // A live preview measured twice counts once, as its last measurement found it.
+      r('livePreview.measured', 501, { attrs: { session: 's1', pictures: 0, pixels: 0 } }),
+      ...Array.from({ length: 20 }, (_, n) => r('livePreview.measured', 510 + n, { attrs: { session: `s${n + 1}`, pictures: 1, pixels: 960 * 720 } })),
+      at('insert', 'end', 600, 1500)
+    ]);
+
+  it('runs on its own after open, as a memory scenario with a memory scenario’s deadline', () => {
+    expect(chainFor(['previewImages']).map((s) => s.name)).toEqual(['launch', 'open', 'previewImages']);
+    expect(() => chainFor(['previewImages', 'edit'])).toThrow('are run on their own');
+    expect([previewImages.memory, previewImages.after, previewImages.deadlineMs]).toEqual([true, 'open', 15 * 60_000]);
+    expect(PREVIEW_IMAGE_READINGS.map(([l, k]) => `${l}:${k}`)).toEqual(['gallery:rest', 'chat:peak', 'chatted:rest', 'layout:peak', 'laidOut:rest', 'component:peak', 'inspected:rest', 'insertShown:rest', 'hover:peak', 'hovered:rest', 'insert:peak', 'peeked:rest']);
+  });
+
+  it('report every reading, the growth over the checks and over the previews, each window over its control, each window’s pictures and each check’s report', () => {
+    const got = previewImages.measure(trace(), facts, readings);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.gallery.mem.preview'), v('memory.layout.peak.mem.preview'), v('memory.component.peak.mem.preview'), v('memory.insert.peak.mem.preview'), v('memory.peeked.mem.preview')]).toEqual([300, 700, 650, 900, 310]);
+    // Over the walk: from the rest just before it (after the hover control), to the rest once its previews are gone.
+    expect([v('memory.inspect.growth.mem.preview'), v('memory.previews.growth.mem.preview'), v('memory.previews.growth.mem.thumbnails')]).toEqual([20, -21, 10]);
+    // Each window's frames over its control's peak: the checks over the turn that only answered, the walk over the sketches.
+    expect([v('memory.layoutOverChat.growth.mem.gpu'), v('memory.componentOverChat.growth.mem.gpu'), v('memory.insertOverHover.growth.mem.gpu'), v('memory.insertOverHover.growth.mem.preview')]).toEqual([90, 70, 110, 560]);
+    expect(got.metrics['memory.layoutOverChat.growth.heap.main']).toBeUndefined();
+    expect([v('pictures.layout.measured'), v('pictures.layout.pictures'), v('pictures.layout.bytes')]).toEqual([1, 20, 20 * 2560 * 1920 * 4]);
+    expect([v('pictures.component.measured'), v('pictures.component.pictures'), v('pictures.component.bytes')]).toEqual([2, 2, (960 * 720 + 2560 * 1920) * 4]);
+    expect([v('pictures.insert.measured'), v('pictures.insert.pictures'), v('pictures.insert.bytes')]).toEqual([20, 20, 20 * 960 * 720 * 4]);
+    expect(got.metrics['pictures.insert.bytes'].unit).toBe('bytes');
+    expect([v('checks.layout.digest'), v('checks.layout.documentHeight'), v('checks.component.digest')]).toEqual([123456, 23855, 654321]);
+    // Where the canvas's page was scrolled when each window ended.
+    expect([v('canvas.layout.scrollY'), v('canvas.component.scrollY'), v('canvas.insert.scrollY')]).toEqual([0, 0, 1500]);
+    // The live previews shown a second time because their page never said it was ready.
+    expect(v('insert.retried')).toBe(1);
+    expect(got.metrics['checks.component.documentHeight']).toBeUndefined();
+  });
+
+  it('fail a window whose frames said nothing of their pictures, and a reading not taken', () => {
+    const t = trace();
+    const bare = new Trace(t.records.map((x) => (x.name === 'componentPreview.measured' ? { ...x, attrs: { width: 390 } } : x)));
+    expect(previewImages.measure(bare, facts, readings).missing).toEqual(['the pictures of the component window\'s frames']);
+    expect(windowPictures(new Trace(t.records.filter((x) => x.name !== 'livePreview.measured')), 'insert', 500, 600)).toBeNull();
+    // 19 of the 20 previews, a preview's mark without its session, or a component measured at one width: not counted.
+    expect(windowPictures(new Trace(t.records.filter((x) => x.attrs?.session !== 's20')), 'insert', 500, 600)).toBeNull();
+    expect(windowPictures(new Trace(t.records.map((x) => (x.attrs?.session === 's3' ? { ...x, attrs: { pictures: 1, pixels: 1 } } : x))), 'insert', 500, 600)).toBeNull();
+    expect(windowPictures(new Trace(t.records.filter((x) => !(x.name === 'componentPreview.measured' && x.attrs?.width === 1280))), 'component', 300, 400)).toBeNull();
+    expect(windowPictures(t, 'insert', 500, 600)).toEqual({ measured: 20, pictures: 20, pixels: 20 * 960 * 720 });
+    expect(previewImages.measure(t, facts, readings.slice(0, -1)).missing).toEqual(['memory reading peeked']);
+    expect(previewImages.measure(new Trace(t.records.filter((x) => x.name !== 'previewImages.checked')), facts, readings).missing).toEqual(['previewImages.checked layout', 'previewImages.checked component']);
+  });
+
+  it('make each photo’s component and the page that places them as the fixture places its cards', () => {
+    const ops = galleryPlacements(['pc_a', 'pc_b']);
+    expect(ops.map((o) => o.type)).toEqual(['page.create', 'node.insert', 'node.insert', 'node.insert', 'node.insert']);
+    expect(ops[0]).toMatchObject({ pageId: GALLERY_PAGE.pageId, route: '/gallery/', starter: 'empty' });
+    expect(ops[2]).toMatchObject({ parentId: 'n_gals01', slot: 'content', definitionId: 'pc_a', newNodeId: 'n_galc01' });
+    expect(ops[3]).toMatchObject({ parentId: null, componentId: 'layout.section', newNodeId: 'n_gals02' });
+    expect(galleryComponent(7)).toMatchObject({ type: 'component.upsert', name: 'Gallery photo 07', newDefinitionId: 'proj.gallery-photo-07-bench' });
+    expect(PROJECT_DEFINITION_ID.test(galleryDefinitionId(7))).toBe(true);
+    const record = galleryRecord({ name: 'Gallery photo 03', file: 'static/assets/gallery-03-abcd.jpg', width: 2560, height: 1920, variants: [{ width: 160, file: 'static/assets/gallery-03-abcd-160w.jpg' }] }, 3, Buffer.from('jpeg'));
+    expect(record).toMatchObject({ id: 'img-gallery-03', mime: 'image/jpeg', bytes: 4, width: 2560, height: 1920, kind: 'image', variants: [{ width: 160, file: 'static/assets/gallery-03-abcd-160w.jpg' }] });
+    expect((galleryComponent(3).nodes as Array<{ kind: string; image?: { assetId: string } }>).find((n) => n.kind === 'image')?.image?.assetId).toBe(record.id);
   });
 });
 

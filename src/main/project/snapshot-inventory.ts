@@ -30,7 +30,7 @@ import { constants as fsConstants, promises as fs, type BigIntStats } from 'node
 import type { FileHandle } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { converterPathOf, isCanonicalPath, MANIFEST_FILE, sourcePathOf } from './documents';
-import { isPrivateFileName } from './private-files';
+import { CREDENTIAL_STEMS, isPrivateFileName } from './private-files';
 import { isMissing, stampOf, statTrusted } from './stable-read';
 
 /** Why a path is no part of a snapshot. */
@@ -105,6 +105,8 @@ function partExcluded(part: string, i: number): SnapshotExclusion | null {
 
 /** What an editor or a sync tool adds to a file's name for its copy: a backup, a swap file, an autosave. */
 const EDITOR_SUFFIX = /(~|#|\.(bak|old|orig|swp|swo|tmp|sav))+$/;
+/** Any JSON file named after one of the app's own credential files, whatever was added to the name. */
+const NAMED_AFTER_CREDENTIALS = new RegExp(`(${CREDENTIAL_STEMS.join('|')}).*\\.json([~#]|\\.(bak|old|orig|swp|swo|tmp|sav))*$`);
 
 /**
  * Whether a file named `folded` (folded) is a copy of a private file: what an editor leaves of one (`client.pem~`,
@@ -116,7 +118,7 @@ const EDITOR_SUFFIX = /(~|#|\.(bak|old|orig|swp|swo|tmp|sav))+$/;
 function copyOfPrivate(folded: string): boolean {
   const bare = folded.replace(EDITOR_SUFFIX, '').replace(/^\.?#/, '');
   if (bare && bare !== folded && isPrivateFileName(bare)) return true;
-  return /(source-secrets|api-keys).*\.json([~#]|\.(bak|old|orig|swp|swo|tmp|sav))*$/.test(folded);
+  return NAMED_AFTER_CREDENTIALS.test(folded);
 }
 
 /**
@@ -457,22 +459,24 @@ async function settledBatches<T, R>(items: T[], fn: (item: T) => Promise<R>): Pr
  * Capture the snapshot of the project in `root` (a real path): every file it takes, listed, hashed and checked to be
  * the project as it was throughout (see the top of this file). Throws a SnapshotCaptureError when it was not. `settleMs`
  * is how long a file must have been left alone for its stat to stand for its bytes (statTrusted); `paused` is called
- * once the files are listed and once they are hashed, before the check that nothing changed (for tests).
+ * once the files are listed and once they are hashed, before the check that nothing changed (for tests). `stop` is
+ * asked before each file is hashed (or hashed again): true ends the capture with an error.
  */
-export async function captureSnapshotInventory(root: string, opts: { settleMs?: number; paused?: (at: 'listed' | 'hashed') => Promise<void> | void } = {}): Promise<SnapshotInventory> {
+export async function captureSnapshotInventory(root: string, opts: { settleMs?: number; paused?: (at: 'listed' | 'hashed') => Promise<void> | void; stop?: () => boolean } = {}): Promise<SnapshotInventory> {
   const settleMs = opts.settleMs ?? 3000;
   const before = await listProject(root, settleMs);
   const files = [...before.values()].filter((l) => !l.dir);
   const clash = nameClash(files.map((l) => l.rel));
   if (clash) throw badName(clash[1], `and ${clash[0]} have names some computers cannot tell apart`);
   await opts.paused?.('listed');
-  const hashed = await settledBatches(files, hashListed);
+  const hashed = await settledBatches(files, (l) => (opts.stop?.() ? Promise.reject(new Error('The snapshot was stopped.')) : hashListed(l)));
   await opts.paused?.('hashed');
   // A file whose stamp cannot stand for its bytes could have changed without it: it is hashed again. Before the last
   // listing, so that one also sees what was added, removed or swapped while these were read.
   await settledBatches(
     files.map((l, i) => ({ l, i })).filter(({ l }) => !l.trusted),
     async ({ l, i }) => {
+      if (opts.stop?.()) throw new Error('The snapshot was stopped.');
       if ((await hashListed(l)).sha256 !== hashed[i].sha256) throw changed(l.rel);
     }
   );

@@ -67,10 +67,12 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
   const runStatus = useStore((s) => s.runStatus);
   const running = !!runStatus;
   const ai = runStatus === 'awaiting-input' ? 'the AI is waiting for your answer.' : 'the AI is working.';
-  // Why an action can't be taken now, each said once above the list. A read-only project can still be read, so Open
-  // waits only for the AI; renaming and deleting wait for both.
+  // Why an action can't be taken now, each said once above the list. Open never waits: a request goes on in its own
+  // conversation while another is read (#1125). Renaming and deleting wait for the AI (a request saves its thread when
+  // it ends) and for a project that is read-only here.
   const editBlocked = readOnly ? 'this project is read-only here.' : running ? ai : null;
-  const openBlocked = running ? ai : null;
+  // Said only when it is the AI that holds them: a read-only project holds them anyway.
+  const aiHolds = running && !readOnly;
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const ids = useId();
@@ -155,7 +157,7 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
   };
 
   const open = async (c: ConversationSummary) => {
-    if (busy || openBlocked) return;
+    if (busy) return;
     setBusy({ id: c.id, what: 'open' });
     setError(null);
     // The manager stays until the conversation is ready, so nothing is typed into, or sent from, the one before it.
@@ -316,7 +318,7 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
       title="AI conversations"
       icon={<MessagesSquare />}
       onClose={onClose}
-      describedBy={[readOnly && readOnlyNote, running && runningNote].filter(Boolean).join(' ') || undefined}
+      describedBy={[readOnly && readOnlyNote, aiHolds && runningNote].filter(Boolean).join(' ') || undefined}
       busy={!!busy}
       wide
       footer={
@@ -357,13 +359,11 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
       </label>
       {/* Each hold is said as it comes and goes: the AI's often while the manager is open, read-only rarely. */}
       <BlockedStatus block={readOnly ? { kind: 'read-only', text: readOnly } : null} lifted="You can rename or delete a conversation now." />
-      <BlockedStatus block={running ? { kind: 'ai', text: aiRunning(runStatus, readOnly ? 'open a conversation' : 'open, rename or delete a conversation') } : null} lifted={readOnly ? 'You can open a conversation now.' : 'You can open, rename or delete a conversation now.'} />
+      <BlockedStatus block={aiHolds ? { kind: 'ai', text: aiRunning(runStatus, 'rename or delete a conversation') } : null} lifted="You can rename or delete a conversation now." />
       {readOnly && (
         <BlockedNote block={{ kind: 'read-only', text: readOnly }} id={readOnlyNote} live={false} />
       )}
-      {running && (
-        <BlockedNote block={{ kind: 'ai', text: aiRunning(runStatus, readOnly ? 'open a conversation' : 'open, rename or delete a conversation') }} id={runningNote} live={false} />
-      )}
+      {aiHolds && <BlockedNote block={{ kind: 'ai', text: aiRunning(runStatus, 'rename or delete a conversation') }} id={runningNote} live={false} />}
       {error && (
         <HistoryNote tone="danger" icon={<CircleAlert aria-hidden="true" />}>
           {error}
@@ -503,9 +503,7 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
                               tabIndex={tab('open')}
                               onFocus={focused('open')}
                               aria-label={`Open “${name}”`}
-                              aria-describedby={describedBy(running ? runningNote : null)}
-                              aria-disabled={!!openBlocked || undefined}
-                              title={openBlocked ? `Can’t open: ${openBlocked}` : undefined}
+                              aria-describedby={describedBy(null)}
                               onClick={() => void open(c)}
                               disabled={!!busy}
                             >

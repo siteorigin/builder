@@ -116,7 +116,9 @@ canonical documents of the new state that are not the very objects of the one be
 `docsSerialized` (`docs.serialized`), durable writes, fsyncs, file writes, synchronous filesystem calls, path
 stats and bytes hashed in the edit; the publication's files read, hashed and written, its bytes hashed, durable writes,
 fsyncs, synchronous filesystem calls and path stats (`publish…`); `project:changed` sends and bytes, `reloadFromDisk`
-calls and React commits until the scenario ends; the sweeps of history blobs and unused assets (`session.sweep`) the
+calls and React commits until the scenario ends, and the editor's walks of every collection entry for the site's addresses
+(`siteEntryWalks`, shared/collections.ts `siteEntries`: work that follows the project's size) from the edit being sent to the
+scenario's end; the sweeps of history blobs and unused assets (`session.sweep`) the
 edit waited on before `changed` (`sweepsAwaited`, their time `sweepAwaited`) and all of them until the scenario ends
 (`sweeps`), so a sweep moved later is still seen; the longest main-process stall. What the edit spends checking and
 deriving from the whole project: the batch's checks once it is applied (`batchChecks`, a span, and its parts
@@ -143,6 +145,20 @@ in as the theme pack's own file; after the edit the site still has its favicon a
 changed; then the same as `edit`. The same metrics as `edit`, named `editBranded.*`, and the favicon's reads and the
 bytes of it hashed by the edit's publication (`publishFaviconReads`, `publishFaviconBytesHashed`), only from a build
 that counted the favicon's reads before the edit (one that never counts them fails rather than reporting none).
+
+**`history`** (after `open`, and after every other scenario that follows it but `editBranded` and `switch`, which inherit
+the two saved versions and the History steps it leaves): take a step back and forward, and put a saved version back,
+each to the preview showing it. Before the timed part: a version saved of the project as it is, the home hero's Heading changed through the editor's
+API (one step of History), and the hero selected in Layers with the Inspector showing it. Then three windows, each from
+its own phase mark to the next: `undo` (the toolbar's Undo), `redo` (its Redo), and `restore` (Restore in History's
+Saved versions, opened and the version reviewed untimed). Checks: each moved the project exactly one revision, and the
+project, the home page's document on disk and the preview hold the heading it should (the original after Undo and the
+restore, the changed one after Redo), and so does the Inspector's Heading, which shows the editor's own copy; the restore kept
+the work it replaced as a version of its own. Per window, named
+`history.<window>.*`, by the revision it made: `changed`, `rendererCommit` and `previewApplied` from the window's start;
+`changedToSent`, `sentToReceived` and `receivedToCommit` as in `edit`; `project:changed` sends and bytes over the window
+(`snapshotsSent`, `snapshotBytes`, the version list's own updates included), React commits, `siteEntryWalks` and the
+longest main-process stall.
 
 **`batch`** (after `open`): in the AI panel, in Edit mode limited to the home page (This page), ask for a change that the
 scripted model (no live provider) makes as one `apply_operations` call of 30 operations, the most one call may carry:
@@ -424,6 +440,50 @@ lost word of one) and `noWindow.outside.takenWithoutWindow` whether it was taken
 only on its return (0). The runner's marks and readings follow the window the scenario brings up
 (`ctx.win`); while there is none, marks go to the main process alone. Memory scenarios run one per `perf:run`: each
 starts from a fresh Welcome on the fixture as it was put back.
+
+**`previewImages`** (after `open`, a memory scenario, on its own; `--fixture small` is enough: the page it measures is
+its own): the memory of the app's processes while frames other than the canvas show a page of photographs (#1037).
+Before the readings (untimed): 20 photographs written into `static/assets/` as an import stores them, each a web-sized
+copy of a 12-megapixel photo (2560 × 1920) with the copies the media worker makes of it (JPEG at 160, 480, 960 and 1440,
+WebP and AVIF at those and 2560; `photos.ts` `galleryPhotos`, made once per machine under `.tmp/perf/photos/`), added to
+the library, each shown by a project component of its own (a heading, a line and the photo), placed one to a section
+on a new Gallery page; the scripted model connected in native tool mode (no live provider) and the window reloaded; the
+gallery on the canvas and the AI panel in Edit mode with Whole site chosen. Readings: at rest (`gallery`); the peak of
+a turn of the scripted model that only answers in words (`chat`, the checks' control); at rest (`chatted`); the peak
+while the assistant checks the gallery's layout at desktop width (`layout`: `inspect_layout`, then an answer); at rest
+(`laidOut`); the peak while it checks the first photo's component (`component`: `inspect_component`, then an answer); at
+rest (`inspected`); at rest with Insert open on Your components, all shown and every thumbnail drawn (each tile scrolled
+into view in turn, the pointer kept off the panel) (`insertShown`); the peak while the pointer rests on the theme's first 10 section tiles in
+turn, 600 ms each, each opening its larger preview, a sketch with no live frame (`hover`, the walk's control); at rest
+(`hovered`); the peak while the pointer goes down Your components, each tile until the larger preview beside the panel
+shows its component rendered live (`insert`: each tile scrolled into view and the pointer brought onto it once the scroll
+holds still; a preview a late scroll of the panel closes, or one whose page has not said it is ready after 25 s, is
+shown again by the pointer leaving and coming back once, the latter counted as `insert.retried`); and at rest once the pointer has left and the previews are gone
+(`peeked`). Checks: the canvas shows the gallery with all 20 photos, the control turn took one model turn, each check
+took the scripted model's two turns and
+ended with nothing changed, the layout check measured the gallery with all 20 images loaded and none failed, the
+component check measured the first photo's component whole (every case, none failed or left for later), no larger
+preview was open before the walk, the section tiles opened their sketches with no live frame, every live preview became
+ready showing its own photo loaded, the walk drew no thumbnail, no preview frame is left once they close, and the project did not move. Metrics: each reading's (`memory.<reading>…`, as `memory`'s), with growth over the checks
+(`memory.inspect.growth.*`, `inspected` − `gallery`) and over the previews (`memory.previews.growth.*`, `peeked` −
+`hovered`) and each window over its control's peak, what its frames cost (`memory.layoutOverChat.growth.*`,
+`memory.componentOverChat.growth.*`, `memory.insertOverHover.growth.*`: the GPU process grows by some 450 MiB on a Mac
+whenever the editor draws after a rest, frames or none); per window (`layout`, `component`, `insert`), the pictures its frames held when they were measured, from
+the page's own report when the editor's marks are on (`pictures.<window>.measured`, `.pictures` and `.bytes`: the pixels
+of the files the browser had chosen when each was measured, four bytes each, a picture offered at several widths counted
+at the width of the copy it chose and in the shape its width and height give it; a live preview counted as its last
+measurement found it, and all 20 of them needed; a component check's two widths both needed; a copy loaded earlier and
+then replaced is not counted, so these say which copy a frame settled on, not every copy it decoded) and how far the canvas's page was scrolled when
+it ended (`canvas.<window>.scrollY`); and what the two checks reported, `checks.layout.digest` and
+`checks.component.digest` (a number standing for the report the model was given) and `checks.layout.documentHeight`:
+the same page measured the same way gives the same, so any change there is a change in what the checks measure. On a
+Mac the frames' cost lands in the GPU process (`.mem.gpu`), which draws them, more than in the preview's renderer.
+Limits: a page check's frame lives for some 0.2 s, about one period of the peak's sampling (200 ms, with gaps up to 0.5 s
+on a busy machine), so `layout`'s peak can miss the frame itself and is mostly the editor's own drawing (compare it with
+`chat`); the controls do less than the windows they stand for (one model request against two, no tool card; 10 sketches
+at a fixed pace against 20 live previews at their own); and `.mem.preview` follows the canvas frame's renderer, which
+the other frames share only while Chromium puts them in the same process (their memory is in `total` and `gpu` either
+way).
 
 **`canvas`** (after `open`): with the home hero selected by a click on it, scroll the home page with the wheel, 30 notches
 of 60 px down and as many back up, each 16 ms after the one before was taken (about 30 a second on an M4 Max, so the

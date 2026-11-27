@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
@@ -301,6 +301,11 @@ export interface State {
   activeRunId: string | null;
   /** What kind of request is running, while `runStatus` is set: a question never holds the project. */
   runMode: ChatMode | null;
+  /**
+   * The conversation the running request was filed in, which need not be the one on screen (see shownRun). The run
+   * holds the app whichever thread it is in; '' once its project closed and it belongs to none.
+   */
+  runConversationId: string | null;
   /** Unsent messages per conversation of the open project (see lib/chatDrafts). */
   chatDrafts: ChatDrafts;
   /** Library images attached to those unsent messages, by asset ID (see lib/chatDrafts). */
@@ -457,6 +462,7 @@ const live = create<State>((set) => ({
   runStatus: null,
   activeRunId: null,
   runMode: null,
+  runConversationId: null,
   chatDrafts: {},
   chatImages: {},
   chatRequest: null,
@@ -575,6 +581,21 @@ export const inspectorFocusRequest = (f: Omit<InspectorFocus, 'seq' | 'at'>): In
 
 /** The status of a request that may change the site; a read-only question is not one. */
 export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
+
+/** A request as the thread it runs in shows it. */
+export interface ShownRun {
+  runId: string;
+  status: RunStatus;
+  mode: ChatMode;
+}
+
+/**
+ * The running request, while the conversation on screen is the one it was filed in; null while it runs in another
+ * thread, which shows (and stops, and answers) it there. Whether a request holds the app is `runStatus`, whichever
+ * thread it is in.
+ */
+export const shownRun = (s: Pick<State, 'conversation' | 'runStatus' | 'activeRunId' | 'runMode' | 'runConversationId'>): ShownRun | null =>
+  s.runStatus && s.activeRunId && s.conversation && s.runConversationId === s.conversation.id ? { runId: s.activeRunId, status: s.runStatus, mode: s.runMode ?? 'edit' } : null;
 
 /** What the Inspector shows its fields for, as it keys them: the selection in the component edited, or with nothing
  *  selected the page, the component or the layout. */
@@ -1518,18 +1539,39 @@ export function refreshProviders(): Promise<void> {
     );
 }
 
+/** The running request, if any, filed in no thread now: its project closed, so it shows in none of the next one's. */
+export const detachedRun = (): Partial<State> => (getState().activeRunId ? { runConversationId: '' } : {});
+
+/** Requests that have ended, newest last: nothing they send after their end (their final message aside) runs them again. */
+const endedRuns: string[] = [];
+const ENDED_KEPT = 20;
+
+/**
+ * Status is the run's alone: it says which request runs, and in which conversation, whichever one is on screen (main
+ * sends it from the moment a request starts). Messages and text change only the conversation they name, and only
+ * while it is on screen.
+ */
 export function applyAiEvent(e: AiEvent) {
   const s = getState();
   if (e.kind === 'status') {
     statusSeen++;
+    if (endedRuns.includes(e.runId)) return;
     const terminal = ['completed', 'partial', 'no-changes', 'cancelled', 'failed', 'conflicted'].includes(e.status!);
+    if (terminal) {
+      endedRuns.push(e.runId);
+      if (endedRuns.length > ENDED_KEPT) endedRuns.shift();
+      // The end of a request other than the running one ends nothing (main runs one at a time).
+      if (s.activeRunId && s.activeRunId !== e.runId) return;
+    }
     // A question never changes the site, so edits typed while it runs are not held or checked against it.
     const ask = e.mode === 'ask';
     if (!ask) aiEpoch++;
+    // A request whose project closed mid-run (tagged with no conversation) ends for no project open now.
+    const detached = e.conversationId === '' || (s.activeRunId === e.runId && s.runConversationId === '');
     setState(
       terminal
-        ? { runStatus: null, activeRunId: null, runMode: null, ...(ask ? {} : { aiOutcome: { run: e.status!, runId: e.runId } }) }
-        : { runStatus: e.status!, activeRunId: e.runId, runMode: ask ? 'ask' : 'edit' }
+        ? { runStatus: null, activeRunId: null, runMode: null, runConversationId: null, ...(ask || detached ? {} : { aiOutcome: { run: e.status!, runId: e.runId } }) }
+        : { runStatus: e.status!, activeRunId: e.runId, runMode: ask ? 'ask' : 'edit', runConversationId: detached ? '' : e.conversationId }
     );
     // What the request learned about a local server (it answered, or it is down) is what Chat shows next.
     if (terminal && getState().settings?.ai.provider === 'local') void refreshProviders();
@@ -1539,7 +1581,7 @@ export function applyAiEvent(e: AiEvent) {
   // The conversation is still being read for (showConversation): what it says now is read again once it shows.
   if (showing && e.conversationId === showing.id) showing.missed = true;
   // A run's messages belong to the conversation it was filed in: one shown in any other thread (or from a project
-  // closed mid-run, tagged with none) would look sent there while being saved elsewhere. Status stays app-wide.
+  // closed mid-run, tagged with none) would look sent there while being saved elsewhere.
   if (!conv || e.conversationId !== conv.id) return;
   if (e.kind === 'message' && e.message) {
     const msgs = [...conv.messages];
@@ -1547,8 +1589,10 @@ export function applyAiEvent(e: AiEvent) {
     if (i >= 0) msgs[i] = e.message;
     else msgs.push(e.message);
     shownWhole?.add(e.message.id);
-    setState({ conversation: { ...conv, messages: msgs }, activeRunId: e.runId || s.activeRunId });
+    setState({ conversation: { ...conv, messages: msgs } });
   } else if (e.kind === 'text') {
+    // A request that has ended sent its text whole in its final message: nothing after that is a piece of it.
+    if (endedRuns.includes(e.runId)) return;
     // The turn's text whole, or the piece it gained after exactly the text this window was sent before (`at`). A piece
     // that does not follow the text shown here means something was missed on the way (the window was reloaded
     // mid-reply): main holds the turn, so the conversation is read from there, and the pieces after that follow it.
@@ -1605,12 +1649,69 @@ export async function showConversation(fallback: Conversation, opening: string, 
     .catch(() => null);
   if (showing === mine) showing = null;
   if (!current() || getState().snapshot?.workspaceKey !== opening) return;
+  // The request still going, in this thread or another: a window reloaded on another thread learns it holds the app,
+  // and where it is answered and stopped (#1125).
   const run = read?.conversation.id === id ? read.run : null;
   // A status that arrived while it was read is newer than the one read (the run may have ended meanwhile).
-  const status = run && statusSeen === seen ? { runStatus: run.status, activeRunId: run.runId, runMode: run.mode } : {};
+  const status = run && statusSeen === seen ? { runStatus: run.status, activeRunId: run.runId, runMode: run.mode, runConversationId: run.conversationId } : {};
   if (run && statusSeen === seen && run.mode !== 'ask') aiEpoch++;
   setState({ conversation: read?.conversation.id === id ? read.conversation : fallback, ...extra(), ...status });
   if (mine.missed) catchUpConversation(id, opening);
+}
+
+/** Moves between conversations, counted: only the latest one asked for shows its conversation. */
+let navigation = 0;
+
+/**
+ * Take the next move between conversations: what it answers says whether it is still the latest one asked for, in
+ * the opening `opening`. A restore of the project's last conversation takes one too, so a jump made while it reads
+ * (Answer in chat) is never undone by it.
+ */
+export function claimNavigation(opening?: string): () => boolean {
+  const mine = ++navigation;
+  return () => mine === navigation && (opening === undefined || getState().snapshot?.workspaceKey === opening);
+}
+
+/** Show conversation `c` at once, over any move still under way: what Clear history leaves (nothing opens meanwhile). */
+export function replaceThread(c: Conversation, extra?: Partial<State>) {
+  navigation++;
+  catchingUp = null;
+  setState({ conversation: c, ...extra });
+}
+
+/**
+ * Show the conversation `pick` opens in main (Earlier conversations, New conversation, the manager, or a way back to
+ * the thread a request runs in) in opening `opening`, with what `extra(c)` gives then. Only the latest move shows: one
+ * that answers after another was asked for, or after the project changed, shows nothing and fails silently. A thread
+ * with a turn still going is read again as main has it (showConversation): what its request sent while another thread
+ * was on screen, or while it opened, lands nowhere, and the request may have ended meanwhile (#1125). True once shown.
+ */
+export async function openThread(pick: Promise<Conversation>, opening: string, extra?: (c: Conversation) => Partial<State>): Promise<boolean> {
+  const current = claimNavigation(opening);
+  const c = await pick.catch((e: unknown) => {
+    if (current()) throw e;
+    return null;
+  });
+  if (!c || !current()) return false;
+  // A read for the thread on screen that is still out is older than this: the thread it was for has been left.
+  catchingUp = null;
+  if (c.messages.some((m) => m.role === 'assistant' && !!m.runId && !m.result)) await showConversation(c, opening, current, () => extra?.(c) ?? {});
+  else setState({ conversation: c, ...extra?.(c) });
+  return current();
+}
+
+/**
+ * Show the thread the running request was filed in (`id`, taken when its Stop or Answer was pressed, before the
+ * request can end), in the opening on screen. True once it shows; a thread that cannot be opened is said so. Opened in
+ * main even when it is on screen: a switch to another thread may still be under way, and this one is asked for later.
+ */
+export function openRunThread(id = getState().runConversationId): Promise<boolean> {
+  const { snapshot } = getState();
+  if (!id || !snapshot) return Promise.resolve(false);
+  return openThread(api.ai.openConversation(id), snapshot.workspaceKey).catch((e: Error) => {
+    toast(e.message || 'Could not open that conversation.', 'error');
+    return false;
+  });
 }
 
 /**
@@ -1715,6 +1816,10 @@ export interface ConfirmRequest {
   /** One short line each: what is lost, what is at risk, what stays safe, how to take it back or that it can't
    *  be, and anything else to know. Shown in the order given, each with its own icon. */
   details?: ConfirmDetail[];
+  /** The app's review of an AI change to where contact forms send: each form, before and after (#1130). */
+  formRouting?: FormRoutingPrompt;
+  /** Names a question its asker may take back unanswered (withdrawConfirm), once it no longer needs an answer. */
+  key?: string;
   /** true = confirm, false = the cancel button, null = dismissed (Escape, ×, backdrop): stay where you were. */
   resolve: (ok: boolean | null) => void;
 }
@@ -1756,4 +1861,11 @@ export function confirmDialog(req: Omit<ConfirmRequest, 'resolve' | 'id'>): Prom
     // Only a question that takes the screen changes what the host shows.
     if (confirmQueue.length === 1) notifyConfirm();
   });
+}
+/**
+ * Take back the questions asked with `key` that no one answered: off the screen, or out of the queue. Each resolves
+ * as dismissed (null), so its asker, which withdrew it, should not read that as an answer.
+ */
+export function withdrawConfirm(key: string) {
+  for (const entry of confirmQueue.filter((q) => q.key === key)) entry.resolve(null);
 }

@@ -12,7 +12,7 @@
  */
 import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { GitError, VERSIONS_BRANCH, VERSIONS_GITDIR, type CommitInput, type FileInput, type GitRepository, type Identity, type Oid } from '../git/protocol';
+import { GitError, VERSIONS_BRANCH, VERSIONS_GITDIR, type CallOptions, type CommitInput, type FileInput, type GitRepository, type Identity, type Oid } from '../git/protocol';
 import { snapshotPlace } from './snapshot-inventory';
 
 /** How the app reaches Git for saved versions. The app gives the worker's client; tests give one in their own process. */
@@ -40,12 +40,12 @@ export const APP_AUTHOR = { name: 'SiteOrigin Builder', email: 'versions@siteori
 export const keptOutOfGit = (path: string): boolean => snapshotPlace(path).kind === 'attachment';
 
 /**
- * What kind of version a commit is: one the author saved, the way back the app saved before a restore, or the site as
- * a restore left it (#1155), which the app saves after one.
+ * What kind of version a commit is: one the author saved, one the app saved by itself (the way back before a restore, a
+ * starting version, a safety milestone, #1156), or the site as a restore left it (#1155), which the app saves after one.
  */
-export type VersionKind = 'saved' | 'before-restore' | 'restored';
+export type VersionKind = 'saved' | 'auto' | 'restored';
 
-const KIND_MESSAGE: Record<VersionKind, string> = { saved: 'Saved version', 'before-restore': 'Before restoring', restored: 'Restored version' };
+const KIND_MESSAGE: Record<VersionKind, string> = { saved: 'Saved version', auto: 'Saved automatically', restored: 'Restored version' };
 
 /** A commit's message: what kind of version it is, and the ID that ties it to its row. Never the author's own words. */
 export function commitMessage(id: string, kind: VersionKind): string {
@@ -79,18 +79,21 @@ export function gitSaveProblem(e: unknown): string {
   }
 }
 
-/** Make the repository if need be, and write the tree of `files` and a commit of it on the branch's tip, moving nothing. */
-export async function writeVersionCommit(repo: GitRepository, files: FileInput[], id: string, time: string, kind: VersionKind): Promise<{ commit: Oid; tree: Oid }> {
-  await repo.init();
-  const tip = await repo.resolveRef(VERSIONS_BRANCH);
+/**
+ * Make the repository if need be, and write the tree of `files` and a commit of it on the branch's tip, moving nothing.
+ * `call.signal` stops it part way, leaving only objects nothing names.
+ */
+export async function writeVersionCommit(repo: GitRepository, files: FileInput[], id: string, time: string, kind: VersionKind, call: CallOptions = {}): Promise<{ commit: Oid; tree: Oid }> {
+  await repo.init(call);
+  const tip = await repo.resolveRef(VERSIONS_BRANCH, call);
   // A tip that can't be read is damaged history: nothing is built on it.
   if (tip)
-    await repo.readCommit(tip).catch((e: unknown) => {
+    await repo.readCommit(tip, call).catch((e: unknown) => {
       throw e instanceof GitError && ['cancelled', 'timeout', 'busy', 'stopped', 'crashed'].includes(e.code) ? e : new GitError('corrupt', 'The newest version in the history is damaged or gone.');
     });
-  const tree = await repo.writeFiles(files);
+  const tree = await repo.writeFiles(files, call);
   const who = appIdentity(time);
-  const commit = await repo.writeCommit({ tree, parents: tip ? [tip] : [], author: who, committer: who, message: commitMessage(id, kind) });
+  const commit = await repo.writeCommit({ tree, parents: tip ? [tip] : [], author: who, committer: who, message: commitMessage(id, kind) }, call);
   return { commit, tree };
 }
 

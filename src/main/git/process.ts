@@ -26,12 +26,21 @@ function hostId(file = join(app.getPath('userData'), 'git-host-id')): string {
   return id;
 }
 
-export const gitClient = createGitClient(() =>
-  utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'git-worker.js'), [], { serviceName: 'SiteOrigin versions', env: workerEnv(), stdio: 'ignore' })
-);
+const forkWorker = (serviceName: string) => () => utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'git-worker.js'), [], { serviceName, env: workerEnv(), stdio: 'ignore' });
+
+export const gitClient = createGitClient(forkWorker('SiteOrigin versions'));
+
+/**
+ * The pushes to hosts (#1157): a worker of their own, started when one is first made, so an upload that takes a while
+ * never holds up saving a version, which the other worker does meanwhile. It only reads a repository.
+ */
+export const remoteGitClient = createGitClient(forkWorker('SiteOrigin publishing'), { timeoutMs: 60 * 60_000 });
 
 /** The bundled Git, and the computer's own if it has one (Settings, #1153). */
 export const gitRuntime = (): Promise<GitRuntimeStatus> => gitRuntimeStatus(gitClient);
 
-/** End the worker (the app is quitting). */
-export const stopGitWorker = () => gitClient.stop();
+/** End the workers (the app is quitting). */
+export const stopGitWorker = () => {
+  gitClient.stop();
+  remoteGitClient.stop();
+};

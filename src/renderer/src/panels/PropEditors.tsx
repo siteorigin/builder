@@ -40,7 +40,7 @@ import { effectiveItem, teaserPage } from '@shared/page-teasers';
 import { articleRows, feedLimit, pageArticle } from '@shared/articles';
 import { entryQuery, feedCollection, hasCollections, listedEntries, publishedEntries, termsNamed, type EntryQuery } from '@shared/entry-feed';
 import { findEntry } from '@shared/collections';
-import { linkableIndexes } from '@shared/archives';
+import { linkIndexes } from '../lib/link-indexes';
 import { openPost, selectPage } from '../lib/actions';
 import { placedFeedRows, resolveRef, sampleQuery } from '../lib/model';
 import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
@@ -339,7 +339,7 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
   const dropped = useRef<{ page: string; section: string } | null>(null);
   if (v.type === 'page' && state.pages[v.target]) lastPage.current = v.target;
   // The collections whose index a link can go to, and the one it last went to.
-  const indexes = useMemo(() => linkableIndexes(state), [state]);
+  const indexes = useMemo(() => linkIndexes(state), [state]);
   const lastIndex = useRef<string | null>(null);
   if (v.type === 'collection' && indexes.some((x) => x.id === v.target)) lastIndex.current = v.target;
   // Likewise the document it last went to.
@@ -751,7 +751,7 @@ function savedDestination(v: LinkValue, state: ProjectState, sectionGone: boolea
   const shared = page && Object.values(state.pages).some((p) => p.id !== page.id && p.title.trim().toLowerCase() === page.title.trim().toLowerCase());
   if (page) return `goes to ${sectionGone || !v.anchor ? 'the top of ' : ''}${page.title}${shared ? ` (${page.route})` : ''}${v.anchor && !sectionGone ? `, ${section(page.id, v.anchor)}` : ''}`;
   if (v.type === 'collection') {
-    const index = linkableIndexes(state).find((x) => x.id === v.target);
+    const index = linkIndexes(state).find((x) => x.id === v.target);
     return index ? `goes to the ${index.name} index` : 'goes nowhere';
   }
   if (v.type === 'document') return Object.hasOwn(state.assets.assets, v.target) && isLibraryDocument(state.assets.assets[v.target]) ? `downloads ${state.assets.assets[v.target].name}` : 'goes nowhere';

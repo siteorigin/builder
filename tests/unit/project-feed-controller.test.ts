@@ -58,6 +58,8 @@ async function openProject() {
     if (!editor.reader.read(change)) editor.unread++;
   };
   await (c as unknown as Attaching).attach(session, {}, { state: 'error', message: 'No preview in this test.' });
+  // The opening's own write, the project's starting version (#1156), is in before the test's first change.
+  await c.startingVersion;
   return { dir, c, session, editor };
 }
 
@@ -150,9 +152,17 @@ describe('the editor’s copy of the open project', { timeout: 60_000 }, () => {
     expect((await c.apply({ operations: [setText(session.state, 'Second heading')] }, { opening: c.snapshot()!.workspaceKey })).ok).toBe(true);
     await settled(c, editor.reader);
     expect(textNow(editor.reader.snapshot!.state)).toBe('Second heading');
+    from = editor.changes.length;
+    const held = editor.reader.snapshot!.state;
     expect((await session.restoreVersion(saved.id!, session.revision)).ok).toBe(true);
     await settled(c, editor.reader);
     expect(textNow(editor.reader.snapshot!.state)).toBe('Feed heading');
+    // A version is read back from its files, every document a new object: only the page it puts back crosses, and
+    // every other document stays the very object the editor held.
+    expect(editor.changes.slice(from).flatMap(sentDocs)).toEqual([`pages.${home}`]);
+    for (const id of Object.keys(held.pages).filter((id) => id !== home)) expect(editor.reader.snapshot!.state.pages[id]).toBe(held.pages[id]);
+    expect(editor.reader.snapshot!.state.components).toBe(held.components);
+    expect(editor.reader.snapshot!.state.site).toBe(held.site);
 
     // Changed outside the app: the page's file written as another editor saves it, then read again.
     const file = join(dir, 'siteorigin', 'pages', `${home}.json`);

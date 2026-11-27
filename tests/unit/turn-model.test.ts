@@ -92,7 +92,8 @@ describe('the model that handled each turn', () => {
     await expect.poll(stamped, { timeout: 5000, interval: 5 }).toBeGreaterThan(-1);
     const running = events.findIndex((e) => e.kind === 'status' && e.runId === sent.runId && e.status === 'running');
     expect(running).toBeGreaterThan(stamped());
-    expect(events.slice(0, stamped()).some((e) => e.kind === 'status' && e.runId === sent.runId)).toBe(false);
+    // Only the status that says it started (preparing, sent at once so the app knows which thread it runs in) comes first.
+    expect(events.slice(0, stamped()).filter((e) => e.kind === 'status' && e.runId === sent.runId).map((e) => e.status)).toEqual(['preparing']);
     expect(models['studio-a'].requests).toHaveLength(1);
     // Settings now choose studio-b for the next message, while A still works on this one.
     selected.model = 'studio-b';

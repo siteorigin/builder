@@ -45,7 +45,7 @@ import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, componentSources } from '../codecheck';
+import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, componentSources, projectTokenVars } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
@@ -58,7 +58,7 @@ import { perf, timed } from '../perf';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
 
 export { statTrusted };
-import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type PendingOutcome, type SavedVersion } from './versions';
+import { heldAsMedia, isVersionMedia, newVersionId, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type PendingOutcome, type SavedVersion } from './versions';
 import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
 import { captureSnapshotInventory, foldName } from './snapshot-inventory';
 import { GitError, type FileInput } from '../git/protocol';
@@ -213,6 +213,51 @@ async function linkOnTheWay(root: string, rel: string): Promise<boolean> {
   }
   return false;
 }
+
+/** The version the app saves of a project that has never had one (#1156). */
+export const STARTING_VERSION = 'Starting version';
+/** The version the app saves of the site before its theme is switched (#1156). */
+export const BEFORE_THEME = 'Before changing theme';
+
+/**
+ * A version an export captured, listed once the export is delivered: what collection must keep until `release`, and
+ * with Git snapshots on, every file of the site its commit holds from disk, by SHA-256.
+ */
+export interface ExportedVersion {
+  version: SavedVersion;
+  release: () => void;
+  files: Map<string, string>;
+}
+
+/** How a version is captured (captureVersion). */
+interface CaptureOptions {
+  /** Saved by the app by itself. */
+  auto?: boolean;
+  /** The version of the site as a restore left it (#1155), by the ID its restore noted first. */
+  restored?: { id: string };
+  /** Files a restore is about to put something else in, held as they are now. */
+  also?: string[];
+  /** Files a restore put where none were, by what it put there. */
+  filled?: Record<string, string>;
+  /** Saved in the plain store whatever the Git snapshots setting says. */
+  plain?: boolean;
+  /** Asked between files: true stops the capture (CaptureStopped), with nothing listed. */
+  stop?: () => boolean;
+  /** Filled, with Git snapshots on, with every file of the site the commit holds from disk, by its SHA-256. */
+  hashes?: Map<string, string>;
+  /** Stops the Git write part way (as `stop` does between files). */
+  signal?: AbortSignal;
+}
+
+/** A capture stopped by its `stop` (the project is closing). */
+class CaptureStopped extends Error {
+  constructor() {
+    super('The version was not saved: the project is closing.');
+  }
+}
+const stopIf = (stop?: () => boolean) => {
+  if (stop?.()) throw new CaptureStopped();
+};
 
 /** A version's name as another's names it, kept short however often restores nest. */
 const shortName = (name: string) => (name.length > 50 ? `${name.slice(0, 49).trimEnd()}…` : name);
@@ -3323,6 +3368,7 @@ export class ProjectSession extends EventEmitter {
           await checkSvelteSource(def.source, {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
+            tokens: projectTokenVars(next),
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
             ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties } } : {}),
             // Its code takes what its properties hold, and nothing they do not.
@@ -3379,6 +3425,18 @@ export class ProjectSession extends EventEmitter {
         if (!admits(routingGrant, this.revision, run, fingerprint, routing)) {
           const review: FormRoutingReview = this.routingGrants.review(this.revision, run, fingerprint, routing, { base: this.state, state: next, results });
           return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: formRoutingRefusal(routing), recoverable: true, details: { formRouting: review } } };
+        }
+      }
+      // A theme switch restyles the whole site: the site as it is first goes to Saved versions (#1156), or one there
+      // already holding exactly that stands for it. If it can't be saved, the theme stays as it is. An AI request's own
+      // switch is not saved so: its documents are provisional, and stopping it, or Undo, takes the whole request back.
+      if (next.site.themeId !== this.state.site.themeId && !opts.runId) {
+        try {
+          const blocked = this.versions.problem;
+          if (blocked) throw new Error(blocked);
+          await this.listAuto(await this.captureAuto(BEFORE_THEME));
+        } catch (e) {
+          return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The site could not be saved first, so the theme was not changed. ${(e as Error).message}`, recoverable: true } };
         }
       }
       let ev: SessionEvent;
@@ -4185,7 +4243,7 @@ export class ProjectSession extends EventEmitter {
    * something else in), as a version not yet in the list. A file that is not there, or is a link, is kept as missing;
    * one that could not be read stops the save.
    */
-  private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string>; plain?: boolean } = {}): Promise<SavedVersion> {
+  private async captureVersion(name: string, opts: CaptureOptions = {}): Promise<SavedVersion> {
     await this.versions.checkFolders();
     // Asked once per version: the same Git decides and stores it. `plain` keeps it to this store whatever the setting.
     const git = opts.plain ? null : versionsGit();
@@ -4193,9 +4251,14 @@ export class ProjectSession extends EventEmitter {
     const docs: Record<string, string> = {};
     // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
     // Nor what has been published: a restore never takes back what the website was exported with.
-    for (const [path, content] of this.docs) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) docs[path] = await this.versions.putText(content);
+    for (const [path, content] of this.docs) {
+      if (path === BRIEF_FILE || path === PUBLISHED_FILE) continue;
+      stopIf(opts.stop);
+      docs[path] = await this.versions.putText(content);
+    }
     const media: Record<string, string | null> = {};
     for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
+      stopIf(opts.stop);
       let abs: string;
       try {
         abs = safeJoin(this.dir, rel);
@@ -4224,7 +4287,7 @@ export class ProjectSession extends EventEmitter {
    * leaves out (a private name, a file of a nested repository). The media a restore puts back are recorded as ever, by
    * their SHA-256, and the worker stores each file only while it still holds the bytes hashed.
    */
-  private async captureGitVersion(git: VersionsGit, name: string, opts: { auto?: boolean; restored?: { id: string }; also?: string[]; filled?: Record<string, string> }): Promise<SavedVersion> {
+  private async captureGitVersion(git: VersionsGit, name: string, opts: CaptureOptions): Promise<SavedVersion> {
     // A restore's version takes the ID its restore noted first, so a stop is matched with the restore it belongs to.
     const id = opts.restored?.id ?? newVersionId();
     const time = new Date().toISOString();
@@ -4243,8 +4306,9 @@ export class ProjectSession extends EventEmitter {
     }
     let inventory: Awaited<ReturnType<typeof captureSnapshotInventory>>;
     try {
-      inventory = await captureSnapshotInventory(this.dir, { settleMs: this.settleMs });
+      inventory = await captureSnapshotInventory(this.dir, { settleMs: this.settleMs, ...(opts.stop ? { paused: () => stopIf(opts.stop), stop: opts.stop } : {}) });
     } catch (e) {
+      if (e instanceof CaptureStopped || opts.stop?.()) throw new CaptureStopped();
       throw new Error(`${(e as Error).message} Nothing was saved.`);
     }
     // Every other file of the site, as it is on disk (the record of what was published, and code no component claims,
@@ -4264,6 +4328,7 @@ export class ProjectSession extends EventEmitter {
       hashed.set(f.path, f.sha256);
       files.push({ path: f.path, source: f.path, sha256: f.sha256, mode: f.mode });
     }
+    if (opts.hashes) for (const [p, h] of hashed) opts.hashes.set(p, h);
     const outside: string[] = [];
     const media: Record<string, string | null> = {};
     for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
@@ -4293,13 +4358,16 @@ export class ProjectSession extends EventEmitter {
       }
       // A file the site names that a snapshot leaves out (a private name, a nested repository's, another spelling of a
       // file on a disk that ignores case): held as it always was, an object beside the list, and never in history.
+      stopIf(opts.stop);
       media[rel] = await this.versions.putFile(abs);
       outside.push(rel);
     }
+    stopIf(opts.stop);
     let stored: { commit: string; tree: string };
     try {
-      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, opts.restored ? 'restored' : opts.auto ? 'before-restore' : 'saved');
+      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, opts.restored ? 'restored' : opts.auto ? 'auto' : 'saved', opts.signal ? { signal: opts.signal } : {});
     } catch (e) {
+      if (opts.stop?.()) throw new CaptureStopped();
       if (e instanceof GitError && e.code === 'corrupt') throw new HistoryDamaged(gitSaveProblem(e));
       throw new Error(gitSaveProblem(e));
     } finally {
@@ -4339,6 +4407,106 @@ export class ProjectSession extends EventEmitter {
       }
       this.emit('history');
       return { ok: true, id: v.id, missing: Object.keys(v.media).filter((p) => v.media[p] === null) };
+    });
+  }
+
+  /**
+   * captureVersion for a version the app saves by itself. With the version history damaged it is saved in the plain
+   * store instead, so a safety version is still there to go back to.
+   */
+  private captureAuto(name: string, opts: Omit<CaptureOptions, 'auto' | 'plain'> = {}): Promise<SavedVersion> {
+    return this.captureVersion(name, { ...opts, auto: true }).catch((e: unknown) => (e instanceof HistoryDamaged ? this.captureVersion(name, { ...opts, auto: true, plain: true }) : Promise.reject(e)));
+  }
+
+  /**
+   * List `v`, a version the app captured by itself, unless one listed already holds exactly what it does (with `name`,
+   * one by that name): that one stands for it. Gives back the row that does. Run in turn with every other command.
+   */
+  private async listAuto(v: SavedVersion, name?: string, stop?: () => boolean): Promise<SavedVersion> {
+    const kept = await this.versions.sameAs(v, name);
+    // Capturing (and reading a version's commit back) takes a while: another app may have taken the project over
+    // meanwhile, which a version kept as it is must not hide from what follows (a theme switch's save).
+    if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? LOCK_UNCHECKED);
+    stopIf(stop);
+    if (kept) return kept;
+    // The version of a restore still being recorded (#1155) goes first, as before any version saved: this one builds on it.
+    if (v.git) {
+      const pending = await this.pendingVersionBlocks();
+      if (pending) throw new Error(pending);
+    }
+    const row = await this.versions.add(v);
+    this.emit('history');
+    return row;
+  }
+
+  /** Set by close: a starting version not begun by then is never saved, and one being saved stops. */
+  private leaving = false;
+  private leavingAbort = new AbortController();
+
+  /**
+   * Save the "Starting version" (#1156) of a project that has never had a version saved: a new project once it is
+   * created, locked and generated, or an existing one on its first writable opening. A project with a list of versions
+   * (even one whose versions were all deleted) gets none, so reopening never adds another. Queued in turn with every
+   * other command, so it holds the project as it was opened, ahead of any edit. A failure leaves the project as usable
+   * as ever, with a notice saying so; the next opening tries again. Gives back whether one was saved.
+   */
+  recordStartingVersion(): Promise<boolean> {
+    return this.serialize(async () => {
+      if (this.leaving || this.readOnly || this.versions.listed || this.versions.problem) return false;
+      // Only a project in a settled state, as an edit would find it: never one waiting for a format update, a save to
+      // finish on reopening, or a choice between versions of a file.
+      if (this.unsettled || this.migrationDue || this.migrationFailed || this.pending.size || this.conflicts.length || this.activeRun) return false;
+      if (await this.writeBlocked()) return false;
+      try {
+        // A change outside the app not loaded yet: the next opening saves it, loaded.
+        if (await this.unloadedEdit(new Set())) return false;
+        const v = await this.captureAuto(STARTING_VERSION, { stop: () => this.leaving, signal: this.leavingAbort.signal });
+        if (this.leaving) return false;
+        const late = await this.unloadedEdit(new Set());
+        if (late || this.leaving) return false;
+        await this.listAuto(v, undefined, () => this.leaving);
+        return true;
+      } catch (e) {
+        if (this.leaving || e instanceof CaptureStopped) return false;
+        this.recoveryNotes.push(`The starting version of this project could not be saved, so it isn’t in History yet: ${(e as Error).message} Your project is fine to work on, and you can save a version yourself under Saved versions.`);
+        this.emit('history');
+        return false;
+      }
+    });
+  }
+
+  /**
+   * Capture the project as it is now as a version an export can list once it is delivered (#1156), not listed yet:
+   * collection keeps what it holds until `release` is called. Run within the export's hold of the project, so it is
+   * the project the export copies.
+   */
+  async captureExported(name: string): Promise<ExportedVersion | { changed: string }> {
+    // Written to the project's own store, so under the lock generation's claim, as any write of a command is; the
+    // export's hold of the project is otherwise only a turn in the queue.
+    return this.fenced(async () => {
+      const why = await this.versionsBlocked();
+      if (why) throw new Error(why);
+      // A document changed outside the app and not loaded yet would be exported as the folder has it, and saved as the
+      // app does: the export waits for it instead. The brief and the record of what was published are never a version's.
+      const changed = await this.unloadedEdit(new Set([BRIEF_FILE, PUBLISHED_FILE]));
+      if (changed) return { changed };
+      const files = new Map<string, string>();
+      const version = await this.captureAuto(name, { hashes: files });
+      return { version, release: this.versions.hold(version), files };
+    });
+  }
+
+  /**
+   * List the version an export captured (captureExported) now that it is delivered, unless one by its name already
+   * holds exactly that. Gives back the row standing for it.
+   */
+  listExported(v: SavedVersion): Promise<SavedVersion> {
+    return this.serialize(async () => {
+      // Captured before any AI request that began since: listing it saves none of that request's work.
+      const blocked = await this.writeBlocked();
+      if (blocked) throw new Error(blocked.error?.message ?? LOCK_UNCHECKED);
+      if (this.versions.problem) throw new Error(this.versions.problem);
+      return this.listAuto(v, v.name);
     });
   }
 
@@ -4518,14 +4686,7 @@ export class ProjectSession extends EventEmitter {
         inGit = !!now.git;
         // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
         // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
-        let kept: SavedVersion | undefined;
-        for (const x of this.versions.versions) {
-          if (!sameContents(x, now) || (now.git ? x.git?.tree !== now.git.tree : !!x.git)) continue;
-          // A version in Git is the way back only while its commit is there to read: otherwise this one is saved.
-          if (now.git && !(await this.versions.holdsTree(x, now.git.tree))) continue;
-          kept = x;
-          break;
-        }
+        const kept = await this.versions.sameAs(now, undefined, true);
         if (kept) backup = kept;
         else {
           if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
@@ -4566,7 +4727,9 @@ export class ProjectSession extends EventEmitter {
           }
           if (written.length) await this.refreshAssetFiles().catch(() => false);
           if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
-          return docsChange ? await this.persist(plan.state, { label, source: 'user' }) : null;
+          // Read from the version's files, every document is a new object: those that read the same are the project's
+          // own (shareUnchanged), so the editor is sent only the documents the restore changes (#967).
+          return docsChange ? await this.persist(shareUnchanged(this.state, this.docs, plan.state, plan.docs), { label, source: 'user' }) : null;
         });
       } catch (e) {
         // Once the documents are saved (in place, or journaled for reopening to finish), the files stay with them; before
@@ -5641,6 +5804,10 @@ export class ProjectSession extends EventEmitter {
   }
 
   async close() {
+    // A starting version still being saved stops at its next file, and its Git write at once: closing never waits for a
+    // whole library.
+    this.leaving = true;
+    this.leavingAbort.abort();
     // A sweep not yet run is left to the next open, which sweeps first.
     if (this.sweepTimer) clearTimeout(this.sweepTimer);
     this.sweepTimer = null;

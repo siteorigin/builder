@@ -113,6 +113,7 @@ export const GAP_ISSUES: Record<number, string> = {
 
 const J = 'tests/e2e/journeys.mjs';
 const L_SHARE = 'tests/e2e/live-share.mjs';
+const L_COLLAB = 'tests/e2e/live-collaborator.mjs';
 
 export const INTERACTIONS: Interaction[] = [
   {
@@ -1946,9 +1947,16 @@ export const INTERACTIONS: Interaction[] = [
     start: 'Welcome or a project of my own open, a host’s invite link, the relay in its local simulator',
     routes: ['welcome:Join live session', 'menu:File > Join Live Session…', 'dialog:Join live session › Ask to join', 'dialog:Join live session › Stop asking', 'toolbar:Live session', 'item:RemoteSession:*: *', 'item:RemoteSession:Leave session…', 'item:Toolbar:Leave live session…', 'toolbar:Leave session'],
     outcome:
-      'The host is asked under the name given, and once it admits the guest the editor shows the host’s project and its preview; a collaborator’s edits land on the host’s disk as the guest’s own History steps and come back to the guest; a viewer, or a guest made one, cannot edit; leaving, being removed, an expiry or the host ending the session puts the editor back on Welcome, saying why, with this computer’s projects as they were',
-    scenario: 'blank · none · relay simulator',
+      'The host is asked under the name given, and once it admits the guest the editor shows the host’s project and its preview; a collaborator’s selection is outlined on the host’s canvas; its edits land on the host’s disk as the guest’s own History steps, come back to the guest and reach the room’s viewers; it resolves the room’s pinned notes; the host refuses a code edit from it, and the remote shell blocks Export; a viewer, or a guest made one, cannot edit; leaving, being removed, an expiry or the host ending the session puts the editor back on Welcome, saying why, with this computer’s projects as they were',
+    scenario: 'blank · none · relay simulator; business · none · relay simulator, two apps',
     proof: [
+      { test: L_COLLAB, kind: 'e2e', step: 'the second app joins through the invite link and waits for the host' },
+      { test: L_COLLAB, kind: 'e2e', step: 'the host admits it and makes it a Collaborator' },
+      { test: L_COLLAB, kind: 'e2e', step: 'the collaborator’s selection shows as an outline on the host’s canvas' },
+      { test: L_COLLAB, kind: 'e2e', step: 'the collaborator’s visual edit is written to the host’s disk, shows in its History and reaches the viewer' },
+      { test: L_COLLAB, kind: 'e2e', step: 'the collaborator resolves a note pinned in the room' },
+      { test: L_COLLAB, kind: 'e2e', step: 'the host refuses the collaborator’s code edit, and the remote shell blocks Export' },
+      { test: L_COLLAB, kind: 'e2e', step: 'made a Viewer, the collaborator’s next edit is refused at once' },
       { test: 'tests/unit/live-remote-shell.test.ts', kind: 'unit', step: 'joins as a collaborator, shows the host’s project and preview, and edits it through the host' },
       { test: 'tests/unit/live-remote-shell.test.ts', kind: 'unit', step: 'ends at once when the host removes the guest, and its preview goes with it' },
       { test: 'tests/unit/live-guest.test.ts', kind: 'unit' },
@@ -1956,7 +1964,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/remote-shell-editor.test.ts', kind: 'unit' },
       { test: 'tests/unit/canvas-navigation.test.ts', kind: 'unit' }
     ],
-    gaps: [{ missing: 'Two apps driven together (a host’s Share and a guest’s Join, the host’s page rendered in the guest’s canvas) are proven only below the editor; no e2e script launches two apps yet', owner: 'preview' }]
+    gaps: [{ missing: 'The second app going back to Welcome when it leaves, is removed, its access expires or the host ends the session is proven by unit tests only (leaving and removal in tests/unit/live-remote-shell.test.ts and tests/unit/remote-shell-editor.test.ts, expiry in tests/unit/live-guest.test.ts and tests/unit/relay-expiry.test.ts); the two-app script ends with the guest still in the room', owner: 'preview' }]
   },
   // ---- export ----
   {

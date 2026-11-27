@@ -15,6 +15,8 @@ import { allTrees, instancesOf } from '@engine/tree';
 import { forEachTokenPropRef } from '@engine/tokens';
 import { api, applyOps, claimRefusals, commitOps, dismissToast, getState, setState, shownAt, toast, undoAction, undoAvailable, useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
+import { afterEditsSettle } from '../lib/pending';
+import { settleEdits } from '../lib/leave';
 import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
 import { useJumpMark } from '../lib/use-jump-mark';
@@ -885,15 +887,31 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
     setBusy(true);
     setRefusal(null);
     const from = theme;
-    // The refusal is said where it is shown (role=alert), once.
-    const r = await claimRefusals(
-      (e) => {
-        setRefusal(e.message);
-        return true;
-      },
-      () => commitOps([{ type: 'theme.apply', themeId: next.id }], `Switch theme to ${next.name}`)
-    );
-    setBusy(false);
+    const opening = getState().snapshot?.workspaceKey;
+    let started: { ok: true; value: Awaited<ReturnType<typeof commitOps>> } | { ok: false; problems: string[] };
+    try {
+      // What is still being typed lands first: the site is saved to Saved versions as it is before the switch (#1156).
+      started = await afterEditsSettle(
+        () => settleEdits(),
+        // The refusal is said where it is shown (role=alert), once.
+        async () =>
+          getState().snapshot?.workspaceKey !== opening
+            ? null
+            : claimRefusals(
+                (e) => {
+                  setRefusal(e.message);
+                  return true;
+                },
+                () => commitOps([{ type: 'theme.apply', themeId: next.id }], `Switch theme to ${next.name}`)
+              )
+      );
+    } catch (e) {
+      started = { ok: false, problems: [`The theme was not changed: ${(e as Error).message}`] };
+    } finally {
+      setBusy(false);
+    }
+    if (!started.ok) return setRefusal(started.problems[0]);
+    const r = started.value;
     if (!r?.ok) return;
     fresh.current = true;
     setDone({ from, to: next.id, kept: changedCount, undo: undoAction(r) });

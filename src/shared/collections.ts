@@ -170,6 +170,16 @@ export function orderedEntries(collection: Collection): EntryDoc[] {
   return [...listed, ...byDate.filter((e) => !seen.has(e))];
 }
 
+/**
+ * Told of each walk of every entry for the site's addresses (`siteEntries`), for the performance harness
+ * (scripts/perf/README.md): set only while the editor's timing marks are on, so otherwise a walk costs one look at an
+ * empty variable.
+ */
+let countWalk: (() => void) | null = null;
+export function countSiteEntryWalks(count: typeof countWalk): void {
+  countWalk = count;
+}
+
 /** A collection entry the site has a page for, and that page's address. */
 export interface SiteEntry {
   collection: Collection;
@@ -190,6 +200,7 @@ export function isEntryPath(collection: Collection, entry: EntryDoc): boolean {
  * prefix edited by hand), or at one a page or an earlier entry holds, has none, so no two files share a place.
  */
 export function siteEntries(state: ProjectState): SiteEntry[] {
+  countWalk?.();
   const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
   const out: SiteEntry[] = [];
   for (const id of Object.keys(state.collections ?? {}).sort()) {

@@ -435,6 +435,7 @@ describe('read-only questions (#203)', () => {
     expect(compiles).toBe(0);
     expect(editingMidRun).toBe(false);
     expect(events.filter((e) => e.kind === 'status').map((e) => [e.status, e.mode])).toEqual([
+      ['preparing', 'ask'],
       ['running', 'ask'],
       ['no-changes', 'ask']
     ]);
@@ -6068,6 +6069,41 @@ describe('a change to where a contact form sends (#1128)', () => {
     expect(asked?.widen).toBeUndefined();
     expect(told.ok).toBe(true);
     expect(node.props.endpoint).toBe(EVIL);
+  });
+
+  it('carries the app’s review for its dialog: the form, its service, and where it sends before and after (#1130)', async () => {
+    const { asked } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[0]));
+    expect(asked?.formRouting).toEqual({
+      forms: [
+        {
+          title: '“Contact form” on “Home”',
+          rows: [
+            { label: 'Form service', before: 'Form endpoint (Formspree, Basin, Getform…)', after: 'Form endpoint (Formspree, Basin, Getform…)' },
+            { label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: `${EVIL} (Form endpoint URL)` }
+          ]
+        }
+      ]
+    });
+  });
+
+  it('never lets the model ask a question that opens the app’s dialog (#1130)', async () => {
+    let asked: NonNullable<ChatMessage['questions']>[number] | undefined;
+    const review = { forms: [{ title: '“Contact form” on “Home”', rows: [{ label: 'Sends to', before: SALES, after: EVIL }] }] };
+    const env = await setup([
+      () => [call('q1', 'request_clarification', { question: 'Let the assistant change where your contact form sends visitors’ messages?', choices: ['Keep it as it is', 'Allow this change'], formRouting: review })],
+      () => finish('Done.')
+    ]);
+    const r = await env.orch.send('Change the form', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 });
+    while (env.orch.busy) {
+      const q = [...env.events].reverse().find((e) => e.message?.questions?.length)?.message?.questions?.at(-1);
+      if (q && !asked && env.events.some((e) => e.status === 'awaiting-input')) {
+        asked = q;
+        env.orch.answer(r.runId!, q.id!, q.choices[1]);
+      }
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    expect(asked?.text).toMatch(/Let the assistant change/);
+    expect(asked).not.toHaveProperty('formRouting');
   });
 
   it('keeps the form sending where it did when the user says no, and tells the model so', async () => {

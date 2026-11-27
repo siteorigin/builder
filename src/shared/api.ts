@@ -789,6 +789,26 @@ export interface ChatQuestion {
   images?: ChatImageRef[];
   /** The offered image the user chose; `answered` is then its name. */
   answeredAssetId?: string;
+  /**
+   * Set only by the app itself, never by the model: the question asks the user to allow an AI batch that changes where
+   * contact forms send visitors' messages (#1130), and the editor shows it in its own dialog, each form's destination
+   * before and after. `choices` are [keep, allow].
+   */
+  formRouting?: FormRoutingPrompt;
+}
+
+/**
+ * What the app shows in its dialog before an AI batch changes where a contact form sends (engine/form-routing): each
+ * affected form (or a design's defaults, or its code), and each of its settings that decides it, before and after.
+ */
+export interface FormRoutingPrompt {
+  forms: Array<{
+    /** The form and where it is, in the user's words (“Contact form” on “Home”). */
+    title: string;
+    rows: Array<{ label: string; before: string; after: string }>;
+    /** Something the rows cannot say: that code decides where it sends. */
+    note?: string;
+  }>;
 }
 
 /** A turn's questions in order, including one stored by an earlier version as `question`. */
@@ -814,11 +834,13 @@ export interface Conversation {
 /** A stored conversation as Earlier conversations lists it (see shared/conversations). */
 /**
  * A conversation as main has it now, read by its ID without opening it: the live thread while a request is filed in it
- * (its newest turn included, saved or not), otherwise its stored file. `run`: that request while it is still going.
+ * (its newest turn included, saved or not), otherwise its stored file. `run`: the request still going in this opening
+ * of the project, in whichever conversation it was filed (`conversationId`), so a window reloaded on another thread
+ * still knows it holds the app, and where to answer or stop it (#1125).
  */
 export interface ConversationState {
   conversation: Conversation;
-  run: { runId: string; status: RunStatus; mode: ChatMode } | null;
+  run: { runId: string; status: RunStatus; mode: ChatMode; conversationId: string } | null;
 }
 
 export interface ConversationSummary {

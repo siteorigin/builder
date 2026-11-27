@@ -5,7 +5,7 @@ import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, ty
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
-import { api, getState, refreshProviders, saveLocal, saveSettings, sendPicksAhead, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
+import { api, getState, refreshProviders, saveLocal, saveSettings, sendPicksAhead, setState, shownRun, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest, openThread, openRunThread, replaceThread } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { importIntoChat, isFileDrag, retargetDrops } from '../lib/chat-drop';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
@@ -26,6 +26,7 @@ import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContex
 import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
+import { requestRoutingReview } from '../lib/formRoutingReview';
 import { textBlocks, textSpans, type TextBlock, type TextSpan } from '../lib/model-text';
 import { perfCount, perfOn, perfWork } from '../lib/perf';
 import { externalLink } from '@shared/links';
@@ -333,8 +334,17 @@ function sizeToFit(ta: HTMLTextAreaElement | null) {
 
 export function Chat() {
   const conversation = useStore((s) => s.conversation);
-  const runStatus = useStore((s) => s.runStatus);
-  const activeRunId = useStore((s) => s.activeRunId);
+  // The request running in this thread: what the panel shows, stops and answers. A request in another thread holds
+  // the app all the same (nothing is sent meanwhile), and is shown there.
+  const runStatus = useStore((s) => shownRun(s)?.status ?? null);
+  const activeRunId = useStore((s) => shownRun(s)?.runId ?? null);
+  const busy = useStore((s) => !!s.runStatus);
+  // The request as it runs, whichever thread it is in: one in another thread is shown, stopped and answered from
+  // here too, each of which goes back to that thread (#1125).
+  const anyRunId = useStore((s) => s.activeRunId);
+  const anyRunStatus = useStore((s) => s.runStatus);
+  const anyRunMode = useStore((s) => s.runMode);
+  const runThreadId = useStore((s) => s.runConversationId);
   // Each conversation keeps its own unsent message.
   const draft = useStore(selectChatDraft);
   // ...and the library images attached to it, by asset ID.
@@ -355,7 +365,7 @@ export function Chat() {
   const viewport = useStore((s) => s.viewport);
   const ctxOn = useStore((s) => s.chatContextEnabled);
   const chatMode = useStore((s) => s.chatMode);
-  const runMode = useStore((s) => s.runMode);
+  const runMode = useStore((s) => shownRun(s)?.mode ?? null);
   const askMode = chatMode === 'ask';
   const providers = useStore((s) => s.providers);
   const settings = useStore((s) => s.settings);
@@ -427,7 +437,15 @@ export function Chat() {
   // The local server or model failed the last time anything asked it: Chat says so instead of offering starters.
   const notReady = configured && provider?.id === 'local' && provider.check && !provider.check.ok ? provider.check : null;
   const msgs = conversation?.messages ?? [];
-  const running = !!runStatus;
+  /** A request is running, in this thread or another: the next message waits for it to end. */
+  const running = busy;
+  /** ...and it is this thread's. */
+  const runHere = !!runStatus;
+  /**
+   * Another thread is read, or a new one started, while a request goes on in its own (#1125); never while Clear history
+   * is under way, whose fresh conversation is the one open after it.
+   */
+  const [clearingHistory, setClearingHistory] = useState(false);
   const waiting = runStatus === 'awaiting-input';
   // While the AI waits on a question, the composer answers it from its own box; the unsent message stays put.
   // The same object until the question, the run or its status changes: every message is given it, and an answer typed
@@ -449,7 +467,7 @@ export function Chat() {
   const workingUser = working ? msgs[msgs.indexOf(working) - 1] : null;
   // Two destinations, never confused: the model the running turn went to (fixed on the turn when it started), and
   // the one Settings choose for the next message.
-  const inFlight = running ? turnRecipient(working) : null;
+  const inFlight = runHere ? turnRecipient(working) : null;
   /** A turn has started and not ended, even before its status arrives (a local server can take a while to answer). */
   const pending = running || !!(working && !working.result);
   // With no local model chosen, the server's first model takes the next message: asked whenever it may have changed
@@ -1183,15 +1201,14 @@ export function Chat() {
   // arrives after the project changed is not this project's.
   const opening = snap.workspaceKey;
   const stillOpen = () => getState().snapshot?.workspaceKey === opening;
+  // Only the latest switch shows, and a thread whose request is still going is shown as main has it (openThread).
   const show = (pending: Promise<NonNullable<typeof conversation>>, unsent?: (c: NonNullable<typeof conversation>) => Pick<ReturnType<typeof getState>, 'chatDrafts' | 'chatImages'>) =>
-    void pending.then(
-      (c) => {
-        if (!stillOpen()) return;
-        setState({ conversation: c, ...(unsent ? unsent(c) : {}) });
-        focusComposer();
-      },
+    void openThread(pending, opening, unsent).then(
+      (shown) => shown && focusComposer(),
       (e: Error) => stillOpen() && toast(e.message || 'Could not open that conversation.', 'error')
     );
+  /** Back to the thread the request runs in, taken now, before the request can end: its question waits there. */
+  const toRunThread = (id = runThreadId) => void openRunThread(id).then((shown) => shown && focusComposer());
 
   // Earlier conversations, managed: found, named and deleted one at a time (issue 235), in the opening of the project
   // the list was read from. Another project opening closes it.
@@ -1224,10 +1241,31 @@ export function Chat() {
         { separator: true },
         ...(list.length ? [{ label: 'Find, rename or delete…', icon: <Search />, onSelect: () => stillOpen() && setManaging({ opening, list }) }] : []),
         // Unsent drafts belong to the conversations being removed, so they go with them.
-        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => (retargetDrops(null, null), { chatDrafts: {}, chatImages: {} }))) }
+        // A request saves its own thread when it ends, which would bring a cleared conversation back.
+        { label: 'Clear history…', icon: <Trash2 />, danger: true, disabled: !!getState().runStatus, ...(getState().runStatus ? { description: 'Available when the AI finishes.' } : {}), onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && !getState().runStatus && clearHistory()) }
       ],
       'Conversations'
     );
+  };
+
+  /**
+   * Every conversation goes, with the unsent drafts that belong to them; nothing is opened meanwhile, and what it leaves
+   * open is shown over any switch still under way.
+   */
+  const clearHistory = () => {
+    setClearingHistory(true);
+    void api.ai
+      .clearHistory(opening)
+      .then(
+        (c) => {
+          if (!stillOpen()) return;
+          retargetDrops(null, null);
+          replaceThread(c, { chatDrafts: {}, chatImages: {} });
+          focusComposer();
+        },
+        (e: Error) => stillOpen() && toast(e.message || 'Could not clear the history.', 'error')
+      )
+      .finally(() => setClearingHistory(false));
   };
 
   /** A new conversation that takes the unsent message (and its images) along, so nothing earlier goes with it. */
@@ -1274,11 +1312,12 @@ export function Chat() {
           <span className="chat-title" title={title}>
             {title}
           </span>
-          {/* Switching waits for the project's own conversation to load, and for a message being sent. */}
-          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" {...menu.triggerProps()} onClick={(e) => void openHistory(e.currentTarget)} disabled={running || sending || !conversation}>
+          {/* Switching waits for the project's own conversation to load, for a message being sent, and for Clear
+              history. A request goes on in its own thread meanwhile. */}
+          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" {...menu.triggerProps()} onClick={(e) => void openHistory(e.currentTarget)} disabled={clearingHistory || sending || !conversation}>
             <History />
           </button>
-          <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={running || sending || !conversation || msgs.length === 0 || !configured} onClick={() => show(api.ai.newConversation())}>
+          <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={clearingHistory || sending || !conversation || msgs.length === 0 || !configured} onClick={() => show(api.ai.newConversation())}>
             <Plus />
           </button>
         </div>
@@ -1290,8 +1329,7 @@ export function Chat() {
           onClose={() => setManaging(null)}
           onOpened={(c) => {
             setManaging(null);
-            setState({ conversation: c });
-            focusComposer();
+            show(Promise.resolve(c));
           }}
         />
       )}
@@ -1309,7 +1347,7 @@ export function Chat() {
         onPointerDown={() => (jumping.current = false)}
         // Busy while the AI works, so its updates are read once they settle rather than piece by piece. A pause for a
         // question is not busy: the author is the one to act, and the question and its answer box sit outside the log.
-        aria-busy={chatBusy(running, waiting)}
+        aria-busy={chatBusy(runHere, waiting)}
         onScroll={(e) => {
           const el = e.currentTarget;
           const below = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -1402,7 +1440,7 @@ export function Chat() {
               key={m.id}
               m={m}
               modelChanged={modelShown.has(m.id)}
-              live={m.runId === activeRunId && running}
+              live={m.runId === activeRunId && runHere}
               awaiting={waiting}
               undoable={m.id === undoableId}
               reviewEntry={reviewEntryId(m, history, m.id === undoableId)}
@@ -1428,7 +1466,40 @@ export function Chat() {
         </div>
       )}
       </div>
-      {running && (
+      {running && !runHere && (
+        // Another thread's request goes on in the background: its question is answered there, so Answer goes back to
+        // it, and Stop stops that request by its ID and goes back to it too, where its outcome shows (#1125).
+        <div className={`run-strip elsewhere${anyRunStatus === 'awaiting-input' ? ' waiting' : ''}`} data-elsewhere-run-id={anyRunId ?? undefined}>
+          <span className="run-icon" aria-hidden="true">
+            {anyRunStatus === 'awaiting-input' ? <CircleHelp /> : <Spinner decorative />}
+          </span>
+          <span className="run-text" role="status">
+            <span className="run-phase">{anyRunStatus === 'awaiting-input' ? 'The AI needs your answer in another conversation' : anyRunStatus === 'stopping' ? 'Stopping in another conversation' : 'Working in another conversation'}</span>
+          </span>
+          <span className="run-actions">
+            {runThreadId && (
+              <button className={`btn btn-sm${anyRunStatus === 'awaiting-input' ? ' btn-primary' : ''}`} onClick={() => toRunThread()}>
+                {anyRunStatus === 'awaiting-input' ? 'Answer' : 'Go to conversation'}
+              </button>
+            )}
+            {anyRunStatus !== 'stopping' && (
+              <button
+                className="btn btn-sm run-stop"
+                title={anyRunMode === 'ask' ? 'Stop that question' : 'Stop that request and undo its changes'}
+                onClick={() => {
+                  // That request only, and its thread as it is now: the request may end before the thread opens.
+                  const id = runThreadId;
+                  if (anyRunId) void api.ai.stop(anyRunId);
+                  toRunThread(id);
+                }}
+              >
+                <Square size={10} fill="currentColor" /> {anyRunMode === 'ask' ? 'Stop' : 'Stop and undo'}
+              </button>
+            )}
+          </span>
+        </div>
+      )}
+      {runHere && (
         <div className={`run-strip${waiting ? ' waiting' : ''}`} data-run-id={activeRunId ?? undefined}>
           {/* The one live indicator: it turns while the AI works and stops when it waits on you. */}
           <span className="run-icon" aria-hidden="true">
@@ -1458,7 +1529,8 @@ export function Chat() {
                 className="btn btn-sm run-stop"
                 title={runMode === 'ask' ? 'Stop this question' : 'Stop this request and undo its changes'}
                 onClick={() => {
-                  void api.ai.stop();
+                  // This request only: one that ended meanwhile is not followed by another being stopped.
+                  if (activeRunId) void api.ai.stop(activeRunId);
                   focusComposer();
                 }}
               >
@@ -1498,7 +1570,7 @@ export function Chat() {
           {notice.leavesComputer ? <TriangleAlert /> : <Info />}
           <span>
             <span id={noticeId}>{switchNoticeText(notice)}</span>{' '}
-            <button className="link" disabled={pending || sending} title={pending ? 'Available when the current request finishes' : 'Start a new conversation with your unsent message, without the earlier ones'} onClick={startFresh}>
+            <button className="link" disabled={clearingHistory || sending} title="Start a new conversation with your unsent message, without the earlier ones" onClick={startFresh}>
               Start fresh
             </button>
           </span>
@@ -1524,7 +1596,7 @@ export function Chat() {
                   !notice && (
                     <>
                       {' '}
-                      <button className="link" disabled={pending || sending} title={pending ? 'Available when the current request finishes' : 'Start a new conversation with your unsent message, without the earlier ones'} onClick={startFresh}>
+                      <button className="link" disabled={clearingHistory || sending} title="Start a new conversation with your unsent message, without the earlier ones" onClick={startFresh}>
                         Start fresh
                       </button>
                     </>
@@ -1555,8 +1627,18 @@ export function Chat() {
             {answerElsewhere && inFlight ? ` Your answer goes to ${turnModelText(inFlight)}, which asked.` : ''}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
-          {/* Only the options scroll, so a long list never scrolls the question and its instructions out of sight. */}
-          {(offeredImages(asking.question).length > 0 || asking.question.choices.length > 0) && (
+          {/* The app's question about where forms send is answered in its own dialog, which shows each address before
+              and after (#1130); the card opens it again. Only the options scroll, so a long list never scrolls the
+              question and its instructions out of sight. */}
+          {asking.question.formRouting ? (
+            <div className="question-options">
+              <div className="choices">
+                <button className="choice" onClick={() => requestRoutingReview()}>
+                  <span>Review changes</span>
+                </button>
+              </div>
+            </div>
+          ) : (offeredImages(asking.question).length > 0 || asking.question.choices.length > 0) && (
             <div className="question-options">
               {offeredImages(asking.question).length > 0 && (
                 <ImageChoices

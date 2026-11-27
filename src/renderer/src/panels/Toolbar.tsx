@@ -4,7 +4,7 @@ import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component,
 import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
-import { api, editRunStatus, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
+import { api, editRunStatus, openRunThread, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
 import { Segmented, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
@@ -180,11 +180,12 @@ export function Toolbar() {
                     : pending
                       ? { kind: 'pending', icon: spin, text: 'Saving…', title: remoteShell ? 'Sending your change to the host' : 'Saving to this computer' }
                       : { kind: 'saved', icon: <Check />, text: 'Saved', title: remoteShell ? 'Your changes are saved on the host’s computer' : 'All changes are saved on this computer' };
-  // The AI's question goes straight to the answer field; the other AI states land on the AI panel's tab, so a click
-  // shows where it went even when the panel was already open.
+  // The AI's question goes straight to the answer field, in the thread that asked (#1125); the other AI states land on
+  // the AI panel's tab, so a click shows where it went even when the panel was already open.
   const openAi = () => {
     setState({ dockOpen: true, rightTab: 'chat' });
-    requestAnimationFrame(() => (save.kind === 'ask' ? document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus() : document.getElementById('dock-tab-chat')?.focus({ focusVisible: true })));
+    if (save.kind === 'ask') void openRunThread().then((shown) => shown && requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()));
+    else requestAnimationFrame(() => document.getElementById('dock-tab-chat')?.focus({ focusVisible: true }));
   };
   // An edit on hold: its row's first choice, with a visible ring even after a click.
   const goToHeld = () => {

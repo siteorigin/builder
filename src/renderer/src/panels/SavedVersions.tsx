@@ -323,7 +323,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
             <span>{open.version.name}</span>
           </h3>
           <p className="muted version-review-when" title={fullWhen(open.version.time)}>
-            {open.version.restored ? 'Saved automatically after a restore, ' : open.version.auto ? 'Saved automatically before a restore, ' : 'Saved '}
+            {open.version.restored ? 'Saved automatically after a restore, ' : open.version.auto ? 'Saved automatically, ' : 'Saved '}
             {lowerDay(savedAt(open.version.time))}
           </p>
           {note}
@@ -385,7 +385,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
                   const editing = renaming?.id === v.id;
                   return (
                     <li key={v.id} data-version={v.id} className={editing ? 'renaming' : undefined}>
-                      {v.auto ? <ArchiveRestore aria-label={v.restored ? 'Saved automatically after a restore' : 'Saved automatically before a restore'} /> : <Bookmark aria-label="Saved by you" />}
+                      {v.auto ? <ArchiveRestore aria-label={v.restored ? 'Saved automatically after a restore' : 'Saved automatically'} /> : <Bookmark aria-label="Saved by you" />}
                       <span className="grow version-text">
                         {editing ? (
                           <input

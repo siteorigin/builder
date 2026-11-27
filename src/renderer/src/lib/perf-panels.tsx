@@ -13,6 +13,7 @@
 import { useContext, type ReactNode } from 'react';
 import { useStore as useStoreOf } from 'zustand';
 import { countTreeWalks } from '@engine/tree';
+import { countSiteEntryWalks } from '@shared/collections';
 import { countSeoOverviews } from './seo-overview';
 import { countChatStarters } from './chatSuggestions';
 import { overlayView, StoreViewContext, useStore, type OverlayState, type State } from '../store';
@@ -65,6 +66,10 @@ if (perfOn) {
   perfCount('seo.routes', 0);
   perfCount('chat.starters', 0);
   countTreeWalks((walk) => perfCount(`tree.${walk}`));
+  // Its walks of every collection entry for the site's addresses (shared/collections.ts siteEntries): work that follows
+  // the project's size, however small the change it renders.
+  perfCount('collections.siteEntries', 0);
+  countSiteEntryWalks(() => perfCount('collections.siteEntries'));
   countSeoOverviews(() => perfCount('seo.overviews'));
   countChatStarters(() => perfCount('chat.starters'));
 }
