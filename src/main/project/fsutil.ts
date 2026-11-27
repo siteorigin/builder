@@ -328,6 +328,122 @@ export async function atomicWrite(path: string, data: string | Buffer, opts: { m
   return true;
 }
 
+/**
+ * A durable write split in two, so several can share their waits: the data is already in a flushed temporary file
+ * beside `path`; `replace` renames it into place, and the folder it lands in is flushed by `syncStaged`, once for all the
+ * files replaced there, before anything depends on them.
+ */
+export interface StagedWrite {
+  readonly path: string;
+  /** Rename into place once `beforeReplace` agrees (see atomicWrite); says whether it was replaced. */
+  replace(beforeReplace?: () => Promise<boolean>): Promise<boolean>;
+  /** Remove the temporary file of a write that will not be replaced. */
+  discard(): Promise<void>;
+  readonly replaced: boolean;
+}
+
+/**
+ * The first half of a durable atomicWrite: the folders on the way made and recorded in their parents, the data written to
+ * a temporary file beside `path` and flushed. Several staged at once flush together.
+ */
+export async function stageWrite(path: string, data: string | Buffer, opts: { mode?: number } = {}): Promise<StagedWrite> {
+  const dir = dirname(path);
+  await ensureDir(dir);
+  const tmp = join(dir, `.${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    const handle = await fs.open(tmp, 'wx', opts.mode ?? 0o666);
+    try {
+      await handle.writeFile(data);
+      // The umask can only remove bits from the requested mode, never add them; chmod makes it exact.
+      if (opts.mode !== undefined) await handle.chmod(opts.mode);
+      await handle.sync();
+      perf.count('fs.fsyncs');
+    } finally {
+      await handle.close();
+    }
+  } catch (e) {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+    throw e;
+  }
+  let state: 'staged' | 'replaced' | 'gone' = 'staged';
+  return {
+    path,
+    get replaced() {
+      return state === 'replaced';
+    },
+    async replace(beforeReplace) {
+      if (state !== 'staged') throw new Error(`A staged write of ${path} was already used.`);
+      try {
+        if (beforeReplace && !(await beforeReplace())) {
+          state = 'gone';
+          await fs.rm(tmp, { force: true });
+          return false;
+        }
+        await renameReplacing(tmp, path);
+      } catch (e) {
+        state = 'gone';
+        await fs.rm(tmp, { force: true }).catch(() => undefined);
+        throw e;
+      }
+      state = 'replaced';
+      perf.count('fs.writes');
+      return true;
+    },
+    async discard() {
+      if (state !== 'staged') return;
+      state = 'gone';
+      await fs.rm(tmp, { force: true }).catch(() => undefined);
+    }
+  };
+}
+
+/** How many files are written or flushed at once: enough to overlap their flushes, few enough to keep handles free. */
+const AT_ONCE = 16;
+
+/** Run `fn` on each item, `AT_ONCE` at a time; once one fails no more are started, and the first failure is thrown. */
+async function eachAtOnce<T>(items: readonly T[], fn: (item: T, i: number) => Promise<void>): Promise<void> {
+  let next = 0;
+  let failure: { reason: unknown } | null = null;
+  await Promise.all(
+    Array.from({ length: Math.min(AT_ONCE, items.length) }, async () => {
+      while (!failure && next < items.length) {
+        const i = next++;
+        await fn(items[i], i).catch((reason: unknown) => {
+          failure ??= { reason };
+        });
+      }
+    })
+  );
+  if (failure) throw (failure as { reason: unknown }).reason;
+}
+
+/**
+ * Stage the writes in `files` together, so their flushes overlap. All or none: when one cannot be staged, the others'
+ * temporary files are removed and its error thrown.
+ */
+export async function stageWrites(files: ReadonlyArray<{ path: string; data: string | Buffer }>): Promise<StagedWrite[]> {
+  const staged: StagedWrite[] = new Array(files.length);
+  try {
+    await eachAtOnce(files, async (f, i) => {
+      staged[i] = await stageWrite(f.path, f.data);
+    });
+  } catch (e) {
+    await Promise.all(staged.map((s) => s?.discard()));
+    throw e;
+  }
+  return staged;
+}
+
+/**
+ * Flush, together, the folder of every staged write that was replaced, each folder once, so the renames survive a power
+ * loss. Each is then counted as a durable write (src/shared/perf.ts): its data and its folder entry are on disk.
+ */
+export async function syncStaged(staged: Iterable<StagedWrite>): Promise<void> {
+  const done = [...staged].filter((s) => s.replaced);
+  await eachAtOnce([...new Set(done.map((s) => dirname(s.path)))], (dir) => syncDir(dir));
+  for (let i = 0; i < done.length; i++) perf.count('fs.durableWrites');
+}
+
 /** Remove a file and flush its folder, so the removal is on disk before anything that depends on it. */
 export async function removeDurable(path: string): Promise<void> {
   await fs.rm(path, { force: true });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, promises as fsp, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { atomicWrite, renameReplacing } from '../../src/main/project/fsutil';
+import { atomicWrite, renameReplacing, stageWrites, syncStaged } from '../../src/main/project/fsutil';
 
 const dirs: string[] = [];
 const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -110,5 +110,46 @@ describe('a durable write on Windows', () => {
     expect(refused).toBe(2);
     expect(readFileSync(path, 'utf8')).toBe('new');
     expect(readdirSync(dir)).toEqual(['generated-manifest.json']);
+  });
+});
+
+describe('staged writes (#962)', () => {
+  it('stages many files a few at a time, and replaces each only when asked', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-stage-'));
+    dirs.push(dir);
+    const open = fsp.open.bind(fsp);
+    let now = 0;
+    let most = 0;
+    vi.spyOn(fsp, 'open').mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await open(...args);
+      if (args[1] !== 'wx') return handle;
+      most = Math.max(most, ++now);
+      const close = handle.close.bind(handle);
+      handle.close = async () => {
+        now--;
+        return close();
+      };
+      return handle;
+    }) as typeof fsp.open);
+    const files = Array.from({ length: 100 }, (_, i) => ({ path: join(dir, `f${i}.json`), data: `${i}\n` }));
+    const staged = await stageWrites(files);
+    expect(most).toBeGreaterThan(1);
+    expect(most).toBeLessThanOrEqual(16);
+    // Nothing is in place until it is replaced, and the folder is flushed for those that were.
+    expect(readdirSync(dir).filter((f) => !f.endsWith('.tmp'))).toEqual([]);
+    for (const s of staged.slice(0, 50)) expect(await s.replace()).toBe(true);
+    await Promise.all(staged.slice(50).map((s) => s.discard()));
+    await syncStaged(staged);
+    expect(readdirSync(dir).sort()).toEqual(files.slice(0, 50).map((f) => f.path.slice(dir.length + 1)).sort());
+    expect(readFileSync(files[7].path, 'utf8')).toBe('7\n');
+  });
+
+  it('stages all or none: one that cannot be written leaves no temporary file behind', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-stage-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'blocker'), 'a file, not a folder');
+    const files = [...Array.from({ length: 20 }, (_, i) => ({ path: join(dir, `f${i}.json`), data: 'x' })), { path: join(dir, 'blocker', 'inside.json'), data: 'x' }];
+    await expect(stageWrites(files)).rejects.toThrow();
+    expect(readdirSync(dir)).toEqual(['blocker']);
   });
 });

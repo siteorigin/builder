@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameS
 import { dirname, join } from 'node:path';
 import type { ElectronApplication, FrameLocator, Page } from 'playwright';
 import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
-import type { BuilderApi } from '../../src/shared/api';
+import { HISTORY_LIMIT, type BuilderApi, type ProjectSnapshot } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import { generateProject } from '../../src/generator/index';
@@ -467,97 +467,119 @@ function switchReady(t: Trace, fixture: FixtureFacts): PerfRecord | undefined {
 
 export const EDITED_HEADING = 'Benchmark heading';
 
+/**
+ * Change the home hero's Heading in the Inspector to `text` and the iteration, bracketed as `scenario`, and check that the
+ * edit landed: the project moved one revision, its document on disk holds the heading, the preview shows it. `check` adds
+ * a scenario's own. Each scenario types its own text, so none leaves the page another one will make (whose version
+ * History would then hold already).
+ */
+async function editHeroHeading(ctx: ScenarioContext, scenario: string, text: string, check?: (after: ProjectSnapshot, target: number) => void) {
+  const { win, fixture } = ctx;
+  const heading = `${text} ${ctx.iteration}`;
+  const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+  expect(before, 'no project is open');
+  // Choosing what to edit is not timed: the edit starts when the Heading is committed.
+  const hero = win.getByRole('treeitem', { name: 'Split hero' }).first();
+  // Layers is open already when another edit ran before this one in the same launch: pressing it again would close it.
+  if (!(await hero.isVisible())) await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
+  await hero.click();
+  await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+  const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
+  await field.waitFor({ timeout: 15_000 });
+  // Choosing the panel and tab saves the workspace 300 ms later: that save lands before the edit starts, not in it,
+  // whatever --settle is.
+  await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+  await ctx.mark('scenario.start', { scenario });
+  await field.fill(heading);
+  await win.keyboard.press('Tab');
+  await preview(win).getByRole('heading', { name: heading, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+  const target = before.revision + 1;
+  await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
+  const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+  expect(after && after.revision === target, `the edit left the project at revision ${after?.revision}, not ${target}`);
+  expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === heading, 'the project does not hold the new heading on the home hero');
+  const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+  const saved = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
+  expect(findHeading(saved, fixture.heroId)?.heading === heading, 'the home page’s document on disk does not hold the new heading on the home hero');
+  check?.(after, target);
+  await sleep(ctx.settleMs);
+  await ctx.mark('scenario.end', { scenario });
+  await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario(scenario, 'renderer')) && !!t.first('scenario.end', forScenario(scenario, 'main')));
+}
+
+/** The metrics of an edit bracketed as `scenario`, each named `<scenario>.<metric>`. */
+function measureEdit(trace: Trace, scenario: string): Collector {
+  const m = new Collector();
+  const name = (metric: string) => `${scenario}.${metric}`;
+  const begin = trace.first('scenario.start', forScenario(scenario, 'renderer'));
+  const req = m.need('edit.requested', trace.first('edit.requested', inProc('renderer'), begin?.t ?? Infinity));
+  const at = req?.t ?? Infinity;
+  const target = typeof req?.attrs?.revision === 'number' ? req.attrs.revision + 1 : NaN;
+  const applied = m.need('controller.apply', trace.first('controller.apply', atRevision(target), at));
+  const until = applied?.t ?? Infinity;
+  const inApply = (mark: string) => m.need(mark, trace.first(mark, inProc('main'), at, until));
+  m.span(name('apply'), applied);
+  m.span(name('sessionApply'), inApply('session.apply'));
+  m.span(name('validateOperations'), inApply('session.validateOperations'));
+  m.span(name('applyOperations'), inApply('session.applyOperations'));
+  m.span(name('validate'), inApply('session.validateState'));
+  // Every generation of both variants, the website's and the preview's: a sum missing one would look faster than it is.
+  const variant = (v: string) => trace.all('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === v, at, until);
+  const clean = variant('clean');
+  const dev = variant('dev');
+  if (!clean.length) m.need('session.generate (clean)', undefined);
+  if (!dev.length) m.need('session.generate (dev)', undefined);
+  if (clean.length && dev.length) m.ms(name('generate'), [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
+  m.span(name('persist'), inApply('session.persist'));
+  const publish = inApply('session.publish');
+  m.span(name('publish'), publish);
+  m.since(name('hmrRelease'), req, inApply('runtime.release'));
+  const changed = m.need('session.changed', trace.first('session.changed', atRevision(target), at));
+  m.since(name('changed'), req, changed);
+  m.since(name('snapshotSent'), req, m.need('controller.snapshotSent', trace.first('controller.snapshotSent', atRevision(target), at)));
+  m.since(name('snapshotReceived'), req, m.need('renderer.snapshotReceived', trace.first('renderer.snapshotReceived', atRevision(target), at)));
+  m.since(name('rendererCommit'), req, m.need('renderer.commit', trace.first('renderer.commit', atRevision(target), at)));
+  m.since(name('previewPublished'), req, m.need('runtime.published', trace.first('runtime.published', atRevision(target), at)));
+  const shown = m.need('canvas.revisionApplied', trace.first('canvas.revisionApplied', atRevision(target), at));
+  m.since(name('previewApplied'), req, shown);
+  m.count(name('durableWrites'), delta(applied, 'fs.durableWrites'));
+  m.count(name('fsyncs'), delta(applied, 'fs.fsyncs'));
+  m.count(name('fileWrites'), delta(applied, 'fs.writes'));
+  // The whole edit's synchronous filesystem calls, path stats and bytes hashed, then the publication's own.
+  m.count(name('syncCalls'), delta(applied, 'fs.syncCalls'));
+  m.count(name('fileStats'), delta(applied, 'files.stats'));
+  m.count(name('bytesHashed'), delta(applied, 'files.hashedBytes'), 'bytes');
+  m.count(name('publishFilesRead'), delta(publish, 'files.read'));
+  m.count(name('publishFilesHashed'), delta(publish, 'files.hashed'));
+  m.count(name('publishBytesHashed'), delta(publish, 'files.hashedBytes'), 'bytes');
+  m.count(name('publishFilesWritten'), delta(publish, 'fs.writes'));
+  m.count(name('publishDurableWrites'), delta(publish, 'fs.durableWrites'));
+  m.count(name('publishFsyncs'), delta(publish, 'fs.fsyncs'));
+  m.count(name('publishSyncCalls'), delta(publish, 'fs.syncCalls'));
+  m.count(name('publishStats'), delta(publish, 'files.stats'));
+  const endMain = m.need('scenario.end (main)', trace.first('scenario.end', forScenario(scenario, 'main')));
+  const endRenderer = m.need('scenario.end (renderer)', trace.first('scenario.end', forScenario(scenario, 'renderer')));
+  // Garbage collection (history blobs, unused assets): the sweeps the edit waited on before it was acknowledged, and
+  // every sweep until the scenario ends, so a sweep moved later is still seen, never taken for one that was dropped.
+  const awaited = trace.all('session.sweep', inProc('main'), at, changed?.t ?? -Infinity);
+  m.count(name('sweepsAwaited'), awaited.length);
+  m.ms(name('sweepAwaited'), awaited.reduce((n, r) => n + (r.ms ?? NaN), 0));
+  m.count(name('sweeps'), trace.all('session.sweep', inProc('main'), at, endMain?.t ?? -Infinity).length);
+  const sent = trace.all('controller.snapshotSent', inProc('main'), at, endMain?.t);
+  m.count(name('snapshotsSent'), sent.length);
+  bytesSent(m, name('snapshotBytes'), sent);
+  m.count(name('reloadFromDisk'), trace.all('session.reloadFromDisk', inProc('main'), at, endMain?.t).length);
+  commits(m, trace, name('rendererCommits'), req, endRenderer);
+  m.ms(name('mainStallMax'), stallMax(trace, req, shown));
+  return m;
+}
+
 export const edit: Scenario = {
   name: 'edit',
   after: 'open',
   description: 'Change the home hero’s Heading in the Inspector and wait for the preview to show it.',
-  async run(ctx) {
-    const { win, fixture } = ctx;
-    const heading = `${EDITED_HEADING} ${ctx.iteration}`;
-    const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-    expect(before, 'no project is open');
-    // Choosing what to edit is not timed: the edit starts when the Heading is committed.
-    await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
-    await win.getByRole('treeitem', { name: 'Split hero' }).first().click();
-    await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
-    const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
-    await field.waitFor({ timeout: 15_000 });
-    // Choosing the panel and tab saves the workspace 300 ms later: that save lands before the edit starts, not in it,
-    // whatever --settle is.
-    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
-    await ctx.mark('scenario.start', { scenario: 'edit' });
-    await field.fill(heading);
-    await win.keyboard.press('Tab');
-    await preview(win).getByRole('heading', { name: heading, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
-    const target = before.revision + 1;
-    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
-    const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-    expect(after && after.revision === target, `the edit left the project at revision ${after?.revision}, not ${target}`);
-    expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === heading, 'the project does not hold the new heading on the home hero');
-    const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
-    const saved = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
-    expect(findHeading(saved, fixture.heroId)?.heading === heading, 'the home page’s document on disk does not hold the new heading on the home hero');
-    await sleep(ctx.settleMs);
-    await ctx.mark('scenario.end', { scenario: 'edit' });
-    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('edit', 'renderer')) && !!t.first('scenario.end', forScenario('edit', 'main')));
-  },
-  measure(trace) {
-    const m = new Collector();
-    const begin = trace.first('scenario.start', forScenario('edit', 'renderer'));
-    const req = m.need('edit.requested', trace.first('edit.requested', inProc('renderer'), begin?.t ?? Infinity));
-    const at = req?.t ?? Infinity;
-    const target = typeof req?.attrs?.revision === 'number' ? req.attrs.revision + 1 : NaN;
-    const applied = m.need('controller.apply', trace.first('controller.apply', atRevision(target), at));
-    const until = applied?.t ?? Infinity;
-    const inApply = (name: string) => m.need(name, trace.first(name, inProc('main'), at, until));
-    m.span('edit.apply', applied);
-    m.span('edit.sessionApply', inApply('session.apply'));
-    m.span('edit.validateOperations', inApply('session.validateOperations'));
-    m.span('edit.applyOperations', inApply('session.applyOperations'));
-    m.span('edit.validate', inApply('session.validateState'));
-    // Every generation of both variants, the website's and the preview's: a sum missing one would look faster than it is.
-    const variant = (v: string) => trace.all('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === v, at, until);
-    const clean = variant('clean');
-    const dev = variant('dev');
-    if (!clean.length) m.need('session.generate (clean)', undefined);
-    if (!dev.length) m.need('session.generate (dev)', undefined);
-    if (clean.length && dev.length) m.ms('edit.generate', [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
-    m.span('edit.persist', inApply('session.persist'));
-    const publish = inApply('session.publish');
-    m.span('edit.publish', publish);
-    m.since('edit.hmrRelease', req, inApply('runtime.release'));
-    m.since('edit.changed', req, m.need('session.changed', trace.first('session.changed', atRevision(target), at)));
-    m.since('edit.snapshotSent', req, m.need('controller.snapshotSent', trace.first('controller.snapshotSent', atRevision(target), at)));
-    m.since('edit.snapshotReceived', req, m.need('renderer.snapshotReceived', trace.first('renderer.snapshotReceived', atRevision(target), at)));
-    m.since('edit.rendererCommit', req, m.need('renderer.commit', trace.first('renderer.commit', atRevision(target), at)));
-    m.since('edit.previewPublished', req, m.need('runtime.published', trace.first('runtime.published', atRevision(target), at)));
-    const shown = m.need('canvas.revisionApplied', trace.first('canvas.revisionApplied', atRevision(target), at));
-    m.since('edit.previewApplied', req, shown);
-    m.count('edit.durableWrites', delta(applied, 'fs.durableWrites'));
-    m.count('edit.fsyncs', delta(applied, 'fs.fsyncs'));
-    m.count('edit.fileWrites', delta(applied, 'fs.writes'));
-    // The whole edit's synchronous filesystem calls, path stats and bytes hashed, then the publication's own.
-    m.count('edit.syncCalls', delta(applied, 'fs.syncCalls'));
-    m.count('edit.fileStats', delta(applied, 'files.stats'));
-    m.count('edit.bytesHashed', delta(applied, 'files.hashedBytes'), 'bytes');
-    m.count('edit.publishFilesRead', delta(publish, 'files.read'));
-    m.count('edit.publishFilesHashed', delta(publish, 'files.hashed'));
-    m.count('edit.publishBytesHashed', delta(publish, 'files.hashedBytes'), 'bytes');
-    m.count('edit.publishFilesWritten', delta(publish, 'fs.writes'));
-    m.count('edit.publishDurableWrites', delta(publish, 'fs.durableWrites'));
-    m.count('edit.publishFsyncs', delta(publish, 'fs.fsyncs'));
-    m.count('edit.publishSyncCalls', delta(publish, 'fs.syncCalls'));
-    m.count('edit.publishStats', delta(publish, 'files.stats'));
-    const endMain = m.need('scenario.end (main)', trace.first('scenario.end', forScenario('edit', 'main')));
-    const endRenderer = m.need('scenario.end (renderer)', trace.first('scenario.end', forScenario('edit', 'renderer')));
-    const sent = trace.all('controller.snapshotSent', inProc('main'), at, endMain?.t);
-    m.count('edit.snapshotsSent', sent.length);
-    bytesSent(m, 'edit.snapshotBytes', sent);
-    m.count('edit.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), at, endMain?.t).length);
-    commits(m, trace, 'edit.rendererCommits', req, endRenderer);
-    m.ms('edit.mainStallMax', stallMax(trace, req, shown));
-    return m;
-  }
+  run: (ctx) => editHeroHeading(ctx, 'edit', EDITED_HEADING),
+  measure: (trace) => measureEdit(trace, 'edit')
 };
 
 // ---------------------------------------------------------------------------
@@ -2328,7 +2350,51 @@ function createScenario(name: 'create' | 'createAgain', after: 'launch' | 'creat
 export const create = createScenario('create', 'launch');
 export const createAgain = createScenario('createAgain', 'create');
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, edits, panels, chat, aiEdit, canvas, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
+// ---------------------------------------------------------------------------
+// editFullHistory
+// ---------------------------------------------------------------------------
+
+/** The headings the edits that fill History set, numbered, so each is a step of its own and the last is known. */
+const FILLER_HEADING = 'Filler heading';
+/** What the timed edit types, never what `edit` typed before it in the same launch. */
+const FULL_HISTORY_HEADING = 'Full History heading';
+
+export const editFullHistory: Scenario = {
+  name: 'editFullHistory',
+  after: 'open',
+  description: `Fill History to its limit of ${HISTORY_LIMIT} steps (untimed), then change the home hero’s Heading in the Inspector, so the edit lets the oldest step go, and wait for the preview to show it.`,
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    // Not what is measured: each filler is an edit of its own through the editor's API, as an AI batch or a script
+    // makes them, without the Inspector's joining of quick edits to one field.
+    const failed = await win.evaluate(
+      async ([pageId, nodeId, steps, text]) => {
+        const project = (globalThis as unknown as EditorPage).builder.project;
+        for (let i = 1; i <= steps; i++) {
+          const r = await project.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId, prop: 'heading', value: `${text} ${i}` }] }, { label: 'Benchmark filler' });
+          if (!r.ok) return `filler edit ${i} was refused: ${r.error?.message ?? 'no reason given'}`;
+        }
+        return null;
+      },
+      [fixture.homePageId, fixture.heroId, HISTORY_LIMIT, FILLER_HEADING] as const
+    );
+    expect(failed === null, failed ?? '');
+    const filled = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    const steps = filled?.history.entries ?? [];
+    expect(steps.length === HISTORY_LIMIT && steps.every((e) => e.applied), `History holds ${steps.length} steps before the edit, not ${HISTORY_LIMIT} applied ones`);
+    await preview(win).getByRole('heading', { name: `${FILLER_HEADING} ${HISTORY_LIMIT}`, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+    const oldest = steps[0].id;
+    await editHeroHeading(ctx, 'editFullHistory', FULL_HISTORY_HEADING, (after, target) => {
+      const entries = after.history.entries;
+      expect(entries.length === HISTORY_LIMIT, `History holds ${entries.length} steps after the edit, not ${HISTORY_LIMIT}`);
+      expect(entries[entries.length - 1]?.revision === target && entries[entries.length - 1]?.applied, 'the edit is not History’s last applied step');
+      expect(!entries.some((e) => e.id === oldest), 'History kept its oldest step past its limit');
+    });
+  },
+  measure: (trace) => measureEdit(trace, 'editFullHistory')
+};
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, panels, chat, aiEdit, canvas, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
