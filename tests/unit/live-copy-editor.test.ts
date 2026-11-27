@@ -203,7 +203,40 @@ describe('what a copy editor may change', () => {
     };
     const state = { ...createStarterState('blank', 'Feed', false), components: { [def.id]: def } };
     expect(copyEditableLookup(state)(def.id, 'label')).toBe(true);
-    expect(copyEditableLookup(state)(def.id, 'category')).toBe(false);
+    for (const prop of ['category', 'collection', 'tag']) {
+      const named = structuredClone(def);
+      named.properties[prop] = named.properties.category;
+      named.tree!.nodes.heading = { ...(named.tree!.nodes.heading as TextNode), text: { $prop: prop } };
+      expect(copyEditableLookup({ ...state, components: { [def.id]: named } })(def.id, prop), prop).toBe(false);
+    }
+    // A list of the site's articles is worked out from the page it is on, never from these properties.
+    const articles = structuredClone(def);
+    (articles.properties.cards as { feed: string }).feed = 'articles';
+    expect(copyEditableLookup({ ...state, components: { [def.id]: articles } })(def.id, 'category')).toBe(true);
+  });
+
+  it('does not count a marked property its design shows once for each item of a list', () => {
+    const def: ComponentDefinition = {
+      ...managed({
+        componentId: 'test.cards',
+        name: 'Cards',
+        description: '',
+        category: 'content',
+        tags: [],
+        icon: 'sparkles',
+        properties: {
+          caption: P.copy(P.str('Caption', 'Read more')),
+          title: P.copy(P.str('Title', 'Our work')),
+          items: P.list('Items', 'Item', { label: P.str('Label', 'x') }, [{ label: 'One' }, { label: 'Two' }])
+        },
+        parts: {},
+        build: (b) => b.el('root', 'div', {}, [b.text('title', 'h2', { $prop: 'title' }), b.repeat('each', 'items', [b.text('caption', 'p', { $prop: 'caption' })])])
+      }),
+      owner: 'project'
+    };
+    const editable = copyEditableLookup({ ...createStarterState('blank', 'Cards', false), components: { [def.id]: def } });
+    expect(editable(def.id, 'title')).toBe(true);
+    expect(editable(def.id, 'caption')).toBe(false);
   });
 
   it('marks the heroes’ copy and the split hero’s picture in every theme', () => {
@@ -397,6 +430,9 @@ describe('what a copy editor may not change', () => {
     expect(added.problem).toMatchObject({ message: expect.stringMatching(/links/) });
     expect(set('### Call us\n\n[read the FAQ](https://example.com/faq)').problem).toMatchObject({ message: expect.stringMatching(/headings/) });
     expect(set('- Call us\n- [read the FAQ](https://example.com/faq)').problem).toMatchObject({ message: expect.stringMatching(/lists/) });
+    // Two lists of a kind with nothing between them show as one, and are reworded as one.
+    const split = withNode(state, owner, rich, { ...node<TextNode>(state, owner, rich), text: [{ type: 'ol', items: [[{ text: 'One' }]] }, { type: 'p', spans: [] }, { type: 'ol', items: [[{ text: 'Two' }]] }] });
+    expect(copyEdit(split, [{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: [{ type: 'ol', items: [[{ text: 'First' }], [{ text: 'Second' }]] }] }]).problem).toBeNull();
   });
 });
 

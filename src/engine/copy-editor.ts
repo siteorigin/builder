@@ -10,9 +10,9 @@
  * operations were allowed to change, each still a value of the kind allowed. One refusal refuses the whole batch.
  */
 import type { EditOperation } from '@shared/ops';
-import type { GraphNode, NodeTree, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, GraphNode, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
-import { cleanBlocks, isImageBlock, isRichBlock, spanRuns, type RichBlock } from '@shared/richtext';
+import { isImageBlock, isRichBlock, spanRuns, toRichText, type RichBlock } from '@shared/richtext';
 import { ENTRY_QUERY_PROPS } from '@shared/entry-feed';
 import { sameValue } from '@shared/same';
 import { copyEditorOperationProblem } from '@shared/live/copy-editor';
@@ -41,7 +41,7 @@ export type CopyEditableLookup = (definitionId: string, prop: string) => boolean
 /**
  * Which properties a Copy Editor may change, worked out as they are asked about. A property qualifies when its design
  * marks it `copyEditable`, it is a top-level text, rich text or image property of a managed design, it has no part in
- * where a contact form sends (formDestinationProps), and every use of it in the design shows it as what it is: the
+ * where a contact form sends (formDestinationProps), and every use of it in the design shows it, once, as what it is: the
  * words of a text element of the same kind, an image element's picture, a test of whether it is set (which a Copy
  * Editor's edit never changes: see `present`), or a whole property passed on to a nested component that qualifies
  * in turn, for the same kind. A design that passes it on is followed at every hop; any other use (a tag, a link, a
@@ -63,23 +63,23 @@ export function copyEditableLookup(state: ProjectState): CopyEditableLookup {
     const schema = def ? own(def.properties, prop) : undefined;
     const kind = kindOf(schema);
     let ok = false;
-    const choosesEntries = () => (ENTRY_QUERY_PROPS as readonly string[]).includes(prop) && Object.values(def!.properties).some((p) => p.type === 'list' && p.feed !== undefined);
+    const choosesEntries = () => (ENTRY_QUERY_PROPS as readonly string[]).includes(prop) && Object.values(def!.properties).some((p) => p.type === 'list' && p.feed === 'entries');
     if (def?.kind === 'managed' && def.tree && kind && isCopySchema(schema) && schema.copyEditable === true && !choosesEntries() && !(destinations ??= formDestinationProps(state)).get(definitionId)?.has(prop)) {
       visiting.add(key);
       const uses = bindingSites(def).filter((s) => isBinding(s.binding) && '$prop' in s.binding && s.binding.$prop === prop);
-      ok = uses.length > 0 && uses.every((s) => shows(s, kind));
+      ok = uses.length > 0 && uses.every((s) => shows(def, s, kind));
       visiting.delete(key);
     }
     known.set(key, ok);
     return ok;
   };
-  const shows = (site: BindingSite, kind: Kind): boolean => {
+  const shows = (def: ComponentDefinition, site: BindingSite, kind: Kind): boolean => {
     if ((site.binding as { field?: unknown }).field !== undefined) return false;
     const { node } = site;
+    if (site.field === 'when' || site.field === 'unless') return !site.comparison;
+    // Shown once for each item of a list in the design, it is part of every row's design, as a repeat's contents on a page are.
+    if (!shownOnceIn(state, def.tree!, node.id)) return false;
     switch (site.field) {
-      case 'when':
-      case 'unless':
-        return !site.comparison;
       case 'text':
         return node.kind === 'text' && (kind === 'rich' ? node.rich === true : kind === 'text' && !node.rich);
       case 'image':
@@ -104,7 +104,7 @@ export function copyEditableLookup(state: ProjectState): CopyEditableLookup {
 function present(value: unknown, state: ProjectState): boolean {
   if (typeof value === 'string') return value.trim().length > 0;
   // Rich text as the site is generated from it: empty paragraphs and list items are dropped before it is shown.
-  if (Array.isArray(value)) return cleanBlocks(value.filter(isRichBlock)).length > 0;
+  if (Array.isArray(value)) return toRichText(value).length > 0;
   if (value && typeof value === 'object' && 'assetId' in value) {
     const id = (value as { assetId?: unknown }).assetId;
     return typeof id === 'string' && !!id && Object.hasOwn(state.assets.assets, id);
@@ -119,7 +119,8 @@ function present(value: unknown, state: ProjectState): boolean {
  */
 function richFixtures(blocks: readonly RichBlock[]): unknown[] {
   const out: unknown[] = [];
-  for (const b of cleanBlocks(blocks.filter(isRichBlock))) {
+  // As the site shows it: empty blocks dropped, neighbouring lists of a kind one list.
+  for (const b of toRichText(blocks)) {
     if (isImageBlock(b)) {
       out.push(b);
       continue;
