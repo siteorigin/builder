@@ -113,7 +113,7 @@ describe.skipIf(!browserInstalled)('marked text of a code component in the previ
   it('refuses marked text that holds the editor’s own content or other marked text, or is not HTML', async () => {
     for (const [bind, id] of [['lead', 'lead'], ['outer', 'outer'], ['caption', 'svgt']]) {
       await post('beginTextEdit', { desc: desc(bind), editId: `c-${bind}`, rich: false });
-      await expect.poll(() => lastOf('textCancel'), bind).toEqual({ desc: desc(bind), editId: `c-${bind}` });
+      await expect.poll(() => lastOf('textCancel'), { message: bind }).toEqual({ desc: desc(bind), editId: `c-${bind}` });
       expect(await editable(id), bind).toBeNull();
     }
   });

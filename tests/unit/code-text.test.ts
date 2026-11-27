@@ -151,7 +151,7 @@ describe('the editor names the text a marked element shows', () => {
 
   it('names nothing the page cannot be typed into', () => {
     const { s, owner, node, ids } = services();
-    const none = (bind: string, st = s, ctx = `page:${owner.id}`) => expect(codeTextTarget(st, { ctx, node, items: '', bind }), bind).toBeNull();
+    const none = (bind: string, st = s, ctx = `page:${owner.id}`) => expect(codeTextTarget(st, { ctx, node, bind }), bind).toBeNull();
     // Not declared, not text, rich text given as paragraphs, a list itself, an item it does not have, a field without
     // its item and a property with one.
     for (const bind of ['subtitle', 'size', 'notes', 'features', 'features.title#gone', `features.count#${ids[0]}`, 'features.title', `heading#${ids[0]}`, `features.title.x#${ids[0]}`, '']) none(bind);
