@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -7,6 +7,9 @@ import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { readFields } from '../../src/renderer/src/lib/held';
+import { applyOperations } from '@engine/apply';
+import { brandPlacements } from '@shared/site-name';
+import { stateToDocs } from '../../src/main/project/documents';
 
 /**
  * An author's held edit saved while an AI request waits for their answer (#1281): it lands in the project and in the
@@ -85,8 +88,8 @@ describe('an edit saved while the AI waits for an answer (#1281)', () => {
       ['Update site settings', 'user'],
       ['AI: rename', 'ai']
     ]);
-    // Undoing the AI's step keeps the author's edit; undoing the author's then takes the URL back.
-    expect((await s.undo()).ok).toBe(true);
+    // Undoing the AI's step (as its card's Undo does) keeps the author's edit; undoing the author's then takes the URL back.
+    expect((await s.undoGroup('run_q')).ok).toBe(true);
     expect(s.state.site).toMatchObject({ name: 'Persist', baseUrl: URL });
     expect(s.state.site.description).not.toBe('AI words');
     expect((await s.undo()).ok).toBe(true);
@@ -103,9 +106,11 @@ describe('an edit saved while the AI waits for an answer (#1281)', () => {
     expect((await saveUrl(s, typed)).ok).toBe(true);
     // The app goes down with the run still open: its marker is on disk.
     expect(existsSync(join(dir, '.siteorigin/sessions/active-run.json'))).toBe(true);
+    const saved = s.revision;
     await s.releaseLock();
     const again = await reopen(dir);
     expect(again.conflicts).toEqual([]);
+    expect(again.revision).toBe(saved);
     expect(again.state.site).toMatchObject({ name: 'Persist', baseUrl: URL });
     expect(again.historyInfo().entries.map((e) => e.label)).toEqual(['Update site settings']);
     expect((await again.undo()).ok).toBe(true);
@@ -127,6 +132,90 @@ describe('an edit saved while the AI waits for an answer (#1281)', () => {
     expect(s.state.site.baseUrl).toBe('https://ai.example');
   });
 
+  it('waits for the request to end when one field of several is one the run changed, saving none of them', async () => {
+    const { s } = await waitingRun();
+    expect((await s.apply({ operations: [{ type: 'site.update', baseUrl: 'https://ai.example' }] }, { label: 'AI', source: 'ai', runId: 'run_q', history: false })).ok).toBe(true);
+    const ops: EditOperation[] = [{ type: 'site.update', description: 'Mine' }, ...urlEdit()];
+    // The author saw the URL as it was before the run.
+    const base = [seen(s.state, ops)[0], { baseUrl: undefined }];
+    const revision = s.revision;
+    expect(await s.apply({ operations: ops }, { label: 'x', source: 'user', asking: { runId: 'run_q', base } })).toMatchObject({ ok: false, error: { code: 'CONFLICT', details: { held: 'changed' } } });
+    expect(s.revision).toBe(revision);
+    expect(s.state.site.description).not.toBe('Mine');
+    expect(s.state.site.baseUrl).toBe('https://ai.example');
+  });
+
+  it('waits for the request to end when the engine would carry the edit into something the run changed', async () => {
+    const { s } = await make();
+    const header = brandPlacements(s.state).find((p) => p.part === 'header')!.node;
+    const setName = (value: string): EditOperation => ({ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header.id, prop: 'siteName', value });
+    // The header had a name of its own before the request; the AI put the site's name back in it.
+    expect((await s.apply({ operations: [setName('Studio')] }, { label: 'Header name' })).ok).toBe(true);
+    expect(await s.beginRun('run_q')).toBeNull();
+    expect((await s.apply({ operations: [setName('Persist')] }, { label: 'AI', source: 'ai', runId: 'run_q', history: false })).ok).toBe(true);
+    // Renaming the site renames the header with it now, but not where the request started.
+    const rename: EditOperation[] = [{ type: 'site.update', name: 'Northstar' }];
+    expect(applyOperations(s.state, rename).state.site.shell.header.nodes[header.id]).toMatchObject({ props: { siteName: 'Northstar' } });
+    const r = await s.apply({ operations: rename }, { label: 'Rename site', source: 'user', asking: { runId: 'run_q', base: seen(s.state, rename) } });
+    expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', details: { held: 'differs' } } });
+    expect(s.state.site.name).toBe('Persist');
+  });
+
+  it('never counts a save turned away at the last moment as the run’s own writing', async () => {
+    const { dir, s, typed } = await waitingRun();
+    // The very file the save would write is saved outside the app just after its journal is in place.
+    const target = stateToDocs(applyOperations(s.state, urlEdit()).state).get(SITE)!;
+    const session = s as unknown as { placeJournal: (...a: unknown[]) => Promise<void> };
+    const place = session.placeJournal.bind(s);
+    const spy = vi.spyOn(session, 'placeJournal').mockImplementation(async (...a: unknown[]) => {
+      await place(...a);
+      writeFileSync(join(dir, SITE), target);
+    });
+    expect(await saveUrl(s, typed)).toMatchObject({ ok: false });
+    spy.mockRestore();
+    expect(existsSync(join(dir, '.siteorigin/journal.json'))).toBe(false);
+    // The run goes on writing elsewhere, so its marker is written again, and then the app goes down.
+    const later = await s.apply({ operations: [{ type: 'page.update', pageId: s.state.site.homePageId, title: 'AI home' }] }, { label: 'AI', source: 'ai', runId: 'run_q', history: false });
+    expect(later.ok).toBe(true);
+    await s.releaseLock();
+    const again = await reopen(dir);
+    // The file saved outside the app is never taken for the run's and silently rolled back.
+    expect(again.conflicts.map((c) => c.path)).toContain(SITE);
+  });
+
+  it('sets aside a save whose journal carries a marker that does not cover the run, undoing the run without it', async () => {
+    const { dir, s, typed, baseUrl } = await waitingRun();
+    expect((await s.apply({ operations: [{ type: 'page.create', title: 'AI page' }] }, { label: 'AI', source: 'ai', runId: 'run_q', history: false })).ok).toBe(true);
+    const session = s as unknown as { placeJournal: (j: { runMarker?: { id: string; paths: Record<string, unknown> } }, ...rest: unknown[]) => Promise<void> };
+    const place = session.placeJournal.bind(s);
+    // The journal lands with its marker missing the AI's new page, and the app goes down at once.
+    vi.spyOn(session, 'placeJournal').mockImplementation(async (j, ...rest) => {
+      const paths = Object.fromEntries(Object.entries(j.runMarker!.paths).filter(([p]) => p === SITE));
+      await place({ ...j, runMarker: { ...j.runMarker!, paths } }, ...rest);
+      throw new Error('injected crash');
+    });
+    await saveUrl(s, typed).catch(() => undefined);
+    vi.restoreAllMocks();
+    await s.releaseLock();
+    const again = await reopen(dir);
+    expect(again.conflicts).toEqual([]);
+    expect(again.state.site.name).toBe('Persist');
+    expect(again.state.site.baseUrl).toBe(baseUrl);
+    expect(Object.values(again.state.pages).map((p) => p.title)).not.toContain('AI page');
+    expect(again.historyInfo().entries).toEqual([]);
+    expect(existsSync(join(dir, '.siteorigin/sessions/active-run.json'))).toBe(false);
+  });
+
+  it('saves an edit the run left alone without making the run look changed', async () => {
+    const { s } = await make();
+    const typed = seen(s.state, urlEdit());
+    expect(await s.beginRun('run_q')).toBeNull();
+    expect((await saveUrl(s, typed)).ok).toBe(true);
+    expect(s.runChanged()).toBe(false);
+    expect(await s.completeRun('AI: nothing')).toBe(false);
+    expect(s.historyInfo().entries.map((e) => e.label)).toEqual(['Update site settings']);
+  });
+
   it('waits for the request to end when the edit is on something the run made', async () => {
     const { s } = await waitingRun();
     expect((await s.apply({ operations: [{ type: 'page.create', title: 'AI page' }] }, { label: 'AI', source: 'ai', runId: 'run_q', history: false })).ok).toBe(true);
@@ -134,6 +223,7 @@ describe('an edit saved while the AI waits for an answer (#1281)', () => {
     const rename: EditOperation[] = [{ type: 'page.update', pageId: page.id, title: 'My title' }];
     const r = await s.apply({ operations: rename }, { label: 'Rename page', source: 'user', asking: { runId: 'run_q', base: seen(s.state, rename) } });
     expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', details: { held: 'differs' } } });
+    expect(r.error!.message).toMatch(/AI made the page/);
     expect(s.state.pages[page.id].title).toBe('AI page');
   });
 
@@ -141,6 +231,7 @@ describe('an edit saved while the AI waits for an answer (#1281)', () => {
     const { s, typed } = await waitingRun();
     expect(await s.apply({ operations: urlEdit() }, { label: 'x', source: 'user', asking: { runId: 'run_other', base: typed } })).toMatchObject({ ok: false, error: { code: 'CANCELLED' } });
     expect(await s.apply({ operations: [{ type: 'page.create', title: 'Mine' }] }, { label: 'x', source: 'user', asking: { runId: 'run_q', base: [null] } })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(await s.apply({ operations: urlEdit() }, { label: 'x', source: 'user', asking: { runId: 'run_q', base: [...typed, null] } })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
     // An ordinary edit still waits for the AI.
     expect(await s.apply({ operations: [{ type: 'site.update', baseUrl: URL }] }, { label: 'x', source: 'user' })).toMatchObject({ ok: false, error: { code: 'BUSY' } });
     await s.abortRun();

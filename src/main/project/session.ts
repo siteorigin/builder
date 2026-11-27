@@ -425,6 +425,16 @@ interface HistoryFile {
 /** Where an AI run's step stood when History let it go: still in the site, or undone. */
 type DroppedRun = 'applied' | 'undone';
 
+/** The AI run holding the project (ProjectSession.activeRun): its checkpoint, and what it has written. */
+interface ActiveRunInfo {
+  id: string;
+  before: Map<string, string>;
+  beforeState: ProjectState;
+  startRevision: number;
+  written: Map<string, Set<string | null>>;
+  hashes: Map<string, { text: string; hash: string }>;
+}
+
 /**
  * `sessions/active-run.json`: what an AI run has changed, file by file, so a crash restores its checkpoint. `before` and
  * `after` name stored versions; `written` every version the run has put in the file.
@@ -497,8 +507,27 @@ function heldRefusal(state: ProjectState, start: ProjectState, ops: EditOperatio
   return null;
 }
 
+const plainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Every value that differs between two states, by its path through them, with its value in each. Parts the two share
+ * are skipped unread (an edit copies only what it changes), and a list is one value. A path is missing on one side
+ * when its value is undefined there, so an object made on the way to a field is never told apart from the field itself.
+ */
+function stateDelta(a: unknown, b: unknown, at = '', out = new Map<string, [unknown, unknown]>()): Map<string, [unknown, unknown]> {
+  if (a === b) return out;
+  if ((plainObject(a) || a === undefined) && (plainObject(b) || b === undefined) && (plainObject(a) || plainObject(b))) {
+    const x: Record<string, unknown> = plainObject(a) ? a : {};
+    const y: Record<string, unknown> = plainObject(b) ? b : {};
+    for (const k of new Set([...Object.keys(x), ...Object.keys(y)])) stateDelta(Object.hasOwn(x, k) ? x[k] : undefined, Object.hasOwn(y, k) ? y[k] : undefined, `${at}\u0000${k}`, out);
+    return out;
+  }
+  if (!sameValue(a, b)) out.set(at, [a, b]);
+  return out;
+}
+
 /** An edit of a collection, of its entries, or of its layout template. */
-const isCollectionOperation =(o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.') || namesTemplate(o);
+const isCollectionOperation = (o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.') || namesTemplate(o);
 
 /**
  * A change checked against files it does not write: a collection removal guards the links other entries and pages
@@ -796,7 +825,7 @@ export class ProjectSession extends EventEmitter {
   private folderGone = false;
   /** Run currently holding the writer lock. */
   /** `hashes`: the SHA-256 of each document's text as the run's markers last hashed it, by path. */
-  activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>>; hashes: Map<string, { text: string; hash: string }> } | null = null;
+  activeRun: ActiveRunInfo | null = null;
   private writing: Promise<unknown> = Promise.resolve();
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
   /** What the user allowed of AI batches that change where a contact form sends, and what they may yet be asked (#1129). */
@@ -2026,6 +2055,15 @@ export class ProjectSession extends EventEmitter {
       if (!sameRun || !whole)
         return keepAside(readable ? 'An interrupted AI change could not be finished, so it was undone instead.' : 'An interrupted AI change could not be finished or undone, so its changes were kept as they are.');
     }
+    // An edit saved into a waiting run's checkpoint (#1281) carries the marker naming that checkpoint, which replaces the
+    // run's own once the save is done. Checked before anything is rolled forward: one that cannot stand in for the marker
+    // on disk leaves the save undone, so the run's recovery restores the checkpoint as it was before the edit.
+    let runMarker: RunMarker | null = null;
+    if (journal.runMarker !== undefined && markerText !== null) {
+      const fit = await this.markerFit(journal.runMarker, markerText);
+      if (fit === 'unfit') return keepAside('An edit saved while the AI waited for an answer could not be finished, so it was set aside. The AI change was undone.');
+      if (fit === 'fits') runMarker = journal.runMarker as RunMarker;
+    }
     let conflicts = 0;
     for (const w of journal.writes) {
       // An earlier recovery of this journal already held this file for the user to choose.
@@ -2116,10 +2154,9 @@ export class ProjectSession extends EventEmitter {
     if (Number.isInteger(journal.revision)) await this.writeRevision(journal.revision!);
     const finished = typeof journal.finishRun === 'string';
     if (finished) await removeDurable(marker);
-    // An edit saved into a waiting run's checkpoint (#1281) leaves the run's marker naming that checkpoint: installed
-    // over the marker of the same run, before the journal goes, so the run's recovery after this restores the edit
-    // with the rest of the checkpoint. Never one for another run, nor in place of a marker already cleared.
-    else if (journal.runMarker && markerText !== null && (await this.rebasedMarker(journal.runMarker, markerText))) await atomicWrite(marker, toJson(journal.runMarker));
+    // The marker an edit saved into a waiting run's checkpoint leaves, checked above, before the journal goes: the run's
+    // recovery after this restores the edit with the rest of the checkpoint.
+    else if (runMarker) await atomicWrite(marker, toJson(runMarker));
     await removeDurable(this.local('journal.json'));
     this.recoveryNotes.push(
       conflicts
@@ -2134,23 +2171,42 @@ export class ProjectSession extends EventEmitter {
 
   /**
    * Whether `m`, the marker an interrupted save carries (Journal.runMarker), may replace the marker on disk
-   * (`markerText`): one of the same run, naming only project documents, each checkpoint version it names stored.
+   * (`markerText`). `fits`: one of the same run, naming only project documents, every file the marker on disk names
+   * and every version it lists as the run's, each checkpoint version it names stored. `other`: the marker on disk is
+   * another run's, or unreadable (run recovery discards that), so it is left alone. `unfit`: it cannot stand in for it.
+   * A version that cannot be read for any other reason than being missing or damaged stops recovery, to be tried again.
    */
-  private async rebasedMarker(m: unknown, markerText: string): Promise<boolean> {
-    let onDisk: { id?: unknown } | null;
+  private async markerFit(m: unknown, markerText: string): Promise<'fits' | 'other' | 'unfit'> {
+    let onDisk: { id?: unknown; paths?: Record<string, { written?: unknown } | null> } | null;
     try {
       onDisk = JSON.parse(markerText);
     } catch {
-      return false;
+      return 'other';
     }
+    if (!onDisk || typeof onDisk !== 'object' || typeof onDisk.id !== 'string') return 'other';
     const marker = m as Partial<RunMarker> | null;
-    if (!marker || typeof marker !== 'object' || typeof marker.id !== 'string' || marker.id !== onDisk?.id || !marker.paths || typeof marker.paths !== 'object') return false;
+    const id = marker && typeof marker === 'object' ? marker.id : undefined;
+    if (typeof id === 'string' && id !== onDisk.id) return 'other';
+    if (typeof id !== 'string' || !marker!.paths || typeof marker!.paths !== 'object') return 'unfit';
+    const paths = marker!.paths;
     const hash = (h: unknown) => h === null || (typeof h === 'string' && /^[a-f0-9]{64}$/.test(h));
-    for (const [path, d] of Object.entries(marker.paths)) {
-      if (!isCanonicalPath(path) || !d || typeof d !== 'object' || !hash(d.before) || !hash(d.after) || !Array.isArray(d.written) || !d.written.every(hash)) return false;
-      if (d.before !== null && !(await this.getBlob(d.before).then(() => true, () => false))) return false;
+    for (const [path, d] of Object.entries(paths)) if (!isCanonicalPath(path) || !d || typeof d !== 'object' || !hash(d.before) || !hash(d.after) || !Array.isArray(d.written) || !d.written.every(hash)) return 'unfit';
+    // It covers all the run has done: a file the marker on disk names, and a version it lists as the run's, are in it too.
+    for (const [path, d] of Object.entries(onDisk.paths && typeof onDisk.paths === 'object' ? onDisk.paths : {})) {
+      const now = Object.hasOwn(paths, path) ? paths[path] : undefined;
+      const had = Array.isArray(d?.written) ? (d.written as unknown[]) : [];
+      if (!now || had.some((h) => !now.written.includes(h as string | null))) return 'unfit';
     }
-    return true;
+    for (const d of Object.values(paths)) {
+      if (d.before === null) continue;
+      try {
+        await this.getBlob(d.before);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT' || (e as Error).message === 'A history blob is corrupted.') return 'unfit';
+        throw e;
+      }
+    }
+    return 'fits';
   }
 
   /**
@@ -2359,7 +2415,8 @@ export class ProjectSession extends EventEmitter {
       // restores the checkpoint without it, and the files without it are still the run's own.
       if (!rebased) await this.writeRunMarker(nextDocs);
     }
-    const runMarker = run && rebased ? await this.runMarker(rebased, nextDocs) : undefined;
+    const rebasedMarker = run && rebased ? await this.runMarker(rebased, nextDocs) : undefined;
+    const runMarker = rebasedMarker?.marker;
     // The undo position is part of the change: planned now, journaled with the documents, installed with them. A change
     // folded into History (amendHistory) is journaled with the History it leaves too.
     const planned = rebased
@@ -2435,9 +2492,10 @@ export class ProjectSession extends EventEmitter {
           this.state = next;
           this.docs = nextDocs;
           // The run's checkpoint holds the edit from now on, as its marker will once the journal is done.
-          if (run && rebased) {
+          if (run && rebased && rebasedMarker) {
             run.before = rebased;
             run.beforeState = opts.rebaseRun!;
+            run.written = rebasedMarker.written;
           }
           if (planned) this.history = planned.history;
           this.revision++;
@@ -3575,10 +3633,13 @@ export class ProjectSession extends EventEmitter {
         } catch (e) {
           return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} ${(e as Error).message}`, recoverable: true, details: { held: 'differs' } } };
         }
-        const wrote = (state: ProjectState) => (readFields(state, ops) ?? []).map((r) => (r.found ? r.value : undefined));
-        const there = wrote(made);
-        const here = wrote(next);
-        const problem = themePinProblem(made) ?? (here.length !== there.length || here.some((v, i) => !sameValue(v, there[i])) ? 'It would not land the same way where the request started.' : null);
+        // Everything the edit changes, as it lands in each: the fields it names and what the engine changes with them (a
+        // header that follows the site's name, the pages inside a moved one). Changed from and to the same values in both,
+        // or the request touched something the edit changes, and stopping it would take part of the edit back.
+        const here = stateDelta(this.state, next);
+        const there = stateDelta(start, made);
+        const differs = here.size !== there.size || [...here].some(([at, [b, a]]) => !there.has(at) || !sameValue(b, there.get(at)![0]) || !sameValue(a, there.get(at)![1]));
+        const problem = themePinProblem(made) ?? (differs ? 'The AI changed something this edit changes too, in this request.' : null);
         const introducedThere = problem ? [] : introducedDiagnostics(this.savingProblems(start), this.savingProblems(made));
         if (problem || introducedThere.length)
           return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} ${problem ?? introducedThere.map((d) => d.message).join(' ')}`, recoverable: true, details: { held: 'differs' } } };
@@ -5574,34 +5635,38 @@ export class ProjectSession extends EventEmitter {
    * publishing the batch (the file still holds the previous batch) is still recognised as the run's own work.
    */
   private async writeRunMarker(docs: Map<string, string> = this.docs) {
-    if (!this.activeRun) return;
-    const marker = await this.runMarker(this.activeRun.before, docs);
+    const run = this.activeRun;
+    if (!run) return;
+    const { marker, written } = await this.runMarker(run.before, docs);
     await atomicWrite(this.local('sessions', 'active-run.json'), toJson(marker));
+    run.written = written;
   }
 
   /**
-   * The active run's marker, were its checkpoint `before` and its documents `docs`. The checkpoint's versions are
-   * stored before this returns, as a marker naming them may be written.
+   * The active run's marker, were its checkpoint `before` and its documents `docs`, and the versions it lists as the
+   * run's (`written`, for the run to take once the marker is on disk: a save turned away keeps none of its own). The
+   * checkpoint's versions are stored before this returns, as a marker naming them may be written.
    */
-  private async runMarker(before: Map<string, string>, docs: Map<string, string>): Promise<RunMarker> {
+  private async runMarker(before: Map<string, string>, docs: Map<string, string>): Promise<{ marker: RunMarker; written: ActiveRunInfo['written'] }> {
     const marking = perf.span('session.runMarker');
     const run = this.activeRun!;
     const paths: RunMarker['paths'] = {};
     const all = new Set([...before.keys(), ...docs.keys(), ...run.written.keys()]);
+    const kept: ActiveRunInfo['written'] = new Map([...run.written].map(([p, w]) => [p, new Set(w)]));
     for (const path of all) {
       const b = before.get(path);
       const a = docs.get(path);
-      const written = run.written.get(path) ?? new Set<string | null>();
+      const written = kept.get(path) ?? new Set<string | null>();
       // A document the run has not changed, nor written before, is not in the marker: it needs no hash.
       if (b === a && !written.size) continue;
       const after = a === undefined ? null : this.docHash(path, a);
       if (b !== a) written.add(after);
-      if (written.size) run.written.set(path, written);
+      if (written.size) kept.set(path, written);
       paths[path] = { before: b === undefined ? null : await this.putBlob(b), after, written: [...written] };
     }
     // Building the marker: every document hashed, the run's versions stored. Its write is not in the span.
     marking({ paths: Object.keys(paths).length });
-    return { id: run.id, paths };
+    return { marker: { id: run.id, paths }, written: kept };
   }
 
   /** `text`'s SHA-256, worked out again only when the document at `path` holds other text than the run last hashed. */

@@ -158,6 +158,8 @@ describe('crash durability', { timeout: 300_000 }, () => {
     let base: unknown[] = [];
     let ops: EditOperation[] = [];
     let before: { baseUrl?: string; title: string } = { title: '' };
+    let marker = '';
+    let revision = 0;
     const setup = {
       build: async (s: ProjectSession) => {
         expect((await s.apply({ operations: [{ type: 'site.update', name: 'Before run' }] }, { label: 'Rename' })).ok).toBe(true);
@@ -174,6 +176,13 @@ describe('crash durability', { timeout: 300_000 }, () => {
         expect(await s.beginRun('run_s')).toBeNull();
         const r = await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }, { type: 'page.create', title: 'AI page' }] }, { label: 'AI', source: 'ai', runId: 'run_s', history: false });
         expect(r.ok).toBe(true);
+        marker = readFileSync(join(s.dir, '.siteorigin/sessions/active-run.json'), 'utf8');
+        revision = s.revision;
+      },
+      // Until the save's journal is on disk, the run's marker is just as it was: a crash restores the checkpoint without the edit.
+      afterCrash: (dir: string) => {
+        const site = JSON.parse(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')) as { baseUrl?: string };
+        if (!existsSync(join(dir, '.siteorigin/journal.json')) && site.baseUrl !== URL) expect(readFileSync(join(dir, '.siteorigin/sessions/active-run.json'), 'utf8')).toBe(marker);
       }
     };
     const outcomes = new Set<string>();
@@ -191,6 +200,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
         const steps = s.historyInfo().entries.map((e) => e.label);
         if (s.state.site.baseUrl === URL) {
           outcomes.add('saved');
+          expect(s.revision).toBe(revision + 1);
           // The whole edit, as the author's own step, which takes back only what it changed.
           expect(home.title).toBe('My home');
           expect(steps).toEqual(['Rename', 'My edit']);
@@ -200,6 +210,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
           expect(s.state.site.name).toBe('Before run');
         } else {
           outcomes.add('not saved');
+          expect(s.revision).toBe(revision);
           expect(s.state.site.baseUrl).toBe(before.baseUrl);
           expect(home.title).toBe(before.title);
           expect(steps).toEqual(['Rename']);

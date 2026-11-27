@@ -2,7 +2,7 @@
  * Save now (#1281) end to end in the main process: the controller saves the author's held edit while the request waits
  * for their answer, the request keeps waiting, and the model hears of the edit with the answer.
  */
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,6 +25,7 @@ const { ProjectSession } = await import('../../src/main/project/session');
 const { Orchestrator } = await import('@agent/orchestrator');
 const { createStarterState } = await import('@catalogue/starters');
 const { readFields } = await import('../../src/renderer/src/lib/held');
+const { upsertCreatesIn } = await import('@agent/completeness');
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 /** Replays scripted turns, keeping each request. */
@@ -142,7 +143,12 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     const runId = await env.send('Rename the site');
     const q = await env.asked();
     expect(env.lastStatus()).toMatchObject({ status: 'awaiting-input', saveable: true });
-    const r = await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings', opening: (env.c as unknown as { workspaceKey: string }).workspaceKey });
+    expect((await env.orch.readConversation(env.orch.conversation!.id)).run).toMatchObject({ runId, saveable: true });
+    const opening = (env.c as unknown as { workspaceKey: string }).workspaceKey;
+    // Made in an earlier opening of the project: never saved into this one.
+    expect(await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings', opening: `${opening}-earlier` })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(env.session.state.site.baseUrl).not.toBe(URL);
+    const r = await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings', opening });
     expect(r.ok).toBe(true);
     // Saved, and the request still waits for the answer.
     expect(env.session.state.site).toMatchObject({ name: 'AI name', baseUrl: URL });
@@ -152,7 +158,7 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     const result = await env.ended();
     expect(result?.status).toBe('completed');
     // The answer names what the author changed, so the model reads it before writing there.
-    expect(told).toMatchObject({ ok: true, answer: 'Warm', authorEdits: ['Update site settings in Site settings (site.update: baseUrl)'] });
+    expect(told).toMatchObject({ ok: true, answer: 'Warm', authorEdits: [`Update site settings in Site settings (site.update: baseUrl = "${URL}")`] });
     expect(told?.note).toMatch(/read what they changed again/);
     // Two steps: the author's, then the AI's, which never holds the URL.
     expect(env.session.historyInfo().entries.slice(-2).map((e) => e.source)).toEqual(['user', 'ai']);
@@ -168,6 +174,7 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     expect((await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' })).ok).toBe(true);
     expect(await env.orch.stopRun(runId)).toMatchObject({ stopped: true, status: 'cancelled' });
     expect(env.session.state.site).toMatchObject({ name: 'Persist', baseUrl: URL });
+    expect(existsSync(join(env.dir, '.siteorigin/sessions/active-run.json'))).toBe(false);
   });
 
   it('gives the model the edit even when the answer comes while it is being saved', async () => {
@@ -183,11 +190,18 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     const runId = await env.send('Rename the site');
     const q = await env.asked();
     const saving = env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' });
-    // Answered before the save has answered: the model hears the answer once the save is in.
+    // Answered before the save has answered: the model hears the answer once the save is in, and no other save is let in
+    // meanwhile, which the editor hears at once.
     expect(env.orch.answer(runId, q.id!, 'Brisk')).toBe(true);
+    expect(env.lastStatus()).toMatchObject({ status: 'awaiting-input' });
+    expect(env.lastStatus()).not.toHaveProperty('saveable');
+    const describe = [{ type: 'site.update', description: 'Also mine' }] as EditOperation[];
+    expect(await env.c.saveWhileAsking({ operations: describe }, { runId, base: seen(env.session.state, describe), label: 'Update site settings' })).toMatchObject({ ok: false, error: { code: 'BUSY' } });
     expect((await saving).ok).toBe(true);
     await env.ended();
     expect(told).toMatchObject({ answer: 'Brisk', authorEdits: [expect.stringContaining('baseUrl')] });
+    expect(told?.authorEdits).toHaveLength(1);
+    expect(env.session.state.site.description).not.toBe('Also mine');
   });
 
   it('refuses once the question is answered, and the next question hears nothing of an earlier one’s edit', async () => {
@@ -212,11 +226,13 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     await env.ended();
     expect(second).toEqual(expect.objectContaining({ answer: 'Muted' }));
     expect(second).not.toHaveProperty('authorEdits');
+    expect(second).not.toHaveProperty('note');
     expect(env.session.state.site.baseUrl).toBe(URL);
   });
 
   it('skips a change the model queued after the question, which was planned before it knew of the edit', async () => {
     let skipped: Record<string, unknown> | undefined;
+    let fresh: Record<string, unknown> | undefined;
     const env: Awaited<ReturnType<typeof setup>> = await setup([
       () =>
         calls(
@@ -226,6 +242,11 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
         ),
       (req) => {
         skipped = resultOf(req, 'a1');
+        // Having read what the author changed, the model's next change goes through.
+        return calls(['a2', 'update_site_seo', { description: 'Written after reading' }]);
+      },
+      (req) => {
+        fresh = resultOf(req, 'a2');
         return finish('Done.');
       }
     ]);
@@ -236,7 +257,9 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     expect(env.orch.answer(runId, q.id!, 'Warm')).toBe(true);
     await env.ended();
     expect(skipped).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
+    expect(fresh).toMatchObject({ ok: true });
     expect(env.session.state.site.baseUrl).toBe(URL);
+    expect(env.session.state.site.description).toBe('Written after reading');
   });
 
   it('stays off the app’s own question about where a form sends, whose grant the save would void (#1130)', async () => {
@@ -251,6 +274,10 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     expect(q.formRouting).toBeDefined();
     expect(env.lastStatus()).toMatchObject({ status: 'awaiting-input' });
     expect(env.lastStatus()).not.toHaveProperty('saveable');
+    // A window reading the thread again hears the same.
+    const read = await env.orch.readConversation(env.orch.conversation!.id);
+    expect(read.run).toMatchObject({ runId, status: 'awaiting-input' });
+    expect(read.run).not.toHaveProperty('saveable');
     const before = env.session.revision;
     expect(await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' })).toMatchObject({ ok: false, error: { code: 'BUSY' } });
     expect(env.session.revision).toBe(before);
@@ -258,5 +285,18 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     expect(env.orch.answer(runId, q.id!, q.choices[1])).toBe(true);
     await env.ended();
     expect((env.session.state.pages[owner.id].nodes[form] as { props: Record<string, unknown> }).props.endpoint).toBe(EVIL);
+  });
+});
+
+describe('a page a skipped change would have made (#1281)', () => {
+  it('is the page an upsert names when no page has its address yet', () => {
+    const state = createStarterState('business', 'Persist', false);
+    expect(upsertCreatesIn(JSON.stringify({ slug: 'services', title: 'Our services' }), state)).toEqual([{ title: 'Our services', route: '/services/' }]);
+    expect(upsertCreatesIn(JSON.stringify({ slug: '/pricing/' }), state)).toEqual([{ title: 'pricing', route: '/pricing/' }]);
+    // An update of a page there already, the Home page, or arguments that say nothing.
+    const about = Object.values(state.pages).find((p) => p.title === 'About')!;
+    expect(upsertCreatesIn(JSON.stringify({ slug: about.route, title: 'About us' }), state)).toEqual([]);
+    expect(upsertCreatesIn(JSON.stringify({ slug: 'home' }), state)).toEqual([]);
+    expect(upsertCreatesIn('{not json', state)).toEqual([]);
   });
 });

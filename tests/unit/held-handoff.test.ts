@@ -257,7 +257,7 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
 
   it('keeps an edit of a field the request changed held, saying it waits for the request to end', async () => {
     let aboutId = '';
-    const { session, about, send } = await setup([
+    const { session, orch, about, send } = await setup([
       () => aiEdit('t', [{ type: 'page.update', pageId: aboutId, seoTitle: 'AI title' }]),
       () => call('q', 'request_clarification', { question: 'Keep going?', choices: ['Yes', 'No'] })
     ]);
@@ -274,6 +274,13 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     expect(heldPrompt(kept, true, 'asking', true).actions).toEqual(['stop-apply', 'discard']);
     expect(session.state.pages[about].seo.title).toBe('AI title');
     expect(stopCalls).toEqual([]);
+    // Once that request has ended, the edit no longer waits on it: a later request's question may save it.
+    const q = orch.conversation!.messages.at(-1)!.questions!.at(-1)!;
+    expect(orch.answer(orch.runId!, q.id!, 'Yes')).toBe(true);
+    await until(() => !orch.busy && statusOf() === null, 'the request to end');
+    expect(store.getState().heldEdits[0]).toMatchObject({ id: held.id, phase: 'waiting' });
+    expect(store.getState().heldEdits[0].waitsForEnd).toBeUndefined();
+    expect(store.getState().heldEdits[0].note).toBeUndefined();
   });
 });
 

@@ -627,16 +627,24 @@ export function whereOf(state: ProjectState, op: EditOperation): string {
   return typeof node === 'string' ? place : `${displayName(state, node)} ${owner.kind === 'page' ? 'on' : 'in'} ${place}`;
 }
 
+/** The most of a value a held edit's summary for the AI quotes. */
+const SUMMARY_VALUE_MAX = 200;
+
 /**
  * A held edit in words for the AI, told of it with the answer it was saved beside (#1281): what it is, where, and what
- * it writes there, e.g. `Update site settings in Site settings (site.update: baseUrl)`.
+ * it wrote there, e.g. `Update site settings in Site settings (site.update: baseUrl = "https://example.com")`. The
+ * values are what the field holds now, which a run with no tool to read it again cannot see otherwise.
  */
 export function heldSummary(state: ProjectState, operations: EditOperation[], label: string): string {
   const where = [...new Set(operations.map((op) => whereOf(state, op)))].join(', ');
+  const shown = (v: unknown) => {
+    const text = JSON.stringify(v) ?? 'null';
+    return text.length > SUMMARY_VALUE_MAX ? `${text.slice(0, SUMMARY_VALUE_MAX)}…` : text;
+  };
   const writes = operations.map((op) => {
     const o = op as Record<string, unknown>;
     const target = Object.keys(o).filter((k) => TARGET_KEYS.has(k) && (typeof o[k] === 'string' || typeof o[k] === 'number')).map((k) => `${k} ${JSON.stringify(o[k])}`);
-    const fields = Object.keys(o).filter((k) => k !== 'type' && !TARGET_KEYS.has(k) && o[k] !== undefined);
+    const fields = Object.keys(o).filter((k) => k !== 'type' && !TARGET_KEYS.has(k) && o[k] !== undefined).map((k) => `${k} = ${shown(o[k])}`);
     return `${op.type}${target.length ? ` ${target.join(' ')}` : ''}: ${fields.join(', ')}`;
   });
   return `${label} in ${where} (${writes.join('; ')})`;

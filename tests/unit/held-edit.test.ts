@@ -281,6 +281,8 @@ describe('held edit row', () => {
     });
     // Once the AI has finished, it is applied as before.
     expect(heldPrompt({ phase: 'waiting', text: 'x', waitsForEnd: true }, false, null, false).actions).toEqual(['apply', 'discard']);
+    // An edit held because its field changed somewhere else is the author's to settle, never saved beside a question.
+    expect(heldPrompt({ phase: 'waiting', text: 'x', cause: 'elsewhere' }, true, 'asking', true).actions).toEqual(['stop-apply', 'discard']);
   });
 
   it('offers to stop the AI while it works, and to apply once it has finished', () => {

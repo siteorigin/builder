@@ -1328,13 +1328,14 @@ export async function saveHeldNow(id: number): Promise<void> {
   if (!live()) return setState({ pendingSave });
   if (r.ok) {
     setState({ pendingSave, heldEdits: removeHeld(id), ...landedRename(id, r.revision, shownField(held.operations[0], held.base[0])) });
-    toast('Your edit is saved. The AI is still waiting for your answer.', 'success');
+    // Answered while it was saved, the AI is on its way again: only a question still waiting is said to be.
+    toast(getState().runSaveable ? 'Your edit is saved. The AI is still waiting for your answer.' : 'Your edit is saved.', 'success');
     return;
   }
   setState({ pendingSave });
   // The request changed what the edit writes, or made what it is for: saved now, stopping the request would lose its
   // changes to it, so the edit waits for the request to end. Answered or stopped meanwhile, it just waits again.
-  const why = (r.error?.details as { held?: unknown } | undefined)?.held;
+  const why = ((r.error as { details?: unknown } | undefined)?.details as { held?: unknown } | undefined)?.held;
   patchHeld(id, { phase: 'waiting', attempt: undefined, writing: false, ...(why ? { waitsForEnd: true, note: r.error?.message } : r.error?.code === 'BUSY' || r.error?.code === 'CANCELLED' ? {} : { note: r.error?.message }) });
 }
 
@@ -1617,9 +1618,11 @@ export function applyAiEvent(e: AiEvent) {
     if (!ask) aiEpoch++;
     // A request whose project closed mid-run (tagged with no conversation) ends for no project open now.
     const detached = e.conversationId === '' || (s.activeRunId === e.runId && s.runConversationId === '');
+    // A held edit Save now refused because this request changed what it writes no longer waits on it once it has ended.
+    const ended = terminal && !ask && s.heldEdits.some((h) => h.waitsForEnd) ? { heldEdits: s.heldEdits.map((h) => (h.waitsForEnd ? { ...h, waitsForEnd: undefined, note: undefined } : h)) } : {};
     setState(
       terminal
-        ? { runStatus: null, activeRunId: null, runMode: null, runConversationId: null, runSaveable: false, ...(ask || detached ? {} : { aiOutcome: { run: e.status!, runId: e.runId } }) }
+        ? { runStatus: null, activeRunId: null, runMode: null, runConversationId: null, runSaveable: false, ...ended, ...(ask || detached ? {} : { aiOutcome: { run: e.status!, runId: e.runId } }) }
         : { runStatus: e.status!, activeRunId: e.runId, runMode: ask ? 'ask' : 'edit', runConversationId: detached ? '' : e.conversationId, runSaveable: !ask && e.status === 'awaiting-input' && !!e.saveable }
     );
     // What the request learned about a local server (it answered, or it is down) is what Chat shows next.

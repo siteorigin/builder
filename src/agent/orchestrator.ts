@@ -34,7 +34,7 @@ import { walkChecks } from '@engine/apply';
 import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
 import { applyContextBudget, contextVerdict, estimateRequestTokens, MIN_OUTPUT_TOKENS } from './budget';
-import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, type MissingPage, type WantedPage } from './completeness';
+import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, upsertCreatesIn, type MissingPage, type WantedPage } from './completeness';
 import { blueprintSection, exampleSection, retrieveBlueprints, retrieveExamples } from './examples';
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
 import { modelInfo } from './models';
@@ -1465,12 +1465,15 @@ export class Orchestrator {
     }
     this.emitMessage(run.message, runId);
     // An edit the author is saving as they answer reaches the project first, and the model hears of it with the answer.
+    // Meanwhile no other save is admitted, and the editor hears so at once.
     const reply = () => {
       run.authorEdits = pending.edits;
       pending.resolve(chosen ? imageAnswer(chosen) : text);
     };
-    if (pending.saving.size) void Promise.all(pending.saving).then(reply);
-    else reply();
+    if (pending.saving.size) {
+      this.setStatus(run.status);
+      void Promise.all(pending.saving).then(reply);
+    } else reply();
     return true;
   }
 
@@ -2143,7 +2146,17 @@ export class Orchestrator {
       // A collaborator's request never reaches the project's external sources, whose settings name the host's secrets.
       ...(this.deps.sources && !delegation ? { sources: this.deps.sources(signal) } : {}),
       ask: (question, choices, widenScope, images) => askUser(question, choices, widenScope, images),
-      authorEdits: () => run.authorEdits.splice(0)
+      authorEdits: () => {
+        const edits = run.authorEdits.splice(0);
+        // What the author saved is in nothing the run drafted or checked before: a page it was refused is sent whole
+        // again rather than repaired from a draft that would put back what the author changed, and every check of the
+        // preview is made again.
+        if (edits.length) {
+          macros.drafts.clear();
+          inspections.invalidate('all');
+        }
+        return edits;
+      }
     };
 
     const addActivity = (label: string, tool: string): ChatActivity => {
@@ -2838,7 +2851,8 @@ export class Orchestrator {
               readRevision()
             );
             items.push(resultItem(call, skipped));
-            if (call.name === 'apply_operations') for (const p of pageCreatesIn(call.arguments)) rememberPage(wanted, { ...p, reason: 'skipped' });
+            // A page it would have made is still owed, whichever tool was to make it.
+            for (const p of call.name === 'apply_operations' ? pageCreatesIn(call.arguments) : call.name === 'upsert_page_with_sections' ? upsertCreatesIn(call.arguments, readState()) : []) rememberPage(wanted, { ...p, reason: 'skipped' });
             continue;
           }
           if (revisionBound && mutationTried) {
