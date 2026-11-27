@@ -242,7 +242,7 @@ export interface FuturePublishQuestion {
 
 /**
  * What Publish asks first when the post is dated after `today` (#1115): nothing makes the website wait for that day,
- * so a post published now is on it, and in its feed, from the next export. Null for a post dated today or earlier,
+ * so a post published now is included in the next export. Null for a post dated today or earlier,
  * or without a valid date. Days compare as YYYY-MM-DD text, which orders them.
  */
 export function futurePublishQuestion(publishedAt: unknown, noun: string, language: string | undefined, today: string): FuturePublishQuestion | null {
@@ -250,7 +250,7 @@ export function futurePublishQuestion(publishedAt: unknown, noun: string, langua
   const day = formatArticleDate(publishedAt, language);
   return {
     title: `Publish this ${noun} dated ${day}?`,
-    body: `This ${noun} is dated ${day}, which has not come yet. Nothing holds it back until then: published now, it is on the website, and in its feed, from the next export.`,
+    body: `This ${noun} is dated ${day}, which has not come yet. Nothing holds it back until then: published now, it is included in the next export.`,
     confirmLabel: 'Publish now',
     cancelLabel: 'Keep as draft',
     tone: 'neutral',
