@@ -110,6 +110,10 @@ function repeatAround(tree: NodeTree, nodeId: string): string {
 
 /** A placement's variant choices, compared as one more setting of code that places a form: its code may route by them. */
 const VARIANTS = '\u0001variants';
+/** The option of each of a design's variants a placement is given: its own choice, or the design's default. */
+const variantsOf = (d: ComponentDefinition | undefined, own?: Record<string, string>) => Object.fromEntries(Object.entries(d?.variantAxes ?? {}).map(([axis, a]) => [axis, own?.[axis] ?? a.default]));
+/** A design's default for a setting (its variant defaults, for VARIANTS), as what a fresh placement is given. */
+const defaultOf = (d: ComponentDefinition | undefined, prop: string): unknown => (prop === VARIANTS ? variantsOf(d) : propDefault(d, prop));
 
 /** Whether a value reads a property or an item's field (`key`), anywhere in it: a whole binding, a list item's, a field's. */
 function reads(value: unknown, key: '$prop' | '$item'): boolean {
@@ -129,7 +133,7 @@ const unlisted = (value: unknown): unknown =>
  * list items' IDs, which copying makes anew; a placement that stays keeps them, as code may read them.
  */
 function valueOf(state: ProjectState, tree: NodeTree, scope: string, n: Instance, prop: string, copy = false): string {
-  if (prop === VARIANTS) return routingText(n.variants ?? null);
+  if (prop === VARIANTS) return routingText(variantsOf(state.components[n.definitionId], n.variants as Record<string, string> | undefined));
   const own = n.props && Object.hasOwn(n.props, prop) ? n.props[prop] : undefined;
   const value = own ?? propDefault(Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined, prop);
   const text = routingText(copy ? unlisted(value) : value);
@@ -140,7 +144,7 @@ function valueOf(state: ProjectState, tree: NodeTree, scope: string, n: Instance
   return source === undefined ? read : `${read}\u0000${JSON.stringify(source)}`;
 }
 
-const resolved = (state: ProjectState, n: Instance, prop: string): unknown => (prop === VARIANTS ? n.variants : undefined) ?? (n.props && Object.hasOwn(n.props, prop) ? n.props[prop] : undefined) ?? propDefault(state.components[n.definitionId], prop);
+const resolved = (state: ProjectState, n: Instance, prop: string): unknown => (prop === VARIANTS ? variantsOf(state.components[n.definitionId], n.variants as Record<string, string> | undefined) : undefined) ?? (n.props && Object.hasOwn(n.props, prop) ? n.props[prop] : undefined) ?? propDefault(state.components[n.definitionId], prop);
 
 /** The designs that place a contact form, however deep: a form, a design with one in it, and code that imports one. */
 function formBearing(state: ProjectState, protectedProps: Map<string, Set<string>>): Set<string> {
@@ -247,8 +251,8 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
     const by = new Map<string, Set<string>>();
     for (const p of props(id)) {
       const ok = new Set<string>();
-      if (def(before, id)) ok.add(routingText(unlisted(propDefault(def(before, id), p))));
-      if (isShipped(def(after, id))) ok.add(routingText(unlisted(propDefault(def(after, id), p))));
+      if (def(before, id)) ok.add(routingText(unlisted(defaultOf(def(before, id), p))));
+      if (isShipped(def(after, id))) ok.add(routingText(unlisted(defaultOf(def(after, id), p))));
       by.set(p, ok);
     }
     defaults.set(id, by);
@@ -305,9 +309,9 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
     if (!now || isShipped(now)) continue;
     const prev = def(before, id);
     for (const p of props(id)) {
-      const value = propDefault(now, p);
+      const value = defaultOf(now, p);
       const text = routingText(unlisted(value));
-      if (prev ? text === routingText(unlisted(propDefault(prev, p))) : EMPTY_ROUTING.has(text)) continue;
+      if (prev ? text === routingText(unlisted(defaultOf(prev, p))) : EMPTY_ROUTING.has(text) || p === VARIANTS) continue;
       add({ kind: 'default', definitionId: id, name: now.name, prop: p, label: labelOf(id, p), value }, text);
     }
   }

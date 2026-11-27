@@ -342,9 +342,9 @@ describe('where a form sends, as an AI batch would leave it', () => {
     const code = (id: string, name: string, dependencies: string[], properties: Record<string, unknown>, variantAxes?: unknown) =>
       ({ id, name, kind: 'code', owner: 'project', source: `<script>/* ${name} */</script>`, dependencies, properties, ...(variantAxes ? { variantAxes } : {}) }) as unknown as ComponentDefinition;
     state.components.cmp_inner = code('cmp_inner', 'Inner code', [FORM], {});
-    state.components.cmp_office = code('cmp_office', 'Office code', ['cmp_inner'], { recipient: { type: 'string', label: 'Recipient', default: '' } }, [
-      { id: 'office', label: 'Office', options: [{ id: 'sales', label: 'Sales' }, { id: 'support', label: 'Support' }], default: 'sales' }
-    ]);
+    state.components.cmp_office = code('cmp_office', 'Office code', ['cmp_inner'], { recipient: { type: 'string', label: 'Recipient', default: '' } }, {
+      office: { label: 'Office', prop: 'office', default: 'sales', options: { sales: { label: 'Sales' }, support: { label: 'Support' } } }
+    });
     const placed = makeInstance(state.components.cmp_office, { recipient: SALES });
     placed.variants = { office: 'sales' };
     state.pages[owner.id].nodes[placed.id] = placed;
@@ -357,6 +357,20 @@ describe('where a form sends, as an AI batch would leave it', () => {
     expect(edit((n) => (n.props.recipient = EVIL))).toEqual([['setting', 'recipient']]);
     expect(edit((n) => (n.variants = { office: 'support' }))).toEqual([['setting', '\u0001variants']]);
     expect(formRoutingChanges(state, structuredClone(state))).toEqual([]);
+    // A placement that takes the design's default variant is given another when the default changes.
+    delete placed.variants;
+    const defaulted = structuredClone(state);
+    (defaulted.components.cmp_office.variantAxes as Record<string, { default: string }>).office.default = 'support';
+    expect(formRoutingChanges(state, defaulted).map((c) => [c.kind, c.prop])).toEqual([
+      ['setting', '\u0001variants'],
+      ['default', '\u0001variants']
+    ]);
+    // A new placement given the design's defaults sends as a fresh one does.
+    const fresh = structuredClone(state);
+    const another = makeInstance(fresh.components.cmp_office);
+    fresh.pages[owner.id].nodes[another.id] = another;
+    fresh.pages[owner.id].rootIds.push(another.id);
+    expect(formRoutingChanges(state, fresh)).toEqual([]);
   });
 
   it('never lets code that places a form be written, nor a form’s own code', () => {
