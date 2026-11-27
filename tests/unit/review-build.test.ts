@@ -75,11 +75,12 @@ async function open(dir: string) {
   return c;
 }
 
-/** Each file of the project's canonical documents and private records (versions, History), by its bytes' hash. */
-const recordFiles = (dir: string) =>
-  Object.fromEntries(
-    ['siteorigin', '.siteorigin/versions', '.siteorigin/history'].flatMap((root) => filesIn(join(dir, root)).map((f) => [`${root}/${f}`, createHash('sha256').update(readFileSync(join(dir, root, f))).digest('hex')]))
-  );
+const hash = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
+/** Each file of the project's canonical documents and private records (revision, versions, History), by its bytes' hash. */
+const recordFiles = (dir: string) => ({
+  '.siteorigin/state.json': hash(join(dir, '.siteorigin/state.json')),
+  ...Object.fromEntries(['siteorigin', '.siteorigin/versions', '.siteorigin/history'].flatMap((root) => filesIn(join(dir, root)).map((f) => [`${root}/${f}`, hash(join(dir, root, f))])))
+});
 
 /** What the project knows of its publication: the record, the redirects, its revision, its versions and History. */
 const publication = (c: InstanceType<typeof Controller>) => {
