@@ -68,13 +68,23 @@ export function App() {
   const directOpen = useStore((s) => s.openingProject);
   const shown: Presented = screen === 'editor' && ((editor && packsReady) || editorFailed) ? 'editor' : screen === 'editor' || directOpen ? 'opening' : 'welcome';
   const openingName = useStore((s) => s.openingProject?.name ?? (s.screen === 'editor' && s.snapshot ? projectDisplayName(s.snapshot.state) : null));
-  // Said once for each opening, when the outline shows: the project's arrival (which ends the click's outline and
-  // starts the editor's) does not say it again.
+  // Said once for each opening, when its wait shows: the project's arrival (which ends the click's outline and starts the
+  // editor's), or a card shown between (setting up the website tools), does not say it again.
   const [openingSaid, setOpeningSaid] = useState('');
+  const openingSince = useStore((s) => s.openingSince);
+  const [saidFor, setSaidFor] = useState<number | null>(null);
+  // The opening lasts until its first page is ready (the canvas outlining it), whichever screen shows it: said here alone.
+  const openingPage = useStore((s) => s.openingPage);
+  const opening = shown === 'opening' || (shown === 'editor' && openingPage);
   useEffect(() => {
-    if (shown !== 'opening') setOpeningSaid('');
-    else setOpeningSaid((said) => said || (openingName ? `Opening ${openingName}…` : 'Opening a project…'));
-  }, [shown, openingName]);
+    // The editor's first render, before its canvas has said it is outlining the first page (a layout effect that has
+    // already run by now), is still the opening: read from the store, not this render.
+    if (!opening && !getState().openingPage) return setOpeningSaid('');
+    if (!opening) return;
+    if (openingSince === null || saidFor === openingSince) return;
+    setSaidFor(openingSince);
+    setOpeningSaid(openingName ? `Opening ${openingName}…` : 'Opening a project…');
+  }, [opening, openingName, openingSince, saidFor]);
   useLayoutEffect(() => {
     presented = shown;
     // A command held back while Welcome stood in for the editor is offered again now that the screen on show is the
@@ -129,7 +139,7 @@ export function App() {
         // Notices (an error stays until dismissed) belong to the project that closed.
         // A request still ending holds the app until it ends, but is filed in no thread of the project opened next.
         // An open from Welcome still on its way ends here too: its project closed before it could show.
-        setState({ toasts: [], screen: 'welcome', openingProject: null, frameReady: false, previewIssue: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
+        setState({ toasts: [], screen: 'welcome', openingProject: null, openingSince: null, openingPage: false, frameReady: false, previewIssue: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -316,6 +326,8 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
   // Another opening's request (still ending) is in none of this one's threads. A status that arrived while this window
   // was starting is this opening's, and is kept.
   const was = getState().snapshot?.workspaceKey;
+  // An opening from a recent project's card began at the click; any other, now.
+  const since = getState().openingProject ? (getState().openingSince ?? performance.now()) : performance.now();
   setState({
     ...(was && was !== snap.workspaceKey ? detachedRun() : {}),
     // A notice from the project that was open (or from the welcome screen) is not this project's.
@@ -323,6 +335,7 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     screen: 'editor',
     // The project has arrived: the outline from a click on its card is the editor's now (App).
     openingProject: null,
+    openingSince: since,
     // Its frame has shown nothing yet, and nothing has gone wrong on it: the last opening's page is not this one's.
     frameReady: false,
     previewIssue: null,

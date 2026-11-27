@@ -212,7 +212,9 @@ function Stopped({ message, detail }: { message: string; detail?: string }) {
  * over then says so at once.
  */
 export function useSlowWait(runtime: RuntimeState): boolean {
-  const waiting = runtime.state === 'preparing' || runtime.state === 'starting' ? runtime.state : null;
+  // A preview not started yet and one starting are one wait, timed as one: one that never gets going hands back to its
+  // card in time. Setting up the website tools is timed on its own.
+  const waiting = runtime.state === 'preparing' ? 'preparing' : runtime.state === 'starting' || runtime.state === 'idle' ? 'starting' : null;
   const [slowFor, setSlowFor] = useState<typeof waiting>(null);
   useEffect(() => {
     setSlowFor(null);

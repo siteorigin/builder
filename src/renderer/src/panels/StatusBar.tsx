@@ -54,7 +54,11 @@ function useHealthAnnouncement(quietConflicts: () => boolean): string {
   const health = useStore((s) => {
     const d = s.snapshot?.diagnostics ?? [];
     const conflicts = s.snapshot?.conflicts.length ?? 0;
-    const { broken, phase } = runtimeInfo(s.runtime, s.previewIssue, s.frameReady);
+    const info = runtimeInfo(s.runtime, s.previewIssue, s.frameReady);
+    const broken = info.broken;
+    // A project's first page is outlined on the canvas, which says it is opening: to the status bar that is a start,
+    // quiet until the page is ready, never "paused" for the moment before the preview begins.
+    const phase = s.openingPage ? 'starting' : info.phase;
     return [d.filter((x) => x.severity === 'error' && x.code !== 'CONFLICT').length + conflicts + (broken ? 1 : 0) + (s.snapshot?.saveFailure ? 1 : 0), d.filter((x) => x.severity === 'warning').length, conflicts, phase].join(',');
   });
   const opened = health.split(',')[3];
@@ -117,7 +121,9 @@ export function StatusBar() {
   // The preview's button becomes text once it recovers: if it had focus, the Project health count takes it.
   const previewHadFocus = useRef(false);
   const problemsRef = useRef<HTMLButtonElement>(null);
-  const previewActionable = useStore((s) => ['broken', 'stopped', 'unavailable'].includes(runtimeInfo(s.runtime, s.previewIssue, s.frameReady).phase));
+  const previewActionable = useStore((s) => !s.openingPage && ['broken', 'stopped', 'unavailable'].includes(runtimeInfo(s.runtime, s.previewIssue, s.frameReady).phase));
+  // While the canvas outlines the project's first page, that outline is the opening's one sign: the preview's line waits.
+  const openingPage = useStore((s) => s.openingPage);
   useLayoutEffect(() => {
     if (previewActionable || !previewHadFocus.current) return;
     previewHadFocus.current = false;
@@ -164,7 +170,7 @@ export function StatusBar() {
   const actionable = phase === 'broken' || phase === 'stopped' || phase === 'unavailable';
   return (
     <footer className="status-bar">
-      {actionable ? (
+      {openingPage ? null : actionable ? (
         <button
           className={`row preview-status${broken ? ' error' : ''}`}
           title={`${label}: open Project health`}

@@ -246,7 +246,7 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
     // starts with a chooser (Open project…, a folder, Find folder…) keeps Welcome until a project arrives.
     const recent = dir !== undefined && !opts ? recents?.find((r) => r.dir === dir && !r.missing) : undefined;
     const direct = recent ? { id: ++directOpens, name: recent.name } : null;
-    if (direct) setState({ openingProject: direct });
+    if (direct) setState({ openingProject: direct, openingSince: performance.now() });
     // Opened: the outline stays until the project's snapshot takes its place (App), whichever of the two arrives first.
     let opened = false;
     try {

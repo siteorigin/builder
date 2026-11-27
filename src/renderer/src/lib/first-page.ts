@@ -5,7 +5,7 @@ export interface FirstPageWait {
   /** This opening's first page has not been shown yet, and nothing has gone wrong with it: no page problem, no retry. */
   pending: boolean;
   runtime: RuntimeState['state'];
-  /** The start has run past what it usually takes (useSlowWait). */
+  /** The start, or the wait for it to begin, has run past what it usually takes (useSlowWait). */
   slow: boolean;
   /** The frame is given a page to load: a ready server and a route to show. */
   frameShown: boolean;
@@ -22,7 +22,6 @@ export interface FirstPageWait {
  */
 export function outlinesFirstPage(w: FirstPageWait): boolean {
   if (!w.pending || !w.onPage) return false;
-  if (w.runtime === 'idle') return true;
-  if (w.runtime === 'starting') return !w.slow;
+  if (w.runtime === 'idle' || w.runtime === 'starting') return !w.slow;
   return w.runtime === 'ready' && w.frameShown && !w.frameReady;
 }

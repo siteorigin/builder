@@ -191,6 +191,11 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     expect(await clickAndLook('Acme Bakery')).toEqual({ outline: true, welcome: false, canvas: true });
     expect(await opens()).toEqual([]);
     await expect.poll(statusText).toContain('Opening Acme Bakery…');
+    // The outline alone answers the click: its one loading sign shows only once the wait is noticeable (a second).
+    expect(await count('.sk-loading')).toBe(0);
+    await page.clock.runFor(900);
+    expect(await count('.sk-loading')).toBe(0);
+    await page.clock.runFor(200);
     await expect.poll(() => text('.sk-loading')).toBe('Opening Acme Bakery…');
     // Nothing in the outline is reachable or read out, and Welcome is kept, not drawn.
     expect(await page.locator('.editor-skeleton').getAttribute('aria-hidden')).toBe('true');

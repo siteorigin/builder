@@ -3044,6 +3044,27 @@ export function Canvas() {
     frameReady,
     onPage: mode === 'edit' && !templateMode && !studioView
   });
+  // The opening's one loading sign: the status bar and the announcements leave the first page's wait to it.
+  useLayoutEffect(() => {
+    if (getState().openingPage !== outlined) setState({ openingPage: outlined });
+  }, [outlined]);
+  useEffect(() => () => setState({ openingPage: false }), []);
+  // The page arriving takes the outline's place by a short fade, the outline lifting off the page underneath; with
+  // reduced motion, or when the wait ended any other way (a card, a problem), at once.
+  const [fadingOutline, setFadingOutline] = useState(false);
+  const wasOutlined = useRef(false);
+  // The render the page arrives in keeps the outline mounted (the same one, its sign included), before the effect
+  // below starts its fade: never a frame without it, nor a fresh copy of it.
+  const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const pageArriving = !outlined && wasOutlined.current && frameReady && !reduced;
+  useEffect(() => {
+    const was = wasOutlined.current;
+    wasOutlined.current = outlined;
+    if (outlined || !was || !frameReady || reduced) return setFadingOutline(false);
+    setFadingOutline(true);
+    const t = setTimeout(() => setFadingOutline(false), OUTLINE_FADE_MS);
+    return () => clearTimeout(t);
+  }, [outlined]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!snapshot) return <div className="canvas" />;
 
@@ -3259,12 +3280,11 @@ export function Canvas() {
           <PreviewStatus runtime={runtime} slow={slowWait} outlined={outlined} />
         </div>
       )}
-      {outlined && <CanvasSkeleton label={`Opening ${projectDisplayName(snapshot.state)}…`} />}
+      {(outlined || fadingOutline || pageArriving) && <CanvasSkeleton label={`Opening ${projectDisplayName(snapshot.state)}…`} leaving={!outlined} />}
       {/* Said in the strip above the page (see frame-status below), and here for screen readers. The project's first
-          page is part of its opening: said as the project opening, which an outline App showed first has said already
-          (this is mounted with the editor, already saying it, so it is not heard again). */}
+          page is part of its opening, which App announces. */}
       <p className="sr-only" role="status">
-        {outlined ? `Opening ${projectDisplayName(snapshot.state)}…` : opening ? `Opening ${view?.title ?? 'the page'}…` : ''}
+        {opening && !outlined ? `Opening ${view?.title ?? 'the page'}…` : ''}
       </p>
       <p className="sr-only" role="status">
         {announcement}
@@ -3466,7 +3486,8 @@ export function Canvas() {
         onMouseDown={(e) => e.target === e.currentTarget && setState({ selection: null })}
       >
         {url && initialSrc && (
-          <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: FRAME_LABEL, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
+          // Under the outline, the page loading is out of reach, to screen readers too, until it is the one shown.
+          <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} inert={outlined || undefined} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: FRAME_LABEL, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
             {/* The strip above the page: what the page is doing on the left, its screen size on the right. */}
             {opening && !outlined && !resizing && !templateMode && (
               <div className="frame-status" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
@@ -4193,6 +4214,8 @@ const FOOT_CLEAR = 8;
 const PASTEBOARD_PAD = 28;
 /** The frame's top margin, which holds the strip above the page (its label, the selection's chip), in screen pixels. */
 const FRAME_LABEL = 14;
+/** How long the outline of a project's first page takes to lift off the page once it has arrived (EditorSkeleton.css). */
+const OUTLINE_FADE_MS = 150;
 
 /** How far down the pasteboard starts under a collection layout's band (8px above it, 42px high), in screen pixels. */
 const TEMPLATE_BAND_ROOM = 50;
