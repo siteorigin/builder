@@ -531,6 +531,8 @@ export interface ExportResult {
   hosting?: string;
   /** The library image the export stopped for, so the author can open it in Assets. */
   assetId?: string;
+  /** A review build's base path (the site's subfolder, or ''), from the snapshot it was built from: where to serve it. */
+  basePath?: string;
 }
 
 /** An export the open project made since it was opened, so the author can find and compare what they handed off. */

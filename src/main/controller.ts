@@ -3794,7 +3794,7 @@ export class Controller {
     const problem = await timed('export.publish', () => this.publish(s, out, dest, format))();
     if (problem) return { ok: false, message: problem, warnings: warnings() };
     // A review build is put in place and nothing more: no address it holds was delivered to visitors.
-    if (opts.review) return { ok: true, path: dest, message: `Built ${exported} for review.`, warnings: warnings(), notes, revision };
+    if (opts.review) return { ok: true, path: dest, message: `Built ${exported} for review.`, warnings: warnings(), notes, revision, basePath: basePath(state) };
     // How the host shows the not-found page is guidance, not a warning: it goes beside the notes, never among them.
     const hosting = notFoundHostNote(basePath(state), redirectHost(live.site));
     const exportedAt = new Date().toISOString();

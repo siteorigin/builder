@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const env = vi.hoisted(() => ({ userData: '', builds: 0 }));
+const env = vi.hoisted(() => ({ userData: '', builds: 0, fail: false }));
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
   BrowserWindow: class {},
@@ -29,6 +29,7 @@ vi.mock('../../src/main/runtime/manager', async (original) => ({
   ...(await original<typeof import('../../src/main/runtime/manager')>()),
   buildProject: async (dir: string) => {
     env.builds++;
+    if (env.fail) return { ok: false, logs: ['Error: the build failed'] };
     const out = join(dir, 'build');
     if (existsSync(join(dir, 'static'))) cpSync(join(dir, 'static'), out, { recursive: true });
     for (const f of filesIn(join(dir, 'src/routes')).filter((f) => f.endsWith('+page.svelte'))) {
@@ -59,6 +60,7 @@ const temp = (name: string) => {
 beforeEach(() => {
   env.userData = temp('userdata');
   env.builds = 0;
+  env.fail = false;
 });
 afterEach(async () => {
   for (const c of controllers.splice(0)) await c.close();
@@ -89,8 +91,8 @@ const publication = (c: InstanceType<typeof Controller>) => {
 };
 
 /**
- * A bookshop exported once before Services was added, with an old address kept working, a saved version and an
- * edit in History: a website export now would record /services/.
+ * A bookshop whose record holds the addresses of its first three pages, with an old address kept working (a redirect),
+ * a saved version, and Services added since as an edit in History: a website export now would record /services/.
  */
 async function exportedBookshop() {
   const dir = temp('project');
@@ -114,9 +116,11 @@ describe('staging a review build', () => {
     expect(Object.keys(files)).toEqual(expect.arrayContaining([PUBLISHED_FILE]));
     expect(Object.keys(files).some((f) => f.startsWith('.siteorigin/versions/'))).toBe(true);
     const before = publication(c);
+    const noted = vi.spyOn(c as unknown as { notePublished: () => Promise<void> }, 'notePublished');
     const dest = join(temp('out'), 'review');
     const r = await c.stageReviewBuild(dest);
-    expect(r).toMatchObject({ ok: true, path: dest, revision: c.snapshot()!.revision });
+    expect(r).toMatchObject({ ok: true, path: dest, message: 'Built 4 pages for review.', revision: c.snapshot()!.revision, basePath: '' });
+    expect(noted).not.toHaveBeenCalled();
     expect(env.builds).toBe(1);
     const site = filesIn(dest);
     expect(site).toEqual(expect.arrayContaining(['index.html', 'about/index.html', 'services/index.html', 'team/index.html', '404.html']));
@@ -134,6 +138,19 @@ describe('staging a review build', () => {
     expect((await c.buildStaticTo(join(temp('out'), 'site'))).ok).toBe(true);
     expect(c.snapshot()!.state.published?.pages['/services/']).toBe('pg_services');
     expect(recordFiles(dir)[PUBLISHED_FILE]).not.toBe(files[PUBLISHED_FILE]);
+  });
+
+  it('leaves the records as they were when the build fails, and puts nothing in place', async () => {
+    const { c, dir } = await exportedBookshop();
+    const files = recordFiles(dir);
+    const before = publication(c);
+    env.fail = true;
+    const dest = join(temp('out'), 'review');
+    expect((await c.stageReviewBuild(dest)).ok).toBe(false);
+    expect(env.builds).toBe(1);
+    expect(existsSync(dest)).toBe(false);
+    expect(recordFiles(dir)).toEqual(files);
+    expect(publication(c)).toBe(before);
   });
 
   it('refuses a folder that exists or one inside the project, as the export does', async () => {
