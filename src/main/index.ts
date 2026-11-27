@@ -744,6 +744,7 @@ function registerIpc() {
   handle('project:compareConflict', (p: unknown) => (typeof p === 'string' ? controller.compareConflict(p) : { ok: false, message: 'That file is no longer in conflict.' }));
   handle('project:readSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.readSavedCopy(id) : { ok: false, message: 'That saved copy is no longer listed.' }));
   handle('project:dismissSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.dismissSavedCopy(id) : { ok: false, message: 'That saved copy is no longer listed.' }));
+  handle('project:restoreSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.restoreSavedCopy(id) : { ok: false, message: 'That saved copy can’t be put back on the list.' }));
   handle('project:unlock', () => controller.unlock());
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
   handle('project:validateSource', async (source: string) => {

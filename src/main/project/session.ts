@@ -599,6 +599,8 @@ export class ProjectSession extends EventEmitter {
   recoveryNotes: string[] = [];
   /** Copies of the versions the author chose against when settling conflicts, newest first (see SavedCopy). */
   savedCopies: SavedCopy[] = [];
+  /** Saved copies taken off the list in this opening of the project, by ID, so Undo can put one back as it was. */
+  private dismissedCopies = new Map<string, SavedCopy>();
   /** Set when the project is open for inspection only: nothing is ever written. */
   readOnly: ReadOnlyInfo | null = null;
   /** History retention: the oldest groups are pruned past this many bytes of history blobs (spec 18.4). */
@@ -1494,7 +1496,35 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, message: (e as Error).message };
       }
       await atomicWrite(safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SAVED_COPIES}`), toJson({ copies: listed.filter((c) => c.id !== id) }));
+      const gone = this.savedCopies.find((c) => c.id === id);
+      if (gone) this.dismissedCopies.set(id, gone);
       this.savedCopies = this.savedCopies.filter((c) => c.id !== id);
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Put a saved copy taken off the list in this opening back on it (Undo), newest first as the list is kept. Only an
+   * entry this opening took off is put back, and only while its file is still a plain file in the recovery folder.
+   */
+  restoreSavedCopy(id: string): Promise<{ ok: boolean; message?: string }> {
+    return this.serialize(async () => {
+      if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
+      if (this.savedCopies.some((c) => c.id === id)) return { ok: true };
+      const copy = this.dismissedCopies.get(id);
+      if (!copy) return { ok: false, message: 'That saved copy can’t be put back on the list.' };
+      const plain = copy.removed || (await (async () => (await fs.lstat(safeJoin(this.dir, copy.file))).isFile())().catch(() => false));
+      if (!plain) return { ok: false, message: 'That saved copy’s file is no longer in the recovery folder, so it wasn’t put back on the list.' };
+      let listed: SavedCopy[];
+      try {
+        listed = await this.loadSavedCopies({ forWrite: true });
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+      const newest = (a: SavedCopy, b: SavedCopy) => b.savedAt - a.savedAt;
+      await atomicWrite(safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SAVED_COPIES}`), toJson({ copies: [...listed.filter((c) => c.id !== id), copy].sort(newest) }));
+      this.savedCopies = [...this.savedCopies, copy].sort(newest);
+      this.dismissedCopies.delete(id);
       return { ok: true };
     });
   }

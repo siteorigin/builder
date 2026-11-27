@@ -101,6 +101,7 @@ const api: BuilderApi = {
     compareConflict: invoke('project:compareConflict'),
     readSavedCopy: invoke('project:readSavedCopy'),
     dismissSavedCopy: invoke('project:dismissSavedCopy'),
+    restoreSavedCopy: invoke('project:restoreSavedCopy'),
     unlock: invoke('project:unlock'),
     saveLocalState: invoke('project:saveLocalState'),
     validateSource: invoke('project:validateSource'),

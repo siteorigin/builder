@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
-import type { SourceSettingsDraft } from '@shared/api';
+import type { SavedCopy, SourceSettingsDraft } from '@shared/api';
 import { createStarterState, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
@@ -1078,6 +1078,15 @@ export class Controller {
     return r;
   }
 
+  /** Put a saved copy taken off the list back on it (Undo). */
+  async restoreSavedCopy(id: string): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'No project is open.' };
+    const r = await s.restoreSavedCopy(id);
+    if (r.ok && this.session === s) this.broadcast();
+    return r;
+  }
+
   /** Read the project documents from disk now, as the file watcher does (an edit was refused because its file changed). */
   async reloadFromDisk(): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
@@ -1091,9 +1100,16 @@ export class Controller {
    * Settle a file conflict: keep the version changed outside the app, restore SiteOrigin Builder's version, or (a
    * design's own file) convert the edited file into a code component, which needs Developer mode as all code does.
    */
-  async resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
+  async resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }): Promise<{ ok: boolean; message?: string; definitionId?: string; saved?: SavedCopy['side'][] }> {
     const s = this.session;
     if (!s) return { ok: false, message: 'No project is open.' };
+    // Which versions settling it kept under Saved copies, so the dialog says only what is there.
+    const listed = new Set(s.savedCopies.map((c) => c.id));
+    const r = await this.resolveConflictIn(s, path, choice, opts);
+    return r.ok ? { ...r, saved: s.savedCopies.filter((c) => !listed.has(c.id) && c.path === path).map((c) => c.side) } : r;
+  }
+
+  private async resolveConflictIn(s: ProjectSession, path: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish first.' };
     // Only an exact choice is acted on: a missing or mistyped one must never overwrite a file.
     if (typeof path !== 'string' || (choice !== 'keep' && choice !== 'restore' && choice !== 'convert')) return { ok: false, message: 'Choose which version to keep.' };
