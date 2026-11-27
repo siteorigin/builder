@@ -2,23 +2,26 @@ import { z } from 'zod';
 import type { BuilderApi } from '../api';
 import type { ElementRef } from '../types';
 import { validateOperation, type EditOperation, type OperationType, type ToolErrorCode } from '../ops';
-import { HOST_ONLY_PROPS, LIVE_BATCH_LABEL_MAX, type GuestRole } from './limits';
+import { HOST_ONLY_PROPS, LIVE_BATCH_LABEL_MAX, MAX_ID_LENGTH, MAX_VIEWPORT_WIDTH, MIN_VIEWPORT_WIDTH, type GuestRole } from './limits';
 import { canCall, LIVE_METHODS } from './roles';
 import { COPY_EDITOR_OPERATIONS, copyEditorOperationProblem } from './copy-editor';
-import type { Presence, RpcError, RpcErrorCode } from './messages';
+import { ELEMENT_REF, type Presence, type RpcError, type RpcErrorCode } from './messages';
+import { LIVE_AI_LABEL_MAX, LIVE_AI_TEXT_MAX, type LiveAiContext } from './ai';
 
 /**
  * What each guest role may do, checked by the host before anything runs: deny by default. Only the methods and
  * operations listed here are ever allowed; a method or operation added to the app later stays refused for guests
  * until it is listed. Everything the host alone may do (opening, closing, exporting or revealing projects, file
- * dialogs, settings, API keys, AI, source code, versions, conflicts and history) appears in no list.
+ * dialogs, settings, API keys, the AI's setup and conversations, source code, versions, conflicts and history)
+ * appears in no list. A collaborator's own AI requests (`ai.send`, and `ai.stop` and `ai.answer` for its own request)
+ * are listed, and the host answers them only for a collaborator it has allowed AI editing (#769).
  */
 
 export { canCall, COLLABORATOR_METHODS, COPY_EDITOR_METHODS, LIVE_METHODS, VIEWER_METHODS, type LiveMethod } from './roles';
 export { HOST_ONLY_PROPS, LIVE_BATCH_LABEL_MAX };
 
 // Every method a guest may call is one the app's API has.
-type ProjectMethod = `project.${keyof BuilderApi['project'] & string}`;
+type ProjectMethod = `project.${keyof BuilderApi['project'] & string}` | `ai.${keyof BuilderApi['ai'] & string}`;
 const _methodsExist: readonly ProjectMethod[] = LIVE_METHODS;
 void _methodsExist;
 
@@ -195,17 +198,78 @@ export function checkEditBatch(role: GuestRole, input: unknown): CapabilityResul
 }
 
 /** A remote call that passed every check, with its arguments as they will be used. */
-export type LiveCall = { method: 'project.snapshot'; args: [] } | { method: 'project.apply'; args: [LiveEditBatch] };
+export type LiveCall =
+  | { method: 'project.snapshot'; args: [] }
+  | { method: 'project.apply'; args: [LiveEditBatch] }
+  | { method: 'ai.send'; args: [string, LiveAiContext] }
+  | { method: 'ai.stop'; args: [string] }
+  | { method: 'ai.answer'; args: [string, string, string] };
+
+/** Text a person wrote, with something in it. */
+const words = (max: number) => z.string().max(max).refine((t) => t.trim().length > 0, { message: 'Must not be blank.' });
+const runRef = z.string().min(1).max(128);
+
+/**
+ * What a collaborator's AI request may be about: the page it shows, or one element selected there or in the shared
+ * header or footer. Nothing else a request can carry on the host (a component edited everywhere, a post, a layout, a
+ * model, a conversation, attached images) is accepted, so the host's AI is never pointed past what the guest edits.
+ */
+const AI_CONTEXT = z
+  .object({
+    scope: z.enum(['page', 'selection']),
+    pageId: z.string().min(1).max(MAX_ID_LENGTH),
+    selection: ELEMENT_REF.nullable(),
+    selectionLabel: z.string().max(LIVE_AI_LABEL_MAX).nullable().optional(),
+    viewport: z.number().int().min(MIN_VIEWPORT_WIDTH).max(MAX_VIEWPORT_WIDTH)
+  })
+  .strict()
+  .refine((c) => (c.scope === 'selection') === (c.selection !== null), { message: 'A selection request names its selection, and a page request none.', path: ['selection'] })
+  .refine((c) => !c.selection || c.selection.owner.kind === 'shell' || (c.selection.owner.kind === 'page' && c.selection.owner.id === c.pageId), {
+    message: 'The selection is on the page the request is about, or in the shared header or footer.',
+    path: ['selection']
+  });
+
+const AI_SEND = z.tuple([words(LIVE_AI_TEXT_MAX), AI_CONTEXT]);
+const AI_STOP = z.tuple([runRef]);
+const AI_ANSWER = z.tuple([runRef, runRef, words(LIVE_AI_TEXT_MAX)]);
+
+/** The first problem a parse found, as a guest is told it. */
+const issueOf = (method: string, error: z.ZodError) => {
+  const issue = error.issues[0];
+  return invalid(`${method}: ${issue.path.map(String).join('.') || 'arguments'}: ${issue.message}`);
+};
 
 /**
  * Check a guest's call before it runs: whether its role allows the method, then its arguments. A method takes exactly
- * the arguments named here, so nothing a guest adds (an opening, a history label key, a second options object)
- * reaches the host's API.
+ * the arguments named here, so nothing a guest adds (an opening, a history label key, a second options object, a
+ * model to send to) reaches the host's API. Whether the host lets this collaborator use its AI is the host's to check.
  */
 export function checkRpcRequest(role: GuestRole, method: string, args: readonly unknown[]): CapabilityResult<LiveCall> {
   if (!canCall(role, method)) return denied(`A ${role.replace('-', ' ')} cannot use ${method.slice(0, 80)}.`);
-  if (method === 'project.snapshot') return args.length === 0 ? { ok: true, value: { method, args: [] } } : invalid('project.snapshot takes no arguments.');
-  if (args.length !== 1) return invalid('project.apply takes one batch of edits.');
-  const batch = checkEditBatch(role, args[0]);
-  return batch.ok ? { ok: true, value: { method: 'project.apply', args: [batch.value] } } : batch;
+  switch (method) {
+    case 'project.snapshot':
+      return args.length === 0 ? { ok: true, value: { method, args: [] } } : invalid('project.snapshot takes no arguments.');
+    case 'project.apply': {
+      if (args.length !== 1) return invalid('project.apply takes one batch of edits.');
+      const batch = checkEditBatch(role, args[0]);
+      return batch.ok ? { ok: true, value: { method: 'project.apply', args: [batch.value] } } : batch;
+    }
+    case 'ai.send': {
+      const parsed = AI_SEND.safeParse(args);
+      if (!parsed.success) return issueOf(method, parsed.error);
+      const [text, ctx] = parsed.data;
+      const context: LiveAiContext = { scope: ctx.scope, pageId: ctx.pageId, selection: ctx.selection, viewport: ctx.viewport, ...(ctx.selectionLabel ? { selectionLabel: ctx.selectionLabel } : {}) };
+      return { ok: true, value: { method, args: [text.trim(), context] } };
+    }
+    case 'ai.stop': {
+      const parsed = AI_STOP.safeParse(args);
+      return parsed.success ? { ok: true, value: { method, args: parsed.data } } : issueOf(method, parsed.error);
+    }
+    case 'ai.answer': {
+      const parsed = AI_ANSWER.safeParse(args);
+      return parsed.success ? { ok: true, value: { method, args: [parsed.data[0], parsed.data[1], parsed.data[2].trim()] } } : issueOf(method, parsed.error);
+    }
+    default:
+      return denied('That is not something a guest can do.');
+  }
 }

@@ -13,6 +13,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LiveJoinRequest, LiveRun, RemoteState } from '../../src/shared/api';
+import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '../../src/agent/types';
 import type { LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { randomAddress, startRelay, wait, type Relay } from './relay-harness';
 
@@ -52,6 +53,8 @@ vi.mock('electron', () => ({
 const { Controller } = await import('../../src/main/controller');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { LiveGuestManager } = await import('../../src/main/live/guest');
+const { Orchestrator } = await import('../../src/agent/orchestrator');
+const { liveHostAi } = await import('../../src/main/live/host-ai');
 const { createStarterState } = await import('@catalogue/starters');
 const { sha } = await import('../../src/main/project/fsutil');
 
@@ -258,5 +261,129 @@ describe('the remote shell', () => {
     expect(await h.c.closeProject()).toEqual({ ok: true });
     await until(() => g.manager.state.phase === 'idle', 'the end');
     expect(g.manager.state).toMatchObject({ ended: { reason: 'ended', message: 'The host ended the live session.' } });
+  });
+});
+
+/** A model that answers with the turns a test gives it, each when the test lets it: no provider is ever called. */
+class ScriptedModel implements AgentModelAdapter {
+  requests: CanonicalModelRequest[] = [];
+  constructor(private turns: Array<(req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>>) {}
+  capabilities() {
+    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 } as ReturnType<AgentModelAdapter['capabilities']>;
+  }
+  async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+    this.requests.push(structuredClone(req));
+    const turn = this.turns.shift();
+    const events = turn ? await turn(req) : [{ type: 'done', stopReason: 'end', text: 'Done.', toolCalls: [] } as ModelEvent];
+    for (const ev of events) {
+      if (signal.aborted) return void (yield { type: 'error', code: 'cancelled', message: 'Canceled' });
+      yield ev;
+    }
+  }
+}
+
+/** The host's assistant, wired to its Controller and live session as the main process wires it (index.ts). */
+function hostAi(h: Awaited<ReturnType<typeof host>>, model: ScriptedModel) {
+  const orch = new Orchestrator({
+    session: () => h.c.session,
+    adapter: async () => ({ adapter: model, model: 'fake', provider: 'openai' }),
+    emit: (e) => {
+      h.c.send('ai:event', e);
+      h.c.live.aiEvent(e);
+    },
+    compileAll: async () => [],
+    inspectLayout: async () => ({ issues: [] }),
+    onBusyChange: () => undefined,
+    codeEnabled: async () => true
+  });
+  h.c.aiBusy = () => orch.editing;
+  h.c.live.ai = liveHostAi({
+    state: () => h.c.session?.state ?? null,
+    opening: () => h.c.openingKey,
+    send: (text, context, delegation) => orch.send(text, context, undefined, undefined, delegation),
+    stop: (runId) => orch.stopRun(runId),
+    answer: (runId, questionId, answer) => orch.answer(runId, questionId, answer)
+  });
+  cleanups.push(() => orch.close(1000));
+  return orch;
+}
+
+describe('a collaborator using the host’s AI (#769)', () => {
+  it('is off until the host allows it, then runs on the host, streams to the guest, and lands in the host’s History as the guest’s', async () => {
+    const h = await host();
+    const g = guest();
+    const guestId = await joined(h, g, 'collaborator');
+    const home = h.c.session!.state.site.homePageId;
+    const model = new ScriptedModel([
+      () => [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: 'c1', name: 'apply_operations', arguments: JSON.stringify({ expectedRevision: h.c.session!.revision, scope: { kind: 'page', targetIds: [home] }, operations: [{ type: 'page.update', pageId: home, title: 'Baked by AI' }] }) }] }],
+      () => [{ type: 'text', delta: `Renamed the page. Saved in ${h.dir}.` }, { type: 'done', stopReason: 'end', text: `Renamed the page. Saved in ${h.dir}.`, toolCalls: [] }]
+    ]);
+    const orch = hostAi(h, model);
+    const joinId = g.admitted().joinId;
+    const page = { scope: 'page', pageId: home, selection: null, viewport: 1280 };
+    // Off by default: the guest has no AI, the host's assistant is never asked.
+    expect(g.manager.ai(joinId)?.access).toEqual({ allowed: false, turnsLeft: null });
+    expect(await g.manager.aiSend(joinId, 'Rename the page', page)).toMatchObject({ ok: false });
+    expect(h.c.live.state).toMatchObject({ ai: { [guestId]: { allowed: false } } });
+
+    expect(h.c.live.setAi(h.run, guestId, { allowed: true, turnLimit: 3 })).toEqual({ ok: true });
+    await until(() => g.manager.ai(joinId)?.access.allowed, 'AI allowed at the guest');
+    expect(g.manager.ai(joinId)?.access).toEqual({ allowed: true, turnsLeft: 3 });
+    const sent = await g.manager.aiSend(joinId, 'Rename the page', page);
+    if (!sent.ok) throw new Error(sent.message);
+    const done = await until(() => g.manager.ai(joinId)?.turns.find((t) => t.runId === sent.runId && t.result), 'the request’s end at the guest');
+    expect(done).toMatchObject({ request: 'Rename the page', result: { status: 'completed' } });
+    expect(done.reply).toContain('Renamed the page.');
+    // Nothing of the host's computer, nor its model, reaches the guest.
+    const seen = JSON.stringify(g.manager.ai(joinId));
+    expect(seen).not.toContain(h.dir);
+    expect(seen).not.toContain('fake');
+    // On the host: the change, a History step naming the guest, and the turn in its own conversation, which the
+    // host's window followed as it ran.
+    expect(h.c.session!.state.pages[home].title).toBe('Baked by AI');
+    expect(h.c.snapshot()!.history.entries.at(-1)).toMatchObject({ source: 'ai', guestName: 'Sarah', runId: sent.runId });
+    expect(orch.conversation!.messages.slice(-2).map((m) => m.guest?.name)).toEqual(['Sarah', 'Sarah']);
+    expect(h.sent.some(([ch, e]) => ch === 'ai:event' && (e as { runId: string }).runId === sent.runId)).toBe(true);
+    expect(g.manager.ai(joinId)?.access).toEqual({ allowed: true, turnsLeft: 2 });
+    // The host takes it back from its own window.
+    expect(await orch.undoTurn(sent.runId)).toEqual({ ok: true });
+    expect(h.c.session!.state.pages[home].title).not.toBe('Baked by AI');
+  });
+
+  it('stops the guest’s request at once when the host turns its AI off, and refuses the next', async () => {
+    const h = await host();
+    const g = guest();
+    const guestId = await joined(h, g, 'collaborator');
+    const home = h.c.session!.state.site.homePageId;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    // Its first change lands, and the host turns its AI off while it works on the next.
+    const model = new ScriptedModel([
+      () => [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: 'c1', name: 'apply_operations', arguments: JSON.stringify({ expectedRevision: h.c.session!.revision, scope: { kind: 'page', targetIds: [home] }, operations: [{ type: 'page.update', pageId: home, title: 'Landed for now' }] }) }] }],
+      async () => {
+        await held;
+        return [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: 'c2', name: 'apply_operations', arguments: JSON.stringify({ expectedRevision: h.c.session!.revision, scope: { kind: 'page', targetIds: [home] }, operations: [{ type: 'page.update', pageId: home, title: 'Should not land' }] }) }] }];
+      }
+    ]);
+    const orch = hostAi(h, model);
+    const joinId = g.admitted().joinId;
+    expect(h.c.live.setAi(h.run, guestId, { allowed: true, turnLimit: null })).toEqual({ ok: true });
+    await until(() => g.manager.ai(joinId)?.access.allowed, 'AI allowed at the guest');
+    const title = h.c.session!.state.pages[home].title;
+    const steps = h.c.snapshot()!.history.entries.length;
+    const sent = await g.manager.aiSend(joinId, 'Rename the page', { scope: 'page', pageId: home, selection: null, viewport: 1280 });
+    if (!sent.ok) throw new Error(sent.message);
+    await until(() => model.requests.length === 2, 'the model asked again');
+    expect(h.c.session!.state.pages[home].title).toBe('Landed for now');
+    expect(h.c.live.setAi(h.run, guestId, { allowed: false, turnLimit: null })).toEqual({ ok: true });
+    release();
+    await until(() => !orch.busy, 'the request stopped on the host');
+    // What it had changed is taken back, and it leaves no step in History.
+    expect(h.c.session!.state.pages[home].title).toBe(title);
+    expect(h.c.snapshot()!.history.entries).toHaveLength(steps);
+    await until(() => !g.manager.ai(joinId)?.access.allowed, 'AI taken away at the guest');
+    expect(g.manager.ai(joinId)).toMatchObject({ activeRunId: null, turns: [{ runId: sent.runId, result: { status: 'cancelled', summary: 'The host turned off AI editing for you, so this request was stopped.' } }] });
+    expect(await g.manager.aiSend(joinId, 'Again', { scope: 'page', pageId: home, selection: null, viewport: 1280 })).toMatchObject({ ok: false });
+    expect(model.requests).toHaveLength(2);
   });
 });

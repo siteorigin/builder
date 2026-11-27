@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { LiveHostState, LiveJoinRequest, LivePresence, LiveRun } from '../../src/shared/api';
+import type { AiEvent, ChatMessage, LiveHostState, LiveJoinRequest, LivePresence, LiveRun } from '../../src/shared/api';
+import type { RunDelegation } from '../../src/agent/orchestrator';
+import type { LiveAiContext } from '../../src/shared/live/ai';
 import { LIVE_CLOSE_CODES } from '../../src/shared/live/close-codes';
 import { newNonce, newRoomId, verifyHostChallenge } from '../../src/shared/live/crypto';
 import type { GuestRole } from '../../src/shared/live/limits';
@@ -62,7 +64,7 @@ afterEach(async () => {
   }
 });
 
-function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<ResolvedRelayUrl>; preview?: { port: number } | null; publishing?: () => boolean } & Pick<LiveHostContext, 'guestSnapshot' | 'applyGuest'> = {}) {
+function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<ResolvedRelayUrl>; preview?: { port: number } | null; publishing?: () => boolean } & Pick<LiveHostContext, 'guestSnapshot' | 'applyGuest' | 'hostPaths'> = {}) {
   const sockets: FakeSocket[] = [];
   const states: LiveHostState[] = [];
   const requests: LiveJoinRequest[] = [];
@@ -75,6 +77,7 @@ function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<
       publishing: opts.publishing,
       guestSnapshot: opts.guestSnapshot,
       applyGuest: opts.applyGuest,
+      hostPaths: opts.hostPaths,
       emit: (channel, payload) =>
         void (channel === 'live:state' ? states.push(payload as LiveHostState) : channel === 'live:presence' ? presence.push(payload as LivePresence) : requests.push(payload as LiveJoinRequest))
     },
@@ -546,7 +549,7 @@ const HERE: Presence = { pageId: 'pg_home', viewportWidth: 1280, selection: null
  * A host whose editor answers guests: a snapshot (the same object until `env.snapshot` is replaced), and edits that
  * are held until the test lets each one go, as a busy write queue would hold them, then checked as the editor checks.
  */
-function editor(opts: { timings?: Partial<LiveHostTimings> } = {}) {
+function editor(opts: { timings?: Partial<LiveHostTimings> } & Pick<LiveHostContext, 'hostPaths'> = {}) {
   const env = { snapshot: SNAPSHOT as LiveProjectSnapshot | null };
   const edits: Array<{ guest: LiveGuestEdit; batch: unknown; release: () => void; result: Promise<LiveApplyResult> }> = [];
   const h = host({
@@ -1155,5 +1158,370 @@ describe('spotlights, edits and connections in the editor (#768)', () => {
     expect(editTarget({ operations: [op(home, 'n'.repeat(129))] })).toBeNull();
     expect(editTarget({ operations: [] })).toBeNull();
     expect(editTarget(null)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The host's AI for collaborators (#769)
+
+/**
+ * A host whose AI takes collaborators' requests the way the app's does: each request waits until the test starts it,
+ * which asks the delegation whether it may still run, as the assistant asks just before installing the run.
+ */
+function withAi(h: ReturnType<typeof editor>) {
+  const sends: Array<{ opening: string; text: string; context: LiveAiContext; delegation: RunDelegation; start: (runId?: string) => string | null }> = [];
+  const stops: string[] = [];
+  const answers: Array<[string, string, string]> = [];
+  h.manager.ai = {
+    send: (opening, text, context, delegation) =>
+      new Promise((resolve) => {
+        sends.push({
+          opening,
+          text,
+          context,
+          delegation,
+          start: (runId = `run-${sends.length}`) => {
+            const refused = delegation.accept(runId);
+            resolve(refused ? { ok: false, message: refused } : { ok: true, runId });
+            return refused;
+          }
+        });
+      }),
+    stop: async (runId) => void stops.push(runId),
+    answer: (runId, questionId, answer) => (answers.push([runId, questionId, answer]), true)
+  };
+  return { sends, stops, answers };
+}
+
+const PAGE_REQUEST: LiveAiContext = { scope: 'page', pageId: 'pg_home', selection: null, viewport: 1280 };
+const aiCall = (socket: FakeSocket, requestId: string, method: 'ai.send' | 'ai.stop' | 'ai.answer', args: unknown[], guestId = 'g1') => socket.receive({ type: 'rpc:request', guestId, requestId, method, args });
+const aiEvents = (socket: FakeSocket, event: 'ai:access' | 'ai:turn') => socket.sent.filter((f) => f.type === 'rpc:event' && f.event === event) as Array<Extract<FrameOf<'host-to-relay'>, { type: 'rpc:event' }>>;
+const userMessage = (runId: string, text: string): ChatMessage => ({ id: `u-${runId}`, role: 'user', text, time: '', runId });
+const reply = (runId: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ id: `a-${runId}`, role: 'assistant', text, time: '', runId, activities: [], ...extra });
+const event = (runId: string, e: Omit<AiEvent, 'runId' | 'conversationId'>): AiEvent => ({ runId, conversationId: 'conv-1', ...e });
+
+/** Ann in as a collaborator, AI allowed (with `turnLimit`), and one request of hers asked for and started. */
+async function running(opts: { turnLimit?: number | null; hostPaths?: string[] } = {}) {
+  const h = editor({ hostPaths: opts.hostPaths ? () => opts.hostPaths! : undefined });
+  const ai = withAi(h);
+  const o = await letIn(h);
+  expect(h.manager.setAi(o.run, 'g1', { allowed: true, turnLimit: opts.turnLimit ?? null })).toEqual({ ok: true });
+  aiCall(o.socket, 's1', 'ai.send', ['Make the heading bigger', PAGE_REQUEST]);
+  const sent = await until(() => ai.sends[0], 'the request');
+  expect(sent.start('run-1')).toBeNull();
+  expect(await answerTo(o.socket, 's1')).toMatchObject({ ok: true, result: { runId: 'run-1' } });
+  return { h, ai, ...o, sent };
+}
+
+describe('the host’s AI for collaborators (#769)', () => {
+  it('refuses a collaborator’s AI requests until the host allows them, and never asks the AI', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket } = await letIn(h);
+    expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: false, turnLimit: null, turnsUsed: 0 } } });
+    aiCall(socket, 'q1', 'ai.send', ['Make the heading bigger', PAGE_REQUEST]);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    aiCall(socket, 'q2', 'ai.stop', ['run-1']);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(ai.sends).toEqual([]);
+    // Nobody but a collaborator is ever allowed, nor anyone at all while this computer has no AI to offer.
+    const v = editor();
+    withAi(v);
+    const viewer = await letIn(v, 'viewer');
+    expect(v.manager.setAi(viewer.run, 'g1', { allowed: true, turnLimit: null })).toMatchObject({ ok: false });
+    const none = editor();
+    const alone = await letIn(none);
+    expect(none.manager.setAi(alone.run, 'g1', { allowed: true, turnLimit: null })).toMatchObject({ ok: false });
+    // A limit that is not a number of requests is refused, whoever it is for.
+    for (const turnLimit of [-1, 1.5, 101, '3']) expect(h.manager.setAi((h.manager.state as LiveRun & object) as LiveRun, 'g1', { allowed: true, turnLimit })).toMatchObject({ ok: false });
+  });
+
+  it('runs an allowed collaborator’s request in the host’s AI, tells only that guest, and counts it against its limit', async () => {
+    const { h, socket, run, sent } = await running({ turnLimit: 2 });
+    expect(sent).toMatchObject({ opening: '/sites/acme#1', text: 'Make the heading bigger', context: PAGE_REQUEST, delegation: { guestName: 'Ann' } });
+    // Told when it was turned on, and again once its request was taken.
+    expect(aiEvents(socket, 'ai:access').map((f) => [f.guestId, f.payload])).toEqual([
+      ['g1', { allowed: true, turnsLeft: 2 }],
+      ['g1', { allowed: true, turnsLeft: 1 }]
+    ]);
+    expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: true, turnLimit: 2, turnsUsed: 1 } } });
+    expect(sent.delegation.check()).toBeNull();
+    // Another admission of the same guest would hear another conversation.
+    expect(sent.delegation.grantId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(run).toBeTruthy();
+  });
+
+  it('streams the guest’s own request to it alone, made safe to share, and nothing of anyone else’s', async () => {
+    const { h, socket } = await running({ hostPaths: ['/Users/host/site', '/Volumes/Private Work/Acme', '/Volumes', '/Volumes/Private Work/Acme/Secret Plans'] });
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: userMessage('run-1', 'Make the heading bigger') }));
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', '') }));
+    h.manager.aiEvent(event('run-1', { kind: 'status', status: 'running', mode: 'edit' }));
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'Reading /Users/host/site/pages ' }));
+    // A path part way written is held back until it can be taken out whole.
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'and /Users/host/si', at: 31 }));
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'te/x now', at: 49 }));
+    // A path with a space in it is held back whole too, however the pieces fall.
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: '. Saved in /Volumes/Private ', at: 57 }));
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'Work/Acme today.', at: 85 }));
+    // The host's own request, run after or beside it, is never the guest's to see.
+    h.manager.aiEvent(event('run-host', { kind: 'message', message: reply('run-host', 'Host secret') }));
+    const turns = aiEvents(socket, 'ai:turn');
+    expect(turns.every((f) => f.guestId === 'g1')).toBe(true);
+    const payloads = turns.map((f) => f.payload as { kind: string; turn?: { reply: string; status: string | null; request: string }; text?: string; at?: number });
+    expect(payloads[0]).toMatchObject({ kind: 'turn', turn: { request: 'Make the heading bigger', reply: '', status: null } });
+    expect(payloads.slice(-4)).toEqual([
+      { kind: 'text', runId: 'run-1', at: 'Reading …/pages '.length, text: 'and ' },
+      { kind: 'text', runId: 'run-1', at: 'Reading …/pages and '.length, text: '…/x now' },
+      { kind: 'text', runId: 'run-1', at: 'Reading …/pages and …/x now'.length, text: '. Saved in ' },
+      { kind: 'text', runId: 'run-1', at: 'Reading …/pages and …/x now. Saved in '.length, text: '… today.' }
+    ]);
+    expect(JSON.stringify(payloads)).not.toContain('/Users/host');
+    expect(JSON.stringify(payloads)).not.toContain('Private');
+    // A longer path written over a shorter one is held back whole, and an address on the host's network never goes.
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: ' See /Volumes/Private Work/Acme/Secret ', at: 101 }));
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'Plans and http://192.168.1.9:1234/v1 ', at: 140 }));
+    const later = JSON.stringify(aiEvents(socket, 'ai:turn').map((f) => f.payload));
+    expect(later).not.toContain('Secret');
+    expect(later).not.toContain('192.168');
+    expect(JSON.stringify(payloads)).not.toContain('Host secret');
+    // Its end, with how it went, and nothing of it after: it can no longer be stopped or answered.
+    h.manager.aiEvent(event('run-1', { kind: 'status', status: 'completed', mode: 'edit' }));
+    // A reply that ends part way through a path has that end taken out.
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Done at /Users/host/site. Copied to /Volumes/Priv', { result: { status: 'completed', summary: 'Made it bigger.', changes: [{ label: 'Heading size', operations: ['node.setStyle'] }], validation: [], canUndo: true } }) }));
+    const last = aiEvents(socket, 'ai:turn').at(-1)!.payload;
+    expect(last).toMatchObject({ kind: 'turn', turn: { reply: 'Done at …. Copied to …', result: { status: 'completed', summary: 'Made it bigger.', changes: ['Heading size'] } } });
+    expect(JSON.stringify(last)).not.toContain('node.setStyle');
+    const count = aiEvents(socket, 'ai:turn').length;
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'late' }));
+    expect(aiEvents(socket, 'ai:turn')).toHaveLength(count);
+    aiCall(socket, 'q9', 'ai.stop', ['run-1']);
+    expect(await answerTo(socket, 'q9')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+  });
+
+  it('tells a guest coming back how its request stands, and ends it when the host loses the relay', async () => {
+    const { h, socket, ai, roomId } = await running({ hostPaths: ['/Users/host/site'] });
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: userMessage('run-1', 'Make the heading bigger') }));
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Which heading? ', { questions: [{ id: 'q1', text: 'Which one?', choices: ['Top', 'Bottom'] }] }) }));
+    // The guest asks for the project on coming back: it is told its access and its request again, question and all.
+    const before = aiEvents(socket, 'ai:turn').length;
+    call(socket, 'q1', 'project.snapshot');
+    await answerTo(socket, 'q1');
+    expect(aiEvents(socket, 'ai:turn').slice(before).map((f) => f.payload)).toEqual([{ kind: 'turn', turn: expect.objectContaining({ runId: 'run-1', question: { id: 'q1', text: 'Which one?', choices: ['Top', 'Bottom'] }, result: null }) }]);
+    // The relay drops: the host cannot hear whether the guest is still there, so its request is stopped.
+    socket.drop(1006);
+    expect(ai.stops).toEqual(['run-1']);
+    const next = await until(() => h.sockets[1], 'the reconnect socket');
+    next.open();
+    next.receive({ type: 'host:challenge', roomId, nonce: newNonce() });
+    await until(() => sentOf(next, 'host:proof'), 'the proof');
+    next.receive(ready(roomId));
+    next.receive(roster('collaborator'));
+    // Taken back, the guest is told its request ended, and why, and that it may ask again.
+    await until(() => aiEvents(next, 'ai:turn').length, 'the ending sent again');
+    expect(aiEvents(next, 'ai:turn').at(-1)!.payload).toMatchObject({ kind: 'turn', turn: { runId: 'run-1', question: null, result: { status: 'cancelled', summary: expect.stringContaining('connection') } } });
+    expect(aiEvents(next, 'ai:access').at(-1)!.payload).toEqual({ allowed: true, turnsLeft: null });
+  });
+
+  it('never starts a request whose acceptance finds the connection gone, nor one asked for on a connection let go', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket, run, roomId } = await letIn(h);
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: null })).toEqual({ ok: true });
+    aiCall(socket, 'q1', 'ai.send', ['One', PAGE_REQUEST]);
+    const first = await until(() => ai.sends[0], 'the request');
+    // Telling the guest its access gives the connection up (it has stopped moving).
+    socket.bufferedAmount = MAX_SOCKET_BACKLOG_BYTES + 1;
+    expect(first.start('run-1')).not.toBeNull();
+    expect(h.manager.state).toMatchObject({ ai: { g1: { turnsUsed: 0 } } });
+    // A request that never started never shows as one, stopped or otherwise.
+    expect(aiEvents(socket, 'ai:turn')).toEqual([]);
+    // A request asked for before the drop and accepted once the room is taken back never runs either.
+    const next = await until(() => h.sockets[1], 'the reconnect socket');
+    next.open();
+    next.receive({ type: 'host:challenge', roomId, nonce: newNonce() });
+    await until(() => sentOf(next, 'host:proof'), 'the proof');
+    next.receive(ready(roomId));
+    next.receive(roster('collaborator'));
+    aiCall(next, 'q2', 'ai.send', ['Two', PAGE_REQUEST]);
+    const second = await until(() => ai.sends[1], 'the second request');
+    expect(second.start('run-2')).toBeNull();
+    expect(h.manager.state).toMatchObject({ ai: { g1: { turnsUsed: 1 } } });
+  });
+
+  it('tells a guest how a request it lost access to really ended, when it was more than a stop', async () => {
+    const { h, socket, run } = await running();
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', '') }));
+    // A bare ending is never sent ahead of the message that says what the request did.
+    const before = aiEvents(socket, 'ai:turn').length;
+    h.manager.aiEvent(event('run-1', { kind: 'status', status: 'completed', mode: 'edit' }));
+    expect(aiEvents(socket, 'ai:turn')).toHaveLength(before);
+    // Taken away as it finished: the guest is told it stopped, then that its changes were in fact kept.
+    expect(h.manager.setAi(run, 'g1', { allowed: false, turnLimit: null })).toEqual({ ok: true });
+    expect(aiEvents(socket, 'ai:turn').at(-1)!.payload).toMatchObject({ turn: { result: { status: 'cancelled' } } });
+    h.manager.aiEvent(event('run-1', { kind: 'text', text: 'progress after the stop' }));
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Done.', { result: { status: 'completed', summary: 'Done.', changes: [{ label: 'Heading' }], validation: [], canUndo: true } }) }));
+    const turns = aiEvents(socket, 'ai:turn').map((f) => f.payload);
+    expect(JSON.stringify(turns)).not.toContain('progress after the stop');
+    expect(turns.at(-1)).toMatchObject({ kind: 'turn', turn: { runId: 'run-1', result: { status: 'completed', changes: ['Heading'] } } });
+    // A stop that was only a stop keeps the reason the guest was given.
+    const again = await running();
+    expect(again.h.manager.setRole(again.run, 'g1', 'viewer')).toEqual({ ok: true });
+    const told = aiEvents(again.socket, 'ai:turn').length;
+    again.h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Stopped.', { result: { status: 'cancelled', summary: 'Stopped.', changes: [], validation: [], canUndo: false } }) }));
+    expect(aiEvents(again.socket, 'ai:turn')).toHaveLength(told);
+  });
+
+  it('keeps a request’s real ending when the connection gives way as it is sent', async () => {
+    const { h, socket, roomId } = await running();
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', '') }));
+    socket.bufferedAmount = MAX_SOCKET_BACKLOG_BYTES + 1;
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Done.', { result: { status: 'completed', summary: 'Done.', changes: [{ label: 'Heading' }], validation: [], canUndo: true } }) }));
+    const next = await until(() => h.sockets[1], 'the reconnect socket');
+    next.open();
+    next.receive({ type: 'host:challenge', roomId, nonce: newNonce() });
+    await until(() => sentOf(next, 'host:proof'), 'the proof');
+    next.receive(ready(roomId));
+    next.receive(roster('collaborator'));
+    await until(() => aiEvents(next, 'ai:turn').length, 'the ending sent again');
+    expect(aiEvents(next, 'ai:turn').at(-1)!.payload).toMatchObject({ kind: 'turn', turn: { runId: 'run-1', result: { status: 'completed', changes: ['Heading'] } } });
+  });
+
+  it('never lets a guest start a request while the host is away from the relay', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket, run } = await letIn(h);
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: null })).toEqual({ ok: true });
+    aiCall(socket, 'q1', 'ai.send', ['Make the heading bigger', PAGE_REQUEST]);
+    const late = await until(() => ai.sends[0], 'the request');
+    socket.drop(1006);
+    expect(late.start('run-1')).not.toBeNull();
+    expect(h.manager.state).toMatchObject({ ai: { g1: { turnsUsed: 0 } } });
+  });
+
+  it('lets a guest stop or answer only its own request while it runs', async () => {
+    const { socket, ai } = await running();
+    aiCall(socket, 'q1', 'ai.stop', ['run-host']);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    aiCall(socket, 'q2', 'ai.answer', ['run-host', 'qn', 'Yes']);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    aiCall(socket, 'q3', 'ai.answer', ['run-1', 'qn', 'Yes']);
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: true, result: true });
+    expect(ai.answers).toEqual([['run-1', 'qn', 'Yes']]);
+    aiCall(socket, 'q4', 'ai.stop', ['run-1']);
+    expect(await answerTo(socket, 'q4')).toMatchObject({ ok: true });
+    expect(ai.stops).toEqual(['run-1']);
+  });
+
+  for (const how of ['AI turned off', 'made a viewer', 'removed', 'gone from the room'] as const)
+    it(`stops the guest’s request and refuses the next when it is ${how}`, async () => {
+      const { h, socket, run, ai, sent } = await running();
+      const before = aiEvents(socket, 'ai:turn').length;
+      if (how === 'AI turned off') expect(h.manager.setAi(run, 'g1', { allowed: false, turnLimit: null })).toEqual({ ok: true });
+      else if (how === 'made a viewer') expect(h.manager.setRole(run, 'g1', 'viewer')).toEqual({ ok: true });
+      else if (how === 'removed') expect(h.manager.kick(run, 'g1')).toEqual({ ok: true });
+      else socket.receive({ type: 'room:roster', participants: [] });
+      expect(ai.stops).toEqual(['run-1']);
+      // The guest is told its request ended, and why, never that its changes were taken back; nothing more of it
+      // reaches the guest, and nothing more it does lands.
+      expect(aiEvents(socket, 'ai:turn')).toHaveLength(before + 1);
+      expect(aiEvents(socket, 'ai:turn').at(-1)!.payload).toMatchObject({ kind: 'turn', turn: { runId: 'run-1', result: { status: 'cancelled', summary: expect.stringMatching(/stopped\.$/) } } });
+      h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Still going') }));
+      expect(aiEvents(socket, 'ai:turn')).toHaveLength(before + 1);
+      expect(sent.delegation.check()).not.toBeNull();
+      if (how === 'AI turned off' || how === 'made a viewer') expect(aiEvents(socket, 'ai:access').at(-1)!.payload).toEqual({ allowed: false, turnsLeft: null });
+      aiCall(socket, 'q2', 'ai.send', ['Again', PAGE_REQUEST]);
+      expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+      expect(ai.sends).toHaveLength(1);
+      if (how === 'gone from the room') expect(h.manager.state).not.toHaveProperty('ai.g1');
+      // AI given back after being turned off starts from the requests already made.
+      if (how === 'AI turned off') {
+        expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 1 })).toEqual({ ok: true });
+        expect(aiEvents(socket, 'ai:access').at(-1)!.payload).toEqual({ allowed: true, turnsLeft: 0 });
+      }
+      // A collaborator again has no AI until the host turns it on again.
+      if (how === 'made a viewer') {
+        expect(h.manager.setRole(run, 'g1', 'collaborator')).toEqual({ ok: true });
+        socket.receive(roster('collaborator'));
+        expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: false } } });
+      }
+    });
+
+  it('never lets one guest stop or answer another’s request', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const o = await opened(h, [
+      { guestId: 'g1', displayName: 'Ann', status: 'pending' },
+      { guestId: 'g2', displayName: 'Bo', status: 'pending' }
+    ]);
+    expect(h.manager.admit(o.run, 'g1', 'collaborator')).toEqual({ ok: true });
+    expect(h.manager.admit(o.run, 'g2', 'collaborator')).toEqual({ ok: true });
+    o.socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'collaborator'), admittedAs('g2', 'Bo', 'collaborator')] });
+    for (const id of ['g1', 'g2']) expect(h.manager.setAi(o.run, id, { allowed: true, turnLimit: null })).toEqual({ ok: true });
+    aiCall(o.socket, 's1', 'ai.send', ['Bigger', PAGE_REQUEST]);
+    (await until(() => ai.sends[0], 'Ann’s request')).start('run-1');
+    expect(await answerTo(o.socket, 's1')).toMatchObject({ ok: true });
+    aiCall(o.socket, 'q1', 'ai.stop', ['run-1'], 'g2');
+    expect(await answerTo(o.socket, 'q1')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    aiCall(o.socket, 'q2', 'ai.answer', ['run-1', 'qn', 'Yes'], 'g2');
+    expect(await answerTo(o.socket, 'q2')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(ai.stops).toEqual([]);
+    expect(ai.answers).toEqual([]);
+    // Each admission hears its own turns alone.
+    expect(ai.sends[0].delegation.grantId).not.toBe((h.manager as unknown as { run: { grants: Map<string, { id: string }> } }).run.grants.get('g2')!.id);
+    // Turning one guest's AI off leaves the other's as it was.
+    expect(h.manager.setRole(o.run, 'g2', 'viewer')).toEqual({ ok: true });
+    expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: true }, g2: { allowed: false } } });
+    expect(ai.stops).toEqual([]);
+  });
+
+  it('never runs a request asked for before AI was taken away, even once it is given back, and spends nothing on it', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket, run } = await letIn(h);
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 1 })).toEqual({ ok: true });
+    aiCall(socket, 'q1', 'ai.send', ['Make the heading bigger', PAGE_REQUEST]);
+    const late = await until(() => ai.sends[0], 'the request');
+    // While the assistant reads the conversation, the host takes AI away and gives it back.
+    expect(h.manager.setAi(run, 'g1', { allowed: false, turnLimit: 1 })).toEqual({ ok: true });
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 1 })).toEqual({ ok: true });
+    expect(late.start('run-1')).not.toBeNull();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(h.manager.state).toMatchObject({ ai: { g1: { allowed: true, turnsUsed: 0 } } });
+    // No request of hers is running, so no event of the run that did start instead reaches her.
+    h.manager.aiEvent(event('run-1', { kind: 'message', message: reply('run-1', 'Host run') }));
+    expect(aiEvents(socket, 'ai:turn')).toEqual([]);
+    // Refused, it is no longer on its way: her next request reaches the AI.
+    aiCall(socket, 'q2', 'ai.send', ['Again', PAGE_REQUEST]);
+    await until(() => ai.sends[1], 'the next request');
+    // And a limit lowered to none while it is on its way keeps it from running, spending nothing.
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 0 })).toEqual({ ok: true });
+    expect(ai.sends[1].start('run-2')).not.toBeNull();
+    expect(h.manager.state).toMatchObject({ ai: { g1: { turnsUsed: 0 } } });
+  });
+
+  it('holds a guest to its limit on requests, and to one on its way at a time', async () => {
+    const h = editor();
+    const ai = withAi(h);
+    const { socket, run } = await letIn(h);
+    expect(h.manager.setAi(run, 'g1', { allowed: true, turnLimit: 1 })).toEqual({ ok: true });
+    aiCall(socket, 'q1', 'ai.send', ['One', PAGE_REQUEST]);
+    aiCall(socket, 'q2', 'ai.send', ['Two', PAGE_REQUEST]);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'BUSY' } });
+    (await until(() => ai.sends[0], 'the request')).start('run-1');
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: true });
+    expect(aiEvents(socket, 'ai:access').at(-1)!.payload).toEqual({ allowed: true, turnsLeft: 0 });
+    aiCall(socket, 'q3', 'ai.send', ['Three', PAGE_REQUEST]);
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(ai.sends).toHaveLength(1);
+    // Its request still running can be stopped once the limit is spent.
+    aiCall(socket, 'q4', 'ai.stop', ['run-1']);
+    expect(await answerTo(socket, 'q4')).toMatchObject({ ok: true });
+  });
+
+  it('stops the guest’s request when the session ends', async () => {
+    const { h, ai } = await running();
+    (h.manager as unknown as { timings: LiveHostTimings }).timings.stopMs = 20;
+    await h.manager.end();
+    expect(ai.stops).toEqual(['run-1']);
   });
 });

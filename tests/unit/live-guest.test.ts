@@ -5,7 +5,7 @@
  * every way a session can end, leaving nothing running.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RemoteState } from '../../src/shared/api';
+import type { RemoteAi, RemoteState } from '../../src/shared/api';
 import { LIVE_CLOSE_CODES } from '../../src/shared/live/close-codes';
 import type { GuestRole } from '../../src/shared/live/limits';
 import type { LiveProjectSnapshot } from '../../src/shared/live/snapshot';
@@ -68,6 +68,7 @@ function guest(timings: Partial<LiveGuestTimings> = {}) {
   const changed: Array<{ joinId: string; snapshot: LiveProjectSnapshot }> = [];
   const reloads: Array<{ joinId: string; revision: number | null }> = [];
   const presence: unknown[] = [];
+  const ai: RemoteAi[] = [];
   const redeemed: Array<{ origin: string; ticket: string }> = [];
   const preview = { started: 0, closed: 0, targets: [] as unknown[] };
   let redeemAnswer: (ticket: string) => Promise<{ ok: true; cookie: string } | { ok: false; message: string }> = async (ticket) => ({ ok: true, cookie: `so_preview=${ticket}` });
@@ -78,6 +79,7 @@ function guest(timings: Partial<LiveGuestTimings> = {}) {
         if (channel === 'remote:changed') changed.push(payload as never);
         if (channel === 'remote:reload') reloads.push(payload as never);
         if (channel === 'remote:presence') presence.push(payload);
+        if (channel === 'remote:ai') ai.push(payload as RemoteAi);
       }
     },
     {
@@ -113,6 +115,7 @@ function guest(timings: Partial<LiveGuestTimings> = {}) {
     changed,
     reloads,
     presence,
+    ai,
     redeemed,
     preview,
     access,
@@ -269,6 +272,99 @@ describe('editing the host’s project', () => {
     await until(() => g.sockets.length === 2, 'the reconnect');
     g.sockets[1].open();
     expect(g.sockets[1].sent.filter((f) => f.type === 'rpc:request' && f.method === 'project.apply')).toHaveLength(0);
+  });
+});
+
+describe('the host’s AI (#769)', () => {
+  const PAGE = { scope: 'page', pageId: 'pg_home', selection: null, viewport: 1280 };
+  const turn = (runId: string, extra: Record<string, unknown> = {}) => ({ runId, request: 'Make it bigger', reply: '', status: 'running', activities: [], question: null, result: null, ...extra });
+  const aiEvent = (event: 'ai:access' | 'ai:turn', payload: unknown) => ({ type: 'rpc:event', event, payload });
+
+  it('starts with no AI, and asks the host nothing until the host allows it', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    expect(g.manager.ai(joinId)).toEqual({ joinId, access: { allowed: false, turnsLeft: null }, turns: [], activeRunId: null });
+    const sent = g.socket().sent.length;
+    expect(await g.manager.aiSend(joinId, 'Make it bigger', PAGE)).toMatchObject({ ok: false });
+    expect(g.socket().sent).toHaveLength(sent);
+    // Allowed, but with no requests left: nothing is asked of the host.
+    g.socket().receive(aiEvent('ai:access', { allowed: true, turnsLeft: 0 }));
+    expect(await g.manager.aiSend(joinId, 'Make it bigger', PAGE)).toMatchObject({ ok: false });
+    expect(g.socket().sent).toHaveLength(sent);
+    // The host says so for a viewer too, by mistake: a viewer still has none.
+    const v = guest();
+    const viewer = await inRoom(v, 'viewer');
+    v.socket().receive(aiEvent('ai:access', { allowed: true, turnsLeft: null }));
+    expect(v.manager.ai(viewer)?.access).toEqual({ allowed: false, turnsLeft: null });
+  });
+
+  it('sends an allowed request, follows its own turn as the host sends it, and stops or answers it', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    g.socket().receive(aiEvent('ai:access', { allowed: true, turnsLeft: 2 }));
+    expect(g.ai.at(-1)).toMatchObject({ joinId, access: { allowed: true, turnsLeft: 2 } });
+    const sending = g.manager.aiSend(joinId, 'Make it bigger', PAGE);
+    const ask = g.socket().last('rpc:request')!;
+    expect(ask).toMatchObject({ method: 'ai.send', args: ['Make it bigger', PAGE] });
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'ai.send', ok: true, result: { runId: 'run-1' } });
+    expect(await sending).toEqual({ ok: true, runId: 'run-1' });
+    expect(g.manager.ai(joinId)?.activeRunId).toBe('run-1');
+    // One request at a time.
+    expect(await g.manager.aiSend(joinId, 'Again', PAGE)).toMatchObject({ ok: false });
+    g.socket().receive(aiEvent('ai:turn', { kind: 'turn', turn: turn('run-1', { reply: 'Making ' }) }));
+    g.socket().receive(aiEvent('ai:turn', { kind: 'text', runId: 'run-1', at: 7, text: 'it bigger. ' }));
+    // A piece that does not follow what is held is left for the next whole turn.
+    g.socket().receive(aiEvent('ai:turn', { kind: 'text', runId: 'run-1', at: 3, text: 'XX' }));
+    expect(g.manager.ai(joinId)?.turns).toEqual([turn('run-1', { reply: 'Making it bigger. ' })]);
+    const answering = g.manager.aiAnswer(joinId, 'run-1', 'q1', 'The first');
+    const answer = g.socket().last('rpc:request')!;
+    expect(answer).toMatchObject({ method: 'ai.answer', args: ['run-1', 'q1', 'The first'] });
+    g.socket().receive({ type: 'rpc:response', requestId: answer.requestId, method: 'ai.answer', ok: true, result: true });
+    expect(await answering).toBe(true);
+    const stopping = g.manager.aiStop(joinId, 'run-1');
+    const stop = g.socket().last('rpc:request')!;
+    expect(stop).toMatchObject({ method: 'ai.stop', args: ['run-1'] });
+    g.socket().receive({ type: 'rpc:response', requestId: stop.requestId, method: 'ai.stop', ok: true, result: { stopped: true } });
+    expect(await stopping).toBe(true);
+    // Its end: nothing of it running any more.
+    g.socket().receive(aiEvent('ai:turn', { kind: 'turn', turn: turn('run-1', { status: 'cancelled', result: { status: 'cancelled', summary: 'Stopped.', changes: [] } }) }));
+    expect(g.manager.ai(joinId)).toMatchObject({ activeRunId: null, turns: [{ runId: 'run-1', result: { status: 'cancelled' } }] });
+    // Anything that is not a turn is never taken for one.
+    g.socket().receive(aiEvent('ai:turn', { kind: 'turn', turn: { runId: 'run-2' } }));
+    expect(g.manager.ai(joinId)?.turns).toHaveLength(1);
+  });
+
+  it('takes a request that ended before the host’s answer came as ended, so the next can be sent', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    g.socket().receive(aiEvent('ai:access', { allowed: true, turnsLeft: null }));
+    const sending = g.manager.aiSend(joinId, 'Make it bigger', PAGE);
+    const ask = g.socket().last('rpc:request')!;
+    g.socket().receive(aiEvent('ai:turn', { kind: 'turn', turn: turn('run-1', { status: 'completed', result: { status: 'completed', summary: 'Done.', changes: [] } }) }));
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'ai.send', ok: true, result: { runId: 'run-1' } });
+    expect(await sending).toEqual({ ok: true, runId: 'run-1' });
+    expect(g.manager.ai(joinId)?.activeRunId).toBeNull();
+    // A late word of a request that has ended never opens it again.
+    g.socket().receive(aiEvent('ai:turn', { kind: 'turn', turn: turn('run-1') }));
+    g.socket().receive(aiEvent('ai:turn', { kind: 'text', runId: 'run-1', at: 0, text: 'late' }));
+    expect(g.manager.ai(joinId)).toMatchObject({ activeRunId: null, turns: [{ runId: 'run-1', reply: '', result: { status: 'completed' } }] });
+    // And it keeps only its newest requests.
+    for (let i = 2; i < 60; i++) g.socket().receive(aiEvent('ai:turn', { kind: 'turn', turn: turn(`run-${i}`, { status: 'completed', result: { status: 'completed', summary: 'Done.', changes: [] } }) }));
+    expect(g.manager.ai(joinId)?.turns).toHaveLength(50);
+    expect(g.manager.ai(joinId)?.turns.at(-1)?.runId).toBe('run-59');
+  });
+
+  it('loses AI at once when the host makes it a viewer, and its requests when the join ends', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    g.socket().receive(aiEvent('ai:access', { allowed: true, turnsLeft: null }));
+    g.socket().receive(aiEvent('ai:turn', { kind: 'turn', turn: turn('run-1') }));
+    expect(g.manager.ai(joinId)?.activeRunId).toBe('run-1');
+    g.socket().receive(admitted({ role: 'viewer' }));
+    expect(g.manager.ai(joinId)).toMatchObject({ access: { allowed: false }, activeRunId: null, turns: [{ runId: 'run-1', result: { status: 'cancelled' } }] });
+    expect(await g.manager.aiSend(joinId, 'Hi', PAGE)).toMatchObject({ ok: false });
+    await g.manager.leave();
+    expect(g.manager.ai(joinId)).toBeNull();
   });
 });
 

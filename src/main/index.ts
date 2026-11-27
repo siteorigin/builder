@@ -7,7 +7,7 @@ import { mkdir } from 'node:fs/promises';
 // First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
 import { perf } from './perf';
 import { PERF_ARG, PERF_GLOBAL } from '@shared/perf';
-import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceManifest, SourceSettingsDraft } from '@shared/api';
+import type { Appearance, ChatContext, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceManifest, SourceSettingsDraft } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
@@ -23,7 +23,8 @@ import { buildDetailsText, buildLabel, buildVersion, type BuildStamp } from './b
 import { captureMainErrors, createMainLog } from './main-log';
 import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
-import { Orchestrator } from '@agent/orchestrator';
+import { Orchestrator, type RunDelegation } from '@agent/orchestrator';
+import { liveHostAi } from './live/host-ai';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { CompileCache, compileProject } from './compile';
@@ -427,6 +428,8 @@ const orchestrator = new Orchestrator({
   emit: (e) => {
     aiJournal?.record(e);
     controller.send('ai:event', e);
+    // A live-session collaborator's request is followed by that guest too (#769), as far as it is safe to share.
+    controller.live.aiEvent(e);
   },
   compileAll: async (): Promise<Diagnostic[]> => {
     const session = controller.session;
@@ -466,6 +469,32 @@ controller.onSessionOpened = async (s) => {
 };
 /** A read-only project (newer format, or another app is editing it) refuses anything that writes to it. */
 const readOnlyReason = () => controller.session?.readOnly?.reason ?? null;
+
+/**
+ * Send a request to the assistant: the author's from the editor, or a live-session collaborator's (`delegation`,
+ * #769), which goes through the same checks and the same test limit on requests, with this computer's provider.
+ */
+async function sendAi(text: string, ctx: unknown, conversationId?: string, recipient?: unknown, delegation?: RunDelegation): Promise<{ ok: boolean; runId?: string; message?: string }> {
+  perf.mark('ai.send', { mode: (ctx as { mode?: unknown } | null)?.mode === 'ask' ? 'ask' : 'edit' });
+  if (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock)) return { ok: false, message: readOnlyReason()! };
+  // A test may cap the requests the assistant starts (ai-journal.ts): one past the cap never reaches a model.
+  if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
+  const sent = await orchestrator.send(text, ctx as ChatContext, conversationId, recipient, delegation);
+  if (!sent.ok) aiJournal?.giveBack();
+  // Admitted just before the deadline, but started after it stopped everything: stopped now.
+  else if (aiJournal?.turns().spent && sent.runId) void orchestrator.stopRun(sent.runId);
+  return sent;
+}
+
+// A live-session collaborator the host allows AI editing asks the assistant here (#769), with this computer's
+// provider and the same checks and test limit as the author's own requests (live/host-ai.ts).
+controller.live.ai = liveHostAi({
+  state: () => controller.session?.state ?? null,
+  opening: () => controller.openingKey,
+  send: (text, context, delegation) => sendAi(text, context, undefined, undefined, delegation),
+  stop: (runId) => orchestrator.stopRun(runId),
+  answer: (runId, questionId, answer) => orchestrator.answer(runId, questionId, answer)
+});
 
 /** An import review's confirmed choices from the renderer, kept only as far as they are well formed. */
 function importChoices(v: unknown): ImportChoices | undefined {
@@ -618,6 +647,7 @@ function registerIpc() {
   handle('live:setLocked', (run: unknown, locked: unknown) => controller.live.setLocked(run, locked));
   handle('live:extend', (run: unknown, expiresAt: unknown) => controller.live.extend(run, expiresAt));
   handle('live:presence', (run: unknown, presence: unknown) => controller.live.setPresence(run, presence));
+  handle('live:setAi', (run: unknown, guestId: unknown, grant: unknown) => controller.live.setAi(run, guestId, grant));
   handle('live:state', () => controller.live.state);
   // This app as a guest in another computer's live session (#766). Joining needs no project open here; each call
   // names the join it is for, so one meant for a join that has ended reaches no other.
@@ -627,6 +657,10 @@ function registerIpc() {
   handle('remote:snapshot', (joinId: unknown, fresh?: unknown) => controller.remote.snapshot(joinId, fresh === true));
   handle('remote:apply', (joinId: unknown, batch: unknown) => controller.remote.apply(joinId, batch));
   handle('remote:presence', (joinId: unknown, presence: unknown) => controller.remote.presence(joinId, presence));
+  handle('remote:ai', (joinId: unknown) => controller.remote.ai(joinId));
+  handle('remote:aiSend', (joinId: unknown, text: unknown, context: unknown) => controller.remote.aiSend(joinId, text, context));
+  handle('remote:aiStop', (joinId: unknown, runId: unknown) => controller.remote.aiStop(joinId, runId));
+  handle('remote:aiAnswer', (joinId: unknown, runId: unknown, questionId: unknown, answer: unknown) => controller.remote.aiAnswer(joinId, runId, questionId, answer));
   handle('project:snapshot', () => controller.snapshot(), { anytime: true });
   // The editor's copy of the project (shared/project-feed.ts): a page that has just loaded is given it whole, and
   // the changes that follow are made against it; one that missed a change is sent it whole on project:changed.
@@ -897,17 +931,7 @@ function registerIpc() {
     return readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory();
   });
   // A question may be asked of a project another app is editing; the orchestrator decides (it writes nothing).
-  handle('ai:send', async (text: string, ctx, conversationId?: string, recipient?: unknown) => {
-    perf.mark('ai.send', { mode: (ctx as { mode?: unknown } | null)?.mode === 'ask' ? 'ask' : 'edit' });
-    if (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock)) return { ok: false, message: readOnlyReason() };
-    // A test may cap the requests the assistant starts (ai-journal.ts): one past the cap never reaches a model.
-    if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
-    const sent = await orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined, recipient);
-    if (!sent.ok) aiJournal?.giveBack();
-    // Admitted just before the deadline, but started after it stopped everything: stopped now.
-    else if (aiJournal?.turns().spent && sent.runId) void orchestrator.stopRun(sent.runId);
-    return sent;
-  });
+  handle('ai:send', (text: string, ctx, conversationId?: string, recipient?: unknown) => sendAi(text, ctx, typeof conversationId === 'string' ? conversationId : undefined, recipient));
   // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.
   handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
   handle('ai:answer', (runId: string, questionId: string, answer: string | { assetId: string }) => orchestrator.answer(runId, questionId, answer));

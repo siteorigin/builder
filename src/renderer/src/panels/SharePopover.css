@@ -107,6 +107,10 @@
   .share-popover .live-settled.left svg { color: var(--text-2); }
   .share-popover .live-row.settled:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   .share-popover .live-controls { display: flex; align-items: center; gap: 6px; }
+  /* Allow AI editing (#769): a collaborator's switch, then its limit on requests once it is on. */
+  .share-popover .live-ai { display: flex; flex-direction: column; gap: 6px; }
+  .share-popover .live-ai .switch-row { padding: 0; }
+  .share-popover .live-ai-used { flex: none; font-size: 12px; font-variant-numeric: tabular-nums; }
   .share-popover .live-controls .select { min-width: 0; flex: 1 1 0; }
   /* Held while the session reconnects, a guest's role and access are still facts the host reads: they keep readable
      ink on the drawn-disabled field. */

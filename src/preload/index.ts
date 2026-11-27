@@ -26,7 +26,7 @@ if (!markAppearance()) {
 }
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai']);
 
 const api: BuilderApi = {
   platform: process.platform,
@@ -140,6 +140,7 @@ const api: BuilderApi = {
     setLocked: invoke('live:setLocked'),
     extend: invoke('live:extend'),
     presence: invoke('live:presence'),
+    setAi: invoke('live:setAi'),
     state: invoke('live:state')
   } as BuilderApi['live'],
   remote: {
@@ -148,7 +149,11 @@ const api: BuilderApi = {
     state: invoke('remote:state'),
     snapshot: invoke('remote:snapshot'),
     apply: invoke('remote:apply'),
-    presence: invoke('remote:presence')
+    presence: invoke('remote:presence'),
+    ai: invoke('remote:ai'),
+    aiSend: invoke('remote:aiSend'),
+    aiStop: invoke('remote:aiStop'),
+    aiAnswer: invoke('remote:aiAnswer')
   } as BuilderApi['remote'],
   on: ((channel: string, cb: (payload: unknown) => void) => {
     if (!ALLOWED_EVENTS.has(channel)) throw new Error(`Unknown channel ${channel}`);

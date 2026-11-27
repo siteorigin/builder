@@ -107,9 +107,17 @@ const HOST_ONLY_METHODS = [
   'ai.providers',
   'ai.setKey',
   'ai.testProvider',
-  'ai.send',
+  'ai.localModels',
+  'ai.localContext',
+  'ai.conversations',
+  'ai.newConversation',
+  'ai.openConversation',
+  'ai.renameConversation',
+  'ai.deleteConversation',
+  'ai.clearHistory',
+  'ai.undoTurn',
   'ai.fixCode',
-  'ai.answer',
+  'ai.cancelFix',
   'on',
   'platform',
   'constructor',
@@ -122,7 +130,7 @@ describe('role methods', () => {
   it('lets a viewer read the project, and a copy editor and a collaborator also edit it', () => {
     expect(VIEWER_METHODS).toEqual(['project.snapshot']);
     expect(COPY_EDITOR_METHODS).toEqual(['project.snapshot', 'project.apply']);
-    expect(COLLABORATOR_METHODS).toEqual(['project.snapshot', 'project.apply']);
+    expect(COLLABORATOR_METHODS).toEqual(['project.snapshot', 'project.apply', 'ai.send', 'ai.stop', 'ai.answer']);
     expect(canCall('viewer', 'project.snapshot')).toBe(true);
     expect(canCall('viewer', 'project.apply')).toBe(false);
     for (const role of ['copy-editor', 'collaborator'] as const) {
@@ -142,6 +150,14 @@ describe('role methods', () => {
     expect(leastRole('copy-editor', 'collaborator', 'viewer', 'collaborator')).toBe('viewer');
     expect(leastRole('collaborator', 'collaborator', 'copy-editor')).toBe('copy-editor');
     expect(leastRole('copy-editor', 'viewer')).toBe('viewer');
+  });
+
+  it('lets a collaborator ask the host’s AI, which the host still has to allow, and never a viewer or a copy editor (#769)', () => {
+    for (const method of ['ai.send', 'ai.stop', 'ai.answer']) {
+      expect(canCall('collaborator', method), method).toBe(true);
+      expect(canCall('viewer', method), method).toBe(false);
+      expect(canCall('copy-editor', method), method).toBe(false);
+    }
   });
 
   it('refuses every host-only method to both roles', () => {
@@ -344,5 +360,43 @@ describe('checking a call', () => {
     expect(checkRpcRequest('collaborator', 'project.apply', [{ operations: [setText] }, { opening: 'x' }])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
     expect(checkRpcRequest('collaborator', 'project.apply', [])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
     expect(checkRpcRequest('collaborator', 'project.apply', [{ operations: [updateSource] }])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+  });
+});
+
+describe('checking an AI call (#769)', () => {
+  const page = { scope: 'page', pageId: 'p1', selection: null, viewport: 1200 };
+  const heading = { owner: { kind: 'page', id: 'p1' }, instancePath: [], nodeId: 'n1' };
+  const header = { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: 'logo' };
+
+  it('takes a request about the page shown, or the element selected there or in the header, trimmed', () => {
+    expect(checkRpcRequest('collaborator', 'ai.send', ['  Make the heading bigger  ', page])).toEqual({ ok: true, value: { method: 'ai.send', args: ['Make the heading bigger', page] } });
+    expect(checkRpcRequest('collaborator', 'ai.send', ['Bolder', { ...page, scope: 'selection', selection: heading, selectionLabel: 'Home → Heading' }])).toMatchObject({ ok: true, value: { args: ['Bolder', { scope: 'selection', selection: heading, selectionLabel: 'Home → Heading' }] } });
+    expect(checkRpcRequest('collaborator', 'ai.send', ['Bolder', { ...page, scope: 'selection', selection: header }])).toEqual({ ok: true, value: { method: 'ai.send', args: ['Bolder', { ...page, scope: 'selection', selection: header }] } });
+    expect(checkRpcRequest('collaborator', 'ai.stop', ['run-1'])).toEqual({ ok: true, value: { method: 'ai.stop', args: ['run-1'] } });
+    expect(checkRpcRequest('collaborator', 'ai.answer', ['run-1', 'q1', ' Yes '])).toEqual({ ok: true, value: { method: 'ai.answer', args: ['run-1', 'q1', 'Yes'] } });
+  });
+
+  it('refuses a viewer, and anything a request can carry on the host that a guest never chooses', () => {
+    for (const [method, args] of [['ai.send', ['Hi', page]], ['ai.stop', ['run-1']], ['ai.answer', ['run-1', 'q1', 'Yes']]] as const)
+      expect(checkRpcRequest('viewer', method, [...args]), method).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    const refused = (args: unknown[]) => expect(checkRpcRequest('collaborator', 'ai.send', args), JSON.stringify(args)).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    refused(['   ', page]);
+    refused(['x'.repeat(8001), page]);
+    refused(['Hi']);
+    refused(['Hi', page, 'conversation-1']);
+    // A model, a mode, a component edited everywhere, a post, a layout, attached images or the whole site: the host's.
+    for (const extra of [{ recipient: { provider: 'openai', model: 'x' } }, { mode: 'ask' }, { component: { id: 'c', name: 'C' } }, { post: { collectionId: 'c', entryId: 'e', title: 't' } }, { template: { collectionId: 'c', name: 'C' } }, { assetIds: ['a1'] }, { task: 'component' }])
+      refused(['Hi', { ...page, ...extra }]);
+    refused(['Hi', { ...page, scope: 'site' }]);
+    // A selection request names its selection, on the page it is about or in the shared header and footer.
+    refused(['Hi', { ...page, scope: 'selection' }]);
+    refused(['Hi', { ...page, selection: heading }]);
+    refused(['Hi', { ...page, scope: 'selection', selection: { ...heading, owner: { kind: 'page', id: 'p2' } } }]);
+    refused(['Hi', { ...page, scope: 'selection', selection: { ...heading, owner: { kind: 'component', id: 'card' } } }]);
+    refused(['Hi', { ...page, viewport: 50 }]);
+    refused(['Hi', { ...page, viewport: 8193 }]);
+    expect(checkRpcRequest('collaborator', 'ai.stop', [])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(checkRpcRequest('collaborator', 'ai.answer', ['run-1', 'q1', ''])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(checkRpcRequest('collaborator', 'ai.answer', ['run-1', 'q1', { assetId: 'a1' }])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
   });
 });

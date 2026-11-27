@@ -12,11 +12,15 @@ import type { GuestRole } from './limits';
  * never the editor's own snapshot, which names the project's folder and holds private state.
  */
 export const VIEWER_METHODS = ['project.snapshot'] as const;
-/** A collaborator also makes visual edits, and shares its own presence (the relay passes on no viewer's). */
-export const COLLABORATOR_METHODS = [...VIEWER_METHODS, 'project.apply'] as const;
+/**
+ * A collaborator also makes visual edits, and shares its own presence (the relay passes on no viewer's). It may also
+ * ask the host's AI to edit, and stop or answer its own request (#769): the relay passes those on for any collaborator,
+ * and the host refuses each one unless it has allowed that collaborator AI editing, which it never does by itself.
+ */
+export const COLLABORATOR_METHODS = [...VIEWER_METHODS, 'project.apply', 'ai.send', 'ai.stop', 'ai.answer'] as const;
 /**
  * A copy editor edits through the same method: which edits it may make is the host's to check, with the arguments
- * (capabilities.ts) and against the project the edit would leave (engine/copy-editor.ts).
+ * (capabilities.ts) and against the project the edit would leave (engine/copy-editor.ts). It never asks the host's AI.
  */
 export const COPY_EDITOR_METHODS = [...VIEWER_METHODS, 'project.apply'] as const;
 /** Every method any guest may call: all a forwarded call or the host's answer can name. */

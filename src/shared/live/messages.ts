@@ -244,8 +244,14 @@ const rpcResponse = <E extends z.ZodRawShape, N extends typeof method | typeof l
     msg('rpc:response', { ...extra, requestId, method: named, ok: z.literal(false), error: rpcError })
   ]);
 
-/** The host's editor events guests follow. Payloads are the host's own, made safe to share before they are sent. */
-export const LIVE_EVENTS = ['project:changed', 'runtime:status'] as const;
+/**
+ * The host's editor events guests follow. Payloads are the host's own, made safe to share before they are sent.
+ * `ai:access` (whether the host lets a collaborator use its AI, and how many requests are left) and `ai:turn` (that
+ * collaborator's own AI request as it runs) go only to the one guest they are about, never to everyone (shared/live/ai.ts).
+ */
+export const LIVE_EVENTS = ['project:changed', 'runtime:status', 'ai:access', 'ai:turn'] as const;
+/** The events the host sends one guest alone: a frame of one with no guest named is never sent, nor passed on. */
+export const PRIVATE_LIVE_EVENTS: readonly LiveEvent[] = ['ai:access', 'ai:turn'];
 export type LiveEvent = (typeof LIVE_EVENTS)[number];
 const rpcEvent = <E extends z.ZodRawShape>(extra: E) => msg('rpc:event', { ...extra, event: z.enum(LIVE_EVENTS), payload: z.unknown() });
 
@@ -265,6 +271,8 @@ const elementRef = z
     slot: shortId.optional()
   })
   .strict();
+/** The editor's ElementRef as the live contract reads it, for checks outside this module (capabilities.ts). */
+export const ELEMENT_REF = elementRef;
 /**
  * What a participant is looking at, replacing whatever it showed before. Null clears a page or a selection.
  * `previewPath` is where that page is in the preview (the path and query on the room's preview origin, as a URL
@@ -445,7 +453,13 @@ function validateFrame<D extends Direction>(direction: D, value: unknown): Frame
   const type = (value as { type?: unknown }).type;
   if (typeof type !== 'string' || !FRAME_TYPES[direction].has(type)) return fail('UNKNOWN_TYPE', `${typeof type === 'string' ? `"${type.slice(0, 40)}"` : 'A frame with no type'} is not a frame sent ${direction.replace(/-/g, ' ')}.`, 'type');
   const parsed = FRAME_SCHEMAS[direction].safeParse(value);
-  if (parsed.success) return { ok: true, frame: parsed.data as FrameOf<D> };
+  if (parsed.success) {
+    const frame = parsed.data as FrameOf<D>;
+    // An event about one guest alone (its AI access, its own AI request) never goes to everyone.
+    if (direction === 'host-to-relay' && frame.type === 'rpc:event' && (frame as { guestId?: string }).guestId === undefined && PRIVATE_LIVE_EVENTS.includes((frame as { event: LiveEvent }).event))
+      return fail('INVALID', 'guestId: This event goes to one guest: name it.', 'guestId');
+    return { ok: true, frame };
+  }
   const issue = parsed.error.issues[0];
   const path = issue.path.map(String).join('.');
   return fail('INVALID', `${path || 'frame'}: ${issue.message}`.slice(0, MAX_MESSAGE_LENGTH), path || undefined);

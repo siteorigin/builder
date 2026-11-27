@@ -1842,10 +1842,13 @@ const UserMessage = memo(function UserMessage({ m, previous }: { m: ChatMessage;
   // The same words can name two different elements ("Home → Heading"), so the target itself must match too.
   const repeated = !!caption && caption === captionOf(previous, state) && requestTarget(m) === requestTarget(previous);
   const images = Array.isArray(m.images) ? m.images.filter((i) => typeof i?.assetId === 'string' && typeof i.name === 'string') : [];
+  const guest = typeof m.guest?.name === 'string' ? m.guest.name : null;
   return (
-    <div className="msg-user" data-message-id={m.id}>
-      {/* Who said it, for a reader who meets the log without its layout. */}
-      <span className="sr-only">You: </span>
+    <div className={`msg-user${guest ? ' from-guest' : ''}`} data-message-id={m.id}>
+      {/* Who said it, for a reader who meets the log without its layout. A live-session collaborator's request (#769)
+          says whose it is, on screen too. */}
+      {guest ? <span className="msg-guest">{guest} (guest)</span> : <span className="sr-only">You: </span>}
+      {guest && <span className="sr-only">: </span>}
       {typeof m.text === 'string' ? m.text : ''}
       {images.length > 0 && <ImageChips images={images} label="Attached images" />}
       {caption && <span className={repeated ? 'sr-only' : 'ctx'}>{repeated ? ` (${caption})` : caption}</span>}

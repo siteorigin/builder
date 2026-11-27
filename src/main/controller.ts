@@ -434,6 +434,7 @@ export class Controller {
     relay: async () => resolveRelayUrl({ env: process.env[RELAY_URL_ENV], setting: (await loadSettings()).settings.liveRelayUrl }),
     guestSnapshot: (opening) => this.guestSnapshot(opening),
     applyGuest: (opening, guest, batch) => this.applyGuest(opening, guest, batch),
+    hostPaths: () => (this.session ? [this.session.dir, homedir()] : [homedir()]),
     emit: (channel, payload) => this.send(channel, payload)
   });
   /**

@@ -17,6 +17,7 @@ import type { GuestRole } from './live/limits';
 import type { ElementTarget, Participant, Presence, Spotlight } from './live/messages';
 import type { LiveEditBatch } from './live/capabilities';
 import type { LiveApplyResult, LiveProjectSnapshot } from './live/snapshot';
+import type { LiveAiAccess, LiveAiContext, LiveAiTurn } from './live/ai';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -751,6 +752,11 @@ export interface ChatMessage {
   question?: ChatQuestion;
   /** A request's attached library images, as they were when it was sent (its context holds their IDs). */
   images?: ChatImageRef[];
+  /**
+   * The live-session collaborator the turn was for (#769), on both of its messages: its name as the host let it in, and
+   * the admission it came under (a guest's later requests hear that admission's turns alone).
+   */
+  guest?: { name: string; id: string };
 }
 
 /** A version of a code component's source that an AI run wrote, kept after the project let it go. */
@@ -1071,7 +1077,18 @@ export interface LiveRoom {
 export type LiveHostState =
   | { phase: 'idle'; lastError: string | null }
   | (LiveRun & { phase: 'starting' | 'stopping' })
-  | (LiveRun & LiveRoom & { phase: 'active' | 'reconnecting'; previewReady: boolean; lastError: string | null });
+  | (LiveRun & LiveRoom & { phase: 'active' | 'reconnecting'; previewReady: boolean; lastError: string | null; ai: Record<string, LiveAiGrant> });
+
+/**
+ * What the host lets one admitted guest do with its AI (#769), by guest ID in LiveHostState: off for every guest until
+ * the host turns it on for a collaborator, and off again whenever it stops being one. `turnLimit` is how many requests
+ * it may make while it is in the session (null: no limit), and `turnsUsed` how many it has made.
+ */
+export interface LiveAiGrant {
+  allowed: boolean;
+  turnLimit: number | null;
+  turnsUsed: number;
+}
 
 /** Where a guest just pointed (#768). `seq` tells a new spotlight from one already shown. */
 export interface LiveSpotlight {
@@ -1176,6 +1193,21 @@ export interface RemotePresence {
 }
 
 export type RemoteJoinResult = { ok: true; state: RemoteState } | { ok: false; message: string };
+
+/**
+ * This app's own requests to the host's AI, as a collaborator in its live session (#769): whether the host allows them
+ * and how many are left, the requests made in this join (kept on this computer only while it lasts), and the one
+ * running now. Every request runs on the host's computer, with its AI provider.
+ */
+export interface RemoteAi {
+  joinId: string;
+  access: LiveAiAccess;
+  turns: LiveAiTurn[];
+  /** This app's request the host's AI is working on, until it ends. */
+  activeRunId: string | null;
+}
+
+export type RemoteAiSendResult = { ok: true; runId: string } | { ok: false; message: string };
 
 export type LiveStartResult = { ok: true; inviteUrl: string; state: LiveHostState } | { ok: false; message: string };
 /** Whether a host command was sent: the relay's next roster or room state shows it taking effect. */
@@ -1510,6 +1542,11 @@ export interface BuilderApi {
     extend(run: LiveRun, expiresAt: number): Promise<LiveCommandResult>;
     /** Where the host is in the editor (its page and preview width), for guests following it. The latest is kept and resent. */
     presence(run: LiveRun, presence: Presence): Promise<LiveCommandResult>;
+    /**
+     * Let a collaborator ask this computer's AI to edit (#769), or stop letting it, with a limit on its requests (null:
+     * none). Its requests run here, with this computer's provider; turning it off stops the one it has running.
+     */
+    setAi(run: LiveRun, guestId: string, grant: { allowed: boolean; turnLimit: number | null }): Promise<LiveCommandResult>;
     state(): Promise<LiveHostState>;
   };
   /**
@@ -1532,6 +1569,14 @@ export interface BuilderApi {
     apply(joinId: string, batch: LiveEditBatch): Promise<LiveApplyResult>;
     /** Where this app is in the editor, for the others: shared while a collaborator. False when it could not be. */
     presence(joinId: string, presence: Presence): Promise<boolean>;
+    /** This app's requests to the host's AI in the join named (#769); null when not admitted. */
+    ai(joinId: string): Promise<RemoteAi | null>;
+    /** Ask the host's AI to edit the page or selection named, when the host allows it. Runs on the host's computer. */
+    aiSend(joinId: string, text: string, context: LiveAiContext): Promise<RemoteAiSendResult>;
+    /** Stop this app's own request; false when it is no longer running. */
+    aiStop(joinId: string, runId: string): Promise<boolean>;
+    /** Answer the question this app's request is waiting on; false when it is no longer waiting. */
+    aiAnswer(joinId: string, runId: string, questionId: string, answer: string): Promise<boolean>;
   };
   /**
    * The project as it is now. Over IPC (`window.builder`) it comes as a `ProjectChange` from the copy sent before
@@ -1577,6 +1622,8 @@ export interface BuilderApi {
   on(channel: 'remote:reload', cb: (reload: { joinId: string; revision: number | null }) => void): () => void;
   /** Where the host and the other collaborators are. */
   on(channel: 'remote:presence', cb: (presence: RemotePresence) => void): () => void;
+  /** This app's requests to the host's AI changed: access, a request's progress, or its end (#769). */
+  on(channel: 'remote:ai', cb: (ai: RemoteAi) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */

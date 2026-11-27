@@ -2285,8 +2285,8 @@ export function HistoryModal() {
 }
 
 type Entry = ProjectSnapshot['history']['entries'][number];
-/** Who made a change, as its row says it. */
-const changeBy = (e: Entry) => (e.source === 'ai' ? 'AI' : e.source === 'system' ? 'Outside the app' : e.guestName ? `${e.guestName} (guest)` : 'You');
+/** Who made a change, as its row says it. An AI step a live-session guest asked for names the guest (#769). */
+const changeBy = (e: Entry) => (e.source === 'ai' ? (e.guestName ? `AI for ${e.guestName} (guest)` : 'AI') : e.source === 'system' ? 'Outside the app' : e.guestName ? `${e.guestName} (guest)` : 'You');
 /** Its glyph: a person for you, two for a live-session guest, the AI's sparkles, a synced folder for a change made outside. */
 function ChangeGlyph({ e }: { e: Entry }) {
   if (e.source === 'ai') return <Sparkles aria-hidden="true" />;
@@ -2552,7 +2552,7 @@ function ChangesPanel({ active, foot, holding }: { active: boolean; foot: HTMLEl
                             {step.text}
                           </span>
                           <span id={meta} className="sr-only">
-                            {`${e.source === 'ai' ? 'By AI' : e.source === 'system' ? 'From outside the app' : e.guestName ? `By ${e.guestName}, a guest` : 'By you'}, ${fullWhen(e.time)}${e.applied ? '' : ', undone'}`}
+                            {`${e.source === 'ai' ? (e.guestName ? `By AI, for ${e.guestName}, a guest` : 'By AI') : e.source === 'system' ? 'From outside the app' : e.guestName ? `By ${e.guestName}, a guest` : 'By you'}, ${fullWhen(e.time)}${e.applied ? '' : ', undone'}`}
                           </span>
                         </button>
                       </li>
