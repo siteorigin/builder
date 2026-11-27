@@ -414,6 +414,33 @@ project closed and Welcome shown. For each reading: `memory.<reading>.total` (th
 difference of two readings in the same launch: `memory.edits.growth.*` (`edit50` − `edit1`: what 49 edits left behind)
 and `memory.close.growth.*` (`closed` − `welcome`: what a project left behind once closed).
 
+**`noWindow`** (after `launch`, a memory scenario, macOS only: elsewhere the last window closing quits): the app with a
+project open and no window, as it is after its window is closed and the app is left in the Dock. Readings at rest: a
+fresh Welcome (`welcome`); the fixture opened from its card, untimed, then a page other than home chosen in Pages (the
+first by address: the Business starter's About), its first section chosen in Layers and the Inspector showing it
+(`canvas`); 20 s after the editor's window was closed as Close Window closes it, through the editor's leave check
+(`noWindow`); and in the window the app brings up when it is activated, as a click on its Dock icon does, once it is back
+where it was left (`reopened`). Then the window is closed again, that page's file changed outside the app (its first
+heading, renamed over it as in `edits`), and the window brought back. Checks: everything `open` checks; the project's
+lock in place and this app's while it has no window; the window brought up again on the same opening of the project at
+the same revision, its canvas reporting the page it was left on ready at that revision, with the same selection on it
+(the canvas's own record of it) and the Inspector naming it; the change made outside the app taken once the window is
+back, one revision on, as the step Undo takes back. A busy machine's file watch can lose the system's word of a save:
+the change is then saved again with the window still closed, as a person would, but never when the app's watch went
+off for the save and the change was still not taken, which fails the iteration; no save is made once the window is
+back. With no window the reading has no editor and no editor heap.
+Growth: `memory.project.growth.*` (`canvas` − `welcome`), `memory.windowClosed.growth.*` (`noWindow` − `canvas`: what
+closing the window let go of), `memory.restWithoutWindow.growth.*` (`noWindow` − `welcome`: what the open project holds
+with no window, over Welcome) and `memory.windowBack.growth.*` (`reopened` − `canvas`). Times from `noWindow.reopen`
+(the activation): `noWindow.reopen.windowCreated`, `.editorShown` (the new editor's first commit of the project),
+`.canvasReady` (the headline: the canvas reporting the page it was left on ready at the project's revision) and, when
+the preview had to start, `.runtimeReady` (its server listening); `noWindow.reopen.previewStarts` counts the preview
+servers forked meanwhile; `noWindow.outside.saves` the saves the change made outside the app took (1 unless the system
+lost word of one) and `noWindow.outside.takenWithoutWindow` whether it was taken before the window came back (1) or
+only on its return (0). The runner's marks and readings follow the window the scenario brings up
+(`ctx.win`); while there is none, marks go to the main process alone. Memory scenarios run one per `perf:run`: each
+starts from a fresh Welcome on the fixture as it was put back.
+
 **`previewImages`** (after `open`, a memory scenario, on its own; `--fixture small` is enough: the page it measures is
 its own): the memory of the app's processes while frames other than the canvas show a page of photographs (#1037).
 Before the readings (untimed): 20 photographs written into `static/assets/` as an import stores them, each a web-sized
@@ -646,7 +673,9 @@ on one machine, never across machines: compare refuses results read from another
 **At rest.** A reading at rest (`ctx.memory.rest(label)`) leaves the app alone for 3 s (work the last step set off: a
 workspace save, a thumbnail), waits until two process tables 500 ms apart list the same processes, then collects
 garbage twice in the main process (an inspector session inside it), the editor and the preview's frame (CDP sessions on
-each), waits 1 s, reads the two heaps, and takes one sample: the process table and what the app says each process is.
+each; with no editor window, the main process alone), waits 1 s, reads the two heaps (the main process's alone with no
+editor window: a reading says whether it expects one, `ctx.memory.rest(label, { window: false })`, and the other
+fails it), and takes one sample: the process table and what the app says each process is.
 If the processes changed meanwhile (or a collection failed because one went, or on macOS `top` had not listed one yet)
 it starts again, up to three times; a set that does not hold still for one gap within 15 s fails the reading. A reading is taken at a fixed point, never "once
 things look done": `closed` starts 20 s after the close (its sample comes some 4.5 s later, after the settle and the

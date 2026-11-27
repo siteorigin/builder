@@ -36,7 +36,7 @@ export function routingDialog(q: RoutingQuestion): RoutingDialogRequest {
   const [keep, allow] = q.question.choices;
   const many = q.question.formRouting.forms.length > 1;
   const details: RoutingDialogRequest['details'] = [
-    { kind: 'risk', text: 'Whoever owns an address below receives what visitors write. Allow only addresses you recognise.' },
+    { kind: 'risk', text: 'Whoever owns an address below receives what visitors write. Allow only addresses you recognize.' },
     { kind: 'keep', text: `${keep}: nothing in this change is applied, and the AI carries on without it.` }
   ];
   return {

@@ -330,8 +330,8 @@ export interface MemoryReading {
   roles: Record<string, { processes: number; bytes: number }>;
   total: number;
   count: number;
-  /** The JavaScript heap in use, bytes (at rest only). */
-  heap?: { main: number; editor: number };
+  /** The JavaScript heap in use, bytes (at rest only); the editor's only while its window is open. */
+  heap?: { main: number; editor?: number };
   how: RestHow | PeakHow;
 }
 
@@ -350,7 +350,7 @@ export function readingMetrics(m: Collector, label: string, r: MemoryReading | u
   }
   if (r.heap) {
     m.count(`${p}.heap.main`, r.heap.main, 'memory');
-    m.count(`${p}.heap.editor`, r.heap.editor, 'memory');
+    if (r.heap.editor !== undefined) m.count(`${p}.heap.editor`, r.heap.editor, 'memory');
   }
 }
 
@@ -369,7 +369,7 @@ export function growthMetrics(m: Collector, label: string, from: MemoryReading |
   }
   if (from.heap && to.heap) {
     m.count(`${p}.heap.main`, to.heap.main - from.heap.main, 'memory');
-    m.count(`${p}.heap.editor`, to.heap.editor - from.heap.editor, 'memory');
+    if (from.heap.editor !== undefined && to.heap.editor !== undefined) m.count(`${p}.heap.editor`, to.heap.editor - from.heap.editor, 'memory');
   }
 }
 
@@ -384,7 +384,8 @@ export interface MemorySource {
   facts(signal?: AbortSignal): Promise<AppFacts>;
   /** Collect garbage `passes` times in each process it can reach; the roles it collected in. Stops once `signal` aborts. */
   collect(passes: number, signal?: AbortSignal): Promise<string[]>;
-  heap(signal?: AbortSignal): Promise<{ main: number; editor: number }>;
+  /** The heaps in use: the main process's, and the editor's while it has a window. */
+  heap(signal?: AbortSignal): Promise<{ main: number; editor?: number }>;
   source: string;
 }
 
@@ -472,9 +473,11 @@ export class MemoryProbe {
    * A reading at rest, `label`: left alone for the settle time, then once two process tables in a row list the same
    * processes, garbage collected, the heaps read, and one sample taken whose processes are still that set. A change
    * meanwhile (or a collection that failed because a process went) starts it again, a few times; a set that never holds
-   * still for one gap within the wait fails it.
+   * still for one gap within the wait fails it. The editor's window is open for it, or with `window: false` closed (the
+   * app with no window): the other fails it, so a window that went by mistake never makes a reading look smaller.
    */
-  async rest(label: string): Promise<MemoryReading> {
+  async rest(label: string, opts: { window?: boolean } = {}): Promise<MemoryReading> {
+    const window = opts.window ?? true;
     this.live();
     const R = this.rest_;
     const asked = this.clock.now();
@@ -500,7 +503,7 @@ export class MemoryProbe {
       };
       this.live();
       let collected: string[];
-      let heap: { main: number; editor: number };
+      let heap: { main: number; editor?: number };
       try {
         collected = await this.call(() => this.src.collect(R.gcPasses, this.abort.signal));
         await this.clock.sleep(R.postGcMs, this.abort.signal);
@@ -513,6 +516,7 @@ export class MemoryProbe {
         again();
         continue;
       }
+      if ((heap.editor !== undefined) !== window) throw new Error(`memory reading ${label}: the editor's window is ${window ? 'not open' : 'open'}`);
       // Read after the heaps, so the processes they came from are the ones the sample has.
       const s = await this.snapshot();
       if (!sameSet(s.ids, ids) || !s.complete) {
@@ -677,13 +681,19 @@ const previewName = (win: Page) => win.evaluate(() => (globalThis as unknown as 
 /**
  * A probe's source for a launched app: the process table, what the main process says of its processes and windows,
  * garbage collection through an inspector session in the main process and CDP sessions on the editor and the preview's
- * frame, and the heaps. Every session is detached before the call returns.
+ * frame, and the heaps. Every session is detached before the call returns. `editor` is the editor's window as it is
+ * now: while it is closed (macOS keeps the app, and the project, running without one) only the main process is
+ * collected and its heap read.
  */
-export function electronSource(app: ElectronApplication, win: Page): MemorySource {
+export function electronSource(app: ElectronApplication, editor: () => Page): MemorySource {
   const closed = (signal?: AbortSignal) => {
     if (signal?.aborted) throw new Error('the memory probe was closed');
   };
-  const cdp = async <T>(target: Page | Frame, fn: (send: (method: string) => Promise<unknown>) => Promise<T>, signal?: AbortSignal): Promise<T> => {
+  const open = (): Page | null => {
+    const win = editor();
+    return win.isClosed() ? null : win;
+  };
+  const cdp = async <T>(win: Page, target: Page | Frame, fn: (send: (method: string) => Promise<unknown>) => Promise<T>, signal?: AbortSignal): Promise<T> => {
     const session = await win.context().newCDPSession(target);
     try {
       closed(signal);
@@ -692,20 +702,24 @@ export function electronSource(app: ElectronApplication, win: Page): MemorySourc
       await session.detach().catch(() => undefined);
     }
   };
+  /** The editor's address, as its window last had it: a window brought up after it is the editor at the same one. */
+  let editorAddress = '';
   return {
     source: memorySource(),
     table: () => memoryTable(),
     async facts(signal) {
-      const frameName = await previewName(win);
+      const win = open();
+      const frameName = win ? await previewName(win) : null;
       closed(signal);
       // By its address: `app:` is not a scheme Node gives an origin to, so the editor's and a blank window's would match.
-      const editorUrl = win.url().split('#')[0];
+      if (win) editorAddress = win.url().split('#')[0];
+      const editorUrl = editorAddress;
       // Sent to the main process as source: no named functions inside (the TypeScript runner would wrap them in a
       // helper the main process does not have).
       return app.evaluate(
         ({ app, BrowserWindow }, a) => {
           const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && !w.webContents.isDestroyed());
-          const editor = wins.find((w) => w.webContents.getURL().split('#')[0] === a.editorUrl);
+          const editor = a.editorUrl ? wins.find((w) => w.webContents.getURL().split('#')[0] === a.editorUrl) : undefined;
           let preview: number | null = null;
           try {
             const frame = a.frameName && editor ? editor.webContents.mainFrame.framesInSubtree.find((f) => f.name === a.frameName) : undefined;
@@ -741,6 +755,9 @@ export function electronSource(app: ElectronApplication, win: Page): MemorySourc
         }, 1);
       }
       const collected = ['main'];
+      const win = open();
+      // No editor window: nothing else of the app's runs JavaScript the harness collects in.
+      if (!win) return collected;
       const gc = async (send: (method: string) => Promise<unknown>) => {
         for (let i = 0; i < passes; i++) {
           going();
@@ -748,7 +765,7 @@ export function electronSource(app: ElectronApplication, win: Page): MemorySourc
         }
       };
       going();
-      await cdp(win, gc, signal);
+      await cdp(win, win, gc, signal);
       collected.push('editor');
       going();
       const name = await previewName(win);
@@ -758,7 +775,7 @@ export function electronSource(app: ElectronApplication, win: Page): MemorySourc
       going();
       // A frame in the editor's own process (no site isolation) was collected with the editor.
       if (frame && facts && facts.preview !== null && facts.preview !== facts.editor) {
-        await cdp(frame, gc, signal);
+        await cdp(win, frame, gc, signal);
         collected.push('preview');
       }
       return collected;
@@ -766,7 +783,9 @@ export function electronSource(app: ElectronApplication, win: Page): MemorySourc
     async heap(signal) {
       const main = await app.evaluate(() => process.memoryUsage().heapUsed);
       closed(signal);
-      const editor = await cdp(win, async (send) => ((await send('Runtime.getHeapUsage')) as { usedSize: number }).usedSize, signal);
+      const win = open();
+      if (!win) return { main };
+      const editor = await cdp(win, win, async (send) => ((await send('Runtime.getHeapUsage')) as { usedSize: number }).usedSize, signal);
       return { main, editor };
     }
   };
