@@ -39,9 +39,17 @@ export const APP_AUTHOR = { name: 'SiteOrigin Builder', email: 'versions@siteori
  */
 export const keptOutOfGit = (path: string): boolean => snapshotPlace(path).kind === 'attachment';
 
+/**
+ * What kind of version a commit is: one the author saved, the way back the app saved before a restore, or the site as
+ * a restore left it (#1155), which the app saves after one.
+ */
+export type VersionKind = 'saved' | 'before-restore' | 'restored';
+
+const KIND_MESSAGE: Record<VersionKind, string> = { saved: 'Saved version', 'before-restore': 'Before restoring', restored: 'Restored version' };
+
 /** A commit's message: what kind of version it is, and the ID that ties it to its row. Never the author's own words. */
-export function commitMessage(id: string, auto: boolean): string {
-  return `${auto ? 'Before restoring' : 'Saved version'}\n\nSiteOrigin-Version: ${id}\n`;
+export function commitMessage(id: string, kind: VersionKind): string {
+  return `${KIND_MESSAGE[kind]}\n\nSiteOrigin-Version: ${id}\n`;
 }
 
 /** The app's identity at `time` (an ISO time), in UTC so the computer's time zone is never recorded. */
@@ -72,7 +80,7 @@ export function gitSaveProblem(e: unknown): string {
 }
 
 /** Make the repository if need be, and write the tree of `files` and a commit of it on the branch's tip, moving nothing. */
-export async function writeVersionCommit(repo: GitRepository, files: FileInput[], id: string, time: string, auto: boolean): Promise<{ commit: Oid; tree: Oid }> {
+export async function writeVersionCommit(repo: GitRepository, files: FileInput[], id: string, time: string, kind: VersionKind): Promise<{ commit: Oid; tree: Oid }> {
   await repo.init();
   const tip = await repo.resolveRef(VERSIONS_BRANCH);
   // A tip that can't be read is damaged history: nothing is built on it.
@@ -82,7 +90,7 @@ export async function writeVersionCommit(repo: GitRepository, files: FileInput[]
     });
   const tree = await repo.writeFiles(files);
   const who = appIdentity(time);
-  const commit = await repo.writeCommit({ tree, parents: tip ? [tip] : [], author: who, committer: who, message: commitMessage(id, auto) });
+  const commit = await repo.writeCommit({ tree, parents: tip ? [tip] : [], author: who, committer: who, message: commitMessage(id, kind) });
   return { commit, tree };
 }
 

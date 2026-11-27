@@ -1167,8 +1167,8 @@ describe('saved versions in Git (#1153)', () => {
     const repo = git.client.repository(root);
     // Stale: written on an empty branch, which another save then moves.
     const files = [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Mine"}') }];
-    const mine = await writeVersionCommit(repo, files, 'vmine000000', new Date().toISOString(), false);
-    const theirs = await writeVersionCommit(repo, [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Theirs"}') }], 'vtheirs00000', new Date().toISOString(), false);
+    const mine = await writeVersionCommit(repo, files, 'vmine000000', new Date().toISOString(), 'saved');
+    const theirs = await writeVersionCommit(repo, [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Theirs"}') }], 'vtheirs00000', new Date().toISOString(), 'saved');
     await repo.advanceRef(VERSIONS_BRANCH, theirs.commit, null);
     const tip = await advanceVersions(repo, mine.commit);
     expect(tip).not.toBe(mine.commit);
