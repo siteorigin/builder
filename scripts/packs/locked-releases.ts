@@ -11,6 +11,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { PACK_MANIFEST, type ThemePack } from '@catalogue/pack';
 import { loadPackDir } from '../../src/main/packs/loader';
+import { packManifestProblems } from '../../src/main/codecheck';
 
 /**
  * Each committed release: its pack ID and the folder it is committed in, as the app's resources lay them out. Paths
@@ -75,8 +76,9 @@ export function missingPreviews(pack: ThemePack): string[] {
 
 /**
  * What is wrong with the committed releases under `root`: each must load as the app loads it, be the release the
- * lock pins (its ID, version and digest), sit where the app looks for it, carry every thumbnail, and hold nothing its
- * pack.json doesn't list (the loader reads only what it lists, but packaging copies the whole folder).
+ * lock pins (its ID, version and digest), sit where the app looks for it, carry every thumbnail, hold nothing its
+ * pack.json doesn't list (the loader reads only what it lists, but packaging copies the whole folder), and have code
+ * that takes exactly what its manifests declare (the loader holds a bundled pack to that only when it is built).
  */
 export async function committedReleaseProblems(root: string): Promise<string[]> {
   let lock: PackLock;
@@ -105,6 +107,8 @@ export async function committedReleaseProblems(root: string): Promise<string[]> 
     if (pack.version !== want.version) problems.push(`${where} is version ${pack.version}; ${LOCK_FILE} pins ${want.version}.`);
     if (pack.digest !== want.digest) problems.push(`${where} has digest ${pack.digest}; ${LOCK_FILE} pins ${want.digest}.`);
     if (Boolean(pack.devOnly) !== r.devOnly) problems.push(`${where} ${r.devOnly ? 'must' : 'must not'} be a development fixture.`);
+    const disagree = await packManifestProblems(pack.components);
+    if (disagree.length) problems.push(`${where}: its code does not match its manifest. ${disagree.join(' ')}`);
     const missing = missingPreviews(pack);
     if (missing.length) problems.push(`${where} has no thumbnail for ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ` and ${missing.length - 5} more` : ''}.`);
   }

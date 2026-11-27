@@ -87,8 +87,8 @@ dist/
 /prs-merge-bg/
 .claude/worktrees/
 
-# Theme pack releases put in place by `npm run build:packs`. Foundation and foundation-alt are built from
-# siteorigin/builder-components and committed (resources/packs.lock.json pins them); the rest are built from src/catalogue.
+# Theme pack releases. Foundation and foundation-alt are built from siteorigin/builder-components and committed
+# (resources/packs.lock.json pins them); anything else in these folders is a build's leftover.
 /resources/packs/*
 !/resources/packs/foundation/
 /resources/packs-dev/*

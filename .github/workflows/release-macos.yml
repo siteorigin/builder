@@ -112,15 +112,13 @@ jobs:
           exit $missing
 
       - run: npm ci
-      # The theme pack thumbnails are drawn in Chromium (`--require-previews`).
-      - run: npx playwright install chromium
 
       # `npm run dist` in two halves, so the dependency installs above and the
       # compile here run without the signing credentials: only electron-builder
       # (and build/after-pack.cjs, which it runs) sees them.
       - name: Build the app
         run: |
-          npm run build:packs -- --committed --require-previews
+          npm run build:packs -- --committed
           npx --no-install electron-vite build
 
       - name: Write the App Store Connect API key

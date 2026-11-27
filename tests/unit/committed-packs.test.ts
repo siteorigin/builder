@@ -92,6 +92,17 @@ describe('the committed theme releases', () => {
     expect(await committedReleaseProblems(root)).toEqual(['resources/packs/foundation must not be a development fixture.', 'resources/packs-dev/foundation-alt must be a development fixture.']);
   });
 
+  it('refuse a release whose code does not take what its manifest declares, as building it would', async () => {
+    const root = committedCopy();
+    repin(root, 'foundation', (m) => {
+      const grid = m.components.find((c) => c.componentId === 'features.grid')!;
+      grid.properties.eyebrow = { ...grid.properties.eyebrow, default: 'Something else' };
+    });
+    const problems = await committedReleaseProblems(root);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/^resources\/packs\/foundation: its code does not match its manifest\. Component features\.grid: .*eyebrow/);
+  });
+
   it('refuse files in a release that its pack.json does not list, which packaging would ship', async () => {
     const root = committedCopy();
     writeFileSync(join(root, 'resources', 'packs', 'foundation', 'previews', 'left-over.webp'), 'x');

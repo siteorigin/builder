@@ -12,7 +12,7 @@ npx playwright install chromium   # on Linux add --with-deps, as CI does
 npm run dev        # the app with hot reload, in a visible window
 ```
 
-Playwright's Chromium is for the browser tests in `npm test`, which skip themselves without it, and for the theme previews that `npm run pack` and `npm run dist` require. The WebKit cases skip themselves too unless you also install WebKit (`npx playwright install webkit`, with `--with-deps` on Linux); CI does not run them.
+Playwright's Chromium is for the browser tests in `npm test`, which skip themselves without it, and for drawing the theme thumbnails when the committed theme releases are refreshed (below). The WebKit cases skip themselves too unless you also install WebKit (`npx playwright install webkit`, with `--with-deps` on Linux); CI does not run them.
 
 `SITEORIGIN_USER_DATA=/some/folder` gives the app a separate settings and cache folder, which is useful for keeping test runs apart from your own projects. In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment are used when no key is saved in Settings.
 

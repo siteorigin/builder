@@ -1,8 +1,7 @@
 /**
- * The packs authored in this repository, which tests and scripts register directly (see registerBuiltinPacks).
- * `npm run build:packs` builds Editorial and Signal into release files the app loads at startup like any other pack;
- * the app's Foundation and foundation-alt are the releases built from siteorigin/builder-components and committed in
- * `resources/` (scripts/packs/locked-releases.ts), not these copies.
+ * The packs authored in this repository, which tests and scripts register directly (see registerBuiltinPacks). The
+ * app loads Foundation and foundation-alt from the releases built from siteorigin/builder-components and committed in
+ * `resources/` (scripts/packs/locked-releases.ts), not from these copies.
  */
 import type { AuthoredPack } from './pack';
 import { FOUNDATION } from './foundation/pack';
