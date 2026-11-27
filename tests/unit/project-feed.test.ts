@@ -701,6 +701,28 @@ describe('a state rebuilt from document texts', async () => {
     expect(shared.pages[base.site.homePageId]).toBe(a.pages[base.site.homePageId]);
   });
 
+  it('keeps a source by its settings and its converter’s file, and takes a converter that changed', () => {
+    const base = opened();
+    const crew = { schemaVersion: 1, id: 'crew', name: 'Crew', adapter: 'rest', collectionId: 'posts', config: { url: 'https://example.com/crew' }, converter: { file: 'converter.mjs', code: 'export default (r) => r;' } };
+    const a = frozen(reread({ ...base, sources: { crew } } as unknown as ProjectState));
+    // A page edit rebuilt from the texts: the source is the project's own.
+    const rebuilt = reread(run(a, setText(a, 'Rebuilt')));
+    const shared = shareUnchanged(a, stateToDocs(a), rebuilt, stateToDocs(frozen(rebuilt)));
+    expect(shared).toEqual(rebuilt);
+    expect(shared.sources).toBe(a.sources);
+    // Only its converter changed (its settings file reads the same): the source is the one rebuilt.
+    const code = 'export default (r) => ({ ...r });';
+    const changed = reread({ ...a, sources: { crew: { ...a.sources!.crew, converter: { file: 'converter.mjs', code } } } });
+    expect(stateToDocs(frozen(changed)).get('siteorigin/sources/crew/source.json')).toBe(stateToDocs(a).get('siteorigin/sources/crew/source.json'));
+    const taken = shareUnchanged(a, stateToDocs(a), changed, stateToDocs(frozen(changed)));
+    expect(taken.sources!.crew).toBe(changed.sources!.crew);
+    expect(taken.sources!.crew.converter!.code).toBe(code);
+    expect(taken.pages).toBe(a.pages);
+    // Its converter's file gone: the source rebuilt without it.
+    const without = reread({ ...a, sources: { crew: { ...a.sources!.crew, converter: { file: 'converter.mjs' } } } });
+    expect(shareUnchanged(a, stateToDocs(a), without, stateToDocs(frozen(without))).sources!.crew).toBe(without.sources!.crew);
+  });
+
   it('keeps a post by its own file, and the collection when every post and its settings are the same', () => {
     const a = opened();
     const [eid, ...rest] = Object.keys(a.collections.posts.entries);

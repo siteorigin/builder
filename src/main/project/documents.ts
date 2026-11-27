@@ -190,8 +190,8 @@ export function stateToDocs(state: ProjectState): Map<string, string> {
  * it (the editor's copy, #967) need not take every document for a new one. A document is the same when every file it
  * is stored in reads the same (each state's `stateToDocs`, or the documents it was rebuilt from) and it is the same
  * value field for field (`sameValue`: a text cannot tell a number too large to store from null, nor a field holding
- * undefined from none), so the state is exactly the one rebuilt. Sources (a converter's code is a file of its own) are
- * left as rebuilt.
+ * undefined from none), so the state is exactly the one rebuilt. A source is the same when its settings and, with a
+ * converter, the converter's own file read the same.
  */
 export function shareUnchanged(prev: ProjectState, prevDocs: Map<string, string>, next: ProjectState, nextDocs: Map<string, string>): ProjectState {
   const same = (...paths: string[]) => paths.every((p) => nextDocs.has(p) && nextDocs.get(p) === prevDocs.get(p));
@@ -230,6 +230,7 @@ export function shareUnchanged(prev: ProjectState, prevDocs: Map<string, string>
     if (settings === a.settings && entries === a.entries && Object.keys(a).length === Object.keys(b).length) return a;
     return { ...b, settings, entries };
   });
+  if (next.sources) out.sources = record(prev.sources, next.sources, (id, a, b) => keep(a, b, sourceDocPath(id), ...(typeof b.converter?.code === 'string' ? [converterDocPath(id)] : [])));
   return out;
 }
 

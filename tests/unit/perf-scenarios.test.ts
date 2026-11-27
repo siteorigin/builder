@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -18,6 +18,10 @@ describe('the scenario chain', () => {
   it('runs each scenario after the ones it follows', () => {
     expect(chainFor(['edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
     expect(chainFor(['edits']).map((s) => s.name)).toEqual(['launch', 'open', 'edits']);
+    expect(chainFor(['history']).map((s) => s.name)).toEqual(['launch', 'open', 'history']);
+    expect(chainFor(['history', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'history']);
+    // After the others that edit the fixture's own copy, so none of them inherits its saved versions; before editBranded.
+    expect(chainFor(['editBranded', 'history', 'batch']).map((s) => s.name)).toEqual(['launch', 'open', 'batch', 'history', 'editBranded']);
     expect(chainFor(['chat']).map((s) => s.name)).toEqual(['launch', 'open', 'chat']);
     expect(chainFor(['aiEdit']).map((s) => s.name)).toEqual(['launch', 'open', 'aiEdit']);
     expect(chainFor(['open']).map((s) => s.name)).toEqual(['launch', 'open']);
@@ -373,7 +377,7 @@ describe('edit metrics', () => {
         m('scenario.start', 9000, { attrs: { scenario: 'edit' } }),
         // Before the edit: none of its checks.
         span('session.check', 9500, 99, { attrs: { check: 'updates' } }),
-        r('edit.requested', 10_000, { attrs: { revision: base, operations: 1 }, c: { 'react.commits': 110 } }),
+        r('edit.requested', 10_000, { attrs: { revision: base, operations: 1 }, c: { 'react.commits': 110, 'collections.siteEntries': 4 } }),
         // Another revision's records inside the window: never taken for this edit.
         r('canvas.revisionApplied', 10_002, { attrs: { revision: base } }),
         m('session.changed', 10_003, { attrs: { revision: base } }),
@@ -423,7 +427,7 @@ describe('edit metrics', () => {
         // One run after the acknowledgement: counted as a sweep, not as one the edit waited on.
         span('session.sweep', 10_700, 5),
         m('scenario.end', 11_640, { attrs: { scenario: 'edit' } }),
-        r('scenario.end', 11_641, { attrs: { scenario: 'edit' }, c: { 'react.commits': 160 } }),
+        r('scenario.end', 11_641, { attrs: { scenario: 'edit' }, c: { 'react.commits': 160, 'collections.siteEntries': 7 } }),
         // After the scenario: none of its counts.
         m('session.reloadFromDisk', 12_000),
         span('session.check', 12_000.5, 50, { attrs: { check: 'diagnostics' } }),
@@ -483,6 +487,7 @@ describe('edit metrics', () => {
       'edit.snapshotBytes': '121005 bytes',
       'edit.reloadFromDisk': '1 count',
       'edit.rendererCommits': '50 count',
+      'edit.siteEntryWalks': '3 count',
       'edit.mainStallMax': '70 ms',
       'edit.batchChecks': '1 ms',
       'edit.batchSyncedEntries': '0.25 ms',
@@ -552,6 +557,13 @@ describe('edit metrics', () => {
     expect(got.metrics['edit.rendererCommits']).toBeUndefined();
   });
 
+  it('leave the editor’s walks of every entry missing when it never counted them, never a false zero', () => {
+    const uncounted = new Trace(trace().records.map((x) => (x.c ? { ...x, c: { 'react.commits': x.c['react.commits'] } } : x)));
+    const got = edit.measure(uncounted, facts);
+    expect(got.missing).toEqual(['edit.siteEntryWalks (the editor never counted its walks of every entry)']);
+    expect(got.metrics['edit.siteEntryWalks']).toBeUndefined();
+  });
+
   it('leave the bytes sent missing when a snapshot’s size could not be told, never short', () => {
     const unsized = new Trace(trace().records.map((x) => (x.name === 'controller.snapshotSent' && x.t === 10_600 ? { ...x, attrs: { revision: target, bytes: null } } : x)));
     const got = edit.measure(unsized, facts);
@@ -615,6 +627,87 @@ describe('edit metrics', () => {
     expect(got.metrics['edit.sweepsAwaited'].value).toBe(0);
     expect(got.metrics['edit.sweepAwaited'].value).toBe(0);
     expect(got.metrics['edit.sweeps'].value).toBe(2);
+  });
+});
+
+describe('history metrics', () => {
+  const h = { scenario: 'history' };
+  const counts = (commits: number, walks: number) => ({ c: { 'react.commits': commits, 'collections.siteEntries': walks } });
+  /** Undo (to revision 10), Redo (11) and a restore (12) whose version list went out first, at revision 11. */
+  function trace(drop: (x: PerfRecord) => boolean = () => false) {
+    return new Trace(
+      [
+        // Before the windows: the untimed edit's own send, never counted in one.
+        m('controller.snapshotSent', 19_000, { attrs: { revision: 9, bytes: 5000 } }),
+        r('scenario.start', 20_000, { attrs: h }),
+        m('scenario.start', 20_000, { attrs: h }),
+        r('scenario.phase', 20_000, { attrs: { ...h, phase: 'undo', target: 10 }, ...counts(10, 2) }),
+        m('scenario.phase', 20_000, { attrs: { ...h, phase: 'undo', target: 10 } }),
+        m('session.changed', 20_050, { attrs: { revision: 10 } }),
+        m('controller.snapshotSent', 20_052, { attrs: { revision: 10, bytes: 600 } }),
+        r('renderer.snapshotReceived', 20_053, { attrs: { revision: 10 } }),
+        r('renderer.commit', 20_056, { attrs: { revision: 10 } }),
+        span('main.stall', 20_060, 55),
+        r('canvas.revisionApplied', 20_100, { attrs: { revision: 10 } }),
+        m('scenario.phase', 21_600, { attrs: { ...h, phase: 'undone' } }),
+        r('scenario.phase', 21_600, { attrs: { ...h, phase: 'undone' }, ...counts(14, 3) }),
+        r('scenario.phase', 22_000, { attrs: { ...h, phase: 'redo', target: 11 }, ...counts(14, 3) }),
+        m('scenario.phase', 22_000, { attrs: { ...h, phase: 'redo', target: 11 } }),
+        m('session.changed', 22_030, { attrs: { revision: 11 } }),
+        m('controller.snapshotSent', 22_031, { attrs: { revision: 11, bytes: 610 } }),
+        r('renderer.snapshotReceived', 22_032, { attrs: { revision: 11 } }),
+        r('renderer.commit', 22_036, { attrs: { revision: 11 } }),
+        r('canvas.revisionApplied', 22_080, { attrs: { revision: 11 } }),
+        m('scenario.phase', 23_600, { attrs: { ...h, phase: 'redone' } }),
+        r('scenario.phase', 23_600, { attrs: { ...h, phase: 'redone' }, ...counts(20, 3) }),
+        r('scenario.phase', 24_000, { attrs: { ...h, phase: 'restore', target: 12 }, ...counts(20, 3) }),
+        m('scenario.phase', 24_000, { attrs: { ...h, phase: 'restore', target: 12 } }),
+        // The version list, with the work the restore replaced saved first: sent in the window, at the revision before.
+        m('controller.snapshotSent', 24_010, { attrs: { revision: 11, bytes: 300 } }),
+        m('session.changed', 24_400, { attrs: { revision: 12 } }),
+        m('controller.snapshotSent', 24_405, { attrs: { revision: 12, bytes: 120_000 } }),
+        r('renderer.snapshotReceived', 24_406, { attrs: { revision: 12 } }),
+        r('renderer.commit', 24_416, { attrs: { revision: 12 } }),
+        r('canvas.revisionApplied', 24_500, { attrs: { revision: 12 } }),
+        m('scenario.phase', 26_000, { attrs: { ...h, phase: 'restored' } }),
+        r('scenario.phase', 26_000, { attrs: { ...h, phase: 'restored' }, ...counts(30, 9) }),
+        m('scenario.end', 26_001, { attrs: h }),
+        r('scenario.end', 26_001, { attrs: h, ...counts(31, 9) }),
+        // After the scenario: none of its counts.
+        m('controller.snapshotSent', 27_000, { attrs: { revision: 12, bytes: 9999 } }),
+        span('main.stall', 27_001, 900)
+      ].filter((x) => !drop(x))
+    );
+  }
+
+  it('time each step and the restore by the revision it made, and count what each sent the editor', () => {
+    const got = history.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    const shown = Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k, `${v.value} ${v.unit}`]));
+    const window = (w: string, v: Record<string, string>) => Object.fromEntries(Object.entries(v).map(([k, x]) => [`history.${w}.${k}`, x]));
+    expect(shown).toEqual({
+      ...window('undo', { changed: '50 ms', changedToSent: '2 ms', sentToReceived: '1 ms', receivedToCommit: '3 ms', rendererCommit: '56 ms', previewApplied: '100 ms', snapshotsSent: '1 count', snapshotBytes: '600 bytes', rendererCommits: '4 count', siteEntryWalks: '1 count', mainStallMax: '55 ms' }),
+      ...window('redo', { changed: '30 ms', changedToSent: '1 ms', sentToReceived: '1 ms', receivedToCommit: '4 ms', rendererCommit: '36 ms', previewApplied: '80 ms', snapshotsSent: '1 count', snapshotBytes: '610 bytes', rendererCommits: '6 count', siteEntryWalks: '0 count', mainStallMax: '0 ms' }),
+      ...window('restore', { changed: '400 ms', changedToSent: '5 ms', sentToReceived: '1 ms', receivedToCommit: '10 ms', rendererCommit: '416 ms', previewApplied: '500 ms', snapshotsSent: '2 count', snapshotBytes: '120300 bytes', rendererCommits: '10 count', siteEntryWalks: '6 count', mainStallMax: '0 ms' })
+    });
+    expect(HISTORY_WINDOWS).toEqual(['undo', 'redo', 'restore']);
+  });
+
+  it('name what is missing instead of timing another revision or counting less', () => {
+    // The restore's own send gone: the version list's, at the revision before, is never taken for it.
+    const unsent = history.measure(trace((x) => x.name === 'controller.snapshotSent' && x.attrs?.revision === 12), facts);
+    expect(unsent.missing).toEqual(['controller.snapshotSent (restore)']);
+    expect(unsent.metrics['history.restore.changedToSent']).toBeUndefined();
+    const unshown = history.measure(trace((x) => x.name === 'canvas.revisionApplied' && x.attrs?.revision === 10), facts);
+    expect(unshown.missing).toEqual(['canvas.revisionApplied (undo)']);
+    expect(unshown.metrics['history.undo.previewApplied']).toBeUndefined();
+    const unmarked = history.measure(trace((x) => x.name === 'scenario.phase' && x.attrs?.phase === 'redone' && x.proc === 'renderer'), facts);
+    expect(unmarked.missing).toContain('scenario.phase redone (renderer)');
+    const uncounted = history.measure(new Trace(trace().records.map((x) => (x.c ? { ...x, c: { 'react.commits': x.c['react.commits'] } } : x))), facts);
+    expect(uncounted.missing).toEqual(HISTORY_WINDOWS.map((w) => `history.${w}.siteEntryWalks (the editor never counted its walks of every entry)`));
+    // A window whose opening mark never counted them is missing too, never the editor's total so far.
+    const unopened = history.measure(new Trace(trace().records.map((x) => (x.attrs?.phase === 'undo' && x.c ? { ...x, c: { 'react.commits': x.c['react.commits'] } } : x))), facts);
+    expect(unopened.missing).toEqual(['history.undo.siteEntryWalks (the editor never counted its walks of every entry)']);
   });
 });
 

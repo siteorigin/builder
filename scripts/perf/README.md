@@ -116,7 +116,9 @@ canonical documents of the new state that are not the very objects of the one be
 `docsSerialized` (`docs.serialized`), durable writes, fsyncs, file writes, synchronous filesystem calls, path
 stats and bytes hashed in the edit; the publication's files read, hashed and written, its bytes hashed, durable writes,
 fsyncs, synchronous filesystem calls and path stats (`publish…`); `project:changed` sends and bytes, `reloadFromDisk`
-calls and React commits until the scenario ends; the sweeps of history blobs and unused assets (`session.sweep`) the
+calls and React commits until the scenario ends, and the editor's walks of every collection entry for the site's addresses
+(`siteEntryWalks`, shared/collections.ts `siteEntries`: work that follows the project's size) from the edit being sent to the
+scenario's end; the sweeps of history blobs and unused assets (`session.sweep`) the
 edit waited on before `changed` (`sweepsAwaited`, their time `sweepAwaited`) and all of them until the scenario ends
 (`sweeps`), so a sweep moved later is still seen; the longest main-process stall. What the edit spends checking and
 deriving from the whole project: the batch's checks once it is applied (`batchChecks`, a span, and its parts
@@ -143,6 +145,20 @@ in as the theme pack's own file; after the edit the site still has its favicon a
 changed; then the same as `edit`. The same metrics as `edit`, named `editBranded.*`, and the favicon's reads and the
 bytes of it hashed by the edit's publication (`publishFaviconReads`, `publishFaviconBytesHashed`), only from a build
 that counted the favicon's reads before the edit (one that never counts them fails rather than reporting none).
+
+**`history`** (after `open`, and after every other scenario that follows it but `editBranded` and `switch`, which inherit
+the two saved versions and the History steps it leaves): take a step back and forward, and put a saved version back,
+each to the preview showing it. Before the timed part: a version saved of the project as it is, the home hero's Heading changed through the editor's
+API (one step of History), and the hero selected in Layers with the Inspector showing it. Then three windows, each from
+its own phase mark to the next: `undo` (the toolbar's Undo), `redo` (its Redo), and `restore` (Restore in History's
+Saved versions, opened and the version reviewed untimed). Checks: each moved the project exactly one revision, and the
+project, the home page's document on disk and the preview hold the heading it should (the original after Undo and the
+restore, the changed one after Redo), and so does the Inspector's Heading, which shows the editor's own copy; the restore kept
+the work it replaced as a version of its own. Per window, named
+`history.<window>.*`, by the revision it made: `changed`, `rendererCommit` and `previewApplied` from the window's start;
+`changedToSent`, `sentToReceived` and `receivedToCommit` as in `edit`; `project:changed` sends and bytes over the window
+(`snapshotsSent`, `snapshotBytes`, the version list's own updates included), React commits, `siteEntryWalks` and the
+longest main-process stall.
 
 **`batch`** (after `open`): in the AI panel, in Edit mode limited to the home page (This page), ask for a change that the
 scripted model (no live provider) makes as one `apply_operations` call of 30 operations, the most one call may carry:
