@@ -19,6 +19,7 @@ import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTIO
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { PAGE_SEO_ARGS, PAGE_SEO_BRIEF, PAGE_SEO_DESCRIPTION, pageSeoToolSchema, runPageSeo, runSiteSeo, SITE_SEO_ARGS, SITE_SEO_BRIEF, SITE_SEO_DESCRIPTION, siteSeoToolSchema } from './seo-tools';
 import { CONNECT_LIST_ARGS, CONNECT_LIST_BRIEF, CONNECT_LIST_DESCRIPTION, connectListSchema, runConnectList } from './collection-lists';
+import { hasSources, INSPECT_SOURCE_ARGS, INSPECT_SOURCE_BRIEF, INSPECT_SOURCE_DESCRIPTION, runInspectSource, runWriteSource, WRITE_SOURCE_ARGS, WRITE_SOURCE_BRIEF, WRITE_SOURCE_DESCRIPTION, type SourceToolHost } from './source-tools';
 import { collectionToolSchemas, DEFINE_COLLECTION_ARGS, DEFINE_COLLECTION_BRIEF, DEFINE_COLLECTION_DESCRIPTION, defineCollectionSchema, runDefineCollection, UPSERT_PINNED_ENTRY_BRIEF, UPSERT_PINNED_ENTRY_DESCRIPTION, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
 import { PROJECT_SECTIONS } from './budget';
 import { hasCollections } from '@shared/entry-feed';
@@ -129,6 +130,8 @@ export const TOOL_ARGS = {
   upsert_collection_entry: UPSERT_ENTRY_ARGS,
   define_collection: DEFINE_COLLECTION_ARGS,
   connect_collection_list: CONNECT_LIST_ARGS,
+  inspect_source_sample: INSPECT_SOURCE_ARGS,
+  write_source_converter: WRITE_SOURCE_ARGS,
   read_layout: z.object({ nodeId: z.string().optional().describe('Optional subtree to read.') }),
   update_theme_component: UPDATE_THEME_COMPONENT_ARGS,
   ...SELECTION_ARGS,
@@ -172,6 +175,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   upsert_collection_entry: UPSERT_ENTRY_DESCRIPTION,
   define_collection: DEFINE_COLLECTION_DESCRIPTION,
   connect_collection_list: CONNECT_LIST_DESCRIPTION,
+  inspect_source_sample: INSPECT_SOURCE_DESCRIPTION,
+  write_source_converter: WRITE_SOURCE_DESCRIPTION,
   read_layout: "Read the collection layout this request may change, as it is now: its sections with their props, styles, bindings and nested content, or one node's subtree. Its owner is the layout's, for every operation.",
   update_theme_component: UPDATE_THEME_COMPONENT_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS,
@@ -208,6 +213,8 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   upsert_collection_entry: UPSERT_ENTRY_BRIEF,
   define_collection: DEFINE_COLLECTION_BRIEF,
   connect_collection_list: CONNECT_LIST_BRIEF,
+  inspect_source_sample: INSPECT_SOURCE_BRIEF,
+  write_source_converter: WRITE_SOURCE_BRIEF,
   read_layout: 'The layout this request may change, as it is now, or one node of it.',
   update_theme_component: UPDATE_THEME_COMPONENT_BRIEF,
   ...SELECTION_BRIEFS,
@@ -404,15 +411,17 @@ const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand
 const ENTRY_READS: ToolName[] = ['list_collection_entries', 'read_collection_entry'];
 const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
 const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
+/** Reads and writes of the project's external sources (#680), offered while it has one and the run may change the site. */
+const SOURCE_TOOLS: ToolName[] = ['inspect_source_sample', 'write_source_converter'];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SOURCE_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, finding a
  * field, and a plain question to the author. Nothing that changes the site, measures the live preview or builds the
  * project.
  */
 export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification'];
-export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'write_source_converter', 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
@@ -433,7 +442,7 @@ const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameter
 
 /** The tools of a read-only question: the same small set for every model, with or without a selection. A project with
  *  collections can also have its posts read. */
-function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null): ToolDefinition[] {
+function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null, sources = true): ToolDefinition[] {
   const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
   const tools = names.map((name): ToolDefinition => {
     // A question can never widen what may change: nothing may.
@@ -446,8 +455,9 @@ function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectio
   // A question reads component contracts alone: a design is read to build a component, which a question never does.
   // A question about the post open in the Posts workspace reads that post, never another with a title like it.
   const posts = entry ? [{ name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: collectionToolSchemas(state, entry).read }] : entryReads(state);
-  // A question asked with a collection's layout open reads that layout as it is.
-  return [...tools.map(contractRead), ...posts, ...(layout ? [plainTool('read_layout')] : [])];
+  // A question asked with a collection's layout open reads that layout as it is. One about the site may read what an
+  // external source the author connected has, and change nothing.
+  return [...tools.map(contractRead), ...posts, ...(layout ? [plainTool('read_layout')] : []), ...(sources && !entry && !layout && hasSources(state) ? [plainTool('inspect_source_sample')] : [])];
 }
 
 /** The reads of a collection's entries, while the project has a collection to read. */
@@ -458,6 +468,16 @@ function entryReads(state: ProjectState): ToolDefinition[] {
     { name: 'list_collection_entries', ...describe('list_collection_entries'), parameters: schemas.list },
     { name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: schemas.read }
   ];
+}
+
+/**
+ * Whether a request typed into the chat asks about an external source (#680): how its records are read or mapped, in
+ * so many words, or by naming one of the project's sources.
+ */
+export function asksForSource(text: string, state?: ProjectState): boolean {
+  if (/\b(?:sources?|converters?|mapping|map|api|cms|feed|json|payload|contentful|sanity|strapi|wordpress|graphql|rest|sync)\b/i.test(text)) return true;
+  const words = text.normalize('NFKC').toLowerCase();
+  return Object.entries(state?.sources ?? {}).some(([id, s]) => [id, s?.name].some((n) => typeof n === 'string' && n.trim().length > 1 && words.includes(n.normalize('NFKC').toLowerCase().trim())));
 }
 
 /**
@@ -558,10 +578,13 @@ function runTools(opts: {
   /** The request typed into the chat asks for a collection (see asksForCollection): a small site run is offered the
    *  collection tools, which it otherwise leaves out to keep its window for pages. */
   collectionRequest?: boolean;
+  /** The request asks about an external source (see asksForSource): a small site run is offered the source tools. */
+  sourceRequest?: boolean;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
-  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout), mode: 'ask', focused };
+  // A small model's question reads a source only when it asks about one.
+  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout, !focused || !!opts.sourceRequest), mode: 'ask', focused };
   // One collection layout, for every model: nothing else is in reach, and nothing widens it.
   if (opts.layout) return { tools: layoutTools(state, opts.layout.owner, focused), mode: 'layout', focused };
   // One post, for every model: its text read a part at a time and written back, and the author to ask for more. Nothing
@@ -645,7 +668,9 @@ function runTools(opts: {
     // the request asks for one or names one the project has, so its window stays for pages otherwise.
     ...(!focused || opts.collectionRequest ? [defineCollectionTool(), ...connectListTools(state)] : []),
     ...entryWrite(state),
-    ...entryReads(state)
+    ...entryReads(state),
+    // How a connected source's records become entries: a small model gets these when the request asks about a source.
+    ...(hasSources(state) && (!focused || opts.sourceRequest) ? SOURCE_TOOLS.map(plainTool) : [])
   ];
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
   // do (styling every card of a selected one, say).
@@ -790,6 +815,8 @@ export interface ToolHost {
   fileDiagnostics?(): Promise<Diagnostic[]>;
   /** Aborted when the run is stopped. */
   signal?: AbortSignal;
+  /** The project's external sources as the source tools read and test them (#680), ended with the run. */
+  sources?: SourceToolHost;
 }
 
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
@@ -1261,6 +1288,10 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
     }
     case 'read_layout':
       return readLayout(args as z.infer<(typeof TOOL_ARGS)['read_layout']>, host);
+    case 'inspect_source_sample':
+      return runInspectSource(args as z.infer<typeof INSPECT_SOURCE_ARGS>, host);
+    case 'write_source_converter':
+      return runWriteSource(args as z.infer<typeof WRITE_SOURCE_ARGS>, host, callId);
     case 'update_theme_component':
       return runUpdateThemeComponent(args as z.infer<typeof UPDATE_THEME_COMPONENT_ARGS>, host, callId);
     case 'update_selected_props':

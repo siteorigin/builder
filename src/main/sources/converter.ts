@@ -147,10 +147,42 @@ export function converterProblems(code: string): ConverterProblem[] {
   return out;
 }
 
+/**
+ * Whether a converter reads its source its own way: it names `fetchAll` anywhere, which is what the worker runs in
+ * place of the source's own reader (the name is looked up in the module, exported or not). A converter that cannot be
+ * read counts as one that does.
+ */
+export function readsItsOwnWay(code: string): boolean {
+  const p = parsed(code);
+  if ('problem' in p) return true;
+  let named = false;
+  walk(p.ast, (n) => {
+    if ((n.type === 'Identifier' && n.name === 'fetchAll') || (n.type === 'Literal' && n.value === 'fetchAll')) named = true;
+    else if (n.type === 'TemplateElement' && /fetchAll/.test(String((n.value as { cooked?: unknown })?.cooked ?? ''))) named = true;
+  });
+  return named;
+}
+
 /** The problems, one per line, as an author reads them. */
 export const converterProblemText = (problems: readonly ConverterProblem[]): string => problems.map((p) => (p.line ? `Line ${p.line}: ${p.message}` : p.message)).join('\n');
 
-/** The module as one script: its exports declared as they are, the two that are read returned. */
+/** The names a module exports, as its declarations write them. */
+function exportedNames(ast: AnyNode): Set<string> {
+  const out = new Set<string>();
+  for (const s of ast.body as AnyNode[]) {
+    if (s.type !== 'ExportNamedDeclaration' || !s.declaration) continue;
+    const d = s.declaration as AnyNode;
+    if (d.type === 'FunctionDeclaration') out.add((d.id as AnyNode).name as string);
+    else if (d.type === 'VariableDeclaration') for (const x of d.declarations as AnyNode[]) if ((x.id as AnyNode).type === 'Identifier') out.add((x.id as AnyNode).name as string);
+  }
+  return out;
+}
+
+/**
+ * The module as one script: its exports declared as they are, the two that are read returned. Each is the module's
+ * own exported binding or nothing, decided from its syntax tree: no name the module makes some other way is ever run
+ * as its reader.
+ */
 function asScript(code: string, ast: AnyNode): string {
   let out = '';
   let from = 0;
@@ -160,8 +192,11 @@ function asScript(code: string, ast: AnyNode): string {
     from = (s.declaration as AnyNode).start;
   }
   out += code.slice(from);
+  const names = exportedNames(ast);
+  // `void 0`, never the name `undefined`, which a module may declare as a function of its own.
+  const read = (n: string) => (names.has(n) ? `typeof ${n} === 'function' ? ${n} : void 0` : 'void 0');
   // On the module's first line, so a problem's line is the author's.
-  return `(function () { 'use strict'; ${out}\n;return { convert: typeof convert === 'function' ? convert : undefined, fetchAll: typeof fetchAll === 'function' ? fetchAll : undefined }; })()`;
+  return `(function () { 'use strict'; ${out}\n;return { convert: ${read('convert')}, fetchAll: ${read('fetchAll')} }; })()`;
 }
 
 /**

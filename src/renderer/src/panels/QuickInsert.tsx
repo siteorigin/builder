@@ -29,7 +29,7 @@ const EDGE = 8;
  * `anchor`: its button's box on screen as it opened, followed while `trigger` stays on the page. `under`: what it
  * opens below, when that is more than its button (a slot's row, whose words say what the slot takes). `refused`: why
  * the last choice can't go there, said on that choice's row. When nothing fits it says so, and why when `empty` says
- * (a full slot), with a way to put the list away; without a reason it offers Insert, the full catalogue. When nothing
+ * (a full slot), with a way to put the list away; without a reason it offers Insert, the full catalog. When nothing
  * matches the search it offers to clear it, or Insert opened on the words searched for.
  */
 export function QuickInsert({ title, search, items, anchor, trigger, under, empty, refused, onChoose, onClose }: { title: string; search: string; items: QuickItem[]; anchor: Box; trigger?: HTMLElement | null; under?: HTMLElement | null; empty?: string | null; refused: string | null; onChoose: (it: QuickItem) => void; onClose: (back: boolean) => void }) {
@@ -117,7 +117,7 @@ export function QuickInsert({ title, search, items, anchor, trigger, under, empt
   };
   useLayoutEffect(() => markStuck(boxRef.current?.querySelector('.qi-list') ?? null));
 
-  // Insert, the full catalogue, opened on what was searched for here.
+  // Insert, the full catalog, opened on what was searched for here.
   const toInsert = () => {
     onClose(false);
     openInsertSearchFor(q.trim());

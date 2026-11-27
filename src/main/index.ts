@@ -385,6 +385,7 @@ const orchestrator = new Orchestrator({
   inspectLayout,
   fileDiagnostics: () => controller.fileDiagnostics(),
   inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
+  sources: (signal) => controller.agentSources(signal),
   onBusyChange: (busy) => {
     perf.mark(busy ? 'ai.runStart' : 'ai.runEnd');
     controller.broadcast();

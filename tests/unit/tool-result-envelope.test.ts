@@ -24,6 +24,8 @@ import { newMacroMemory } from '@agent/macros';
 import { applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ToolResult } from '@agent/result';
 import { applyContextBudget } from '@agent/budget';
 import { ProjectSession } from '../../src/main/project/session';
+import type { SourceToolHost } from '@agent/source-tools';
+import { sourceConversionKey, sourceFingerprint } from '@shared/sources';
 
 /**
  * Tools a test adds to those a run is offered, so a guard behind them (a write in a question) can be reached, and every
@@ -77,7 +79,9 @@ function project(): { state: ProjectState; note: string; design: string } {
     { type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: {} },
     { type: 'collection.create', collectionId: 'posts' },
     { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio', publishedAt: '2027-03-02', draft: false, body: ['Twenty makers open their doors.'] },
-    { type: 'component.fork', definitionId: hero }
+    { type: 'component.fork', definitionId: hero },
+    { type: 'collection.create', collectionId: 'staff', name: 'Staff', kind: 'structured', fields: { role: { type: 'string', label: 'Role' } } },
+    { type: 'source.upsert', sourceId: 'team-api', name: 'Team API', adapter: 'rest', collectionId: 'staff', config: { url: 'https://api.example.test/team' } }
   ] as EditOperation[]);
   s = made.state;
   const note = (made.results[0] as { definitionId: string }).definitionId;
@@ -162,6 +166,13 @@ const CASES = {
     fail: (s) => ({ owner: onHome(s), nodeId: 'n_missing', prop: 'items', query: { collectionId: 'posts' } }),
     code: 'VALIDATION_FAILED'
   },
+  inspect_source_sample: { where: 'site', ok: () => ({ sourceId: 'team-api' }), fail: () => ({ sourceId: 'nothing' }), code: 'INVALID_ARGUMENT' },
+  write_source_converter: {
+    where: 'site',
+    ok: () => ({ sourceId: 'team-api', mapping: { externalId: 'uuid', title: 'headline', values: [{ field: 'role', path: 'job' }] } }),
+    fail: () => ({ sourceId: 'team-api', mapping: { title: 'headline' }, converter: 'export function convert(items) { return items; }' }),
+    code: 'INVALID_ARGUMENT'
+  },
   read_layout: { where: 'layout', ok: () => ({}), fail: () => ({ nodeId: 'n_missing' }), code: 'INVALID_ARGUMENT' },
   update_theme_component: { where: 'site', ok: () => ({ definitionId: HEADER }), fail: () => ({ definitionId: 'proj.nothing-abcde' }), code: 'INVALID_ARGUMENT', sameStep: { fail: () => ({ definitionId: HEADER }) } },
   update_selected_props: { where: 'hero', ok: () => ({ props: { heading: 'Thoughtful spaces' } }), fail: () => ({ props: { nothing: 'here' } }), code: 'VALIDATION_FAILED' },
@@ -195,6 +206,17 @@ async function sessionFor() {
   return { session: await ProjectSession.create(dir, state), ids: { note, design } };
 }
 
+/** The main process's side of the source tools, as a source that has one record answers them. */
+const sourcesOf = (session: ProjectSession): SourceToolHost => ({
+  inspect: async () => ({ ok: true, raw: [{ uuid: 'u1', headline: 'Ana Ruiz', job: 'Potter' }], total: 1 }),
+  verify: async (sourceId, change) => {
+    const saved = session.state.sources![sourceId];
+    const operation = { type: 'source.upsert', sourceId, name: saved.name, adapter: saved.adapter, collectionId: saved.collectionId, config: saved.config, ...change } as EditOperation;
+    return { ok: true, operation, grant: { sourceId, base: sourceFingerprint(saved), change: sourceConversionKey(change) }, ticket: 't1', records: [], total: 1, created: 1, updated: 0, unchanged: 0, unpublished: 0, removed: 0, kept: 0 };
+  },
+  approve: async () => true
+});
+
 /** A host like the orchestrator's for a direct call: the session applies, with the call's grant. */
 function hostFor(session: ProjectSession, where: Where, design: string): ToolHost {
   const sel = selectionAt(session.state, where);
@@ -202,7 +224,8 @@ function hostFor(session: ProjectSession, where: Where, design: string): ToolHos
     state: () => session.state,
     revision: () => session.revision,
     diagnostics: () => session.diagnostics(),
-    apply: (operations, expectedRevision, label, key, grants) => session.apply({ operations, expectedRevision }, { label, source: 'ai', idempotencyKey: key, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}) }),
+    apply: (operations, expectedRevision, label, key, grants) => session.apply({ operations, expectedRevision }, { label, source: 'ai', idempotencyKey: key, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}) }),
+    sources: sourcesOf(session),
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [], images: { total: 0, loaded: 0, failed: 0, unverified: 0 } }),
     inspectComponent: async (steps) => steps.map(measured),
@@ -356,6 +379,7 @@ function runner(session: ProjectSession, turns: Array<(req: CanonicalModelReques
     inspectComponent: async (steps) => steps.map(measured),
     codeEnabled: async () => true,
     onBusyChange: () => undefined,
+    sources: () => sourcesOf(session),
     ...extra
   });
   const run = async (text: string, ctx: Partial<ChatContext> = {}) => {

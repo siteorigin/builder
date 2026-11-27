@@ -17,6 +17,7 @@ import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
 import { walkOperations } from '@engine/apply';
 import type { CollectionWriteGrant, LayoutOwner } from '@shared/collection-grant';
+import type { SourceWriteGrant } from '@shared/sources';
 
 /** A part selected inside a placement: the run may change only what that part shows. */
 export interface PartAuthority {
@@ -561,6 +562,9 @@ export interface AuthorityGrants {
   collectionWrite?: CollectionWriteGrant;
   /** The one installed theme component the theme update tool's call updates (see agent/theme-update.ts). */
   themeRefresh?: string;
+  /** The one source mapping or converter the source tool's call tested (see agent/source-tools.ts): the project
+   *  refuses every other source change from a run. */
+  sourceWrite?: SourceWriteGrant;
 }
 
 /**

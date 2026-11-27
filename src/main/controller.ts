@@ -3,6 +3,7 @@ import { markdownMirrorRoute } from '@shared/llms';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
@@ -29,9 +30,10 @@ import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents'
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
-import { sampleSource, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
-import { converterProblems, converterProblemText } from './sources/converter';
-import { holdsSecretValue, sourceFingerprint } from '@shared/sources';
+import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
+import { createAgentSources } from './sources/agent';
+import { sourceFingerprint } from '@shared/sources';
+import type { SourceToolHost } from '@agent/source-tools';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { readContained } from './posts-import/files';
@@ -133,6 +135,15 @@ function sampleCache(): SampleCache | null {
 }
 
 /** Licence notice for the Business starter's sample images. */
+/**
+ * The script an exported project with external sources syncs them with (#680), built beside the main process (see
+ * scripts/sync-cli.ts); null when this build has none, and the export then goes without it.
+ */
+async function syncCliText(state: ProjectState): Promise<string | null> {
+  if (!Object.keys(state.sources ?? {}).length) return null;
+  return fs.readFile(join(dirname(fileURLToPath(import.meta.url)), 'sync-sources.mjs'), 'utf8').catch(() => null);
+}
+
 function starterNotice(): string {
   return join(resourcesDir(), 'resources', 'starter-assets', 'NOTICE.md');
 }
@@ -2719,28 +2730,8 @@ export class Controller {
    * the engine's own reasons, a converter that may not run (each problem by its line), or one of the user's saved
    * secrets written into them.
    */
-  private async sourceDraft(s: ProjectSession, draft: SourceSettingsDraft): Promise<{ state: ProjectState; source: SourceDoc } | { message: string }> {
-    const op = { ...draft, type: 'source.upsert' } as EditOperation;
-    const checked = validateOperation(op);
-    if (!checked.ok) return { message: `The source cannot be saved: ${checked.message}` };
-    let values: string[];
-    try {
-      values = await sourceSecrets.values(s.state.manifest.projectId);
-    } catch (e) {
-      return { message: `${(e as Error).message} The source’s settings cannot be checked for them.` };
-    }
-    // A source's settings never hold one of the user's saved secrets themselves (a token pasted into its name).
-    if (holdsSecretValue(JSON.stringify(draft), values)) return { message: 'A source’s settings may not hold one of your secrets. Name it with ${secret:NAME} or a credential instead.' };
-    if (typeof draft.converter === 'string') {
-      const problems = converterProblems(draft.converter);
-      if (problems.length) return { message: `Its converter cannot be run:\n${converterProblemText(problems)}` };
-    }
-    try {
-      const state = applyOperations(s.state, [op]).state;
-      return { state, source: state.sources![draft.sourceId] };
-    } catch (e) {
-      return { message: (e as Error).message };
-    }
+  private sourceDraft(s: ProjectSession, draft: SourceSettingsDraft): Promise<{ state: ProjectState; source: SourceDoc } | { message: string }> {
+    return sourceDraftState(s.state, draft, sourceSecrets);
   }
 
   /**
@@ -2791,6 +2782,23 @@ export class Controller {
     const saved = s.state.sources?.[draft.sourceId];
     if (saved) await sourceApprovals.approve(s.state.manifest.projectId, saved).catch(() => undefined);
     return { ok: true, revision: r.revision };
+  }
+
+  /** The assistant's side of the open project's external sources (#680), each run's ended with its signal and the project. */
+  private agentSourceHost = createAgentSources({
+    project: () => (this.session && !this.closing ? this.session : null),
+    runner: sourceSyncRunner,
+    secrets: sourceSecrets,
+    approvals: sourceApprovals,
+    track: (abort) => {
+      this.sourceSyncs.add(abort);
+      return () => this.sourceSyncs.delete(abort);
+    }
+  });
+
+  /** The source tools' host for one run (#680), ended with `signal`. */
+  agentSources(signal: AbortSignal): SourceToolHost {
+    return this.agentSourceHost(signal);
   }
 
   /** The names of the secrets the open project's sources can sign in with, never their values. */
@@ -3279,7 +3287,7 @@ export class Controller {
       await timed('export.leaveOutDrafts', () => leaveOutDrafts(dest, s.state))();
       if (opts.forBuild) {
         if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
-      } else await finishExportedSource(dest, s.state, starterNotice());
+      } else await finishExportedSource(dest, s.state, starterNotice(), await syncCliText(s.state));
       if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       return { ok: true as const, revision: s.revision, state: structuredClone(s.state) };

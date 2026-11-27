@@ -6,7 +6,8 @@
  * source is where its entries change, and undoing one would only be put back by the next.
  */
 import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
-import type { SourceSampleResult, SourceSyncResult } from '@shared/api';
+import type { SourceSampleResult, SourceSettingsDraft, SourceSyncResult } from '@shared/api';
+import { converterProblems, converterProblemText } from './converter';
 import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
@@ -20,6 +21,7 @@ import type { ApprovalStore } from './approvals';
 import { SAMPLE_SIZE, type FieldKinds, type NormalizedRecord, type SyncImage } from './protocol';
 import { knownHashes, planIsEmpty, planSourceSync, SyncPlanError, syncOperations, type SyncPlan } from './reconcile';
 import { redactSecrets } from './redact';
+import { pngTextValues } from '../project/photo-metadata';
 
 /** The project session as a sync uses it. */
 export interface SyncSession {
@@ -82,13 +84,24 @@ const slugged = (t: string) => folded(t).replace(/[^\p{L}\p{N}]+/gu, '-');
  * Whether `text` holds a secret, as written or as the slug or file name the engine or the library would make of it:
  * a title "Éxample Token" becomes the address example-token.
  */
-function holdsSecret(text: string, values: readonly string[]): boolean {
+export function holdsSecret(text: string, values: readonly string[]): boolean {
   const long = values.filter((v) => v.length >= MIN_SECRET_LENGTH);
   return holdsSecretValue(text, long) || holdsSecretValue(folded(text), long.map(folded)) || holdsSecretValue(slugged(text), long.map(slugged).filter((v) => v.replace(/-/g, '').length >= MIN_SECRET_LENGTH));
 }
 
+/**
+ * Whether a picture's bytes hold one of `values`: as they are, and in its PNG text chunks, compressed ones included
+ * (a PNG whose text cannot all be read counts as one that does). The library keeps a picture's bytes as they are, so
+ * none may carry a secret.
+ */
+export function pictureHoldsSecret(bytes: Buffer, values: readonly string[]): boolean {
+  if (values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v))) return true;
+  const text = pngTextValues(bytes);
+  return text === null || holdsSecret(text.join('\n'), values);
+}
+
 /** What to call a picture in the library: the name the source gives it, or its file's name. */
-function pictureName(given: string | undefined, url: string): string {
+export function pictureName(given: string | undefined, url: string): string {
   let file = '';
   try {
     file = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '');
@@ -161,7 +174,7 @@ export function syncPreflight(state: ProjectState, source: SourceDoc, records: r
 }
 
 /** Why a sync wrote nothing when what a source sent holds one of the user's secrets. */
-const SECRET_IN_RECORDS = 'what it sent holds one of your secrets, which is never written into the project';
+export const SECRET_IN_RECORDS = 'what it sent holds one of your secrets, which is never written into the project';
 
 /** Why a source whose settings name a converter cannot be read without it, or null. */
 function converterMissing(source: SourceDoc): string | null {
@@ -175,7 +188,7 @@ function converterMissing(source: SourceDoc): string | null {
  * its collection. Nothing is written and no picture fetched. The records are shown only once nothing in them is one of
  * the user's secrets.
  */
-export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | 'signal' | 'now'>, state: ProjectState, source: SourceDoc): Promise<SourceSampleResult> {
+export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | 'signal' | 'now'>, state: ProjectState, source: SourceDoc, opts: { offline?: boolean } = {}): Promise<SourceSampleResult> {
   const missing = converterMissing(source);
   if (missing) return { ok: false, code: 'converter', message: missing };
   const projectId = state.manifest.projectId;
@@ -189,7 +202,7 @@ export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | '
   }
   let result;
   try {
-    result = await deps.runner.run(source.name, { ...sourceRequest(state, source), mode: 'sample', secrets, known: {} }, { signal: deps.signal, timeoutMs: SAMPLE_TIMEOUT_MS });
+    result = await deps.runner.run(source.name, { ...sourceRequest(state, source), mode: 'sample', secrets, known: {}, ...(opts.offline ? { offline: true } : {}) }, { signal: deps.signal, timeoutMs: SAMPLE_TIMEOUT_MS });
   } catch (e) {
     const message = e instanceof SyncError ? redactSecrets(e.message, values) : syncFailureMessage(source.name, 'failed');
     return { ok: false, ...(e instanceof SyncError ? { code: e.code } : {}), message: message.replace('was not synced', 'could not be tested') };
@@ -203,6 +216,84 @@ export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | '
   const plan = planSourceSync(state, source, result.records, now);
   const c = counts(plan, 0, 0) as Extract<SourceSyncResult, { ok: true }>;
   return { ok: true, raw: result.raw ?? [], records: result.records.slice(0, SAMPLE_SIZE), total: result.records.length, created: c.created, updated: c.updated, unchanged: c.unchanged, unpublished: c.unpublished, removed: c.removed, kept: c.kept };
+}
+
+/**
+ * Whether `source`'s settings may sign in with the user's secrets: they name none, or the user approved them as they
+ * are, by saving them here. Settings changed outside the app (a collaborator's commit pointing them elsewhere) are not.
+ */
+export async function signInApproved(approvals: Pick<ApprovalStore, 'approved'>, projectId: string, source: SourceDoc): Promise<boolean> {
+  if (!sourceSecretNames(source).length) return true;
+  try {
+    return await approvals.approved(projectId, source);
+  } catch {
+    return false;
+  }
+}
+
+/** Why a source whose settings were changed outside the app does not sign in with the user's secrets. */
+export const unapprovedMessage = (source: SourceDoc) =>
+  `“${source.name}” was changed outside SiteOrigin Builder since it was last saved here, so it does not sign in with your secrets. Open its settings, test them and save them again.`;
+
+/** What a source has, as its kind of source reads it, before any mapping or converter puts it in shape. */
+export type SourceInspection = { ok: true; raw: unknown[]; total: number } | { ok: false; code?: string; message: string };
+
+/**
+ * The first few records source `sourceId` of the project `state` has, exactly as its kind of source reads them (links
+ * resolved, the list found in the reply), and how many it has (#680): what the assistant reads to write its mapping or
+ * converter, which are not run. Its saved settings are read as they are, signed in only when the user approved them.
+ * Nothing is written and no picture fetched, and nothing comes back that holds one of the user's secrets.
+ */
+export async function inspectSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | 'approvals' | 'signal'>, state: ProjectState, source: SourceDoc): Promise<SourceInspection> {
+  const projectId = state.manifest.projectId;
+  const refused = (message: string) => message.replace('was not synced', 'could not be read');
+  if (!(await signInApproved(deps.approvals, projectId, source))) return { ok: false, code: 'unapproved', message: unapprovedMessage(source) };
+  let secrets: Record<string, string>;
+  let values: string[];
+  try {
+    secrets = await deps.secrets.resolve(projectId, sourceSecretNames(source));
+    values = [...new Set([...Object.values(secrets), ...(await deps.secrets.values(projectId))])];
+  } catch (e) {
+    return { ok: false, code: 'secrets', message: refused(syncFailureMessage(source.name, 'failed', (e as Error).message.replace(/\.$/, ''))) };
+  }
+  let result;
+  try {
+    result = await deps.runner.run(source.name, { adapter: source.adapter, config: source.config, fields: fieldKinds(state, source.collectionId), mode: 'inspect', secrets, known: {} }, { signal: deps.signal, timeoutMs: SAMPLE_TIMEOUT_MS });
+  } catch (e) {
+    return { ok: false, ...(e instanceof SyncError ? { code: e.code } : {}), message: refused(e instanceof SyncError ? redactSecrets(e.message, values) : syncFailureMessage(source.name, 'failed')) };
+  }
+  // Only what is shown goes anywhere, and none of it may hold a secret (a server echoing its token).
+  if (holdsSecret(textOf(result.raw ?? []), values)) return { ok: false, code: 'secret', message: `“${source.name}” could not be read: what it sent holds one of your secrets, which is never shown.` };
+  return { ok: true, raw: result.raw ?? [], total: result.total ?? 0 };
+}
+
+/**
+ * The project `state` with source settings `draft` saved in it, as `source.upsert` saves them, or why they cannot be:
+ * the engine's own reasons, a converter that may not run (each problem by its line), or one of the user's saved
+ * secrets written into them.
+ */
+export async function sourceDraftState(state: ProjectState, draft: SourceSettingsDraft, secrets: Pick<SecretStore, 'values'>): Promise<{ state: ProjectState; source: SourceDoc } | { message: string }> {
+  const op = { ...draft, type: 'source.upsert' } as EditOperation;
+  const checked = validateOperation(op);
+  if (!checked.ok) return { message: `The source cannot be saved: ${checked.message}` };
+  let values: string[];
+  try {
+    values = await secrets.values(state.manifest.projectId);
+  } catch (e) {
+    return { message: `${(e as Error).message} The source’s settings cannot be checked for them.` };
+  }
+  // A source's settings never hold one of the user's saved secrets themselves (a token pasted into its name).
+  if (holdsSecretValue(JSON.stringify(draft), values)) return { message: 'A source’s settings may not hold one of your secrets. Name it with ${secret:NAME} or a credential instead.' };
+  if (typeof draft.converter === 'string') {
+    const problems = converterProblems(draft.converter);
+    if (problems.length) return { message: `Its converter cannot be run:\n${converterProblemText(problems)}` };
+  }
+  try {
+    const next = applyOperations(state, [op]).state;
+    return { state: next, source: next.sources![draft.sourceId] };
+  } catch (e) {
+    return { message: (e as Error).message };
+  }
 }
 
 /** How long a Test may take: less than a sync, as someone is waiting on it. */
@@ -229,16 +320,8 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   if (missing) return { ok: false, code: 'converter', message: missing };
   const projectId = state.manifest.projectId;
   // Settings changed outside the app (its address, say) never take the user's secrets anywhere until saved here.
-  if (sourceSecretNames(source).length) {
-    let approved: boolean;
-    try {
-      approved = await deps.approvals.approved(projectId, source);
-    } catch {
-      approved = false;
-    }
-    if (!approved)
-      return { ok: false, code: 'unapproved', message: `“${source.name}” was changed outside SiteOrigin Builder since it was last saved here, so it does not sign in with your secrets. Open its settings, test them and save them again.` };
-  }
+  if (!(await signInApproved(deps.approvals, projectId, source)))
+    return { ok: false, code: 'unapproved', message: unapprovedMessage(source) };
   let secrets: Record<string, string>;
   let values: string[];
   try {
@@ -292,7 +375,7 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
       // Nor in what a picture brings: its name, as an address may carry it, or its bytes (a text chunk), which the
       // library keeps as they are.
       const bytes = Buffer.from(img.bytes);
-      if (holdsSecret(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v))) return leaked;
+      if (holdsSecret(name, values) || pictureHoldsSecret(bytes, values)) return leaked;
       try {
         const { record, existing } = await deps.importImage({ ...img, name }, known, createdAt);
         // The file name the library made of it ("Arts & Crafts" is arts-and-crafts): never one that holds a secret.

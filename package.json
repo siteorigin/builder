@@ -65,6 +65,7 @@
     "electron": "45.4.1",
     "electron-builder": "26.18.0",
     "electron-vite": "6.0.0",
+    "esbuild": "0.28.2",
     "js-yaml": "4.3.2",
     "lucide-react": "1.78.0",
     "miniflare": "5.20261123.1-beta",
