@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronRight, Copy } from 'lucide-react';
+import { Check, Copy } from 'lucide-react';
+import { Disclosure } from './Disclosure';
 import { REPORT_URL } from '@shared/links';
 import { AppMark } from './AppMark';
 import './FailureScreen.css';
@@ -78,13 +79,9 @@ export function FailureScreen({ title, children, detail, detailOpen = false, rep
           </h1>
           <div className="failure-text">{children}</div>
           {detail && (
-            <details className="failure-details" open={detailOpen || undefined}>
-              <summary>
-                <ChevronRight aria-hidden="true" />
-                Technical details
-              </summary>
+            <Disclosure className="failure-details" summary="Technical details" open={detailOpen || undefined}>
               <pre className="failure-detail">{detail}</pre>
-            </details>
+            </Disclosure>
           )}
           {/* Always there, so a screen reader hears it when it fills. */}
           <div className="failure-note" role="status">

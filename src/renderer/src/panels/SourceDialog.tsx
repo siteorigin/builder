@@ -17,11 +17,11 @@ import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighl
 import { lintGutter, nextDiagnostic, setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import { javascript } from '@codemirror/lang-javascript';
 import { tags as t } from '@lezer/highlight';
-import { Check, ChevronRight, KeyRound, Plug, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { Check, KeyRound, Plug, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { SourceSampleResult } from '@shared/api';
 import { SOURCE_ADAPTERS, SOURCE_REMOVALS, effectiveMapping, isBuiltInAdapter, isSecretName, sourceFingerprint } from '@shared/sources';
 import { api, toast, useStore } from '../store';
-import { ChoiceField, Field, Modal } from '../components/ui';
+import { ChoiceField, Disclosure, Field, Modal } from '../components/ui';
 import { ADAPTER_IDS, MAPPED_DETAILS, draftSecretNames, sourceDraft, sourceForm, sourceOfCollection, type PairRow, type SourceForm } from '../lib/sources';
 // The app's code frame and syntax colours, as the Svelte editor draws them.
 import './SourceModal.css';
@@ -389,16 +389,12 @@ function EntryTable({ entry, paths, given, named, fields, caption }: { entry: un
   );
 }
 
-/** A fold in the sample, marked as the app's other folds are. */
+/** A fold in the sample: the house row fold, in the sample's bordered card. */
 function Fold({ open, summary, label, children }: { open?: boolean; summary: ReactNode; label?: string; children: ReactNode }) {
   return (
-    <details className="sd-fold" open={open}>
-      <summary aria-label={label}>
-        <ChevronRight aria-hidden="true" className="sd-fold-mark" />
-        {summary}
-      </summary>
+    <Disclosure row className="sd-fold" open={open} summary={summary} summaryLabel={label}>
       {children}
-    </details>
+    </Disclosure>
   );
 }
 

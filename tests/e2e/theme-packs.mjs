@@ -91,7 +91,7 @@ assert.ok(!JSON.parse(pkgBefore.toString()).devDependencies['@fontsource-variabl
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 const styles = win.locator('#dock-panel-styles .ss-theme');
 await styles.waitFor();
-await styles.locator('.ss-packs-refused').getByRole('button', { name: 'Show why' }).click();
+await styles.locator('.ss-packs-refused summary', { hasText: 'Why it couldn’t be loaded' }).click();
 assert.match(await styles.locator('.ss-packs-refused').innerText(), /couldn’t be loaded[^]*broken[^]*not valid JSON[^]*packs/, 'Site styles lists the refused pack, why, and where packs are read from');
 await styles.getByRole('button', { name: 'Change theme' }).click();
 await styles.locator('[data-theme-option="atelier"]').click();

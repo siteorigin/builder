@@ -1,9 +1,8 @@
 import './TagField.css';
 import { useId, useMemo, type ReactNode } from 'react';
-import { ChevronRight } from 'lucide-react';
 import type { ElementNode, OwnerRef, ProjectState, TextNode } from '@shared/types';
 import { tagOptions } from '@engine/semantic-tags';
-import { Field } from '../components/ui';
+import { Disclosure, Field } from '../components/ui';
 import { standingReason, tagSelectOptions, unavailableReasons } from '../lib/tag-options';
 
 /** Where a heading's look is set, kept on one line. */
@@ -58,11 +57,7 @@ export function TagField({ state, owner, node, onChange, label = 'Tag', hint }: 
         </select>
       </Field>
       {reasons.length > 0 && (
-        <details className="tag-why">
-          <summary id={whyId}>
-            <ChevronRight aria-hidden="true" />
-            {blocked === 1 ? '1 tag can’t go here' : `${blocked} tags can’t go here`}
-          </summary>
+        <Disclosure className="tag-why" summaryId={whyId} summary={blocked === 1 ? '1 tag can’t go here' : `${blocked} tags can’t go here`}>
           <ul>
             {reasons.map((r) => (
               <li key={r.reason}>
@@ -71,7 +66,7 @@ export function TagField({ state, owner, node, onChange, label = 'Tag', hint }: 
               </li>
             ))}
           </ul>
-        </details>
+        </Disclosure>
       )}
     </div>
   );

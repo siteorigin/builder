@@ -50,14 +50,8 @@
   .import-review-warn, .import-review-what svg.import-review-warn, .import-review-heading svg.import-review-warn { color: var(--amber); }
   .modal-head > svg.import-review-icon-blocked { color: var(--red); }
 
-  /* ---------- Disclosure: the house chevron, neutral ink ---------- */
-  .import-disclosure > summary { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; min-height: 26px; margin-left: -6px; padding: 2px 8px 2px 6px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600; color: var(--text-2); list-style: none; }
-  .import-disclosure > summary::-webkit-details-marker { display: none; }
-  .import-disclosure > summary:hover { background: var(--hover); color: var(--text); }
-  .import-disclosure > summary svg { flex: none; width: 14px; height: 14px; }
-  .import-disclosure > summary .chev { color: var(--text-3); transition: transform 120ms; }
-  .import-disclosure[open] > summary .chev { transform: rotate(90deg); }
-  .import-disclosure[open] > summary { margin-bottom: 6px; }
+  /* ---------- Disclosure: the house fold (ui.tsx Disclosure), an optional glyph after its mark ---------- */
+  .import-disclosure > summary > svg:not(.disclosure-mark) { flex: none; width: 14px; height: 14px; }
   .import-review-rest.import-disclosure { margin-top: 10px; }
 
   /* ---------- Name lists: two columns while names fit, one when they don't ---------- */
@@ -100,5 +94,4 @@
   /* The dialog body is the container the post lines and name lists answer to. */
   .modal-body:has(> .import-summary) { container-type: inline-size; }
 
-  @media (prefers-reduced-motion: reduce) { .import-disclosure > summary .chev { transition: none; } }
 }

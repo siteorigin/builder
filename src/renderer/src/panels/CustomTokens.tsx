@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import type { ProjectState, TokenDef, TokenGroup } from '@shared/types';
 import { effectiveTokens } from '@generator/index';
 import { tokenPropUsageCounts, tokenUsageCounts } from '@engine/tokens';
@@ -9,7 +9,7 @@ import { ColorPick, opacityWords, type ColorPreset } from '../components/ColorPi
 import { ColorTextInput } from '../components/ColorTextInput';
 import { colorFieldProblem } from '@shared/color';
 import { normalizeColorText } from '@shared/color-names';
-import { DraftInput, Field } from '../components/ui';
+import { DisclosureMark, DraftInput, Field } from '../components/ui';
 import { FontSelect, familyName } from './FontSelect';
 import { usePreviewStack } from '../lib/editor-fonts';
 
@@ -428,7 +428,7 @@ function StyleRow({ t, fresh, uses: used, propUses, where, tokens, state, open, 
             setRemoving(false);
           }}
         >
-          <ChevronRight className="chev" aria-hidden="true" />
+          <DisclosureMark />
           <Mark t={t} value={literal} tokens={tokens} />
           <span className="ss-custom-spec">
             <span className="ss-custom-top">

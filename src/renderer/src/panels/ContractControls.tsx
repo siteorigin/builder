@@ -16,7 +16,7 @@ import { instancesOf } from '@engine/tree';
 import { slotAccepts, slotDeclProblem } from '@engine/slots';
 import { applyOps, claimRefusals, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { isRequiredRefusal } from '@shared/required';
-import { DraftInput, Field, Section, Segmented, Switch } from '../components/ui';
+import { Disclosure, DraftInput, Field, Section, Segmented, Switch } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { designContent, type DesignContent } from '../lib/design-content';
 import { planSlotRemoval } from '../lib/removal-review';
@@ -429,10 +429,7 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
                 </div>
                 {missingNote({ prop }, schema)}
                 {requirableFields(schema).length > 0 && (
-                  <details className="contract-fields">
-                    <summary className="contract-meta">
-                      {schema.type === 'list' ? `${schema.itemLabel} fields` : 'Fields'} ({requirableFields(schema).length})
-                    </summary>
+                  <Disclosure className="contract-fields" summary={`${schema.type === 'list' ? `${schema.itemLabel} fields` : 'Fields'} (${requirableFields(schema).length})`}>
                     <ul className="contract-list" aria-label={`Fields of ${schema.label}`}>
                       {requirableFields(schema).map(([field, fs]) => (
                         <li key={field} className="contract-field" data-field={field}>
@@ -444,7 +441,7 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
                         </li>
                         ))}
                       </ul>
-                    </details>
+                    </Disclosure>
                   )}
               </li>
             );

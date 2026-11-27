@@ -21,12 +21,7 @@
   /* Technical details: folded away, for everyone, selectable, in a scrolling box so a long log never pushes the way
      back off the card. */
   .status-card-details { margin-top: 14px; }
-  .status-card-details summary { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; cursor: default; list-style: none; color: var(--text-2); font-size: 12px; font-weight: 500; border-radius: var(--r-xs); }
-  .status-card-details summary::-webkit-details-marker { display: none; }
-  .status-card-details summary:hover { color: var(--text); }
-  .status-card-details summary svg { width: 14px; height: 14px; transition: transform 120ms; }
-  .status-card-details[open] summary svg { transform: rotate(90deg); }
-  .status-card-details pre { margin: 6px 0 0; padding: 9px 11px; max-height: min(24vh, 180px); overflow: auto; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2); font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+  .status-card-details pre { margin: 2px 0 0; padding: 9px 11px; max-height: min(24vh, 180px); overflow: auto; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2); font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 
   /* A help action that did not work, said where the person is looking, with what to do by hand. Empty until then: out
      of the flow, still in the page so a screen reader hears it fill. */

@@ -91,20 +91,14 @@
   .sd-record-head { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; font-weight: 600; color: var(--text-3); }
   .sd-record-count { padding: 0 6px; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); font-variant-numeric: tabular-nums; }
 
-  /* A fold: the app's local disclosure (a chevron that turns a quarter as it opens), drawn here until a shared one. */
+  /* A fold: the house row fold (ui.tsx Disclosure row) in a bordered card, its summary the card's header. */
   .sd-fold { min-width: 0; border: 1px var(--sd-edge, solid) var(--border-strong); border-radius: var(--r-sm); background: var(--panel-2); }
-  .sd-fold > summary { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px 0 6px; border-radius: calc(var(--r-sm) - 1px); font-size: 12px; font-weight: 600; color: var(--text); cursor: default; list-style: none; }
+  .sd-fold > summary { min-height: 32px; padding: 0 10px 0 8px; border-radius: calc(var(--r-sm) - 1px); font-size: 12px; font-weight: 600; }
   .sd-fold[open] > summary { border-radius: calc(var(--r-sm) - 1px) calc(var(--r-sm) - 1px) 0 0; }
-  .sd-fold > summary::-webkit-details-marker { display: none; }
-  .sd-fold > summary:hover { background: var(--hover); }
-  .sd-fold > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-  .sd-fold-mark { width: 14px; height: 14px; flex: none; color: var(--text-2); transition: transform 120ms; }
-  .sd-fold[open] > summary .sd-fold-mark { transform: rotate(90deg); }
   .sd-fold-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--text-2); }
   .sd-fold-name::before { content: '·'; margin: 0 6px 0 2px; color: var(--text-3); }
   .sd-fold-note { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding-left: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; }
   .sd-fold-note svg { width: 12px; height: 12px; color: var(--amber); }
-  @media (prefers-reduced-motion: reduce) { .sd-fold-mark { transition: none; } }
 
   /* A record as JSON: one line per line, scrolled sideways rather than broken mid-value. */
   .sd-raw { margin: 0; padding: 8px 10px; max-height: 280px; overflow: auto; border: 1px var(--sd-edge, solid) var(--border); border-radius: var(--r-sm); background: var(--code-bg, var(--raised)); font-family: var(--mono); font-size: 12px; line-height: 1.5; font-variant-ligatures: none; white-space: pre; tab-size: 2; user-select: text; color: var(--text); scrollbar-width: thin; }

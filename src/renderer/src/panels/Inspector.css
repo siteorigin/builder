@@ -128,8 +128,7 @@
   .contract-required { display: inline-flex; flex: none; align-items: center; gap: 8px; min-height: 24px; margin-left: auto; font-size: 12px; color: var(--text-2); }
   .contract-required > label { cursor: pointer; }
   .contract-missing { margin: 0; }
-  .contract-fields > summary { cursor: pointer; width: fit-content; }
-  .contract-fields > .contract-list { gap: 4px; margin: 4px 0 2px 8px; }
+  .contract-fields > .contract-list { gap: 4px; margin: 0 0 2px 20px; }
   .contract-field { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; font-size: 12px; }
   .contract-field-name { min-width: 0; overflow-wrap: anywhere; }
   .contract-field > .contract-missing { flex-basis: 100%; }
@@ -152,8 +151,7 @@
   .slot-desc-count { margin-top: -8px; }
   .contract-kind { flex: 0 0 auto; width: auto; }
   .contract-add > .contract-add-end { margin-left: auto; }
-  .contract-uses > summary { cursor: pointer; width: fit-content; }
-  .contract-uses > ul { margin: 2px 0 0; padding-left: 16px; }
+  .contract-uses > ul { margin: 0; padding-left: 34px; }
   .contract-preview .insert-live { max-width: 100%; }
   .insp-note { margin: 0; font-size: 12px; line-height: 1.5; }
   .insp-condition-test { display: flex; gap: 6px; margin-top: 6px; }
@@ -248,8 +246,9 @@
   .insp-page-option:not(.current).active { box-shadow: inset 0 0 0 1px var(--border-strong); }
   .insp-page-option.current.active { box-shadow: inset 0 0 0 1px var(--text-3), var(--shadow-sm); }
   .insp-page-check { position: absolute; right: 8px; top: 6px; width: 14px; height: 14px; color: var(--text-2); }
-  /* What search engines are told: one quiet line that says what is ticked, opening to the ticks. */
-  .insp-link-more > summary { display: flex; align-items: flex-start; gap: 6px; min-height: 24px; margin-left: -6px; padding: 0 6px; border-radius: var(--r-xs); font-size: 12px; color: var(--text); list-style: none; cursor: pointer; }
+  /* What search engines are told: one quiet line that says what is ticked, opening to the ticks. A field's row, so its
+     name keeps full ink; the mark, target, hover and arrow cursor are the house fold's (primitives.css Disclosures). */
+  .insp-link-more > summary { display: flex; align-items: flex-start; gap: 6px; min-height: 24px; margin-left: -6px; padding: 0 6px; border-radius: var(--r-sm); font-size: 12px; color: var(--text); list-style: none; cursor: default; }
   .insp-link-more > summary::-webkit-details-marker { display: none; }
   .insp-link-more > summary:hover { background: var(--hover); }
   .insp-link-more > summary .chev { flex: none; width: 14px; height: 14px; color: var(--text-3); transition: transform 120ms; }

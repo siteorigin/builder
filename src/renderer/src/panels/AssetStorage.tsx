@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Ban, ChevronRight, CircleMinus, HardDrive, Info, ShieldCheck, Trash2, TriangleAlert, Undo2 } from 'lucide-react';
+import { Ban, CircleMinus, HardDrive, Info, ShieldCheck, Trash2, TriangleAlert, Undo2 } from 'lucide-react';
 import type { ReclaimPlan, StorageInfo } from '@shared/api';
 import { api, getState, toast, useStore } from '../store';
-import { Modal, Spinner } from '../components/ui';
+import { DisclosureMark, Modal, Spinner } from '../components/ui';
 import { describeTrim, formatBytes, plural, type TrimmedSide } from '../lib/storage';
 import '../components/ConfirmDialog.css';
 
@@ -75,7 +75,7 @@ export function StorageSummary({ info, onFree }: { info: StorageInfo; onFree: ()
       <div className="asset-storage-head">
         <h4 id="asset-storage-title">
           <button type="button" className="asset-storage-toggle" aria-expanded={shown} aria-controls="asset-storage-details" onClick={() => setOpen(!shown)}>
-            <ChevronRight aria-hidden="true" />
+            <DisclosureMark />
             Storage <span className="asset-storage-total">{formatBytes(total)}</span>
           </button>
         </h4>
@@ -134,7 +134,7 @@ function Trimmed({ side, rest, last }: { side: TrimmedSide; rest: string[]; last
       </ul>
       {side.more && rest.length > 0 && (
         <button type="button" className="storage-more" aria-expanded={all} onClick={() => setAll((v) => !v)}>
-          <ChevronRight aria-hidden="true" />
+          <DisclosureMark />
           {/* "and 4 earlier steps" → "Show all 4 earlier steps"; "and 1 earlier step" → "Show the earlier step". */}
           {all ? 'Show fewer steps' : `Show ${side.more.replace(/^and 1 /, 'the ').replace(/^and /, 'all ')}`}
         </button>

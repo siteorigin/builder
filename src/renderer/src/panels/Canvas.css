@@ -302,8 +302,6 @@
   .form-practice-title strong { font-weight: 600; }
   .form-practice-head .form-practice-lead { flex: none; max-width: 45%; margin-right: 2px; padding: 2px 6px; border-radius: var(--r-xs); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .form-practice-fold { flex: none; width: 28px; height: 28px; }
-  .form-practice-fold svg { width: 16px; height: 16px; transition: transform 120ms; }
-  .form-practice-fold[aria-expanded='false'] svg { transform: rotate(180deg); }
   .form-practice-body { display: flex; flex-direction: column; gap: 8px; padding-right: 8px; }
   .form-practice-body[hidden] { display: none; }
   .form-practice-where { overflow-wrap: anywhere; }
@@ -313,14 +311,8 @@
   .form-practice-label { color: var(--text); font-weight: 500; }
   .form-practice-live { margin-left: auto; }
   .form-practice-live[aria-disabled='true'] { cursor: not-allowed; }
-  /* The forms list: the app's disclosure, a quiet row with a chevron that turns when open. */
-  .form-practice-forms summary { display: flex; align-items: center; gap: 4px; width: fit-content; min-height: 24px; padding: 2px 6px 2px 2px; margin-left: -2px; border-radius: var(--r-xs); list-style: none; cursor: default; color: var(--text-2); font-weight: 500; }
-  .form-practice-forms summary::-webkit-details-marker { display: none; }
-  .form-practice-forms summary:hover { color: var(--text); background: var(--hover); }
-  .form-practice-forms summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-  .form-practice-forms summary svg { width: 14px; height: 14px; flex: none; transition: transform 120ms; }
-  .form-practice-forms[open] summary svg { transform: rotate(90deg); }
-  .form-practice-forms ul { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 0; padding: 0 0 0 22px; overflow-wrap: anywhere; }
+  /* The forms list: the house fold (ui.tsx Disclosure), its list set in under the label's words. */
+  .form-practice-forms ul { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0 0 0 20px; overflow-wrap: anywhere; }
   /* A real send is the one consequential act here, so its confirmation is amber rather than the calm accent. */
   .form-practice-confirm { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--amber) 8%, var(--raised)); border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
   .form-practice-ask { display: flex; align-items: flex-start; gap: 7px; }
@@ -361,7 +353,6 @@
     .form-practice-head { flex-wrap: wrap; row-gap: 2px; }
     .form-practice-head .form-practice-lead { order: 3; flex-basis: 100%; max-width: none; margin-left: 17px; padding-left: 6px; white-space: normal; }
   }
-  @media (prefers-reduced-motion: reduce) { .form-practice-fold svg, .form-practice-forms summary svg { transition: none; } }
   /* Back, Forward and the address of the visitor's journey: quiet controls on the pill itself. */
   .preview-pill .pill-note { flex: none; display: inline-flex; align-items: center; gap: 6px; }
   .preview-pill .pill-step { width: 26px; padding: 0; justify-content: center; background: transparent; color: #fff; }

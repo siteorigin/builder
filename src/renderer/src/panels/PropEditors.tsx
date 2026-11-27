@@ -10,7 +10,7 @@ import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';
 import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
-import { DraftInput, Field, FieldHome, missingNote, openMenus, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
+import { DisclosureMark, DraftInput, Field, FieldHome, missingNote, openMenus, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isSettling, refusedWithin, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
@@ -3409,7 +3409,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
             <div className="list-editor-head">
               {/* The chevron and title are one disclosure button, so the whole leading area opens the item. */}
               <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} aria-describedby={flag ? `list-flag-${it.id}` : undefined} onClick={() => setOpen(openId === it.id ? null : it.id)}>
-                <ChevronRight size={12} style={{ transform: openId === it.id ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
+                <DisclosureMark />
                 {thumb && devUrl && (
                   <span className="list-editor-thumb" aria-hidden="true">
                     <AssetImage key={missingKey(snapshot, thumb.id)} asset={thumb} devUrl={devUrl} cover alt="" loading="lazy" />

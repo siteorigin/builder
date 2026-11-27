@@ -278,6 +278,26 @@
   /* A closed section that keeps its fields (Section keepMounted) hides them: its flex layout must not show them. */
   .section-body[hidden] { display: none; }
 
+  /* ---------- Disclosures ----------
+     Every fold that is not a panel Section: a native details (ui.tsx Disclosure) or a button with aria-expanded.
+     One mark, DisclosureMark: a 14px chevron in --text-3 that points right closed and turns down open, as Section's
+     does. An inline fold's trigger is 12px/500 secondary ink, a 24px target whose hover fills it, with the mark in
+     the text column (the fill reaches out past it); a row fold (.disclosure-row) is a whole header row in its
+     container's type and full ink, focused inside. Focus and reduced motion come from reset.css. A fold brings only
+     its own layout; a whole-row toggle (list item, document, style row) brings its row and takes just the mark.
+     svg.disclosure-mark, so the mark keeps its size inside a .btn or .icon-btn, whose svg rules come earlier. */
+  svg.disclosure-mark { flex: none; width: 14px; height: 14px; color: var(--text-3); transition: transform 120ms; }
+  :is(details[open] > summary, [aria-expanded='true']) > .disclosure-mark { transform: rotate(90deg); }
+  .disclosure-trigger { display: inline-flex; align-items: flex-start; gap: 6px; max-width: 100%; min-height: 24px; margin-left: -4px; padding: 4px 8px 4px 4px; border: 0; border-radius: var(--r-sm); background: none; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--text-2); text-align: left; list-style: none; cursor: default; }
+  .disclosure-trigger::-webkit-details-marker { display: none; }
+  /* On the label's first line, so a label that wraps keeps its mark beside its start. */
+  .disclosure-trigger > svg { flex: none; margin-top: 1px; }
+  .disclosure-trigger:hover { background: var(--hover); color: var(--text); }
+  .disclosure[open] > .disclosure-trigger { margin-bottom: 4px; }
+  .disclosure-row > .disclosure-trigger { display: flex; align-items: center; width: 100%; margin: 0; font-size: inherit; color: var(--text); outline-offset: -2px; }
+  .disclosure-row > .disclosure-trigger > svg { margin-top: 0; }
+  .disclosure-row[open] > .disclosure-trigger { margin-bottom: 0; }
+
   /* ---------- Tabs (dialog-level view switchers) ---------- */
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: -4px -18px 0; padding: 0 8px; }
   .tab { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 10px; border: 0; background: none; color: var(--text-2); font-weight: 500; outline-offset: -4px; }

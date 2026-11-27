@@ -15,6 +15,8 @@ import type { PropSchema } from '@shared/types';
 import { isEmptyPropValue, requiredHint } from '@shared/required';
 import { RenameOffer } from './RenameOffer';
 import { JoinRequests } from './JoinRequests';
+// The house disclosure, in a module of its own so the failure screens can use it without the store.
+export { Disclosure, DisclosureMark } from './Disclosure';
 
 // Editable content counts (the code editor's text area is one), so Tab order and wrapping inside a dialog see it.
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [contenteditable="true"], [tabindex]:not([tabindex="-1"])';

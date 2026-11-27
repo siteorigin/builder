@@ -83,17 +83,11 @@
   /* A caution about where content goes, not a failure: a red ring and icon, without the problem fill. */
   .settings-remote-warning.scope-note.danger { margin-top: 6px; font-size: 12px; background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 55%, transparent); }
 
-  /* Advanced server options: the card's last row, a full-width disclosure. */
-  .settings-advanced > summary { display: flex; align-items: center; gap: 6px; min-height: 42px; padding: 0 14px; border-radius: 0 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px); font-size: 13px; font-weight: 500; color: var(--text-2); list-style: none; cursor: default; }
+  /* Advanced server options: the card's last row, the house row fold (ui.tsx Disclosure row) at the card's size. */
+  .settings-advanced > summary { min-height: 42px; padding: 0 14px; border-radius: 0 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px); font-size: 13px; }
   .settings-advanced[open] > summary { border-radius: 0; }
-  .settings-advanced > summary::-webkit-details-marker { display: none; }
-  .settings-advanced > summary:hover { color: var(--text); background: var(--hover); }
-  .settings-advanced > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-  .settings-advanced > summary svg { width: 14px; height: 14px; transition: transform 120ms; }
-  .settings-advanced[open] > summary svg { transform: rotate(90deg); }
   .settings-advanced-flag { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; color: var(--text-2); }
   .settings-advanced-body { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
-  @media (prefers-reduced-motion: reduce) { .settings-advanced > summary svg { transition: none; } }
 
   .settings-foot-note { font-size: 12px; color: var(--text-3); }
   /* A short window keeps more of the open section in view. */
