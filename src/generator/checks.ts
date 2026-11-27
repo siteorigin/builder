@@ -741,35 +741,42 @@ export interface FormNameClash {
  * Contact forms the site shows that send to Netlify Forms under the same form name. Netlify files a site's messages
  * by form name, so theirs would be mixed together in one list. Each published page, and the shared header and footer
  * where a published page shows them, is walked once as it renders: a form repeated in a list counts once per item.
+ * With `parts`, the forms each of them shows are kept between states (CheckParts).
  */
-export function netlifyFormClashes(state: ProjectState): FormNameClash[] {
+export function netlifyFormClashes(state: ProjectState, parts?: CheckParts): FormNameClash[] {
   const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
   const trees: Array<{ owner: OwnerRef; tree: NodeTree }> = [
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p })),
     ...SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] }))
   ];
   const byName = new Map<string, FormNameClash['forms']>();
-  const add = (name: string, form: FormNameClash['forms'][number]) => byName.set(name, [...(byName.get(name) ?? []), form]);
-  for (const { owner, tree } of trees) {
-    // Content shown through a slot the receiving design renders more than once (inside its list) is walked once;
-    // each further rendering shows its forms again.
-    const bySlot = new Map<string, Array<[string, FormNameClash['forms'][number]]>>();
-    // Forms in a panel a component keeps in the page are in its HTML, where Netlify finds them.
-    walkRendered(state, tree, {
-      kept: true,
-      code: (def, props, reportId, _placement, _n, scope) => {
-        const name = netlifyFormName(def, props);
-        if (!name) return;
-        const form = { owner, nodeId: reportId };
-        add(name, form);
-        for (const slot of scope.slots ?? []) bySlot.set(slot, [...(bySlot.get(slot) ?? []), [name, form]]);
-      },
-      again: (slot) => {
-        for (const [name, form] of bySlot.get(slot) ?? []) add(name, form);
-      }
-    });
-  }
+  for (const { owner, tree } of trees)
+    for (const [name, form] of parts ? parts.tree({ owner, tree, label: '' }, 'netlifyForms', () => netlifyForms(state, owner, tree)) : netlifyForms(state, owner, tree))
+      byName.set(name, [...(byName.get(name) ?? []), form]);
   return [...byName].filter(([, forms]) => forms.length > 1).map(([name, forms]) => ({ name, forms }));
+}
+
+/** The Netlify forms one page, header or footer shows, by form name, each time it renders one (netlifyFormClashes). */
+function netlifyForms(state: ProjectState, owner: OwnerRef, tree: NodeTree): Array<[string, FormNameClash['forms'][number]]> {
+  const out: Array<[string, FormNameClash['forms'][number]]> = [];
+  // Content shown through a slot the receiving design renders more than once (inside its list) is walked once;
+  // each further rendering shows its forms again.
+  const bySlot = new Map<string, Array<[string, FormNameClash['forms'][number]]>>();
+  // Forms in a panel a component keeps in the page are in its HTML, where Netlify finds them.
+  walkRendered(state, tree, {
+    kept: true,
+    code: (def, props, reportId, _placement, _n, scope) => {
+      const name = netlifyFormName(def, props);
+      if (!name) return;
+      const form = { owner, nodeId: reportId };
+      out.push([name, form]);
+      for (const slot of scope.slots ?? []) bySlot.set(slot, [...(bySlot.get(slot) ?? []), [name, form]]);
+    },
+    again: (slot) => {
+      for (const found of bySlot.get(slot) ?? []) out.push(found);
+    }
+  });
+  return out;
 }
 
 /**
@@ -1886,19 +1893,29 @@ export function notFoundSectionRoutes(state: ProjectState): Record<string, strin
 }
 
 /**
+ * What a caller keeps of a check's parts from one project state to the next (engine/validation-cache): a part that
+ * reads no page's tree, and one document's part. Without it, each part is worked out.
+ */
+export interface CheckParts {
+  shared<T>(key: string, compute: () => T): T;
+  tree<T>(t: { owner: OwnerRef; tree: NodeTree; label: string }, key: string, compute: () => T): T;
+}
+
+/**
  * Links that jump to a section the destination page will not have: a page link's section, checked on that page,
  * and an "on this page" link, checked on every page that shows it, collection entries' pages included for the shared
  * header and footer, which every entry shows. A static build refuses these links, and a visitor who follows one lands
- * at the top of the page instead of the section.
+ * at the top of the page instead of the section. With `parts`, the links each page and the shared header and footer
+ * render, the published entries and the archive pages' addresses are kept between states (CheckParts).
  */
-export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
+export function missingSectionLinks(state: ProjectState, parts?: CheckParts): SectionLinkIssue[] {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
   const shell = shellIds(state);
   // Only published entries are pages of the website a build has to follow links on.
-  const published = siteEntries(state).filter((e) => !isDraftEntry(e.entry));
+  const published = parts ? parts.shared('publishedEntries', () => publishedEntries(state)) : publishedEntries(state);
   const entries = published.map((e) => e.entry.id);
   // Collections' index and archive pages show the header and footer around a list of entries, with no sections.
-  const archives = archivePages(state).map((p) => p.route);
+  const archives = parts ? parts.shared('archiveRoutes', () => archivePages(state).map((p) => p.route)) : archivePages(state).map((p) => p.route);
   const entryIds = new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]);
   const ids = new Map<string, Set<string>>();
   // A link visitors see at first must find its section on screen. One in a panel kept in the page hidden shows with
@@ -1925,9 +1942,10 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
     if (!layoutIds.has(key)) layoutIds.set(key, template?.nodes ? treeIds(state, [template], new Set(entryIdsOf(hidden)), !!hidden) : entryIdsOf(hidden));
     return layoutIds.get(key)!;
   };
-  const articleIds = new Map<string, Set<string>>();
+  // An entry's page reads what any part of the project but the pages' trees may hold: kept with those (CheckParts).
+  const articleIds = parts ? parts.shared('entryPageIds', () => new Map<string, Set<string>>()) : new Map<string, Set<string>>();
   const idsOnEntry = (a: (typeof articles)[number], hidden?: boolean) => {
-    const key = `${hidden ? 'kept' : 'shown'}:${a.entry.id}`;
+    const key = JSON.stringify([hidden ? 'kept' : 'shown', a.collection.settings.id, a.entry.id]);
     if (!articleIds.has(key)) articleIds.set(key, treeIds(state, [a.article()], new Set(entryIdsOf(hidden)), !!hidden));
     return articleIds.get(key)!;
   };
@@ -1956,8 +1974,15 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[]; entry?: (typeof articles)[number] }> = [
     ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0 || archives.length > 0),
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] })),
-    // A collection's layout, as each of its published entries shows it.
-    ...articles.filter((a) => hasSectionLinks(a.collection.settings.id)).map((a) => ({ owner: { kind: 'template' as const, id: a.collection.settings.id }, tree: a.article(), on: [] as PageDoc[], entry: a }))
+    // A collection's layout, as each of its published entries shows it (the entry's page is made when it is read).
+    ...articles.filter((a) => hasSectionLinks(a.collection.settings.id)).map((a) => ({
+      owner: { kind: 'template' as const, id: a.collection.settings.id },
+      get tree() {
+        return a.article();
+      },
+      on: [] as PageDoc[],
+      entry: a
+    }))
   ];
   const out: SectionLinkIssue[] = [];
   const seen = new Map<string, SectionLinkIssue>();
@@ -1965,8 +1990,18 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const lackingOf = new Map<SectionLinkIssue, Set<string>>();
   // Links in a panel kept in the page hidden are in its HTML, where the build follows them; the sections they go to
   // count only where a visitor can see them.
+  // A page's links and the shared header's and footer's are their own tree's alone; a layout's, as each entry's page
+  // shows them, read what any part of the project but the pages' trees may hold, so each entry's are kept with those.
+  const entryLinks = parts?.shared('entryLayoutLinks', () => new Map<string, RenderedLink[]>());
+  const linksOf = (src: (typeof sources)[number]): RenderedLink[] => {
+    if (!parts || !entryLinks) return renderedLinks(state, src.tree, false, true);
+    if (src.owner.kind === 'page' || src.owner.kind === 'shell') return parts.tree({ owner: { kind: src.owner.kind, id: src.owner.id }, tree: src.tree, label: '' }, 'sectionLinks', () => renderedLinks(state, src.tree, false, true));
+    const key = JSON.stringify([src.owner.id, src.entry?.entry.id ?? null]);
+    if (!entryLinks.has(key)) entryLinks.set(key, renderedLinks(state, src.tree, false, true));
+    return entryLinks.get(key)!;
+  };
   for (const src of sources)
-    for (const { link, label, reportId, key, inText, hidden } of renderedLinks(state, src.tree, false, true)) {
+    for (const { link, label, reportId, key, inText, hidden } of linksOf(src)) {
       let issue: SectionLinkIssue | null = null;
       if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
         if (!idsOf(link.target, hidden).has(link.anchor)) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment: link.anchor, pageId: link.target };
@@ -1994,12 +2029,19 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
     }
   for (const [issue, ids] of lackingOf) issue.entries = [...ids];
   // An entry's text: its page has the layout's and the header and footer's sections, and none of a page's.
-  for (const a of articles) {
+  const showsTextOf = parts ? parts.shared('entryShowsText', () => new Map<string, boolean>()) : new Map<string, boolean>();
+  const showsText = (a: (typeof articles)[number]) => {
+    const key = JSON.stringify([a.collection.settings.id, a.entry.id]);
+    if (!showsTextOf.has(key)) showsTextOf.set(key, showsBody(a.collection, a.article()));
+    return showsTextOf.get(key)!;
+  };
+  const textLinks = parts ? parts.shared('entryTextLinks', () => published.map((e) => entryTextLinks(e.entry.body))) : published.map((e) => entryTextLinks(e.entry.body));
+  for (const [at, a] of articles.entries()) {
     const { entry } = a;
     const owner = { kind: 'entry' as const, id: entry.id };
-    const links = entryTextLinks(entry.body);
+    const links = textLinks[at];
     // Text the entry's layout does not show has no links a visitor or the build could follow.
-    if (!links.length || !showsBody(a.collection, a.article())) continue;
+    if (!links.length || !showsText(a)) continue;
     links.forEach(({ link, label }, i) => {
       const key = `body:${i}`;
       if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
@@ -2012,6 +2054,9 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   }
   return out;
 }
+
+/** The collection entries the website publishes, in the order the site lists them. */
+const publishedEntries = (state: ProjectState) => siteEntries(state).filter((e) => !isDraftEntry(e.entry));
 
 /**
  * The links in an entry's text that visitors see, in order, each with its words. Text damaged by a hand edit (a block

@@ -1,5 +1,5 @@
 import { variantOptions } from '@shared/variants';
-import type { OwnerRef, ProjectState, PropSchema, ResponsiveStyles, TokenDef } from '@shared/types';
+import type { NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, TokenDef } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { colorAtStrength, linkOf } from '@shared/styles';
@@ -105,7 +105,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
  * object's token field included) and the defaults of the project's own definitions. Theme-owned defaults are fixed
  * data. A value bound to an enclosing component's property holds no token of its own.
  */
-export function forEachTokenPropRef(state: ProjectState, fn: (tokenId: string, site: TokenPropSite) => void, opts: { themeDesigns?: boolean } = {}) {
+export function forEachTokenPropRef(state: ProjectState, fn: (tokenId: string, site: TokenPropSite) => void, opts: { themeDesigns?: boolean; trees?: Array<{ owner: OwnerRef; tree: NodeTree; label: string }>; defaults?: boolean } = {}) {
   const visit = (schema: PropSchema, holder: Record<string, unknown>, key: string, owner: OwnerRef, label: string, nodeId?: string) => {
     const v = holder[key];
     if (v === undefined || isBinding(v)) return;
@@ -120,7 +120,7 @@ export function forEachTokenPropRef(state: ProjectState, fn: (tokenId: string, s
     const records = schema.type === 'object' ? (isRecord(v) ? [v] : []) : Array.isArray(v) ? v.filter(isRecord) : [];
     for (const r of records) for (const [k, f] of tokenFields) if (Object.hasOwn(r, k)) visit(f, r, k, owner, label, nodeId);
   };
-  for (const t of allTrees(state)) {
+  for (const t of opts.trees ?? allTrees(state)) {
     // A theme-owned design is fixed theme data, locked to its pack: it is neither counted nor rewritten. Validation
     // still reads it (`themeDesigns`), as a design kept from an earlier theme can choose a token the new one lacks.
     if (!opts.themeDesigns && t.owner.kind === 'component' && state.components[t.owner.id]?.owner !== 'project') continue;
@@ -129,6 +129,7 @@ export function forEachTokenPropRef(state: ProjectState, fn: (tokenId: string, s
       for (const [k, schema] of Object.entries(state.components[n.definitionId].properties ?? {})) if (Object.hasOwn(n.props, k)) visit(schema, n.props, k, t.owner, t.label, n.id);
     }
   }
+  if (opts.defaults === false) return;
   for (const def of Object.values(state.components)) {
     if (def.owner !== 'project') continue;
     const owner: OwnerRef = { kind: 'component', id: def.id };

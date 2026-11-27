@@ -98,10 +98,18 @@ class Structure {
 
   private brokenCards?: Set<string>;
   private placed?: Map<string, Array<{ owner: OwnerRef; tree: NodeTree; id: string }>>;
+  /** How many times a check asked where a design is placed: what every document's placements decide. */
+  placementReads = 0;
+  /**
+   * How many times a walk met a document holding itself (edited by hand). What it then works out depends on where the
+   * walk began, so each document's problems depend on the documents checked before it.
+   */
+  cycles = 0;
 
   /** Where a design's root renders: around each of its placements, unknown while it has none. */
   placements(ctx: TreeCtx): Up {
     if (ctx.owner.kind !== 'component') return OPEN;
+    this.placementReads++;
     if (!this.placed) {
       this.placed = new Map();
       for (const t of allTrees(this.state))
@@ -129,7 +137,10 @@ class Structure {
     const known = this.ups.get(key);
     if (known) return known;
     // A document that holds itself (edited by hand) renders nowhere certain.
-    if (this.visiting.has(key)) return OPEN;
+    if (this.visiting.has(key)) {
+      this.cycles++;
+      return OPEN;
+    }
     this.visiting.add(key);
     const out = this.climb(ctx, id);
     this.visiting.delete(key);
@@ -168,7 +179,10 @@ class Structure {
     const key = `all|${ownerKey(ctx.owner)}|${id}`;
     const known = this.alls.get(key);
     if (known) return known;
-    if (this.visiting.has(key)) return [];
+    if (this.visiting.has(key)) {
+      this.cycles++;
+      return [];
+    }
     this.visiting.add(key);
     const out = new Map<string, Around>();
     for (const a of this.up(ctx, id).parents) {
@@ -226,7 +240,10 @@ class Reader {
     const key = ownerKey(ctx.owner);
     const known = this.inlineDesigns.get(key);
     if (known !== undefined) return known;
-    if (seen.has(key)) return false;
+    if (seen.has(key)) {
+      this.structure.cycles++;
+      return false;
+    }
     seen.add(key);
     const nodes = ctx.tree.nodes;
     // A node met twice holds itself (edited by hand), which renders nothing certain.
@@ -398,6 +415,24 @@ export function nestingProblems(state: ProjectState, owner: OwnerRef, tree: Node
 export function nestingChecker(state: ProjectState): (owner: OwnerRef, tree: NodeTree) => NestingProblem[] {
   const reader = new Reader(new Structure(state));
   return (owner, tree) => treeProblems(reader, owner, tree);
+}
+
+/**
+ * As nestingChecker, saying of each document whether its problems read where a design is placed (a group at the edge of
+ * a design is in a list when every placement of the design is), which a change to any other document can move, and of
+ * the checks so far whether any met a document holding itself, after which each depends on the order they ran in.
+ */
+export function trackedNestingChecker(state: ProjectState): { check: (owner: OwnerRef, tree: NodeTree) => { problems: NestingProblem[]; readPlacements: boolean }; cycles: () => boolean } {
+  const structure = new Structure(state);
+  const reader = new Reader(structure);
+  return {
+    check: (owner, tree) => {
+      const before = structure.placementReads;
+      const problems = treeProblems(reader, owner, tree);
+      return { problems, readPlacements: structure.placementReads !== before };
+    },
+    cycles: () => structure.cycles > 0
+  };
 }
 
 type Doc = { owner: OwnerRef; tree: NodeTree; label: string };

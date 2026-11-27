@@ -39,6 +39,7 @@ import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
+import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
@@ -595,6 +596,8 @@ export class ProjectSession extends EventEmitter {
   settleMs = 3000;
   /** Checks worked out from a state, kept for as long as it is the session's: the state is replaced, never changed. */
   private derived = new WeakMap<ProjectState, { core?: CoreValidation; diagnostics?: Diagnostic[]; saving?: Diagnostic[]; usages?: Record<string, number>; updates?: ThemeUpdates }>();
+  /** The parts of validation one state can share with the next: each document checked again only when it changes. */
+  private validation = new ValidationCache();
   conflicts: Conflict[] = [];
   /** While the open's publication runs after the project is shown: the conflicts as they were before it (shownConflicts). */
   private conflictsBeforeOpen: Conflict[] | null = null;
@@ -3242,7 +3245,16 @@ export class ProjectSession extends EventEmitter {
 
   /** How many places use each library asset. */
   assetUsages(): Record<string, number> {
-    return this.memo(this.state, 'usages', assetUsages);
+    return this.memo(this.state, 'usages', (st) => assetUsages(st, this.usageParts(st)));
+  }
+
+  /** What asset usage may keep from the last state's count: none when the state cannot be read for validation (read-only). */
+  private usageParts(state: ProjectState) {
+    try {
+      return this.validation.keeper(state);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Theme components with a newer version available. */
@@ -3252,7 +3264,7 @@ export class ProjectSession extends EventEmitter {
 
   /** Every problem `validateState` finds in `state`, as Project health shows them, worked out once. */
   private problemsOf(state: ProjectState): Diagnostic[] {
-    return this.memo(state, 'diagnostics', (st) => joinValidation(this.coreOf(st), adviceValidation(st)));
+    return this.memo(state, 'diagnostics', (st) => joinValidation(this.coreOf(st), adviceValidation(st, this.validation)));
   }
 
   /** Problems that stop a state from being saved. */
@@ -3267,7 +3279,7 @@ export class ProjectSession extends EventEmitter {
    */
   private coreOf(state: ProjectState): CoreValidation {
     const checks = this.checksOf(state);
-    return (checks.core ??= coreValidation(state));
+    return (checks.core ??= coreValidation(state, this.validation));
   }
 
   /**

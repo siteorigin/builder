@@ -4,7 +4,7 @@
  * value as it is made; this reads what is already stored, for load validation and for the edits that carry values
  * over without normalizing each one (a swap, a theme change, a package import).
  */
-import type { ComponentDefinition, GraphNode, InstanceNode, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding, isBindingRef, isEntryBinding } from '@shared/types';
 import { entryFieldSchema } from '@shared/entry-fields';
 import { fieldsOf, hasRequired, isEmptyPropValue, requiredGap, requiredMessage } from '@shared/required';
@@ -66,13 +66,22 @@ export function bindingSource(state: ProjectState, owner: OwnerRef, node: GraphN
  * that checks them with the other binding problems (`bindingProblem`).
  */
 export function requiredProblems(state: ProjectState, { bindings = true } = {}): RequiredProblem[] {
-  const out: RequiredProblem[] = [];
+  const { problems, definitions } = requiredDefaults(state);
+  const out = [...problems];
+  if (definitions.size) for (const t of allTrees(state)) out.push(...requiredPlacementProblems(state, t, definitions, bindings));
+  return out;
+}
+
+/** The definitions with a required property, and what their defaults leave empty: what requiredProblems reports first. */
+export function requiredDefaults(state: ProjectState): { problems: RequiredProblem[]; definitions: ReadonlySet<string> } {
   const defs = Object.values(state.components).filter((d): d is ComponentDefinition => !!d && typeof d === 'object' && hasRequiredProps(d));
-  for (const def of defs) out.push(...defaultProblems(def));
-  if (!defs.length) return out;
-  const required = new Set(defs.map((d) => d.id));
-  for (const { owner, tree, label } of allTrees(state))
-    for (const n of Object.values(tree.nodes ?? {})) if (n?.kind === 'instance' && required.has(n.definitionId)) out.push(...placementProblems(state, owner, n, label, bindings));
+  return { problems: defs.flatMap(defaultProblems), definitions: new Set(defs.map((d) => d.id)) };
+}
+
+/** What one tree's placements of `definitions` leave empty, as requiredProblems reports them for each tree in turn. */
+export function requiredPlacementProblems(state: ProjectState, { owner, tree, label }: { owner: OwnerRef; tree: NodeTree; label: string }, definitions: ReadonlySet<string>, bindings: boolean): RequiredProblem[] {
+  const out: RequiredProblem[] = [];
+  for (const n of Object.values(tree.nodes ?? {})) if (n?.kind === 'instance' && definitions.has(n.definitionId)) out.push(...placementProblems(state, owner, n, label, bindings));
   return out;
 }
 
