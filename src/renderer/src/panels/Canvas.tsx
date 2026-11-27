@@ -41,7 +41,7 @@ import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, 
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { CHIP_H, chipLeft } from '../lib/chip-place';
-import { askAiAbout, leaveLayout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
+import { askAiAbout, leaveLayout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
@@ -1104,7 +1104,7 @@ export function Canvas() {
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
-          setState({ selection: next });
+          selectOnPage(next);
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
           break;
         }
@@ -1117,12 +1117,12 @@ export function Canvas() {
           const clicked = ref && s.definitionMode?.studio ? studioClicked(chain, ref) : null;
           const desc = ref && canInlineEdit(ref) ? (clicked ?? descFor(ref)) : null;
           if (ref && desc) {
-            setState({ selection: ref });
+            selectOnPage(ref);
             // The double-click it answers, so the edit starts at the word clicked (and not after a newer one).
             const hit = typeof p.hit === 'string' && p.hit.length <= 20 ? p.hit : undefined;
             beginTextEdit(ref, desc, hit);
           } else if (ref) {
-            setState({ selection: ref, rightTab: 'inspect' });
+            selectOnPage(ref, { rightTab: 'inspect' });
             const r = resolveRef(st, ref);
             const bound = r.node?.kind === 'text' ? r.node.text : r.node?.kind === 'link' ? r.node.label : undefined;
             // A News card or article header shows a page's article details, changed in that page's settings.
@@ -1228,7 +1228,7 @@ export function Canvas() {
             setState({ selection: null });
             break;
           }
-          if (ref) setState({ selection: ref, ...(s.rightTab === 'styles' ? { rightTab: 'inspect' as const } : {}) });
+          if (ref) selectOnPage(ref, s.rightTab === 'styles' ? { rightTab: 'inspect' } : {});
           const fr = frameRef.current!.getBoundingClientRect();
           const z = currentZoom();
           const at = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -1489,8 +1489,8 @@ export function Canvas() {
     if (ready) syncTrack();
   }, [ready, selection, hover, snapshot?.revision, stylesOpen, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A new selection is scrolled to once the frame shows its page, and so is one a Layers row asks to show again
-  // (showLayer). Asked from Layers, one taller than the page shows from its top. One made with a page change (a page
+  // A new selection is scrolled to once the frame shows its page (not one picked on the page: selectOnPage), and so
+  // is one a Layers row asks to show again (showLayer). Asked from Layers, one taller than the page shows from its top. One made with a page change (a page
   // opened at its remembered place, a usage on another page) is scrolled to when the page says it has arrived
   // (`navigated`). The selection Edit makes again after Preview stays where the visitor left the page.
   const shownFor = useRef(showSelection);
@@ -3486,7 +3486,7 @@ export function Canvas() {
                                 : () => {
                                     overTag.current = false;
                                     pagePick();
-                                    if (hover) setState({ selection: hover, ...(getState().rightTab === 'styles' ? { rightTab: 'inspect' as const } : {}) });
+                                    if (hover) selectOnPage(hover, getState().rightTab === 'styles' ? { rightTab: 'inspect' } : {});
                                   }
                             }
                             onPointerEnter={() => (overTag.current = true)}

@@ -2,7 +2,7 @@ import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
 import { newId } from '@shared/ids';
 import { sameRichText, toRichText } from '@shared/richtext';
-import { isBinding } from '@shared/types';
+import { isBinding, refKey } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
@@ -1335,14 +1335,26 @@ export function setStudioView(patch: Partial<StudioView>) {
   setState({ definitionMode: { ...dm, studio: { ...dm.studio, ...patch } } });
 }
 
-/** A selection made again without being scrolled to (see setMode). */
+/** A selection made without being scrolled to (see setMode and selectOnPage). */
 let unscrolled: ElementRef | null = null;
 
-/** Whether `ref` is the selection Edit just made again unscrolled: asked once, by the canvas, as it scrolls to a new selection. */
+/** Whether `ref` is a selection made unscrolled: asked once, by the canvas, as it scrolls to a new selection. */
 export function takeUnscrolled(ref: ElementRef | null): boolean {
   const quiet = !!ref && ref === unscrolled;
   unscrolled = null;
   return quiet;
+}
+
+/**
+ * Select what the author picked on the page itself, which is not scrolled to (issue #1109): they are looking at it,
+ * and a scroll would move it from under the pointer between the two clicks of a double-click, then leave a heading
+ * under the site's sticky header.
+ */
+export function selectOnPage(ref: ElementRef | null, also: Parameters<typeof setState>[0] = {}) {
+  const now = getState().selection;
+  // Only a change of selection is asked about: the same one again scrolls nothing.
+  if (ref && (!now || refKey(ref) !== refKey(now))) unscrolled = ref;
+  setState({ ...also, selection: ref });
 }
 
 /** Show one library image in Assets, closing the dialog that asked for it (Project health, an export). */

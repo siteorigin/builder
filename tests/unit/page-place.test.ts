@@ -237,6 +237,7 @@ const actions = (await load('../../src/renderer/src/lib/actions')) as {
   selectPage: (pageId: string, target?: ElementRef | null) => void;
   setMode: (mode: 'edit' | 'preview') => void;
   takeUnscrolled: (ref: ElementRef | null) => boolean;
+  selectOnPage: (ref: ElementRef | null, also?: Partial<EditorState>) => void;
   deleteSelection: () => Promise<void>;
 };
 store.useStore.subscribe(store.persistPlaces);
@@ -304,6 +305,25 @@ describe('the editor resumes where the author was', () => {
     actions.selectPage(about);
     actions.selectPage(home);
     expect(store.getState().selection).toBeNull();
+  });
+
+  it('a pick on the page selects without scrolling to it', () => {
+    const cta = ref(page(home), lastSection(s, home));
+    actions.selectOnPage(cta);
+    expect(store.getState().selection).toBe(cta);
+    expect(actions.takeUnscrolled(cta), 'the page stays where it was picked').toBe(true);
+    // The same element picked again changes nothing the canvas asks about, so nothing is left over for later.
+    actions.selectOnPage({ ...cta });
+    expect(actions.takeUnscrolled(store.getState().selection)).toBe(false);
+    // Another element picked while one is selected, with what else the pick changes.
+    const intro = ref(page(home), s.pages[home].rootIds[0]);
+    store.setState({ rightTab: 'styles' } as Partial<EditorState>);
+    actions.selectOnPage(intro, { rightTab: 'inspect' } as Partial<EditorState>);
+    expect((store.getState() as unknown as { rightTab: string }).rightTab).toBe('inspect');
+    expect(actions.takeUnscrolled(intro)).toBe(true);
+    actions.selectOnPage(null);
+    expect(store.getState().selection).toBeNull();
+    expect(actions.takeUnscrolled(null)).toBe(false);
   });
 
   it('Preview → Edit selects the element again, without scrolling to it, when the visitor stayed', () => {
