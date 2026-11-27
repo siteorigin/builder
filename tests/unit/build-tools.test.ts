@@ -60,6 +60,8 @@ function tree(dir: string): Record<string, string> {
 }
 
 const ino = (p: string) => lstatSync(p).ino;
+/** A file written with the default mode, as `tree` lists it: Windows has no group or other bits to take away. */
+const WRITABLE = process.platform === 'win32' ? '666' : '644';
 /**
  * The files the build's copy wrote while `step` ran (copyFresh copies each one with fs.copyFile). A new inode cannot
  * show a copy made again: the stale copy is removed just before, and ext4 hands the new file the inode it freed.
@@ -187,8 +189,9 @@ describe('the build’s copy of the website tools', () => {
     // The kept copy is the one brought up to date, and the file is copied into it again.
     expect(readdirSync(join(dirname(second), 'tools'))).toEqual([]);
     expect(copied).toContain(join(second, 'node_modules/vite/dist/node/index.js'));
-    // A link has no bytes to vouch for: it is kept as it is when it still says the same.
-    expect(readlinkSync(join(second, 'node_modules/.bin/vite'))).toBe('../vite/bin/vite.js');
+    // A link has no bytes to vouch for: it is kept as it is when it still says the same (Windows stores the project's
+    // `../vite/bin/vite.js` with its own separators).
+    expect(readlinkSync(join(second, 'node_modules/.bin/vite'))).toBe(readlinkSync(join(p, 'node_modules/.bin/vite')));
   });
 
   it('is held by one export at a time: another copies the tools afresh, and only one copy goes back', async () => {
@@ -238,7 +241,7 @@ describe('the build’s copy of the website tools', () => {
     const third = staging();
     await again(p, third);
     expect(lstatSync(join(p, 'node_modules')).isDirectory()).toBe(true);
-    expect(tree(join(p, 'node_modules'))).toMatchObject({ 'vite/package.json': 'file 644 {"name":"vite"}' });
+    expect(tree(join(p, 'node_modules'))).toMatchObject({ 'vite/package.json': `file ${WRITABLE} {"name":"vite"}` });
     expect(tree(join(third, 'node_modules'))).toEqual(tree(join(fresh, 'node_modules')));
   });
 
@@ -271,7 +274,10 @@ describe('the build’s copy of the website tools', () => {
     const second = staging();
     await take(p, second);
     expect(readFileSync(join(second, 'node_modules/svelte/src/index.js'), 'utf8')).toBe('export const changed = true;\n');
-    expect(statSync(join(second, 'node_modules/svelte/src')).mode & 0o777).toBe(0o555);
+    // The folder's own mode as the system reports it: 555 on macOS and Linux, 444 on Windows, whose read-only
+    // attribute is all a chmod sets and whose folders have no execute bits.
+    expect(statSync(join(second, 'node_modules/svelte/src')).mode & 0o777).toBe(statSync(join(nm, 'svelte/src')).mode & 0o777);
+    if (process.platform !== 'win32') expect(statSync(join(second, 'node_modules/svelte/src')).mode & 0o777).toBe(0o555);
     for (const d of [join(nm, 'svelte/src'), join(second, 'node_modules/svelte/src'), join(slot, 'node_modules/svelte/src')]) if (existsSync(d)) chmodSync(d, 0o755);
   });
 

@@ -1,9 +1,11 @@
 /**
  * The main process's side of the compile workers: the files a build check must compile again are shared between a
  * few utility processes, which compile them at the same time, so checking a large site neither holds up the editor's
- * main process nor takes as long as one process would. Each worker starts with the first batch it is given and stops
- * once it has been idle for a while. A worker that fails, crashes or takes too long gives no outcomes for its share:
- * the check then compiles those files itself, so none is skipped and none answered from anything but its own source.
+ * main process nor takes as long as one process would. Each worker starts with the first batch it is given. The
+ * first, which takes every check, stops once it has been idle for a while; one beyond it, started for a check too
+ * large for one worker, stops as soon as it has answered its share. A worker that fails, crashes or takes too long
+ * gives no outcomes for its share: the check then compiles those files itself, so none is skipped and none answered
+ * from anything but its own source.
  */
 import type { CompileFailure, CompileReply, CompileRequest } from './compile-file';
 
@@ -110,8 +112,15 @@ export function createCompilePool(spawn: () => CompileWorkerHandle, opts: { size
         settle(slot, id, null);
       }
     }).finally(() => {
-      // Each worker keeps its own idle time: one that only a large check needed ends while the first goes on working.
       if (stopped || !slot.worker) return;
+      // Only the first worker waits for the next check: every check goes to it, and one beyond it is needed again only
+      // by another check of more than FILES_PER_WORKER files (the first after a project opens, or one after a change to
+      // many of the website's files), which starts it afresh. Waiting, it would hold its compiler and what compiling its
+      // share left behind.
+      if (slot !== slots[0]) {
+        if (!slot.current) kill(slot);
+        return;
+      }
       slot.idle = setTimeout(() => {
         slot.idle = null;
         if (!slot.current) kill(slot);

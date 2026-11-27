@@ -126,7 +126,10 @@ describe('safeJoin (#959)', () => {
     expect(looked('src/routes/blog/new/+page.svelte')).toBeNull();
     expect(looked('src/routes/missing.svelte')).toBeNull();
     // Anything it cannot vouch for is left to the caller: a link on the way or at the end, a folder, a file in the way.
-    for (const rel of ['inside/+page.svelte', 'src/linked.txt', 'src/routes', 'file.txt/under-a-file', 'missing/deeper/file.json']) expect(looked(rel), rel).toBeUndefined();
+    for (const rel of ['inside/+page.svelte', 'src/linked.txt', 'src/routes', 'missing/deeper/file.json']) expect(looked(rel), rel).toBeUndefined();
+    // A file in the way: macOS and Linux say ENOTDIR, which it leaves to the caller. Windows says plainly that nothing
+    // is there (ENOENT), and nothing can be.
+    expect(looked('file.txt/under-a-file')).toBe(process.platform === 'win32' ? null : undefined);
     // And a path out through a link is refused exactly as safeJoin refuses it.
     expect(() => safeJoinLooking(root, 'src/out/secret.txt')).toThrow(/through a link/);
     expect(() => safeJoinLooking(root, '../outside/secret.txt')).toThrow(/escapes the project/);

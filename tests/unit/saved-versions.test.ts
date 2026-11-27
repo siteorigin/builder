@@ -6,7 +6,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir, userInfo } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import type { AssetRecord } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
@@ -21,6 +21,7 @@ import { advanceVersions, writeVersionCommit } from '../../src/main/project/vers
 import { VersionStore, type SavedVersion } from '../../src/main/project/versions';
 import type { EditOperation } from '@shared/ops';
 import { deflateSync } from 'node:zlib';
+import { denyAccess } from './deny-access';
 
 // Saved versions reach Git as the app's do, through the worker's service run here; versions go to it only in a test
 // run in Git mode (`both`), or one that turns it on (#1153).
@@ -797,7 +798,7 @@ describe('saved versions in Git (#1153)', () => {
     const walk = (d: string) => {
       for (const name of readdirSync(d).sort()) {
         const p = join(d, name);
-        const rel = relative(dir, p);
+        const rel = relative(dir, p).split(sep).join('/');
         if (rel === '.siteorigin') continue;
         const st = lstatSync(p);
         if (st.isDirectory()) {
@@ -1578,12 +1579,12 @@ describe('restoring with Git snapshots on (#1155)', () => {
     await ok(s.restoreVersion(first.id!, s.revision));
     crash.mockRestore();
     const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
-    chmodSync(join(dir, RECORDING), 0o000);
+    const giveBack = denyAccess(join(dir, RECORDING), 'read');
     try {
       expect(await s.saveVersion('Next')).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read just now/) });
       expect(await s.deleteVersion(first.id!)).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read just now/) });
     } finally {
-      chmodSync(join(dir, RECORDING), 0o644);
+      giveBack();
     }
     const next = await ok(s.saveVersion('Next'));
     const row = catalogue(dir).find((v) => v.id === next.id)!;

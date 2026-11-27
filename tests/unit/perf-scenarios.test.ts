@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, FIRST_SHOW, firstShow, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, aiMemory, AI_MEMORY_RUNS, aiMemoryReply, BATCH_REPLY, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, welcome, emptyAppMain, emptyAppSwitches, EMPTY_PAGE, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, FIRST_SHOW, firstShow, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -2047,10 +2047,94 @@ describe('memory', () => {
     ]);
   });
 
+  it('report the AI request’s peak, the rest before and after it and after ten, and both growths', () => {
+    const all = [reading('aiIdle', 200, 'rest', { editor: 150 }), reading('aiRun', 320, 'peak', { editor: 180, buildCheck: 90 }), reading('aiDone', 215, 'rest', { editor: 152 }), reading(`aiDone${AI_MEMORY_RUNS}`, 230, 'rest', { editor: 160 })];
+    const got = aiMemory.measure(new Trace([]), facts, all);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.aiIdle.mem.main'), v('memory.aiIdle.heap.main'), v('memory.aiRun.peak.mem.main'), v('memory.aiRun.peak.mem.buildCheck'), v('memory.aiRun.peak.total'), v('memory.aiDone.heap.main')]).toEqual([200, 10, 320, 90, 590, 10]);
+    expect([v('memory.aiRun.growth.mem.main'), v('memory.aiRun.growth.total'), v('memory.aiRuns.growth.mem.main'), v('memory.aiRuns.growth.mem.editor'), v('memory.aiRuns.growth.heap.main')]).toEqual([15, 17, 15, 8, 0]);
+    // The peak has no heap: it is read from the process table alone.
+    expect(Object.keys(got.metrics).some((k) => k.startsWith('memory.aiRun.peak.heap'))).toBe(false);
+    expect(aiMemory.measure(new Trace([]), facts, all.slice(0, -1)).missing).toEqual([`memory reading aiDone${AI_MEMORY_RUNS}`]);
+    expect(aiMemory.measure(new Trace([]), facts, all.map((r) => (r.label === 'aiRun' ? { ...r, kind: 'rest' as const } : r))).missing).toEqual(['memory reading aiRun']);
+  });
+
+  it('make ten AI requests on their own, after the launch, each answered in its own words', () => {
+    expect(AI_MEMORY_RUNS).toBe(10);
+    expect([aiMemory.memory, aiMemory.after, aiMemory.deadlineMs]).toEqual([true, 'launch', 15 * 60_000]);
+    expect(chainFor(['aiMemory']).map((s) => s.name)).toEqual(['launch', 'aiMemory']);
+    expect(() => chainFor(['aiMemory', 'batch'])).toThrow('Memory scenarios (aiMemory) are run on their own');
+    // Each request's answer is its own, so the log is known to hold the one just made, never the one before.
+    expect(new Set(Array.from({ length: AI_MEMORY_RUNS }, (_, i) => aiMemoryReply(i + 1))).size).toBe(AI_MEMORY_RUNS);
+    expect(aiMemoryReply(2).startsWith(BATCH_REPLY)).toBe(true);
+    // The answer before a request's never reads as that request's.
+    for (let n = 2; n <= AI_MEMORY_RUNS; n++) expect(aiMemoryReply(n - 1).includes(aiMemoryReply(n))).toBe(false);
+  });
+
   it('make 50 edits and give itself longer than a timing scenario, as a memory scenario', () => {
     expect(MEMORY_EDITS).toBe(50);
     expect([memory.memory, memory.after, memory.deadlineMs]).toEqual([true, 'launch', 15 * 60_000]);
     expect([launch, open, edit, panels, chat].some((s) => s.memory)).toBe(false);
+  });
+
+  it('read Welcome beside an empty Electron window, on its own after the launch, and report the app’s part as the difference', () => {
+    expect(chainFor(['welcome']).map((s) => s.name)).toEqual(['launch', 'welcome']);
+    expect(() => chainFor(['welcome', 'launch'])).toThrow('Memory scenarios (welcome) are run on their own');
+    expect([welcome.memory, welcome.after]).toEqual([true, 'launch']);
+    const all = [reading('welcome', 150, 'rest', { editor: 110, gpu: 60, network: 20 }), reading('empty', 60, 'rest', { editor: 30, gpu: 50, network: 20 })];
+    const got = welcome.measure(new Trace([]), facts, all);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.welcome.total'), v('memory.welcome.mem.editor'), v('memory.welcome.heap.main'), v('memory.empty.total'), v('memory.empty.processes')]).toEqual([340, 110, 10, 160, 4]);
+    expect([v('memory.overEmpty.growth.total'), v('memory.overEmpty.growth.mem.main'), v('memory.overEmpty.growth.mem.editor'), v('memory.overEmpty.growth.mem.gpu'), v('memory.overEmpty.growth.mem.network'), v('memory.overEmpty.growth.processes')]).toEqual([180, 90, 80, 10, 0, 0]);
+    // Either reading missing fails the iteration, and no difference is made of one.
+    for (const left of [all.slice(1), all.slice(0, 1)]) {
+      const lacking = welcome.measure(new Trace([]), facts, left);
+      expect(lacking.missing).toEqual([`memory reading ${left[0].label === 'welcome' ? 'empty' : 'welcome'}`]);
+      expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.overEmpty'))).toBe(false);
+    }
+  });
+
+  it('make the empty Electron window with the app’s headless switches, hidden, of the editor’s size, on an empty page', () => {
+    expect(emptyAppSwitches('darwin')).toEqual(['use-mock-keychain', 'disable-background-timer-throttling', 'disable-renderer-backgrounding', 'disable-backgrounding-occluded-windows']);
+    expect(emptyAppSwitches('win32')).toContain('disable-frame-rate-limit');
+    const main = emptyAppMain('/scratch/profile', ['use-mock-keychain']);
+    expect(main).toContain(`app.setPath('userData', "/scratch/profile");`);
+    expect(main).toContain('for (const name of ["use-mock-keychain"]) app.commandLine.appendSwitch(name);');
+    expect(main).toContain("app.setActivationPolicy('accessory')");
+    expect(main).toContain('new BrowserWindow({ width: 1480, height: 920, show: false })');
+    expect(main).not.toMatch(/\.show\(|\.focus\(|webPreferences/);
+    expect(decodeURIComponent(EMPTY_PAGE.slice(EMPTY_PAGE.indexOf(',') + 1))).toBe('<!doctype html><title>Empty</title>');
+    // Run against stand-ins for Electron: what it does, in order, and the one window it makes.
+    const calls: string[] = [];
+    const handlers: Record<string, () => void> = {};
+    let ready: (() => void) | null = null;
+    const electronStub = {
+      app: {
+        setPath: (name: string, value: string) => calls.push(`setPath ${name} ${value}`),
+        commandLine: { appendSwitch: (name: string) => calls.push(`switch ${name}`) },
+        setActivationPolicy: (policy: string) => calls.push(`policy ${policy}`),
+        on: (event: string, fn: () => void) => ((handlers[event] = fn), calls.push(`on ${event}`)),
+        whenReady: () => ({ then: (fn: () => void) => void (ready = fn) }),
+        quit: () => calls.push('quit')
+      },
+      BrowserWindow: class {
+        constructor(opts: object) {
+          calls.push(`window ${JSON.stringify(opts)}`);
+        }
+        loadURL(url: string) {
+          calls.push(`load ${url}`);
+          return Promise.resolve();
+        }
+      }
+    };
+    new Function('require', 'process', main)((id: string) => (id === 'electron' ? electronStub : undefined), { platform: 'darwin' });
+    expect(calls).toEqual(['setPath userData /scratch/profile', 'setPath crashDumps /scratch/profile/Crashpad', 'switch use-mock-keychain', 'policy accessory', 'on window-all-closed']);
+    (ready as unknown as () => void)();
+    expect(calls.slice(5)).toEqual(['window {"width":1480,"height":920,"show":false}', `load ${EMPTY_PAGE}`]);
+    handlers['window-all-closed']();
+    expect(calls.at(-1)).toBe('quit');
   });
 
   const scenario = (name: string, run: () => Promise<void>, seen: string[][]): Scenario => ({
