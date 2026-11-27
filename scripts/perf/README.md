@@ -504,6 +504,15 @@ by snapshots that changed no document). The editor follows them with weak refere
 `editor.held` mark, made straight after a garbage collection of its own and made again when a snapshot arrived in
 between. Memory scenarios run one per launch: each opens the fixture as the warm-up left it.
 
+**`reopen`** (after `launch`, a memory scenario like `memory`, on its own): the fixture opened from its card on Welcome
+and closed again (Close Project), five times in one launch, each open checked as `open` checks it and waited for to the
+canvas reporting that open's home page ready to edit. Readings at rest: a fresh Welcome (`welcome`), the canvas of the
+first open (`canvas`), and Welcome 20 s after the first close (`closed1`) and after the fifth (`closed5`), as `memory`'s
+`closed` is read. Checks: every open opened the fixture whole and writable, every close left no project open and
+Welcome shown. Metrics: each reading's, as `memory`'s; and growth: `memory.close.growth.*` (`closed1` − `welcome`: what
+the closed project left behind), `memory.cycles.growth.*` (`closed5` − `closed1`: what four more opens and closes added
+to it) and `memory.reopen.growth.*` (`closed5` − `welcome`).
+
 **`canvas`** (after `open`): with the home hero selected by a click on it, scroll the home page with the wheel, 30 notches
 of 60 px down and as many back up, each 16 ms after the one before was taken (about 30 a second on an M4 Max, so the
 outlines move every other frame); then sweep the pointer across the page, corner to corner along both diagonals in 60

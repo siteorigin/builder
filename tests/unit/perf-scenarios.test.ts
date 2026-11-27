@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -1945,6 +1945,28 @@ describe('memory', () => {
     expect(() => chainFor(['memoryPanels', 'panels'])).toThrow('are run on their own');
     // Each opens the fixture as the warm-up left it: two in one launch would find it changed by the first.
     expect(() => chainFor(['memory', 'memoryPanels'])).toThrow('Memory scenarios (memory, memoryPanels) are run one at a time');
+  });
+
+  it('reopen: report Welcome, the canvas and Welcome after the first and last close, and what each stretch left', () => {
+    expect(REOPEN_CYCLES).toBe(5);
+    expect([reopen.memory, reopen.after, reopen.deadlineMs]).toEqual([true, 'launch', 15 * 60_000]);
+    expect(chainFor(['reopen']).map((s) => s.name)).toEqual(['launch', 'reopen']);
+    expect(() => chainFor(['reopen', 'open'])).toThrow('Memory scenarios (reopen) are run on their own');
+    const all = [reading('welcome', 150, 'rest', { editor: 100 }), reading('canvas', 260, 'rest', { editor: 140, devServer: 300 }), reading('closed1', 190, 'rest', { editor: 104 }), reading('closed5', 200, 'rest', { editor: 101, preview: 30 })];
+    const heaps = { welcome: 10, canvas: 70, closed1: 40, closed5: 41 } as Record<string, number>;
+    const got = reopen.measure(new Trace([]), facts, all.map((r) => ({ ...r, heap: { main: heaps[r.label] * MiB, editor: 20 * MiB } })));
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.welcome.heap.main'), v('memory.canvas.heap.main'), v('memory.closed1.heap.main'), v('memory.closed5.heap.main'), v('memory.canvas.mem.devServer')]).toEqual([10, 70, 40, 41, 300]);
+    expect([v('memory.close.growth.heap.main'), v('memory.close.growth.mem.main'), v('memory.close.growth.total')]).toEqual([30, 40, 44]);
+    expect([v('memory.cycles.growth.heap.main'), v('memory.cycles.growth.mem.preview'), v('memory.cycles.growth.processes'), v('memory.cycles.growth.total')]).toEqual([1, 30, 1, 37]);
+    expect([v('memory.reopen.growth.heap.main'), v('memory.reopen.growth.mem.main'), v('memory.reopen.growth.total')]).toEqual([31, 50, 81]);
+    // The last close's reading not taken: it, and every growth that needs it, is missing, never zero.
+    const lacking = reopen.measure(new Trace([]), facts, all.slice(0, -1));
+    expect(lacking.missing).toEqual(['memory reading closed5']);
+    expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.cycles') || k.startsWith('memory.reopen'))).toBe(false);
+    // A peak is not a reading at rest.
+    expect(reopen.measure(new Trace([]), facts, all.map((r) => (r.label === 'closed1' ? { ...r, kind: 'peak' as const } : r))).missing).toEqual(['memory reading closed1']);
   });
 
   it('make 50 edits and give itself longer than a timing scenario, as a memory scenario', () => {

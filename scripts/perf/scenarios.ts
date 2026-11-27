@@ -2425,6 +2425,59 @@ export const memory: Scenario = {
   }
 };
 
+/** How many times `reopen` opens the fixture from Welcome and closes it again. */
+export const REOPEN_CYCLES = 5;
+/** The readings `reopen` takes, in order, all at rest: Welcome before the first open, the canvas of the first, and
+ *  Welcome after the first close and after the last. */
+export const REOPEN_READINGS = ['welcome', 'canvas', 'closed1', `closed${REOPEN_CYCLES}`] as const;
+
+export const reopen: Scenario = {
+  name: 'reopen',
+  after: 'launch',
+  memory: true,
+  deadlineMs: 15 * 60_000,
+  description: `The memory of every process of the app at rest on a fresh Welcome, with the fixture open on the canvas, and back on Welcome after the fixture has been opened from its card and closed once and ${REOPEN_CYCLES} times: what a closed project leaves behind, and whether closing more of them adds to it.`,
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('the reopen scenario was run without a memory probe');
+    await probe.rest('welcome');
+    const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    for (let cycle = 1; cycle <= REOPEN_CYCLES; cycle++) {
+      // Opened as `open` opens it, to the canvas reporting this open's home page ready to edit: the cycle-th open of
+      // the launch, never an earlier one's.
+      await openFromWelcome(ctx);
+      const ready = (t: Trace) => {
+        const asked = t.all('open.requested', inProc('renderer'));
+        return asked.length === cycle ? t.first('canvas.ready', homeReady(fixture), asked[cycle - 1].t) : undefined;
+      };
+      expect(ready(await ctx.waitTrace((t) => !!ready(t), 15_000)), `the canvas never reported the home page ready to edit in open ${cycle}`);
+      await checkOpened(ctx);
+      if (cycle === 1) await probe.rest('canvas');
+      const closed = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.projects.close());
+      expect(closed.ok, `the project did not close after open ${cycle}`);
+      await win.locator('.welcome').waitFor({ timeout: 60_000 });
+      expect((await snapshotOf(win)) === null, `a project is still open after close ${cycle}`);
+      if (cycle === 1 || cycle === REOPEN_CYCLES) {
+        // The same age as `memory`'s closed reading, so the preview's renderer has gone in both.
+        await sleep(CLOSED_AFTER_MS);
+        await probe.rest(`closed${cycle}`);
+      }
+    }
+  },
+  measure(_trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string) => readings.find((r) => r.label === label && r.kind === 'rest');
+    for (const label of REOPEN_READINGS) readingMetrics(m, label, reading(label));
+    // What the first project closed left behind; what the next ones closed added to it; and the two together.
+    growthMetrics(m, 'close', reading('welcome'), reading('closed1'));
+    growthMetrics(m, 'cycles', reading('closed1'), reading(`closed${REOPEN_CYCLES}`));
+    growthMetrics(m, 'reopen', reading('welcome'), reading(`closed${REOPEN_CYCLES}`));
+    return m;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // noWindow
 // ---------------------------------------------------------------------------
@@ -6065,7 +6118,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow, reopen];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
