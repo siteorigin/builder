@@ -9,7 +9,7 @@
  * and `getState()`, `setState()` and `useStore.subscribe()` are always the live store's. A panel whose effects must
  * follow the store while it is hidden (announcing, sending, acting on a request made of it) is not wrapped in this.
  */
-import { createContext, memo, useContext, useMemo, useRef, type ReactNode } from 'react';
+import { createContext, memo, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
 import { getOverlay, StoreViewContext, useStore, type OverlayState, type State, type StoreView } from '../store';
 import { activeWorkspace } from './workspace';
 
@@ -65,4 +65,16 @@ export function useShownValue<T>(value: T, hidden: boolean): T {
   const last = useRef(value);
   if (!hidden) last.current = value;
   return last.current;
+}
+
+/**
+ * `children` from the first render in which `shown` is true, and from then on whether shown or not: a panel never
+ * shown is never built, so a project opens with only the panels it shows, and one that has been shown keeps what it
+ * holds (its search, scroll position, open sections and drafts) while it is hidden, as every panel did before.
+ */
+export function ShownOnce({ shown, children }: { shown: boolean; children: ReactNode }) {
+  const [built, setBuilt] = useState(shown);
+  // Set while rendering, so the render that first shows the panel builds it: never a frame shown empty.
+  if (shown && !built) setBuilt(true);
+  return built || shown ? children : null;
 }

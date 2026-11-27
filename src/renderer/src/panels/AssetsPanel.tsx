@@ -15,7 +15,7 @@ import { Picture, Thumb } from '../components/AssetPicture';
 import { gridMeasures, WindowedGrid, type WindowedGridApi } from '../components/WindowedGrid';
 import { assetDropRefusal, goToShellPart, imagePlacement, openComponentStudio, openPost, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
 import { beginAssetDrag } from '../lib/asset-drag';
-import { SHOW_ASSET_EVENT } from '../lib/place';
+import { SHOW_ASSET_EVENT, takeShowAsset } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { sameNameLabels } from '../lib/same-name';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
@@ -752,8 +752,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   // "Show image" (an import kept here rather than placed) opens that image's details.
   useEffect(() => {
     let frame = 0;
-    const onShow = (e: Event) => {
-      const { opening, assetId } = ((e as CustomEvent).detail ?? {}) as { opening?: string; assetId?: string };
+    const show = ({ opening, assetId }: { opening?: string; assetId?: string }) => {
       const s = getState().snapshot;
       const kind = assetId && s ? s.state.assets.assets[assetId]?.kind : undefined;
       if (!assetId || !s || s.workspaceKey !== opening || (kind !== 'image' && kind !== 'document')) return;
@@ -770,7 +769,14 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
     };
+    const onShow = (e: Event) => {
+      takeShowAsset();
+      show(((e as CustomEvent).detail ?? {}) as { opening?: string; assetId?: string });
+    };
     window.addEventListener(SHOW_ASSET_EVENT, onShow);
+    // Asked for before this panel was built (the asking built it): taken now, as it mounts.
+    const asked = takeShowAsset();
+    if (asked) show(asked);
     return () => {
       window.removeEventListener(SHOW_ASSET_EVENT, onShow);
       cancelAnimationFrame(frame);
