@@ -439,6 +439,7 @@ export async function loadPackDir(dir: string, root: PackRoot, reviewed: Readonl
     const bytes = await readRegularFile(abs, want.size).catch((e: Error) => refuse(`${rel} could not be read: ${e.message}`));
     if (bytes.length !== want.size) refuse(`${rel} is ${bytes.length} bytes, but the pack lists ${want.size}. The pack is damaged or was changed after it was built.`);
     perf.count('files.hashed');
+    perf.count('files.hashedBytes', bytes.length);
     if (sha(bytes) !== want.sha256) refuse(`${rel} does not match the hash the pack lists. The pack is damaged or was changed after it was built.`);
     if (rel.endsWith('.woff2') && !isWoff2(bytes)) refuse(`${rel} is not a WOFF2 font.`);
     if (rel.endsWith('.webp') && !isWebp(bytes)) refuse(`${rel} is not a WebP image.`);
@@ -449,6 +450,7 @@ export async function loadPackDir(dir: string, root: PackRoot, reviewed: Readonl
   void _s;
   void _files;
   perf.count('files.hashed');
+  perf.count('files.hashedBytes', raw.length);
   return { pack: { ...data, digest: sha(raw), source: root.source }, files };
 }
 

@@ -86,8 +86,8 @@ the page the canvas reported ready: `runtimeStarted` (the worker given its start
 browser asked for that was answered, when it was asked for and when the answer had gone), with the stretches
 `forkToListen`, `listenToFirstResponse`, `firstResponseToCanvasReady`, and `editorToCanvasReady` (what the author
 watches as "Starting preview"). Counts: files read and hashed, document files read, durable
-writes and fsyncs (session open, attach and preview start), the publication's files read, hashed and written,
-`project:changed` sends and their bytes until the canvas is ready, `reloadFromDisk` calls, React commits; the longest
+writes and fsyncs (session open, attach and preview start), the publication's files read, hashed and written, its
+synchronous filesystem calls, path stats and bytes hashed, `project:changed` sends and their bytes until the canvas is ready, `reloadFromDisk` calls, React commits; the longest
 main-process stall.
 
 **`edit`**: change the home hero's Heading in the Inspector, to the preview showing it. Checks: the project moved exactly
@@ -95,9 +95,10 @@ one revision, the page's document on disk holds the new heading, the preview sho
 editor sending the edit): `apply` (the whole edit in the main process, queue included), `sessionApply`,
 `validateOperations`, `applyOperations`, `validate` (the saving checks), `generate` (both variants), `persist`,
 `publish` (spans); `hmrRelease`, `changed`, `snapshotSent`, `snapshotReceived`, `rendererCommit`, `previewPublished`
-and `previewApplied` (the headline). Counts: durable writes, fsyncs and file writes in the edit, the publication's files
-read, hashed and written, `project:changed` sends and bytes, `reloadFromDisk` calls and React commits until the scenario
-ends; the longest main-process stall.
+and `previewApplied` (the headline). Counts: durable writes, fsyncs, file writes, synchronous filesystem calls, path
+stats and bytes hashed in the edit; the publication's files read, hashed and written, its bytes hashed, durable writes,
+fsyncs, synchronous filesystem calls and path stats (`publish…`); `project:changed` sends and bytes, `reloadFromDisk`
+calls and React commits until the scenario ends; the longest main-process stall.
 
 **`edits`** (after `open`): change the home hero's Heading in the Inspector 20 times, each edit sent once the one
 before it is saved and the file watch has gone off for that save (`controller.watchFired`, when the reload a save sets
@@ -410,7 +411,10 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 - `c` on a mark: every counter of its process, cumulative. `dc` on a span: what each counter gained while it ran.
 
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
-(project, generated and theme pack files), `docs.read` (canonical document files read from the project folder, also
+(project, generated and theme pack files) and `files.hashedBytes` (the bytes those hashes ran over), `files.stats` (a
+project file looked at by its path without being read: a stat, an lstat, or a handle opened for its stat alone;
+`src/main/project/stable-read.ts` and the session's publication), `fs.syncCalls` (synchronous filesystem calls on the
+main process's event loop by path containment, `safeJoin`, the server-hook check and the publication), `docs.read` (canonical document files read from the project folder, also
 counted in `files.read`; `src/main/project/documents.ts`), `export.filesRead`, `export.bytesRead` (what an export reads
 in the main process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as
 IPC serializes the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's

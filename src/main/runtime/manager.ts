@@ -68,6 +68,7 @@ async function lockHash(dir: string): Promise<string> {
   const pkg = await fs.readFile(join(dir, 'package.json'), 'utf8');
   perf.count('files.read');
   perf.count('files.hashed');
+  if (perf.on) perf.count('files.hashedBytes', Buffer.byteLength(lock + pkg));
   return sha(lock + pkg);
 }
 

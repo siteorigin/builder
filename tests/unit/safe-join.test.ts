@@ -4,10 +4,11 @@
  * is decided exactly as the full real-path check decides it.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { safeJoin } from '../../src/main/project/fsutil';
+import { FolderPass, safeJoin, safeJoinLooking } from '../../src/main/project/fsutil';
+import { stampOf } from '../../src/main/project/stable-read';
 
 /** The check as it was before the parts were looked at: real paths, always. */
 function byRealPaths(root: string, rel: string): string {
@@ -74,16 +75,96 @@ describe('safeJoin (#959)', () => {
         '/etc/passwd',
         'src/../../outside',
         '.',
-        'a\0b'
+        'a\0b',
+        // Written other ways than plainly: each is resolved, and decided as before.
+        './src/routes/+page.svelte',
+        'src//routes/+page.svelte',
+        'src/./routes/+page.svelte',
+        'src/routes/',
+        'src/routes/../out/secret.txt',
+        '..hidden/file',
+        '.hidden/file',
+        'src/...',
+        'src\\routes',
+        'C:file',
+        ''
       ];
       const decided = cases.map((rel) => [rel, outcome(() => safeJoin(root, rel))]);
       expect(decided).toEqual(cases.map((rel) => [rel, outcome(() => byRealPaths(root, rel))]));
+      // Checked together in one pass, each is decided the same.
+      const pass = new FolderPass();
+      expect(cases.map((rel) => [rel, outcome(() => safeJoinLooking(root, rel, pass).abs)])).toEqual(decided);
       // And the ones that matter most, said plainly.
       for (const rel of ['src/out/secret.txt', 'src/out/missing/new.txt', 'src/secret.txt', 'chain/secret.txt']) expect(() => safeJoin(root, rel)).toThrow(/through a link/);
       expect(safeJoin(root, 'inside/+page.svelte')).toBe(join(root, 'inside/+page.svelte'));
       expect(safeJoin(root, 'missing/deeper/file.json')).toBe(join(root, 'missing/deeper/file.json'));
     });
   }
+
+  it('says what it saw at a regular file reached with no link, and nothing it did not see for itself (#964)', () => {
+    const base = mkdtempSync(join(tmpdir(), 'so-safejoin-'));
+    dirs.push(base);
+    const root = join(base, 'project');
+    const outside = join(base, 'outside');
+    mkdirSync(join(root, 'src/routes/blog'), { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(root, 'src/routes/+page.svelte'), 'x');
+    writeFileSync(join(root, 'file.txt'), 'x');
+    writeFileSync(join(outside, 'secret.txt'), 'x');
+    symlinkSync(join(root, 'src/routes'), join(root, 'inside'));
+    symlinkSync(join(root, 'file.txt'), join(root, 'src/linked.txt'));
+    symlinkSync(outside, join(root, 'src/out'));
+    const looked = (rel: string) => {
+      const { abs, st } = safeJoinLooking(root, rel);
+      expect(abs).toBe(safeJoin(root, rel));
+      return st === undefined || st === null ? st : stampOf(st);
+    };
+    // The file's own stat, the same as a stat by its path says.
+    expect(looked('src/routes/+page.svelte')).toBe(stampOf(statSync(join(root, 'src/routes/+page.svelte'), { bigint: true })));
+    expect(looked('file.txt')).toBe(stampOf(statSync(join(root, 'file.txt'), { bigint: true })));
+    // Nothing there, below a folder that is.
+    expect(looked('src/routes/blog/new/+page.svelte')).toBeNull();
+    expect(looked('src/routes/missing.svelte')).toBeNull();
+    // Anything it cannot vouch for is left to the caller: a link on the way or at the end, a folder, a file in the way.
+    for (const rel of ['inside/+page.svelte', 'src/linked.txt', 'src/routes', 'file.txt/under-a-file', 'missing/deeper/file.json']) expect(looked(rel), rel).toBeUndefined();
+    // And a path out through a link is refused exactly as safeJoin refuses it.
+    expect(() => safeJoinLooking(root, 'src/out/secret.txt')).toThrow(/through a link/);
+    expect(() => safeJoinLooking(root, '../outside/secret.txt')).toThrow(/escapes the project/);
+  });
+
+  it('reads a folder many paths go through once, and still finds every link among its entries (#964)', () => {
+    const base = mkdtempSync(join(tmpdir(), 'so-safejoin-'));
+    dirs.push(base);
+    const root = join(base, 'project');
+    const outside = join(base, 'outside');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, '+page.svelte'), 'x');
+    const blog = join(root, 'src/routes/blog');
+    const rels: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      mkdirSync(join(blog, `post-${i}`), { recursive: true });
+      writeFileSync(join(blog, `post-${i}`, '+page.svelte'), 'x');
+      rels.push(`src/routes/blog/post-${i}/+page.svelte`);
+    }
+    // Among the folders read whole: a link out of the project, a link to a folder inside it, a file where a folder
+    // should be, one not there yet, and one whose name is written in another case than on disk.
+    symlinkSync(outside, join(blog, 'linked-out'));
+    symlinkSync(join(blog, 'post-0'), join(blog, 'linked-in'));
+    writeFileSync(join(blog, 'a-file'), 'x');
+    const odd = ['linked-out', 'linked-in', 'a-file', 'missing', 'POST-1'].map((name) => `src/routes/blog/${name}/+page.svelte`);
+    const all = [...rels, ...odd];
+    const pass = new FolderPass();
+    const decided = all.map((rel) => [rel, outcome(() => safeJoinLooking(root, rel, pass).abs)]);
+    expect(decided).toEqual(all.map((rel) => [rel, outcome(() => byRealPaths(root, rel))]));
+    expect(() => safeJoinLooking(root, 'src/routes/blog/linked-out/+page.svelte', pass)).toThrow(/through a link/);
+    // What the pass says of each file is what a look of its own says.
+    const own = (rel: string) => {
+      const st = safeJoinLooking(root, rel).st;
+      return st ? stampOf(st) : st;
+    };
+    // Including through the pass that has read the folder whole by now.
+    for (const rel of all) if (!rel.includes('linked-out')) expect(((st) => (st ? stampOf(st) : st))(safeJoinLooking(root, rel, pass).st), rel).toEqual(own(rel));
+  });
 
   it('refuses every path of a project folder that is not there, as before', () => {
     const base = mkdtempSync(join(tmpdir(), 'so-safejoin-'));

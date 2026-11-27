@@ -273,6 +273,9 @@ export const open: Scenario = {
     m.count('open.publishFilesRead', delta(publish, 'files.read'));
     m.count('open.publishFilesHashed', delta(publish, 'files.hashed'));
     m.count('open.publishFilesWritten', delta(publish, 'fs.writes'));
+    m.count('open.publishSyncCalls', delta(publish, 'fs.syncCalls'));
+    m.count('open.publishStats', delta(publish, 'files.stats'));
+    m.count('open.publishBytesHashed', delta(publish, 'files.hashedBytes'), 'bytes');
     const sent = trace.all('controller.snapshotSent', inProc('main'), at, ready?.t);
     m.count('open.snapshotsSent', sent.length);
     bytesSent(m, 'open.snapshotBytes', sent);
@@ -533,9 +536,18 @@ export const edit: Scenario = {
     m.count('edit.durableWrites', delta(applied, 'fs.durableWrites'));
     m.count('edit.fsyncs', delta(applied, 'fs.fsyncs'));
     m.count('edit.fileWrites', delta(applied, 'fs.writes'));
+    // The whole edit's synchronous filesystem calls, path stats and bytes hashed, then the publication's own.
+    m.count('edit.syncCalls', delta(applied, 'fs.syncCalls'));
+    m.count('edit.fileStats', delta(applied, 'files.stats'));
+    m.count('edit.bytesHashed', delta(applied, 'files.hashedBytes'), 'bytes');
     m.count('edit.publishFilesRead', delta(publish, 'files.read'));
     m.count('edit.publishFilesHashed', delta(publish, 'files.hashed'));
+    m.count('edit.publishBytesHashed', delta(publish, 'files.hashedBytes'), 'bytes');
     m.count('edit.publishFilesWritten', delta(publish, 'fs.writes'));
+    m.count('edit.publishDurableWrites', delta(publish, 'fs.durableWrites'));
+    m.count('edit.publishFsyncs', delta(publish, 'fs.fsyncs'));
+    m.count('edit.publishSyncCalls', delta(publish, 'fs.syncCalls'));
+    m.count('edit.publishStats', delta(publish, 'files.stats'));
     const endMain = m.need('scenario.end (main)', trace.first('scenario.end', forScenario('edit', 'main')));
     const endRenderer = m.need('scenario.end (renderer)', trace.first('scenario.end', forScenario('edit', 'renderer')));
     const sent = trace.all('controller.snapshotSent', inProc('main'), at, endMain?.t);

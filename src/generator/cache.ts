@@ -244,6 +244,15 @@ export class GenerationCache {
     return { file, finish };
   }
 
+  /**
+   * The derived value named `name` (see derived) a run worked out for this very state, as a file it gave back read it;
+   * undefined when no run since has (a state never changes, so the value still stands for it).
+   */
+  derivedFor<T>(state: ProjectState, name: string): T | undefined {
+    const dep = this.deps.get('@' + JSON.stringify([name]));
+    return dep && dep.state === state ? (dep.value as T) : undefined;
+  }
+
   clear() {
     this.entries.clear();
     this.deps.clear();
