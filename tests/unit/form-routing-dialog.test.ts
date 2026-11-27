@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
 import type { ChatQuestion, FormRoutingPrompt } from '@shared/api';
 import { questionHint, type WaitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
-import { askRoutingDialog, routingAnswer, routingDialog, routingKey, routingQuestion, type RoutingQuestion } from '../../src/renderer/src/lib/formRoutingReview';
+import { askRoutingDialog, routingAnswer, routingAnswered, routingDialog, routingKey, routingQuestion, type RoutingQuestion } from '../../src/renderer/src/lib/formRoutingReview';
 
 type Confirm = { id: number; title: string; key?: string; formRouting?: FormRoutingPrompt; resolve: (ok: boolean | null) => void };
 type Store = {
@@ -73,6 +73,27 @@ describe('the app’s dialog for where forms send', () => {
     await tick();
     expect(sent).toEqual(['run_1:q_1:Allow this change']);
     expect(store.getConfirm()).toBeNull();
+  });
+
+  it('answers Keep from the Keep button', async () => {
+    const { sent } = open(routingQuestion(question({ id: 'q_keep' }))!);
+    store.getConfirm()!.resolve(false);
+    await tick();
+    expect(sent).toEqual(['run_1:q_keep:Keep it as it is']);
+  });
+
+  it('is not asked again while its answer is on its way, and is once that answer fails', async () => {
+    let settle: (ok: boolean) => void = () => {};
+    const q = routingQuestion(question({ id: 'q_flight' }))!;
+    const { failed } = open(q, () => new Promise<boolean>((r) => (settle = r)));
+    expect(routingAnswered(routingKey(q))).toBe(false);
+    store.getConfirm()!.resolve(true);
+    await tick();
+    expect(routingAnswered(routingKey(q))).toBe(true);
+    settle(false);
+    await tick();
+    expect(routingAnswered(routingKey(q))).toBe(false);
+    expect(failed()).toBe(1);
   });
 
   it('answers Keep when it is dismissed', async () => {

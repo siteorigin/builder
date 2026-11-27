@@ -44,11 +44,11 @@ export interface FormRoutingChange {
    */
   placement?: string;
   /**
-   * For a placement of one of the app's forms, where it sends on each side, whichever setting the batch changes: the
-   * service it uses and that service's setting, so the user sees the address a changed service now reads too. `was` is
-   * absent for a placement that is new or was not a form before, `is` for one that is no longer a form.
+   * Where the placement (or, for a default, a fresh placement of the design) sends on each side, whichever setting the
+   * batch changes: each form it is or holds, with the service it uses and that service's setting, so the user sees the
+   * address a changed service now reads, or a swapped design sends to. `was` is absent where there was nothing before.
    */
-  sends?: { was?: FormSends; is?: FormSends };
+  sends?: { was?: FormSends[]; is?: FormSends[] };
   /**
    * The change itself, as a grant names it: the placement it reaches (its page, layout or design, and the node when it
    * was there before), and the value whole. The same change made again (new IDs and all) has the same key.
@@ -56,9 +56,13 @@ export interface FormRoutingChange {
   key: string;
 }
 
-/** Where one of the app's forms sends: its service, and that service's setting, as the form's design labels them. */
+/**
+ * Where one of the app's forms sends: its service, and that service's setting (as the form's design labels it) with
+ * its value. `prop` names that setting when the placement is the form itself, rather than a design that holds one.
+ */
 export interface FormSends {
   service: string;
+  prop?: string;
   setting?: string;
   value?: unknown;
 }
@@ -129,6 +133,13 @@ function repeatAround(tree: NodeTree, nodeId: string): string {
     id = parents.get(id);
   }
   return '';
+}
+
+/** An `$item` binding with the list it repeats in (`$list`, as repeatAround gives it), so the dialog can name it. */
+function withList(value: unknown, tree: NodeTree | undefined, nodeId: string): unknown {
+  if (!tree || !reads(value, '$item')) return value;
+  const list = repeatAround(tree, nodeId);
+  return list && value && typeof value === 'object' && !Array.isArray(value) && typeof (value as { $item?: unknown }).$item === 'string' ? { ...value, $list: list } : value;
 }
 
 /** A placement's variant choices, compared as one more setting of code that places a form: its code may route by them. */
@@ -221,17 +232,30 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   const trusted = new WeakMap<ComponentDefinition, boolean>();
   const isShipped = (d: ComponentDefinition | undefined) => !!d && (trusted.get(d) ?? (trusted.set(d, shipped(d)), trusted.get(d)!));
   const def = (state: ProjectState, id: string) => (Object.hasOwn(state.components, id) ? state.components[id] : undefined);
-  // Where a placement of one of the app's forms sends: the service it uses, and the one setting that service reads.
-  const sendsWith = (state: ProjectState, n: Instance): FormSends | undefined => {
+  /**
+   * Where a placement sends, as the dialog shows it: the form it is, with its service and the one setting that service
+   * reads, or each form inside the design it is (a setting the design passes on read from the placement), or that its
+   * code decides. `read` resolves a value bound to the design the placement is inside; `tree` holds the placement.
+   */
+  const sendsOf = (state: ProjectState, n: Instance, tree?: NodeTree, read: (v: unknown) => unknown = (v) => v, depth = 0): FormSends[] => {
     const d = def(state, n.definitionId);
-    if (!sendsFormMessages(d)) return undefined;
-    const provider = String(resolved(state, n, 'provider') ?? 'endpoint');
-    const options = (d!.properties.provider as { options?: Array<{ value: string; label: string }> }).options ?? [];
-    const service = options.find((o) => o.value === provider)?.label ?? FORM_PROVIDERS.find(([v]) => v === provider)?.[1] ?? provider;
-    const prop = Object.hasOwn(FORM_SERVICES, provider) ? FORM_SERVICES[provider].prop : undefined;
-    if (!prop) return { service };
-    const label = (d!.properties[prop] as { label?: unknown } | undefined)?.label;
-    return { service, setting: typeof label === 'string' && label ? label : prop, value: resolved(state, n, prop) };
+    if (!d || depth > 4) return [];
+    const value = (p: string) => withList(read(resolved(state, n, p)), tree, n.id);
+    if (sendsFormMessages(d)) {
+      const provider = value('provider') ?? 'endpoint';
+      // A service read from somewhere else (a setting of the design around it) is shown as that.
+      if (typeof provider !== 'string') return [{ service: display(provider) }];
+      const options = (d.properties.provider as { options?: Array<{ value: string; label: string }> }).options ?? [];
+      const service = FORM_PROVIDERS.find(([v]) => v === provider)?.[1] ?? options.find((o) => o.value === provider)?.label ?? provider;
+      const prop = Object.hasOwn(FORM_SERVICES, provider) ? FORM_SERVICES[provider].prop : undefined;
+      if (!prop) return [{ service }];
+      const label = (d.properties[prop] as { label?: unknown } | undefined)?.label;
+      return [{ service, ...(depth ? {} : { prop }), setting: typeof label === 'string' && label ? label : prop, value: value(prop) }];
+    }
+    if (d.kind === 'code') return bears().before.has(d.id) || bears().after.has(d.id) ? [{ service: 'Decided by its code' }] : [];
+    // A design's own setting, bound inside it, reads the placement's value for it.
+    const inner = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { $prop?: unknown }).$prop === 'string' && Object.keys(v).length === 1 ? read(resolved(state, n, (v as { $prop: string }).$prop)) : v);
+    return Object.values(d.tree?.nodes ?? {}).flatMap((m) => (m.kind === 'instance' ? sendsOf(state, m, d.tree, inner, depth + 1) : []));
   };
   // The designs that place a form at all, a setting of their own or not, worked out only if something needs them.
   let bearing: { before: Set<string>; after: Set<string> } | undefined;
@@ -322,14 +346,14 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       // Named, for a grant, without its list items' IDs: the batch sent again gives new items new IDs.
       // Where the placement sends on each side, as the dialog shows it: worked out only for a placement that changes.
       const sends = () => {
-        const was = prior ? sendsWith(before, prior) : undefined;
-        const is = sendsWith(after, n);
-        return was || is ? { sends: { ...(was ? { was } : {}), ...(is ? { is } : {}) } } : {};
+        const was = prior ? sendsOf(before, prior, had!.tree) : [];
+        const is = sendsOf(after, n, tree);
+        return was.length || is.length ? { sends: { ...(was.length ? { was } : {}), ...(is.length ? { is } : {}) } } : {};
       };
       const report = (p: string) => {
         // What it sent with before: the placement's value then, where it was there and its design had the setting.
-        const then = prior && (p === VARIANTS || Object.hasOwn(def(before, prior.definitionId)?.properties ?? {}, p)) ? { was: resolved(before, prior, p) } : {};
-        add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p), ...then, ...(prior ? {} : { added: true }), placement, ...sends() }, valueOf(after, tree, scope, n, p, true), placement);
+        const then = prior && (p === VARIANTS || Object.hasOwn(def(before, prior.definitionId)?.properties ?? {}, p)) ? { was: withList(resolved(before, prior, p), had!.tree, prior.id) } : {};
+        add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: withList(resolved(after, n, p), tree, n.id), ...then, ...(prior ? {} : { added: true }), placement, ...sends() }, valueOf(after, tree, scope, n, p, true), placement);
       };
       if (prior && prior.definitionId !== n.definitionId) {
         if (!bears().before.has(prior.definitionId) && !bears().after.has(n.definitionId)) continue;
@@ -367,7 +391,12 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       const value = defaultOf(now, p);
       const text = routingText(unlisted(value));
       if (prev ? text === routingText(unlisted(defaultOf(prev, p))) : EMPTY_ROUTING.has(text) || p === VARIANTS) continue;
-      add({ kind: 'default', definitionId: id, name: now.name, prop: p, label: labelOf(id, p), value, ...(prev ? { was: defaultOf(prev, p) } : { added: true }) }, text);
+      // Where a fresh placement of the design would send, before and after.
+      const fresh = { kind: 'instance', id: '', definitionId: id, props: {} } as unknown as Instance;
+      const then = prev ? sendsOf(before, fresh) : [];
+      const now_ = sendsOf(after, fresh);
+      const sends = then.length || now_.length ? { sends: { ...(then.length ? { was: then } : {}), ...(now_.length ? { is: now_ } : {}) } } : {};
+      add({ kind: 'default', definitionId: id, name: now.name, prop: p, label: labelOf(id, p), value, ...(prev ? { was: defaultOf(prev, p) } : { added: true }), ...sends }, text);
     }
   }
 
@@ -404,14 +433,24 @@ export function formRoutingRefusal(changes: readonly FormRoutingChange[]): strin
   return `Only the user can allow a change to where a contact form sends visitors’ messages. ${describe(changes[0])}${changes.length > 1 ? ` And ${changes.length - 1} more.` : ''} Nothing in this batch was applied.`;
 }
 
+/** The list a repeat reads (repeatAround's text), named for the dialog: its design's setting, or the list itself. */
+function listName(list: string): string {
+  try {
+    const v = JSON.parse(list) as { $prop?: unknown } | null;
+    return v && typeof v === 'object' && typeof v.$prop === 'string' ? `“${v.$prop}”` : list;
+  } catch {
+    return list;
+  }
+}
+
 /** A setting's value as the dialog shows it: the text itself, what a binding reads, or that nothing is set. */
 function display(value: unknown): string {
   if (EMPTY_ROUTING.has(routingText(value))) return 'Not set';
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const v = value as { $prop?: unknown; $item?: unknown };
+    const v = value as { $prop?: unknown; $item?: unknown; $list?: unknown };
     if (typeof v.$prop === 'string' && Object.keys(v).length === 1) return `Its design’s “${v.$prop}” setting`;
-    if (typeof v.$item === 'string' && Object.keys(v).length === 1) return `Each item’s “${v.$item}”`;
+    if (typeof v.$item === 'string' && Object.keys(v).length <= 2) return `Each item’s “${v.$item}”${typeof v.$list === 'string' ? ` in the ${listName(v.$list)} list` : ''}`;
   }
   return JSON.stringify(value);
 }
@@ -429,6 +468,9 @@ export function formRoutingPrompt(changes: readonly FormRoutingChange[]): FormRo
     const at = c.kind === 'setting' || c.kind === 'design' ? `p\u0000${c.placement ?? c.where ?? ''}\u0000${c.definitionId}` : `${c.kind}\u0000${c.definitionId}`;
     groups.set(at, [...(groups.get(at) ?? []), c]);
   }
+  type Row = FormRoutingPrompt['forms'][number]['rows'][number];
+  const service = (s: FormSends[] | undefined) => (s?.length ? [...new Set(s.map((f) => f.service))].join('; ') : 'Not a contact form');
+  const to = (s: FormSends[] | undefined) => (s?.length ? s.map((f) => (f.setting ? `${display(f.value)} (${f.setting})` : f.service === 'Decided by its code' ? 'Decided by its code' : 'Depends on its service')).join('; ') : 'Not a contact form');
   const forms: FormRoutingPrompt['forms'] = [];
   for (const cs of groups.values()) {
     const first = cs[0];
@@ -436,29 +478,29 @@ export function formRoutingPrompt(changes: readonly FormRoutingChange[]): FormRo
       forms.push({ title: `The code of “${first.name}”`, rows: [], note: 'This design places a contact form, and its code decides where the form sends. The AI changes that code, so the app can’t show the address it will use.' });
       continue;
     }
-    if (first.kind === 'default') {
-      forms.push({ title: `The “${first.name}” design: what new placements start with`, rows: cs.map((c) => ({ label: c.label ?? c.prop ?? '', before: c.added ? 'New design' : display(c.was), after: display(c.value) })) });
-      continue;
-    }
+    const isDefault = first.kind === 'default';
+    // New: nothing sent from here before the batch.
     const added = cs.every((c) => c.added);
-    const rows: FormRoutingPrompt['forms'][number]['rows'] = [];
+    const fresh = isDefault ? 'New design' : 'New form';
+    const rows: Row[] = [];
     const swap = cs.find((c) => c.kind === 'design');
     if (swap) rows.push({ label: 'Design', before: String(swap.value), after: swap.name });
     const sends = cs.find((c) => c.sends)?.sends;
-    // The settings the service rows already show, on either side.
-    const shown = new Set<string>(['provider']);
     if (sends) {
-      const service = (s: FormSends | undefined) => s?.service ?? 'Not a contact form';
-      const to = (s: FormSends | undefined) => (!s ? 'Not a contact form' : s.setting ? `${display(s.value)} (${s.setting})` : 'Nowhere');
-      rows.push({ label: 'Form service', before: added ? 'New form' : service(sends.was), after: service(sends.is) });
-      rows.push({ label: 'Sends to', before: added ? 'New form' : to(sends.was), after: to(sends.is) });
-      for (const s of [sends.was, sends.is]) for (const c of cs) if (s?.setting && c.label === s.setting && c.prop) shown.add(c.prop);
+      rows.push({ label: 'Form service', before: added ? fresh : service(sends.was), after: service(sends.is) });
+      rows.push({ label: 'Sends to', before: added ? fresh : to(sends.was), after: to(sends.is) });
     }
+    // A change the rows above already show as it ends up: the service, or the one setting it reads, of the form the
+    // placement is. Any other (a setting the new service does not read, one a design passes on) has its own row.
+    const direct = sends?.is?.length === 1 ? sends.is[0].prop : undefined;
     for (const c of cs) {
-      if (c.kind !== 'setting' || (sends && shown.has(c.prop ?? ''))) continue;
-      rows.push({ label: sends ? `${c.label}, a setting this service doesn’t use` : (c.label ?? c.prop ?? ''), before: added ? 'New form' : Object.hasOwn(c, 'was') ? display(c.was) : 'Not set', after: display(c.value) });
+      if (c.kind === 'design' || (direct && (c.prop === 'provider' || c.prop === direct))) continue;
+      const row = { label: direct ? `${c.label}, a setting this service doesn’t use` : (c.label ?? c.prop ?? ''), before: added ? fresh : Object.hasOwn(c, 'was') ? display(c.was) : 'Not set', after: display(c.value) };
+      // A change is never shown as staying the same: what reads alike reads from somewhere else now.
+      rows.push(row.before === row.after ? { ...row, after: `${row.after}, read from a different place` } : row);
     }
-    forms.push({ title: `“${first.name}” ${first.where ?? ''}`.trim(), rows });
+    const title = isDefault ? `The “${first.name}” design: what new placements start with` : `“${first.name}” ${first.where ?? ''}`.trim();
+    forms.push({ title, rows });
   }
   // Forms with the same name in the same place are told apart by their order there.
   const titles = new Map<string, number>();

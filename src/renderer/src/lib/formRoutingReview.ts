@@ -6,8 +6,19 @@
  * that batch; Keep, Escape, × and the backdrop all answer with its keep choice, so the turn goes on without it.
  */
 import type { FormRoutingPrompt } from '@shared/api';
-import type { ConfirmDetail, ConfirmRequest } from '../store';
 import type { WaitingQuestion } from './chatQuestions';
+
+/** What the dialog is asked with: the store's confirmDialog request (store.ts ConfirmRequest), as this question fills it. */
+export interface RoutingDialogRequest {
+  key: string;
+  title: string;
+  body: string;
+  icon: 'email';
+  confirmLabel: string;
+  cancelLabel: string;
+  formRouting: FormRoutingPrompt;
+  details: Array<{ kind: 'risk' | 'keep'; text: string }>;
+}
 
 export type RoutingQuestion = WaitingQuestion & { question: { formRouting: FormRoutingPrompt } };
 
@@ -21,10 +32,10 @@ export function routingQuestion(q: WaitingQuestion | null): RoutingQuestion | nu
 export const routingKey = (q: WaitingQuestion) => `form-routing:${q.runId}:${q.question.id}`;
 
 /** The dialog for the question: its review, its two answers as the question words them, and what each one does. */
-export function routingDialog(q: RoutingQuestion): Omit<ConfirmRequest, 'resolve' | 'id'> {
+export function routingDialog(q: RoutingQuestion): RoutingDialogRequest {
   const [keep, allow] = q.question.choices;
   const many = q.question.formRouting.forms.length > 1;
-  const details: ConfirmDetail[] = [
+  const details: RoutingDialogRequest['details'] = [
     { kind: 'risk', text: 'Whoever owns an address below receives what visitors write. Allow only addresses you recognise.' },
     { kind: 'keep', text: `${keep}: nothing in this change is applied, and the AI carries on without it.` }
   ];
@@ -42,6 +53,11 @@ export function routingDialog(q: RoutingQuestion): Omit<ConfirmRequest, 'resolve
 
 /** The answer a closed dialog gives: Allow only for the allow button, Keep for anything else. */
 export const routingAnswer = (q: WaitingQuestion, ok: boolean | null): string => (ok === true ? q.question.choices[1] : q.question.choices[0]);
+
+/** Questions whose answer the dialog has given and that are not known to have failed: never asked again. */
+const answered = new Set<string>();
+/** Whether the dialog has answered the question (`routingKey`), its answer sent or on its way. */
+export const routingAnswered = (key: string) => answered.has(key);
 
 const reviewListeners = new Set<() => void>();
 /** Show the waiting question's dialog again (the chat card's Review button), after an answer that could not be sent. */
@@ -61,11 +77,13 @@ export function onRoutingReview(fn: () => void): () => void {
 export function askRoutingDialog(
   q: RoutingQuestion,
   deps: {
-    confirm: (req: Omit<ConfirmRequest, 'resolve' | 'id'>) => Promise<boolean | null>;
+    confirm: (req: RoutingDialogRequest) => Promise<boolean | null>;
     withdraw: (key: string) => void;
     answer: (runId: string, questionId: string, answer: string) => Promise<boolean>;
-    /** The answer could not be sent. */
+    /** The answer could not be sent: the question may be asked again. */
     failed: () => void;
+    /** The answer was sent. */
+    sent?: (answer: string) => void;
   }
 ): () => void {
   let live = true;
@@ -73,8 +91,13 @@ export function askRoutingDialog(
   void deps.confirm(routingDialog(q)).then(async (ok) => {
     if (!live) return;
     live = false;
-    const sent = await deps.answer(q.runId, q.question.id, routingAnswer(q, ok)).catch(() => false);
-    if (!sent) deps.failed();
+    // Answered: a Review asked for while the answer is on its way opens nothing.
+    answered.add(key);
+    const text = routingAnswer(q, ok);
+    const sent = await deps.answer(q.runId, q.question.id, text).catch(() => false);
+    if (sent) return deps.sent?.(text);
+    answered.delete(key);
+    deps.failed();
   });
   return () => {
     if (!live) return;
