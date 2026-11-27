@@ -58,7 +58,7 @@ import { perf, timed } from '../perf';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
 
 export { statTrusted };
-import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
+import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type PendingOutcome, type SavedVersion } from './versions';
 import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
 import { captureSnapshotInventory, foldName } from './snapshot-inventory';
 import { GitError, type FileInput } from '../git/protocol';
@@ -214,10 +214,17 @@ async function linkOnTheWay(root: string, rel: string): Promise<boolean> {
   return false;
 }
 
-/** The name of the version saved before restoring the one named `name`, kept short however often restores nest. */
+/** A version's name as another's names it, kept short however often restores nest. */
+const shortName = (name: string) => (name.length > 50 ? `${name.slice(0, 49).trimEnd()}…` : name);
+
+/** The name of the version saved before restoring the one named `name`. */
 function backupName(name: string): string {
-  const short = name.length > 50 ? `${name.slice(0, 49).trimEnd()}…` : name;
-  return `Before restoring “${short}”`;
+  return `Before restoring “${shortName(name)}”`;
+}
+
+/** The name of the version of the site as restoring the one named `name` left it (#1155). */
+function restoredName(name: string): string {
+  return `Restored “${shortName(name)}”`;
 }
 
 /** Every stored version a history entry restores or expects. */
@@ -905,8 +912,23 @@ export class ProjectSession extends EventEmitter {
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)));
     // Before the first sweep, which collects what no saved version names.
     await s.versions.load();
+    // The version of a restore the app stopped recording is finished first (#1155): listed, or told of.
+    const recorded = await s.versions.recordPending().catch((): PendingOutcome => ({ state: 'unreadable' }));
+    if (recorded.state === 'pending')
+      s.recoveryNotes.push(`Restoring “${recorded.version}” finished, but the site as it left it is not in Saved versions yet. ${recorded.reason} It is added the next time the project opens or a version is saved. Your work from before is saved as “${recorded.backup}”.`);
+    else if (recorded.state === 'moved')
+      s.recoveryNotes.push(`Restoring “${recorded.version}” finished, but the project’s version history was changed by something else before the site as it left it was added, so both were left as they are. Your work from before is saved as “${recorded.backup}”.`);
+    else if (recorded.state === 'unreadable') s.recoveryNotes.push('The version of a restore that was still being saved could not be read, so it was left as it is.');
     const interrupted = await s.versions.takeRestoring().catch(() => null);
-    if (interrupted) s.recoveryNotes.push(`Restoring “${interrupted.version}” was interrupted, so some of it may be missing. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
+    // A restore whose version was noted is told of by what became of that version, above.
+    const owed = recorded.state === 'unreadable' ? undefined : recorded.op;
+    // Or listed already: only the note of the restore was left behind.
+    if (!interrupted || (interrupted.op && (interrupted.op === owed || s.versions.versions.some((v) => v.id === interrupted.op)))) {
+      // Told of above, or nothing to tell.
+    } else if (interrupted.settled)
+      s.recoveryNotes.push(`Restoring “${interrupted.version}” finished, but the site as it left it could not be saved as a version of its own. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
+    else
+      s.recoveryNotes.push(`Restoring “${interrupted.version}” was interrupted, so some of it may be missing. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
     const manifestAt = Date.now();
     const manifest = await readTextAt(join(dir, 'siteorigin', 'generated-manifest.json'));
     if (manifest) perf.count('files.read');
@@ -4085,6 +4107,7 @@ export class ProjectSession extends EventEmitter {
         name: v.name,
         time: v.time,
         auto: !!v.auto,
+        ...(v.restored ? { restored: true } : {}),
         pages: Object.keys(v.docs).filter((p) => PAGE_DOC.test(p)).length,
         bytes: store.exclusiveBytes(v),
         missing: Object.keys(v.media).filter((p) => v.media[p] === null)
@@ -4201,8 +4224,9 @@ export class ProjectSession extends EventEmitter {
    * leaves out (a private name, a file of a nested repository). The media a restore puts back are recorded as ever, by
    * their SHA-256, and the worker stores each file only while it still holds the bytes hashed.
    */
-  private async captureGitVersion(git: VersionsGit, name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> }): Promise<SavedVersion> {
-    const id = newVersionId();
+  private async captureGitVersion(git: VersionsGit, name: string, opts: { auto?: boolean; restored?: { id: string }; also?: string[]; filled?: Record<string, string> }): Promise<SavedVersion> {
+    // A restore's version takes the ID its restore noted first, so a stop is matched with the restore it belongs to.
+    const id = opts.restored?.id ?? newVersionId();
     const time = new Date().toISOString();
     const docs: Record<string, string> = {};
     const files: FileInput[] = [];
@@ -4274,7 +4298,7 @@ export class ProjectSession extends EventEmitter {
     }
     let stored: { commit: string; tree: string };
     try {
-      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, !!opts.auto);
+      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, opts.restored ? 'restored' : opts.auto ? 'before-restore' : 'saved');
     } catch (e) {
       if (e instanceof GitError && e.code === 'corrupt') throw new HistoryDamaged(gitSaveProblem(e));
       throw new Error(gitSaveProblem(e));
@@ -4283,7 +4307,8 @@ export class ProjectSession extends EventEmitter {
       await this.versions.measureGit();
     }
     const filled = opts.filled && Object.keys(opts.filled).length ? { filled: opts.filled } : {};
-    return { id, name, time, revision: this.revision, schemaVersion: SCHEMA_VERSION, ...(opts.auto ? { auto: true } : {}), docs, media, ...filled, git: { ...stored, ...(outside.length ? { outside: outside.sort() } : {}) } };
+    const made = opts.restored ? { auto: true, restored: true } : opts.auto ? { auto: true } : {};
+    return { id, name, time, revision: this.revision, schemaVersion: SCHEMA_VERSION, ...made, docs, media, ...filled, git: { ...stored, ...(outside.length ? { outside: outside.sort() } : {}) } };
   }
 
   /**
@@ -4292,7 +4317,7 @@ export class ProjectSession extends EventEmitter {
    */
   saveVersion(name: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }> {
     return this.serialize(async () => {
-      const why = await this.versionsBlocked();
+      const why = (await this.versionsBlocked()) ?? (await this.pendingVersionBlocks());
       if (why) return { ok: false, message: why };
       const clean = name.replace(/\s+/g, ' ').trim();
       if (!clean) return { ok: false, message: 'Give the version a name.' };
@@ -4443,7 +4468,7 @@ export class ProjectSession extends EventEmitter {
    */
   restoreVersion(id: string, expectedRevision: number, reviewed?: { files: string[]; replaced: string[] }): Promise<RestoreVersionResult> {
     return this.serialize(async () => {
-      const why = await this.versionsBlocked();
+      const why = (await this.versionsBlocked()) ?? (await this.pendingVersionBlocks());
       if (why) return { ok: false, message: why };
       const v = this.versions.versions.find((x) => x.id === id);
       if (!v) return { ok: false, message: 'That saved version is no longer there.' };
@@ -4479,11 +4504,18 @@ export class ProjectSession extends EventEmitter {
       const replaced = plan.files.filter((f) => prior.get(f.path)).map((f) => f.path);
       const filled = Object.fromEntries(plan.files.filter((f) => !prior.get(f.path)).map((f) => [f.path, f.hash]));
       let backup: SavedVersion;
+      // With Git snapshots on, what the restore leaves is saved after it as a version of its own (#1155): decided once,
+      // by the store the way back went to.
+      let inGit = false;
+      let damaged = false;
       try {
         // With the version history damaged, the way back is saved in the plain store instead: a restore still has one.
-        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled }).catch((e: unknown) =>
-          e instanceof HistoryDamaged ? this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled, plain: true }) : Promise.reject(e)
-        );
+        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled }).catch((e: unknown) => {
+          if (!(e instanceof HistoryDamaged)) return Promise.reject(e);
+          damaged = true;
+          return this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled, plain: true });
+        });
+        inGit = !!now.git;
         // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
         // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
         let kept: SavedVersion | undefined;
@@ -4507,7 +4539,9 @@ export class ProjectSession extends EventEmitter {
       const label = `Restore “${v.name}”`;
       const written: Array<{ path: string; hash: string; prior: string | null }> = [];
       let ev: SessionEvent | null = null;
-      const earlier = await this.versions.markRestoring(v.name, way.name);
+      // The ID of the version recording what the restore leaves, noted with it so a stop is matched with that version.
+      const op = inGit ? newVersionId() : undefined;
+      const earlier = await this.versions.markRestoring(v.name, way.name, op);
       const clear = async () => {
         if (!earlier) await this.versions.clearRestoring().catch(() => undefined);
       };
@@ -4547,9 +4581,16 @@ export class ProjectSession extends EventEmitter {
         if (e instanceof DiskConflictError || e instanceof RestoreStopped) return { ok: false, message: e.message, backup: way };
         throw e;
       }
-      await clear();
       if (!ev) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: written.map((w) => w.path), label, source: 'user' } satisfies SessionEvent);
-      return { ok: true, revision: this.revision, entryId: ev?.entryId, backup: way, replaced: written.filter((w) => w.prior).length, left: plan.left };
+      let notice: string | undefined;
+      if (op) {
+        // Everything is back: a stop from here is told as the version of it not saved, not as a restore that may have
+        // left something out. The note stays until the version is noted itself, so a stop is never told of by neither.
+        if (!earlier) await this.versions.settleRestoring(v.name, way.name, op).catch(() => undefined);
+        notice = await this.recordRestore(v, way, op, plan.files.map((f) => f.path));
+      } else if (damaged) notice = 'The project’s version history is damaged, so the site as restored was not added to it.';
+      await clear();
+      return { ok: true, revision: this.revision, entryId: ev?.entryId, backup: way, replaced: written.filter((w) => w.prior).length, left: plan.left, ...(notice ? { notice } : {}) };
     });
   }
 
@@ -4575,6 +4616,60 @@ export class ProjectSession extends EventEmitter {
       }
     }
     return clean;
+  }
+
+  /**
+   * With Git snapshots on, save the site as restoring `v` left it as a version of its own, on top of the history
+   * (#1155): a restore goes forward, never back. The whole site is committed on the versions branch's tip, the version
+   * noted with the commit the branch moves from (VersionStore.recordPending), and only then the branch moved and the
+   * row listed, so a stop anywhere is finished on reopening rather than repeated. The restore itself is done whatever
+   * happens here: gives what to tell the author when the version is not, or not yet, saved.
+   */
+  private async recordRestore(v: SavedVersion, backup: { name: string }, op: string, files: string[]): Promise<string | undefined> {
+    const notSaved = (why: string) => `The site as restored could not be saved as a version of its own. ${why}`;
+    const git = versionsGit();
+    if (!git) return notSaved('The project’s version history can’t be reached.');
+    try {
+      // A change made outside the app meanwhile is not the restore's to record: it is loaded as ever, and the version
+      // of the restore not saved, rather than either taken for the other.
+      const before = await this.unloadedEdit(new Set());
+      if (before) return notSaved(`${before} changed outside the app meanwhile.`);
+      const row = await this.captureGitVersion(git, restoredName(v.name), { restored: { id: op }, also: files });
+      const late = await this.unloadedEdit(new Set());
+      if (late) return notSaved(`${late} changed outside the app meanwhile.`);
+      if (!(await this.stillOwner())) return notSaved(this.readOnly?.reason ?? LOCK_UNCHECKED);
+      const expected = (await git.repository(this.dir).readCommit(row.git!.commit)).parents[0] ?? null;
+      const record = { op, version: v.name, backup: backup.name, expected, row };
+      await this.versions.writePending(record).catch(async (e: unknown) => {
+        // Written whole though its folder could not be flushed: it stands, and is finished like any other.
+        const there = await this.versions.readPending().catch(() => null);
+        if (!there || typeof there === 'string' || JSON.stringify(there) !== JSON.stringify(record)) throw e;
+        await this.versions.flushPending().catch(() => Promise.reject(e));
+      });
+    } catch (e) {
+      // Not noted, or perhaps noted only part way (its folder could not be flushed): nothing is left to finish.
+      await this.versions.clearPending().catch(() => undefined);
+      return notSaved(e instanceof GitError ? gitSaveProblem(e) : (e as Error).message);
+    }
+    const r = await this.versions.recordPending().catch((e: Error): PendingOutcome => ({ state: 'pending', op, version: v.name, backup: backup.name, reason: e.message }));
+    this.emit('history');
+    if (r.state === 'pending') return `The site as restored is not in Saved versions yet. ${r.reason} It is added the next time the project opens or a version is saved.`;
+    if (r.state === 'moved') return 'The project’s version history was changed by something else meanwhile, so the site as restored was not added to it.';
+    return undefined;
+  }
+
+  /**
+   * Finish recording the version a restore left (#1155) before anything else moves the versions branch. Says why no
+   * version can be saved to Git now, while that is still to be done.
+   */
+  private async pendingVersionBlocks(): Promise<string | null> {
+    const r = await this.versions.recordPending().catch(() => null);
+    if (r?.state === 'recorded' && r.op) this.emit('history');
+    if (r?.state !== 'pending' && !(r?.state === 'unreadable' && r.retry)) return null;
+    const git = versionsGit();
+    if (!git || !(await git.enabled())) return null;
+    if (r.state === 'unreadable') return 'The version still being saved after a restore could not be read just now. Try again in a moment.';
+    return `The site as restoring “${r.version}” left it is not in Saved versions yet. ${r.reason} Try again in a moment.`;
   }
 
   /** Give saved version `id` another name. What it holds, and when it was saved, stay as they are. */
@@ -4608,6 +4703,7 @@ export class ProjectSession extends EventEmitter {
       const left = this.versions.versions.filter((v) => v.id !== id);
       if (left.length === this.versions.versions.length) return { ok: true, freed: 0 };
       try {
+        await this.versions.forgetPending(id);
         await this.versions.publish(left);
       } catch (e) {
         return { ok: false, message: (e as Error).message };

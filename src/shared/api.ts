@@ -230,8 +230,10 @@ export interface SavedVersionInfo {
   name: string;
   /** When it was saved (ISO time). */
   time: string;
-  /** Saved by the app before a restore, as the way back to the work that restore replaced. */
+  /** Saved by the app, not the author: before a restore, as the way back to the work it replaced, or after one. */
   auto: boolean;
+  /** Saved by the app after a restore, with Git snapshots on: the site as that restore left it (#1155). */
+  restored?: boolean;
   /** How many pages it holds. */
   pages: number;
   /**
@@ -303,6 +305,11 @@ export interface RestoreVersionResult {
   replaced?: number;
   /** Files an earlier restore put back that this one leaves in the project folder. */
   left?: string[];
+  /**
+   * With Git snapshots on: why the site as restored is not, or not yet, a saved version of its own, though the restore
+   * itself is done (#1155).
+   */
+  notice?: string;
 }
 
 export type RuntimeState =

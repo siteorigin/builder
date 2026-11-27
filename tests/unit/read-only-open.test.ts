@@ -193,12 +193,21 @@ describe('read-only opens leave saved versions in Git as they are (#1153)', () =
     }
     expect(existsSync(join(dir, '.siteorigin/versions.git'))).toBe(true);
     writeFileSync(join(dir, '.siteorigin/versions/restoring.json'), JSON.stringify({ version: 'First', backup: 'Before restoring “First”', time: new Date().toISOString() }));
+    // And the version of a restore still being recorded (#1155): a writable open would finish it; this one never reads it.
+    const rows = JSON.parse(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).versions;
+    const row = { ...rows.at(-1), id: 'vpending0000' };
+    writeFileSync(join(dir, '.siteorigin/versions/recording.json'), JSON.stringify({ op: row.id, version: 'First', backup: 'Before restoring “First”', expected: rows.at(-2).git.commit, row }));
     lockByAnother(dir);
     const before = snapshotTree(dir);
     const calls = git.calls.length;
-    const session = await openReadOnly(dir);
+    // With Git snapshots on, as when the record was made: a read-only open still never reads it.
+    git.enabled = true;
+    const session = await openReadOnly(dir).finally(() => {
+      git.enabled = false;
+    });
     const listed = session.versionsInfo().list;
     expect(listed.map((v) => [v.name, v.bytes])).toEqual([
+      ['Restored “First”', null],
       ['Before restoring “First”', null],
       ['First', null]
     ]);
@@ -211,7 +220,7 @@ describe('read-only opens leave saved versions in Git as they are (#1153)', () =
       expect(r.review!.problem).toBeUndefined();
       reviews.push(r.review!);
     }
-    expect(reviews.map((r) => r.site)).toEqual([true, false]);
+    expect(reviews.map((r) => r.site)).toEqual([false, true, false]);
     expect(git.calls.slice(calls)).toContain('readBlob');
     expect((await session.restoreVersion(listed[1].id, session.revision)).ok).toBe(false);
     expect((await session.deleteVersion(listed[1].id)).ok).toBe(false);
