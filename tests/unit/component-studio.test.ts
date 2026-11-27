@@ -285,9 +285,15 @@ describe('Component Studio: the content of a real placement (#1147)', () => {
     const view = { ...NEW_STUDIO, placement: { owner: { kind: 'page' as const, id: home }, nodeId: n.id } };
     // The item positions offered are the rows the preview shows, not the none the feed saves.
     expect(studioContent(state, def, view)?.article).toHaveLength(1);
+    expect((studioContent(state, def, view)?.article as Array<{ title?: unknown }>)[0].title).toBe('A page title only this page has');
     const out = generateComponentPreview(state, studioSpec(def, view, null, state));
     if ('error' in out) throw new Error(out.error);
     expect(out.files.get(PREVIEW_MODULE)).toContain('A page title only this page has');
+    // A hand-damaged row in another list never reaches the rows worked out for the item positions.
+    def.properties.extra = structuredClone(state.components[installComponent(state, 'features.grid')].properties.items);
+    n.props = { ...n.props, extra: [null] };
+    expect(() => studioContent(state, def, view)).not.toThrow();
+    expect(studioContent(state, def, view)?.extra).toEqual([null]);
     const plain = generateComponentPreview(state, { definitionId: id });
     if ('error' in plain) throw new Error(plain.error);
     expect(plain.files.get(PREVIEW_MODULE)).not.toContain('A page title only this page has');

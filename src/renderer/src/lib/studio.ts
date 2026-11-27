@@ -157,9 +157,16 @@ export function studioContent(state: ProjectState | undefined, def: ComponentDef
   // preview shows where it is placed, not the ones saved: those are worked out as the page works them out.
   const computed = Object.entries(def.properties).filter(([name, schema]) => schema.type === 'list' && (schema.feed || (own.listSources && Object.hasOwn(own.listSources, name))));
   if (!computed.length) return own.props;
-  const node = { id: '', kind: 'instance' as const, definitionId: def.id, props: own.props, ...(own.listSources ? { listSources: own.listSources } : {}) };
-  const resolved = resolveInstanceProps(def, node, own.pageId ? { state, pageId: own.pageId } : { state });
-  return { ...own.props, ...Object.fromEntries(computed.map(([name]) => [name, resolved[name]])) };
+  // Only those lists are worked out (the rest keep their starting values here), so a hand-damaged row elsewhere
+  // never reaches the resolver; one it still cannot read leaves the saved rows.
+  const props = Object.fromEntries(computed.flatMap(([name]) => (Object.hasOwn(own.props, name) ? [[name, own.props[name]]] : [])));
+  const node = { id: '', kind: 'instance' as const, definitionId: def.id, props, ...(own.listSources ? { listSources: own.listSources } : {}) };
+  try {
+    const resolved = resolveInstanceProps({ ...def, properties: Object.fromEntries(computed) }, node, own.pageId ? { state, pageId: own.pageId } : { state });
+    return { ...own.props, ...Object.fromEntries(computed.map(([name]) => [name, resolved[name]])) };
+  } catch {
+    return own.props;
+  }
 }
 
 /** The isolated preview request for what the studio shows: the design, its variant options, its sample content and its UI state. */
