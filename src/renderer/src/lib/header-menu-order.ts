@@ -5,6 +5,7 @@
 import { followsPageOrder } from '@engine/header-order';
 import { commitOps, confirmDialog, getState, toast, undoAction } from '../store';
 import { headerOrderPreview } from './page-navigation';
+import { aiChanging } from './blocked';
 
 export type HeaderMenuOrder = 'own' | 'follow';
 
@@ -25,7 +26,7 @@ export async function setHeaderMenuOrder(mode: HeaderMenuOrder): Promise<boolean
   const now = getState().snapshot;
   if (!now || followsPageOrder(now.state) === (mode === 'follow')) return false;
   if (now.aiBusy) {
-    toast('The AI is making changes. Choose the header menu’s order when it stops.', 'info');
+    toast(aiChanging('choose the header menu’s order'), 'info');
     return false;
   }
   const preview = mode === 'follow' ? headerOrderPreview(now.state) : null;

@@ -17,6 +17,7 @@ import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
 import { applyOps, api, commitOps, errorText, getState, projectHistory, revertAiTurn, saveLocal, setState, shownAt, stepHistory, toast, useStore } from '../store';
 import { Field, Modal, openMenus, openSection, Tabs } from '../components/ui';
+import { BlockedNote, BlockedStatus, aiRunning, projectBlock, readOnlyBlock, useProjectBlock, type Blocked } from '../components/BlockedNote';
 import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { goToShellPart, insertionPoint, openComponentStudio, selectPage, setMode } from '../lib/actions';
@@ -230,7 +231,12 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
   // The element is replaced by its component as the save lands: the form stays until the dialog closes.
   const gone = !busy && !!st && !targetNode;
   // Still there, but no longer something to make a component from (a section emptied while the dialog was open).
-  const unfit = !busy && !gone && !!st && !createComponentTarget(snap, target);
+  // Read-only is a state, not a fault: said as the session's reason, in the info face, in place of the form.
+  const hold = busy || gone ? null : readOnlyBlock(snap);
+  const unfit = !busy && !gone && !hold && !!st && !createComponentTarget(snap, target);
+  // The AI at work only holds the change: the form stays as it is, with why under it.
+  const runStatus = useStore((s) => s.runStatus);
+  const wait: Blocked | null = busy || gone || hold || unfit ? null : projectBlock({ aiBusy: snap?.aiBusy }, 'create the component', runStatus);
   const [targetName] = useState(() => (st && targetNode ? displayName(st, targetNode) : null));
   const [where] = useState(() => (st ? `${placeOf(st, target.owner)}${whereItShows(st, target.owner)}` : ''));
   const input = useRef<HTMLInputElement>(null);
@@ -239,7 +245,7 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
   // Asked for only once the author has typed or pressed Enter, so the dialog never opens on an error.
   const [touched, setTouched] = useState(false);
   const close = () => setState({ modal: null });
-  const ready = !gone && !unfit && !!name.trim() && !busy;
+  const ready = !gone && !unfit && !hold && !wait && !!name.trim() && !busy;
   const nameError = touched && !name.trim() ? 'Enter a name for this component.' : undefined;
   const create = async () => {
     setTouched(true);
@@ -263,29 +269,30 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
       icon={<Badge icon={<Component />} tone={gone || unfit ? 'caution' : 'neutral'} />}
       onClose={close}
       busy={busy}
-      describedBy={gone || unfit ? GONE_ID : 'create-component-desc create-component-subject create-component-details'}
+      describedBy={gone || unfit || hold ? GONE_ID : `create-component-desc create-component-subject create-component-details${wait ? ' create-component-wait' : ''}`}
       footer={
-        gone || unfit ? (
+        gone || unfit || hold ? (
           <GoneClose onClose={close} />
         ) : (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn btn-primary" disabled={!ready} onClick={() => void create()}>
+            <button className="btn btn-primary" disabled={!ready} aria-describedby={wait ? 'create-component-wait' : undefined} onClick={() => void create()}>
               {busy ? 'Creating…' : 'Create component'}
             </button>
           </>
         )
       }
     >
+      <BlockedStatus block={hold ?? wait} lifted={name.trim() ? 'You can create the component now.' : 'Name the component to create it.'} />
       {gone ? (
         <GoneNotice>{targetName ? <><strong>{targetName}</strong> was removed, so no component was made.</> : 'This element was removed, so no component was made.'}</GoneNotice>
+      ) : hold ? (
+        <BlockedNote block={hold} id={GONE_ID} live={false} />
       ) : unfit ? (
         <GoneNotice>
-          {snap?.readOnly ? (
-            'This project is open read-only, so no component was made.'
-          ) : targetNode?.kind === 'instance' ? (
+          {targetNode?.kind === 'instance' ? (
             <>
               {targetName ? <strong>{targetName}</strong> : 'This section'} no longer holds any content of its own, so no component was made.
             </>
@@ -318,6 +325,7 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
               onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void create()}
             />
           </Field>
+          {wait && <BlockedNote block={wait} id="create-component-wait" live={false} />}
         </div>
       )}
     </Modal>
@@ -339,11 +347,13 @@ function newComponentPlaceNow() {
  */
 export function NewComponentModal() {
   const snap = useStore((s) => s.snapshot);
-  const running = useStore((s) => !!s.runStatus);
+  const runStatus = useStore((s) => s.runStatus);
+  const running = !!runStatus;
   const waiting = useStore((s) => !!s.chatRequest);
   // The page Start blank places it on, said as it is now: the page on screen, or the one a design was opened from.
   const pageId = useStore((s) => s.definitionMode?.returnPageId ?? s.pageId);
   const readOnly = !!snap?.readOnly;
+  const aiBusy = !!snap?.aiBusy;
   const input = useRef<HTMLInputElement>(null);
   useHeldFocus(input);
   const close = useCloseOwn();
@@ -355,11 +365,20 @@ export function NewComponentModal() {
   const [busy, setBusy] = useState(false);
   const pageTitle = pageId && snap && Object.hasOwn(snap.state.pages, pageId) ? snap.state.pages[pageId].title : undefined;
   const nameError = touched && !name.trim() ? 'Enter a name for this component.' : undefined;
-  const canBuild = !readOnly && !busy && !running && !waiting && !!(name.trim() || description.trim());
+  const canBuild = !readOnly && !aiBusy && !busy && !running && !waiting && !!(name.trim() || description.trim());
+  // What holds a choice now, said under the form beside the buttons it holds: the AI changing the site holds both, a
+  // request in the chat (being answered or waiting to be sent) only Build with AI.
+  const held: Blocked | null = aiBusy
+    ? projectBlock({ aiBusy }, 'start blank or build with AI', runStatus)
+    : running
+      ? { kind: 'ai', text: aiRunning(runStatus, 'build with AI') }
+      : waiting
+        ? { kind: 'ai', text: 'Another request is waiting to be sent in the chat. You can build with AI once it’s sent.' }
+        : null;
 
   const start = async () => {
     setTouched(true);
-    if (busy || readOnly || !name.trim()) return;
+    if (busy || readOnly || aiBusy || !name.trim()) return;
     const now = getState().snapshot;
     // Placed where the editor points as the change is made: the page may have changed since the dialog opened.
     const at = newComponentPlaceNow();
@@ -421,10 +440,10 @@ export function NewComponentModal() {
   return (
     <Modal
       title="Create component"
-      icon={<Badge icon={<Component />} tone={readOnly ? 'caution' : 'neutral'} />}
+      icon={<Badge icon={<Component />} tone="neutral" />}
       onClose={close}
       busy={busy}
-      describedBy={readOnly ? GONE_ID : 'new-component-desc new-component-details'}
+      describedBy={readOnly ? GONE_ID : `new-component-desc new-component-details${held ? ' new-component-held' : ''}`}
       footer={
         readOnly ? (
           <GoneClose onClose={close} />
@@ -433,19 +452,20 @@ export function NewComponentModal() {
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn" disabled={!canBuild} title={running ? 'The AI is working on another request.' : waiting ? 'Another request is waiting to be sent in the chat.' : undefined} onClick={build}>
+            <button className="btn" disabled={!canBuild} aria-describedby={held ? 'new-component-held' : undefined} onClick={build}>
               <Sparkles aria-hidden="true" />
               Build with AI
             </button>
-            <button className="btn btn-primary" disabled={busy || !name.trim()} onClick={() => void start()}>
+            <button className="btn btn-primary" disabled={busy || aiBusy || !name.trim()} aria-describedby={aiBusy ? 'new-component-held' : undefined} onClick={() => void start()}>
               {busy ? 'Creating…' : 'Start blank'}
             </button>
           </>
         )
       }
     >
-      {readOnly ? (
-        <GoneNotice>This project is open read-only, so no component can be made.</GoneNotice>
+      <BlockedStatus block={readOnlyBlock(snap) ?? held} lifted={name.trim() ? 'You can start blank or build with AI now.' : description.trim() ? 'You can build with AI now. Add a name to start blank.' : 'Name the component to start blank or build with AI.'} />
+      {snap?.readOnly ? (
+        <BlockedNote block={readOnlyBlock(snap)!} id={GONE_ID} live={false} />
       ) : (
         <div className="authoring-form">
           <FormStatus text={busy ? 'Creating component' : (nameError ?? limitSaid(name.length, NAME_MAX, 'Names'))} />
@@ -485,6 +505,7 @@ export function NewComponentModal() {
               onChange={(e) => setDescription(e.target.value.replace(/\s*\n\s*/g, ' '))}
             />
           </Field>
+          {held && <BlockedNote block={held} id="new-component-held" live={false} />}
         </div>
       )}
     </Modal>
@@ -528,7 +549,11 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
   const reach = st && def ? reachOf(st, placesOf(st, definitionId)) : null;
   const input = useSelectedOnOpen();
   const close = useCloseOwn();
-  const ready = !!def && !!name.trim() && !busy;
+  // Read-only or the AI at work holds the copy: the form stays, with why under it.
+  const hold = useProjectBlock('make it unique');
+  // Read-only lasts while the dialog is open: said in place of the form, with Close, as the other authoring dialogs do.
+  const locked = hold?.kind === 'read-only' ? hold : null;
+  const ready = !!def && !!name.trim() && !busy && !hold;
   const nameError = name.trim() ? undefined : 'Enter a name for the copy.';
   const make = async () => {
     if (!ready) return;
@@ -550,14 +575,14 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
       icon={<Badge icon={<Split />} tone={def ? 'neutral' : 'caution'} />}
       onClose={close}
       busy={busy}
-      describedBy={def ? 'make-unique-desc make-unique-subject make-unique-details' : GONE_ID}
+      describedBy={def && !locked ? `make-unique-desc make-unique-subject make-unique-details${hold ? ' make-unique-held' : ''}` : GONE_ID}
       footer={
-        def ? (
+        def && !locked ? (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn btn-primary" disabled={!ready} onClick={() => void make()}>
+            <button className="btn btn-primary" disabled={!ready} aria-describedby={hold ? 'make-unique-held' : undefined} onClick={() => void make()}>
               {busy ? 'Making unique…' : 'Make unique'}
             </button>
           </>
@@ -566,7 +591,8 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
         )
       }
     >
-      {def ? (
+      <BlockedStatus block={hold} lifted="You can make it unique now." />
+      {def && !locked ? (
         <div className="authoring-form">
           <FormStatus text={busy ? 'Making a unique copy' : (nameError ?? limitSaid(name.length, NAME_MAX, 'Names'))} />
           <p id="make-unique-desc" className="confirm-lead">
@@ -586,7 +612,10 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
           <Field label="Name for the copy" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError} extra={<Count length={name.length} max={NAME_MAX} />}>
             <input ref={input} className="input" autoFocus readOnly={busy} aria-required="true" maxLength={NAME_MAX} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void make()} />
           </Field>
+          {hold && !locked && <BlockedNote block={hold} id="make-unique-held" live={false} />}
         </div>
+      ) : locked ? (
+        <BlockedNote block={locked} id={GONE_ID} live={false} />
       ) : (
         <GoneNotice>
           {node?.kind === 'instance' ? (
@@ -636,7 +665,11 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
   const id = useId();
   const close = useCloseOwn();
   const title = opened?.top === false ? 'Change design' : 'Change section design';
-  const ready = !!plan && !plan.problems.length && !busy && !readOnly;
+  // Read-only or the AI at work holds the change: the form stays, with why under it.
+  const hold = useProjectBlock('change its design');
+  // Read-only lasts while the dialog is open: said in place of the form, with Close, as the other authoring dialogs do.
+  const locked = hold?.kind === 'read-only' ? hold : null;
+  const ready = !!plan && !plan.problems.length && !busy && !readOnly && !hold;
   // A collection's layout is shared by every entry shown with it.
   const where = st ? (owner.kind === 'template' ? `In the layout of ${st.collections?.[owner.id]?.settings.name ?? 'a collection'}, shown for every entry` : placeOf(st, owner)) : undefined;
   const change = async () => {
@@ -671,14 +704,14 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
       icon={<Badge icon={<ArrowRightLeft />} tone={def ? 'neutral' : 'caution'} />}
       onClose={close}
       busy={busy}
-      describedBy={(def || busy) && offered.length ? `${id}-lead${shown ? ` ${id}-details` : ''}` : GONE_ID}
+      describedBy={(def || busy) && offered.length && !locked ? `${id}-lead${shown ? ` ${id}-details` : ''}${hold ? ` ${id}-held` : ''}` : GONE_ID}
       footer={
-        (def || busy) && offered.length ? (
+        (def || busy) && offered.length && !locked ? (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className={dropped.length ? 'btn btn-danger-fill' : 'btn btn-primary'} disabled={!ready} onClick={() => void change()}>
+            <button className={dropped.length ? 'btn btn-danger-fill' : 'btn btn-primary'} disabled={!ready} aria-describedby={hold ? `${id}-held` : undefined} onClick={() => void change()}>
               {busy ? 'Changing…' : dropped.length ? `Change and drop ${plural(dropped.length, 'field')}` : 'Change design'}
             </button>
           </>
@@ -687,7 +720,8 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
         )
       }
     >
-      {(def || busy) && offered.length ? (
+      <BlockedStatus block={hold} lifted="You can change its design now." />
+      {(def || busy) && offered.length && !locked ? (
         <div className="authoring-form" data-testid="swap-component-dialog">
           <FormStatus text={busy && shown ? `Changing to ${shown.choice.def.name}` : undefined} />
           <p id={`${id}-lead`} className="confirm-lead">
@@ -723,7 +757,10 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
           ) : shown ? (
             <Details id={`${id}-details`} items={details} />
           ) : null}
+          {hold && !locked && <BlockedNote block={hold} id={`${id}-held`} live={false} />}
         </div>
+      ) : locked ? (
+        <BlockedNote block={locked} id={GONE_ID} live={false} />
       ) : (
         <GoneNotice>
           {def && !offered.length
@@ -754,7 +791,11 @@ export function DuplicateComponentModal({ definitionId, openedIn }: { definition
   const count = st && def ? placesOf(st, definitionId).reduce((n, p) => n + p.nodeIds.length, 0) : 0;
   const input = useSelectedOnOpen();
   const close = useCloseOwn();
-  const ready = !!def && !!name.trim() && !busy;
+  // Read-only or the AI at work holds the copy: the form stays, with why under it.
+  const hold = useProjectBlock('duplicate it');
+  // Read-only lasts while the dialog is open: said in place of the form, with Close, as the other authoring dialogs do.
+  const locked = hold?.kind === 'read-only' ? hold : null;
+  const ready = !!def && !!name.trim() && !busy && !hold;
   const nameError = name.trim() ? undefined : 'Enter a name for the copy.';
   const duplicate = async () => {
     const snap = getState().snapshot;
@@ -786,14 +827,14 @@ export function DuplicateComponentModal({ definitionId, openedIn }: { definition
       icon={<Badge icon={<Copy />} tone={def ? 'neutral' : 'caution'} />}
       onClose={close}
       busy={busy}
-      describedBy={def ? 'duplicate-component-desc duplicate-component-subject duplicate-component-details' : GONE_ID}
+      describedBy={def && !locked ? `duplicate-component-desc duplicate-component-subject duplicate-component-details${hold ? ' duplicate-component-held' : ''}` : GONE_ID}
       footer={
-        def ? (
+        def && !locked ? (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn btn-primary" disabled={!ready} onClick={() => void duplicate()}>
+            <button className="btn btn-primary" disabled={!ready} aria-describedby={hold ? 'duplicate-component-held' : undefined} onClick={() => void duplicate()}>
               {busy ? 'Duplicating…' : 'Duplicate'}
             </button>
           </>
@@ -802,7 +843,8 @@ export function DuplicateComponentModal({ definitionId, openedIn }: { definition
         )
       }
     >
-      {def ? (
+      <BlockedStatus block={hold} lifted="You can duplicate it now." />
+      {def && !locked ? (
         <div className="authoring-form">
           <FormStatus text={busy ? 'Duplicating component' : (nameError ?? limitSaid(name.length, NAME_MAX, 'Names'))} />
           <p id="duplicate-component-desc" className="confirm-lead">
@@ -816,7 +858,10 @@ export function DuplicateComponentModal({ definitionId, openedIn }: { definition
           <Field label="Name for the copy" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError} extra={<Count length={name.length} max={NAME_MAX} />}>
             <input ref={input} className="input" autoFocus readOnly={busy} aria-required="true" maxLength={NAME_MAX} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void duplicate()} />
           </Field>
+          {hold && !locked && <BlockedNote block={hold} id="duplicate-component-held" live={false} />}
         </div>
+      ) : locked ? (
+        <BlockedNote block={locked} id={GONE_ID} live={false} />
       ) : (
         <GoneNotice>
           <strong>{opened ?? 'This component'}</strong> is no longer in this project, so there is nothing to duplicate.
@@ -840,7 +885,11 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
   const [busy, setBusy] = useState(false);
   const input = useSelectedOnOpen();
   const close = useCloseOwn();
-  const ready = def?.owner === 'project' && !!name.trim() && !busy;
+  // Read-only or the AI at work holds the rename: the form stays, with why under it.
+  const hold = useProjectBlock('rename it');
+  // Read-only lasts while the dialog is open: said in place of the form, with Close, as the other authoring dialogs do.
+  const locked = hold?.kind === 'read-only' ? hold : null;
+  const ready = def?.owner === 'project' && !!name.trim() && !busy && !hold;
   const save = async () => {
     if (!ready) return;
     const n = name.trim();
@@ -871,14 +920,14 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
       icon={<Badge icon={<Pencil />} tone={def ? 'neutral' : 'caution'} />}
       onClose={close}
       busy={busy}
-      describedBy={def ? 'rename-component-desc rename-component-subject' : GONE_ID}
+      describedBy={def && !locked ? `rename-component-desc rename-component-subject${hold ? ' rename-component-held' : ''}` : GONE_ID}
       footer={
-        def ? (
+        def && !locked ? (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn btn-primary" disabled={!ready} onClick={() => void save()}>
+            <button className="btn btn-primary" disabled={!ready} aria-describedby={hold ? 'rename-component-held' : undefined} onClick={() => void save()}>
               {busy ? 'Renaming…' : 'Rename'}
             </button>
           </>
@@ -887,7 +936,8 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
         )
       }
     >
-      {def ? (
+      <BlockedStatus block={hold} lifted="You can rename it now." />
+      {def && !locked ? (
         <div className="authoring-form">
           <FormStatus text={busy ? 'Renaming component' : (nameError ?? ([limitSaid(name.length, NAME_MAX, 'Names'), limitSaid(description.length, DESCRIPTION_MAX, 'Descriptions')].filter(Boolean).join(' ') || undefined))} />
           <p id="rename-component-desc" className="confirm-lead">
@@ -908,7 +958,10 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
           >
             <textarea className="textarea" rows={2} readOnly={busy} maxLength={DESCRIPTION_MAX} value={description} placeholder="What this component is for" onChange={(e) => setDescription(e.target.value.replace(/\s*\n\s*/g, ' '))} onKeyDown={onKey} />
           </Field>
+          {hold && !locked && <BlockedNote block={hold} id="rename-component-held" live={false} />}
         </div>
+      ) : locked ? (
+        <BlockedNote block={locked} id={GONE_ID} live={false} />
       ) : (
         <GoneNotice>
           <strong>{shown.name || 'This component'}</strong> has been deleted, so there is nothing to rename.
@@ -1018,7 +1071,9 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   const refs = review.uses.length;
   const plan = planPageRemoval(st, pageId, replacement, choices);
   const target = pagePicked ? st.pages[pagePicked] : undefined;
-  const aiBusy = !!snap?.aiBusy;
+  // Read-only or the AI at work holds the deletion: said on its own row above the buttons, while whatever else still
+  // blocks it stays beside them.
+  const hold = useProjectBlock('delete this page');
   // A page deleted some other way (the assistant) takes its dialog with it, so an undo never brings the dialog back.
   useEffect(() => {
     const modal = getState().modal;
@@ -1031,7 +1086,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   // The replacement page's sections as they will be once this page's cards have left their lists.
   const { options } = sectionOptions(review.cards.length ? withoutCards(st, pageId) : st, pagePicked);
   const remove = async () => {
-    if (!plan.operations || busy || aiBusy) return;
+    if (!plan.operations || busy || hold) return;
     const workspaceKey = snap?.workspaceKey;
     setBusy(true);
     let done: Awaited<ReturnType<typeof applyOps>> = null;
@@ -1104,8 +1159,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
             : implicated.size > 1
               ? { text: 'Sections chosen can’t be used now.', act: 'Choose again' }
               : { text: 'A section chosen can’t be used now.', act: 'Choose again' };
-  // While the AI works, whatever else still blocks the deletion stays in view.
-  const blocked = aiBusy ? { text: `The AI is making changes.${need ? ` ${need.text}` : ' You can delete this page when it stops.'}`, act: need?.act } : need;
+  const blocked = need;
   // The first choice still open or refused: its field (label included) scrolled into view, then the select focused.
   const goToChoice = () => {
     const el = body.current?.querySelector<HTMLSelectElement>('select[data-unset], select[aria-invalid="true"], select[data-refused]');
@@ -1192,16 +1246,18 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   return (
     <Modal
       title={`Delete “${page.title}”?`}
-      describedBy="delete-page-desc"
+      describedBy={`delete-page-desc${hold ? ' delete-page-held' : ''}`}
       icon={<Badge icon={<Trash2 />} tone="caution" />}
       onClose={close}
       busy={busy}
       footer={
         <>
+          {hold && <BlockedNote block={hold} id="delete-page-held" live={false} className="foot-blocked" />}
+          <BlockedStatus block={hold} lifted={need ? need.text : 'You can delete this page now.'} />
           <span className="page-dialog-status" role="status">
             {blocked && (
               <>
-                {aiBusy ? <Sparkles /> : <Info />}
+                <Info />
                 <span>
                   {blocked.text}
                   {blocked.act && (
@@ -1219,7 +1275,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
           <SafeButton onClick={close} disabled={busy}>
             Cancel
           </SafeButton>
-          <button className="btn btn-danger" disabled={!plan.operations || busy || aiBusy} onClick={() => void remove()}>
+          <button className="btn btn-danger" disabled={!plan.operations || busy || !!hold} aria-describedby={hold ? 'delete-page-held' : undefined} onClick={() => void remove()}>
             Delete page
           </button>
         </>
@@ -1362,6 +1418,7 @@ function reviewShellLink(link: ShellPageLink) {
  */
 export function SetHomeModal({ pageId }: { pageId: string }) {
   const snap = useStore((s) => s.snapshot);
+  const runStatus = useStore((s) => s.runStatus);
   const [keep, setKeep] = useState(true);
   const [busy, setBusy] = useState(false);
   const close = () => setState({ modal: null });
@@ -1396,12 +1453,15 @@ export function SetHomeModal({ pageId }: { pageId: string }) {
     return { moves, to: new Map(moves.map((m) => [m.pageId, m.to])), first: links[0], rows: [...rows.values()], total: links.length };
   }, [st, page, gone, pageId, keep]);
   if (!snap || !st || !page || !review) return null;
+  // Read-only or the AI at work holds the change: said on its own row above the buttons.
+  const hold = projectBlock(snap, 'change the home page', runStatus);
   const { moves, to, first, rows, total } = review;
   const vacated = page.route;
   // Only an address the website was exported with can be in anyone's bookmarks: one never exported is not kept.
   const published = wasPublishedFor(st, vacated, pageId);
   const taker = keep ? undefined : moves.find((m) => m.to === vacated);
   const confirm = async () => {
+    if (hold) return;
     setBusy(true);
     let r: Awaited<ReturnType<typeof applyOps>> = null;
     try {
@@ -1421,24 +1481,19 @@ export function SetHomeModal({ pageId }: { pageId: string }) {
   return (
     <Modal
       title={`Make “${page.title}” the home page?`}
-      describedBy="set-home-desc"
+      describedBy={`set-home-desc${hold ? ' set-home-held' : ''}`}
       icon={<Badge icon={<House />} />}
       onClose={close}
       busy={busy}
       footer={
         <>
-          <span className="page-dialog-status" role="status">
-            {snap.aiBusy && (
-              <>
-                <Sparkles />
-                The AI is making changes. You can change the home page when it stops.
-              </>
-            )}
-          </span>
+          {hold && <BlockedNote block={hold} id="set-home-held" live={false} className="foot-blocked" />}
+          <BlockedStatus block={hold} lifted="You can change the home page now." />
+          <span className="grow" />
           <SafeButton onClick={close} disabled={busy}>
             Cancel
           </SafeButton>
-          <button className="btn btn-primary" onClick={() => void confirm()} disabled={busy || snap.aiBusy}>
+          <button className="btn btn-primary" onClick={() => void confirm()} disabled={busy || !!hold} aria-describedby={hold ? 'set-home-held' : undefined}>
             Make home page
           </button>
         </>
@@ -1547,6 +1602,8 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
   const [busy, setBusy] = useState(false);
   const def = node && openedId && (node.definitionId === openedId || busy) ? st.components[openedId] : undefined;
   const close = () => setState({ modal: null });
+  // Opening a design writes nothing, so only the theme copy waits on read-only or the AI.
+  const copyHold = useProjectBlock('make a copy');
   if (!def || !node)
     return (
       <Modal title="Edit component" icon={<Badge icon={<Component />} tone="caution" />} onClose={close} describedBy={GONE_ID} footer={<GoneClose onClose={close} />}>
@@ -1564,6 +1621,7 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
       </Modal>
     );
   const isTheme = def.owner === 'theme';
+  const hold = isTheme ? copyHold : null;
   const allPlaces = placesOf(st, def.id);
   // Uses inside a theme's own components stay on the original when it is copied, so they are not counted as changing.
   const places = allPlaces.filter((p) => !(isTheme && p.owner.kind === 'component' && st.components[p.owner.id]?.owner !== 'project'));
@@ -1590,7 +1648,7 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
   // One placement in a shared part, or inside a component placed on several pages, still changes many pages.
   const wide = count > 1 || reach.everyPage || reach.pages > 1 || reach.appears > 1;
   const go = async () => {
-    if (busy) return;
+    if (busy || hold) return;
     let defId = def.id;
     if (isTheme) {
       setBusy(true);
@@ -1635,13 +1693,13 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
       icon={<Badge icon={<Component />} tone="definition" />}
       onClose={close}
       busy={busy}
-      describedBy="edit-definition-desc edit-definition-subject edit-definition-details"
+      describedBy={`edit-definition-desc edit-definition-subject edit-definition-details${hold ? ' edit-definition-held' : ''}`}
       footer={
         <>
           <SafeButton onClick={close} disabled={busy}>
             Cancel
           </SafeButton>
-          <button className="btn btn-primary" disabled={busy} onClick={() => void go()}>
+          <button className="btn btn-primary" disabled={busy || !!hold} aria-describedby={hold ? 'edit-definition-held' : undefined} onClick={() => void go()}>
             {busy ? 'Making a copy…' : isTheme ? 'Make a copy and edit' : wide ? 'Edit everywhere' : 'Edit design'}
           </button>
         </>
@@ -1675,6 +1733,8 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
           </div>
         )}
         <Details id="edit-definition-details" items={details} />
+        {hold && <BlockedNote block={hold} id="edit-definition-held" live={false} />}
+        <BlockedStatus block={hold} lifted="You can make a copy now." />
       </div>
     </Modal>
   );
@@ -1884,6 +1944,7 @@ function ChangeGlyph({ e }: { e: Entry }) {
 
 /** `holding`: a saved version is being saved, renamed, restored or deleted, and the dialog waits for it to close. */
 function ChangesPanel({ active, foot, holding }: { active: boolean; foot: HTMLElement | null; holding: boolean }) {
+  const runStatus = useStore((s) => s.runStatus);
   const snap = useStore((s) => s.snapshot);
   // Opened from a notification whose change could not be undone on its own: show that change, with focus on it.
   // Otherwise focus starts where History stands now.
@@ -1913,7 +1974,7 @@ function ChangesPanel({ active, foot, holding }: { active: boolean; foot: HTMLEl
   const busy = waitFor !== null && (snap?.revision ?? 0) < waitFor;
   // While the AI works History is its to change, and a read-only project can't be changed at all: a step chosen now
   // could take back more than its row says, or nothing. The rows stay readable, and the reason is pinned above them.
-  const lock = historyLock(snap, 'changes');
+  const lock = historyLock(snap, 'changes', runStatus);
   const locked = busy || !!lock;
   const historyAt = `${snap?.revision ?? 0}|${all.length}|${cursor}|${all.at(-1)?.id ?? ''}`;
   // A step's success is pinned to History once the project shows where the step went.
@@ -2050,10 +2111,9 @@ function ChangesPanel({ active, foot, holding }: { active: boolean; foot: HTMLEl
     <>
       {active && foot && createPortal(footer, foot)}
       <div className={`history-pinned${scrolled ? ' scrolled' : ''}`}>
-        {lock && (
-          <HistoryNote id={noteId} tone="info" icon={lock.icon}>
-            {lock.text}
-          </HistoryNote>
+        {active && <BlockedStatus block={lock} lifted="You can undo and redo now." />}
+      {lock && (
+          <BlockedNote block={lock} id={noteId} live={false} />
         )}
         {entries.length > 0 && (
           <>

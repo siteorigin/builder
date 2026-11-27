@@ -66,6 +66,7 @@ import { shortcutLabel } from '../lib/shortcut-keys';
 import { settlePageClick } from '../lib/page-clicks';
 import { askAiHint, useAskAiKeys } from '../lib/ask-ai-key';
 import { perfCount, perfMark, perfOn, perfWork } from '../lib/perf';
+import { aiRunning } from '../lib/blocked';
 
 /** Whether two reports measured the same element (or both nothing). */
 const sameMeasured = (a: BridgeDesc | null, b: BridgeDesc | null) => a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '') && a.slot === b.slot);
@@ -3086,7 +3087,7 @@ export function Canvas() {
       <button
         className={className}
         disabled={aiWorking}
-        title={runStatus === 'awaiting-input' ? 'Answer the AI’s question in the AI panel first' : aiWorking ? 'Available once the AI finishes' : 'Open the AI panel to paste copy for this page or describe what goes on it'}
+        title={aiWorking || runStatus === 'awaiting-input' ? aiRunning(runStatus, 'use this') : 'Open the AI panel to paste copy for this page or describe what goes on it'}
         onClick={() => pageId && writePageWithAi(pageId)}
       >
         <Sparkles /> <span>Write with AI</span>

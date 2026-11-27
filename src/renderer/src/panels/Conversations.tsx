@@ -1,6 +1,6 @@
 import './Conversations.css';
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { CircleAlert, Lock, MessagesSquare, Pencil, Search, SearchX, Sparkles, Trash2 } from 'lucide-react';
+import { CircleAlert, MessagesSquare, Pencil, Search, SearchX, Trash2 } from 'lucide-react';
 import type { Conversation, ConversationSummary } from '@shared/api';
 import { cleanTitle, matchConversation, TITLE_MAX, type ConversationMatch } from '@shared/conversations';
 import { api, confirmDialog, errorText, getState, setState, toast, useStore } from '../store';
@@ -12,6 +12,7 @@ import { isImeComposing } from '../lib/ime';
 import { plural } from '../lib/storage';
 import { clock, dayKey, dayName, fullWhen } from '../lib/when';
 import { HistoryNote } from './SavedVersions';
+import { BlockedNote, BlockedStatus, aiRunning } from '../components/BlockedNote';
 
 /** A conversation as a row shows it: the request that explains it best, and a search's match. */
 interface Row {
@@ -63,11 +64,13 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
   const [stop, setStop] = useState<{ id: string; col: Col } | null>(null);
   const openId = useStore((s) => s.conversation?.id);
   const readOnly = useStore((s) => s.snapshot?.readOnly?.reason ?? null);
-  const running = useStore((s) => !!s.runStatus);
+  const runStatus = useStore((s) => s.runStatus);
+  const running = !!runStatus;
+  const ai = runStatus === 'awaiting-input' ? 'the AI is waiting for your answer.' : 'the AI is working.';
   // Why an action can't be taken now, each said once above the list. A read-only project can still be read, so Open
   // waits only for the AI; renaming and deleting wait for both.
-  const editBlocked = readOnly ? 'this project is read-only here.' : running ? 'the AI is working.' : null;
-  const openBlocked = running ? 'the AI is working.' : null;
+  const editBlocked = readOnly ? 'this project is read-only here.' : running ? ai : null;
+  const openBlocked = running ? ai : null;
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const ids = useId();
@@ -233,6 +236,9 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
     });
     // Cancelled: the question hands focus back to the Delete button it was asked from.
     if (yes !== true || !stillOpen()) return;
+    // A hold that came while the question was open stops it here: the manager's note, back in view, says why.
+    const held = getState();
+    if (held.snapshot?.readOnly || held.runStatus) return;
     setBusy({ id: c.id, what: 'delete' });
     setError(null);
     const r = await api.ai.deleteConversation(c.id, opening).then(
@@ -310,6 +316,7 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
       title="AI conversations"
       icon={<MessagesSquare />}
       onClose={onClose}
+      describedBy={[readOnly && readOnlyNote, running && runningNote].filter(Boolean).join(' ') || undefined}
       busy={!!busy}
       wide
       footer={
@@ -348,15 +355,14 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
           }}
         />
       </label>
+      {/* Each hold is said as it comes and goes: the AI's often while the manager is open, read-only rarely. */}
+      <BlockedStatus block={readOnly ? { kind: 'read-only', text: readOnly } : null} lifted="You can rename or delete a conversation now." />
+      <BlockedStatus block={running ? { kind: 'ai', text: aiRunning(runStatus, readOnly ? 'open a conversation' : 'open, rename or delete a conversation') } : null} lifted={readOnly ? 'You can open a conversation now.' : 'You can open, rename or delete a conversation now.'} />
       {readOnly && (
-        <HistoryNote id={readOnlyNote} tone="info" icon={<Lock aria-hidden="true" />}>
-          {readOnly}
-        </HistoryNote>
+        <BlockedNote block={{ kind: 'read-only', text: readOnly }} id={readOnlyNote} live={false} />
       )}
       {running && (
-        <HistoryNote id={runningNote} tone="info" icon={<Sparkles aria-hidden="true" />}>
-          {readOnly ? 'The AI is working. You can open a conversation once it finishes.' : 'The AI is working. You can look through your conversations now, and open, rename or delete one once it finishes.'}
-        </HistoryNote>
+        <BlockedNote block={{ kind: 'ai', text: aiRunning(runStatus, readOnly ? 'open a conversation' : 'open, rename or delete a conversation') }} id={runningNote} live={false} />
       )}
       {error && (
         <HistoryNote tone="danger" icon={<CircleAlert aria-hidden="true" />}>

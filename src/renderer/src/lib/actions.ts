@@ -37,6 +37,7 @@ import { dropRefusal, savingProblems } from './insert-drop';
 import { draftFor, imagesFor, withDraft } from './chatDrafts';
 import { previewHandoff, type SeoHandoff } from './seoHandoff';
 import type { SlotTarget } from './slot-target';
+import { aiRunning, projectBlock } from './blocked';
 
 export type { InsertSpec, Primitive } from './insert-search';
 
@@ -745,8 +746,8 @@ export type ImagePlacement = { at: InsertAt; where: NonNullable<Where>; page: st
 function placingRefusal(snap: ProjectSnapshot | null): string | null {
   const s = getState();
   if (!snap) return 'No project is open.';
-  if (snap.readOnly) return 'This project is open read-only, so the image can’t be placed.';
-  if (snap.aiBusy) return 'The AI is making changes. Stop it to place the image.';
+  const held = projectBlock(snap, 'place the image', s.runStatus);
+  if (held) return held.text;
   if (s.definitionMode) return 'Finish editing this component to place the image on a page.';
   if (s.mode === 'preview') return 'Switch to Edit to place the image on a page.';
   return null;
@@ -1155,7 +1156,7 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
   if (!snap || seoOpening) return false;
   // While the AI works (or waits on an answer) the chat is busy with that request; this one would sit unseen behind it.
   // The run's status says so: its ID stays on the last run once that has ended.
-  if (s.runStatus) return (toast('The AI is still working on a request. Try again once it has finished.', 'info'), false);
+  if (s.runStatus) return (toast(aiRunning(s.runStatus, 'try again'), 'info'), false);
   if (!s.conversation) return (toast('The AI conversation is still loading. Try again in a moment.', 'info'), false);
   const pageGone = (st: ProjectState) => h.mode === 'edit' && h.scope === 'page' && !Object.hasOwn(st.pages, h.pageId);
   if (pageGone(snap.state)) return (toast('That page is no longer on the site.', 'info'), false);

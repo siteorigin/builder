@@ -5,6 +5,7 @@ import type { OutlineHeading } from '@generator/checks';
 import { applyOps, getState, setState, useStore, type InspectorFocus } from '../store';
 import { openInsertSearch } from '../lib/insert-focus';
 import { headingLevelOps, headingTarget, headingWords, pageOutline, type OutlineRow } from '../lib/outline';
+import { BlockedNote, BlockedStatus, useProjectBlock } from '../components/BlockedNote';
 
 const WHERE: Record<string, string> = { header: 'Shared header', footer: 'Shared footer' };
 
@@ -92,10 +93,14 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
   const [picked, setPicked] = useState<{ key: string; selection: ElementRef } | null>(null);
   const uid = useId();
   const typed = useRef({ text: '', at: 0 });
+  // Held (read-only, or the AI changing the site), nothing here can be fixed: why is said once on its own note, and no
+  // warning promises a fix.
+  const hold = useProjectBlock('change heading levels');
   if (!snap || !state || !outline) return null;
   const page = state.pages[pageId];
   const { rows, review, titleFix } = outline;
-  const readOnly = !!snap.readOnly;
+  // Read-only, or held while the AI changes the site: no level can be changed, so no fix is offered.
+  const held = !!snap.readOnly || !!snap.aiBusy;
   const revision = snap.revision;
 
   // Several headings can select one element (subheadings in one text): the row chosen here is the one marked current.
@@ -186,7 +191,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(null);
   };
 
-  const promise = readOnly ? 'This project is read-only, so levels can’t be changed here.' : 'Changing a level never changes how a heading looks.';
+  const promise = held ? '' : 'Changing a level never changes how a heading looks.';
   const goTo =
     flagged > 0 ? (
       <button className="btn btn-sm outline-summary-action" onClick={goToFirst}>
@@ -198,9 +203,9 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
       <TriangleAlert aria-hidden="true" />
       <span className="grow">
         <strong>No main heading.</strong> Screen readers have no Heading 1 to start from. {promise}
-        {!titleFix && !readOnly && rows.length > 0 && ' In the Inspector, choose Heading 1 for the heading that titles this page, or add a section that starts with a title.'}
+        {!titleFix && !held && rows.length > 0 && ' In the Inspector, choose Heading 1 for the heading that titles this page, or add a section that starts with a title.'}
         {flagged > 0 && ` ${flagged === 1 ? 'One heading also skips a level' : `${flagged} headings also skip a level`}.`}
-        {titleFix && !readOnly ? (
+        {titleFix && !held ? (
           <button className="btn btn-sm outline-summary-action" onClick={() => setLevel(titleFix, 1)}>
             Make “{headingWords(titleFix.heading)}” Heading 1
           </button>
@@ -227,7 +232,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
       <Info aria-hidden="true" />
       <span className="grow">
         This page has no headings of its own yet. Its title should be its one Heading 1.
-        {!readOnly && (
+        {!held && (
           <button className="btn btn-sm outline-summary-action" onClick={openInsertSearch}>
             <Plus aria-hidden="true" /> Add sections
           </button>
@@ -247,6 +252,9 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
   return (
     <div className="panel-body outline-view" aria-label={`Headings on ${page.title}`} role="region" tabIndex={-1}>
       {/* A fix that settles the last flag changes the summary while focus stays on the row: it is announced. */}
+      {/* Said by its own status, outside the summary's live region, so it is heard once. */}
+      <BlockedStatus block={hold} lifted="You can change heading levels now." />
+      {hold && <BlockedNote block={hold} live={false} className="outline-held" />}
       <div className="outline-summary" aria-live="polite">
         {summary}
       </div>
@@ -255,7 +263,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
           <p>
             <strong>No headings yet.</strong> Start with one Heading 1 as the page’s title, then a Heading 2 for each section.
           </p>
-          {!readOnly && (
+          {!held && (
             <button className="btn btn-sm" onClick={openInsertSearch}>
               <Plus aria-hidden="true" /> Add sections
             </button>
@@ -271,8 +279,8 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
             const group = h.owner.kind === 'shell' ? (prev?.kind !== 'shell' || prev.id !== h.owner.id ? WHERE[h.owner.id] : null) : prev?.kind === 'shell' ? 'Page content' : null;
             const words = headingWords(h);
             const why = fixedWhy(h);
-            // A read-only project says so once, above the list, rather than offering edits on every row.
-            const hint = readOnly ? null : flagHint(r);
+            // A held project says why once, above the list, rather than offering edits on every row.
+            const hint = held ? null : flagHint(r);
             const shellName = h.owner.kind === 'shell' ? WHERE[h.owner.id] : null;
             const mainNote = r.title && titled ? 'Main heading' : null;
             const tab = r.key === stop ? 0 : -1;
@@ -300,7 +308,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
                     aria-label={`Heading ${h.level}, ${words}${flag ? `. ${flag}` : mainNote ? `. ${mainNote}` : ''}${h.repeated && !r.extraTitle ? '. Shown more than once' : ''}${shellName ? `. ${shellName}` : ''}`}
                     aria-describedby={hintId}
                     // The full words, which a long heading's row clamps; why its level is set elsewhere only where it can be changed.
-                    title={why && !readOnly ? `${words}\n${why}` : words}
+                    title={why && !held ? `${words}\n${why}` : words}
                     onFocus={() => setFocused(r.key)}
                     onClick={() => select(r)}
                   >
@@ -317,7 +325,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
                       )}
                     </span>
                   </button>
-                  {!readOnly && (r.fix || hint) && (
+                  {!held && (r.fix || hint) && (
                     <div className="outline-next">
                       {hint && (
                         <span className="outline-hint" id={hintId}>

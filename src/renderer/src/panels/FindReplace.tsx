@@ -1,6 +1,7 @@
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type InputHTMLAttributes, type KeyboardEvent } from 'react';
 import { ArrowRight, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleAlert, CircleCheck, FileText, Link2, ListChecks, ListX, Lock, PanelBottom, PanelRightOpen, PanelTop, Replace, Search, SearchX, Undo2 } from 'lucide-react';
 import { Modal, openSection } from '../components/ui';
+import { BlockedNote, BlockedStatus, useProjectBlock } from '../components/BlockedNote';
 import { api, commitOps, getState, setState, toast, trackHistory, undoAction, undoAvailable, useStore } from '../store';
 import { pageOutOfSight, selectPage } from '../lib/actions';
 import { contentFields, contentTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
@@ -354,6 +355,10 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const needInspector = matches.length - replaceable;
   const readOnly = !!snap?.readOnly;
   const aiBusy = !!snap?.aiBusy;
+  // Read-only or the AI at work holds every replacement: said once, on its own row above the buttons.
+  const block = useProjectBlock(matches.length === 1 ? 'replace it' : 'replace these');
+  const undoBlock = useProjectBlock('undo it');
+  const inspectBlock = useProjectBlock('change them in the inspector');
   // Where one field holds several matches, each row says which one it is.
   const nth = useMemo(() => {
     const seen = new Map<string, string[]>();
@@ -424,6 +429,10 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const canReplace = !!plan && settled && !plan.error && plan.operations.length > 0 && !busy && !readOnly && !aiBusy && finished?.phase !== 'undoing';
   const undoTarget = finished ? undoAction(finished.result)?.undoes : undefined;
   const canUndo = !!undoTarget && undoAvailable(undoTarget, snap ?? null);
+  // Matches only the inspector can change: while held they can still be opened, just not changed there.
+  const inspectorOnly = matches.length > 0 && !replaceable && settled;
+  // What a hold stops now: the replacement being chosen, the Undo of the one just made, or edits in the inspector.
+  const footBlock = replacing ? (inspectorOnly ? inspectBlock : block) : finished?.phase === 'done' && canUndo ? undoBlock : inspectorOnly ? inspectBlock : null;
   const filled = expanded || !!query.trim() || !!finished;
   useEffect(() => {
     if (filled && !expanded) setExpanded(true);
@@ -514,7 +523,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   };
   const undo = async () => {
     const entryId = finished?.result.entryId;
-    if (!finished || !entryId) return;
+    if (!finished || !entryId || undoBlock) return;
     findRef.current?.focus();
     setFinished({ ...finished, phase: 'undoing' });
     let ok = false;
@@ -629,23 +638,17 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
 
   // The footer says what the action will do, or what it is waiting for.
   const sharedChosen = plan && !plan.error ? groupsOf(chosen.filter((m) => !unchanged(m))).filter((g) => g.shared) : [];
-  const footNote = !replacing ? (
-    matches.length && !replaceable && settled ? (
-      <span className="find-foot-note">
-        <Lock aria-hidden />
-        Open each match to change it in the inspector.
-      </span>
-    ) : null
-  ) : readOnly ? (
-    <span className="find-foot-note">This project is open for viewing only.</span>
-  ) : aiBusy ? (
-    <span className="find-foot-note">Wait for the assistant to finish changing the site.</span>
-  ) : matches.length && !replaceable && settled ? (
+  const inspectorHint = (
     <span className="find-foot-note">
       <Lock aria-hidden />
-      Open each match to change it in the inspector.
+      {inspectBlock ? 'Open each match to see it in the inspector.' : 'Open each match to change it in the inspector.'}
     </span>
-  ) : replaceable && !chosen.length && settled ? (
+  );
+  const footNote = !replacing ? (
+    inspectorOnly ? inspectorHint : null
+  ) : inspectorOnly ? (
+    inspectorHint
+  ) : block ? null : replaceable && !chosen.length && settled ? (
     <span className="find-foot-note">
       <CircleAlert aria-hidden />
       Choose at least one match to {verb.toLowerCase()}.
@@ -674,6 +677,14 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
     </span>
   ) : null;
   const footId = `${summaryId}-foot`;
+  // What the footer's status says as a hold lifts: only what can really be done then.
+  const footLifted = inspectorOnly && !(!replacing && finished?.phase === 'done' && canUndo)
+    ? 'You can change them in the inspector now.'
+    : !replacing
+      ? 'You can undo it now.'
+      : plan && !plan.error && plan.operations.length > 0
+        ? `You can ${verb.toLowerCase()} the chosen matches now.`
+        : `${removing ? 'Removing' : 'Replacing'} is available again.`;
   // A long list gets a row of its places, so every page is one click away without scrolling past the first.
   const dense = settled && groups.length > 2 && matches.length > 10;
   const jumpTo = (key: string) => {
@@ -699,9 +710,11 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
       wide
       onClose={close}
       busy={busy}
-      describedBy={summaryId}
+      describedBy={`${summaryId}${footBlock ? ` ${footId}-held` : ''}`}
       footer={
         <>
+          {footBlock && <BlockedNote block={footBlock} id={`${footId}-held`} live={false} className="foot-blocked" />}
+          <BlockedStatus block={footBlock} lifted={footLifted} />
           <span className="grow find-foot" id={footId}>
             {footNote}
           </span>
@@ -709,7 +722,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
             Close
           </button>
           {replacing ? (
-            <button ref={actionRef} className="btn btn-primary" disabled={!canReplace} onClick={() => void replace()} aria-describedby={footNote ? footId : undefined} title={`${verb} the chosen matches (${mod}↩)`}>
+            <button ref={actionRef} className="btn btn-primary" disabled={!canReplace} onClick={() => void replace()} aria-describedby={[block && `${footId}-held`, footNote && footId].filter(Boolean).join(' ') || undefined} title={`${verb} the chosen matches (${mod}↩)`}>
               {busy ? (removing ? 'Removing…' : 'Replacing…') : `${verb} ${matchCount(effective)}`}
             </button>
           ) : (
@@ -821,7 +834,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
             )}
           </div>
           {finished?.phase === 'done' && canUndo && (
-            <button className="btn btn-sm" disabled={busy} onClick={() => void undo()} aria-describedby={`${summaryId}-change`}>
+            <button className="btn btn-sm" disabled={busy || !!undoBlock} onClick={() => void undo()} aria-describedby={`${summaryId}-change${undoBlock ? ` ${footId}-held` : ''}`}>
               <Undo2 /> Undo
             </button>
           )}

@@ -230,7 +230,7 @@ const UNSETTLED = 'A save did not finish. Close and reopen the project to recove
 const LOCK_UNCHECKED = 'The project lock could not be checked, so nothing was changed. Try again.';
 /** Why a project whose folder went while it was open is read-only. */
 const FOLDER_GONE: ReadOnlyInfo = {
-  reason: 'The project folder is gone: it was moved, renamed or deleted, so nothing more can be saved. Close the project, then open it from where it is now.',
+  reason: 'The project folder is gone: it was moved, renamed or deleted, so it is read-only here. Close the project, then open it from where it is now.',
   preview: 'There is no preview: the project folder is gone.',
   canUnlock: false
 };
