@@ -47,7 +47,7 @@ import { commitPublication, credentialProblem, projectPublication, publishedTree
 import { redactSecrets } from './sources/redact';
 import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
 import { createAgentSources } from './sources/agent';
-import { sourceFingerprint } from '@shared/sources';
+import { MIN_SECRET_LENGTH, sourceFingerprint } from '@shared/sources';
 import type { SourceToolHost } from '@agent/source-tools';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
@@ -393,6 +393,15 @@ const READ_ONLY_NOTES = 'This project is open read-only, so its notes can’t be
  * What a push or a change to where the project is published says when it stops (#1157): the app's own words, which
  * name no credential (`secrets` are taken out of them all the same), and for a divergence the commit the host has.
  */
+/** `v` with its address escapes undone, or as it is when they are not valid. */
+function decodeURIComponentSafe(v: string): string {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+}
+
 function remoteFailed(e: unknown, secrets: readonly string[] = []): RemoteFailure {
   if (e instanceof GitError) return { ok: false, code: e.code, message: redactSecrets(e.message, secrets), ...(e.actual !== undefined && (e.code === 'diverged' || e.code === 'conflict') ? { actual: e.actual } : {}) };
   if (e instanceof RemoteCredentialError || e instanceof RemoteStateError) return { ok: false, code: 'failed', message: e.message };
@@ -4193,15 +4202,20 @@ export class Controller {
    * no failure of what it records, which the next push or status finds again.
    */
   private async recordRemote(s: ProjectSession, binding: string | null, f: (state: RemoteState) => RemoteState): Promise<boolean> {
+    if (s.readOnly) return false;
+    let wrote = false;
     try {
-      if (this.session !== s || this.closing || s.readOnly || !(await s.stillOwner())) return false;
-      const state = await readRemoteState(s.dir);
-      if (!state || (binding !== null && state.binding.id !== binding)) return false;
-      await writeRemoteState(s.dir, f(state));
-      return true;
+      // Read and written while this app holds the project, so another that took it over meanwhile is never written over.
+      await this.writeFence(s)(async () => {
+        const state = await readRemoteState(s.dir);
+        if (!state || (binding !== null && state.binding.id !== binding)) return;
+        await writeRemoteState(s.dir, f(state));
+        wrote = true;
+      });
     } catch {
       return false;
     }
+    return wrote;
   }
 
   /** Where the open project is published to and what is known of it, never a credential: null when it is not connected. */
@@ -4235,20 +4249,29 @@ export class Controller {
       }
       const site = opts.site ?? null;
       if (site !== null && !opaqueOk(site)) return { ok: false, code: 'invalid', message: 'That is not a site name the app can keep.' };
-      const old = await readRemoteState(s.dir).catch(() => null);
+      // The project keeps the address and the site's name: neither may carry the token, as it is or as an address spells it.
+      const token = typeof opts.token === 'string' ? opts.token.trim() : '';
+      if (token.length >= MIN_SECRET_LENGTH && [url, site ?? ''].some((v) => redactSecrets(v, [token]) !== v || decodeURIComponentSafe(v).includes(token)))
+        return { ok: false, code: 'invalid', message: 'The repository address or site name holds the token. Give the token on its own.' };
       const state: RemoteState = { binding: { id: `rb_${randomBytes(12).toString('hex')}`, provider: 'https-git', url, site }, content: null, acknowledged: null, receipt: null };
+      const owner = this.credentialOwner(s, url);
       try {
-        await this.remoteCredentials.set(state.binding.id, this.credentialOwner(s, url), { username: opts.username, token: opts.token });
+        await this.remoteCredentials.set(state.binding.id, owner, { username: opts.username, token: opts.token });
       } catch (e) {
         return remoteFailed(e);
       }
-      try {
+      let old: RemoteState | null = null;
+      let failed = false;
+      const wrote = await this.writeFence(s)(async () => {
+        old = await readRemoteState(s.dir).catch(() => null);
         await writeRemoteState(s.dir, state);
-      } catch {
-        await this.remoteCredentials.forget(state.binding.id).catch(() => undefined);
-        return { ok: false, code: 'failed', message: 'Where the project is published to could not be saved.' };
+      }).catch(() => ((failed = true), false));
+      if (!wrote) {
+        await this.remoteCredentials.forget(state.binding.id, owner).catch(() => undefined);
+        return failed ? { ok: false, code: 'failed', message: 'Where the project is published to could not be saved.' } : { ok: false, code: 'read-only', message: READ_ONLY };
       }
-      if (old) await this.remoteCredentials.forget(old.binding.id).catch(() => undefined);
+      const replaced = old as RemoteState | null;
+      if (replaced) await this.remoteCredentials.forget(replaced.binding.id, this.credentialOwner(s, replaced.binding.url)).catch(() => undefined);
       return { ok: true, state };
     });
   }
@@ -4259,13 +4282,16 @@ export class Controller {
     return this.onePublication(async (): Promise<RemoteResult> => {
       const blocked = await this.remoteBlocked(s);
       if (blocked || !s) return blocked!;
-      const old = await readRemoteState(s.dir).catch(() => null);
-      try {
+      let old: RemoteState | null = null;
+      let failed = false;
+      const wrote = await this.writeFence(s)(async () => {
+        old = await readRemoteState(s.dir).catch(() => null);
         await writeRemoteState(s.dir, null);
-      } catch {
-        return { ok: false, code: 'failed', message: 'Where the project is published to could not be forgotten.' };
-      }
-      if (old) await this.remoteCredentials.forget(old.binding.id).catch(() => undefined);
+      }).catch(() => ((failed = true), false));
+      if (!wrote) return failed ? { ok: false, code: 'failed', message: 'Where the project is published to could not be forgotten.' } : { ok: false, code: 'read-only', message: READ_ONLY };
+      const removed = old as RemoteState | null;
+      // Only this project's, in this folder: a copy of it made outside the app leaves the original's credential alone.
+      if (removed) await this.remoteCredentials.forget(removed.binding.id, this.credentialOwner(s, removed.binding.url)).catch(() => undefined);
       return { ok: true, state: null };
     });
   }
@@ -4298,30 +4324,30 @@ export class Controller {
     const commit = opts.commit ?? tip;
     if (commit !== tip) return { ok: false, code: 'conflict', message: 'That is not the publication last prepared, so it was not pushed. Prepare the publication again, then push it.', actual: tip };
     const { binding } = state;
-    const owner = this.credentialOwner(s, binding.url);
-    const tokens: string[] = [];
-    let signedIn = false;
+    // The credential kept for this binding of this project, in this folder, at this address, is what approved the
+    // address: without one (a copy of the folder, an address changed outside the app) the host is never contacted.
+    let credential: Awaited<ReturnType<RemoteCredentialStore['resolve']>>;
+    try {
+      credential = await this.remoteCredentials.resolve(binding.id, this.credentialOwner(s, binding.url));
+    } catch (e) {
+      return remoteFailed(e);
+    }
+    if (!credential) return { ok: false, code: 'auth-rejected', message: 'No credential is saved for this project here, so nothing was sent to the host. Connect the project to its host again.' };
+    const tokens = [credential.token];
     try {
       const outcome = await this.remoteTransport.push(s.dir, {
         endpoint: binding.url,
         binding: binding.id,
         ref: PUBLISH_BRANCH,
         commit,
-        // Only for the binding's own address, and only as kept for this project in this folder.
-        credentials: async (url) => {
-          if (url !== binding.url) return null;
-          const credential = await this.remoteCredentials.resolve(binding.id, owner);
-          if (credential) tokens.push(credential.token);
-          signedIn = !!credential;
-          return credential;
-        },
+        // Only for the binding's own address.
+        credentials: async (url) => (url === binding.url ? credential : null),
         ...(opts.signal ? { signal: opts.signal } : {})
       });
       const at = new Date().toISOString();
       await this.recordRemote(s, binding.id, (st) => ({ ...st, acknowledged: { commit, at }, receipt: outcome.receipt ?? st.receipt }));
       return { ok: true, commit, uploaded: outcome.uploaded, reconciled: outcome.reconciled };
     } catch (e) {
-      if (e instanceof GitError && e.code === 'auth-rejected' && !signedIn) return { ok: false, code: 'auth-rejected', message: 'No credential is saved for this project here, so the host could not be signed in to. Connect the project to its host again.' };
       return remoteFailed(e, tokens);
     }
   }

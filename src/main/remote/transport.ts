@@ -73,10 +73,10 @@ export function httpsGitTransport(git: RemoteGit, opts: { lookupMs?: number } = 
         const r = await git.push(root, target, request.commit, call);
         return { commit: request.commit, uploaded: r.uploaded, reconciled: false, receipt: null };
       } catch (e) {
-        // Stopped by the caller, it stays unknown: the next push settles it.
+        // Stopped by the caller, before or while it looks, it stays unknown: the next push settles it.
         if (!(e instanceof GitError && e.code === 'outcome-unknown') || request.signal?.aborted) throw e;
-        const tip = await git.remoteTip(target, { timeoutMs: lookupMs }).catch(() => undefined);
-        if (tip === request.commit) return { commit: request.commit, uploaded: true, reconciled: true, receipt: null };
+        const tip = await git.remoteTip(target, { timeoutMs: lookupMs, ...call }).catch(() => undefined);
+        if (tip === request.commit && !request.signal?.aborted) return { commit: request.commit, uploaded: true, reconciled: true, receipt: null };
         throw e;
       }
     },

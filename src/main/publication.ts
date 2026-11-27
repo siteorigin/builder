@@ -28,7 +28,7 @@ import { defFile, publishedState, webMcpFormFile } from '@generator/index';
 import { redirectHost } from '@generator/host-redirects';
 import { holdsSecret } from './sources/sync';
 import { withoutCodeMarkers } from './codecheck';
-import { GIT_LIMITS, GitError, PUBLISH_BRANCH, type GitRepository, type Identity, type Oid } from './git/protocol';
+import { GIT_LIMITS, GitError, PUBLISH_BRANCH, PUBLISH_EMAIL, type GitRepository, type Identity, type Oid } from './git/protocol';
 import { snapshotPlace } from './project/snapshot-inventory';
 import { CUSTOM_SOURCE_RE, isCanonicalPath, MANIFEST_FILE, stateToDocs } from './project/documents';
 import { readIfExists, sha } from './project/fsutil';
@@ -61,7 +61,7 @@ import {
 export { PUBLISH_BRANCH };
 
 /** Who a publication's commit is by: the app, at the time it was made, in UTC, so it carries nothing of the computer. */
-export const publicationIdentity = (now = Date.now()): Identity => ({ name: 'SiteOrigin Builder', email: 'publish@siteorigin.invalid', timestamp: Math.floor(now / 1000), timezoneOffset: 0 });
+export const publicationIdentity = (now = Date.now()): Identity => ({ name: 'SiteOrigin Builder', email: PUBLISH_EMAIL, timestamp: Math.floor(now / 1000), timezoneOffset: 0 });
 
 // ---------------------------------------------------------------------------
 // Git's names, worked out without writing anything

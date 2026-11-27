@@ -469,6 +469,8 @@ describe('unpacking a project into a new folder', () => {
       { name: 'Cafe/static/Remote-Credentials (1).json', data: '{}' },
       { name: 'Cafe/src/lib/.remote-credentials.json.swp', data: '{}' },
       { name: 'Cafe/src/lib/api-keys.json~', data: '{}' },
+      { name: 'Cafe/static/remote-credentials (Someone’s conflicted copy 2026-11-27).json', data: '{}' },
+      { name: 'Cafe/src/lib/keys/remote-credentials.json', data: '{}' },
       // Named after one, and no copy of one.
       { name: 'Cafe/static/remote-credentials-guide.txt', data: 'kept' }
     ]);

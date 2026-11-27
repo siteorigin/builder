@@ -11,8 +11,8 @@
  *   so an upload that landed and a build at the host that then failed are told apart from an upload that failed.
  */
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
-import { atomicWrite } from '../project/fsutil';
+import { dirname } from 'node:path';
+import { atomicWrite, safeJoin } from '../project/fsutil';
 import { approveEndpoint, OID_RE, type GitErrorCode, type Oid } from '../git/protocol';
 import { BINDING_ID_RE } from './credentials';
 
@@ -86,7 +86,8 @@ function stateOk(v: unknown): v is RemoteState {
 
 /** The project's remote state, or null when it has no binding. A file there that is not one the app writes stops the read. */
 export async function readRemoteState(dir: string): Promise<RemoteState | null> {
-  const path = join(dir, ...REMOTE_STATE_FILE.split('/'));
+  // Never through a link out of the project: `.siteorigin` made a link elsewhere is refused.
+  const path = remotePath(dir);
   const st = await fs.lstat(path).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' || e.code === 'ENOTDIR' ? null : Promise.reject(e)));
   if (!st) return null;
   const damaged = () => new RemoteStateError('Where this project is published to could not be read. Connect it to its host again.');
@@ -104,11 +105,20 @@ export async function readRemoteState(dir: string): Promise<RemoteState | null> 
 
 /** Write the project's remote state, or remove it (null). */
 export async function writeRemoteState(dir: string, state: RemoteState | null): Promise<void> {
-  const path = join(dir, ...REMOTE_STATE_FILE.split('/'));
-  if (state === null) return fs.rm(path, { force: true });
-  if (!stateOk(state)) throw new RemoteStateError('That is not a remote state the app writes.');
-  await fs.mkdir(join(dir, '.siteorigin'), { recursive: true });
+  if (state !== null && !stateOk(state)) throw new RemoteStateError('That is not a remote state the app writes.');
+  if (state === null) return fs.rm(remotePath(dir), { force: true });
+  const path = remotePath(dir);
+  await fs.mkdir(dirname(path), { recursive: true });
   await atomicWrite(path, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+/** The file's path in the project at `dir`, or throws when a link on the way leads out of it. */
+function remotePath(dir: string): string {
+  try {
+    return safeJoin(dir, REMOTE_STATE_FILE);
+  } catch {
+    throw new RemoteStateError('Where this project is published to is kept in a folder outside the project, so it was not used.');
+  }
 }
 
 /** Why a remote operation stopped, in the app's words (never a host's), and for a divergence or a conflict the commit there. */

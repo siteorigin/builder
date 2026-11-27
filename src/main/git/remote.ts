@@ -25,7 +25,7 @@ import type { ClientRequest, IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import git, { type GitHttpRequest, type GitHttpResponse, type HttpClient, type PromiseFsClient } from 'isomorphic-git';
-import { approveEndpoint, GitError, OID_RE, PUBLISH_BRANCH, remoteAuthOk, type GitErrorCode, type Oid, type PushReply, type RemoteTarget } from './protocol';
+import { approveEndpoint, GitError, OID_RE, PUBLISH_BRANCH, PUBLISH_EMAIL, remoteAuthOk, type GitErrorCode, type Oid, type PushReply, type RemoteAuth, type RemoteTarget } from './protocol';
 import type { Repo } from './repo';
 import type { RepoFs } from './fs';
 
@@ -79,34 +79,73 @@ interface RemoteHttp extends HttpClient {
   close(): void;
 }
 
+/** The most of a refusal's body kept (a 401's sign-in page): the rest is never read, and its connection is let go at once. */
+const MAX_REFUSAL_BYTES = 64 * 1024;
+
+/** The body of a response that is not the Git data asked for, read now and let go, so its connection holds nothing up. */
+async function settledBody(res: IncomingMessage): Promise<Uint8Array[]> {
+  const kept: Uint8Array[] = [];
+  let n = 0;
+  try {
+    for await (const chunk of res as AsyncIterable<Buffer>) {
+      n += chunk.byteLength;
+      if (n > MAX_REFUSAL_BYTES) break;
+      kept.push(chunk);
+    }
+  } catch {
+    // What it says is never shown: an answer cut short is as good as one read.
+  }
+  res.destroy();
+  return kept;
+}
+
+const basic = (auth: RemoteAuth) => `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;
+const hasAuthorization = (headers: Record<string, string>) => Object.keys(headers).some((k) => k.toLowerCase() === 'authorization');
+
 /**
  * The push's HTTP client for the repository at `endpoint`: its two requests and nothing else, over HTTPS, the host's
- * certificate checked as ever. `posting` is told just before the push itself is sent.
+ * certificate checked as ever. `posting` is told just before the push itself is sent. A host that lets anyone list its
+ * branches but asks to be signed in to for the push itself (a 401 to the push alone) is sent the push once more with
+ * `auth`: the bundled Git answers a sign-in request only when listing.
  */
-function remoteHttp(endpoint: string, opts: { ca?: string; signal: AbortSignal; posting?: () => void }): RemoteHttp {
+function remoteHttp(endpoint: string, opts: { ca?: string; signal: AbortSignal; auth?: RemoteAuth | null; posting?: () => void }): RemoteHttp {
   const discovery = `${endpoint}/info/refs?service=git-receive-pack`;
   const push = `${endpoint}/git-receive-pack`;
   const open = new Set<ClientRequest>();
+  const send = async (url: string, method: string, headers: Record<string, string>, body: GitHttpRequest['body']): Promise<{ req: ClientRequest; res: IncomingMessage }> => {
+    if (opts.signal.aborted) throw new GitError('cancelled', 'The push was stopped.');
+    // No connection is kept for another request: each is the repository's own, with this push's trust.
+    const req = httpsRequest(url, { method, headers, signal: opts.signal, agent: false, ...(opts.ca ? { ca: opts.ca } : {}) });
+    open.add(req);
+    req.once('close', () => open.delete(req));
+    const res = await new Promise<IncomingMessage>((resolve, reject) => {
+      req.once('response', resolve);
+      req.once('error', reject);
+      sendBody(req, body).catch((e: unknown) => req.destroy(e instanceof Error ? e : new Error(String(e))));
+    });
+    return { req, res };
+  };
   return {
     async request({ url, method = 'GET', headers = {}, body }: GitHttpRequest): Promise<GitHttpResponse> {
       if (!((method === 'GET' && url === discovery) || (method === 'POST' && url === push))) throw new GitError('invalid', 'The push asked to reach an address other than the repository’s.');
-      if (opts.signal.aborted) throw new GitError('cancelled', 'The push was stopped.');
       if (method === 'POST') opts.posting?.();
-      // No connection is kept for another request: each is the repository's own, with this push's trust.
-      const req = httpsRequest(url, { method, headers, signal: opts.signal, agent: false, ...(opts.ca ? { ca: opts.ca } : {}) });
-      open.add(req);
-      req.once('close', () => open.delete(req));
-      const res = await new Promise<IncomingMessage>((resolve, reject) => {
-        req.once('response', resolve);
-        req.once('error', reject);
-        sendBody(req, body).catch((e: unknown) => req.destroy(e instanceof Error ? e : new Error(String(e))));
-      });
+      let { req, res } = await send(url, method, headers, body);
+      // A push is sent whole (an array of its parts), so it can be sent again once the host has said who may send it.
+      if (method === 'POST' && res.statusCode === 401 && opts.auth && !hasAuthorization(headers) && Array.isArray(body)) {
+        await settledBody(res);
+        ({ req, res } = await send(url, method, { ...headers, Authorization: basic(opts.auth) }, body));
+      }
       const status = res.statusCode ?? 0;
       if (status >= 300 && status < 400) {
         req.destroy();
         throw new GitError('redirect-refused', 'The host answered with a redirect to another address, which is never followed, so nothing was sent there.');
       }
-      return { url, method, statusCode: status, statusMessage: res.statusMessage ?? '', headers: flatHeaders(res), body: bounded(res) };
+      const reply = { url, method, statusCode: status, statusMessage: res.statusMessage ?? '', headers: flatHeaders(res) };
+      if (status !== 200) {
+        const kept = await settledBody(res);
+        return { ...reply, body: (async function* () { yield* kept; })() };
+      }
+      return { ...reply, body: bounded(res) };
     },
     close() {
       for (const req of open) req.destroy();
@@ -127,8 +166,10 @@ function signIn(target: RemoteTarget) {
  * The repository's files as a push reads them: every read the bundled Git makes, and no write. The one write a push
  * makes once it has landed, a note of where it left the host's branch (`refs/remotes/origin/…`), is taken and dropped.
  */
-function readOnly(gitdir: string, files: RepoFs['promises']): PromiseFsClient {
-  const note = join(gitdir, 'refs', 'remotes', 'origin', PUBLISH_BRANCH.slice('refs/heads/'.length));
+export function readOnly(gitdir: string, files: RepoFs['promises']): PromiseFsClient {
+  // The bundled Git joins its paths with forward slashes, on Windows too.
+  const slashed = (p: string) => p.replace(/\\/g, '/');
+  const note = slashed(join(gitdir, 'refs', 'remotes', 'origin', PUBLISH_BRANCH.slice('refs/heads/'.length)));
   let noted = false;
   const refuse = async (): Promise<never> => {
     throw Object.assign(new Error('A push never writes to the versions repository.'), { code: 'EROFS' });
@@ -137,7 +178,7 @@ function readOnly(gitdir: string, files: RepoFs['promises']): PromiseFsClient {
     promises: {
       ...files,
       writeFile: async (path: string) => {
-        if (path === note && !noted) {
+        if (typeof path === 'string' && slashed(path) === note && !noted) {
           noted = true;
           return;
         }
@@ -167,13 +208,16 @@ function remoteFailure(e: unknown, at: { posted: boolean; signal: AbortSignal; p
   if (code === 'PushRejectedError') return fail('diverged', 'The host’s publication branch holds a commit this publication does not follow, so nothing was sent and the host was left as it is.', at.previous ?? null);
   if (code === 'HttpError') {
     const status = Number(data.statusCode);
-    // Signing in is checked before anything sent is taken: a refusal moves nothing.
-    if (status === 401 || status === 403 || status === 203) return fail('auth-rejected', 'The host refused the credential, so nothing was published.');
+    // A host asks to be signed in to before it reads what is sent: a 401 moved nothing, whenever it came.
+    if (status === 401) return fail('auth-rejected', 'The host refused the credential, so nothing was published.');
+    // Anything else once the push was sent may stand in front of a push the host took (a proxy's page, say).
     if (at.posted) return unknown();
+    if (status === 403 || status === 203) return fail('auth-rejected', 'The host refused the credential, so nothing was published.');
     return fail('unreachable', status === 404 ? 'The host has no repository at that address.' : `The host answered as no Git host does (HTTP ${status}), so nothing was sent.`);
   }
-  if (e instanceof GitError && (e.code === 'redirect-refused' || e.code === 'invalid')) return e;
+  if (e instanceof GitError && e.code === 'invalid') return e;
   if (at.posted) return unknown();
+  if (e instanceof GitError && e.code === 'redirect-refused') return e;
   if (at.signal.aborted) return fail('cancelled', 'The push was stopped before anything was sent.');
   if (e instanceof GitError) return e;
   if (code === 'SmartHttpError') return fail('unreachable', 'That address is not a Git repository the app can publish to.');
@@ -182,13 +226,45 @@ function remoteFailure(e: unknown, at: { posted: boolean; signal: AbortSignal; p
   return fail('failed', 'The push could not be made, and nothing was sent.');
 }
 
+/** The most commits a push looks through to see that each is a publication's. */
+const MAX_LINEAGE = 200_000;
+
+/**
+ * Whether every commit from `commit` back to `until` (or to the first, when the host has none) is a publication's, by
+ * the app (PUBLISH_EMAIL), as no saved version is: so a publication branch pointed at a saved version some other way
+ * (a stock Git moving it) never sends that version's history, drafts and all. Throws `invalid` when one is not.
+ */
+async function checkLineage(fs: PromiseFsClient, gitdir: string, commit: Oid, until: Oid | null): Promise<void> {
+  const seen = new Set<Oid>();
+  const queue = [commit];
+  while (queue.length) {
+    const oid = queue.pop()!;
+    if (oid === until || seen.has(oid)) continue;
+    seen.add(oid);
+    if (seen.size > MAX_LINEAGE) throw new GitError('too-large', 'The publication’s history is too long to push.');
+    const { commit: c } = await git.readCommit({ fs, gitdir, oid });
+    if (c.author.email !== PUBLISH_EMAIL || c.committer.email !== PUBLISH_EMAIL)
+      throw new GitError('invalid', 'The publication branch holds a commit that is not a publication’s, so nothing was pushed. Prepare the publication again.');
+    queue.push(...c.parent);
+  }
+}
+
+/** Whether `ancestor` is in the history of `commit` here (false when it is not, or is not here at all). */
+async function follows(fs: PromiseFsClient, gitdir: string, commit: Oid, ancestor: Oid): Promise<boolean> {
+  try {
+    return await git.isDescendent({ fs, gitdir, oid: commit, ancestor, depth: -1 });
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The commit the host's publication branch is at, or null when it has none: its own list of branches, the exact name
  * looked for (a longer name sharing its start is another branch).
  */
 export async function remoteTip(target: unknown, signal: AbortSignal, opts: RemoteOptions = {}): Promise<Oid | null> {
   const t = checkTarget(target);
-  const http = remoteHttp(t.url, { ca: opts.ca, signal });
+  const http = remoteHttp(t.url, { ca: opts.ca, signal, auth: t.auth });
   try {
     const refs = await git.listServerRefs({ http, url: t.url, forPush: true, protocolVersion: 1, prefix: PUBLISH_BRANCH, corsProxy: '', ...signIn(t) });
     const hit = refs.find((r) => r.ref === PUBLISH_BRANCH);
@@ -214,10 +290,11 @@ export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, co
   let posted = false;
   let previous: Oid | null | undefined;
   let held = false;
-  const http = remoteHttp(t.url, { ca: opts.ca, signal, posting: () => (posted = true) });
+  const http = remoteHttp(t.url, { ca: opts.ca, signal, auth: t.auth, posting: () => (posted = true) });
+  const view = readOnly(gitdir, files);
   try {
     await git.push({
-      fs: readOnly(gitdir, files),
+      fs: view,
       http,
       gitdir,
       url: t.url,
@@ -227,11 +304,12 @@ export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, co
       corsProxy: '',
       force: false,
       ...signIn(t),
-      onPrePush: ({ localRef, remoteRef }) => {
+      onPrePush: async ({ localRef, remoteRef }) => {
         // The one push asked for, to the one branch: a host that lists a longer name the bundled Git took for it is not.
         if (localRef.oid !== commit || remoteRef.ref !== PUBLISH_BRANCH || !OID_RE.test(remoteRef.oid)) throw new GitError('invalid', 'The host’s branches are not what a push to it needs.');
         previous = remoteRef.oid === NONE ? null : remoteRef.oid;
         held = previous === commit;
+        if (!held) await checkLineage(view, gitdir, commit, previous);
         return !held;
       }
     });
@@ -239,12 +317,14 @@ export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, co
   } catch (e) {
     if (held && (e as { code?: string })?.code === 'UserCanceledError') return { previous: commit, uploaded: false };
     if ((e as { code?: string })?.code === 'GitPushError') {
-      // The host's own report: it did not take the update. Its branch says whether another push moved it meanwhile.
+      // The host's own report: it did not take this update. Its branch says whether another push moved it meanwhile:
+      // to this very commit (published all the same), to one this publication follows or away (push again), or to one
+      // of its own (diverged). Not to be read, or where it was, the refusal is the host's own.
       const now = await remoteTip(t, signal, opts).catch(() => undefined);
       if (now === commit) return { previous: previous ?? null, uploaded: true };
-      if (now !== undefined && now !== (previous ?? null)) throw new GitError('diverged', 'The host’s publication branch moved while the push was sent, so it was left as it is.', now);
-      if (now === undefined) throw remoteFailure(new Error('lost'), { posted: true, signal });
-      throw new GitError('rejected', 'The host refused the update to its publication branch.');
+      if (now === undefined || now === (previous ?? null)) throw new GitError('rejected', 'The host refused the update to its publication branch.');
+      if (now === null || (await follows(view, gitdir, commit, now))) throw new GitError('conflict', 'The host’s publication branch changed while the push was sent, so it was not moved. Push again.', now);
+      throw new GitError('diverged', 'The host’s publication branch moved while the push was sent, to a commit this publication does not follow, so it was left as it is.', now);
     }
     throw remoteFailure(e, { posted, signal, previous });
   } finally {

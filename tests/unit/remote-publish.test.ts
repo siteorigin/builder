@@ -10,7 +10,7 @@
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { HOST_AVAILABLE, startGitHost, stockGit, type GitHost } from './https-git-server';
@@ -170,6 +170,9 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     await repo.init();
     const version = await repo.writeCommit({ tree: await repo.writeFiles(saved), parents: [], author: APP, committer: APP, message: 'Saved\n' });
     await repo.advanceRef(VERSIONS_BRANCH, version, null);
+    // The version holds both, so their absence at the host is the push's doing.
+    expect(saved.map((f) => f.path)).toContain('static/assets/launch-22222222.svg');
+    expect(saved.some((f) => Buffer.from(f.bytes).includes(PHRASE))).toBe(true);
     expect((await c.apply({ operations: [{ type: 'page.remove', pageId: 'pg_launch01' }, { type: 'asset.remove', assetId: 'launch' }] })).ok).toBe(true);
 
     expect(await c.bindRemote({ url: h.url, username: USER, token: TOKEN })).toMatchObject({ ok: true });
@@ -203,6 +206,9 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     const h = await host();
     const dir = await project();
     const { c, sent } = await open(dir, h.ca);
+    // Whatever the app writes to its console or the log meanwhile, a refused push's included.
+    const logged: unknown[] = [];
+    for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) vi.spyOn(console, level).mockImplementation((...a: unknown[]) => void logged.push(a));
     const bound = await c.bindRemote({ url: h.url, username: USER, token: TOKEN });
     expect(bound.ok).toBe(true);
     const prepared = await c.preparePublication();
@@ -210,13 +216,21 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     const pushed = await c.pushPublication();
     expect(pushed.ok).toBe(true);
     const status = await c.remoteStatus();
+    const other = await host();
+    await c.bindRemote({ url: other.url, username: USER, token: `${TOKEN}-wrong` });
+    const refused = await c.pushPublication();
+    expect(refused).toMatchObject({ ok: false, code: 'auth-rejected' });
+    await c.bindRemote({ url: h.url, username: USER, token: TOKEN });
+    vi.restoreAllMocks();
+    expect(JSON.stringify(logged)).not.toContain(TOKEN);
+    expect(JSON.stringify(refused)).not.toContain(TOKEN);
 
     const file = join(env.userData, REMOTE_CREDENTIALS_FILE);
     expect(statSync(file).mode & 0o777).toBe(process.platform === 'win32' ? statSync(file).mode & 0o777 : 0o600);
     expect(readFileSync(file, 'utf8')).toContain(TOKEN);
     expect(holds(dir, TOKEN), 'project files, .siteorigin and its versions repository included').toEqual([]);
     expect(holds(h.bare, TOKEN)).toEqual([]);
-    expect(holds(env.userData, TOKEN)).toEqual([REMOTE_CREDENTIALS_FILE]);
+    expect(holds(env.userData, TOKEN), 'the logs and every other file of the app’s').toEqual([REMOTE_CREDENTIALS_FILE]);
     expect(readFileSync(join(dir, '.siteorigin/versions.git/config'), 'utf8')).not.toContain('remote');
     expect(JSON.stringify([bound, prepared, pushed, status, sent, c.snapshot()])).not.toContain(TOKEN);
     // The binding the project keeps names the address alone.
@@ -227,7 +241,15 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
       expect(isPrivateFileName(name), name).toBe(true);
       expect(snapshotPlace(`static/${name}`), name).toMatchObject({ kind: 'excluded', reason: 'private' });
     }
-    expect(snapshotPlace('static/remote-credentials (conflicted copy).json')).toMatchObject({ kind: 'excluded', reason: 'private' });
+    for (const name of ['remote-credentials (conflicted copy).json', 'remote-credentials (Someone’s conflicted copy 2026-11-27).json']) {
+      expect(isPrivateFileName(name), name).toBe(true);
+      expect(snapshotPlace(`static/${name}`), name).toMatchObject({ kind: 'excluded', reason: 'private' });
+    }
+    expect(isPrivateFileName('remote-credentials-guide.json')).toBe(false);
+    // A token in the address or the site's name would be kept in the project: refused.
+    for (const opts of [{ url: `${h.url}/${TOKEN}` }, { url: `${h.url}/${encodeURIComponent(TOKEN)}x` }, { url: h.url, site: TOKEN }])
+      expect(await c.bindRemote({ username: USER, token: TOKEN, ...opts })).toMatchObject({ ok: false, code: 'invalid' });
+    expect(holds(dir, TOKEN)).toEqual([]);
     // A publication that carries the token is refused.
     writeFileSync(join(dir, 'static/notes.txt'), `deploy with ${TOKEN}\n`);
     expect(await c.preparePublication()).toMatchObject({ ok: false, message: expect.stringContaining('static/notes.txt') });
@@ -238,9 +260,11 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     const dir = await project();
     const { c } = await open(dir, h.ca);
     await c.bindRemote({ url: h.url, username: USER, token: TOKEN });
+    const kept = () => JSON.parse(readFileSync(join(dir, REMOTE_STATE_FILE), 'utf8'));
     const first = await c.preparePublication();
     if (!first.ok) throw new Error(first.message);
-    expect((await c.remoteStatus()) as unknown).toMatchObject({ ok: true, state: { content: { prepared: first.commit, changed: false }, acknowledged: null, receipt: null } });
+    // Written by preparing itself, not by asking for the state.
+    expect(kept()).toMatchObject({ content: { prepared: first.commit, changed: false }, acknowledged: null, receipt: null });
     await c.pushPublication();
     expect(await c.remoteStatus()).toMatchObject({ ok: true, state: { acknowledged: { commit: first.commit }, receipt: null } });
 
@@ -249,7 +273,9 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     expect(await c.recordDeploymentReceipt({ commit: 'a'.repeat(40), status: 'live' })).toMatchObject({ ok: false, code: 'conflict' });
     // The site is edited: it now differs from what was prepared and uploaded, which are as they were.
     expect((await c.apply({ operations: [{ type: 'site.update', name: 'Bookshop & Café' }] })).ok).toBe(true);
+    expect(kept().content).toMatchObject({ prepared: first.commit, changed: false });
     expect(await c.publicationStatus()).toMatchObject({ ok: true, changed: true });
+    expect(kept().content).toMatchObject({ prepared: first.commit, changed: true });
     expect(await c.remoteStatus()).toMatchObject({
       ok: true,
       state: { content: { prepared: first.commit, changed: true }, acknowledged: { commit: first.commit }, receipt: { commit: first.commit, status: 'failed', id: 'dep_1' } }
@@ -275,6 +301,9 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     if (!first.ok) throw new Error(first.message);
     h.dropNextPushReply = true;
     expect(await c.pushPublication()).toEqual({ ok: true, commit: first.commit, uploaded: true, reconciled: true });
+    // Settled by asking the host where its branch is, after the push, never by pushing again.
+    const after = h.requests.slice(h.requests.findIndex((r) => r.method === 'POST'));
+    expect(after.map((r) => r.method)).toEqual(['POST', 'GET', 'GET']);
     expect(await c.remoteStatus()).toMatchObject({ ok: true, state: { acknowledged: { commit: first.commit } } });
 
     const blob = h.git(['hash-object', '-w', '--stdin'], 'theirs').trim();
@@ -295,6 +324,11 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     const { c } = await open(dir, h.ca);
     await c.bindRemote({ url: h.url, username: USER, token: TOKEN });
     expect((await c.preparePublication()).ok).toBe(true);
+    // The app's own credential files, copied into the project by hand or by a sync tool.
+    writeFileSync(join(dir, 'static/remote-credentials (Someone’s conflicted copy 2026-11-27).json'), JSON.stringify({ token: TOKEN }));
+    mkdirSync(join(dir, 'src/lib/keys'), { recursive: true });
+    writeFileSync(join(dir, 'src/lib/keys/remote-credentials.json'), JSON.stringify({ token: TOKEN }));
+    writeFileSync(join(dir, 'static/source-secrets (1).json'), JSON.stringify({ token: TOKEN }));
 
     // Duplicated in the app: a new project, with no remote state of the original's.
     const parent = temp('dupes');
@@ -314,17 +348,52 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     expect(existsSync(join(unpacked, REMOTE_STATE_FILE))).toBe(false);
     expect(holds(unpacked, TOKEN)).toEqual([]);
 
-    // A copy of the whole folder made outside the app keeps the binding, but its folder is another: no credential.
+    // A copy of the whole folder made outside the app keeps the binding and the project's ID, but its folder is
+    // another: it gets no credential, and the host is never contacted. The original still pushes, and disconnecting
+    // the copy leaves the original's credential as it is.
+    for (const f of ['static/remote-credentials (Someone’s conflicted copy 2026-11-27).json', 'src/lib/keys/remote-credentials.json', 'static/source-secrets (1).json']) rmSync(join(dir, f));
     const copy = join(temp('finder'), 'Bookshop copy');
     cpSync(dir, copy, { recursive: true });
     rmSync(join(copy, '.siteorigin', 'lock.json'), { force: true });
     await c.close();
     const other = await open(copy, h.ca);
-    expect(existsSync(join(copy, REMOTE_STATE_FILE))).toBe(true);
+    const original = JSON.parse(readFileSync(join(dir, REMOTE_STATE_FILE), 'utf8'));
+    expect(JSON.parse(readFileSync(join(copy, REMOTE_STATE_FILE), 'utf8')).binding).toEqual(original.binding);
+    expect(other.c.snapshot()!.state.manifest.projectId).toBe(JSON.parse(readFileSync(join(dir, 'siteorigin.project.json'), 'utf8')).projectId);
     const r = await other.c.pushPublication();
-    expect(r).toMatchObject({ ok: false, code: 'auth-rejected', message: expect.stringContaining('No credential is saved for this project here') });
-    expect(h.requests.filter((q) => q.authorization !== null)).toEqual([]);
-    expect(h.git(['for-each-ref']).trim()).toBe('');
+    expect(r).toMatchObject({ ok: false, code: 'auth-rejected', message: expect.stringContaining('nothing was sent to the host') });
+    expect(h.requests).toEqual([]);
+    expect(await other.c.unbindRemote()).toEqual({ ok: true, state: null });
+    await other.c.close();
+    const back = await open(dir, h.ca);
+    expect(await back.c.pushPublication()).toMatchObject({ ok: true, uploaded: true });
+    expect(h.git(['for-each-ref', '--format=%(refname)']).trim()).toBe(PUBLISH_BRANCH);
+  });
+
+  it('acknowledges a push only for the binding it was made through, never one that replaced it meanwhile', async () => {
+    const dir = await project();
+    const h = await host();
+    const { c } = await open(dir, h.ca);
+    await c.bindRemote({ url: h.url, username: USER, token: TOKEN });
+    const prepared = await c.preparePublication();
+    if (!prepared.ok) throw new Error(prepared.message);
+    const file = join(dir, REMOTE_STATE_FILE);
+    let release: () => void = () => undefined;
+    c.remoteTransport = {
+      push: async (_root, request) => {
+        // Rebound elsewhere (by another copy of the app, say) while this push was out.
+        const replaced = JSON.parse(readFileSync(file, 'utf8'));
+        writeFileSync(file, JSON.stringify({ ...replaced, binding: { ...replaced.binding, id: 'rb_ffffffffffffffffffffffff' } }));
+        await new Promise<void>((r) => (release = r));
+        return { commit: request.commit, uploaded: true, reconciled: false, receipt: null };
+      },
+      tip: async () => null
+    };
+    const pushing = c.pushPublication();
+    await vi.waitFor(() => expect(JSON.parse(readFileSync(file, 'utf8')).binding.id).toBe('rb_ffffffffffffffffffffffff'));
+    release();
+    expect(await pushing).toMatchObject({ ok: true });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ binding: { id: 'rb_ffffffffffffffffffffffff' }, acknowledged: null });
   });
 
   it('connects again to another address as a new binding, forgetting the old one’s credential and facts', async () => {
@@ -334,7 +403,9 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     const { c } = await open(dir, h.ca);
     await c.bindRemote({ url: h.url, username: USER, token: TOKEN });
     expect((await c.preparePublication()).ok).toBe(true);
-    expect((await c.pushPublication()).ok).toBe(true);
+    const pushed = await c.pushPublication();
+    if (!pushed.ok) throw new Error(pushed.message);
+    expect(await c.recordDeploymentReceipt({ commit: pushed.commit, status: 'live' })).toMatchObject({ ok: true });
     const before = await c.remoteStatus();
     const rebound = await c.bindRemote({ url: `${other.url}/`, username: USER, token: TOKEN, site: 'site_42' });
     expect(rebound).toMatchObject({ ok: true, state: { binding: { url: other.url, site: 'site_42' }, content: null, acknowledged: null, receipt: null } });
@@ -349,7 +420,3 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
     expect(await c.pushPublication()).toMatchObject({ ok: false, code: 'not-bound' });
   });
 });
-
-function dirname(p: string) {
-  return p.slice(0, p.lastIndexOf('/'));
-}

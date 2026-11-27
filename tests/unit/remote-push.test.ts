@@ -6,19 +6,24 @@
  *
  * Skipped where stock Git or openssl is missing, except on CI, where both must be there.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGitClient, type GitWorkerHandle } from '../../src/main/git/client';
 import { createGitService } from '../../src/main/git/service';
 import { openRepo } from '../../src/main/git/repo';
+import { readOnly } from '../../src/main/git/remote';
+import { readRemoteState, writeRemoteState } from '../../src/main/remote/binding';
 import { GitError, PUBLISH_BRANCH, VERSIONS_BRANCH, type FileInput, type Identity, type RemoteTarget } from '../../src/main/git/protocol';
 import { httpsGitTransport, type PushRequest, type RemoteGit } from '../../src/main/remote/transport';
 import { createRemoteCredentialStore } from '../../src/main/remote/credentials';
 import { HOST_AVAILABLE, startGitHost, type GitHost } from './https-git-server';
 
 const APP: Identity = { name: 'SiteOrigin Builder', email: 'publish@siteorigin.invalid', timestamp: 1_790_000_000, timezoneOffset: 0 };
+/** Who a saved version is by (versions-git.ts). */
+const SAVED: Identity = { ...APP, email: 'versions@siteorigin.invalid' };
 const USER = 'publisher';
 const TOKEN = 'tok_8f2b6c1d9e7a4053b1c2';
 const text = (s: string) => new TextEncoder().encode(s);
@@ -99,19 +104,28 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
   it('sends the first publication and then only what the next one adds, writing nothing in the versions repository', async () => {
     const h = await host();
     const git = client(h.ca);
-    const first = await publish({ 'README.md': '# Bookshop\n', 'static/a.txt': 'shelf' }, null);
+    // A picture that does not compress, so what each push carries shows in its size.
+    const photo = randomBytes(200_000).toString('base64');
+    const first = await publish({ 'README.md': '# Bookshop\n', 'static/photo.txt': photo }, null);
     const before = repoFiles();
     expect(await git.push(root, target(h), first)).toEqual({ previous: null, uploaded: true });
     expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim()).toBe(first);
+    // Asked first without a credential, given it once the host asks, and the push itself signed in.
+    const auth = `Basic ${Buffer.from(`${USER}:${TOKEN}`).toString('base64')}`;
+    expect(h.requests.map((r) => [r.method, r.path, r.authorization])).toEqual([
+      ['GET', '/site.git/info/refs?service=git-receive-pack', null],
+      ['GET', '/site.git/info/refs?service=git-receive-pack', auth],
+      ['POST', '/site.git/git-receive-pack', auth]
+    ]);
+    expect(pushes(h)[0].bytes).toBeGreaterThan(200_000);
     expect(h.git(['for-each-ref', '--format=%(refname)']).trim().split('\n')).toEqual([PUBLISH_BRANCH]);
     expect(repoFiles(), 'no remote branch, config or anything else is written locally').toEqual(before);
 
-    const second = await publish({ 'README.md': '# Bookshop\n', 'static/a.txt': 'shelf', 'static/b.txt': 'new page' }, first);
-    const objectsBefore = new Set(h.git(['rev-list', '--objects', '--all']).trim().split('\n').map((l) => l.split(' ')[0]));
+    const second = await publish({ 'README.md': '# Bookshop\n', 'static/photo.txt': photo, 'static/b.txt': 'new page' }, first);
     expect(await git.push(root, target(h), second)).toEqual({ previous: first, uploaded: true });
     expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim()).toBe(second);
-    const added = h.git(['rev-list', '--objects', `${first}..${second}`]).trim().split('\n').map((l) => l.split(' ')[0]);
-    expect(added.every((oid) => !objectsBefore.has(oid))).toBe(true);
+    // Only the new commit, its trees and the new page: the picture the host has is not sent again.
+    expect(pushes(h)[1].bytes).toBeLessThan(10_000);
     h.git(['fsck', '--strict', '--no-dangling']);
 
     // Pushed again: the host has it, so nothing is sent.
@@ -142,9 +156,27 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     h.redirectNext = elsewhere.origin;
     await expect(git.push(root, target(h), commit)).rejects.toMatchObject({ code: 'redirect-refused' });
     expect(elsewhere.requests).toEqual([]);
-    h.redirectNext = h.origin;
+    // To another repository on the same host: nothing is sent there either.
+    const seen = h.requests.length;
+    h.redirectNext = `${h.origin}/other`;
     await expect(git.push(root, target(h), commit)).rejects.toMatchObject({ code: 'redirect-refused' });
+    expect(h.requests.slice(seen).map((r) => r.path)).toEqual(['/site.git/info/refs?service=git-receive-pack']);
     expect(h.requests.every((r) => r.authorization === null)).toBe(true);
+    // Once signed in, a redirect is refused all the same, and nothing is pushed.
+    const signed = h.requests.length;
+    const realRequest = h.requests.push.bind(h.requests);
+    h.requests.push = (...r) => {
+      const n = realRequest(...r);
+      if (r.some((x) => x.authorization !== null)) h.redirectNext = elsewhere.origin;
+      return n;
+    };
+    await expect(git.push(root, target(h), commit)).rejects.toMatchObject({ code: 'redirect-refused' });
+    h.requests.push = realRequest;
+    expect(h.requests.slice(signed).map((r) => [r.method, r.authorization !== null])).toEqual([
+      ['GET', false],
+      ['GET', true]
+    ]);
+    expect(elsewhere.requests).toEqual([]);
     expect(h.git(['for-each-ref']).trim()).toBe('');
   });
 
@@ -159,7 +191,9 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     const theirs = h.git(['commit-tree', tree, '-p', first, '-m', 'Theirs']).trim();
     h.git(['update-ref', PUBLISH_BRANCH, theirs, first]);
     const second = await publish({ 'index.html': 'two' }, first);
+    const posts = pushes(h).length;
     const err = await git.push(root, target(h), second).catch((e: unknown) => e);
+    expect(pushes(h), 'nothing is sent to a host known to have gone its own way').toHaveLength(posts);
     expect(err).toBeInstanceOf(GitError);
     expect(err).toMatchObject({ code: 'diverged', actual: theirs });
     expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim(), 'nothing of theirs was lost').toBe(theirs);
@@ -174,7 +208,7 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     const second = await publish({ 'index.html': 'two' }, first);
     // A hook of the host's refuses it.
     writeFileSync(join(h.bare, 'hooks', 'pre-receive'), '#!/bin/sh\necho "protected by policy" >&2\nexit 1\n', { mode: 0o755 });
-    const refused = await git.push(root, target(h), second).catch((e: unknown) => e as GitError);
+    const refused = (await git.push(root, target(h), second).catch((e: unknown) => e)) as GitError;
     expect(refused).toMatchObject({ code: 'rejected' });
     expect(refused.message, 'nothing the host said is passed on').not.toContain('policy');
     expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim()).toBe(first);
@@ -190,6 +224,11 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     const moved = await git.push(root, target(h), second).catch((e: unknown) => e);
     expect(moved).toMatchObject({ code: 'diverged', actual: theirs });
     expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim()).toBe(theirs);
+    // Deleted meanwhile instead: nothing of anyone's is lost, and pushing again makes it.
+    h.git(['update-ref', PUBLISH_BRANCH, first, theirs]);
+    h.beforeNextPush = () => void h.git(['update-ref', '-d', PUBLISH_BRANCH]);
+    await expect(git.push(root, target(h), second)).rejects.toMatchObject({ code: 'conflict', actual: null });
+    expect(await git.push(root, target(h), second)).toEqual({ previous: null, uploaded: true });
   });
 
   it('says a push whose reply was lost after the host took it is unknown, which the host’s branch then settles', async () => {
@@ -207,12 +246,12 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     const repo = openRepo(root);
     await repo.init();
     const tree = await repo.writeFiles([{ path: 'siteorigin/pages/draft.json', bytes: text('{"title":"Embargoed"}') }]);
-    const saved = await repo.writeCommit({ tree, parents: [], author: APP, committer: APP, message: 'Saved\n' });
+    const saved = await repo.writeCommit({ tree, parents: [], author: SAVED, committer: SAVED, message: 'Saved\n' });
     await repo.advanceRef(VERSIONS_BRANCH, saved, null);
     await expect(git.push(root, target(h), saved)).rejects.toMatchObject({ code: 'conflict', actual: null });
     const first = await publish({ 'index.html': 'one' }, null);
-    await publish({ 'index.html': 'two' }, first);
-    await expect(git.push(root, target(h), first)).rejects.toMatchObject({ code: 'conflict' });
+    const second = await publish({ 'index.html': 'two' }, first);
+    await expect(git.push(root, target(h), first)).rejects.toMatchObject({ code: 'conflict', actual: second });
     expect(h.requests, 'refused before anything was sent').toEqual([]);
   });
 
@@ -223,13 +262,88 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     for (const url of [h.url.replace('https:', 'http:'), h.url.replace('https://', `https://${USER}:${TOKEN}@`), `${h.url}?x=1`, `${h.url}/`])
       await expect(git.push(root, { url, ref: PUBLISH_BRANCH, auth: null }, commit)).rejects.toMatchObject({ code: 'invalid' });
     await expect(git.push(root, { url: h.url, ref: VERSIONS_BRANCH as typeof PUBLISH_BRANCH, auth: null }, commit)).rejects.toMatchObject({ code: 'invalid' });
+    for (const auth of [{ username: 'a:b', password: TOKEN }, { username: USER, password: '' }, { username: USER, password: `${TOKEN}\nX-Evil: 1` }])
+      await expect(git.push(root, target(h, auth), commit)).rejects.toMatchObject({ code: 'invalid' });
     expect(h.requests).toEqual([]);
+  });
+
+  it('signs in for the push itself to a host that lets anyone list its branches', async () => {
+    const h = await startGitHost({ username: USER, password: TOKEN, signInToPushOnly: true });
+    hosts.push(h);
+    const git = client(h.ca);
+    const commit = await publish({ 'index.html': 'hi' }, null);
+    expect(await git.push(root, target(h), commit)).toEqual({ previous: null, uploaded: true });
+    expect(h.requests.map((r) => [r.method, r.authorization !== null])).toEqual([
+      ['GET', false],
+      ['POST', false],
+      ['POST', true]
+    ]);
+    expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim()).toBe(commit);
+    // Without a credential, the push is refused and nothing lands.
+    const second = await publish({ 'index.html': 'two' }, commit);
+    await expect(git.push(root, target(h, null), second)).rejects.toMatchObject({ code: 'auth-rejected' });
+    expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim()).toBe(commit);
+  });
+
+  it('says a host that drops the connection before answering could not be reached, and moved nothing', async () => {
+    const h = await host();
+    const git = client(h.ca);
+    const commit = await publish({ 'index.html': 'hi' }, null);
+    h.resetNext = true;
+    await expect(git.push(root, target(h), commit)).rejects.toMatchObject({ code: 'unreachable' });
+    expect(pushes(h)).toEqual([]);
+  });
+
+  it('looks for the publication branch by its exact name, never a longer one sharing its start', async () => {
+    const h = await host();
+    const git = client(h.ca);
+    const first = await publish({ 'index.html': 'one' }, null);
+    await git.push(root, target(h), first);
+    h.git(['update-ref', `${PUBLISH_BRANCH}-extra`, first]);
+    h.git(['update-ref', '-d', PUBLISH_BRANCH]);
+    expect(await git.remoteTip(target(h))).toBeNull();
+    // Pushed again, it makes the branch itself and leaves the other as it was.
+    expect(await git.push(root, target(h), first)).toEqual({ previous: null, uploaded: true });
+    expect(h.git(['for-each-ref', '--format=%(refname)']).trim().split('\n').sort()).toEqual([PUBLISH_BRANCH, `${PUBLISH_BRANCH}-extra`]);
+  });
+
+  it('never sends a saved version’s history, even with the publication branch pointed at it some other way', async () => {
+    const h = await host();
+    const git = client(h.ca);
+    const repo = openRepo(root);
+    await repo.init();
+    const tree = await repo.writeFiles([{ path: 'siteorigin/pages/draft.json', bytes: text('{"title":"Embargoed"}') }]);
+    const saved = await repo.writeCommit({ tree, parents: [], author: SAVED, committer: SAVED, message: 'Saved\n' });
+    await repo.advanceRef(PUBLISH_BRANCH, saved, null);
+    await expect(git.push(root, target(h), saved)).rejects.toMatchObject({ code: 'invalid' });
+    // A publication after it still holds it in its history.
+    const after = await publish({ 'index.html': 'hi' }, saved);
+    await expect(git.push(root, target(h), after)).rejects.toMatchObject({ code: 'invalid' });
+    expect(pushes(h)).toEqual([]);
+    expect(h.git(['count-objects', '-v'])).toMatch(/^count: 0$/m);
+  });
+});
+
+describe('the push’s view of the versions repository (#1157)', () => {
+  it('drops the one note a landed push makes, once, and refuses every other write', async () => {
+    const calls: string[] = [];
+    const record = (name: string) => async () => void calls.push(name);
+    const files = Object.fromEntries(['readFile', 'writeFile', 'mkdir', 'rmdir', 'unlink', 'stat', 'lstat', 'readdir', 'readlink', 'symlink', 'chmod'].map((k) => [k, record(k)])) as unknown as Parameters<typeof readOnly>[1];
+    const fs = readOnly(join(root, 'versions.git'), files).promises;
+    const note = `${join(root, 'versions.git').replace(/\\/g, '/')}/refs/remotes/origin/siteorigin-publish`;
+    await expect(fs.writeFile(note, 'x\n')).resolves.toBeUndefined();
+    await expect(fs.writeFile(note, 'x\n')).rejects.toMatchObject({ code: 'EROFS' });
+    await expect(fs.writeFile(join(root, 'versions.git', 'config'), '')).rejects.toMatchObject({ code: 'EROFS' });
+    for (const write of ['mkdir', 'rmdir', 'unlink', 'symlink', 'chmod'] as const) await expect((fs[write] as (p: string) => Promise<void>)(join(root, 'versions.git', 'refs'))).rejects.toMatchObject({ code: 'EROFS' });
+    await fs.readFile(join(root, 'versions.git', 'HEAD'));
+    expect(calls).toEqual(['readFile']);
   });
 });
 
 describe('settling a push whose reply was lost (#1157)', () => {
   const PINNED = 'a'.repeat(40);
-  const OLD = 'b'.repeat(40);
+  // Sharing all but its last digit with the pinned commit, so only the whole name tells them apart.
+  const OLD = `${'a'.repeat(39)}b`;
   const request = (over: Partial<PushRequest> = {}): PushRequest => ({
     endpoint: 'https://git.example/site.git',
     binding: 'rb_0123456789abcdef01234567',
@@ -254,6 +368,24 @@ describe('settling a push whose reply was lost (#1157)', () => {
     // Still where it was, at none, or no answer: the host may yet take it.
     for (const tip of [async () => OLD, async () => null, async () => Promise.reject(new GitError('unreachable', 'down'))])
       await expect(httpsGitTransport(lostPush(tip).git).push(root, request())).rejects.toMatchObject({ code: 'outcome-unknown' });
+  });
+
+  it('hands the caller’s signal to the push and to the look that settles it, and stays unknown when stopped while looking', async () => {
+    const controller = new AbortController();
+    const calls: unknown[] = [];
+    const git: RemoteGit = {
+      push: async (_root, _target, _commit, opts) => (calls.push(['push', opts?.signal]), Promise.reject(new GitError('outcome-unknown', 'lost'))),
+      remoteTip: async (_target, opts) => {
+        calls.push(['tip', opts?.signal]);
+        controller.abort();
+        return PINNED;
+      }
+    };
+    await expect(httpsGitTransport(git).push(root, request({ signal: controller.signal }))).rejects.toMatchObject({ code: 'outcome-unknown' });
+    expect(calls).toEqual([
+      ['push', controller.signal],
+      ['tip', controller.signal]
+    ]);
   });
 
   it('does not look once the caller stopped the push, and never looks after a failure that moved nothing', async () => {
@@ -297,8 +429,22 @@ describe('the publishing credential store (#1157)', () => {
     await expect(store.set(ID, owner(), { username: 'a:b', token: TOKEN })).rejects.toThrow();
     await expect(store.set(ID, { ...owner(), url: 'http://git.example/site.git' }, { username: USER, token: TOKEN })).rejects.toThrow();
     await expect(store.set('p_abc', owner(), { username: USER, token: TOKEN })).rejects.toThrow();
-    await store.forget(ID);
+    await store.forget(ID, owner());
     expect(await store.resolve(ID, owner())).toBeNull();
+  });
+
+  it('keeps both of two credentials saved at once, and forgets one only for its own project and folder', async () => {
+    const file = join(root, 'remote-credentials.json');
+    const store = createRemoteCredentialStore(() => file);
+    const other = 'rb_ffffffffffffffffffffffff';
+    await Promise.all([store.set(ID, owner(), { username: USER, token: TOKEN }), store.set(other, { ...owner(), projectId: 'p_two' }, { username: USER, token: `${TOKEN}2` })]);
+    expect((await store.values()).sort()).toEqual([TOKEN, `${TOKEN}2`]);
+    // A copy of the folder elsewhere asks to forget the binding it carries: the original's stays.
+    await store.forget(ID, { ...owner(), dir: join(root, 'copy') });
+    expect(await store.resolve(ID, owner())).toEqual({ username: USER, token: TOKEN });
+    await store.forget(ID, owner());
+    expect(await store.resolve(ID, owner())).toBeNull();
+    expect(await store.resolve(other, { ...owner(), projectId: 'p_two' })).not.toBeNull();
   });
 
   it('leaves a damaged file as it is rather than writing over every other credential', async () => {
@@ -309,5 +455,23 @@ describe('the publishing credential store (#1157)', () => {
     await expect(store.set(ID, owner(), { username: USER, token: TOKEN })).rejects.toThrow(/damaged/);
     await expect(store.values()).rejects.toThrow(/damaged/);
     expect(readFileSync(file, 'utf8')).toBe('{"rb_0123456789abcdef01234567":{"token":1}}');
+  });
+
+  it('takes a file with a malformed binding ID for a damaged one, and never reads a remote state through a link out of the project', async () => {
+    const file = join(root, 'remote-credentials.json');
+    writeFileSync(file, JSON.stringify({ not_a_binding: { ...owner(), username: USER, token: TOKEN } }));
+    await expect(createRemoteCredentialStore(() => file).values()).rejects.toThrow(/damaged/);
+    const project = join(root, 'project');
+    const outside = join(root, 'outside');
+    mkdirSync(project);
+    mkdirSync(outside);
+    const state = { binding: { id: ID, provider: 'https-git' as const, url: 'https://git.example/site.git', site: null }, content: null, acknowledged: null, receipt: null };
+    await writeRemoteState(outside, state);
+    // A junction on Windows, which needs no administrator to make.
+    symlinkSync(join(outside, '.siteorigin'), join(project, '.siteorigin'), process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(readRemoteState(project)).rejects.toThrow(/outside the project/);
+    await expect(writeRemoteState(project, state)).rejects.toThrow(/outside the project/);
+    await expect(writeRemoteState(project, null)).rejects.toThrow(/outside the project/);
+    expect(await readRemoteState(outside)).toEqual(state);
   });
 });

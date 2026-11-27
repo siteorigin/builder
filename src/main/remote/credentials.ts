@@ -39,8 +39,11 @@ type CredentialFile = Record<string, Entry>;
 export interface RemoteCredentialStore {
   /** Keep `credential` for binding `binding` of `owner`, in place of any kept for it. */
   set(binding: string, owner: CredentialOwner, credential: RemoteCredential): Promise<void>;
-  /** Forget the credential kept for binding `binding`, if any. */
-  forget(binding: string): Promise<void>;
+  /**
+   * Forget the credential kept for binding `binding`, only when it was kept for exactly `owner`: a copy of the project
+   * made outside the app carries the binding's ID, and disconnecting it leaves the original's credential as it is.
+   */
+  forget(binding: string, owner: CredentialOwner): Promise<void>;
   /** The credential kept for binding `binding`, only when it was kept for exactly `owner`; null otherwise. */
   resolve(binding: string, owner: CredentialOwner): Promise<RemoteCredential | null>;
   /** Every token kept, for a publication to be searched for: never shown, logged or sent. */
@@ -112,10 +115,11 @@ export function createRemoteCredentialStore(file: () => string): RemoteCredentia
         all[binding] = entry;
       });
     },
-    forget(binding) {
+    forget(binding, owner) {
       if (!BINDING_ID_RE.test(binding)) return Promise.resolve();
       return change((all) => {
-        delete all[binding];
+        const e = Object.hasOwn(all, binding) ? all[binding] : null;
+        if (e && e.projectId === owner.projectId && e.dir === owner.dir && e.url === owner.url) delete all[binding];
       });
     },
     async resolve(binding, owner) {

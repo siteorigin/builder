@@ -25,6 +25,8 @@ export const BRANCH_RE = /^refs\/heads\/siteorigin-[a-z0-9]+(?:-[a-z0-9]+)*$/;
  * push sends to a host (#1157), there under the same name.
  */
 export const PUBLISH_BRANCH = 'refs/heads/siteorigin-publish';
+/** Who every commit of the publication's history is by (publicationIdentity), and no saved version is: a push checks it. */
+export const PUBLISH_EMAIL = 'publish@siteorigin.invalid';
 
 /**
  * Who made a commit and when: `timestamp` in seconds since 1970, `timezoneOffset` in minutes as JavaScript's

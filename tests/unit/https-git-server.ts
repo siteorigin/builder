@@ -6,12 +6,13 @@
  *
  * Stock Git only plays the host here: the app never runs it.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AddressInfo, Socket } from 'node:net';
+import type { AddressInfo } from 'node:net';
+import type { Duplex } from 'node:stream';
 import { detectSystemGit } from '../../src/main/git/system-git';
 
 const found = await detectSystemGit();
@@ -26,6 +27,8 @@ export interface SeenRequest {
   path: string;
   /** The Authorization header, as sent, or null. */
   authorization: string | null;
+  /** The bytes its body carried. */
+  bytes: number;
 }
 
 export interface GitHost {
@@ -45,6 +48,8 @@ export interface GitHost {
   dropNextPushReply: boolean;
   /** Run once when the next push arrives, before the host reads it (another push landing meanwhile, say). */
   beforeNextPush: (() => void) | null;
+  /** Close the next connection as soon as its request arrives, before anything is answered. */
+  resetNext: boolean;
   /** Stock Git in the bare repository, with none of this computer's settings. */
   git(args: string[], input?: string): string;
   close(): Promise<void>;
@@ -89,8 +94,17 @@ function certificate(dir: string): { key: string; cert: string } {
  * Start a host whose repository takes pushes from `username` with `password`. `certs` reuses another host's
  * certificate, so one `ca` reaches both.
  */
-export async function startGitHost(opts: { username: string; password: string; certs?: { key: string; cert: string } }): Promise<GitHost> {
+export async function startGitHost(opts: { username: string; password: string; certs?: { key: string; cert: string }; signInToPushOnly?: boolean }): Promise<GitHost> {
   const dir = mkdtempSync(join(tmpdir(), 'so-git-host-'));
+  try {
+    return await serve(dir, opts);
+  } catch (e) {
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+}
+
+async function serve(dir: string, opts: { username: string; password: string; certs?: { key: string; cert: string }; signInToPushOnly?: boolean }): Promise<GitHost> {
   const home = join(dir, 'home');
   const root = join(dir, 'repos');
   stockGit(['init', '--quiet', '--bare', join(root, 'site.git')], { cwd: dir, home: dir });
@@ -99,7 +113,8 @@ export async function startGitHost(opts: { username: string; password: string; c
   stockGit(['config', 'receive.denyNonFastForwards', 'true'], { cwd: bare, home: dir });
   const { key, cert } = opts.certs ?? certificate(dir);
   const expected = `Basic ${Buffer.from(`${opts.username}:${opts.password}`).toString('base64')}`;
-  const sockets = new Set<Socket>();
+  const sockets = new Set<Duplex>();
+  const children = new Set<ChildProcess>();
 
   const host: GitHost = {
     url: '',
@@ -111,9 +126,20 @@ export async function startGitHost(opts: { username: string; password: string; c
     redirectNext: null,
     dropNextPushReply: false,
     beforeNextPush: null,
+    resetNext: false,
     git: (args, input) => stockGit(args, { cwd: bare, home: dir, input }),
     close: async () => {
       for (const s of sockets) s.destroy();
+      await Promise.all(
+        [...children].map(
+          (c) =>
+            new Promise<void>((resolve) => {
+              if (c.exitCode !== null || c.signalCode !== null) return resolve();
+              c.once('close', () => resolve());
+              c.kill('SIGKILL');
+            })
+        )
+      );
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });
     }
@@ -122,7 +148,14 @@ export async function startGitHost(opts: { username: string; password: string; c
   const server: Server = createServer({ key, cert }, (req, res) => {
     const path = req.url ?? '/';
     const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : null;
-    host.requests.push({ method: req.method ?? 'GET', path, authorization });
+    const seen: SeenRequest = { method: req.method ?? 'GET', path, authorization, bytes: 0 };
+    host.requests.push(seen);
+    req.on('data', (b: Buffer) => (seen.bytes += b.byteLength));
+    if (host.resetNext) {
+      host.resetNext = false;
+      req.socket.destroy();
+      return;
+    }
     if (host.redirectNext) {
       const to = host.redirectNext + path;
       host.redirectNext = null;
@@ -130,7 +163,8 @@ export async function startGitHost(opts: { username: string; password: string; c
       res.writeHead(302, { Location: to }).end();
       return;
     }
-    if (authorization !== expected) {
+    const isPushRequest = req.method === 'POST' && path.split('?')[0].endsWith('/git-receive-pack');
+    if (authorization !== expected && (!opts.signInToPushOnly || isPushRequest || authorization !== null)) {
       req.resume();
       res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Git"' }).end('Sign in');
       return;
@@ -160,6 +194,13 @@ export async function startGitHost(opts: { username: string; password: string; c
         ...(req.headers['content-encoding'] ? { HTTP_CONTENT_ENCODING: String(req.headers['content-encoding']) } : {})
       }
     });
+    children.add(cgi);
+    cgi.once('close', () => children.delete(cgi));
+    cgi.on('error', () => {
+      if (!res.headersSent) res.writeHead(500).end('No http-backend');
+    });
+    cgi.stdin.on('error', () => undefined);
+    cgi.stderr.resume();
     req.pipe(cgi.stdin);
     const out: Buffer[] = [];
     cgi.stdout.on('data', (b: Buffer) => out.push(b));

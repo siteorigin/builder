@@ -15,7 +15,8 @@ export const CREDENTIAL_STEMS: readonly string[] = ['source-secrets', 'api-keys'
 /**
  * Whether `name` is one of the app's credential files or a copy of one: told apart without a pattern that could take
  * long on a hostile name. Before `.json` is the file's name and nothing but what a copy adds (spaces, hyphens,
- * underscores, numbers, brackets, "copy"); after it, anything an editor adds (`~`, `#`, `.swp`, `.bak`).
+ * underscores, numbers, "copy", and anything in brackets, as a sync tool names a conflicted copy); after it, anything
+ * an editor adds (`~`, `#`, `.swp`, `.bak`).
  */
 export function isCredentialFile(name: string): boolean {
   let n = name.toLowerCase().replace(/^[.#]+/, '');
@@ -25,7 +26,8 @@ export function isCredentialFile(name: string): boolean {
   if (at < 0 || !(after === '' || after[0] === '~' || after[0] === '#' || after[0] === '.')) return false;
   const stem = n.slice(0, at);
   const base = CREDENTIAL_STEMS.find((s) => stem.startsWith(s));
-  return !!base && stem.slice(base.length).split('copy').join('').replace(/[\s_\-()0-9]/g, '') === '';
+  // What a sync tool puts in brackets (`(Someone's conflicted copy 2026-11-27)`) is a copy's, whatever it says.
+  return !!base && stem.slice(base.length).replace(/\([^()]*\)/g, '').split('copy').join('').replace(/[\s_\-()0-9]/g, '') === '';
 }
 
 /** Whether a file named `name` is private (see PRIVATE_FILE and isCredentialFile). */
