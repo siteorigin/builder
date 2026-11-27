@@ -161,11 +161,11 @@ await win.keyboard.press('Tab');
 await win.keyboard.press('Tab');
 await shot('welcome-focus', '.recent-card:focus-visible', LIGHT);
 
-// A project on its way: the card says so and everything else waits.
+// A project on its way: the editor's outline from the click, with the one sign that it is opening.
 await fresh({ recents: RECENTS, open: 'hold' });
 await win.locator('.recent-card', { hasText: 'Tide & Timber' }).click();
 await pause(150);
-await shot('welcome-opening', '.recent-card:has(.spinner)', LIGHT, 'Opening');
+await shot('welcome-opening', '.editor-skeleton .sk-loading', LIGHT, 'Opening');
 
 // A project whose folder has gone: its card says so and offers to find it.
 await fresh({ recents: RECENTS });

@@ -178,7 +178,8 @@ export async function probeApp(page: Page): Promise<AppProbe> {
         unreadable = true;
         return null;
       });
-      const screen = d.querySelector('.welcome') ? 'welcome' : d.querySelector('.editor') ? 'editor' : 'other';
+      // The editor's outline while a project opens keeps Welcome mounted, out of sight, under it: neither screen yet.
+      const screen = d.querySelector('.editor-skeleton') ? 'other' : d.querySelector('.welcome') ? 'welcome' : d.querySelector('.editor') ? 'editor' : 'other';
       const saveEl = d.querySelector('.toolbar .save-state');
       const kinds = ['saved', 'pending', 'ai', 'ask', 'wait', 'error'];
       const save = saveEl ? { kind: kinds.find((k) => saveEl.classList.contains(k)) ?? 'unknown', text: String(saveEl.textContent ?? '').replace(/\s+/g, ' ').trim() } : null;
