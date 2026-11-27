@@ -46,7 +46,8 @@ function moduleFile(root: string, spec: string): string {
 
 /**
  * A font's faces and files, from the stylesheets the pack author named: its main one, then the stylesheet of its italic
- * faces when the family has one, which may declare only italic faces and must bring at least one in the chosen subsets.
+ * faces when the family has one, which may declare only italic faces. A font with an italic sheet must end up with an
+ * italic face in the chosen subsets, so it never silently ships upright only.
  */
 export function buildFont(font: PackFontSource, root: string): { font: PackFont; files: Map<string, string> } {
   const faces: PackFontFace[] = [];
@@ -54,7 +55,6 @@ export function buildFont(font: PackFontSource, root: string): { font: PackFont;
   const sheets = [{ css: font.css, italic: false }, ...(font.italicCss ? [{ css: font.italicCss, italic: true }] : [])];
   for (const { css, italic } of sheets) {
     const cssFile = moduleFile(root, css);
-    const before = faces.length;
     for (const f of parseFontFaces(readFileSync(cssFile, 'utf8'))) {
       if (f.family !== font.family) throw new Error(`${css} declares "${f.family}", not "${font.family}".`);
       if (f.format !== 'woff2' && f.format !== 'woff2-variations') throw new Error(`${css}: only woff2 fonts can be bundled, not ${f.format}.`);
@@ -63,12 +63,15 @@ export function buildFont(font: PackFontSource, root: string): { font: PackFont;
       const file = `fonts/${basename(f.url)}`;
       if (font.subsets && !font.subsets.some((s) => basename(f.url).includes(`-${s}-wght-`))) continue;
       if (!PACK_FILE_RE.test(file)) throw new Error(`${css}: ${f.url} is not a usable font file name.`);
-      if (files.has(file)) throw new Error(`${css}: ${basename(f.url)} is already a face of ${font.name}.`);
-      files.set(file, join(dirname(cssFile), f.url));
+      const src = join(dirname(cssFile), f.url);
+      if (files.has(file) && files.get(file) !== src) throw new Error(`${css}: ${font.name} has two different files named ${basename(f.url)}.`);
+      files.set(file, src);
       faces.push({ file, weight: f.weight, style: f.style, ...(f.unicodeRange ? { unicodeRange: f.unicodeRange } : {}), format: f.format });
     }
-    if (faces.length === before) throw new Error(`${css} declares no fonts${font.subsets ? ` in the subsets ${font.subsets.join(', ')}` : ''}.`);
   }
+  const inSubsets = font.subsets ? ` in the subsets ${font.subsets.join(', ')}` : '';
+  if (!faces.length) throw new Error(`${font.css} declares no fonts${inSubsets}.`);
+  if (font.italicCss && !faces.some((f) => f.style === 'italic')) throw new Error(`${font.italicCss} declares no italic fonts${inSubsets}.`);
   const { css: _css, italicCss: _italicCss, noticeFile, subsets: _subsets, ...rest } = font;
   void _css;
   void _italicCss;
@@ -79,9 +82,15 @@ export function buildFont(font: PackFontSource, root: string): { font: PackFont;
 /** An authored pack as the app uses it, with the source of each file it ships. */
 export function buildPack(authored: AuthoredPack, root = process.cwd(), previews?: Record<string, ComponentPreviews>): { pack: ThemePack; files: Map<string, string> } {
   const files = new Map<string, string>();
+  const owners = new Map<string, string>();
   const fonts = authored.fonts.map((f) => {
     const built = buildFont(f, root);
-    for (const [k, v] of built.files) files.set(k, v);
+    for (const [k, v] of built.files) {
+      const other = owners.get(k);
+      if (other && files.get(k) !== v) throw new Error(`${f.name} and ${other} both ship a different ${k}.`);
+      owners.set(k, f.name);
+      files.set(k, v);
+    }
     return built.font;
   });
   const pack: ThemePack = { ...authored, fonts, ...(previews ? { previews } : {}), source: 'bundled' };
