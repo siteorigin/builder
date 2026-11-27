@@ -60,8 +60,11 @@ async function untilWatching(dir: string, events: Array<string | null>) {
   let touched = 0;
   await vi.waitFor(
     () => {
-      if (!events.includes('probe.txt')) {
-        if (Date.now() - touched > 500) (touched = Date.now()), writeFileSync(join(dir, 'probe.txt'), String(touched));
+      if (!events.some((file) => file?.startsWith('probe-'))) {
+        if (Date.now() - touched > 500) {
+          touched = Date.now();
+          writeFileSync(join(dir, `probe-${touched}.txt`), String(touched));
+        }
         throw new Error('The watch has not reported yet.');
       }
     },
@@ -75,7 +78,13 @@ async function reported(events: Array<string | null>, dir: string, file: string)
   await vi.waitFor(
     () => {
       if (!events.includes(file)) {
-        if (Date.now() - wrote > 500) (wrote = Date.now()), writeFileSync(join(dir, file), String(wrote));
+        if (Date.now() - wrote > 500) {
+          wrote = Date.now();
+          // A directory watch can coalesce repeated writes to one file on macOS. Recreate the entry so each probe
+          // produces a directory change while still requiring the watcher to report this exact path.
+          rmSync(join(dir, file), { force: true });
+          writeFileSync(join(dir, file), String(wrote));
+        }
         throw new Error(`${file} was not reported.`);
       }
     },
@@ -106,7 +115,7 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     const { events, errors } = start(dir);
     await untilWatching(dir, events);
     // What was there when it started is not reported as new (macOS also tells of changes made just before a watch began).
-    if (process.platform === 'linux') expect(events.filter((e) => e !== 'probe.txt')).toEqual([]);
+    if (process.platform === 'linux') expect(events.filter((e) => !e?.startsWith('probe-'))).toEqual([]);
     await reported(events, dir, join('a', 'b', 'page.json'));
     expect(errors).toEqual([]);
   });

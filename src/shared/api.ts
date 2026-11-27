@@ -1344,6 +1344,8 @@ export interface BuilderApi {
     reloadFromDisk(): Promise<{ ok: boolean; message?: string }>;
     /** `opening` is the snapshot's workspaceKey of the project the change was made in: any other refuses it. */
     apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string; opening?: string }): Promise<ApplyResult>;
+    /** Wait for a generated page to be served by the current preview before opening it. Null while the preview starts. */
+    previewRouteReady(route: string, revision: number): Promise<boolean | null>;
     /**
      * Save a held edit while AI request `runId` waits for the author's answer, without stopping it (#1281). `base` is what
      * each field the edit writes held when the author made it: the edit lands only while every one still holds that, in
@@ -1663,6 +1665,7 @@ export interface BuilderApi {
   /** A project ZIP file is being unpacked, sent as it starts and as its files are written (null: it finished, failed or was called off). */
   on(channel: 'projects:unpacking', cb: (u: Unpacking | null) => void): () => void;
   on(channel: 'runtime:status', cb: (s: RuntimeState) => void): () => void;
+  on(channel: 'preview:load-failed', cb: (failure: { url: string }) => void): () => void;
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
   /** The editor's Appearance, when Settings saves a new one. */
   on(channel: 'appearance', cb: (appearance: Appearance) => void): () => void;

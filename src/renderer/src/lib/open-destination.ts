@@ -128,8 +128,8 @@ function showElement(state: ProjectState, dest: Extract<EditorDestination, { kin
     else if (collectionId) openLayout(collectionId);
     else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
   }
-  // Opened from the post writer or the SEO view, Layers takes its place, so the canvas shows the element where it is.
-  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, ...(focus ? { inspectorFocus: focus } : {}), ...(getState().leftTab === 'posts' || getState().leftTab === 'seo' ? { leftTab: 'layers' as const } : {}) });
+  // A named element destination shows its selected row in Layers, including when opened from Insert or a dialog.
+  setState({ modal: null, selection: ref, showSelection: getState().showSelection + 1, leftTab: 'layers', rightTab: 'inspect', dockOpen: true, ...(focus ? { inspectorFocus: focus } : {}) });
 }
 
 /**

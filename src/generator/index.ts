@@ -4186,6 +4186,18 @@ const HERO_ASSET_IMPORT = `\timport { asset as so_asset } from '$app/paths';`;
  */
 function heroImage(ctx: EmitCtx): { image: Record<string, unknown>; sizes: string } | null {
   const { state, tree } = ctx;
+  // The committed Foundation split hero is code, so the managed-tree walk below cannot see its SoImage. Its source
+  // renders the placement's `image` with the runtime default sizes and takes the first-section eager flag.
+  const first = tree.rootIds.length ? tree.nodes[tree.rootIds[0]] : undefined;
+  const firstDef = first?.kind === 'instance' ? state.components[first.definitionId] : undefined;
+  if (first?.kind === 'instance' && firstDef?.owner === 'theme' && firstDef.kind === 'code' && firstDef.componentId === 'hero.split' && ['foundation', 'foundation-alt'].includes(firstDef.provenance?.pack ?? '')) {
+    const value = first.props.image ?? firstDef.properties.image?.default;
+    const id = value && typeof value === 'object' && 'assetId' in value ? value.assetId : null;
+    if (typeof id === 'string' && state.assets.assets[id]?.kind === 'image') {
+      const image = resolveImage(value as ImageValue, ctx.rctx);
+      if (image?.src) return { image, sizes: '100vw' };
+    }
+  }
   let hero: { image: Record<string, unknown>; sizes: string } | null = null;
   const sizingParents: EmitCtx['sizingParents'] = new Map();
   firstSectionImages(state, tree, ctx.rctx.entry, (n, scope, def) => {
@@ -4425,7 +4437,7 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     : '';
   const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
   const devBridge = opts.instrument
-    ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\timport('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => window.dispatchEvent(new CustomEvent('siteorigin:navigated')));`
+    ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginLiveViewer && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\tif (!window.__siteoriginLiveViewer) import('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => { if (!window.__siteoriginLiveViewer) window.dispatchEvent(new CustomEvent('siteorigin:navigated')); });`
     : '';
   return (
     HEADER_NOTE('siteorigin/site.json') +

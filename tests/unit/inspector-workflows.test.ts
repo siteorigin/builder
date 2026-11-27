@@ -611,8 +611,7 @@ describe('a Section’s columns, arranged from the placement (#514)', () => {
 
   /**
    * A blank site with a Section built in the editor installed as Foundation's own (its Container holding its Content
-   * slot, with the controls the release's Section offers) and placed: the release's Section is code, with no tree for
-   * columnLayoutPart to read (the Release gap test below).
+   * slot, with the controls the release's Section offers) and placed.
    */
   const withManagedSection = () => {
     const s = createStarterState('blank', 'Blank', false);
@@ -632,9 +631,14 @@ describe('a Section’s columns, arranged from the placement (#514)', () => {
     expect(columnLayoutPart(def)).toEqual(COLUMNS);
   });
 
-  // Release gap: columnLayoutPart (src/shared/styles.ts) needs a tree, so the release's Section gets no column controls.
-  it.fails('offers the shipped theme’s Section its column controls without Parts', () => {
+  it('offers the shipped theme’s Section its column controls without Parts', () => {
     expect(columnLayoutPart(withSection().def)).toEqual(COLUMNS);
+  });
+
+  it('offers the same column controls on a code Section with a Content slot', () => {
+    const { def } = withSection();
+    const code = { ...def, kind: 'code' as const, tree: undefined, slots: { content: { label: 'Content' } } };
+    expect(columnLayoutPart(code)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] });
   });
 
   it('offers what an older installed Section has, and the same on a copy made unique', () => {

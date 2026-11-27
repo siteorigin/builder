@@ -828,12 +828,12 @@ export function LayersPanel() {
             onChange={(v) => setState({ layersView: v })}
             options={[
               { value: 'layers', label: 'Layers', controls: 'layers-view-tree' },
-              { value: 'outline', label: 'Headings', title: 'The headings this page shows, in the order screen readers list them', controls: outline ? 'layers-view-outline' : undefined }
+              { value: 'outline', label: 'Headings', title: 'The headings this page shows, in the order screen readers list them', controls: 'layers-view-outline' }
             ]}
           />
         </div>
       )}
-      {outline && visible && <OutlinePanel pageId={pageId} id="layers-view-outline" />}
+      {outline && visible ? <OutlinePanel pageId={pageId} id="layers-view-outline" /> : <div id="layers-view-outline" role="tabpanel" aria-labelledby="layers-view-outline-tab" hidden />}
       {/* Layers selected together: how many, their commands (Shift+F10 on one of them has the same menu), and the
           pointer's way back to one layer (Esc from the keyboard). */}
       {picked && !outline && (
@@ -875,7 +875,8 @@ export function LayersPanel() {
       {/* The tree stays mounted while the outline shows, so its single tab stop is kept for when it returns. */}
       <Picked.Provider value={picked}>
       <MenuTriggers.Provider value={menu.triggerProps}>
-      <div id="layers-view-tree" className="panel-body layers-tree" role="tree" aria-label="Layers" aria-multiselectable="true" ref={treeRef} onKeyDown={onTreeKey} onPointerDown={(e) => e.currentTarget.removeAttribute('data-keys')} hidden={outline}>
+      <div id="layers-view-tree" className="panel-body layers-tree" role="tabpanel" aria-labelledby="layers-view-tree-tab" ref={treeRef} onKeyDown={onTreeKey} onPointerDown={(e) => e.currentTarget.removeAttribute('data-keys')} hidden={outline}>
+        <div role="tree" aria-label="Layers" aria-multiselectable="true">
         {defOwner && defTree ? (
           <>
             <SectionLabel id="layers-sec-component" icon={<Component />} label="Component layers" />
@@ -944,6 +945,7 @@ export function LayersPanel() {
             )}
           </>
         )}
+        </div>
       </div>
       </MenuTriggers.Provider>
       </Picked.Provider>

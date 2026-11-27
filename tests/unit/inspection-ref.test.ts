@@ -28,6 +28,20 @@ const homeOf = (s: ProjectState) => s.pages[s.site.homePageId];
 const placementOf = (s: ProjectState, definitionId: string) => Object.values(homeOf(s).nodes).find((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === definitionId)!;
 const ctxOf = (s: ProjectState, ...path: string[]) => [`page:${s.site.homePageId}`, ...path].join('|');
 
+it('names a marked part of a code placement, including one repeated item', () => {
+  const s = fresh();
+  const grid = placementOf(s, 'foundation.features.grid');
+  const def = s.components[grid.definitionId];
+  def.kind = 'code';
+  def.source = '<section></section>';
+  def.tree = undefined;
+  def.parts.cardTitle.list = 'items';
+  const itemId = placementItems(def, grid, 'items')[1].id;
+  expect(inspectionRef(s, { ctx: ctxOf(s), node: grid.id, items: '', part: 'cardTitle', partItem: itemId })).toEqual({
+    owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id, partId: 'cardTitle', itemId
+  });
+});
+
 /** Apply a harmless style change through the reference, as the assistant would, and return the state after it. */
 function styleThrough(s: ProjectState, ref: InspectionRef): ProjectState {
   const op = { type: 'node.setStyle' as const, owner: ref.owner, nodeId: ref.nodeId, ...(ref.partId ? { partId: ref.partId } : {}), ...(ref.itemId ? { itemId: ref.itemId } : {}), scope: 'base' as const, property: 'color', value: '#123456' };

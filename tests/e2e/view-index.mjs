@@ -36,13 +36,21 @@ const index = s.collections.posts.settings.route;
 assert.ok(index, 'the blog has an index address');
 await eventually(async () => assert.equal(await framePath(), home.route, 'the canvas shows Home'), 20000);
 await emptyCard.waitFor({ timeout: 20000 });
+// A newly created route can be opened before Vite has published its first page. Wait for the page the menu will open.
+await eventually(async () => {
+  const src = await win.locator('.frame-box iframe').getAttribute('src');
+  const response = await win.context().request.get(new URL(index, src).href);
+  assert.equal(response.status(), 200, 'the blog index is served');
+  assert.match(await response.text(), /Second firing/, 'the served index includes the new posts');
+}, 60000);
 
 step('View index opens the blog index in Preview');
 await openRail('Pages');
+await win.locator('.pages-collection').filter({ has: win.getByTestId('edit-layout-posts') }).getByRole('button', { name: /Index settings/ }).click();
 await win.getByTestId('view-index-posts').click();
 await pill.waitFor();
 await eventually(async () => assert.equal(await framePath(), index, 'the frame is on the blog index'), 30000);
-await eventually(async () => assert.equal(await frame.getByText('Second firing').count() > 0, true, 'the index lists the posts'), 20000);
+await eventually(async () => assert.equal(await frame.getByText('Second firing').count() > 0, true, `the index lists the posts: ${(await frame.locator('body').innerText()).slice(0, 300)}`), 20000);
 await win.screenshot({ path: join(SHOTS, 'view-index-preview.png') });
 
 step('Back to editing shows Home again, not the index under its name');

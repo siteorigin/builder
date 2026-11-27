@@ -55,7 +55,11 @@ try {
 
   step('one bounded observation covers the editor and the site in its preview, with context and screenshots');
   // The first observation after starting: the fixture waits for the page to take the editor's mode.
-  const first = await snapshot({ screenshot: true });
+  const first = await eventually(async () => {
+    const observation = await snapshot({ screenshot: true });
+    assert.equal(observation.context.preview.state, 'ready', 'the preview is ready for the first observation');
+    return observation;
+  }, 60000);
   assert.equal(first.context.screen, 'editor');
   assert.equal(first.context.mode, 'edit');
   assert.equal(first.context.dialog, null);
@@ -66,8 +70,16 @@ try {
   const editorNodes = flatten(first.editor.nodes);
   const previewNodes = flatten(first.preview.nodes);
   assert.ok(editorNodes.some((x) => x.role === 'toolbar' && x.name === 'Panels'), 'the editor’s named toolbar is there');
-  assert.ok(editorNodes.some((x) => x.role === 'button' && x.name === 'Edit' && x.pressed === true), 'pressed state is reported');
-  assert.ok(previewNodes.some((x) => x.role === 'heading' && x.level === 1 && x.semantic?.node === 'heading'), 'the preview is observed, not an iframe placeholder, with the page’s own element ids');
+  assert.ok(editorNodes.some((x) => x.role === 'radio' && x.name === 'Edit' && x.checked === true), 'the selected mode is reported');
+  const previewDetail = flatten((await snapshot({ scope: 'preview', maxNodes: 1000 })).preview.nodes);
+  const h1 = previewDetail.find((x) => x.role === 'heading' && x.level === 1 && x.name === HEADING && x.ref);
+  assert.ok(h1, 'the preview is observed, not an iframe placeholder, with its heading');
+  const h1Element = await session.elementFor(h1.ref);
+  try {
+    assert.ok(await h1Element.evaluate((el) => el.closest('[data-so-node]')?.getAttribute('data-so-node')), 'the heading belongs to an identified page component');
+  } finally {
+    await h1Element.dispose();
+  }
   assert.ok(previewNodes.some((x) => x.offscreen), 'mounted content below the fold is reported as out of view');
   assert.ok([...editorNodes, ...previewNodes].every((x) => x.role === 'text' || x.ref), 'every element observed has a ref');
   assert.equal(first.screenshots.withheld, undefined);
@@ -122,30 +134,39 @@ try {
   failed(await call('ui.locate', { role: 'button', name: 'No such control' }), 'TARGET_NOT_FOUND', 'a missing control');
 
   step('the preview’s heading is located, selected, and seen as the editor’s selection');
-  const heading = await locate({ role: 'heading', name: HEADING, scope: 'preview' });
+  const heading = await eventually(() => locate({ role: 'heading', name: HEADING, scope: 'preview' }), 30000);
   assert.equal(heading.scope, 'preview');
-  assert.equal(heading.node.semantic.node, 'heading');
+  assert.ok(heading.node.ref, 'the heading has a stable element reference');
+  const headingIdentity = await (async () => {
+    const element = await session.elementFor(heading.node.ref);
+    try {
+      return element.evaluate((el) => {
+        const host = el.closest('[data-so-node]');
+        return { ctx: host?.getAttribute('data-so-ctx'), node: host?.getAttribute('data-so-node') };
+      });
+    } finally {
+      await element.dispose();
+    }
+  })();
   assert.deepEqual(ok(await call('ui.locate', { ref: heading.node.ref }), 'the ref again').node, heading.node, 'a ref looked at again is the same element');
   await press(heading.node.ref);
-  // The first click on a section selects the section itself (Split hero); the next steps in to the heading.
+  // The packed code section owns the heading; clicking it selects the component.
   const section = await eventually(async () => {
     const s = (await snapshot()).context.selection;
     assert.equal(s?.shown, true, 'something is selected');
     assert.equal(s.toolbar, 'Split hero actions', 'the section is selected and its toolbar drawn');
     assert.equal(s.outlined, true);
-    assert.equal(s.semantic.ctx, heading.node.semantic.ctx, 'the heading’s own section');
+    assert.equal(s.semantic.ctx, headingIdentity.ctx, 'the heading’s own section');
     return s;
   });
-  assert.notEqual(section.semantic.node, heading.node.semantic.node);
+  assert.equal(section.semantic.node, headingIdentity.node);
   // A section's own element has no role of its own, so no observed element stands for it.
   assert.deepEqual(section.refs, []);
-  await new Promise((r) => setTimeout(r, 700)); // Clear of any double-click, which would start editing the text.
-  await press(heading.node.ref);
   const selected = await eventually(async () => {
     const s = (await snapshot()).context.selection;
-    assert.deepEqual(s?.semantic, heading.node.semantic, 'the heading is the selection');
-    assert.equal(s.toolbar, 'Heading actions');
-    assert.deepEqual(s.refs, [heading.node.ref], 'the selection names the heading’s own ref');
+    assert.deepEqual(s?.semantic, headingIdentity, 'the heading’s component is the selection');
+    assert.equal(s.toolbar, 'Split hero actions');
+    assert.deepEqual(s.refs, [], 'the code component has no accessible role of its own');
     return s;
   });
   assert.equal(selected.outlined, true);
@@ -157,7 +178,7 @@ try {
     const s = (await snapshot({ maxNodes: 20 })).context.selection;
     assert.equal(s.shown, true);
     assert.equal(s.outlined, false);
-    assert.deepEqual(s.semantic, heading.node.semantic);
+    assert.deepEqual(s.semantic, headingIdentity);
   });
 
   step('a dialog over the editor, focus in it, and a credential that never comes back');
@@ -218,13 +239,13 @@ try {
   await eventually(async () => assert.equal((await snapshot()).context.dialog, null, 'the dialogs closed'));
 
   step('visitor mode is told apart from a preview still loading');
-  await press((await locate({ role: 'button', name: 'Preview', region: 'Mode' })).node.ref);
+  await press((await locate({ role: 'radio', name: 'Preview', region: 'Mode' })).node.ref);
   await eventually(async () => {
     const c = (await snapshot({ maxNodes: 20 })).context;
     assert.equal(c.mode, 'preview');
     assert.deepEqual(c.preview, { state: 'ready', path: '/', editing: false });
   });
-  await press((await locate({ role: 'button', name: 'Edit', region: 'Mode' })).node.ref);
+  await press((await locate({ role: 'radio', name: 'Edit', region: 'Mode' })).node.ref);
   await eventually(async () => {
     const c = (await snapshot({ maxNodes: 20 })).context;
     assert.equal(c.mode, 'edit');

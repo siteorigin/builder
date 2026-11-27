@@ -81,7 +81,7 @@ await eventually(async () => assert.equal(await placeShown.innerText(), 'SEO', '
 await eventually(async () => assert.equal(await inspected.innerText(), 'SEO', 'and so does the Inspector'));
 assert.equal(await inspector.locator('input, textarea, select, [contenteditable="true"]').count(), 0, 'nothing in the Inspector changes the page under the view');
 assert.ok(!(await inspector.innerText()).includes(sectionName), 'Home’s section is out of the Inspector');
-for (const name of ['Desktop', 'Tablet', 'Phone', 'Edit', 'Preview']) assert.equal(await win.getByRole('button', { name, exact: true }).isDisabled(), true, `${name} waits while the view covers the canvas`);
+for (const name of ['Desktop', 'Tablet', 'Phone', 'Edit', 'Preview']) assert.equal(await win.locator('.toolbar').getByRole('radio', { name, exact: true }).isDisabled(), true, `${name} waits while the view covers the canvas`);
 assert.equal(await crumbs.count(), 0, 'no path in the status bar leads to the section under the view');
 await noWindowShown('opening the view');
 
@@ -116,7 +116,7 @@ assert.deepEqual(
   ['entry:posts:en_winter'],
   'the draft is marked as one'
 );
-const RANK = { warning: 0, note: 1, ok: 2 };
+const RANK = { warning: 0, note: 1, ok: 2, excluded: 3 };
 const sortedByLevel = (rs) => rs.every((r, i) => i === 0 || RANK[rs[i - 1].level] <= RANK[r.level]);
 assert.ok(sortedByLevel(rows), `the rows with something to fix come first: ${JSON.stringify(rows)}`);
 assert.match(await ovRow(`page:${about.id}`).innerText(), /About · Riverside Studio/, 'a row shows its search title, fallbacks included');
@@ -149,7 +149,7 @@ for (const shown of ['Meet the designers behind Riverside Studio', 'Site image',
 assert.match(await ovRow('entry:posts:en_winter').innerText(), /Kept out of search until published/, 'the draft says it is kept out of search until it is published');
 rows = await ovRows();
 assert.ok(sortedByLevel(rows), 'and the order follows');
-const toFix = rows.filter((r) => r.level !== 'ok').map((r) => r.key);
+const toFix = rows.filter((r) => r.level !== 'ok' && r.level !== 'excluded').map((r) => r.key);
 assert.ok(toFix.length > 0 && toFix.length < rows.length, `some rows still have something to fix: ${JSON.stringify(rows)}`);
 
 step('Problems only leaves out the rows with nothing to fix; a row opens its document, and Back returns to the list as it was');
@@ -650,7 +650,7 @@ await row('Spring open studio').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Spring open studio'));
 await eventually(async () => assert.equal(await surfaceShown('Search result'), true));
 assert.equal(await settings.getByRole('heading').innerText(), 'Search & sharing', 'the post’s settings are under its previews');
-const titleBox = viewField('Browser title');
+const titleBox = viewField('Search title');
 assert.equal(await titleBox.inputValue(), 'Spring open studio at Riverside', 'the title field shows the saved title');
 // Each keystroke reaches the result and the meter; nothing is saved while it is typed.
 await titleBox.fill('');
@@ -699,13 +699,17 @@ await canonicalBox.press('Enter');
 await eventually(async () => assert.equal((await entryNow('en_spring')).seo.canonical, undefined));
 await lastStep('Clear post canonical URL');
 // The sharing image, chosen and put back to the default.
-const sharing = viewField('Sharing image');
-const picture = await sharing.locator('option').nth(1).getAttribute('value');
-assert.ok(picture, 'the library has a picture to choose');
-await sharing.selectOption(picture);
+const sharing = settings.locator('[data-seo-field="socialImage"]');
+await sharing.getByRole('button', { name: /Change…|Choose image…/ }).click();
+await win.locator('.insp-image-pop').getByRole('listbox', { name: 'Your images' }).getByRole('option').first().click();
+const picture = await eventually(async () => {
+  const id = (await entryNow('en_spring')).seo.socialImage;
+  assert.ok(id && (await snapshot()).state.assets.assets[id]?.kind === 'image', 'the library picture is chosen');
+  return id;
+});
 await eventually(async () => assert.equal((await entryNow('en_spring')).seo.socialImage, picture));
 await lastStep('Change post sharing image');
-await sharing.selectOption('');
+await sharing.getByRole('button', { name: /Use the (featured|site’s) image/ }).click();
 await eventually(async () => assert.equal((await entryNow('en_spring')).seo.socialImage, undefined));
 await lastStep('Use the default sharing image');
 // Both visibility switches, which the structured data's status follows.
@@ -738,8 +742,11 @@ assert.match(await viewMeter('title').innerText(), /^Default title:/);
 assert.equal(await descriptionBox.inputValue(), '', 'and its own description, none');
 assert.equal((await entryNow('en_spring')).seo.title, 'Glaze weekend at Riverside', 'the text too long to save was never saved');
 await row('Spring open studio').click();
-await eventually(async () => assert.equal(await titleBox.inputValue(), 'Glaze weekend at Riverside', 'back on the post, its saved title shows'));
-assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Glaze weekend at Riverside');
+await eventually(async () => assert.equal(await titleBox.inputValue(), 'A'.repeat(130), 'back on the post, its refused draft is kept'));
+await eventually(async () => assert.ok((await result('desktop').locator('.serp-title').innerText()).startsWith('AAAA'), 'the refused draft is previewed again'));
+await titleBox.press('Escape');
+await eventually(async () => assert.equal(await titleBox.inputValue(), 'Glaze weekend at Riverside', 'Escape restores the saved title'));
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Glaze weekend at Riverside'));
 await win.screenshot({ path: join(SHOTS, 'seo-view-post-settings.png') });
 await row('Winter hours').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
@@ -812,8 +819,8 @@ const writerHolder = win.locator('.post-writer-holder');
 assert.equal(await writerHolder.locator('.post-title-input').inputValue(), 'Spring open studio', 'the writer holds Spring');
 await rail('seo').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
-await viewField('Browser title').fill('Winter hours by the river');
-await viewField('Browser title').press('Enter');
+await viewField('Search title').fill('Winter hours by the river');
+await viewField('Search title').press('Enter');
 await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.title, 'Winter hours by the river', 'saved to the post chosen in the view'));
 assert.equal((await entryNow('en_spring')).seo.title, 'Glaze weekend at Riverside', 'never to the post the writer holds');
 await lastStep('Change post browser title');
@@ -823,21 +830,21 @@ await eventually(async () => assert.equal(await writerHolder.locator('.post-titl
 const writerSeo = writerHolder.locator('.post-seo');
 await writerSeo.locator('.section-head').first().click();
 const writerField = (name) => writerSeo.getByLabel(name, { exact: true });
-assert.equal(await writerField('Browser title').inputValue(), 'Winter hours by the river', 'the writer shows the title saved in the view');
+assert.equal(await writerField('Search title').inputValue(), 'Winter hours by the river', 'the writer shows the title saved in the view');
 // Saved in the writer, it shows in the view.
-await writerField('Browser title').fill('Winter hours at the studio');
-await writerField('Browser title').press('Enter');
+await writerField('Search title').fill('Winter hours at the studio');
+await writerField('Search title').press('Enter');
 await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.title, 'Winter hours at the studio'));
 await rail('seo').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
-await eventually(async () => assert.equal(await viewField('Browser title').inputValue(), 'Winter hours at the studio', 'a title saved in the writer shows in the view'));
+await eventually(async () => assert.equal(await viewField('Search title').inputValue(), 'Winter hours at the studio', 'a title saved in the writer shows in the view'));
 assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Winter hours at the studio');
 // Saved in the view, it shows in the writer.
-await viewField('Browser title').fill('Short winter days');
-await viewField('Browser title').press('Enter');
+await viewField('Search title').fill('Short winter days');
+await viewField('Search title').press('Enter');
 await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.title, 'Short winter days'));
 await lastStep('Change post browser title');
-await eventually(async () => assert.equal(await writerField('Browser title').inputValue(), 'Short winter days', 'a title saved in the view shows in the writer'));
+await eventually(async () => assert.equal(await writerField('Search title').inputValue(), 'Short winter days', 'a title saved in the view shows in the writer'));
 /** Show the writer and press one of its buttons in one go, while a field of the view still has the text typed in it. */
 const pressInWriterWhileTyping = (button) =>
   win.evaluate((name) => {
@@ -856,7 +863,7 @@ await eventually(async () => assert.equal(await writerField('Description').input
 // Publish, pressed the same way, publishes the post with the title typed in the view.
 await rail('seo').click();
 await eventually(async () => assert.equal(await holder.isVisible(), true));
-await viewField('Browser title').fill('Winter hours, shorter days');
+await viewField('Search title').fill('Winter hours, shorter days');
 assert.equal(await pressInWriterWhileTyping('Publish'), true, 'the title was still being typed in the view');
 await eventually(async () => assert.equal((await entryNow('en_winter')).draft, false, 'Publish publishes the post'));
 assert.equal((await entryNow('en_winter')).seo.title, 'Winter hours, shorter days', 'with the title typed in the view');
@@ -865,7 +872,7 @@ await eventually(async () => {
   const lastSteps = (await snapshot()).history.entries.filter((e) => e.applied).map((e) => e.label).slice(-2);
   assert.deepEqual(lastSteps, ['Change post browser title', 'Publish post'], 'the view’s change is saved before the post is published');
 });
-await eventually(async () => assert.equal(await writerField('Browser title').inputValue(), 'Winter hours, shorter days'));
+await eventually(async () => assert.equal(await writerField('Search title').inputValue(), 'Winter hours, shorter days'));
 // An address the view refused is still the post’s: Move to drafts waits, and says where to look.
 await rail('seo').click();
 await eventually(async () => assert.equal(await holder.isVisible(), true));
@@ -1264,7 +1271,7 @@ await apply(
 const rakuSeo = async () => (await entryNow('en_raku')).seo ?? {};
 await row(left).click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), fullTitle));
-const postTitle = viewField('Browser title');
+const postTitle = viewField('Search title');
 const postDescription = viewField('Description');
 const postCanonical = viewField('Canonical URL');
 await eventually(async () => assert.equal(await surfaceShown('Search result'), true, 'the previews open on the search result'));

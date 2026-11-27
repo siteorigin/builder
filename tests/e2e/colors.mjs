@@ -73,8 +73,10 @@ const nudge = async (n = 1, swatch = picker()) => {
 /** Type a colour into the picker's own value field. */
 const typeInPicker = async (value, swatch = picker()) => {
   await openPicker(swatch);
+  const before = await revision();
   await pop.locator('input.color-pop-hex').fill(value);
   await pop.locator('input.color-pop-hex').press('Enter');
+  await eventually(async () => assert.ok((await revision()) > before, 'the picker change is saved before it closes'));
   await closePicker();
 };
 
@@ -181,7 +183,11 @@ await eventually(async () => assert.equal(await saved(), 'rgb(209, 65, 49)', 'un
 
 step('a color only the browser can resolve still starts the picker from itself');
 await paste('color-mix(in srgb, #ff0000 50%, #0000ff)');
-await eventually(async () => assert.ok((await pickerState()).placed, 'the mixed color is placed in the picker'));
+await eventually(async () => {
+  const opened = await pickerState();
+  assert.equal(opened.text, 'color-mix(in srgb, #ff0000 50%, #0000ff)', 'the picker shows the saved mix');
+  assert.ok(opened.placed, 'the mixed color is placed in the picker');
+});
 await typeInPicker('#336699');
 await eventually(async () => assert.equal(await saved(), '#336699', 'a pick replaces the mix with a plain color'));
 await eventually(async () => assert.equal(await text().inputValue(), '#336699', 'the editor shows that pick before the next draft'));
@@ -335,7 +341,7 @@ const proposed = await chips();
 assert.notEqual(proposed['color.background'], neutral['color.background'], 'each mood proposes its own colors');
 assert.notEqual(await drawnPage(), neutralPage, 'and the preview is drawn in them');
 assert.equal(await drawnPage(), rgbOf(proposed['color.background']), 'its page in the proposed background');
-for (const id of ['color.background', 'color.surface', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent', 'color.error', 'color.error-on-inverse']) assert.match(proposed[id] ?? '', /^#[0-9a-f]{6}$/, `the preview names ${id}`);
+for (const id of ['color.background', 'color.surface', 'color.surface-alt', 'color.border', 'color.text', 'color.muted', 'color.brand', 'color.brand-strong', 'color.on-brand', 'color.accent', 'color.inverse', 'color.on-inverse', 'color.focus']) assert.match(proposed[id] ?? '', /^#[0-9a-f]{6}$/, `the preview names ${id}`);
 assert.match(await harmony.locator('.ss-harmony-facts').textContent(), /Every color pair in this preview is readable/, 'and says the proposal is readable');
 assert.equal(await settled(), atRest, 'choosing a mood only previews it');
 assert.deepEqual(await overrides(), beforePalette, 'and saves nothing');

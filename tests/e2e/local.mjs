@@ -228,14 +228,15 @@ try {
   await message.press('Enter');
   const strip = win.locator('.run-strip');
   await eventually(async () => assert.ok(posts().length > sentBefore, 'the held request reached the server'));
-  const runModel = async () => said([(await strip.locator('.run-model').textContent()) ?? ''])[0];
+  // The run's model is visually repeated only once the next message has a different recipient.
+  const runModel = async () => said([(await strip.locator('.run-model, .sr-only').first().textContent()) ?? ''])[0];
   await eventually(async () => assert.equal(await runModel(), 'Sent to Local model · second-model'));
   await chooseLocalModel('first-model');
   const composerModel = win.locator('.composer-model');
   await win.getByRole('button', { name: 'Next: first-model, Local model. Change AI provider or model', exact: true }).waitFor();
   assert.equal((await composerModel.innerText()).trim(), 'Next: first-model');
   assert.equal(await runModel(), 'Sent to Local model · second-model', 'the running turn still names the model it went to');
-  assert.match(await strip.locator('.run-phase').innerText(), /Working/);
+  assert.match(await strip.locator('.run-phase').innerText(), /Thinking/);
   const notice = win.locator('.switch-note');
   assert.equal(await notice.count(), 0, 'a running turn with an empty composer has no switch notice');
   await message.fill('A fresh question for first-model');
@@ -388,8 +389,8 @@ try {
   assert.match((await down.getAttribute('class')) ?? '', /\bfailed\b/);
   await down.getByText('Nothing in the site was changed.', { exact: false }).waitFor();
   await down.getByText('Is your local server running?', { exact: false }).waitFor();
-  // It failed before it started working, and the toolbar says so rather than how the request before it ended.
-  await eventually(async () => assert.deepEqual(await heard(), ['AI request failed']));
+  // The toolbar announces the attempt and then its failure, rather than how the request before it ended.
+  await eventually(async () => assert.deepEqual(await heard(), ['AI is working', 'AI request failed']));
   assert.equal(await siteName(), 'Studio B Coffee', 'the site is unchanged');
   await down.getByRole('button', { name: 'Open AI settings' }).waitFor();
   await down.getByRole('button', { name: 'Try again', exact: true }).waitFor();

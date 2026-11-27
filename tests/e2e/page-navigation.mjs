@@ -218,8 +218,7 @@ const headerList = win.locator('#dock-panel-inspect [data-list="links"]');
 const order = headerList.getByRole('combobox', { name: 'Order' });
 await order.waitFor({ timeout: 10000 });
 assert.equal(await order.inputValue(), 'follow');
-const moveUp = headerList.getByRole('button', { name: /^Move .+ up$/ }).nth(1);
-assert.equal(await moveUp.getAttribute('aria-disabled'), 'true', 'a link cannot be moved by hand while the menu follows Pages');
+assert.equal(await headerList.getByRole('button', { name: /^Move .+ (up|down)$/ }).count(), 0, 'links have no manual move controls while the menu follows Pages');
 assert.match(await headerList.innerText(), /To move a link here, choose Own order/);
 
 step('moving a page in Pages moves the menu with it, with no note, and one Undo takes both back');
@@ -236,6 +235,7 @@ assert.equal(await following(), true);
 step('choosing Own order in the Inspector gives the links their moves back');
 await order.selectOption('own');
 await eventually(async () => assert.equal(await following(), false));
+const moveUp = headerList.getByRole('button', { name: /^Move .+ up$/ }).nth(1);
 await eventually(async () => assert.equal(await moveUp.getAttribute('aria-disabled'), null));
 assert.deepEqual(await menu(), ['Home', 'About', 'Lookbook', 'Shop', 'Contact'], 'switching back moves nothing');
 

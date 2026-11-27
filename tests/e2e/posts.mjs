@@ -92,7 +92,7 @@ await eventually(async () => assert.equal(await inspected.innerText(), 'Opening 
 assert.match(await inspector.locator('.insp-kind-label').innerText(), /Draft post/);
 await noPageSettings('writing');
 // The canvas is under the writer: its widths and zoom wait for the preview.
-for (const name of ['Desktop', 'Tablet', 'Phone']) assert.equal(await win.getByRole('button', { name, exact: true }).isDisabled(), true, `${name} waits while writing`);
+for (const name of ['Desktop', 'Tablet', 'Phone']) assert.equal(await win.locator('.toolbar').getByRole('radio', { name, exact: true }).isDisabled(), true, `${name} waits while writing`);
 assert.equal(await win.getByLabel('Preview width in pixels').isDisabled(), true, 'and the width field');
 assert.equal(await win.locator('.toolbar .zoom-btn').isDisabled(), true, 'and the zoom');
 assert.deepEqual(await checkedPages(), [], 'the toolbar menu checks no page while the post is written');
@@ -222,7 +222,7 @@ await eventually(async () => assert.match(await inspector.locator('.insp-kind-la
 assert.equal(await inspected.innerText(), 'Opening the kiln');
 await noPageSettings('previewing');
 assert.deepEqual(await checkedPages(), [], 'the toolbar menu checks no page while the post is shown');
-for (const name of ['Desktop', 'Tablet', 'Phone']) assert.equal(await win.getByRole('button', { name, exact: true }).isEnabled(), true, `${name} acts on the preview`);
+for (const name of ['Desktop', 'Tablet', 'Phone']) assert.equal(await win.locator('.toolbar').getByRole('radio', { name, exact: true }).isEnabled(), true, `${name} acts on the preview`);
 assert.equal(await win.getByLabel('Preview width in pixels').isEnabled(), true, 'and the width field');
 assert.equal(await win.locator('.toolbar .zoom-btn').isEnabled(), true, 'and the zoom');
 // The post's page is its collection's layout, read for this post.

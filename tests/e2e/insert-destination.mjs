@@ -11,6 +11,12 @@ import { createProject, eventually, launch, scratch, step } from './harness.mjs'
 const { WORK, SHOTS, cleanup } = scratch('insert-destination');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Artist profiles', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
+await win.evaluate(() => {
+  window.__shownRevisions = [];
+  window.addEventListener('message', (e) => {
+    if (e.data?.type === 'revisionApplied' && Number.isSafeInteger(e.data.payload?.revision)) window.__shownRevisions.push(e.data.payload.revision);
+  });
+});
 
 const snapshot = () => win.evaluate(async () => (await window.builder.project.snapshot()).state);
 const apply = (operations, label) =>
@@ -19,7 +25,12 @@ const apply = (operations, label) =>
     if (!r.ok) throw new Error(`${label}: ${r.error?.message}`);
     return r.results;
   }, [operations, label]);
-const undo = () => win.evaluate(() => window.builder.project.undo());
+const undo = async () => {
+  const r = await win.evaluate(() => window.builder.project.undo());
+  assert.equal(r.ok, true);
+  await eventually(async () => assert.ok(await win.evaluate((at) => window.__shownRevisions.includes(at), r.revision), `the preview has applied Undo ${r.revision}`), 30000);
+  return r;
+};
 /** The newest change History holds (it trims old ones by size, so they are not counted). */
 const newest = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).at(-1) ?? null);
 const panel = win.locator('.side-panel-view:not([hidden])');
@@ -98,7 +109,7 @@ const arrival = () =>
     assert.ok(seen, 'the outline arrives with the cue');
     assert.ok(seen.first, 'on the first outline of the selection');
     return seen;
-  });
+  }, 30000);
 
 step('Artist profiles: two sections, the first holding a grid with one Exhibitor card');
 await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
@@ -117,8 +128,7 @@ const [{ nodeId: stack }] = await apply([{ type: 'node.insert', owner, parentId:
 await apply(
   [
     { type: 'node.insert', owner, parentId: stack, primitive: 'paragraph', text: 'Hall A, stand 12' },
-    { type: 'node.insert', owner, parentId: second, slot: 'content', primitive: 'heading', text: 'See you there' },
-    { type: 'node.setContent', owner, nodeId: first, field: 'anchor', value: 'first' }
+    { type: 'node.insert', owner, parentId: second, slot: 'content', primitive: 'heading', text: 'See you there' }
   ],
   'Fill sections'
 );
@@ -183,8 +193,8 @@ const dragTo = async (tile, locator, fx, fy, dy = 0) => {
   const at = await pointIn(locator, fx, fy, dy);
   await win.mouse.move(at.x, at.y, { steps: 12 });
 };
-const firstBox = frame.locator('#first');
-const bandBox = frame.locator(`[data-so-ctx$="|${band}"]`).first();
+const firstBox = frame.locator(`[data-so-ctx="page:${pageId}"][data-so-node="${first}"] section`).first();
+const bandBox = frame.locator(`[data-so-ctx$="|${band}"] section`).first();
 
 step('Gallery drags before, between and after the two sections, each in one change');
 await openInsert();
@@ -212,8 +222,11 @@ for (const [where, locator, fy, index, label] of [
   assert.equal(await dropLabel.count(), 0, 'the drop indicator goes away');
   // Dropped where it shows: its outline arrives with the cue there too.
   assert.equal((await arrival()).animation, 'ov-arrive', `the dropped Gallery arrives with the cue (${where})`);
-  await undo();
+  const insertedId = (await home()).rootIds[index];
+  const undone = await undo();
+  assert.equal(undone.ok, true);
   await eventually(async () => assert.deepEqual((await home()).rootIds, roots, `one Undo takes it away (${where})`));
+  await eventually(async () => assert.equal(await frame.locator(`[data-so-node="${insertedId}"]`).count(), 0, `the preview has also taken Gallery away (${where})`));
 }
 
 step('a Paragraph drags between two cards in the grid');
@@ -306,6 +319,7 @@ const [{ nodeId: one }, { nodeId: two }] = await apply(
   'Fill row'
 );
 await apply([{ type: 'node.setStyle', owner, nodeId: one, scope: 'base', property: 'order', value: 1 }], 'Order');
+await eventually(async () => assert.ok(await win.evaluate((at) => window.__shownRevisions.includes(at), (await win.evaluate(() => window.builder.project.snapshot())).revision), 'the preview has applied the Order style'), 30000);
 const shownLast = frame.locator('p', { hasText: 'Shown second' }).first();
 await shownLast.waitFor();
 {
@@ -349,7 +363,7 @@ step('Escape cancels a drag; a tile still inserts from the keyboard afterwards')
 step('a Gallery inserted at the end of a tall page is scrolled to as the page mounts it, and its outline arrives with a cue (#509)');
 {
   // What the editor draws for an element of the page: the frame's box on screen plus the element's place, scaled.
-  const drawn = (id) => frame.locator(`[data-so-node="${id}"], [data-so-ctx$="|${id}"]`).first();
+  const drawn = (id) => frame.locator(`[data-so-node="${id}"] section, [data-so-ctx$="|${id}"] section`).first();
   const onScreen = async (locator) => {
     const f = await win.locator('.frame-box iframe').boundingBox();
     const r = await locator.evaluate((el) => {

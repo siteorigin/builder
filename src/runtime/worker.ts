@@ -4,6 +4,7 @@
  * Its environment is constructed explicitly by the main process and never contains provider credentials.
  */
 import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { maskSecrets, serializeBuildError } from './build-diagnostics';
@@ -12,6 +13,7 @@ import { firstPagePlugin } from './first-page';
 import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, liveGuestPlugin, previewFsPolicy, unwatched } from './policy';
 import { collectGarbage, createIdleCollector, heapGrowth, IDLE_COLLECT, idleCollectPlugin, type IdleCollector } from './idle-collect';
 import { createPublicationGate, type GateServer, type PublicationGate } from './publication-gate';
+import { waitForPreviewPage } from './preview-ready';
 
 type Msg =
   | { type: 'start'; dir: string; port?: number; packaged?: boolean; perf?: boolean }
@@ -63,6 +65,8 @@ function useRealProjectDir(dir: string): string {
 }
 
 async function start(dir: string, wantedPort = 0, packaged = true) {
+  const site = JSON.parse(await readFile(join(dir, 'siteorigin/site.json'), 'utf8')) as { homePageId: string };
+  const home = JSON.parse(await readFile(join(dir, 'siteorigin/pages', `${site.homePageId}.json`), 'utf8')) as { route: string };
   const vite = await loadVite(dir);
   mark('runtime.viteLoaded');
   const ignored = unwatched(dir);
@@ -125,8 +129,13 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
     server = s as never;
     const addr = (s.httpServer as { address(): { port: number } | string | null } | null)?.address();
     const bound = addr && typeof addr === 'object' ? addr.port : wantedPort;
-    post({ type: 'ready', url: `http://127.0.0.1:${bound}` });
+    const url = `http://127.0.0.1:${bound}`;
+    await waitForPreviewPage(url, home.route);
+    post({ type: 'ready', url });
   } catch (e) {
+    if (server) await server.close().catch(() => undefined);
+    server = null;
+    gate = null;
     quiet.dispose();
     throw e;
   } finally {

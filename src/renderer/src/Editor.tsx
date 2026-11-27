@@ -246,6 +246,7 @@ function Seam({ side, width, max, at, restore }: { side: PanelSide; width: numbe
       const d = drag.current;
       if (d?.pointer !== e.pointerId) return;
       drag.current = null;
+      document.body.classList.remove(`splitting-${side}`);
       setDragging(false);
       if (d.changed) saveWidth(side);
     };
@@ -308,6 +309,7 @@ function Seam({ side, width, max, at, restore }: { side: PanelSide; width: numbe
     const d = drag.current;
     if (d?.pointer !== pointer) return;
     drag.current = null;
+    document.body.classList.remove(`splitting-${side}`);
     setDragging(false);
     if (el.hasPointerCapture(pointer)) el.releasePointerCapture(pointer);
     if (d.changed) saveWidth(side);
@@ -318,6 +320,8 @@ function Seam({ side, width, max, at, restore }: { side: PanelSide; width: numbe
       if (e.button !== 0 || collapsed) return;
       // Captured, so the drag follows the pointer over the preview frame and always hears the release.
       e.currentTarget.setPointerCapture(e.pointerId);
+      // The first move can cross the preview iframe before React commits the dragging state.
+      document.body.classList.add(`splitting-${side}`);
       dragged.current = false;
       const from = drawn();
       drag.current = { pointer: e.pointerId, x: e.clientX, from, drawn: from, moved: false, changed: false };
@@ -350,6 +354,7 @@ function Seam({ side, width, max, at, restore }: { side: PanelSide; width: numbe
     document.body.classList.add(name);
     return () => document.body.classList.remove(name);
   }, [lit, side]);
+  useEffect(() => () => document.body.classList.remove(`splitting-${side}`), [side]);
   return (
     <div className={`seam ${side}${collapsed ? ' collapsed' : ''}`} style={side === 'left' ? { left: at } : { right: at }}>
       <div

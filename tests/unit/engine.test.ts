@@ -64,6 +64,7 @@ describe('starter and generator', () => {
     expect(dev.get('src/routes/+page.svelte')).toContain('__so=');
     expect([...dev.values()].some((c) => c.includes('data-so-ctx'))).toBe(true);
     expect(dev.get('src/routes/+layout.svelte')).toContain('virtual:siteorigin-bridge');
+    expect(dev.get('src/routes/+layout.svelte')).toContain('if (!window.__siteoriginLiveViewer) import(\'virtual:siteorigin-bridge\')');
   });
 
   it('writes a prerendered route per page', () => {

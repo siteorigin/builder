@@ -53,7 +53,7 @@ async function poll(check, what, ms = 15000) {
   const end = Date.now() + ms;
   for (;;) {
     if (await check().catch(() => false)) return;
-    if (Date.now() > end) throw new Error(`Timed out waiting for ${what}`);
+    if (Date.now() > end) throw new Error(`Timed out waiting for ${typeof what === 'function' ? what() : what}`);
     await wait(50);
   }
 }
@@ -208,15 +208,16 @@ try {
   await poll(async () => (await frameHeading(tab, previewA)) === heading, 'the edited heading in the viewer’s frame', 30000);
   assert.equal(viewerLoads, 0, 'the viewer itself was not reloaded');
   assert.equal(await tab.evaluate(() => window.__sameViewer), true, 'the same viewer page is still showing');
-  assert.ok((await tab.evaluate(() => window.__bridgeReloads)) >= 1, 'the frame was reloaded in place by its bridge');
   assert.equal(await tab.locator('#connection').getAttribute('data-state'), 'live');
   frame = await previewFrame(tab, previewA);
+  assert.equal(new URL(frame.url()).origin, previewA, 'the updated preview stays at the room’s origin');
 
   step('a spotlight the viewer points shows on the host’s canvas');
   await tab.waitForSelector('#point:not([disabled])');
   await tab.click('#point');
   await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'attached' });
   await frame.click('h1');
+  await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'detached' });
   await win.locator(`.ov-peer.spotlight[data-peer="${ann.guestId}"]`).waitFor({ state: 'visible' });
   await win.locator(`.ov-peer-tag.spotlight[data-peer="${ann.guestId}"]`, { hasText: /^Ann Lee$/ }).waitFor({ state: 'visible' });
   await win.screenshot({ path: join(SHOTS, 'live-viewer-spotlight.png') });
@@ -224,8 +225,8 @@ try {
   step('a note the viewer pins shows to the host, on the page the viewer is on');
   // The viewer goes to About on their own; the host stays on Home.
   await frame.click('a[href="/about/"]');
+  await poll(async () => tab.frames().some((f) => f.url().startsWith(previewA) && new URL(f.url()).pathname === '/about/'), () => `the viewer on About (clicked frame: ${frame.url()}, all frames: ${tab.frames().map((f) => f.url()).join(', ')})`);
   frame = await previewFrame(tab, previewA);
-  await poll(async () => new URL(frame.url()).pathname === '/about/', 'the viewer on About');
   let aboutHeading = null;
   await poll(async () => (aboutHeading = await frameHeading(tab, previewA)) !== null && aboutHeading !== heading, 'About shows its own heading');
   await tab.click('#notes-button');

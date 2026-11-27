@@ -64,12 +64,12 @@ describe('names under localhost in the relay tests', () => {
     expect(r.asked).toEqual(['example.com', 'example.org']);
   });
 
-  it('changes nothing where the system resolver already answers them', async () => {
+  it('resolves nested localhost names consistently on macOS and Linux too', async () => {
     for (const platform of ['darwin', 'linux'] as const) {
       const r = resolverKnowingNothing();
       resolveLocalhostNames(platform, r.target);
-      expect((await r.ask('p-abc.relay.localhost')).err).toMatchObject({ code: 'ENOTFOUND' });
-      await expect(r.askPromise('p-abc.relay.localhost')).rejects.toMatchObject({ code: 'ENOTFOUND' });
+      expect(await r.ask('p-abc.relay.localhost')).toEqual({ err: null, address: '127.0.0.1', family: 4 });
+      expect(await r.askPromise('p-abc.relay.localhost')).toEqual(BOTH[0]);
     }
   });
 });

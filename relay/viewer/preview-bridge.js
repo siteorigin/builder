@@ -8,6 +8,8 @@
  */
 (() => {
   if (window.parent === window) return;
+  // This frame belongs to a guest, so the editor-only bridge must not intercept the site's links or forms.
+  window.__siteoriginLiveViewer = true;
   // On the relay's own refusal page (relay/src/index.ts, refusedInFrame) the bridge says only that, and nothing else.
   const refused = document.currentScript?.hasAttribute('data-refused') ?? false;
   // The viewer is the preview origin less its first label: `p-<label>.<relay host>` is framed by `<relay host>`.

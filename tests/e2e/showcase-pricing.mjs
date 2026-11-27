@@ -41,14 +41,18 @@ try {
   await tile('Conversion', 'Pricing with billing switch').click();
   await eventually(async () => assert.equal(placed(await snapshot(), 'pricing.toggle').length, 1, 'one Pricing with billing switch is on Home'));
   const showcase = placed(await snapshot(), 'tabs.showcase')[0];
-  await apply([{ type: 'instance.setProp', owner, nodeId: showcase.id, prop: 'tab4', value: { label: 'Support', heading: 'Help when you need it', copy: 'Call us any weekday.' } }], 'A fourth tab');
+  await apply([{ type: 'instance.listInsert', owner, nodeId: showcase.id, prop: 'tabs', index: 3, item: {
+    label: 'Support and aftercare', heading: 'Help when you need it', copy: [{ type: 'p', spans: [{ text: 'Call us any weekday.' }] }],
+    icon: 'star', actionLabel: '', actionLink: { type: 'none', target: '' }, image: { assetId: null, alt: '' }
+  } }], 'A fourth tab');
 
   step('the canvas shows the four tabs, the first one chosen and only its panel showing');
-  const canvasList = frame.locator(`[data-so-ctx="page:${home}|${showcase.id}"][role="tablist"]`);
+  const showcaseOnPage = frame.locator(`[data-so-ctx="page:${home}"][data-so-node="${showcase.id}"]`);
+  const canvasList = showcaseOnPage.getByRole('tablist');
   await canvasList.waitFor({ timeout: 30000 });
-  await eventually(async () => assert.deepEqual(await canvasList.getByRole('tab').allInnerTexts(), ['Design', 'Build', 'Care', 'Support'], 'the canvas shows four tabs'));
+  await eventually(async () => assert.deepEqual(await canvasList.getByRole('tab').allInnerTexts(), ['Design', 'Build', 'Care', 'Support and aftercare'], 'the canvas shows four tabs'));
   assert.equal(await canvasList.getByRole('tab', { name: 'Design' }).getAttribute('aria-selected'), 'true', 'the first tab is chosen on the canvas');
-  const canvasPanels = frame.locator(`[data-so-ctx="page:${home}|${showcase.id}"][role="tabpanel"]`);
+  const canvasPanels = showcaseOnPage.locator('[role="tabpanel"]');
   assert.equal(await canvasPanels.count(), 4, 'every tab’s panel is in the canvas page');
   assert.deepEqual(await canvasPanels.evaluateAll((ps) => ps.map((p) => p.checkVisibility())), [true, false, false, false], 'only the first panel shows');
 
@@ -86,9 +90,9 @@ try {
     await eventually(async () => assert.equal(await shownHeading(), 'One team from demolition to handover', 'clicking Build shows its panel'));
     for (const [key, to, heading] of [
       ['ArrowRight', 'Care', 'Looked after long after we leave'],
-      ['End', 'Support', 'Help when you need it'],
+      ['End', 'Support and aftercare', 'Help when you need it'],
       ['ArrowRight', 'Design', 'Plans drawn around how you live'],
-      ['ArrowLeft', 'Support', 'Help when you need it'],
+      ['ArrowLeft', 'Support and aftercare', 'Help when you need it'],
       ['Home', 'Design', 'Plans drawn around how you live']
     ]) {
       await page.keyboard.press(key);
@@ -127,7 +131,7 @@ try {
         group: getComputedStyle(document.querySelector('[role="group"]')).display
       }));
       assert.equal(printed.list, 'none', 'the tab row is left out of print');
-      assert.deepEqual(printed.labels, ['"Design"', '"Build"', '"Care"', '"Support"'], 'every tab’s panel prints under its label');
+      assert.deepEqual(printed.labels, ['"Design"', '"Build"', '"Care"', '"Support and aftercare"'], 'every tab’s panel prints under its label');
       assert.equal(printed.group, 'none', 'the billing switch is left out of print');
       assert.deepEqual(await prices(), annual, 'the prices chosen print');
       await page.emulateMedia({ media: 'screen' });
@@ -150,7 +154,7 @@ try {
       group: getComputedStyle(document.querySelector('[role="group"]')).display
     }));
     assert.equal(seen.list, 'none', 'the tab row, which would do nothing, is left out');
-    assert.deepEqual(seen.labels, ['"Design"', '"Build"', '"Care"', '"Support"'], 'each panel shows under its tab’s label');
+    assert.deepEqual(seen.labels, ['"Design"', '"Build"', '"Care"', '"Support and aftercare"'], 'each panel shows under its tab’s label');
     assert.equal(seen.group, 'none', 'the billing switch, which would do nothing, is left out');
     const shown = await page.locator('li p').filter({ visible: true }).locator('span').filter({ hasText: /^\$/ }).allInnerTexts();
     assert.deepEqual(shown, monthly.flatMap((m, i) => [m, annual[i]]), 'every plan shows both periods’ prices');

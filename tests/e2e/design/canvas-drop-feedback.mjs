@@ -315,7 +315,7 @@ await openInsert();
   const btn = frame.getByText('Book a table', { exact: true }).first();
   await btn.waitFor({ timeout: 30000 });
   await pause(600);
-  const grip = win.locator('.ov-chip [aria-label="Drag to move"]');
+  const grip = win.locator('.ov-chip .grip');
   for (let i = 0; i < 5 && !/^(Button|Link)/.test((await win.locator('.ov-chip .label').allInnerTexts().catch(() => [])).join(' ')); i++) {
     const p = await pointIn(btn, 0.5, 0.5);
     await win.mouse.click(p.x, p.y);

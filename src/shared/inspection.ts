@@ -10,6 +10,9 @@ export interface InspectionDesc {
   ctx: string;
   node: string;
   items: string;
+  /** A declared part of a code component, and the item of a repeated part when present. */
+  part?: string;
+  partItem?: string;
   /** The finding is about something inside this element that the editor does not know by itself (a code component's markup). */
   inside?: boolean;
 }

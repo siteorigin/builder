@@ -97,7 +97,10 @@ await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true 
 await eventually(async () => assert.equal(await forcedOnPage(), 0, 'nothing is held in a state in Preview'));
 assert.equal(await bg(card), resting);
 await win.locator('.toolbar').getByRole('radio', { name: 'Edit', exact: true }).click();
-// Preview let go of the selection, and with it the state: back in Edit, the card is edited at rest.
+// Preview lets go of a code part selection. Select the card again to inspect its resting state.
+await frame.locator('html[data-so-editing]').waitFor({ state: 'attached' });
+await card.click({ modifiers: ['Alt'], position: { x: 6, y: 6 } });
+await pointerToDock();
 await eventually(async () => assert.equal(await stateRadio('Default').getAttribute('aria-checked'), 'true', 'Default is chosen again'), 15000);
 assert.equal(await forcedOnPage(), 0);
 assert.equal(await bg(card), resting);

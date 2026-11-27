@@ -11,6 +11,12 @@ import { createProject, eventually, launch, scratch, step, withTimeout } from '.
 
 const { WORK, cleanup } = scratch('page-languages');
 const { app, win, errors } = await launch(WORK);
+await win.evaluate(() => {
+  window.__appliedRevisions = [];
+  window.addEventListener('message', (event) => {
+    if (event.data?.type === 'revisionApplied' && Number.isSafeInteger(event.data.payload?.revision)) window.__appliedRevisions.push(event.data.payload.revision);
+  });
+});
 
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const apply = async (operations, label) => {
@@ -176,7 +182,10 @@ try {
   await eventually(async () => assert.equal(await win.locator('button[title^="Preview:"]').getAttribute('aria-checked'), 'true', 'Preview is on'));
   const frame = await (await win.locator('.frame-box iframe').elementHandle()).contentFrame();
   await eventually(async () => assert.equal(await frame.evaluate(() => location.pathname), '/about/'), 30000);
-  assertWalk(await walk(frame), 'preview');
+  await frame.waitForLoadState('networkidle');
+  await frame.locator('html[data-so-bridge="preview"]').waitFor();
+  const previewSteps = await walk(frame);
+  assertWalk(previewSteps, 'preview');
   await win.locator('button[title^="Edit:"]').click();
 
   step('the exported website declares the same, on first load and as visitors move between the versions');

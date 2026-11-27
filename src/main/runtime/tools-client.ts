@@ -33,6 +33,8 @@ export interface ToolsWorkerHandle {
 export interface ToolsChecker {
   /** One check; `signal` calls it off (the creation that asked was cancelled), whether it is under way or waiting. */
   check(req: Omit<ToolsCheckRequest, 'id'>, signal?: AbortSignal): Promise<ToolsCheckResult>;
+  /** Drop the warm process when its project closes; a later check may start a new one. */
+  release(): void;
   /** End the process now (the app is quitting): a check in progress, and any asked for from now on, fail. */
   stop(): void;
 }
@@ -131,6 +133,12 @@ export function createToolsChecker(spawn: () => ToolsWorkerHandle, opts: { timeo
         signal.addEventListener('abort', onAbort, { once: true });
         run.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
       });
+    },
+    release() {
+      if (idle) clearTimeout(idle);
+      idle = null;
+      kill();
+      if (current) current.settle({ id: current.id, ok: false, error: 'Canceled' });
     },
     stop() {
       stopped = true;

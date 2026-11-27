@@ -117,6 +117,7 @@ controller.reviewShoot = (url, width, signal) =>
 controller.onSessionClosed = () => {
   thumbCapturer.dispose();
   reviewShooter.dispose();
+  toolsChecker.release();
 };
 
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
@@ -680,6 +681,7 @@ function registerIpc() {
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
   handle('project:saveWhileAsking', (batch, opts) => controller.saveWhileAsking(batch, opts));
+  handle('project:previewRouteReady', (route, revision) => typeof route === 'string' && typeof revision === 'number' ? controller.previewRouteReady(route, revision) : false);
   // One node, or several siblings copied together (the session checks they are siblings on that page).
   const nodeIds = (v: unknown): v is string | string[] => typeof v === 'string' || (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string'));
   handle('project:copy', (pageId: unknown, nodeId: unknown, rev: unknown, key: unknown) =>
@@ -1170,6 +1172,9 @@ async function createWindow() {
   recoveries.set(self, recovery);
   // A page that is replaced or crashes mid-recording leaves no one to hand the menus' keys back.
   self.webContents.on('did-navigate', () => self.webContents.setIgnoreMenuShortcuts(false));
+  self.webContents.on('did-fail-load', (_event, _code, _description, url, isMainFrame) => {
+    if (!isMainFrame && /^http:\/\/127\.0\.0\.1:\d+\//.test(url)) self.webContents.send('preview:load-failed', { url });
+  });
   self.webContents.on('render-process-gone', (_e, details) => {
     if (details.reason !== 'clean-exit') console.error(`The editor stopped working (${details.reason}, exit code ${details.exitCode}).`);
     if (!self.webContents.isDestroyed()) self.webContents.setIgnoreMenuShortcuts(false);

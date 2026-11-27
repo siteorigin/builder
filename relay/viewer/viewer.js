@@ -706,6 +706,18 @@ function catchUp() {
 function reloadPreview() {
   if (!iframe?.contentWindow || !previewReady || reconnecting) return;
   clearTimeout(reloadFallback);
+  if (!bridgeReady) {
+    // A change can arrive while the frame is still loading. A reload message sent then is lost, and its fallback
+    // can later pull a visitor back to the old route. Wait for the bridge, with the same bounded fallback.
+    stale = true;
+    reloadFallback = setTimeout(() => {
+      if (stale) {
+        stale = false;
+        navigate(framePath);
+      }
+    }, RELOAD_FALLBACK_MS);
+    return;
+  }
   // A page the bridge could not run on (its own policy refused the script) is pointed at its page again instead.
   reloadFallback = setTimeout(() => navigate(framePath), RELOAD_FALLBACK_MS);
   iframe.contentWindow.postMessage({ type: BRIDGE_MESSAGES.reload }, config.previewOrigin);
@@ -749,6 +761,7 @@ window.addEventListener('message', (event) => {
     const first = !bridgeReady;
     bridgeReady = true;
     frameReady();
+    if (stale && previewReady && hostConnected && !reconnecting) catchUp();
     if (!ui.notes.hidden) renderNotes();
     // A page the site's own router moved to keeps its bridge: still pointing, it is told so again.
     if (pointing) iframe.contentWindow?.postMessage({ type: BRIDGE_MESSAGES.point, on: true }, config.previewOrigin);

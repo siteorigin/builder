@@ -26,8 +26,8 @@ const apply = (operations, label) =>
 const panel = win.locator('.side-panel-view:not([hidden])');
 const tree = win.locator('.layers-tree');
 const marker = (slot) => frame.locator(`[data-so-slot-empty="${slot}"]`);
-const column = (which) => frame.locator(`[class*="__split-${which}"]`);
-const viewport = (name) => win.getByRole('button', { name, exact: true }).first().click();
+const column = (which) => frame.locator(`.split__${which}`);
+const viewport = (name) => win.locator('.toolbar').getByRole('radio', { name, exact: true }).click();
 const showPanel = async (name) => {
   const rail = win.locator(`.rail [aria-label="${name}"]`);
   if ((await rail.getAttribute('aria-pressed')) !== 'true') await rail.click();
@@ -213,7 +213,7 @@ const files = (dir) => readdirSync(dir).flatMap((name) => (statSync(join(dir, na
 const sources = files(join(exported.path, 'src')).filter((f) => /\.(svelte|js|ts|css|html)$/.test(f));
 for (const f of sources) assert.doesNotMatch(readFileSync(f, 'utf8'), /data-so-(slot|editor|node|ctx)|so-slot-empty|bridge\.client|\.siteorigin\/|so_editing/, f);
 const component = readFileSync(sources.find((f) => f.endsWith('-layout-split.svelte')), 'utf8');
-assert.match(component, /<section[\s\S]*__split-primary[\s\S]*slot_primary\?\.\(\)[\s\S]*__split-secondary[\s\S]*slot_secondary\?\.\(\)/);
+assert.match(component, /<section[\s\S]*split__primary[\s\S]*slot_primary\?\.\(\)[\s\S]*split__secondary[\s\S]*slot_secondary\?\.\(\)/);
 const route = readFileSync(join(exported.path, 'src', 'routes', '+page.svelte'), 'utf8');
 const snippet = (slot) => route.match(new RegExp(`\\{#snippet slot_${slot}\\(\\)\\}([\\s\\S]*?)\\{/snippet\\}`))?.[1] ?? '';
 assert.match(snippet('secondary'), /Write something here\./, 'Secondary’s Paragraph is exported in Secondary');
@@ -221,8 +221,7 @@ assert.doesNotMatch(snippet('secondary'), /Entry 30\./);
 assert.match(route, /variant_ratio="wide-left"/);
 assert.match(route, /variant_sticky="pin-secondary"/);
 assert.match(route, /Entry 30\./);
-const css = sources.filter((f) => f.endsWith('.css')).map((f) => readFileSync(f, 'utf8')).join('\n');
-assert.match(css, /grid-template-columns: minmax\(0, 2fr\) minmax\(0, 1fr\)/);
+assert.match(component, /grid-template-columns: minmax\(0, 2fr\) minmax\(0, 1fr\)/, 'the code component exports its responsive columns');
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();

@@ -116,18 +116,20 @@ export function stepVisitor(dir: 'back' | 'forward'): boolean {
 }
 
 /** Set while the canvas is shown: opens an address that is no page of the editor's (a post), or the page shown again. */
-let frameVisit: ((path: string | null) => boolean) | null = null;
+let frameVisit: ((path: string | null, fullReload?: boolean) => boolean) | null = null;
 /** The address visitAddress asked for, until showEditedPage: a new frame (the preview restarted) opens it again. */
 let visitWanted: string | null = null;
+let visitWantedReload = false;
 /**
  * Show `path` in the preview, as the editor asks for a page: the editor's page stays the one it shows, and asking for
  * that page again (showEditedPage) overtakes this request even before the frame gets there. False while the preview
  * is not ready to be asked.
  */
-export function visitAddress(path: string): boolean {
+export function visitAddress(path: string, fullReload = false): boolean {
   // Wanted either way: a preview still starting opens it once its frame is ready.
   visitWanted = path;
-  return frameVisit?.(path) ?? false;
+  visitWantedReload = fullReload;
+  return frameVisit?.(path, fullReload) ?? false;
 }
 /** Back to the page the editor shows, from an address visitAddress opened. */
 export function showEditedPage(): void {
@@ -318,6 +320,8 @@ export function Canvas() {
   const sentReveal = useRef<RevealTarget | null>(null);
   /** The route the page last said it is showing, or null while a navigation the editor asked for is on its way. */
   const frameAt = useRef<string | null>(null);
+  const frameLoadFailed = useRef(false);
+  const recoverySeq = useRef(0);
   /** The frame session whose page has said it is ready at least once. */
   const readySession = useRef<string | null>(null);
   const measureWaiters = useRef(new Map<string, (rects: unknown) => void>());
@@ -672,6 +676,42 @@ export function Canvas() {
   /** What the frame of the current session shows, as it last reported (null before it reported a page). */
   const viewNow = () => (frameView.current.session === session ? frameView.current.view : null);
   const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload, viewNow());
+  const recoverRoute = (route: string, revision: number, openingSession: string) => {
+    const seq = ++recoverySeq.current;
+    void (async () => {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const frame = frameRef.current;
+        if (seq !== recoverySeq.current || !frame || frame.name !== openingSession) return;
+        if (samePath(route, frameAt.current) && !frameLoadFailed.current) return;
+        const live = getState().runtime;
+        if (live.state !== 'ready') continue;
+        const canServe = await api.project.previewRouteReady(route, revision).catch(() => false);
+        if (seq !== recoverySeq.current || !canServe || frameRef.current !== frame) continue;
+        if (samePath(route, frameAt.current) && !frameLoadFailed.current) return;
+        frameLoadFailed.current = false;
+        frame.src = live.url + route;
+        return;
+      }
+    })();
+  };
+  useEffect(() => api.on('preview:load-failed', ({ url: failedUrl }) => {
+    const frame = frameRef.current;
+    if (!origin || !frame || frame.name !== session) return;
+    let failed: URL;
+    try { failed = new URL(failedUrl); } catch { return; }
+    if (failed.origin !== origin) return;
+    const requested = nav.current.request?.path;
+    const loaded = frameAt.current;
+    const initial = new URL(frame.src).pathname;
+    if (![requested, loaded, initial].some((path) => path && samePath(failed.pathname, path))) return;
+    frameLoadFailed.current = true;
+    frameAt.current = null;
+    setState({ frameReady: false });
+    const s = getState();
+    const shown = s.snapshot ? shownView(s.snapshot.state, s.pageId, s.templateMode) : null;
+    if (shown?.route) recoverRoute(shown.route, s.snapshot!.revision, session);
+  }), [origin, session]); // eslint-disable-line react-hooks/exhaustive-deps
   // Saving or leaving the project asks the preview to hand back an inline edit that is still open.
   useEffect(() => {
     setCanvasCommit(() => post('commitTextEdit'));
@@ -882,6 +922,14 @@ export function Canvas() {
       switch (m.type) {
         case 'ready': {
           const path = String(p.path);
+          const intended = s.snapshot ? shownView(s.snapshot.state, s.pageId, s.templateMode) : null;
+          if (intended?.route && samePath(intended.route, path) && typeof p.title === 'string' && /^Error (404|500)$/.test(p.title)) {
+            frameLoadFailed.current = true;
+            frameAt.current = null;
+            setState({ frameReady: false });
+            recoverRoute(intended.route, s.snapshot!.revision, session);
+            break;
+          }
           // A component preview reports whether the component is on the page; only the one the frame was last given counts.
           const studio = showsStudio();
           // A preview of a component the author has since moved on from is set up, but takes no picks until they come
@@ -921,6 +969,7 @@ export function Canvas() {
           // The visitor left the page they were on.
           if (reloaded && s.previewReturn) setState({ previewReturn: null });
           setReady(true);
+          frameLoadFailed.current = false;
           // A page that arrives after Component Studio was opened, before its first preview, takes no picks either.
           setState({ frameReady: !elsewhere && (studio || !studioPending.current) });
           // What is reported about the preview on its way (it could not be prepared) stays until that one arrives.
@@ -931,11 +980,14 @@ export function Canvas() {
             errorAt.current = null;
           }
           frameAt.current = path;
+          // A visitor may open another page while an earlier editor route's recovery timer is waiting. That timer
+          // belongs to the page it asked for and must never send the visitor back after this page has loaded.
+          if (s.mode === 'preview' && !nav.current.request) recoverySeq.current++;
           // Scheduled once the frame's page is known, which the baseline belongs to.
           if (!elsewhere) notePageWorking();
           // A page loaded in full while the frame was already up (Try again, a load that could not go in place) shows the
           // selection, as an arrival in place does (`navigated`); the first load scrolls to it once the frame is ready.
-          if ((studio || ready) && getState().mode !== 'preview' && (studio || (view?.route && samePath(view.route, path)))) {
+          if ((studio || ready || nav.current.request) && getState().mode !== 'preview' && (studio || (view?.route && samePath(view.route, path)))) {
             const desc = descFor(getState().selection);
             if (desc) post('scrollTo', arrivalScroll(desc));
           }
@@ -962,7 +1014,7 @@ export function Canvas() {
             // ready, so the navigate effect does not run for it.
             nav.current.request = null;
             // An address visitAddress opened (a post previewed) is opened again in the new frame.
-            if (visitWanted) visit(visitWanted);
+            if (visitWanted) visit(visitWanted, visitWantedReload);
             else if (viewKey(s)) openShownPage();
             else {
               syncPage(path);
@@ -1013,6 +1065,7 @@ export function Canvas() {
           // The page the frame is showing, so following it below does not send the frame back there (which would
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
+          if (getState().mode === 'preview' && typeof p.navId !== 'number') recoverySeq.current++;
           notePostPreviewAt(path);
           // The page arrived: it counts as working once it has gone a moment without an error.
           if (!getState().previewIssue) notePageWorking();
@@ -1686,20 +1739,20 @@ export function Canvas() {
     };
   });
   useEffect(() => {
-    frameVisit = (path) => {
+    frameVisit = (path, fullReload = false) => {
       if (path === null) {
         if (ready) openShownPage();
         return ready;
       }
       if (!ready) return false;
-      return visit(path);
+      return visit(path, fullReload);
     };
     return () => {
       frameVisit = null;
     };
   });
   /** Ask the frame for an address that is no page of the editor's (see visitAddress). */
-  function visit(path: string): boolean {
+  function visit(path: string, fullReload = false): boolean {
     // Already there, with nothing asked for since.
     if (!nav.current.request && samePath(path, frameAt.current)) return true;
     // As a page the editor opens: "opening" until the frame says it is there, and a problem reported was about the
@@ -1712,7 +1765,7 @@ export function Canvas() {
     if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
     const navId = askFrame(nav.current, viewKey(getState()) ?? '', path);
     frameAt.current = null;
-    post('navigate', { path, navId });
+    post('navigate', { path, navId, fullReload });
     // A post previewed is on its way: what the frame showed before is not named in its place (see notePostPreviewAt).
     if (getState().postView === 'preview' && getState().postPreviewAt !== null) setState({ postPreviewAt: null });
     return true;
@@ -1764,8 +1817,16 @@ export function Canvas() {
     setRetrying(false);
     if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
     const navId = askFrame(nav.current, shown.key, shown.route);
+    recoverySeq.current++;
     frameAt.current = null;
-    post('navigate', { path: shown.route, navId });
+    // A newly published entry can be on disk before Vite serves its route. This applies to ordinary pages as well
+    // as template pages: navigating during that gap can leave the canvas on Vite's error page.
+    // Ask the preview to compile the route first. The request remains authoritative while the old page reports
+    // its final state during the wait.
+    void api.project.previewRouteReady(shown.route, s.snapshot!.revision).catch(() => false).then((canServe) => {
+      if (canServe) post('navigate', { path: shown.route, navId, fullReload: true });
+      recoverRoute(shown.route!, s.snapshot!.revision, session);
+    });
   }
   // Navigate when the current page changes. A frame that has just become ready while a post is visited (the preview
   // restarted) stays on the post its 'ready' report asked for again.
@@ -3191,7 +3252,7 @@ export function Canvas() {
             })
           : []),
         ...(hovering && rects.hovered.length === 1 && measuredFor(rectsFor.current.hovered, descFor(hover)) ? addPoints(state!, addOwner!, hover, true).map((p) => ({ p, box: toBox(rects.hovered[0]) })) : [])
-      ];
+      ].filter((b, i, all) => all.findIndex((o) => o.p.key === b.p.key) === i);
   // The shared header's boxes as the page shows them now: an edge's Add button keeps off them (see placeAdd).
   const headerBoxes = rects.headers.map(toBox);
   const placedAdds = placeAdds(

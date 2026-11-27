@@ -697,7 +697,7 @@ export function SettingsModal() {
                         setViewed(p);
                         setShowKey(false);
                       }}
-                      options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.id === 'local' ? <Laptop /> : <Cloud />, controls: p.id === provider ? `settings-provider-${p.id}` : undefined }))}
+                      options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.id === 'local' ? <Laptop /> : <Cloud />, controls: `settings-provider-${p.id}` }))}
                     />
                     {providerNote}
                   </div>
@@ -712,6 +712,7 @@ export function SettingsModal() {
                     </section>
                   )}
                   </div>
+                  {providers.filter((p) => p.id !== provider).map((p) => <div key={p.id} role="tabpanel" id={`settings-provider-${p.id}`} aria-labelledby={`settings-provider-${p.id}-tab`} hidden />)}
                   <div className="settings-group-title">Chat</div>
                   <div className="settings-group">
                     <div className="settings-row">

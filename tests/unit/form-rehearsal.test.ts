@@ -68,7 +68,7 @@ window.mountForm = (props) => {
 
 /** The submission hold exactly as the instrumented layout installs it, before the page's own code runs. */
 function holdFrom(layout: string): string {
-  const hold = /\tif \(typeof window !== 'undefined' && !window\.__siteoriginBridge[\s\S]*?\n\t\}/.exec(layout)?.[0];
+  const hold = /\tif \(typeof window !== 'undefined' && !window\.__siteoriginLiveViewer && !window\.__siteoriginBridge[\s\S]*?\n\t\}/.exec(layout)?.[0];
   if (!hold) throw new Error('The instrumented layout holds no submissions');
   return hold;
 }
@@ -101,7 +101,9 @@ interface PreviewForm {
 describe('the instrumented layout', () => {
   it('holds submissions until the bridge runs, and only in the preview', () => {
     const { files, dev } = site();
-    expect(holdFrom(dev.get('src/routes/+layout.svelte')!)).toContain("document.addEventListener('submit', window.__siteoriginHold, true)");
+    const hold = holdFrom(dev.get('src/routes/+layout.svelte')!);
+    expect(hold).toContain("document.addEventListener('submit', window.__siteoriginHold, true)");
+    expect(hold).toContain('!window.__siteoriginLiveViewer');
     for (const [path, content] of files) expect(content.includes('__siteorigin'), path).toBe(false);
   });
 });

@@ -38,13 +38,12 @@ export const isLocalhostName = (hostname: string) => /(^|\.)localhost\.?$/i.test
 let localhostNamesResolved = false;
 
 /**
- * Give names under `localhost` the loopback addresses in this process, as macOS and Linux already do (RFC 6761) and
- * Chromium does on every platform. Windows' resolver answers only `localhost` itself, so a request a test makes from Node
- * to a room's preview origin (`p-<label>.relay.localhost`, through Playwright's `route.fetch`) found no address there and
- * never completed. Every other name is looked up as before. Only Windows needs it, unless `platform` says otherwise.
+ * Give names under `localhost` the loopback addresses in this process. Host resolvers vary in whether they handle
+ * nested names such as `p-<label>.relay.localhost`; Playwright's `route.fetch` uses Node's resolver on every OS.
+ * Every other name is looked up as before.
  */
-export function resolveLocalhostNames(platform: NodeJS.Platform = process.platform, target: Resolver = dns): void {
-  if (platform !== 'win32' || (target === dns && localhostNamesResolved)) return;
+export function resolveLocalhostNames(_platform: NodeJS.Platform = process.platform, target: Resolver = dns): void {
+  if (target === dns && localhostNamesResolved) return;
   if (target === dns) localhostNamesResolved = true;
   const original = target.lookup;
   target.lookup = ((hostname: string, options: unknown, callback?: unknown) => {

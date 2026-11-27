@@ -131,6 +131,7 @@ describe.skipIf(!browserInstalled)('the shared popup menu', { timeout: 30_000 },
     expect(await menu().getByRole('menuitem', { name: /Team row/ }).count()).toBe(0);
     expect(await focused()).toBe('Home');
     await page.keyboard.press('ArrowDown');
+    await page.waitForFunction(`document.activeElement?.textContent === 'Fit'`);
     expect(await focused()).toBe('Fit');
     // Read as the menu's description: the heading of its group, then the fact, by ids an id list can hold.
     expect(await description()).toEqual(['Used 2 times.', 'In Team row, 2 times.']);

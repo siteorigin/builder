@@ -4,7 +4,7 @@
 // code component every placement uses: the row goes, the preview shows the edit, and the edited file is under Saved
 // copies.
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
 
@@ -16,6 +16,7 @@ const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const apply = async (operations, label) => {
   const r = await win.evaluate(([o, l]) => window.builder.project.apply({ operations: o }, { label: l }), [operations, label]);
   assert.ok(r.ok, `${label}: ${JSON.stringify(r.error ?? r)}`);
+  return r.results;
 };
 /** Developer mode switched as the author does, in Settings, so the editor's own view of it follows. */
 const setDeveloperMode = async (on) => {
@@ -39,12 +40,19 @@ const closeDialog = async () => {
   await modal.waitFor({ state: 'detached' });
 };
 
+const home = (await snapshot()).state.site.homePageId;
+const [{ definitionId, rootNodeId }] = await apply([{ type: 'component.create', name: 'Hand-built panel' }], 'Create a managed component');
+await apply([
+  { type: 'node.insert', owner: { kind: 'component', id: definitionId }, parentId: rootNodeId, primitive: 'paragraph', text: 'A hand-built panel' },
+  { type: 'node.insert', owner: { kind: 'page', id: home }, definitionId, index: 0 }
+], 'Place the managed component');
 const dir = (await snapshot()).dir;
-const HERO = 'src/lib/siteorigin/generated/foundation-hero-split.svelte';
+const HERO = `src/lib/siteorigin/generated/${definitionId.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()}.svelte`;
+await eventually(() => assert.equal(existsSync(join(dir, HERO)), true, 'the managed component file is generated'));
 const ABOUT = 'src/routes/about/+page.svelte';
 const generated = readFileSync(join(dir, HERO), 'utf8');
-const edited = generated.replace(/(<section [^>]*>)/, '$1\n\t<p class="hand-badge">Made by hand</p>');
-assert.notEqual(edited, generated, 'the hero file has a section to add to');
+const edited = generated.replace(/(<div\b[^>]*>)/, '$1\n\t<p class="hand-badge">Made by hand</p>');
+assert.notEqual(edited, generated, 'the managed file has a container to add to');
 
 step('the hero design’s file and the About page’s file edited by hand, found by the next save');
 await setDeveloperMode(false);
@@ -55,7 +63,7 @@ await eventually(async () => assert.deepEqual((await snapshot()).conflicts.map((
 
 step('only the design file’s row offers the conversion, and without Developer mode it says why');
 let health = await openHealth();
-const heroRow = health.locator('.health-row.danger', { hasText: 'Split Hero component file' });
+const heroRow = health.locator('.health-row.danger', { hasText: 'Hand-built panel component file' });
 const aboutRow = health.locator('.health-row.danger', { hasText: 'About website file' });
 const convert = heroRow.getByRole('button', { name: 'Convert to code component' });
 await convert.waitFor();
@@ -88,12 +96,12 @@ writeFileSync(join(dir, HERO), edited);
 await convert.click();
 await eventually(async () => assert.deepEqual((await snapshot()).conflicts.map((c) => c.path), [ABOUT]));
 const done = await snapshot();
-const code = Object.values(done.state.components).find((d) => d.kind === 'code' && d.generatedFrom === 'foundation.hero.split');
+const code = Object.values(done.state.components).find((d) => d.kind === 'code' && d.generatedFrom === definitionId);
 assert.ok(code, 'the code component was made from the design');
 assert.equal(code.source, edited, 'its code is the edited file');
 assert.equal(readFileSync(join(dir, HERO), 'utf8'), generated, 'the design’s file is SiteOrigin Builder’s again');
 await eventually(async () => assert.equal(await heroRow.count(), 0, 'its conflict row is gone'));
-await health.locator('.health-row', { hasText: 'The file as edited outside SiteOrigin Builder' }).filter({ hasText: 'Split Hero component file' }).waitFor();
+await health.locator('.health-row', { hasText: 'The file as edited outside SiteOrigin Builder' }).filter({ hasText: 'Hand-built panel component file' }).waitFor();
 await closeDialog();
 await eventually(async () => assert.equal(await frame.locator('.hand-badge').first().innerText(), 'Made by hand'), 60000);
 

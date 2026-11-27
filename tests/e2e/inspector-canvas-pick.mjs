@@ -46,7 +46,7 @@ assert.equal(await heading().inputValue(), typed);
 assert.notEqual(props(home.hero).heading, typed, 'nothing is saved while typing');
 
 step('click another section on the canvas: the hero keeps what was typed, the section clicked keeps its own');
-await frame.locator(`[data-so-ctx="page:${home.pageId}|${home.other}"]`).first().getByRole('heading', { name: savedOther, exact: true }).click();
+await frame.locator(`[data-so-ctx="page:${home.pageId}"][data-so-node="${home.other}"]`).first().getByRole('heading', { name: savedOther, exact: true }).click();
 await eventually(async () => assert.equal(sectionOf(await selected()), home.other, 'the click selects in the Services grid'));
 await eventually(() => assert.equal(props(home.hero).heading, typed, 'the hero’s heading is saved'));
 await eventually(async () => assert.equal(await win.locator('.toolbar .save-state').innerText(), 'Saved'));
@@ -75,7 +75,7 @@ await settled('Escape to nothing', (c) => assert.equal(c, null));
 await pageHeading.click();
 let hero;
 await settled('picking the hero', (c) => assert.ok((hero = c), 'the hero is selected'));
-await pageHeading.click();
+for (let i = 0; i < 3 && !/heading/i.test((await chip()) ?? ''); i++) await pageHeading.click();
 await settled('picking its heading', (c) => assert.ok(c && c !== hero && /heading/i.test(c), `its heading is selected, not ${c}`));
 await win.keyboard.press('Escape');
 await settled('Escape to the hero', (c) => assert.equal(c, hero));

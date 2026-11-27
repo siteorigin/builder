@@ -29,6 +29,16 @@ mkdirSync(HOST_WORK, { recursive: true });
 mkdirSync(GUEST_WORK, { recursive: true });
 // Headless whatever the caller's shell says: a person debugging another script may have SITEORIGIN_HEADED set.
 const HEADLESS = { SITEORIGIN_HEADLESS: '1', SITEORIGIN_HEADED: '' };
+const loopbackRelay = (app) => app.evaluate(() => {
+  const dns = process.getBuiltinModule('node:dns');
+  const original = dns.lookup;
+  dns.lookup = (hostname, options, callback) => {
+    if (!/(^|\.)localhost\.?$/i.test(hostname)) return original.call(dns, hostname, options, callback);
+    const done = typeof options === 'function' ? options : callback;
+    const all = typeof options === 'object' && options?.all;
+    process.nextTick(() => (all ? done(null, [{ address: '127.0.0.1', family: 4 }]) : done(null, '127.0.0.1', 4)));
+  };
+});
 
 let server = null;
 let relay = null;
@@ -124,6 +134,7 @@ try {
   const origin = await relay.browserOrigin();
 
   host = await launch(HOST_WORK, { ...HEADLESS, SITEORIGIN_LIVE_RELAY_URL: origin });
+  await loopbackRelay(host.app);
   await watchWindows(host.app);
   const hw = host.win;
   // The host's AI is the scripted local model; the second app has no AI settings of its own.
@@ -132,6 +143,7 @@ try {
   await hw.waitForSelector('.welcome');
   await createProject(hw, { name: 'Harbour Lane Studio', parentDir: join(HOST_WORK, 'sites'), starter: 'business', sampleImages: false });
   guest = await launch(GUEST_WORK, { ...HEADLESS, SITEORIGIN_LIVE_RELAY_URL: origin });
+  await loopbackRelay(guest.app);
   await watchWindows(guest.app);
   const gw = guest.win;
   await gw.locator('.welcome').waitFor();
@@ -193,7 +205,7 @@ try {
   step('the host starts a live session, and the second app joins as a Collaborator');
   let dialog = await openShare();
   await dialog.getByRole('button', { name: 'Start live session' }).click();
-  await eventually(async () => assert.match(await share().innerText(), /Live/));
+  await eventually(async () => assert.match(await share().innerText(), /Live/, `share: ${await dialog.innerText()}`), 60000);
   const invite = await dialog.getByLabel('Invite link').inputValue();
   const room = parseInviteLink(invite);
   assert.ok(room, `the invite link is a room link: ${invite}`);

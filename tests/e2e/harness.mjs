@@ -60,7 +60,16 @@ export async function createProject(win, opts) {
   if (!res.ok) throw new Error(`Project creation failed: ${res.message ?? JSON.stringify(res)}`);
   await win.waitForSelector('.editor');
   const frame = win.frameLocator('.frame-box iframe');
-  await frame.locator(opts.starter === 'blank' ? 'body *' : 'h1').first().waitFor({ timeout: 90000 });
+  try {
+    await frame.locator(opts.starter === 'blank' ? 'body *' : 'h1').first().waitFor({ timeout: 90000 });
+  } catch (error) {
+    console.error('preview startup state', JSON.stringify({
+      src: await win.locator('.frame-box iframe').getAttribute('src').catch(() => null),
+      body: await frame.locator('body').innerText({ timeout: 3000 }).catch(() => null),
+      status: await win.locator('.status-card').allInnerTexts().catch(() => [])
+    }));
+    throw error;
+  }
   // The selection bridge loads after hydration; clicks before it is ready are lost.
   await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 30000 });
   return frame;

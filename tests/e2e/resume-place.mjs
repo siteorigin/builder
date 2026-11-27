@@ -159,6 +159,7 @@ await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data
 await openPage('Home');
 await ctaSelected('Home, before the removal');
 await openPage('About');
+await showTab('Layers');
 await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${section}"]`).getAttribute('aria-selected'), 'true', 'About resumes at its section'));
 await openPage('Home');
 await ctaSelected('Home again, before the removal');

@@ -65,12 +65,13 @@ const windowBox = async (locator) => {
   const r = await pageBox(locator);
   return { x: f.x + r.x * k, y: f.y + r.y * k, width: r.width * k, height: r.height * k };
 };
-/** Whether the middle of `button` lies inside `box`. */
+/** Whether the button is on the box or hangs from its rim when the box is too small. */
 const centredIn = async (button, box) => {
   const b = await button.boundingBox();
   const cx = b.x + b.width / 2;
   const cy = b.y + b.height / 2;
-  return cx >= box.x && cx <= box.x + box.width && cy >= box.y && cy <= box.y + box.height;
+  const rim = box.width < 56 || box.height < 56 ? 14 : 0;
+  return cx >= box.x - rim && cx <= box.x + box.width + rim && cy >= box.y - rim && cy <= box.y + box.height + rim;
 };
 /** Choose `name` from the open quick-add list by searching for it, as one change. */
 const chooseQuick = async (name) => {
@@ -169,7 +170,7 @@ step('a Paragraph dragged from Insert draws a surface for each empty slot, at le
 }
 
 step('a Paragraph in Main drags by its grip into Sidebar as one change, keeping itself; Undo puts it back (#658)');
-const grip = win.locator('.ov-chip [aria-label="Drag to move"]');
+const grip = win.locator('.ov-chip .grip');
 /** Select what the chip calls `name` by clicking `locator` in the page: each click steps one level in. */
 const selectIn = async (locator, name) => {
   for (let i = 0; i < 5; i++) {

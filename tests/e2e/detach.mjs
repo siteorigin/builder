@@ -23,7 +23,7 @@ const openRail = async (name) => {
   if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
 };
 const width = async (name, px) => {
-  await win.locator('.toolbar').getByRole('button', { name, exact: true }).click();
+  await win.locator('.toolbar').getByRole('radio', { name, exact: true }).click();
   await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => window.innerWidth), px, `the preview is ${px}px wide`));
 };
 
@@ -65,9 +65,37 @@ const probeAll = async (anchors) => {
 step('a section holding Pricing, and a dark call to action, styled per placement');
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
-const [{ nodeId: section }] = await apply([{ type: 'node.insert', owner, componentId: 'layout.section' }], 'Insert section');
-const [{ nodeId: pricing }] = await apply([{ type: 'node.insert', owner, parentId: section, slot: 'content', componentId: 'pricing.plans', variants: { tone: 'inverse' } }], 'Insert pricing');
-const [{ nodeId: cta }] = await apply([{ type: 'node.insert', owner, componentId: 'cta.banner', variants: { tone: 'inverse' } }], 'Insert call to action');
+const [{ definitionId: sectionDef }, { definitionId: pricingDef }, { definitionId: ctaDef }] = await apply([
+  { type: 'component.upsert', name: 'Section', properties: {}, slots: { content: { label: 'Content' } },
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['content'] }, { kind: 'slot', id: 'content', slot: 'content' }] },
+  { type: 'component.upsert', name: 'Pricing', properties: { plans: { type: 'list', label: 'Plans', itemLabel: 'Plan', fields: {
+    name: { type: 'string', label: 'Name', default: 'Plan' }, price: { type: 'string', label: 'Price', default: '$100' }
+  }, default: [{ id: 'basic', name: 'Basic', price: '$100' }, { id: 'plus', name: 'Plus', price: '$200' }, { id: 'premium', name: 'Premium', price: '$300' }] } },
+    parts: { heading: { nodeId: 'heading', label: 'Heading', styleControls: ['color'] },
+      grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns'] },
+      plan: { nodeId: 'plan', label: 'Plan', styleControls: ['background', 'hidden'] } },
+    variantAxes: { tone: { label: 'Tone', default: 'default', options: {
+      default: { label: 'Default' }, inverse: { label: 'Dark', styles: { root: { base: { background: { token: 'color.inverse' }, color: { token: 'color.on-inverse' } } } } }
+    } } },
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['heading', 'grid'] },
+      { kind: 'text', id: 'heading', tag: 'h2', text: 'Pricing' },
+      { kind: 'element', id: 'grid', tag: 'div', styles: { base: { layout: 'grid', columns: 3 } }, children: ['plans'] },
+      { kind: 'repeat', id: 'plans', list: 'plans', children: ['plan'] },
+      { kind: 'element', id: 'plan', tag: 'article', children: ['plan-name', 'plan-price'] },
+      { kind: 'text', id: 'plan-name', tag: 'h3', text: { $item: 'name' } },
+      { kind: 'text', id: 'plan-price', tag: 'p', text: { $item: 'price' } }] },
+  { type: 'component.upsert', name: 'Call to action', properties: { secondaryLabel: { type: 'string', label: 'Secondary label', default: '' } },
+    variantAxes: { tone: { label: 'Tone', default: 'default', options: {
+      default: { label: 'Default' }, inverse: { label: 'Dark', styles: { panel: { base: { background: { token: 'color.inverse' }, color: { token: 'color.on-inverse' } } } } }
+    } } },
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['panel'] },
+      { kind: 'element', id: 'panel', tag: 'div', children: ['heading', 'secondary'] },
+      { kind: 'text', id: 'heading', tag: 'h2', text: 'Ready to start?' },
+      { kind: 'text', id: 'secondary', tag: 'p', text: { $prop: 'secondaryLabel' } }] }
+], 'Make detachable fixtures');
+const [{ nodeId: section }] = await apply([{ type: 'node.insert', owner, parentId: null, definitionId: sectionDef }], 'Insert section');
+const [{ nodeId: pricing }] = await apply([{ type: 'node.insert', owner, parentId: section, slot: 'content', definitionId: pricingDef, variants: { tone: 'inverse' } }], 'Insert pricing');
+const [{ nodeId: cta }] = await apply([{ type: 'node.insert', owner, parentId: null, definitionId: ctaDef, variants: { tone: 'inverse' } }], 'Insert call to action');
 // A new placement's items get IDs of their own.
 const plans = (await snapshot()).pages[pageId].nodes[pricing].props.plans;
 await apply(
@@ -84,11 +112,11 @@ await apply(
   'Style the placements'
 );
 /** The colour the theme gives buttons drawn on the dark call to action's panel, through its class hooks. */
-const panelInk = () => frame.locator('#cta [class*="cta-banner__panel"]').first().evaluate((el) => getComputedStyle(el).getPropertyValue('--so-surface-ink').trim());
+const panelInk = () => frame.locator('#cta div').first().evaluate((el) => getComputedStyle(el).color);
 const before = await probeAll(['area', 'plans', 'cta']);
 const inkBefore = await panelInk();
 assert.notEqual(inkBefore, '', 'the dark panel sets the colour drawn on it');
-assert.ok(before['plans@Phone'].length > 20, 'the probe reads the whole pricing section');
+assert.ok(before['plans@Phone'].length >= 12 && before['plans@Phone'].some((line) => line.includes('Premium')), 'the probe reads all three pricing plans');
 const libraryBefore = Object.keys((await snapshot()).components).sort();
 
 step('Detach component is offered in the Inspector, Canvas and Layers menus for the placement');

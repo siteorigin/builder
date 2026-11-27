@@ -105,14 +105,30 @@ assert.deepEqual(after.items, before.items, 'the cards are as they were');
 assert.equal(after.revision, before.revision, 'nothing was edited');
 
 step('a part some cards hide is stepped over');
-// A card's link shows only when it has a label: give the first and last cards one, so the middle card hides it.
+// A managed card's link shows only when it has a label: give the first and last cards one, so the middle hides it.
 const where = await win.evaluate(async () => {
   const s = await window.builder.project.snapshot();
-  const page = s.state.pages[s.state.site.homePageId];
-  return { pageId: page.id, gridId: page.rootIds.find((id) => s.state.components[page.nodes[id].definitionId]?.componentId === 'features.grid') };
+  const pageId = s.state.site.homePageId;
+  const made = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name: 'Steppable cards',
+    properties: { items: { type: 'list', label: 'Cards', itemLabel: 'Card', fields: {
+      linkLabel: { type: 'string', label: 'Link label', default: '' }
+    }, default: [{ id: 'step-1', linkLabel: '' }, { id: 'step-2', linkLabel: '' }, { id: 'step-3', linkLabel: '' }] } },
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['cards'] },
+      { kind: 'repeat', id: 'cards', list: 'items', children: ['card'] },
+      { kind: 'element', id: 'card', tag: 'article', children: ['link'] },
+      { kind: 'text', id: 'link', name: 'Link', tag: 'span', text: { $item: 'linkLabel' }, when: { $item: 'linkLabel' } }]
+  }], label: 'Make steppable cards' });
+  if (!made.ok) throw new Error(made.error?.message);
+  const placed = await window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, parentId: null, definitionId: made.results[0].definitionId }], label: 'Place steppable cards' });
+  if (!placed.ok) throw new Error(placed.error?.message);
+  return { pageId, gridId: placed.results[0].nodeId };
 });
+const linkItems = await win.evaluate(async (id) => {
+  const s = await window.builder.project.snapshot();
+  return s.state.pages[s.state.site.homePageId].nodes[id].props.items;
+}, where.gridId);
 const label = async (i, value) => {
-  const operations = [{ type: 'instance.setProp', owner: { kind: 'page', id: where.pageId }, nodeId: where.gridId, prop: 'items', itemId: before.items[i].id, field: 'linkLabel', value }];
+  const operations = [{ type: 'instance.setProp', owner: { kind: 'page', id: where.pageId }, nodeId: where.gridId, prop: 'items', itemId: linkItems[i].id, field: 'linkLabel', value }];
   const r = await win.evaluate((operations) => window.builder.project.apply({ operations, label: 'Link label' }), operations);
   assert.equal(r.ok, true, r.error?.message);
 };

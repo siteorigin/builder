@@ -337,7 +337,7 @@ try {
 
   step('Stop and undo: the run ends stopped, and its change is gone');
   at = await mark();
-  await click('button', 'Stop and undo');
+  await click('button', 'Stop and undo', { region: 'AI Working' });
   const stopped = await wait(held.runId, at);
   assert.deepEqual([stopped.reason, stopped.run.status], ['terminal', 'cancelled']);
   assert.equal(stopped.shown.reply.result.heading, 'Stopped');

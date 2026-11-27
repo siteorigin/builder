@@ -111,21 +111,21 @@ await win.getByRole('radio', { name: 'Desktop', exact: true }).first().click();
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 const home = async () => (await snapshot()).pages[pageId];
-// The Proof section first: copying the Section's design moves every Section on the page onto the copy.
-const [{ nodeId: scratchSection }] = await apply([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }], 'Insert section');
-const sectionDef = (await home()).nodes[scratchSection].definitionId;
-const [{ definitionId: proofDef }] = await apply([{ type: 'component.fork', definitionId: sectionDef }], 'Copy Section');
-await apply(
-  [
-    { type: 'node.remove', owner, nodeId: scratchSection },
-    { type: 'component.rename', definitionId: proofDef, name: 'Proof section' },
-    { type: 'component.setSlot', definitionId: proofDef, slot: 'content', label: 'Proof', categories: ['social-proof'], max: 1 }
-  ],
-  'Make Proof section'
-);
+// A small managed Section keeps this slot-authoring workflow available when the shipped Section is code.
+const [{ definitionId: sectionDef }] = await apply([{ type: 'component.upsert', name: 'Section', properties: {},
+  slots: { content: { label: 'Content' } },
+  nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['container'] },
+    { kind: 'element', id: 'container', tag: 'div', children: ['content'] },
+    { kind: 'slot', id: 'content', slot: 'content' }] }], 'Make editable Section');
+const [{ definitionId: proofDef }] = await apply([{ type: 'component.upsert', name: 'Proof section', properties: {},
+  slots: { content: { label: 'Content' } },
+  nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['container'] },
+    { kind: 'element', id: 'container', tag: 'div', children: ['content'] },
+    { kind: 'slot', id: 'content', slot: 'content' }] }], 'Make Proof section');
+await apply([{ type: 'component.setSlot', definitionId: proofDef, slot: 'content', label: 'Proof', categories: ['social-proof'], max: 1 }], 'Limit Proof slot');
 const [{ nodeId: first }, { nodeId: proof }] = await apply(
   [
-    { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' },
+    { type: 'node.insert', owner, parentId: null, definitionId: sectionDef },
     { type: 'node.insert', owner, parentId: null, definitionId: proofDef }
   ],
   'Insert sections'
@@ -153,7 +153,7 @@ assert.deepEqual(roots, [first, proof]);
 await inPage(col1).waitFor();
 await inPage(proof).waitFor();
 
-step('Insert lists the six blocks in a Blocks group, right after the column layouts');
+step('Insert lists the theme blocks in a Blocks group, right after the column layouts');
 await openInsert();
 await blocksGroup.waitFor();
 const groups = await panel.locator('.insert-group').evaluateAll((els) => els.map((g) => g.dataset.group ?? g.dataset.kind));
@@ -161,7 +161,7 @@ assert.equal(groups[groups.indexOf('columns') + 1], 'blocks', `the blocks follow
 assert.equal(await blocksGroup.locator('.insert-head').innerText(), 'Blocks');
 assert.deepEqual(
   await blocksGroup.locator('.insert-tile strong').allInnerTexts(),
-  ['Feature card', 'Stat card', 'Testimonial card', 'Callout box', 'Signup form', 'Compact video'],
+  ['Feature card', 'Stat card', 'Testimonial card', 'Callout box', 'Downloads', 'Key facts', 'Signup form', 'Compact video'],
   'every block, in the theme’s order'
 );
 
@@ -179,7 +179,7 @@ await eventually(async () => {
   assert.deepEqual(page.rootIds, roots, 'no new section on the page');
 });
 await oneChange(before, 'Insert Feature card on Home');
-await frame.locator('h3', { hasText: 'Thoughtful planning' }).first().waitFor();
+await frame.getByRole('heading', { name: 'Two-hour site visit' }).first().waitFor();
 await win.screenshot({ path: join(SHOTS, 'blocks-column-click.png') });
 await undo();
 await eventually(async () => assert.deepEqual((await home()).nodes[col1].children, [], 'one Undo takes it away'));
@@ -190,7 +190,7 @@ await win.keyboard.press('Escape');
 await openPlus(addButton('inside', col2), () => pointIn(inPage(col2), 0.5, 0.5));
 /** What the list offers, by name, and the group each is listed under. */
 const offered = () => list.getByRole('option').evaluateAll((els) => els.map((el) => ({ name: el.querySelector('.qi-name')?.textContent ?? '', group: el.dataset.group })));
-for (const name of ['Feature card', 'Stat card', 'Testimonial card', 'Callout box', 'Signup form', 'Compact video'])
+for (const name of ['Feature card', 'Stat card', 'Testimonial card', 'Callout box', 'Downloads', 'Key facts', 'Signup form', 'Compact video'])
   assert.ok((await offered()).some((o) => o.name === name && o.group === 'Blocks'), `${name} is offered under Blocks`);
 assert.equal(await list.getByRole('group', { name: 'Blocks' }).count(), 1, 'under a Blocks heading');
 assert.equal((await offered()).some((o) => o.name.startsWith('Statistics')), false, 'sections are not offered inside a column');
@@ -251,7 +251,7 @@ await eventually(async () => {
   assert.deepEqual(page.rootIds, roots, 'no new section on the page');
 });
 await oneChange(before, 'Insert Testimonial card on Home');
-await frame.locator('cite', { hasText: 'Amelia Hart' }).first().waitFor();
+await frame.getByText('Amelia Hart', { exact: true }).first().waitFor();
 await win.screenshot({ path: join(SHOTS, 'blocks-slot-drag.png') });
 
 step('the full slot takes no second block: a click on its tile with the slot’s card selected says so, and adds nothing');

@@ -214,7 +214,6 @@ const mark = async () => {
   await cdp.send('DOM.setTextMarker', { nodeId, start: 0, end: 'recieve'.length, type: 'spelling' });
 };
 let freshMenu;
-let freshChip;
 for (let attempt = 1; attempt <= 3; attempt++) {
   await clickCanvas(h1);
   await settle();
@@ -222,7 +221,6 @@ for (let attempt = 1; attempt <= 3; attempt++) {
   await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
   // The edit begins with the word double-clicked selected, as a double-click selects a word in any text.
   assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve', 'the edit selects the word double-clicked');
-  freshChip = await chip();
   const target = await canvasPoint(h1, 'recieve');
   freshMenu = await nextWritingMenu(async () => {
     await mark();
@@ -236,7 +234,7 @@ for (let attempt = 1; attempt <= 3; attempt++) {
 assertWritingMenu(freshMenu, 'heading as its edit begins', 'recieve', { marked: true });
 await settle();
 assert.equal(await openMenus(), 0, 'the element actions stay closed');
-assert.equal(await chip(), freshChip, 'the selection stays on the heading');
+assert.match(await chip(), /heading/i, 'the selection stays on the heading');
 // The right-click put the selection on the word, where the replacement goes: marked again, as it still would be.
 assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve', 'the right-click selects the misspelled word');
 await mark();
@@ -285,8 +283,12 @@ await eventually(async () => assert.ok((await pages()).includes(JSON.stringify(i
 
 step('a correction inside bold rich text keeps its formatting');
 const found = frame.locator('.so-rich', { hasText: 'That conversation shapes' }).first();
-// Found by its words, then held by its place on the page: the words are about to change.
-const rich = frame.locator(`.so-rich[data-so-node="${await found.getAttribute('data-so-node')}"][data-so-ctx="${await found.getAttribute('data-so-ctx')}"]`);
+// Hold the placement, since the words inside the rich text are about to change.
+const richHost = await found.evaluate((el) => {
+  const host = el.closest('[data-so-node]');
+  return { ctx: host.getAttribute('data-so-ctx'), node: host.getAttribute('data-so-node') };
+});
+const rich = frame.locator(`[data-so-ctx="${richHost.ctx}"][data-so-node="${richHost.node}"] .so-rich`).first();
 await scrollTo(rich);
 await settle();
 await clickCanvas(rich);

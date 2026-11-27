@@ -59,23 +59,36 @@ try {
     await apply([{ type: 'instance.setVariant', owner, nodeId, axis: 'layout', variant: layout }], `${heading} layout`);
   }
 
+  // The shipped Carousel is code. The inspector's list reveal edits a managed design, so exercise that editor
+  // behavior with a small scrollable list while keeping the shipped Carousel for the exported visitor checks.
+  const [{ definitionId: editableDef }] = await apply([{ type: 'component.upsert', name: 'Editable carousel',
+    properties: { slides: { type: 'list', label: 'Slides', itemLabel: 'Slide', fields: { caption: { type: 'string', label: 'Caption', default: '' } },
+      default: SLIDES.map(({ id, caption }) => ({ id, caption })) } },
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['heading', 'track'] },
+      { kind: 'text', id: 'heading', tag: 'h2', text: 'Editable slides' },
+      { kind: 'element', id: 'track', tag: 'ul', styles: { base: { customCss: 'display:flex;overflow-x:auto;overflow-y:hidden;width:min(100%, 600px);' } }, children: ['repeat'] },
+      { kind: 'repeat', id: 'repeat', list: 'slides', children: ['slide'] },
+      { kind: 'element', id: 'slide', tag: 'li', styles: { base: { customCss: 'flex:0 0 240px;min-height:120px;padding:16px;' } }, children: ['caption'] },
+      { kind: 'text', id: 'caption', tag: 'p', text: { $item: 'caption' } }] }], 'Make editable carousel');
+  const [{ nodeId: editable }] = await apply([{ type: 'node.insert', owner, parentId: null, definitionId: editableDef }], 'Place editable carousel');
+
   step('opening a slide in the inspector brings it into view in its list on the canvas');
-  const track = frame.locator(`ul[data-so-ctx="page:${home}|${placed.id}"][data-so-node="track"]`);
+  const track = frame.locator(`[data-so-ctx="page:${home}|${editable}"][data-so-node="track"]`);
   await track.waitFor({ timeout: 30000 });
   const slideShows = (id) =>
-    track.evaluate((ul, id) => {
-      const li = ul.querySelector(`li[data-so-items="${id}"]`);
+    track.evaluate((ul, index) => {
+      const li = ul.querySelectorAll('li')[index];
       const r = li.getBoundingClientRect();
       const t = ul.getBoundingClientRect();
       return { scrollLeft: ul.scrollLeft, inList: r.left >= t.left - 1 && r.right <= t.right + 1, inFrame: r.top >= 0 && r.bottom <= innerHeight };
-    }, id);
+    }, SLIDES.findIndex((slide) => slide.id === id));
   await eventually(async () => {
     const initial = await slideShows('s5');
     assert.equal(initial.scrollLeft, 0, 'the track starts at its first slide');
     assert.equal(initial.inList, false, 'the fifth slide starts out of sight');
   });
   await win.locator('.rail [aria-label="Layers"]').click();
-  await win.locator(`[role="tree"] .list-item[data-node="${placed.id}"]`).click();
+  await win.locator(`[role="tree"] .list-item[data-node="${editable}"]`).click();
   const list = win.locator('#dock-panel-inspect [data-list="slides"]');
   await list.waitFor();
   const rows = list.locator('.list-editor-head button.title');
@@ -90,9 +103,9 @@ try {
   const caption = list.locator('.list-editor-body:not([hidden])').getByLabel('Caption', { exact: true });
   await caption.click();
   await caption.fill('Fitting day');
-  await eventually(async () => assert.equal(await track.locator('li[data-so-items="s5"] figcaption').innerText(), 'Fitting day', 'the typed caption shows on the slide'));
+  await eventually(async () => assert.equal(await track.locator('li').nth(4).locator('p').innerText(), 'Fitting day', 'the typed caption shows on the slide'));
   await caption.press('Escape');
-  await eventually(async () => assert.equal(await track.locator('li[data-so-items="s5"] figcaption').innerText(), 'Slide 5', 'Escape gives the slide its saved caption back'));
+  await eventually(async () => assert.equal(await track.locator('li').nth(4).locator('p').innerText(), 'Slide 5', 'Escape gives the slide its saved caption back'));
   await win.getByRole('radio', { name: 'Phone', exact: true }).click();
   await eventually(async () => assert.equal(await track.evaluate(() => innerWidth), 390, 'the canvas is a phone’s width'), 15000);
   await eventually(async () => assert.equal((await slideShows('s5')).inList, true, 'at phone width the fifth slide is brought back into its list'), 15000);

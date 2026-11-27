@@ -54,7 +54,11 @@ async function untilWatching(dir: string, session: InstanceType<typeof ProjectSe
     () => {
       if (!look.mock.calls.length) {
         // Rarely enough that the look each report asks for is not put off for ever.
-        if (Date.now() - touched > 1000) (touched = Date.now()), writeFileSync(join(dir, 'siteorigin', 'probe.tmp'), String(touched));
+        if (Date.now() - touched > 1000) {
+          touched = Date.now();
+          const probe = join(dir, 'siteorigin', `probe-${touched}.probe`);
+          writeFileSync(probe, String(touched));
+        }
         throw new Error('No watch has reported yet.');
       }
     },

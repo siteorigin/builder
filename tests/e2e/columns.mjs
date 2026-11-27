@@ -138,7 +138,7 @@ try {
   const near = (a, b, what, slack = 3) => assert.ok(Math.abs(a - b) <= slack, `${what}: ${a} against ${b}`);
   /** Shows the page at a size, once the canvas is that wide: under 768px for Phone, 1024px and up for Desktop. */
   const showAt = async (size) => {
-    await win.getByRole('button', { name: size, exact: true }).first().click();
+    await win.locator('.toolbar').getByRole('radio', { name: size, exact: true }).click();
     await eventually(async () => {
       const width = await frame.locator('body').evaluate(() => innerWidth);
       assert.ok(size === 'Phone' ? width < 768 : width >= 1024, `the canvas shows ${size}: ${width}px`);
@@ -363,6 +363,30 @@ try {
   }, 30000);
 
   step('a grid item shows Column start, Column span and Row span in Layout with every group closed; an item outside a grid does not');
+  // The shipped Section is code; grid-child inspection follows the editable tree of a managed Section.
+  const gridMade = await win.evaluate(async (host) => {
+    const def = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name: 'Grid Section', properties: {},
+      slots: { content: { label: 'Content' } },
+      parts: { container: { nodeId: 'container', label: 'Container' } },
+      nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['container'] },
+        { kind: 'element', id: 'container', tag: 'div', styles: { base: { layout: 'grid', columns: 2 } }, children: ['content'] },
+        { kind: 'slot', id: 'content', slot: 'content' }] }] }, { label: 'Make grid section' });
+    if (!def.ok) throw new Error(def.error?.message);
+    const placed = await window.builder.project.apply({ operations: [
+      { type: 'node.insert', owner: host, parentId: null, definitionId: def.results[0].definitionId },
+      { type: 'node.insert', owner: host, parentId: null, definitionId: def.results[0].definitionId }
+    ] }, { label: 'Place grid sections' });
+    if (!placed.ok) throw new Error(placed.error?.message);
+    const [one, two] = placed.results.map((r) => r.nodeId);
+    const plain = await window.builder.project.apply({ operations: [{ type: 'node.setStyle', owner: host, nodeId: two, partId: 'container', scope: 'base', property: 'layout', value: 'stack' }] }, { label: 'Keep second section stacked' });
+    if (!plain.ok) throw new Error(plain.error?.message);
+    const filled = await window.builder.project.apply({ operations: [
+      { type: 'node.insert', owner: host, parentId: one, slot: 'content', primitive: 'paragraph', text: 'Grid item' },
+      { type: 'node.insert', owner: host, parentId: two, slot: 'content', primitive: 'paragraph', text: 'Other item' }
+    ] }, { label: 'Fill grid sections' });
+    if (!filled.ok) throw new Error(filled.error?.message);
+    return { one, two, first: filled.results[0].nodeId, other: filled.results[1].nodeId };
+  }, host);
   const spanRows = inspector.locator('.style-group[data-group="layout"] .style-row:is([data-prop="columnStart"], [data-prop="columnSpan"], [data-prop="rowSpan"])');
   /** Selects a paragraph inside the Section already selected, or inside another one. */
   const pick = async (section, id) => {
@@ -373,12 +397,12 @@ try {
     await inspector.locator('.style-group').first().waitFor();
     assert.equal(await inspector.locator('.style-group-toggle[aria-expanded="true"]').count(), 0, 'no group is open');
   };
-  await pick(made.one, made.first);
+  await pick(gridMade.one, gridMade.first);
   await eventually(async () => assert.equal(await spanRows.count(), 3, 'the start and both spans show for a grid item'), 10000);
   await inspector.locator('.style-group[data-group="layout"]').screenshot({ path: join(OUT, 'grid-item-spans.png') });
   // A start line and a span compose, and the item stays where it was in the document.
-  const lines = () => at(made.first).evaluate((el) => [getComputedStyle(el).gridColumnStart, getComputedStyle(el).gridColumnEnd]);
-  const siblings = () => at(made.first).evaluate((el) => [...el.parentElement.children].indexOf(el));
+  const lines = () => at(gridMade.first).evaluate((el) => [getComputedStyle(el).gridColumnStart, getComputedStyle(el).gridColumnEnd]);
+  const siblings = () => at(gridMade.first).evaluate((el) => [...el.parentElement.children].indexOf(el));
   const place = await siblings();
   await inspector.locator('.style-row[data-prop="columnStart"] select').selectOption('2');
   await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('1');
@@ -387,8 +411,8 @@ try {
   await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('full');
   await eventually(async () => assert.deepEqual(await lines(), ['1', '-1']), 30000);
   await inspector.locator('.style-row[data-prop="rowSpan"] select').selectOption('2');
-  await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridRowEnd), 'span 2'), 30000);
-  await pick(made.two, made.other);
+  await eventually(async () => assert.equal(await at(gridMade.first).evaluate((el) => getComputedStyle(el).gridRowEnd), 'span 2'), 30000);
+  await pick(gridMade.two, gridMade.other);
   await eventually(async () => assert.equal(await spanRows.count(), 0, 'outside a grid they stay behind the group’s heading'), 10000);
 
   assert.deepEqual(errors, [], 'no page errors');

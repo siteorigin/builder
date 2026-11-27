@@ -11,27 +11,55 @@ const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
 const dir = join(WORK, 'sites', 'harbour-lane-studio');
 const read = (rel) => readFileSync(join(dir, rel), 'utf8');
+const start = await win.evaluate(() => window.builder.project.snapshot());
+const contact = Object.values(start.state.pages).find((page) => page.title === 'Contact');
+const items = [
+  { question: 'How long does a typical project take?', answer: 'Most projects take six to ten weeks.' },
+  { question: 'Do you work outside the local area?', answer: 'Yes. We work across the region.' },
+  { question: 'How are your fees calculated?', answer: 'We quote a fixed fee for each stage.' },
+  { question: 'Can you recommend builders?', answer: 'We work with trusted contractors.' }
+];
+const apply = async (operations, label) => {
+  const result = await win.evaluate(([ops, name]) => window.builder.project.apply({ operations: ops }, { label: name }), [operations, label]);
+  assert.equal(result.ok, true, `${label}: ${result.error?.message}`);
+  return result.results;
+};
+const [{ definitionId: faqDefinition }] = await apply([{ type: 'component.upsert', name: 'Editable FAQ', properties: {
+  items: { type: 'list', label: 'Questions', itemLabel: 'Question', titleField: 'question', fields: {
+    question: { type: 'string', label: 'Question', default: '' }, answer: { type: 'string', label: 'Answer', default: '', multiline: true }
+  }, default: items }
+}, nodes: [
+  { kind: 'element', id: 'root', tag: 'section', children: ['questions'] },
+  { kind: 'repeat', id: 'questions', list: 'items', children: ['item'] },
+  { kind: 'element', id: 'item', tag: 'details', children: ['summary', 'answer'] },
+  { kind: 'element', id: 'summary', tag: 'summary', children: ['question'] },
+  { kind: 'text', id: 'question', name: 'Question text', tag: 'span', text: { $item: 'question' } },
+  { kind: 'text', id: 'answer', name: 'Answer', tag: 'p', text: { $item: 'answer' } }
+] }], 'Make editable FAQ');
+const [{ nodeId: faqPlacement }] = await apply([{ type: 'node.insert', owner: { kind: 'page', id: contact.id }, definitionId: faqDefinition, index: 0 }], 'Place editable FAQ');
 
 step('open the FAQ on Contact from Layers');
 await win.locator('.side-panel-view:not([hidden]) [data-page]', { hasText: 'Contact' }).first().click();
 // The FAQ's questions: the header's menu button is a disclosure too.
-const questions = frame.locator('.so-foundation-faq-list__root details');
+const questions = frame.locator(`[data-so-ctx="page:${contact.id}|${faqPlacement}"] details`);
 await questions.first().waitFor({ state: 'attached', timeout: 30000 });
 await win.locator('.rail [aria-label="Layers"]').click();
-await win.locator('[role="tree"] .list-item', { hasText: 'FAQ' }).first().click();
+await win.locator(`[role="tree"] .list-item[data-node="${faqPlacement}"]`).click();
 await openInspector(win);
 const list = win.locator('#dock-panel-inspect [data-list="items"]');
 await list.waitFor();
 const rows = list.locator('.list-editor-head button.title');
 const opened = () => questions.evaluateAll((els) => els.map((d) => d.open));
+const closed = Array(await questions.count()).fill(false);
+const onlyOpen = (index) => closed.map((_, i) => i === index);
 const outlines = () => win.locator('.ov-revealed').count();
-assert.deepEqual(await opened(), [false, false, false, false], 'every question starts closed, as visitors find it');
+assert.deepEqual(await opened(), closed, 'every question starts closed, as visitors find it');
 const contentOf = (els) => els.map((d) => [d.querySelector('summary').textContent.trim(), d.querySelector('p').textContent.trim()]);
 const before = new Map(await questions.evaluateAll(contentOf));
 
 step('opening a question in the inspector reveals it on the page');
 await rows.nth(1).click();
-await eventually(async () => assert.deepEqual(await opened(), [false, true, false, false], 'the second question opens on the page'));
+await eventually(async () => assert.deepEqual(await opened(), onlyOpen(1), 'the second question opens on the page'));
 await eventually(async () => assert.equal(await outlines(), 1, 'and is outlined'));
 
 step('the answer shows as it is typed, at phone and desktop widths, with the caret kept in the field');
@@ -61,7 +89,7 @@ step('saving keeps the question open, and the page shows the saved answer');
 await win.keyboard.press(`${MOD}+Enter`);
 await eventually(() => assert.ok(read('src/routes/contact/+page.svelte').includes(`${typed} Ask us.`), 'the answer is saved'));
 await eventually(async () => {
-  assert.deepEqual(await opened(), [false, true, false, false], 'the question stays open after the page updates');
+  assert.deepEqual(await opened(), onlyOpen(1), 'the question stays open after the page updates');
   assert.equal(await answerOnPage.innerText(), `${typed} Ask us.`, 'with the saved answer');
 });
 
@@ -81,7 +109,7 @@ await questions.nth(1).evaluate((d) => {
 // Dispatched on the answer itself: the scaled canvas throws off a pointer's aim at text this far down the page.
 await answerOnPage.dispatchEvent('click', { altKey: true });
 await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Answer' }).waitFor();
-await eventually(async () => assert.deepEqual(await opened(), [false, true, false, false], 'the question stays open under the pointer'));
+await eventually(async () => assert.deepEqual(await opened(), onlyOpen(1), 'the question stays open under the pointer'));
 assert.equal(await outlines(), 0, 'the selection marks the item, so it gets no second outline');
 const partField = win.locator('#dock-panel-inspect textarea').first();
 await partField.evaluate((el) => (el.focus(), el.setSelectionRange(el.value.length, el.value.length)));
@@ -93,30 +121,30 @@ await eventually(async () => assert.equal(await answerOnPage.innerText(), `${typ
 await win.keyboard.press('Escape');
 await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'FAQ' }).waitFor();
 await eventually(async () => assert.equal(await rows.nth(1).getAttribute('aria-expanded'), 'true', 'back on the section, its list opens on that question'));
-assert.deepEqual(await opened(), [false, true, false, false], 'and the question stays open on the page');
+assert.deepEqual(await opened(), onlyOpen(1), 'and the question stays open on the page');
 assert.equal(await questions.nth(1).evaluate(() => window.closes), 0, 'it never closed on the way from the list to the answer and back');
 
 step('moving to another question follows it, a moved question stays revealed, and closing it leaves the page as visitors find it');
 const title = (await rows.nth(1).innerText()).trim();
 await rows.nth(2).click();
-await eventually(async () => assert.deepEqual(await opened(), [false, false, true, false], 'the third question opens and the second closes again'));
+await eventually(async () => assert.deepEqual(await opened(), onlyOpen(2), 'the third question opens and the second closes again'));
 await rows.nth(1).click();
-await eventually(async () => assert.deepEqual(await opened(), [false, true, false, false], 'the second question opens again'));
+await eventually(async () => assert.deepEqual(await opened(), onlyOpen(1), 'the second question opens again'));
 await list.getByRole('button', { name: `Move ${title} down` }).click();
-await eventually(async () => assert.deepEqual(await opened(), [false, false, true, false], 'the moved question stays open in its new place'));
+await eventually(async () => assert.deepEqual(await opened(), onlyOpen(2), 'the moved question stays open in its new place'));
 assert.equal((await questions.nth(2).locator('summary').innerText()).trim(), title, 'it is the same question, followed by its id');
 await eventually(async () => assert.equal(await outlines(), 1, 'and still outlined'));
 await rows.nth(2).click();
-await eventually(async () => assert.deepEqual(await opened(), [false, false, false, false], 'closing the row closes the question it opened'));
+await eventually(async () => assert.deepEqual(await opened(), closed, 'closing the row closes the question it opened'));
 await eventually(async () => assert.equal(await outlines(), 0, 'and its outline goes'));
 const after = new Map(await questions.evaluateAll(contentOf));
 for (const [question, answer] of before) assert.equal(after.get(question), question === title ? `${typed} Ask us.` : answer, `${question} keeps its content, apart from the answer saved`);
-const saved = await win.evaluate(async () => {
+const saved = await win.evaluate(async (definitionId) => {
   const s = await window.builder.project.snapshot();
   const page = Object.values(s.state.pages).find((p) => p.title === 'Contact');
-  const faq = page.rootIds.map((id) => page.nodes[id]).find((n) => s.state.components[n.definitionId]?.componentId === 'faq.list');
+  const faq = page.rootIds.map((id) => page.nodes[id]).find((n) => n.definitionId === definitionId);
   return faq.props.items.map((i) => Object.keys(i).sort().join(','));
-});
+}, faqDefinition);
 assert.deepEqual([...new Set(saved)], ['answer,id,question'], 'the saved questions hold only their content');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');

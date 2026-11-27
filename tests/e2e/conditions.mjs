@@ -8,6 +8,44 @@ const { WORK, SHOTS: OUT, cleanup } = scratch('conditions');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Condition Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
 const inspector = win.locator('#dock-panel-inspect');
+const initial = await win.evaluate(() => window.builder.project.snapshot());
+const homeId = initial.state.site.homePageId;
+const fixture = await win.evaluate(async (pageId) => {
+  const made = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name: 'Services grid fixture',
+    properties: {
+      eyebrow: { type: 'string', label: 'Eyebrow', default: 'What we do' },
+      items: { type: 'list', label: 'Cards', itemLabel: 'Card', fields: {
+        title: { type: 'string', label: 'Title', default: 'Service' },
+        description: { type: 'string', label: 'Description', default: 'A service' }
+      }, default: [
+        { id: 'planning', title: 'Planning & layout', description: 'Plan the space' },
+        { id: 'materials', title: 'Materials & color', description: 'Choose materials' },
+        { id: 'delivery', title: 'Project delivery', description: 'Bring it home' }
+      ] }
+    },
+    nodes: [
+      { kind: 'element', id: 'root', tag: 'section', children: ['cards'] },
+      { kind: 'repeat', id: 'cards', list: 'items', children: ['card'] },
+      { kind: 'element', id: 'card', tag: 'article', children: ['card-icon-wrap', 'card-title', 'card-text'] },
+      { kind: 'element', id: 'card-icon-wrap', tag: 'div', children: ['card-icon'] },
+      { kind: 'text', id: 'card-icon', tag: 'span', text: '★' },
+      { kind: 'text', id: 'card-title', tag: 'h3', text: { $item: 'title' } },
+      { kind: 'text', id: 'card-text', tag: 'p', text: { $item: 'description' } }
+    ]
+  }], label: 'Make conditions fixture' });
+  if (!made.ok) throw new Error(made.error?.message);
+  const definitionId = made.results[0].definitionId;
+  const placed = await window.builder.project.apply({ operations: [
+    { type: 'node.insert', owner: { kind: 'page', id: pageId }, parentId: null, definitionId },
+  ], label: 'Place conditions fixture' });
+  if (!placed.ok) throw new Error(placed.error?.message);
+  const nodeId = placed.results[0].nodeId;
+  const filled = await window.builder.project.apply({ operations: [
+    { type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId, prop: 'eyebrow', value: 'Services' }
+  ], label: 'Set fixture eyebrow' });
+  if (!filled.ok) throw new Error(filled.error?.message);
+  return { definitionId, nodeId };
+}, homeId);
 
 /** Choose Edit → Undo or Edit → Redo, as a click on the menu item does (no window has focus while headless). */
 const menu = (id) =>
@@ -24,22 +62,22 @@ const menu = (id) =>
 
 /** The Services grid placed on Home, the design it uses, and its cards. */
 const grid = () =>
-  win.evaluate(async () => {
+  win.evaluate(async (fixtureNodeId) => {
     const s = await window.builder.project.snapshot();
     const page = s.state.pages[s.state.site.homePageId];
-    const node = Object.values(page.nodes).find((n) => n.kind === 'instance' && s.state.components[n.definitionId]?.name.startsWith('Services grid'));
+    const node = page.nodes[fixtureNodeId];
     const def = s.state.components[node.definitionId];
     return { pageId: page.id, nodeId: node.id, defId: def.id, owner: def.owner, nodes: def.tree.nodes, props: node.props, items: node.props.items ?? def.properties.items.default };
-  });
+  }, fixture.nodeId);
 
 step('open the Services grid design');
 await win.locator('.rail [aria-label="Layers"]').click();
-await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
+await win.locator(`[role="tree"] .list-item[data-node="${fixture.nodeId}"]`).click();
 await openInspector(win);
 const compSection = win.locator('.section-head', { hasText: 'Component' });
 if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
 await win.getByRole('button', { name: 'Edit everywhere…' }).click();
-await win.getByRole('button', { name: /Make a copy and edit/ }).click();
+await win.getByRole('button', { name: 'Edit design' }).click();
 await win.locator('.mode-band').waitFor();
 await eventually(async () => assert.equal((await grid()).owner, 'project', 'the placement now uses the project’s copy'));
 const { pageId, nodeId: placedId, defId, items } = await grid();

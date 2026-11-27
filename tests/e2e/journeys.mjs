@@ -180,7 +180,7 @@ try {
   step('principal journey: the website exported to a folder holds both changes');
   await menu('File', 'Export…');
   await until('ui.context', { dialog: 'Export your website' });
-  await click(editor('button', 'Folder'));
+  await click(editor('radio', 'Folder'));
   await ok('desktop.setAnswers', { answers: [{ dialog: 'open', selection: 'folder', paths: ['exports'] }] });
   await click(editor('button', 'Website files, ready to upload', { exact: false }));
   const exported = await until('export.finished', {}, 300000);

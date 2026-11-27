@@ -513,11 +513,13 @@ async function openProject(): Promise<{ c: InstanceType<typeof Controller>; dir:
   const created = await ProjectSession.create(dir, state);
   await created.close();
   const pkg = '{"name":"site","type":"module"}';
+  const lock = JSON.stringify({ name: 'site', lockfileVersion: 3, requires: true, packages: { '': { name: 'site' } } }, null, 2) + '\n';
   writeFileSync(join(dir, 'package.json'), pkg);
+  writeFileSync(join(dir, 'package-lock.json'), lock);
   writeFileSync(join(dir, 'vite.config.js'), 'export default {};');
   mkdirSync(join(dir, 'node_modules/@sveltejs/kit'), { recursive: true });
   writeFileSync(join(dir, 'node_modules/@sveltejs/kit/package.json'), '{"name":"@sveltejs/kit"}');
-  writeFileSync(join(dir, '.siteorigin/cache/deps.json'), JSON.stringify({ lockHash: sha('' + pkg), preparedAt: '2026-01-01T00:00:00.000Z' }));
+  writeFileSync(join(dir, '.siteorigin/cache/deps.json'), JSON.stringify({ lockHash: sha(lock + pkg), preparedAt: '2026-01-01T00:00:00.000Z' }));
   const c = new Controller(() => null);
   c.send = () => undefined;
   controllers.push(c);
@@ -541,6 +543,17 @@ describe('a project whose picture was moved out of its folder', () => {
     // A check still running from opening the project would report the files it reached before they went; a newer
     // check makes it change nothing.
     await s.refreshAssetFiles();
+    // macOS can start delivering a newly installed watch after the opening has returned. Prove it is listening
+    // before removing the pictures whose disappearance this test expects it to report.
+    const watched = vi.spyOn(s, 'refreshAssetFiles');
+    const probe = join(dir, 'static/assets', 'watch-probe.txt');
+    for (let attempt = 0; attempt < 20 && !watched.mock.calls.length; attempt++) {
+      writeFileSync(probe, String(attempt));
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(watched).toHaveBeenCalled();
+    watched.mockRestore();
+    unlinkSync(probe);
     const outside = temp('moved');
     for (const f of [nook.file, ...(nook.variants ?? []).map((v) => v.file)]) {
       copyFileSync(join(dir, f), join(outside, f.split('/').pop()!));

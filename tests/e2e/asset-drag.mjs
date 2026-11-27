@@ -82,21 +82,23 @@ const dragTo = async (tile, locator, fx = 0.5, fy = 0.5, dy = 0) => {
 
 step('the Split hero’s image is emptied: it shows the neutral placeholder');
 await apply([{ type: 'instance.setProp', owner, nodeId: hero, prop: 'image', value: { assetId: null, alt: '' } }], 'Empty the hero image');
-const placeholder = frame.locator(`[data-so-ctx$="|${hero}"][data-so-node="media"]`);
+const heroOnPage = frame.locator(`[data-so-ctx="page:${home}"][data-so-node="${hero}"]`);
+const placeholder = heroOnPage.locator('.hero__media');
 await eventually(async () => assert.equal(await placeholder.evaluate((el) => el.classList.contains('so-img--placeholder')), true, 'the hero shows the placeholder'));
-const heading = frame.locator(`[data-so-ctx$="|${hero}"]`).locator('h1').first();
+const heading = heroOnPage.locator('h1').first();
 await win.locator('.rail [aria-label="Assets"]').click();
 const tile = win.locator('[data-asset="a_reading"]');
 await tile.waitFor();
 
 step('held over the placeholder, the placeholder is outlined; released, it takes the picture as one change');
-const at = await dragTo(tile, placeholder);
+await dragTo(tile, placeholder);
 await eventually(async () => assert.match(await dropLabel.innerText(), /^Place .+ as Image in /, 'the strip says the image fills the hero’s image'));
 assert.equal(await dropLine.count(), 0, 'no insertion line while an image takes it');
 await eventually(async () => {
   const box = await dropTarget.boundingBox();
-  assert.ok(box, 'the image is outlined');
-  for (const [k, want] of [['x', at.left], ['y', at.top], ['width', at.width], ['height', at.height]]) assert.ok(Math.abs(box[k] - want) < 3, `the outline is the placeholder’s box (${k}: ${box[k]} vs ${want})`);
+  assert.ok(box, 'the component that owns the image is outlined');
+  const root = await pointIn(heroOnPage.locator('section').first(), 0.5, 0.5);
+  for (const [k, want] of [['x', root.left], ['y', root.top], ['width', root.width], ['height', root.height]]) assert.ok(Math.abs(box[k] - want) < 3, `the outline is the code component’s box (${k}: ${box[k]} vs ${want})`);
 });
 await win.screenshot({ path: join(SHOTS, 'asset-drag-over-placeholder.png') });
 const before = await newest();
@@ -125,7 +127,7 @@ const other = Object.keys(start.assets.assets).find((id) => id !== 'a_reading' &
 step('anywhere else on the hero, the drop goes to its one empty image, outlined as itself');
 await dragTo(tile, heading);
 await eventually(async () => assert.match(await dropLabel.innerText(), /^Place .+ as Image in /, 'over the heading, the hero’s empty image would take it'));
-await eventually(() => outlines(placeholder, 'the hero’s empty image'));
+await eventually(() => outlines(heroOnPage.locator('section').first(), 'the code component that owns the hero’s empty image'));
 assert.equal(await dropLine.count(), 0, 'no insertion line over a component whose empty image takes it');
 await win.mouse.up();
 await eventually(async () => assert.deepEqual(await heroImage(), { assetId: 'a_reading', alt: reading.altSuggestion }, 'the hero’s image takes it'));
@@ -180,13 +182,16 @@ const roots = async () => (await snapshot()).pages[home].rootIds;
 const rootsBefore = await roots();
 const after = rootsBefore.indexOf(stats);
 assert.ok(after >= 0 && after < rootsBefore.length - 1, 'a section follows the stats row');
-const plain = frame.locator(`[data-so-ctx$="|${stats}"]`).first();
+const plain = frame.locator(`[data-so-ctx="page:${home}"][data-so-node="${stats}"] section`).first();
 // Just inside the stats row's bottom edge: between it and the section after it.
-const edge = await dragTo(tile, plain, 0.5, 1, -3);
+await dragTo(tile, plain, 0.5, 1, -3);
 await eventually(async () => assert.match(await dropLabel.innerText(), /^Place .+ in a new section after /, 'the strip says the image goes in a new section after the stats row'));
 await eventually(async () => assert.ok(await dropLine.isVisible(), 'the insertion line shows'));
 const lineBox = await dropLine.boundingBox();
-assert.ok(Math.abs(lineBox.y + lineBox.height / 2 - edge.y) < 4, `the line is at the stats row’s bottom edge (${lineBox.y} vs ${edge.y})`);
+const frameBox = await win.locator('.frame-box iframe').boundingBox();
+const statsEdge = await plain.evaluate((el) => ({ bottom: el.getBoundingClientRect().bottom, width: window.innerWidth }));
+const edgeY = frameBox.y + statsEdge.bottom * (frameBox.width / statsEdge.width);
+assert.ok(Math.abs(lineBox.y + lineBox.height / 2 - edgeY) < 4, `the line is at the stats row’s current bottom edge (${lineBox.y} vs ${edgeY})`);
 assert.equal(await dropTarget.count(), 0, 'no image is outlined');
 await win.screenshot({ path: join(SHOTS, 'asset-drag-between-sections.png') });
 const still = await newest();

@@ -28,7 +28,7 @@ const openShare = async () => {
 };
 const closeShare = async () => {
   if ((await share().getAttribute('aria-expanded')) !== 'true') return;
-  await win.keyboard.press('Escape');
+  await popover().getByRole('button', { name: 'Close' }).click();
   await popover().waitFor({ state: 'detached' });
 };
 const hostState = () => win.evaluate(() => window.builder.live.state());
@@ -141,7 +141,7 @@ try {
   await dialog.getByRole('group', { name: 'Answer Cy' }).getByRole('button', { name: 'Decline' }).click();
   assert.equal((await cy.guest.next('guest:status')).status, 'declined');
   await dialog.getByRole('region', { name: 'In the session (2)' }).waitFor();
-  assert.equal(await dialog.getByRole('region', { name: /Waiting to join/ }).count(), 0);
+  await eventually(async () => assert.equal(await dialog.getByRole('region', { name: /Waiting to join/ }).count(), 0));
 
   await dialog.getByLabel('Role for Ann').selectOption('collaborator');
   assert.equal((await ann.guest.next('guest:status')).role, 'collaborator', 'the guest hears its new role');

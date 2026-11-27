@@ -5,7 +5,7 @@ import { MOD, createProject, launch, openInspector, scratch, step } from './harn
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('tour');
 const { app, win, errors } = await launch(WORK);
-await win.evaluate(() => window.builder.app.setSettings({ appearance: 'dark' }));
+await win.evaluate(() => window.builder.app.setSettings({ appearance: 'dark', developerMode: true }));
 await win.emulateMedia({ colorScheme: 'dark' });
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 await win.waitForTimeout(1200);
@@ -21,20 +21,27 @@ await win.locator('[role="tree"] .list-item.selected', { hasText: 'Card title' }
 await openInspector(win);
 await shot('31-dark-part.png');
 
-step('edit a component everywhere');
+step('view the packed component and make a project copy');
 await gridRow.click();
 await openInspector(win);
+await win.locator('[aria-label="Settings"]').click();
+if ((await win.getByRole('switch', { name: 'Developer mode' }).getAttribute('aria-checked')) !== 'true') await win.getByRole('switch', { name: 'Developer mode' }).click();
+await win.keyboard.press('Escape');
+await win.locator('.modal').waitFor({ state: 'detached' });
 const compSection = win.locator('.section-head', { hasText: 'Component' });
 if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
-await win.getByRole('button', { name: 'Edit everywhere…' }).click();
-await win.locator('.modal').waitFor();
+await win.getByRole('button', { name: 'View source' }).click();
+await win.locator('.modal .cm-content').waitFor();
 await shot('32-edit-definition.png');
-await win.getByRole('button', { name: /Make a copy and edit/ }).click();
-await win.locator('.mode-band').waitFor();
-await win.waitForTimeout(800);
+await win.keyboard.press('Escape');
+await win.locator('.modal').waitFor({ state: 'detached' });
+await win.getByRole('button', { name: 'Make unique…' }).click();
+await win.getByRole('dialog', { name: 'Make unique' }).getByRole('button', { name: 'Make unique', exact: true }).click();
+await win.getByRole('button', { name: 'Edit code' }).click();
+await win.locator('.modal .cm-content').waitFor();
 await shot('33-definition-mode.png');
-await win.locator('.mode-band-done').click();
-await win.locator('.mode-band').waitFor({ state: 'detached' });
+await win.keyboard.press('Escape');
+await win.locator('.modal').waitFor({ state: 'detached' });
 
 step('settings, command menu and export');
 await win.locator('[aria-label="Settings"]').click();
@@ -60,7 +67,7 @@ step('source view (Developer mode)');
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'light' }));
 await win.emulateMedia({ colorScheme: 'light' });
 await win.locator('[aria-label="Settings"]').click();
-await win.getByRole('switch', { name: 'Developer mode' }).click();
+if ((await win.getByRole('switch', { name: 'Developer mode' }).getAttribute('aria-checked')) !== 'true') await win.getByRole('switch', { name: 'Developer mode' }).click();
 await win.keyboard.press('Escape');
 await win.locator('.modal').waitFor({ state: 'detached' });
 await frame.locator('h1').first().click();

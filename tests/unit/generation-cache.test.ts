@@ -202,8 +202,7 @@ describe('incremental generation (#183)', () => {
     expect(generateProject(s, {}, cache).get(INDEX)).toContain('Hand-built oak staircases');
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('writes the words of the release’s sections into the site search index', () => {
+  it('writes the words of the release’s sections into the site search index', () => {
     const { s: site, home, about } = multiPageSite();
     let s = apply(site, { type: 'node.insert', owner: page(home), componentId: 'site.search' });
     const inst = firstInstance(s, about);

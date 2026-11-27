@@ -656,7 +656,7 @@ export const INTERACTIONS: Interaction[] = [
     outcome: 'A first click picks the section and the next the card or heading inside it; the editor’s selection is the element clicked; a code component’s placement, then its marked part, are picked in turn; a section picked in Layers is selected and scrolled into view, and picking it again brings it back after the page has scrolled away',
     scenario: 'Business starter · none',
     proof: [
-      { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'inline text: the heading selected in two clicks' },
+      { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'inline text: the code section selected, its heading edited after a double click, typed over and committed' },
       { test: 'tests/e2e/snapshot.mjs', kind: 'driver', step: 'the preview’s heading is located, selected, and seen as the editor’s selection' },
       { test: 'tests/e2e/smoke.mjs', kind: 'e2e', step: 'select the hero, then its heading' },
       { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'a click on the marked element selects the placement, the next one its part' },

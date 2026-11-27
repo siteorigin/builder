@@ -3,11 +3,8 @@
 // project; Layers and the canvas in Edit mode undo the project, from the keyboard and from Edit → Undo alike,
 // one step at a time.
 //
-// Chords are sent as native input through webContents.sendInputEvent, so they pass the main process's
-// before-input-event (which forwards editor shortcuts) and reach the page as a real key press does. On macOS a
-// field's text Undo is the Edit menu's key equivalent, which injected input never reaches; there the key press
-// only has to leave the project and the field alone, and the text Undo is proven through the menu item the key
-// equivalent runs.
+// Text fields receive chords through their focused page. Editor shortcuts are injected at the main process to
+// exercise before-input-event forwarding from a hidden window; the test invokes macOS menu copies explicitly.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -16,6 +13,12 @@ const mac = process.platform === 'darwin';
 const { WORK, cleanup } = scratch('undo');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Undo Routing', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
+await win.evaluate(() => {
+  window.__shownRevisions = [];
+  window.addEventListener('message', (e) => {
+    if (e.data?.type === 'revisionApplied' && Number.isSafeInteger(e.data.payload?.revision)) window.__shownRevisions.push(e.data.payload.revision);
+  });
+});
 
 const revision = () => win.evaluate(async () => (await window.builder.project.snapshot()).revision);
 const pages = () => win.evaluate(async () => JSON.stringify((await window.builder.project.snapshot()).state.pages));
@@ -24,7 +27,7 @@ const settle = () => win.waitForTimeout(500);
 const value = (field) => field.inputValue({ timeout: 1000 });
 const focusedTag = () => win.evaluate(() => document.activeElement?.tagName);
 
-/** Press a chord as native input, the way the keyboard delivers it. */
+/** Press a chord at the main process, as the editor shortcut forwarder receives it. */
 const chord = (key, shift = false) =>
   app.evaluate(
     ({ BrowserWindow }, { key, shift, mac }) => {
@@ -37,6 +40,8 @@ const chord = (key, shift = false) =>
   );
 const undoKey = () => chord('z');
 const redoKey = () => (process.platform === 'win32' ? chord('y') : chord('z', true));
+const textUndoKey = () => win.keyboard.press(`${MOD}+z`);
+const textRedoKey = () => win.keyboard.press(process.platform === 'win32' ? `${MOD}+y` : `${MOD}+Shift+z`);
 
 /**
  * Choose Edit → Undo or Edit → Redo, as a click on the menu item does (no window has focus while headless).
@@ -64,22 +69,24 @@ const redoPress = async () => (await redoKey(), await menu('edit-redo', true));
  * moves. (On Windows and Linux the injected key may undo the field by itself; a second Undo of a one-step history
  * changes nothing.)
  */
-async function textHistory(what, read, typed, original) {
+async function textHistory(what, field, read, typed, original) {
   const rev = await revision();
   const unchanged = async (when) => {
     await settle();
     assert.equal(await revision(), rev, `${what}: ${when} leaves the project unchanged`);
   };
-  await undoKey();
-  await unchanged('the forwarded Undo key');
-  if (mac) assert.equal(await read(), typed, `${what}: the forwarded Undo key leaves the field to the menu’s key`);
   for (const [how, undo, redo] of [
-    ['the Undo and Redo keys', () => menu('edit-undo', true), redoPress],
+    ['the Undo and Redo keys', textUndoKey, textRedoKey],
+    ['the Edit menu’s key equivalents', () => menu('edit-undo', true), () => menu('edit-redo', true)],
     ['Edit → Undo and Redo', () => menu('edit-undo'), () => menu('edit-redo')]
   ]) {
+    await field.focus();
+    await eventually(async () => assert.equal(await field.evaluate((el) => document.activeElement === el), true, `${what}: the field owns Undo`));
     await undo();
     await eventually(async () => assert.equal(await read(), original, `${what}: ${how} undo the typing`));
     await unchanged(how);
+    await field.focus();
+    await eventually(async () => assert.equal(await field.evaluate((el) => document.activeElement === el), true, `${what}: the field owns Redo`));
     await redo();
     await eventually(async () => assert.equal(await read(), typed, `${what}: ${how} bring the typing back`));
     await unchanged(how);
@@ -128,6 +135,7 @@ await win.getByRole('button', { name: 'Contact form' }).click();
 await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Contact form' }).waitFor();
 const form = frame.locator('form').filter({ has: frame.locator('input[name="name"]') });
 await eventually(async () => assert.equal(await form.count(), 1, 'the preview shows the Contact form'));
+await eventually(async () => assert.ok(await win.evaluate((r) => window.__shownRevisions.includes(r), await revision()), 'the preview has applied the form insert'), 30000);
 const nameField = form.locator('input[name="name"]');
 const formName = async () => {
   assert.equal(await form.count(), 1, 'the Contact form is still on the page');
@@ -140,8 +148,9 @@ await eventually(async () => assert.equal(await win.locator('button[title^="Prev
 // The preview is scaled to fit, so focus the field directly rather than aiming a click at it.
 await nameField.focus();
 await eventually(async () => assert.equal(await focusedTag(), 'IFRAME', 'the preview frame has focus'));
+await win.waitForTimeout(250);
 await nameField.pressSequentially('Demo');
-await textHistory('visitor’s Name field', formName, 'Demo', '');
+await textHistory('visitor’s Name field', nameField, formName, 'Demo', '');
 
 step('Undo in Preview never reaches the project, whatever on the page has focus');
 await nameField.blur();
@@ -164,8 +173,9 @@ await win.locator('button[title^="Edit:"]').click();
 step('a form field reached in Edit mode keeps its own history');
 await nameField.focus();
 await eventually(async () => assert.equal(await focusedTag(), 'IFRAME', 'the canvas has focus'));
+await win.waitForTimeout(250);
 await nameField.pressSequentially('Typed');
-await textHistory('Name field on the canvas', formName, 'Typed', '');
+await textHistory('Name field on the canvas', nameField, formName, 'Typed', '');
 await nameField.fill('');
 await nameField.blur();
 
@@ -179,7 +189,7 @@ await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'),
 // A double-click starts at the word clicked; Select All takes the whole heading.
 await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('Fresh copy');
-await textHistory('inline heading', () => h1.innerText(), 'Fresh copy', original);
+await textHistory('inline heading', h1, () => h1.innerText(), 'Fresh copy', original);
 await win.keyboard.press('Escape');
 await eventually(async () => assert.equal(await h1.innerText(), original, 'Escape cancels the inline edit'));
 
@@ -192,6 +202,7 @@ await win.keyboard.press(`${MOD}+a`);
 await win.keyboard.type('Committed heading');
 await win.keyboard.press('Enter');
 await eventually(async () => assert.match(await pages(), /Committed heading/, 'the heading edit is committed'));
+await eventually(async () => assert.ok(await win.evaluate((r) => window.__shownRevisions.includes(r), await revision()), 'the preview has applied the heading edit'), 30000);
 await win.locator('.rail [aria-label="Layers"]').click();
 const row = win.locator('[role="tree"] [role="treeitem"]').first();
 await row.click();
@@ -224,7 +235,7 @@ await headingField.focus();
 await headingField.press('End');
 // One character: the field re-renders as it changes, which can split typing into several steps of its history.
 await headingField.pressSequentially('!');
-await textHistory('inspector field', () => value(headingField), 'Committed heading!', 'Committed heading');
+await textHistory('inspector field', headingField, () => value(headingField), 'Committed heading!', 'Committed heading');
 await headingField.press('Escape');
 
 step('Undo from the empty Layers panel undoes the project');
@@ -256,7 +267,7 @@ const search = win.locator('[role="dialog"] input').first();
 await search.waitFor();
 // One character, as in the inspector.
 await search.pressSequentially('p');
-await textHistory('command menu search', () => value(search), 'p', '');
+await textHistory('command menu search', search, () => value(search), 'p', '');
 await search.press('Escape');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');

@@ -9,12 +9,34 @@ import { createProject, eventually, launch, scratch, step } from './harness.mjs'
 const { WORK, SHOTS: OUT, cleanup } = scratch('layout-handles');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Layout Studio', parentDir: join(WORK, 'sites'), starter: 'business' });
+// The shipped hero is code; its marked parts have no canvas handles. Use a managed placement for handle editing.
+await win.evaluate(async () => {
+  const home = (await window.builder.project.snapshot()).state.site.homePageId;
+  const link = { type: 'page', target: home };
+  const made = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name: 'Editable layout hero', properties: {},
+    parts: { root: { nodeId: 'root', label: 'Section' }, container: { nodeId: 'container', label: 'Container', styleControls: ['maxWidth', 'gap'] },
+      actions: { nodeId: 'actions', label: 'Actions', styleControls: ['gap'] } },
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', styles: { base: { paddingBlock: '96px' } }, children: ['container'] },
+      { kind: 'element', id: 'container', tag: 'div', styles: { base: { marginInline: 'auto', layout: 'stack', gap: '24px' } }, children: ['heading', 'actions'] },
+      { kind: 'text', id: 'heading', tag: 'h1', text: 'Editable layout hero' },
+      { kind: 'element', id: 'actions', tag: 'div', styles: { base: { layout: 'row' } }, children: ['primary', 'secondary'] },
+      { kind: 'link', id: 'primary', label: 'Start a project', link, appearance: 'primary' },
+      { kind: 'link', id: 'secondary', label: 'See our work', link, appearance: 'secondary' }] }] }, { label: 'Make layout hero' });
+  if (!made.ok) throw new Error(made.error?.message);
+  const placed = await window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index: 0, definitionId: made.results[0].definitionId }] }, { label: 'Place layout hero' });
+  if (!placed.ok) throw new Error(placed.error?.message);
+  const base = await window.builder.project.apply({ operations: [
+    { type: 'node.setStyle', owner: { kind: 'page', id: home }, nodeId: placed.results[0].nodeId, partId: 'actions', scope: 'base', property: 'gap', value: '12px' },
+    { type: 'node.setStyle', owner: { kind: 'page', id: home }, nodeId: placed.results[0].nodeId, partId: 'container', scope: 'base', property: 'maxWidth', value: '960px' }
+  ] }, { label: 'Start layout sizes' });
+  if (!base.ok) throw new Error(base.error?.message);
+});
 
 const snap = () => win.evaluate(() => window.builder.project.snapshot());
 const homeNodes = (s) => s.state.pages[s.state.site.homePageId].nodes;
 const heroNode = (s) => {
   const page = s.state.pages[s.state.site.homePageId];
-  return page.rootIds.map((id) => page.nodes[id]).find((n) => s.state.components[n.definitionId]?.componentId === 'hero.split');
+  return page.rootIds.map((id) => page.nodes[id]).find((n) => s.state.components[n.definitionId]?.name === 'Editable layout hero');
 };
 const applied = (s) => s.history.entries.filter((e) => e.applied).map((e) => e.id);
 /** The snapshot once a save has landed: the project's state shows a change a moment before its history does. */
@@ -53,7 +75,7 @@ const selectPart = async (section, part) => {
   await eventually(async () => assert.match(await win.locator('.ov-chip').first().innerText(), new RegExp(part)));
 };
 
-const hero = frame.locator('section', { has: frame.locator('h1', { hasText: 'Calm, considered spaces' }) }).first();
+const hero = frame.locator('section', { has: frame.locator('h1', { hasText: 'Editable layout hero' }) }).first();
 const actions = hero.locator('a', { hasText: 'Start a project' }).locator('xpath=..');
 const container = hero.locator(':scope > div').first();
 const gapOf = (loc) => loc.evaluate((el) => Number.parseFloat(getComputedStyle(el).columnGap));
@@ -81,14 +103,14 @@ const edges = (loc) =>
 try {
   await win.locator('.rail [aria-label="Layers"]').click();
 
-  step('select the Split hero’s Actions: a gap handle sits between its two buttons');
-  await selectPart('Split hero', 'Actions');
+  step('select the editable hero’s Actions: a gap handle sits between its two buttons');
+  await selectPart('Editable layout hero', 'Actions');
   const gapHandle = win.getByTestId('layout-gap-x-0');
   await gapHandle.waitFor();
   const before = await snap();
   const originalOverrides = heroNode(before).overrides ?? {};
+  await eventually(async () => assert.equal(await gapOf(actions), 12, 'the buttons start a Small gap apart'), 30000);
   const startGap = await gapOf(actions);
-  assert.equal(startGap, 12, 'the buttons start a Small gap apart');
   // The handle sits in the gap between the two buttons, level with them.
   const [first, second] = [await onScreen(actions.locator('a').first()), await onScreen(actions.locator('a').nth(1))];
   const g = await centre('layout-gap-x-0');
@@ -108,15 +130,15 @@ try {
   await win.mouse.up();
   const gapSaved = await landed(before, (s) => assert.deepEqual(heroNode(s).overrides?.actions?.base?.gap, { token: 'space.lg' }));
   assert.equal(applied(gapSaved).length, applied(before).length + 1, 'one history entry');
-  assert.equal(gapSaved.history.undoLabel, 'Set gap for Actions in Split hero on Home');
+  assert.equal(gapSaved.history.undoLabel, 'Set gap for Actions in Editable layout hero on Home');
   await eventually(async () => assert.equal(await previews(), 0, 'the preview is handed over to the saved style'), 15000);
   assert.equal(await gapOf(actions), 24, 'the saved style shows on its own');
   await win.locator('[aria-label^="Undo"]').first().click();
   const gapUndone = await landed(gapSaved, (s) => assert.deepEqual(heroNode(s).overrides ?? {}, originalOverrides));
   await eventually(async () => assert.equal(await gapOf(actions), startGap), 15000);
 
-  step('select the Split hero’s Container: max width handles on both its edges');
-  await selectPart('Split hero', 'Container');
+  step('select the editable hero’s Container: max width handles on both its edges');
+  await selectPart('Editable layout hero', 'Container');
   await win.getByTestId('layout-width-right').waitFor();
   assert.equal(await win.getByTestId('layout-width-left').count(), 1);
   const startBox = await edges(container);
@@ -180,7 +202,7 @@ try {
 
   step('drag the divider a third of the way across: the columns preview at 1:2, and release saves 1fr 2fr');
   await dragBy('layout-split-0', -(a + b) / 6);
-  await eventually(async () => assert.match(await hud.innerText(), /Column sizes\s*1fr 2fr/));
+  await eventually(async () => assert.match(await hud.innerText(), /Column sizes\s*33% · 67%/));
   await eventually(async () => {
     const [l, r] = await tracks();
     assert.ok(Math.abs(r / l - 2) < 0.02, `the page shows 1:2 while dragging: ${[l, r]}`);

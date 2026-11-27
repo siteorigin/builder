@@ -82,17 +82,17 @@ const [{ nodeId: row }] = await apply([{ type: 'node.insert', owner, parentId: f
 await apply(
   [
     { type: 'node.insert', owner, parentId: row, primitive: 'paragraph', text: 'Doors open at seven' },
-    { type: 'node.insert', owner, parentId: second, slot: 'content', primitive: 'heading', text: 'See you there' },
-    { type: 'node.setContent', owner, nodeId: first, field: 'anchor', value: 'first' }
+    { type: 'node.insert', owner, parentId: second, slot: 'content', primitive: 'heading', text: 'See you there' }
   ],
   'Fill sections'
 );
 await frame.locator('p', { hasText: 'Doors open at seven' }).first().waitFor();
-await frame.locator('#first').waitFor();
+const firstOnPage = frame.locator(`[data-so-ctx="page:${pageId}"][data-so-node="${first}"] section`).first();
+await firstOnPage.waitFor();
 
 step('the pointer on the first section shows a + on its bottom edge, which stays as the pointer moves onto it');
 await win.keyboard.press('Escape');
-const over = await pointIn(frame.locator('#first'), 0.85, 0.75);
+const over = await pointIn(firstOnPage, 0.85, 0.75);
 await win.mouse.move(over.x, over.y);
 const below = addButton('after', first);
 await below.waitFor({ timeout: 10000 });
@@ -226,7 +226,7 @@ step('Preview shows no Add buttons');
 await inside.waitFor();
 await win.locator('.toolbar').getByRole('radio', { name: 'Preview', exact: true }).click();
 await frame.locator('html:not([data-so-editing])').waitFor({ state: 'attached' });
-const hoverAt = await pointIn(frame.locator('#first'), 0.85, 0.75);
+const hoverAt = await pointIn(firstOnPage, 0.85, 0.75);
 await win.mouse.move(hoverAt.x, hoverAt.y);
 await win.waitForTimeout(400);
 assert.equal(await allAdds.count(), 0, 'no + in Preview');

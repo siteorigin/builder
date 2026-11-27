@@ -84,9 +84,9 @@ const leftBehind = (m) => !!m.navigationId && m.navigationId !== navigationId;
 
 /**
  * A page the editor asks for may be one just added: its file is on disk, but the preview server takes a moment to
- * pick up a new route, and a full load that arrives first is answered Not Found (on a slower machine, Windows, often).
- * The address asked for is kept for the load it may lead to, and that load, answered 404, loads the page again a few
- * times before it is shown as missing. Only an address the editor asked for: a visitor's broken link stays missing.
+ * pick up a new route, and a full load that arrives first can be answered 404 or a transient compile error (500).
+ * The address asked for is kept for the load it may lead to, and that load retries a few times before it is shown
+ * as missing or broken. Only an address the editor asked for: a visitor's broken link stays broken.
  */
 const ASKED_KEY = 'siteorigin:asked';
 const MISSING_RELOADS = 6;
@@ -107,7 +107,7 @@ function reloadMissingPage() {
     return false;
   }
   const status = performance.getEntriesByType('navigation')[0]?.responseStatus;
-  if (!asked || asked.path !== location.pathname || status !== 404 || !(asked.tries < MISSING_RELOADS)) return false;
+  if (!asked || asked.path !== location.pathname || (status !== 404 && status !== 500) || !(asked.tries < MISSING_RELOADS)) return false;
   try {
     sessionStorage.setItem(ASKED_KEY, JSON.stringify({ path: asked.path, tries: asked.tries + 1 }));
   } catch {
@@ -161,7 +161,7 @@ const PART_CLASS = 'so-part--';
  * placement gave it (`so-part--total`). Only attributes are read.
  */
 function partIdOf(el) {
-  if (el.hasAttribute('data-so-part')) return el.getAttribute('data-so-part') || '';
+  if (HAS_ATTRIBUTE.call(el, 'data-so-part')) return el.getAttribute('data-so-part') || '';
   // The placement's class comes after any the code writes itself, so the last one is the part's.
   let part = '';
   for (const c of el.classList || []) if (c.startsWith(PART_CLASS) && c.length > PART_CLASS.length) part = c.slice(PART_CLASS.length);
@@ -244,7 +244,8 @@ function partItemOf(el, owner, part) {
  * so one card is picked rather than all of them.
  */
 function partDesc(el) {
-  if (el.hasAttribute('data-so-node')) return null;
+  // A form control named “hasAttribute” can shadow the method on its form.
+  if (HAS_ATTRIBUTE.call(el, 'data-so-node')) return null;
   const part = partIdOf(el);
   const owner = part ? partOwner(el) : null;
   if (!owner) return null;
@@ -3712,6 +3713,11 @@ function editorElement(el) {
 /** The editor's address for a finding about `el`, saying when it is about something inside the element it names. */
 function findingDesc(el) {
   try {
+    for (let e = el; e && e !== document.documentElement; e = parentOf(e)) {
+      const part = partDesc(e);
+      if (part) return { ...part, ...(e !== el ? { inside: true } : {}) };
+      if (HAS_ATTRIBUTE.call(e, 'data-so-node')) break;
+    }
     const at = editorElement(el);
     if (!at) return null;
     const d = descOf(at);
@@ -5271,6 +5277,10 @@ window.addEventListener('message', async (e) => {
       navRequest = id;
       stopShowing();
       askedFor(path);
+      if (m.payload.fullReload === true) {
+        location.assign(path);
+        break;
+      }
       try {
         const nav = await import('$app/navigation');
         await nav.goto(path);

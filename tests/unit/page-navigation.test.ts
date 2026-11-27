@@ -82,8 +82,7 @@ describe('labels a page rename leaves behind', () => {
     expect(links(after, 'header')[3]).toMatchObject({ id: links(s, 'header')[3].id, link: { type: 'page', target: id } });
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the release's page introduction heading counts as custom code and pageHeadings never reports it.
-  it.fails('offers the release’s page introduction heading that still says the old name', () => {
+  it('offers the release’s page introduction heading that still says the old name', () => {
     const { s, id } = lookbook(undefined, () => createStarterState('business', 'Test Studio', false));
     expect(renameLabels(s, id, 'Lookbook').filter((l) => l.where !== 'Header menu link').map((l) => [l.where, l.preselect])).toEqual([['Page introduction heading', true]]);
   });

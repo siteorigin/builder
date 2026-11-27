@@ -18,6 +18,12 @@ import { createProject, eventually, launch, scratch, step, withTimeout } from '.
 
 const { WORK, cleanup } = scratch('child-pages');
 const { app, win, errors } = await launch(WORK);
+await win.evaluate(() => {
+  window.__appliedRevisions = [];
+  window.addEventListener('message', (event) => {
+    if (event.data?.type === 'revisionApplied' && Number.isSafeInteger(event.data.payload?.revision)) window.__appliedRevisions.push(event.data.payload.revision);
+  });
+});
 
 let root = null;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.xml': 'application/xml', '.txt': 'text/plain' };
@@ -96,7 +102,7 @@ try {
   const nested = list.locator('.list-editor-item.nested');
   await eventually(async () => assert.equal(await nested.count(), 1, 'one link is under another'));
   assert.match(await nested.locator('.title').innerText(), /Kitchens/);
-  assert.equal(await nested.locator('.sr-only').first().textContent(), ', under Lookbook');
+  assert.match(await nested.locator('.list-editor-meta').first().innerText(), /Under Lookbook/);
   await nested.locator('.title').click();
   const sub = nested.getByRole('switch', { name: 'Show under the link above' });
   assert.equal(await sub.getAttribute('aria-checked'), 'true');
@@ -184,6 +190,7 @@ try {
   await win.locator('button[title^="Preview:"]').click();
   const pill = win.getByRole('group', { name: 'Preview', exact: true });
   const pageShown = win.locator('.project-title .page');
+  await eventually(async () => assert.ok(await win.evaluate((revision) => window.__appliedRevisions.includes(revision), (await win.evaluate(() => window.builder.project.snapshot())).revision), 'the preview has applied the Japanese page'), 30000);
   await eventually(async () => assert.equal(await frame.locator('html').evaluate((html) => document.readyState === 'complete' && !html.hasAttribute('data-so-editing')), true, 'the page is ready for a visitor'), 30000);
   // A link the site's own router follows, as a visitor's click on a link to the page would be.
   await frame.locator('body').evaluate((body) => {
@@ -262,7 +269,7 @@ try {
   assert.equal(await focusedText(page), 'Kitchens', 'Tab moves into the submenu');
   await page.keyboard.press('Escape');
   await eventually(async () => assert.equal(await expanded(toggle), 'false', 'Escape closes it'));
-  assert.equal(await kitchensLink.isVisible(), false);
+  await eventually(async () => assert.equal(await kitchensLink.isVisible(), false, 'the closed submenu is hidden'));
   assert.equal(await hasFocus(toggle), true, 'focus is back on its button');
   await page.keyboard.press('Space');
   await eventually(async () => assert.equal(await expanded(toggle), 'true', 'Space opens it'));

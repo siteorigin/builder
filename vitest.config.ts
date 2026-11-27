@@ -27,8 +27,10 @@ export default defineConfig({
       '**/resources/packs/foundation/**',
       '**/resources/packs-dev/foundation-alt/**'
     ],
-    // A CI runner has a quarter of a workstation's cores, so image encoding and browser tests run several times
-    // slower there: tests without a timeout of their own get more time on CI, never less anywhere.
-    ...(process.env.CI ? { testTimeout: 30_000, hookTimeout: 60_000 } : {})
+    // Native file watchers and media workers share this machine's filesystem and event queues across test files.
+    // Keep the general suite parallel; the filesystem-sensitive files run serially in scripts/test-unit.mjs.
+    maxWorkers: 6,
+    testTimeout: 30_000,
+    hookTimeout: 60_000
   }
 });

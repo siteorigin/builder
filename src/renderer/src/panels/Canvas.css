@@ -134,10 +134,9 @@
      heavy keylined line on its edge, or a tint over the box it fills. Open, it takes the raised face (white, its glyph
      turned to a close mark); keyboard focus is the house 2px ring, 2px clear of the rim, wrapped white then ink.
      Pointed at, it also grows a little, except under keyboard focus (the ring stays put) or reduced motion.
-     It is drawn before the spacing handles and the chip (each z-index 1 in the overlay), which stay on top where a
-     small page brings them together. */
+     Keep the Add target above a spacing handle when their hit areas overlap on a small page. */
   .ov-add-at { display: contents; }
-  .ov-add { --focus: var(--select); --add-rim: 0 0 0 1.5px #fff, 0 0 0 2.5px #101828; --add-lift: 0 2px 6px rgb(16 24 40 / 0.3); position: absolute; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0; border: 0; border-radius: 50%; background: var(--select); color: #fff; box-shadow: var(--add-rim), var(--add-lift); pointer-events: auto; cursor: pointer; outline: none; transition: transform 90ms ease-out, background-color 90ms ease-out; }
+  .ov-add { --focus: var(--select); --add-rim: 0 0 0 1.5px #fff, 0 0 0 2.5px #101828; --add-lift: 0 2px 6px rgb(16 24 40 / 0.3); position: absolute; z-index: 2; display: grid; place-items: center; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0; border: 0; border-radius: 50%; background: var(--select); color: #fff; box-shadow: var(--add-rim), var(--add-lift); pointer-events: auto; cursor: pointer; outline: none; transition: transform 90ms ease-out, background-color 90ms ease-out; }
   .ov-add.inside { border-radius: var(--r-sm); }
   /* A 32px target round a 22px face (WCAG 2.5.8), square so it holds a full 24px square. */
   .ov-add::after { content: ''; position: absolute; inset: -5px; border-radius: var(--r-sm); }
@@ -477,6 +476,7 @@
   /* The pointer keeps the gesture's closed hand wherever it goes, and over a place that refuses the drop says so. */
   html.insert-dragging, html.insert-dragging * { cursor: grabbing !important; user-select: none; }
   html.insert-dragging.drop-refused, html.insert-dragging.drop-refused * { cursor: no-drop !important; }
+  html.insert-dragging .frame-box iframe { pointer-events: none; }
   /* A collection's layout being edited: a band over the pasteboard (TemplateStrip), which starts below it, so the band
      never scrolls away and the strip above the page stays the selection chip's and the width's. A neutral raised bar,
      since layouts have no hue: the words say it is shared, and Done is a bordered button. It is a container, and gives

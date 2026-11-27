@@ -109,7 +109,7 @@ try {
   const experiment = await send(EXPERIMENT);
   await eventually(async () => assert.equal(await gateState('interview-held'), 'reached'));
   let at = await mark();
-  await click('button', 'Stop and undo');
+  await click('button', 'Stop and undo', { region: 'AI Working' });
   assert.equal((await wait(experiment.runId, at)).run.status, 'cancelled');
   await ok('assistant.release', { gate: 'interview-held' });
   const experimentId = experiment.conversationId;

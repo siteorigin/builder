@@ -232,8 +232,7 @@ describe.skipIf(!engine)('what a thumbnail can show of the site’s colours', ()
     expect(await holds(b, 'light')).toContain('--so-color-brand');
   }, 120_000);
 
-  // Release gap: thumb-reads.ts (src/main/runtime) takes a selector holding both a quote and a pseudo-element as applying, and the release's base CSS draws a chosen tab's underline in the brand colour under one (.so-tablist > .so-plain-link[role='tab'][aria-selected='true']::after), so every preview reads the brand colour.
-  it.fails('does not read the brand colour for a card that never shows it', async () => {
+  it('does not read the brand colour for a card that never shows it', async () => {
     const [p] = await cards();
     expect(await holds(p, 'light')).not.toContain('--so-color-brand');
   }, 120_000);
@@ -255,9 +254,9 @@ describe.skipIf(!engine)('what the script must not be fooled by', () => {
     expect(await readsNow()).toEqual(['--b', '--d', '--local']);
   });
 
-  it('takes a selector with a pseudo-element’s name in quotes as applying', async () => {
-    await page0('[aria-label="::selection"] { background: var(--a); } [title="::before"] { color: var(--b); } [title=x]::before { color: var(--c); }', '<p aria-label="::selection">p</p>');
-    expect(await readsNow()).toEqual(['--a', '--b', '--c']);
+  it('keeps a quoted pseudo-element name conservative while testing unrelated pseudo-element selectors', async () => {
+    await page0('[aria-label="::selection"] { background: var(--a); } [title="::before"] { color: var(--b); } [title=x]::before { color: var(--c); } .unused[role="tab"]::after { color: var(--d); }', '<p aria-label="::selection">p</p>');
+    expect(await readsNow()).toEqual(['--a', '--b']);
   });
 
   it('cannot tell once the page changed between the read before a photograph and the one after', async () => {
@@ -288,9 +287,11 @@ describe.skipIf(!engine)('what the script must not be fooled by', () => {
   });
 
   it('counts the selection’s colours only while something is selected or focused', async () => {
-    await page0('::selection { background: var(--a); } :focus-visible { outline-color: var(--b); }', '<p id="t">text</p><input id="i">');
+    await page0('::selection { background: var(--a); } :focus-visible { outline-color: var(--b); }', '<p id="t">text</p><input id="i"><button id="button">Go</button>');
     expect(await readsNow()).toEqual([]);
-    await page.evaluate(`(() => { const r = document.createRange(); r.selectNodeContents(document.getElementById('t')); getSelection().addRange(r); })()`);
+    await page.evaluate(`document.getElementById('button').focus()`);
+    expect(await readsNow()).toEqual(['--b']);
+    await page.evaluate(`(() => { document.getElementById('button').blur(); const r = document.createRange(); r.selectNodeContents(document.getElementById('t')); getSelection().addRange(r); })()`);
     expect(await readsNow()).toEqual(['--a']);
     await page.evaluate(`(() => { getSelection().removeAllRanges(); document.getElementById('i').focus(); })()`);
     expect(await readsNow()).toEqual(['--a', '--b']);

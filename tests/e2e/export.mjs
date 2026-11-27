@@ -530,7 +530,10 @@ function checkBuiltArchives(root, label, base = '') {
   assert.match(feed, /<time[^>]*datetime="2026-03-02"[^>]*>/, `${label}: each card states its date in a <time> element`);
   assert.match(feed, new RegExp(`srcset="[^"]*${kitchen75.variants[0].file.split('/').pop().replace(/\./g, '\\.')}[^"]*"`), `${label}: the backdated post's card has its picture's smaller copies`);
   assert.ok(feed.includes('>News<') && feed.includes('A bigger kiln for bigger pots.'), `${label}: a card shows its category and excerpt`);
-  const cardLinks = [...feed.matchAll(/<a [^>]*href="([^"]*)"[^>]*>(?:<[^>]*>)*New kiln</g)].map((m) => at(feed, '/')(m[1]));
+  const cardLinks = [...feed.matchAll(/<a\b([^>]*)>New kiln<\/a>/g)]
+    .map((m) => m[1].match(/\bhref="([^"]*)"/)?.[1])
+    .filter(Boolean)
+    .map(at(feed, '/'));
   assert.deepEqual(cardLinks, [`${base}/blog/new-kiln/`], `${label}: the card links to the post's page`);
 
   const index = page('blog');

@@ -71,12 +71,13 @@ try {
   await addPage('Wholesale', 'empty');
   assert.deepEqual(await sectionsOf('Wholesale'), []);
   assert.deepEqual(await headerLinks(), ['Home', 'Wholesale']);
-  const card = win.getByTestId('canvas-empty-page');
-  await card.waitFor({ timeout: 30000 });
-  assert.deepEqual(await card.getByRole('button').allInnerTexts(), ['Add a section', 'Write with AI']);
+  // The same first actions sit in the page card when it fits, or in the canvas strip when the measured room is short.
+  const startActions = win.locator('[data-testid="canvas-empty-page"], [data-testid="canvas-start-strip"]').first();
+  await startActions.waitFor({ timeout: 30000 });
+  assert.deepEqual(await startActions.getByRole('button').allInnerTexts(), ['Add a section', 'Write with AI']);
 
   step('with no AI provider, Write with AI still opens a message box for the page’s copy');
-  await card.getByRole('button', { name: 'Write with AI' }).click();
+  await startActions.getByRole('button', { name: 'Write with AI' }).click();
   await chatOpen();
   await composerFocused();
   await scopeIs('Wholesale');
@@ -92,8 +93,8 @@ try {
   await win.waitForSelector('.editor');
   frame = win.frameLocator('.frame-box iframe');
   await leaveChat();
-  await card.waitFor({ timeout: 30000 });
-  await card.getByRole('button', { name: 'Write with AI' }).click();
+  await startActions.waitFor({ timeout: 30000 });
+  await startActions.getByRole('button', { name: 'Write with AI' }).click();
   await chatOpen();
   await composerFocused();
   await scopeIs('Wholesale');

@@ -9,6 +9,10 @@ import { join, resolve } from 'node:path';
 import { PACK_MANIFEST, type PackManifest } from '@catalogue/pack';
 import type { ThemePack } from '@catalogue/pack';
 import { defaultTheme, findTheme } from '@catalogue/index';
+import { createStarterState } from '@catalogue/starters';
+import { applyOperations } from '@engine/apply';
+import { buildSearchIndex } from '@generator/search';
+import { pageHeadings, renderedContent } from '@generator/checks';
 import { loadPackDir } from '../../src/main/packs/loader';
 import { loadBundledPacks, loadInstalledPacks, packPreview, packRoots } from '../../src/main/packs/installed';
 import { sha } from '../../src/main/project/fsutil';
@@ -64,6 +68,28 @@ describe('the committed theme releases', () => {
     expect(findTheme('foundation-alt')?.devOnly).toBe(true);
     // builder-components' Foundation is made of Svelte components.
     expect(foundation.components.every((c) => c.kind === 'code')).toBe(true);
+    const blank = createStarterState('blank', 'Pack search', false);
+    const pageId = blank.site.homePageId;
+    const withText = applyOperations(blank, [
+      { type: 'node.insert', owner: { kind: 'page', id: pageId }, componentId: 'content.text', props: {
+        heading: 'Workshop',
+        body: [{ type: 'p', spans: [{ text: 'A walnut bench made for the library.' }] }]
+      } }
+    ]).state;
+    expect(buildSearchIndex(withText).find((entry) => entry.route === '/')?.text).toContain('A walnut bench made for the library.');
+    const withIntro = applyOperations(withText, [{ type: 'page.create', title: 'Gallery', route: '/gallery/', starter: 'intro' }]).state;
+    const gallery = Object.values(withIntro.pages).find((page) => page.route === '/gallery/')!;
+    const heading = renderedContent(withIntro, gallery).find((content) => content.value === 'Gallery');
+    expect(heading?.custom).toBeUndefined();
+    expect(heading?.source).toMatchObject({ kind: 'prop', prop: 'heading' });
+    expect(pageHeadings(withIntro, gallery.id).outline).toContainEqual(expect.objectContaining({ level: 1, text: 'Gallery' }));
+    const business = createStarterState('business', 'Pack search', false);
+    const contact = Object.values(business.pages).find((page) => page.title === 'Contact')!;
+    for (const tree of [contact, business.site.shell.footer]) {
+      const samples = renderedContent(business, tree).filter((content) => JSON.stringify(content.value).includes('hello@example.com'));
+      expect(samples.length).toBeGreaterThan(0);
+      expect(samples.every((content) => !content.custom)).toBe(true);
+    }
     // Their thumbnails are served to the editor from the release.
     const [componentId, previews] = Object.entries(foundation.previews ?? {})[0];
     expect(componentId).toBeTruthy();

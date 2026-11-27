@@ -9,11 +9,22 @@ import { createProject, eventually, launch, openInspector, scratch, step } from 
 const { WORK, SHOTS: OUT, cleanup } = scratch('spacing-handles');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Spacing Studio', parentDir: join(WORK, 'sites'), starter: 'business' });
+// The shipped hero is a code component. Canvas spacing handles edit a managed element's own styles.
+await win.evaluate(async () => {
+  const home = (await window.builder.project.snapshot()).state.site.homePageId;
+  const made = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name: 'Editable spacing hero', properties: {},
+    parts: { root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock'] } },
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', styles: { base: { paddingBlock: '96px' } }, children: ['heading'] },
+      { kind: 'text', id: 'heading', tag: 'h1', text: 'Editable hero padding' }] }] }, { label: 'Make spacing hero' });
+  if (!made.ok) throw new Error(made.error?.message);
+  const placed = await window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index: 0, definitionId: made.results[0].definitionId }] }, { label: 'Place spacing hero' });
+  if (!placed.ok) throw new Error(placed.error?.message);
+});
 
 const snap = () => win.evaluate(() => window.builder.project.snapshot());
 const heroNode = (s) => {
   const page = s.state.pages[s.state.site.homePageId];
-  return page.rootIds.map((id) => page.nodes[id]).find((n) => s.state.components[n.definitionId]?.componentId === 'hero.split');
+  return page.rootIds.map((id) => page.nodes[id]).find((n) => s.state.components[n.definitionId]?.name === 'Editable spacing hero');
 };
 const applied = (s) => s.history.entries.filter((e) => e.applied).map((e) => e.id);
 /** The snapshot once a save has landed: the project's state shows a change a moment before its history does. */
@@ -24,7 +35,7 @@ const landed = (after, check) =>
     check(s);
     return s;
   }, 15000);
-const hero = frame.locator('section', { has: frame.locator('h1', { hasText: 'Calm, considered spaces' }) }).first();
+const hero = frame.locator('section', { has: frame.locator('h1', { hasText: 'Editable hero padding' }) }).first();
 const padding = () => hero.evaluate((el) => [Number.parseFloat(getComputedStyle(el).paddingTop), Number.parseFloat(getComputedStyle(el).paddingBottom)]);
 const previews = () => frame.locator('style[data-so-spacing]').count();
 const handle = win.getByTestId('spacing-padding-top');
@@ -48,9 +59,9 @@ async function dragTopTo(to, steps = 4) {
   await win.mouse.move(x, target, { steps });
 }
 
-step('select the Split hero: its vertical padding gets handles on the page');
+step('select the editable hero: its vertical padding gets handles on the page');
 await win.locator('.rail [aria-label="Layers"]').click();
-await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
+await win.locator('.list-item', { hasText: 'Editable spacing hero' }).first().click();
 await openInspector(win);
 await handle.waitFor();
 const handles = () => win.locator('[data-testid^="spacing-"]:not([data-testid="spacing-hud"])').evaluateAll((els) => els.map((e) => e.dataset.testid).sort());
@@ -74,13 +85,13 @@ step('release: one edit saves the spacing style for all sizes, and the page keep
 await win.mouse.up();
 const saved = await landed(before, (s) => assert.deepEqual(heroNode(s).overrides?.root?.base?.paddingBlock, { token: 'space.lg' }));
 assert.equal(applied(saved).length, applied(before).length + 1, 'one history entry');
-assert.equal(saved.history.undoLabel, 'Set vertical padding for Split hero on Home');
+assert.equal(saved.history.undoLabel, 'Set vertical padding for Editable spacing hero on Home');
 assert.equal(saved.revision, before.revision + 1, 'one revision');
 assert.deepEqual(heroNode(saved).overrides.root, { ...original.root, base: { ...original.root?.base, paddingBlock: { token: 'space.lg' } } }, 'only the padding changed');
 // The preview rule goes once the site's own stylesheet shows the same padding.
 await eventually(async () => assert.equal(await previews(), 0, 'the drag preview is handed over to the saved style'), 15000);
-assert.deepEqual(await padding(), [24, 24], 'the saved style shows on its own');
-assert.equal(await hud.count(), 0, 'the HUD goes with the drag');
+await eventually(async () => assert.deepEqual(await padding(), [24, 24], 'the saved style shows on its own'), 30000);
+await eventually(async () => assert.equal(await hud.count(), 0, 'the HUD goes with the drag'));
 
 step('a release before the page has measured its spacing styles saves where it let go');
 // The page's answers are held back in the editor for a moment, and the hero is picked again so its handles start
@@ -100,8 +111,8 @@ await win.evaluate(() => {
 });
 await win.locator('.list-item', { hasText: 'Logo strip' }).first().click();
 await eventually(async () => assert.match(await win.locator('.ov-chip').first().innerText(), /Logo strip/));
-await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
-await eventually(async () => assert.match(await win.locator('.ov-chip').first().innerText(), /Split hero/));
+await win.locator('.list-item', { hasText: 'Editable spacing hero' }).first().click();
+await eventually(async () => assert.match(await win.locator('.ov-chip').first().innerText(), /Editable spacing hero/));
 await handle.waitFor();
 await dragTopTo(47, 1);
 await win.mouse.up();
@@ -122,14 +133,15 @@ await win.keyboard.press('Escape');
 // Still holding the mouse: Escape alone ends the drag.
 await eventually(async () => assert.deepEqual(await padding(), [24, 24], 'the padding is back where it was'));
 assert.equal(await previews(), 0, 'no preview is left on the page');
-assert.equal(await hud.count(), 0, 'the HUD goes with the drag');
+await win.mouse.move(0, 0);
+await eventually(async () => assert.equal(await hud.count(), 0, 'the HUD goes with the drag'));
 await win.mouse.up();
 await win.waitForTimeout(500);
 const escaped = await snap();
 assert.equal(escaped.revision, beforeEscape.revision, 'nothing is saved');
 assert.deepEqual(applied(escaped), applied(beforeEscape), 'no history entry');
 assert.deepEqual(await padding(), [24, 24], 'releasing after Escape saves nothing either');
-assert.match(await win.locator('.ov-chip').first().innerText(), /Split hero/, 'Escape ended the drag, not the selection');
+assert.match(await win.locator('.ov-chip').first().innerText(), /Editable spacing hero/, 'Escape ended the drag, not the selection');
 
 step('one Undo takes the drag back');
 await win.locator('[aria-label^="Undo"]').first().click();

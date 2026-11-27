@@ -32,6 +32,17 @@ const ok = (m: ToolsCheckRequest): ToolsCheckReply => ({ id: m.id, ok: true, pac
 afterEach(() => vi.useRealTimers());
 
 describe('the website tools check’s process', () => {
+  it('drops its warm process when a project closes and starts a fresh one for a later check', async () => {
+    const made: FakeWorker[] = [];
+    const checker = createToolsChecker(() => (made.push(new FakeWorker(ok)), made.at(-1)!));
+    await checker.check(req);
+    checker.release();
+    expect(made[0].killed).toBe(true);
+    await checker.check(req);
+    expect(made).toHaveLength(2);
+    checker.stop();
+  });
+
   it('answers each check in turn from one process, which goes once it has been idle a while', async () => {
     const made: FakeWorker[] = [];
     const checker = createToolsChecker(() => (made.push(new FakeWorker(ok)), made.at(-1)!), { idleMs: 50 });

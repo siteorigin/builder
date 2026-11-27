@@ -117,9 +117,10 @@ try {
   assert.equal(ok(await client.request('session.describe'), 'describe').session.pid, one.pid);
 
   step('a call past its deadline is answered TIMEOUT; a read leaves the session usable');
-  const slow = await client.request('window.info', undefined, { timeoutMs: 1 });
+  const slow = await client.request('wait.for', { condition: 'ui.present', role: 'heading', name: 'A heading that is absent' }, { timeoutMs: 50 });
   assert.equal(code(slow), 'TIMEOUT');
-  assert.deepEqual(slow.error.details, { phase: 'window.info', sessionState: 'ready' });
+  assert.equal(slow.error.details.phase, 'wait.for');
+  assert.equal(slow.error.details.sessionState, 'ready');
   assert.equal(ok(await client.request('window.info'), 'window.info after the timeout').nativeId, first.nativeId);
 
   step('more sessions at the same time, two launching together in one process, each get an app of their own');

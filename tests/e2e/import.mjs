@@ -206,7 +206,9 @@ await win.getByRole('button', { name: `Free ${mb(plan.files.bytes + plan.history
 await dialog.waitFor({ state: 'detached', timeout: 15000 });
 await win.locator('.toast', { hasText: 'Freed ' }).first().waitFor({ timeout: 15000 });
 assert.deepEqual(onDisk(), [], 'the removed files are deleted');
-await storage.waitFor({ state: 'detached', timeout: 15000 });
+// Saved versions can keep the storage summary visible after unused assets and their Undo steps are freed.
+await eventually(async () => assert.equal(await storage.getByRole('button', { name: /^Free / }).count(), 0, 'there is no longer anything to reclaim'));
+assert.equal(await storage.getByText('Kept for Undo').count(), 0, 'the removed pictures are no longer kept for Undo');
 const after = await win.evaluate(() => window.builder.project.snapshot());
 assert.equal(after.history.canUndo, false, 'the steps that could bring them back are gone');
 assert.deepEqual(after.state.assets.assets, {}, 'the library stays empty');
@@ -313,7 +315,7 @@ await win.locator(`[role="tree"] [data-node="${heroId}"]`).click();
 const field = win.locator('.insp-image').first();
 await field.locator('button', { hasText: /Choose image…|Change…/ }).click();
 await choose(CONVERTS ? [heic, notes] : [scan, notes]);
-await field.locator('.insp-pick button', { hasText: 'Import…' }).click();
+await win.locator('.insp-image-pop').getByRole('button', { name: 'Import…' }).click();
 await rows.first().waitFor({ timeout: 30000 });
 assert.equal(await rows.count(), 2, 'the picker reviews the photo and names the text file as no image');
 await win.locator('[data-testid="import-review-add"]').click();
@@ -340,7 +342,7 @@ if (await win.locator('.asset-detail .asset-back').count()) await win.locator('.
 await win.locator(`[data-asset="${original.id}"]`).click();
 const copyButton = win.locator('[data-testid="asset-web-copy"]');
 await copyButton.waitFor({ timeout: 30000 });
-assert.match(await win.locator('[data-testid="asset-large-note"]').innerText(), /A web-sized copy \(JPEG · 2560 × 1920\) keeps it light\. It’s added to Assets beside the original/);
+assert.match(await win.locator('[data-testid="asset-large-note"]').innerText(), /A web-sized copy \(JPEG · 2560 × 1920\) keeps it light\. It’s added beside this one, which you can then remove/);
 await copyButton.click();
 await eventually(async () => assert.equal(await win.locator('.asset-detail h4').innerText(), 'camera (web-sized)'), 60000);
 now = await win.evaluate(() => window.builder.project.snapshot());

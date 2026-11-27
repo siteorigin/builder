@@ -11,6 +11,12 @@ const mac = process.platform === 'darwin';
 const { WORK, SHOTS, cleanup } = scratch('preview-history');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Journey Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
+await win.evaluate(() => {
+  window.__previewHistoryRevisions = [];
+  window.addEventListener('message', (event) => {
+    if (event.data?.type === 'revisionApplied') window.__previewHistoryRevisions.push(event.data.payload?.revision);
+  });
+});
 
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const apply = (operations, label) => win.evaluate(([o, l]) => window.builder.project.apply({ operations: o }, { label: l }), [operations, label]);
@@ -79,11 +85,20 @@ async function stepKey(dir) {
 step('Book a call goes to the studio hours on Contact; the FAQ has an anchor of its own');
 const s0 = (await snapshot()).state;
 const contact = Object.values(s0.pages).find((p) => p.title === 'Contact');
-const [, details, faq] = contact.rootIds;
+const [{ definitionId: anchorSection }] = await apply([{ type: 'component.upsert', name: 'Anchor section',
+  properties: { heading: { type: 'string', label: 'Heading', default: 'Studio hours' } },
+  nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['heading'] },
+    { kind: 'text', id: 'heading', tag: 'h2', text: { $prop: 'heading' } }]
+}], 'Make anchor section').then((r) => r.results);
+const [{ nodeId: details }, { nodeId: faq }] = await apply([
+  { type: 'node.insert', owner: { kind: 'page', id: contact.id }, parentId: null, definitionId: anchorSection },
+  { type: 'node.insert', owner: { kind: 'page', id: contact.id }, parentId: null, definitionId: anchorSection }
+], 'Place anchor sections').then((r) => r.results);
 const header = s0.site.shell.header.rootIds[0];
 for (const [ops, label] of [
   [[{ type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: details, field: 'anchor', value: 'studio-hours' }], 'Anchor'],
   [[{ type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: faq, field: 'anchor', value: 'questions' }], 'Anchor'],
+  [[{ type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: faq, prop: 'heading', value: 'Questions' }], 'Question heading'],
   [[{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'ctaLink', value: { type: 'page', target: contact.id, anchor: 'studio-hours' } }], 'Link']
 ]) {
   const r = await apply(ops, label);
@@ -94,6 +109,8 @@ await eventually(async () => assert.equal(await cta.getAttribute('href'), '/cont
 const menuLink = (label) => frame.locator('header nav a', { hasText: label }).first();
 
 step('pages opened while editing are not part of the journey');
+await win.locator('.side-panel .list-item', { hasText: 'Contact' }).click();
+await eventually(async () => assert.equal(await frame.locator('#studio-hours').count(), 1, 'the anchored section is on Contact before the visitor follows its link'), 30000);
 await win.locator('.side-panel .list-item', { hasText: 'About' }).click();
 await eventually(async () => assert.equal(await frameAt(), '/about/'));
 await win.locator('.side-panel .list-item', { hasText: 'Home' }).click();
@@ -104,18 +121,37 @@ await at('/', 'Home', { canBack: false, canForward: false });
 step('Home → About → Book a call');
 await follow(menuLink('About'));
 await at('/about/', 'About', { canBack: true, canForward: false });
+await eventually(async () => assert.equal(await frame.getByRole('heading', { name: 'A small studio with a long view' }).count(), 1, 'About has replaced Home in the frame'), 30000);
 await scrollTo(600);
 const atAbout = await settledScroll();
+const contactRevision = (await snapshot()).revision;
+await eventually(async () => assert.equal(await win.evaluate((revision) => window.builder.project.previewRouteReady('/contact/', revision), contactRevision), true, 'the newly generated Contact route is ready for visitor navigation'), 30000);
+await eventually(async () => assert.equal(await win.evaluate((revision) => window.__previewHistoryRevisions.includes(revision), contactRevision), true, 'the preview has applied the contact edit'), 30000);
+const contactHtml = await frame.locator('html').evaluate(async () => (await fetch('/contact/')).text());
+assert.match(contactHtml, /Studio hours/, 'the Contact route serves its new content');
+assert.equal(await frameAt(), '/about/', 'About remains in the frame before the Contact link is followed');
+assert.equal(await frame.getByRole('heading', { name: 'A small studio with a long view' }).count(), 1, 'About content remains before the Contact link');
 await follow(cta);
 await at('/contact/#studio-hours', 'Contact', { canBack: true, canForward: false });
 await eventually(async () => {
-  const top = await frame.locator('#studio-hours').evaluate((el) => el.getBoundingClientRect().top);
-  assert.ok(top >= -2 && top < 200, `the page opened at the studio hours (its top is at ${top}px)`);
+  const destination = await frame.locator('html').evaluate(() => ({
+    found: document.querySelectorAll('#studio-hours').length,
+    top: document.getElementById('studio-hours')?.getBoundingClientRect().top ?? null,
+    url: location.href,
+    scrollY,
+    maxScroll: document.documentElement.scrollHeight - innerHeight,
+    innerHeight
+  }));
+  assert.equal(destination.found, 1, `Contact's destination is rendered: ${JSON.stringify(destination)}`);
+  assert.equal(new URL(destination.url).pathname, '/contact/', 'the frame stays on Contact');
+  const top = destination.top;
+  assert.ok(top >= -2 && (top < 200 || (top < destination.innerHeight && destination.scrollY >= destination.maxScroll - 2)), `the page opened as far as possible toward the studio hours: ${JSON.stringify(destination)}`);
 });
 await win.screenshot({ path: join(SHOTS, 'preview-history.png') });
 
 step('a section jump on the same page is a step of its own');
 // A link to the FAQ, added where it takes no room on the page, so the page stays where the visitor left it.
+const atHours = await settledScroll();
 await frame.locator('body').evaluate((body) => {
   const a = document.createElement('a');
   a.id = 'to-questions';
@@ -125,7 +161,6 @@ await frame.locator('body').evaluate((body) => {
   // Inside the site's own markup, where its router handles a visitor's click.
   (body.querySelector('main') ?? body).append(a);
 });
-const atHours = await settledScroll();
 await follow(frame.locator('#to-questions'));
 await at('/contact/#questions', 'Contact', { canBack: true, canForward: false });
 await back.click();

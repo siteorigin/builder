@@ -217,8 +217,7 @@ describe('the hero’s preload', () => {
     expect(head.indexOf('rel="preload"')).toBeLessThan(head.indexOf('name="description"'));
   });
 
-  // Release gap: the head's hero preload (heroImage in src/generator/index.ts) does not see a code component's images.
-  it.fails('asks for the set the release hero’s <picture> takes first, at the widths and sizes it offers, under the base path', async () => {
+  it('asks for the set the release hero’s <picture> takes first, at the widths and sizes it offers, under the base path', async () => {
     const { head, body } = await renderHome(site(picture('hero')));
     const first = firstSource(body);
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);

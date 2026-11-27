@@ -65,20 +65,9 @@ try {
   assert.ok(cards?.length >= 2, 'the features grid has cards');
   const card = cards[1].id;
 
-  // The theme's shared header and footer have links under 44px tall at phone width: reported on the shell, each on
-  // the placement that holds it there.
-  const state = await snapshot();
-  const shellPlacement = (part) => state.site.shell[part].rootIds[0];
+  // The current Foundation shell gives its links full tap targets, so it should start clean too.
   const withShell = await inspectUntil((r) => assert.ok(r.checks, 'the report counts the readability checks'), 'with the shell');
-  const shell = findings(withShell);
-  assert.deepEqual([...new Set(shell.map((f) => f.ref?.owner.id))].sort(), ['footer', 'header'], `the header's and the footer's links are measured:\n${summary(withShell)}`);
-  for (const f of shell) {
-    assert.equal(f.kind, 'small-tap-target', summary(withShell));
-    assert.ok(['header', 'footer'].includes(f.ref?.owner.id) && f.ref.owner.kind === 'shell', summary(withShell));
-    assert.equal(f.ref.nodeId, shellPlacement(f.ref.owner.id), `named on the ${f.ref.owner.id}'s placement`);
-    assert.ok(f.ref.match, 'a link inside the shell is named by the part around it, and says so');
-  }
-  assert.equal(withShell.checks.tapTargets.failed, shell.reduce((n, f) => n + (f.count ?? 1), 0), summary(withShell));
+  assert.deepEqual(findings(withShell), [], `the shared shell starts readable:\n${summary(withShell)}`);
 
   step('without the shell, the page itself starts readable');
   await apply([{ type: 'page.update', pageId, showHeader: false, showFooter: false }], 'Hide the shell');

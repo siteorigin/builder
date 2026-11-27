@@ -327,17 +327,20 @@ const COLUMN_CONTROLS = ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'g
  * its layout change. Read from the installed definition, so a Section installed before Column sizes and the separate
  * gaps were offered offers what it has. Null for anything else: a slot another design holds is not its columns.
  */
-export function columnLayoutPart(def: Pick<ComponentDefinition, 'kind' | 'componentId' | 'provenance' | 'parts' | 'tree'>): { partId: string; controls: string[] } | null {
+export function columnLayoutPart(def: Pick<ComponentDefinition, 'kind' | 'componentId' | 'provenance' | 'parts' | 'tree' | 'slots'>): { partId: string; controls: string[] } | null {
   const tree = def.kind === 'managed' ? def.tree : undefined;
-  if (!tree || (def.componentId !== 'layout.section' && def.provenance?.componentId !== 'layout.section')) return null;
+  if (def.componentId !== 'layout.section' && def.provenance?.componentId !== 'layout.section') return null;
   const part = Object.hasOwn(def.parts, 'container') ? def.parts.container : undefined;
-  const nodeOf = (id: string) => (Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined);
-  const content = (id: string) => {
-    const n = nodeOf(id);
-    return n?.kind === 'slot' && n.slot === 'content';
-  };
-  const node = part ? nodeOf(part.nodeId) : undefined;
-  if (node?.kind !== 'element' || !node.children.some(content)) return null;
+  if (!part) return null;
+  if (tree) {
+    const nodeOf = (id: string) => (Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined);
+    const content = (id: string) => {
+      const n = nodeOf(id);
+      return n?.kind === 'slot' && n.slot === 'content';
+    };
+    const node = nodeOf(part.nodeId);
+    if (node?.kind !== 'element' || !node.children.some(content)) return null;
+  } else if (def.kind !== 'code' || !def.slots?.content) return null;
   const offered = offeredStyleProps(partStyleControls(def, 'container'));
   const controls = COLUMN_CONTROLS.filter((c) => offered.includes(c));
   return controls.includes('layout') ? { partId: 'container', controls } : null;

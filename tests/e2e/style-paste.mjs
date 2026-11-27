@@ -31,7 +31,7 @@ const sectionWith = (tag, text) => frame.locator('section', { has: frame.locator
 const studio = sectionWith('h2', 'Good design starts with listening');
 const paddingOf = (loc) => loc.evaluate((el) => [getComputedStyle(el).paddingTop, getComputedStyle(el).paddingBottom]);
 const padding = () => paddingOf(studio);
-const width = (name) => win.getByRole('button', { name, exact: true }).first().click();
+const width = (name) => win.locator('.toolbar').getByRole('radio', { name, exact: true }).click();
 await eventually(async () => assert.deepEqual(await paddingOf(sectionWith('h1', 'Calm, considered spaces')), ['72px', '72px'], 'the hero shows its padding'), 30000);
 await eventually(async () => assert.deepEqual(await padding(), ['96px', '96px'], 'the section starts with its own desktop padding'), 30000);
 await width('Phone');

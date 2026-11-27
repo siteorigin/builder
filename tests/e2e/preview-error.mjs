@@ -10,6 +10,15 @@ const { app, win, errors } = await launch(WORK);
 await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
 const issue = win.locator('.canvas-notice.issue');
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
+await win.evaluate(() => {
+  window.__shownRevisions = [];
+  window.__lastWorkingReport = Date.now();
+  window.addEventListener('message', (e) => {
+    if (['ready', 'navigated', 'revisionApplied'].includes(e.data?.type)) window.__lastWorkingReport = Date.now();
+    if (e.data?.type === 'revisionApplied' && Number.isSafeInteger(e.data.payload?.revision)) window.__shownRevisions.push(e.data.payload.revision);
+  });
+});
+const shown = (revision) => eventually(async () => assert.ok(await win.evaluate((r) => window.__shownRevisions.includes(r), revision), `the preview has shown revision ${revision}`), 30000);
 
 async function frame() {
   const content = await (await win.locator('.frame-box iframe').elementHandle()).contentFrame();
@@ -18,16 +27,16 @@ async function frame() {
 }
 /** Report something to the editor from the preview page, as its bridge does. */
 async function bridge(type, payload) {
-  await (await frame()).evaluate(([t, p]) => {
+  await eventually(async () => (await frame()).evaluate(([t, p]) => {
     const navigationId = document.documentElement.dataset.soNavigation;
     if (!navigationId) throw new Error('the preview bridge has not named its navigation');
     window.parent.postMessage({ protocolVersion: 1, sessionId: window.name, navigationId, revision: p.revision ?? 0, type: t, payload: p }, '*');
-  }, [type, payload]);
+  }, [type, payload]), 10000);
 }
 /** The bar's buttons, by name, in order. */
 const buttons = () => issue.getByRole('button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? e.textContent.trim()));
 /** Long enough for the page to count as working (1.5 s without an error). */
-const settle = () => win.waitForTimeout(2200);
+const settle = () => eventually(async () => assert.ok(await win.evaluate(() => Date.now() - window.__lastWorkingReport > 1700), 'the preview has had a quiet working interval'), 30000);
 const apply = async (prop, value, label) => {
   const r = await win.evaluate(
     ([pageId, nodeId, prop, value, label]) => window.builder.project.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId, prop, value }] }, { label }),
@@ -50,9 +59,10 @@ step('the first edit after the page opens, followed by an error, offers to rever
 // The page loaded and went a moment without an error: that is the sighting Revert works from.
 await settle();
 const early = await apply(keptProp, 'Early edit', 'Early edit');
+await shown(early.revision);
 await bridge('runtimeError', { message: 'Broken by the first edit', revision: early.revision });
 await issue.getByRole('button', { name: 'Revert “Early edit”' }).waitFor({ timeout: 10000 });
-await bridge('revisionApplied', {});
+await issue.getByRole('button', { name: 'Try again' }).click();
 await issue.waitFor({ state: 'detached' });
 
 step('an error with no edit before it offers no Revert, and Open source opens the generated component read only');
@@ -84,7 +94,9 @@ const second = await apply(brokenProp, 'Second edit', 'Another edit');
 await bridge('runtimeError', { message: 'Two changes ago', revision: second.revision });
 await eventually(async () => assert.deepEqual(await buttons(), ['Project health', 'Try again']));
 // Undo the second, and let the page work again with the first in place.
-assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true);
+const undoSecond = await win.evaluate(() => window.builder.project.undo());
+assert.equal(undoSecond.ok, true);
+await shown(undoSecond.revision);
 await bridge('revisionApplied', {});
 await issue.waitFor({ state: 'detached' });
 

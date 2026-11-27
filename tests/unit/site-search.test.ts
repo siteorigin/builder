@@ -170,8 +170,7 @@ describe('site search index', () => {
     expect(entry.text.split('\n')).toEqual(expect.arrayContaining(['Commission 1']));
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists the words the release’s text section shows', () => {
+  it('lists the words the release’s text section shows', () => {
     const s = project(withSearch(), 1, 'Built for the Harbour Library reading room.', 'content.text');
     const entry = buildSearchIndex(s).find((e) => e.route === '/portfolio/workshop-commission-1/')!;
     expect(entry.text).toContain('Commission 1');

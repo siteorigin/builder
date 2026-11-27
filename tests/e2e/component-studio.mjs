@@ -44,15 +44,18 @@ const defKey = (id) => id.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 step('a project component that no page places');
 const pageId = (await snapshot()).state.site.homePageId;
 const owner = { kind: 'page', id: pageId };
-await apply([{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'features.grid' }], 'Insert a grid');
-const placed = (await snapshot()).state.pages[pageId].rootIds[0];
-const themeDef = (await snapshot()).state.pages[pageId].nodes[placed].definitionId;
-const [fork] = await apply([{ type: 'component.fork', definitionId: themeDef }], 'Make a project copy');
-const defId = fork.definitionId;
-await apply([{ type: 'node.remove', owner, nodeId: placed }], 'Remove its placement');
+const [{ definitionId: defId }] = await apply([{ type: 'component.upsert', name: 'Studio grid',
+  properties: { heading: { type: 'string', label: 'Heading', default: 'Featured work' } },
+  parts: { heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textAlign'] } },
+  variantAxes: { layout: { label: 'Layout', default: 'standard', options: {
+    standard: { label: 'Standard' }, spacious: { label: 'Spacious', styles: { root: { base: { gap: '32px' } } } }
+  } } },
+  nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['heading'] },
+    { kind: 'text', id: 'heading', tag: 'h2', text: { $prop: 'heading' } }]
+}], 'Make a project component');
 const baseline = await snapshot();
 const def = baseline.state.components[defId];
-assert.equal(def.owner, 'project', 'the copy is the project’s own');
+assert.equal(def.owner, 'project', 'the component is the project’s own');
 const placements = Object.values(baseline.state.pages).flatMap((p) => Object.values(p.nodes)).filter((n) => n.kind === 'instance' && n.definitionId === defId);
 assert.equal(placements.length, 0, 'no page places it');
 const root = def.tree.rootIds[0];
@@ -97,9 +100,9 @@ step('phone and desktop widths, with the same preview');
 await frame.locator(`.so-${defKey(defId)}--${axis}-${option}`).first().waitFor({ timeout: 30000 });
 const shownAt = await framePath();
 const innerWidth = () => frame.locator('html').evaluate((el) => el.ownerDocument.defaultView.innerWidth);
-await win.getByRole('radio', { name: 'Phone', exact: true }).click();
+await win.locator('.toolbar').getByRole('radio', { name: 'Phone', exact: true }).click();
 await eventually(async () => assert.equal(await innerWidth(), 390, 'phone width'));
-await win.getByRole('radio', { name: 'Desktop', exact: true }).click();
+await win.locator('.toolbar').getByRole('radio', { name: 'Desktop', exact: true }).click();
 await eventually(async () => assert.equal(await innerWidth(), 1280, 'desktop width'));
 assert.equal(await framePath(), shownAt, 'a width is not a new preview');
 

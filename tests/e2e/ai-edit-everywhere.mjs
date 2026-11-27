@@ -38,6 +38,22 @@ try {
 
   step('a project, with page starters in the AI tab');
   const frame = await createProject(win, { name: 'Kloof Light Studio', parentDir: WORK, starter: 'business', sampleImages: false });
+  const initial = await snapshot();
+  const made = await win.evaluate(async (home) => {
+    const definition = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name: 'Split hero', properties: {},
+      parts: { heading: { nodeId: 'heading', label: 'Heading' } },
+      nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['content'] },
+        { kind: 'element', id: 'content', tag: 'div', children: ['heading', 'lead'] },
+        { kind: 'text', id: 'heading', tag: 'h1', text: 'Light for every room' },
+        { kind: 'text', id: 'lead', tag: 'p', text: 'A small studio with a clear point of view.' }] }] }, { label: 'Make editable hero' });
+    if (!definition.ok) throw new Error(definition.error?.message);
+    const placement = await window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index: 0, definitionId: definition.results[0].definitionId }] }, { label: 'Place editable hero' });
+    if (!placement.ok) throw new Error(placement.error?.message);
+    const spacing = await window.builder.project.apply({ operations: [{ type: 'node.setStyle', owner: { kind: 'component', id: definition.results[0].definitionId }, nodeId: 'root', scope: 'base', property: 'paddingBlock', value: '160px' }] }, { label: 'Space editable hero' });
+    if (!spacing.ok) throw new Error(spacing.error?.message);
+    return definition.results[0].definitionId;
+  }, initial.state.site.homePageId);
+  assert.ok(made, 'the project has a managed component for design editing');
   await win.locator('.dock-tab', { hasText: 'AI' }).click();
   await message().waitFor();
   await eventually(async () => assert.ok((await win.locator('.chat .suggestions').count()) > 0, 'a page offers starters'));
@@ -49,7 +65,7 @@ try {
   const compSection = win.locator('.section-head', { hasText: 'Component' });
   if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
   await win.getByRole('button', { name: 'Edit everywhere…' }).click();
-  await win.getByRole('button', { name: /Make a copy and edit/ }).click();
+  await win.getByRole('dialog').getByRole('button', { name: /Edit (everywhere|design)/ }).click();
   await win.locator('.mode-band').waitFor();
   // Entering selects the whole design; Escape steps back to its overview, with nothing selected.
   await win.keyboard.press('Escape');
@@ -58,7 +74,7 @@ try {
 
   const before = await snapshot();
   const def = Object.values(before.state.components).find((d) => d.owner === 'project' && d.name === 'Split hero');
-  assert.ok(def, 'Edit everywhere made a project copy of the hero');
+  assert.ok(def, 'the managed hero is editable everywhere');
   const owner = { kind: 'component', id: def.id };
   const home = before.state.pages[before.state.site.homePageId];
   const homeBefore = JSON.stringify(home);
@@ -134,12 +150,13 @@ try {
 
   step('an element of the design narrows the next message to it, or the whole component');
   // A click in the page picks the design's own node under the pointer.
-  await frame.locator(`[data-so-ctx$="|${home.rootIds[0]}"] h1`).first().click();
+  // The scaled frame can place Playwright's physical click over the sticky header; dispatch at the visible heading.
+  await frame.locator(`[data-so-ctx$="|${home.rootIds[0]}"] h1`).first().dispatchEvent('click');
   await eventually(async () => assert.equal(await win.locator('[role="tree"] [data-node="heading"]').getAttribute('aria-selected'), 'true', 'the heading of the design is selected'));
   await eventually(async () => assert.match(await chips().innerText(), /^Heading\b/));
   // Its menu offers the element or the whole component, and never the whole site.
   await chips().locator('.scope-chip').click();
-  assert.deepEqual(await win.getByRole('menuitemradio').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label'))), ['Only Heading, in Split hero everywhere it is used', 'All of Split hero, everywhere it is used']);
+  assert.deepEqual(await win.getByRole('menuitemradio').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label'))), ['Only Heading 1, in Split hero everywhere it is used', 'All of Split hero, everywhere it is used']);
   await win.keyboard.press('Escape');
   const ask = async (text) => {
     let req;
@@ -155,7 +172,7 @@ try {
     return editorContext(req);
   };
   const narrowed = await ask('Make the heading shorter');
-  assert.deepEqual(narrowed.selection && { owner: narrowed.selection.owner, nodeId: narrowed.selection.nodeId, label: narrowed.selection.label }, { owner, nodeId: 'heading', label: 'Heading' });
+  assert.deepEqual(narrowed.selection && { owner: narrowed.selection.owner, nodeId: narrowed.selection.nodeId, label: narrowed.selection.label }, { owner, nodeId: 'heading', label: 'Heading 1' });
   assert.match(narrowed.allowedScope, /^only Heading/);
   assert.match(await log().locator('.msg-user .ctx').last().innerText(), /Split hero everywhere → Heading/);
   await chips().locator('.scope-chip').click();

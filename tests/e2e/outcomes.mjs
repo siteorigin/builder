@@ -135,7 +135,7 @@ try {
   step('the website exported to a folder holds the edit');
   await menu('File', 'Export…');
   await until('ui.context', { dialog: 'Export your website' });
-  await click((await find({ role: 'button', name: 'Folder', scope: 'editor' })).ref);
+  await click((await find({ role: 'radio', name: 'Folder', scope: 'editor' })).ref);
   ok(await call('desktop.setAnswers', { answers: [{ dialog: 'open', selection: 'folder', paths: ['exports'] }] }), 'the folder chooser’s answer');
   await click((await find({ role: 'button', name: 'Website files, ready to upload', exact: false, scope: 'editor' })).ref);
   const exported = await until('export.finished', {}, 300000);

@@ -36,7 +36,7 @@ await wait(800);
 assert.equal(await scrollY(), 0, 'the page starts at its top');
 
 const grab = async () => {
-  const gb = await win.locator('.ov-chip [aria-label="Drag to move"]').boundingBox();
+  const gb = await win.locator('.ov-chip .grip').boundingBox();
   assert.ok(gb, 'the selection chip shows a drag grip');
   const wrap = await win.locator('.frame-wrap').boundingBox();
   await win.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2);

@@ -178,8 +178,7 @@ describe('finding content', () => {
 });
 
 describe('replacing content', () => {
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('replaces the words and destinations of the release’s Contact details and Footer', () => {
+  it('replaces the words and destinations of the release’s Contact details and Footer', () => {
     const s = fresh();
     const ms = findContent(s, 'hello@example.com');
     expect(ms.map((m) => m.field.section)).toEqual(['Contact details', 'Contact details', 'Contact details', 'Footer', 'Footer']);

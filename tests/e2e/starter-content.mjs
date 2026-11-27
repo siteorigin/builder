@@ -39,6 +39,7 @@ const exportWebsite = async (name) => {
 /** Replace the sample a Find dialog opened for, in every place it lists. */
 const replaceAll = async (replacement, count) => {
   await find.getByTestId('find-sample-note').waitFor();
+  assert.equal(await find.locator('.modal-foot .btn-primary').isEnabled(), true, `Find and replace can choose the ${count} sample matches: ${await find.innerText()}`);
   await find.locator('.modal-foot .btn-primary').click();
   await find.getByLabel('Replace with').fill(replacement);
   await find.getByRole('button', { name: `Replace ${count} matches` }).click();
@@ -61,7 +62,7 @@ try {
   const address = review.getByTestId('export-sample-address');
   assert.match(await email.innerText(), /hello@example\.com · 5 places on Contact and the shared footer/);
   assert.match(await phone.innerText(), /\+1 555 0134 · 4 places on Contact and the shared footer/);
-  assert.match(await address.innerText(), /12 Harbor Lane, Millbrook · 1 place on Contact/);
+  assert.match(await address.innerText(), /12 Harbor Lane, Millbrook · 2 places on Contact and the shared footer/);
   assert.equal(await review.evaluate((el) => !!el.closest('[role="alert"]')), false, 'a review, not an error');
   assert.equal(await websiteButton.getAttribute('aria-disabled'), null, 'the review never stops the website export');
   assert.equal(await websiteButton.isDisabled(), false, 'the website export can be started while details are under review');
@@ -84,11 +85,11 @@ try {
   await email.getByRole('button', { name: 'Show where' }).click();
   const places = email.locator('.export-samples-places li span');
   assert.deepEqual(await places.allInnerTexts(), [
-    'Contact › Contact details › Action link',
     'Contact › Contact details › Contact methods › Email › Value',
     'Contact › Contact details › Contact methods › Email › Link',
-    'Shared footer › Contact links › hello@example.com › Label',
-    'Shared footer › Contact links › hello@example.com › Destination'
+    'Contact › Contact details › Action link',
+    'Shared footer › Contact details › hello@example.com › Label',
+    'Shared footer › Contact details › hello@example.com › Destination'
   ]);
   await email.getByRole('button', { name: 'Open Contact › Contact details › Action link in the inspector' }).click();
   await exportDialog.waitFor({ state: 'detached' });

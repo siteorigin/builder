@@ -60,6 +60,12 @@ const NEW_HEADING = 'Rooms that work beautifully';
 
 try {
   await session.start({ fixture: 'welcome' });
+  await session.page.evaluate(() => {
+    window.__appliedRevisions = [];
+    window.addEventListener('message', (event) => {
+      if (event.data?.type === 'revisionApplied' && Number.isSafeInteger(event.data.payload?.revision)) window.__appliedRevisions.push(event.data.payload.revision);
+    });
+  });
 
   step('Welcome: a dialog opens from its button, keeps the focus, and Escape closes it with nothing made');
   const welcome = await snapshot({ scope: 'editor' });
@@ -130,18 +136,20 @@ try {
   assert.ok(existsSync(join(PROJECT(), 'siteorigin.project.json')), 'the project is in the chosen folder');
   assert.deepEqual((await pageOrder()).slice(0, 3), ['Split hero', 'Logo strip', 'Services grid']);
 
-  step('inline text: the heading selected in two clicks, edited after a double click, typed over and committed');
-  const heading = await find({ role: 'heading', name: HEADING, scope: 'preview' });
-  const firstClick = await click(heading.ref);
+  step('inline text: the code section selected, its heading edited after a double click, typed over and committed');
+  const heading = await settled({ role: 'heading', name: HEADING, scope: 'preview' });
+  const firstClick = await eventually(async () => click((await find({ role: 'heading', name: HEADING, scope: 'preview' })).ref), 30000);
   assert.equal(firstClick.target.surface, 'preview');
   assert.ok(firstClick.target.at && firstClick.target.point, 'a preview hit says where it was in the page and in the window');
   await eventually(async () => assert.equal((await snapshot({ maxNodes: 20 })).context.selection?.toolbar, 'Split hero actions', 'the first click selects the section'));
   await new Promise((r) => setTimeout(r, 700)); // Clear of a double click.
-  await click(heading.ref);
-  await eventually(async () => assert.deepEqual((await snapshot({ maxNodes: 20 })).context.selection?.refs, [heading.ref], 'the second click selects the heading'));
+  const headingAfterFirst = await settled({ role: 'heading', name: HEADING, scope: 'preview' });
+  await click(headingAfterFirst.ref);
+  await eventually(async () => assert.equal((await snapshot({ maxNodes: 20 })).context.selection?.toolbar, 'Container actions', 'the second click steps into the code section'));
   const before = await applied();
   await new Promise((r) => setTimeout(r, 700));
-  await click(heading.ref, { count: 2 });
+  const headingAfterSelection = await settled({ role: 'heading', name: HEADING, scope: 'preview' });
+  await click(headingAfterSelection.ref, { count: 2 });
   await eventually(async () => {
     await find({ role: 'toolbar', name: 'Editing heading', scope: 'editor' });
     assert.equal((await snapshot({ maxNodes: 20 })).context.focus?.scope, 'preview', 'the page has the focus');
@@ -160,6 +168,8 @@ try {
   step('the Inspector shows the committed text');
   // The right panel opens on the AI (#696): the Inspector is chosen from its tab.
   await click((await find({ role: 'tab', name: 'Inspector', scope: 'editor' })).ref);
+  await click((await find({ role: 'button', name: 'Layers', scope: 'editor' })).ref);
+  await click((await find({ role: 'treeitem', name: 'Split hero', scope: 'editor' })).ref);
   const field = await eventually(async () => {
     const f = await find({ role: 'textbox', name: 'Heading', scope: 'editor' });
     assert.equal(f.value, NEW_HEADING, 'the Inspector’s Heading field has the new text');
@@ -169,8 +179,10 @@ try {
 
   step('hover, a right click that opens a menu and Escape out of it, and the wheel over the page: none moves the project');
   const steps = await applied();
-  await act('ui.hover', { target: { ref: edited.ref } });
-  await click(edited.ref, { button: 'right' });
+  const currentHeading = await settled({ role: 'heading', name: NEW_HEADING, scope: 'preview' });
+  await act('ui.hover', { target: { ref: currentHeading.ref } });
+  const hoveredHeading = await settled({ role: 'heading', name: NEW_HEADING, scope: 'preview' });
+  await click(hoveredHeading.ref, { button: 'right' });
   const menu = await eventually(async () => {
     const s = await snapshot({ scope: 'editor', maxNodes: 300 });
     const m = flatten(s.editor.nodes).find((x) => x.role === 'menu');
@@ -180,11 +192,12 @@ try {
   assert.ok(menu.ref);
   await press('Escape');
   await eventually(async () => assert.ok(!flatten((await snapshot({ scope: 'editor', maxNodes: 300 })).editor.nodes).some((x) => x.role === 'menu'), 'Escape closed the menu'));
-  // Fields the open menu kept from being read are not taken for credentials: their text is still reported once it
-  // closed, and refs to it still hold.
+  await click((await find({ role: 'treeitem', name: 'Split hero', scope: 'editor' })).ref);
+  // The code heading's right-click selects its part; returning to the component shows its saved field again.
   assert.equal((await find({ role: 'textbox', name: 'Heading', scope: 'editor' })).value, NEW_HEADING, 'the Inspector’s text is still reported after the menu');
-  const top = (await find({ ref: edited.ref })).box.y;
-  const wheel = await act('ui.scroll', { target: { ref: edited.ref }, deltaY: 400 });
+  const scrollHeading = await settled({ role: 'heading', name: NEW_HEADING, scope: 'preview' });
+  const top = (await find({ ref: scrollHeading.ref })).box.y;
+  const wheel = await act('ui.scroll', { target: { ref: scrollHeading.ref }, deltaY: 400 });
   assert.equal(wheel.target.surface, 'preview');
   const scrolled = await eventually(async () => {
     const y = (await find({ role: 'heading', name: NEW_HEADING, scope: 'preview' })).box.y;
@@ -198,8 +211,7 @@ try {
   assert.equal(await applied(), steps, 'none of that changed the project');
 
   step('reorder by the canvas grip: a screenshot point on the grip, dragged to a point below the next section');
-  await click((await find({ role: 'button', name: 'Desktop', scope: 'editor' })).ref);
-  await click((await find({ role: 'button', name: 'Layers', region: 'Panels' })).ref);
+  await click((await find({ role: 'radio', name: 'Desktop', scope: 'editor', region: 'Preview width' })).ref);
   // The logo strip's own element ids, as the canvas reports them for a selection (to find it on the image below).
   await click((await eventually(() => find({ role: 'treeitem', name: 'Logo strip', scope: 'editor' }))).ref);
   const logo = await eventually(async () => {
@@ -211,26 +223,31 @@ try {
   await click(hero.ref);
   await eventually(async () => assert.equal((await snapshot({ maxNodes: 20 })).context.selection?.toolbar, 'Split hero actions'));
   const reorderSteps = await applied();
+  await eventually(async () => assert.ok(await session.page.evaluate((revision) => window.__appliedRevisions.includes(revision), (await saved()).revision), 'the preview has applied the heading edit'), 30000);
+  await session.page.frameLocator('.frame-box iframe').locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 30000 });
   const shot = await snapshot({ maxNodes: 20, screenshot: true });
   assert.ok(shot.screenshots.observation, 'a still screenshot can be pointed at');
   const { preview: previewShot } = shot.screenshots;
   assert.ok(previewShot.origin && previewShot.scale > 0, 'the preview image says where the page is and its zoom');
   // Where the grip and the next section are on the images (read from the page, as a tester reads the pixels).
-  const grip = await session.page.locator('.ov-chip [aria-label="Drag to move"]').boundingBox();
+  const grip = await session.page.locator('.ov-chip .grip').boundingBox();
   assert.ok(grip, 'the chip shows its grip');
   const logoBox = await (await session.page.$('.frame-box iframe')).contentFrame().then((f) =>
-    f.locator(semanticSelector(logo)).first().evaluate((el) => {
+    f.locator(semanticSelector(logo)).first().locator('section.logos').evaluate((el) => {
       const r = el.getBoundingClientRect();
       return { x: r.x, y: r.y, width: r.width, height: r.height };
     }, undefined, { timeout: 5000 })
   );
   const drop = { x: previewShot.origin.x - previewShot.clip.x + (logoBox.x + logoBox.width / 2) * previewShot.scale, y: previewShot.origin.y - previewShot.clip.y + (logoBox.y + logoBox.height * 0.8) * previewShot.scale };
+  const from = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 };
+  const windowDrop = { x: drop.x + previewShot.clip.x, y: drop.y + previewShot.clip.y };
+  // The page can reload while the drag moves its drop line; use the measured displacement and assert the saved order.
   const dragged = await act('ui.drag', {
-    from: { observation: shot.screenshots.observation, surface: 'editor', x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 },
-    to: { observation: shot.screenshots.observation, surface: 'preview', x: drop.x, y: drop.y }
+    from: { observation: shot.screenshots.observation, surface: 'editor', ...from },
+    by: { x: windowDrop.x - from.x, y: windowDrop.y - from.y }
   });
   assert.equal(dragged.target.surface, 'editor', 'the drag started on the editor’s grip');
-  assert.equal(dragged.destination.surface, 'preview', 'and was aimed at the page');
+  assert.ok(Math.abs(dragged.destination.point.x - windowDrop.x) < 1 && Math.abs(dragged.destination.point.y - windowDrop.y) < 1, 'the drag reached the point measured in the preview');
   await eventually(async () => assert.deepEqual((await pageOrder()).slice(0, 3), ['Logo strip', 'Split hero', 'Services grid'], 'the hero moved below the logo strip'));
   assert.equal(await applied(), reorderSteps + 1, 'one step of history');
   const used = failed(await call('ui.click', { target: { observation: shot.screenshots.observation, surface: 'editor', x: grip.x + 2, y: grip.y + 2 } }), 'STALE_OBSERVATION', 'a point on a screenshot taken before the drag');
@@ -254,16 +271,16 @@ try {
 
   step('a breakpoint chosen, and the preview frame resized by dragging its edge, without touching the project');
   const sizing = await applied();
-  await click((await find({ role: 'button', name: 'Tablet', scope: 'editor' })).ref);
+  await click((await find({ role: 'radio', name: 'Tablet', scope: 'editor' })).ref);
   const width = async () => Number((await find({ role: 'spinbutton', name: 'Preview width in pixels', scope: 'editor' })).value);
   await eventually(async () => assert.equal(await width(), 834, 'Tablet sets the width'));
-  assert.equal((await find({ role: 'button', name: 'Tablet', scope: 'editor' })).pressed, true);
+  assert.equal((await find({ role: 'radio', name: 'Tablet', scope: 'editor' })).checked, true);
   const edge = await find({ role: 'separator', name: 'Preview width, right edge', scope: 'editor' });
   const zoom = (await snapshot({ maxNodes: 1, screenshot: true })).screenshots.preview.scale;
   await act('ui.drag', { from: { ref: edge.ref }, by: { x: 30, y: 0 } });
   const want = Math.max(240, Math.min(2560, Math.round(834 + (30 / zoom) * 2)));
   await eventually(async () => assert.ok(Math.abs((await width()) - want) <= 2, `the frame is ${want}px after the drag (${await width()}px)`));
-  assert.notEqual((await find({ role: 'button', name: 'Tablet', scope: 'editor' })).pressed, true, 'no preset fits it any more');
+  assert.notEqual((await find({ role: 'radio', name: 'Tablet', scope: 'editor' })).checked, true, 'no preset fits it any more');
   assert.equal(await applied(), sizing, 'resizing the preview is not an edit');
 
   step('another page: chosen in Pages, its heading edited, its history and the home page’s checked');
@@ -274,7 +291,7 @@ try {
     assert.equal(c.preview.state, 'ready');
     assert.equal(c.preview.path, '/about/');
   }, 60000);
-  const homeHeading = failed(await call('ui.click', { target: { ref: edited.ref } }), 'STALE_REF', 'a ref from the home page, on About');
+  const homeHeading = failed(await call('ui.click', { target: { ref: scrollHeading.ref } }), 'STALE_REF', 'a ref from the home page, on About');
   assert.equal(homeHeading.details.reason, 'document');
   const aboutHeading = flatten((await snapshot({ scope: 'preview', maxNodes: 1000 })).preview.nodes).find((x) => x.role === 'heading' && x.level === 1);
   assert.ok(aboutHeading?.ref, 'About has a heading');

@@ -103,7 +103,10 @@ await choosePage(contactRoute);
 await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'page', target: contact }, 'the notice links to Contact again'));
 const headerId = s0.site.shell.header.rootIds[0];
 const bar = frame.locator('header.so-header .so-header__notice');
-await eventually(async () => assert.equal((await bar.innerText()).replace(/\s+/g, ' ').trim(), `${NOTICE} Get directions`, 'the canvas shows the notice and its link'), 30000);
+await eventually(async () => {
+  assert.equal((await bar.innerText()).replace(/\u2060/g, '').replace(/\s+/g, ' ').trim(), `${NOTICE}·Get directions`, 'the canvas shows the notice and its link');
+  assert.equal(new URL(await bar.locator('a').getAttribute('href'), 'http://preview.local').pathname, contactRoute, 'the notice link goes to Contact');
+}, 30000);
 await notice.scrollIntoViewIfNeeded();
 await win.screenshot({ path: join(SHOTS, 'header-notice-inspector.png') });
 
@@ -212,9 +215,9 @@ const exportStatic = async (name) => {
     const main = h.slice(h.indexOf('<main id="main"'), h.indexOf('</main>'));
     const bar = head.match(/<div class="so-header__notice[^"]*"[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? null;
     return {
-      notice: bar && bar.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
-      link: bar && (bar.match(/<a href="([^"]*)"/)?.[1] ?? null),
-      name: head.includes(`<span>${siteName}</span>`),
+      notice: bar && bar.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\u2060/g, '').replace(/\s+/g, ' ').trim(),
+      link: bar && (bar.match(/<a\b[^>]*\bhref="([^"]*)"/)?.[1] ?? null),
+      name: head.includes(`>${siteName}</span>`) && head.includes('so-header__name'),
       action: new RegExp(`so-header__cta[^>]*>${action}</a>`).test(head),
       heading: /<h1[\s>]/.test(main),
       inMain: main.includes('Back on Saturday'),
@@ -227,11 +230,11 @@ step('static export: Home and a direct visit to Contact both show the notice');
 const published = await exportStatic('export-published');
 for (const rel of ['index.html', 'contact/index.html']) {
   const p = published(rel);
-  assert.equal(p.notice, `${REWORDED} Get directions`, `${rel} shows the notice and its link`);
+  assert.equal(p.notice, `${REWORDED} · Get directions`, `${rel} shows the notice and its link`);
   assert.match(p.link ?? '', /(^|\/)contact\/$/, `${rel} links the notice to Contact`);
   assert.deepEqual({ name: p.name, action: p.action, heading: p.heading, inMain: p.inMain, editor: p.editor }, { name: true, action: true, heading: true, inMain: false, editor: false }, `${rel} keeps its name, action and own content`);
 }
-assert.equal(published('about/index.html').notice, `${REWORDED} Get directions`, 'About inherits it too');
+assert.equal(published('about/index.html').notice, `${REWORDED} · Get directions`, 'About inherits it too');
 
 step('remove the notice once: both pages update');
 await selectHeader();

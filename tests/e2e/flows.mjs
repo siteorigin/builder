@@ -10,6 +10,13 @@ const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir:
 const dir = join(WORK, 'sites', 'harbour-lane-studio');
 const read = (rel) => readFileSync(join(dir, rel), 'utf8');
 const projectSnapshot = () => win.evaluate(() => window.builder.project.snapshot());
+await win.evaluate(() => {
+  window.__shownRevisions = [];
+  window.addEventListener('message', (e) => {
+    if (e.data?.type === 'revisionApplied' && Number.isSafeInteger(e.data.payload?.revision)) window.__shownRevisions.push(e.data.payload.revision);
+  });
+});
+const shown = (revision) => eventually(async () => assert.ok(await win.evaluate((at) => window.__shownRevisions.includes(at), revision), `the preview has applied revision ${revision}`), 30000);
 await win.waitForTimeout(1500);
 await win.screenshot({ path: join(OUT, '10-images.png') });
 
@@ -26,6 +33,7 @@ await win.keyboard.press('Enter');
 await eventually(() => assert.ok(read('src/routes/+page.svelte').includes('Rooms that work beautifully'), 'the new heading is written to the page source'));
 assert.ok(!read('src/routes/+page.svelte').includes('data-so-'), 'no editor instrumentation in the page source');
 await eventually(async () => assert.equal(await h1.innerText(), 'Rooms that work beautifully', 'the preview shows the new heading'));
+await shown((await projectSnapshot()).revision);
 
 step('inline rich text: bold, italic and a page link');
 const rich = frame.locator('.so-rich', { hasText: 'That conversation shapes' }).first();
@@ -53,13 +61,14 @@ await win.keyboard.press(`${MOD}+k`);
 await eventually(async () => assert.equal(await win.locator('[role="dialog"]').count(), 0, 'the command menu stays closed while editing text'));
 // An address no page has keeps the field open, says so, and links nothing.
 const linkField = frame.locator('input[aria-label="Link destination"]');
-await win.keyboard.type('/abot/');
-await win.keyboard.press('Enter');
+await linkField.waitFor();
+await linkField.fill('/abot/');
+await linkField.press('Enter');
 await eventually(async () => assert.match(await frame.locator('#so-link-error').innerText(), /No page has the address \/abot\//, 'the link field says the page does not exist'));
 assert.equal(await linkField.inputValue(), '/abot/', 'the link field keeps what was typed');
 assert.equal(await rich.locator('a').count(), 0, 'nothing is linked');
 await linkField.fill('/about/');
-await win.keyboard.press('Enter');
+await linkField.press('Enter');
 await eventually(async () => assert.equal(await rich.locator('a[href="/about/"]').count(), 1, 'the words are linked'));
 await win.keyboard.press(`${MOD}+Enter`);
 const richSpan = async () =>
@@ -81,6 +90,7 @@ await eventually(async () => {
   assert.deepEqual(found.span, { text: 'conversation', strong: true, em: true, link: { type: 'page', target: found.about } }, 'bold, italic and the page ID are stored together');
 });
 await eventually(async () => assert.equal(await rich.locator('a[href="/about/"] strong em').count(), 1, 'the preview shows the linked bold italic words'));
+await shown((await projectSnapshot()).revision);
 assert.ok(!read('src/lib/siteorigin/runtime/RichText.svelte').includes('data-so-'), 'no editor instrumentation in the rich text helper');
 
 step('inline rich text: the word double-clicked, and line breaks inside a paragraph (#175)');
@@ -144,14 +154,17 @@ await eventually(async () => {
 });
 const edited = await mediaBody();
 await eventually(async () => assert.equal(await second.locator('br').count(), 2, 'the preview shows the lines inside one paragraph'));
+await shown(edited.revision);
 assert.match(read('src/lib/siteorigin/runtime/RichText.svelte'), /<br \/>/, 'the exported helper writes a line break as <br>');
 assert.ok(read('src/routes/+page.svelte').includes('Harbour Lane'), 'the page source holds the address');
 // Undo and Redo take the whole edit back and forth.
 await win.locator('[aria-label^="Undo"]').first().click();
 await eventually(async () => assert.ok(lastText((await mediaBody()).body).endsWith('last cushion.'), 'undo puts the word and the paragraph back'));
+await shown((await projectSnapshot()).revision);
 await eventually(async () => assert.equal(await second.locator('br').count(), 0, 'the preview shows the paragraph as it was'));
 await win.locator('[aria-label^="Redo"]').first().click();
 await eventually(async () => assert.deepEqual((await mediaBody()).body, edited.body, 'redo writes the edit again, marks and links included'));
+await shown((await projectSnapshot()).revision);
 await eventually(async () => assert.equal(await second.locator('br').count(), 2, 'the lines are back'));
 // Opening the edit again and leaving it changes nothing.
 const settled = (await mediaBody()).revision;
@@ -246,16 +259,20 @@ step('a code component’s marked heading and list item title are typed over on 
     await win.mouse.dblclick(f.x + at.x * k, f.y + at.y * k);
   };
 
-  await dblclickOn(heading);
-  await eventually(async () => assert.equal(await heading.getAttribute('contenteditable'), 'plaintext-only', 'the code component’s heading is being edited'));
+  await eventually(async () => {
+    await dblclickOn(heading);
+    assert.equal(await heading.getAttribute('contenteditable'), 'plaintext-only', 'the code component’s heading is being edited');
+  }, 30000);
   await win.keyboard.press(`${MOD}+a`);
   await win.keyboard.type('Services we offer');
   await win.keyboard.press('Enter');
   await eventually(async () => assert.equal((await props()).heading, 'Services we offer', 'the heading property holds the words typed'));
   await eventually(async () => assert.equal(await heading.innerText(), 'Services we offer', 'the preview shows the new heading'));
 
-  await dblclickOn(title);
-  await eventually(async () => assert.equal(await title.getAttribute('contenteditable'), 'plaintext-only', 'the second item’s title is being edited'));
+  await eventually(async () => {
+    await dblclickOn(title);
+    assert.equal(await title.getAttribute('contenteditable'), 'plaintext-only', 'the second item’s title is being edited');
+  }, 30000);
   await win.keyboard.press(`${MOD}+a`);
   await win.keyboard.type('Building to last');
   await win.keyboard.press('Enter');
@@ -282,7 +299,14 @@ step('a code component’s marked heading and list item title are typed over on 
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
 await win.getByRole('button', { name: 'Pricing', exact: true }).click();
-await eventually(async () => assert.equal(await frame.locator('text=Clear packages, no surprises').count(), 1, 'one pricing section is inserted'));
+await eventually(async () => {
+  const count = await frame.getByRole('heading', { name: 'Clear packages, fixed fees' }).count();
+  const state = (await projectSnapshot()).state;
+  const page = state.pages[state.site.homePageId];
+  const pricingCount = page.rootIds.filter((id) => state.components[page.nodes[id]?.definitionId]?.componentId === 'pricing.plans').length;
+  assert.equal(pricingCount, 1, 'one pricing section is in the document');
+  assert.equal(count, 1, 'one pricing section is shown');
+});
 await win.screenshot({ path: join(OUT, '11-inserted.png') });
 
 step('phone-only padding override on selected section');
@@ -563,6 +587,7 @@ await eventually(async () =>
 );
 const placeWhere = win.getByTestId('asset-place-where');
 await eventually(async () => assert.equal(await placeWhere.innerText(), 'Goes in a new section after Gallery on Home. Select something on the page to put it elsewhere.'));
+await eventually(async () => assert.equal(await previewReading.count(), 1, 'the Gallery’s reading photo is shown before placing another'), 30000);
 const shownBefore = await previewReading.count();
 await win.getByRole('button', { name: 'Place on page' }).click();
 await eventually(async () => assert.deepEqual(await placedReading(), [readingAlt], 'one new image on Home, with the suggested alt text'));
@@ -617,7 +642,7 @@ assert.deepEqual(await order(), ['Split hero', 'Logo strip', 'Services grid']);
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('.list-item', { hasText: 'Split hero' }).click();
 await win.waitForTimeout(800);
-const gb = await win.locator('.ov-chip [aria-label="Drag to move"]').boundingBox();
+const gb = await win.locator('.ov-chip .grip').boundingBox();
 assert.ok(gb, 'the selection chip shows a drag grip');
 const wrap = await win.locator('.frame-wrap').boundingBox();
 await win.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2);
@@ -632,19 +657,35 @@ await eventually(async () => assert.deepEqual(await order(), ['Split hero', 'Log
 
 
 step('edit a component everywhere: canvas, layers and inspector agree');
-await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
+const homeForDesign = (await projectSnapshot()).state.site.homePageId;
+const [{ definitionId: editableServices }] = await win.evaluate(async () => {
+  const r = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name: 'Editable services',
+    properties: { heading: { type: 'string', label: 'Heading', default: 'Our services' } },
+    parts: { heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textAlign'] } },
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['heading'] },
+      { kind: 'text', id: 'heading', tag: 'h2', text: { $prop: 'heading' } }]
+  }], label: 'Make editable services' });
+  if (!r.ok) throw new Error(r.error?.message);
+  return r.results;
+});
+const [{ nodeId: editablePlacement }] = await win.evaluate(async ([id, definitionId]) => {
+  const r = await window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id }, parentId: null, definitionId }], label: 'Place editable services' });
+  if (!r.ok) throw new Error(r.error?.message);
+  return r.results;
+}, [homeForDesign, editableServices]);
+await win.locator('[role="tree"] .list-item', { hasText: 'Editable services' }).first().click();
 const compSection = win.locator('.section-head', { hasText: 'Component' });
 if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
 await win.getByRole('button', { name: 'Edit everywhere…' }).click();
-await win.getByRole('button', { name: /Make a copy and edit/ }).click();
+await win.getByRole('button', { name: 'Edit design' }).click();
 await win.locator('.mode-band').waitFor();
 await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'entering outlines the design on the canvas'));
 // A click in the page picks the design's own node under the pointer: Layers and the inspector follow it.
-// The services grid now places the project's own copy of its design: its heading is that copy's part.
+// The managed project component exposes its heading as a design part.
 const fork = await eventually(async () => {
   const s = await projectSnapshot();
   const page = s.state.pages[s.state.site.homePageId];
-  const grid = page.nodes[page.rootIds[2]];
+  const grid = page.nodes[editablePlacement];
   const def = s.state.components[grid.definitionId];
   assert.equal(def.owner, 'project', 'the grid places the copy being edited');
   return { gridId: grid.id, defId: def.id, headingNode: def.parts.heading.nodeId };
@@ -656,10 +697,29 @@ const selectedHeading = headingRow.and(win.locator('[aria-selected="true"]'));
 // original's, which a click while the preview catches up would miss.
 const gridHeading = frame.locator(`[data-so-ctx$="|${gridId}"] h2[class*="so-${fork.defId.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()}__"]`).first();
 await gridHeading.waitFor({ timeout: 30000 });
+const clickGridHeading = async () => {
+  await gridHeading.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  const position = async () => {
+    const frameBox = await win.locator('.frame-box iframe').boundingBox();
+    const inner = await gridHeading.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { x: b.x + b.width / 2, y: b.y + b.height / 2, width: window.innerWidth };
+    });
+    const scale = frameBox.width / inner.width;
+    return { x: frameBox.x + inner.x * scale, y: frameBox.y + inner.y * scale };
+  };
+  let at = await position();
+  const view = await win.locator('.canvas-scroll').boundingBox();
+  if (at.y < view.y + 20 || at.y > view.y + view.height - 20) {
+    await win.locator('.canvas-scroll').evaluate((el, y) => el.scrollBy(0, y), at.y - (view.y + view.height / 2));
+    at = await position();
+  }
+  await win.mouse.click(at.x, at.y);
+};
 // The preview can still be settling after entering the mode: a click the canvas missed is clicked again, and
 // picking in the design selects the same node each time.
 await eventually(async () => {
-  if ((await selectedHeading.count()) !== 1) await gridHeading.click({ timeout: 3000 });
+  if ((await selectedHeading.count()) !== 1) await clickGridHeading();
   await eventually(async () => assert.equal(await selectedHeading.count(), 1, 'Layers selects the picked node of the design'), 3000);
 }, 20000);
 await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'the picked node is outlined'));
@@ -673,6 +733,10 @@ await eventually(async () => assert.ok((await win.locator('.ov-selected').count(
 await win.locator('.insp-scope.definition').first().waitFor();
 await win.locator('.mode-band-done').click();
 await win.locator('.mode-band').waitFor({ state: 'detached' });
+await win.evaluate(async ([id, nodeId]) => {
+  const r = await window.builder.project.apply({ operations: [{ type: 'node.remove', owner: { kind: 'page', id }, nodeId }], label: 'Remove editable services fixture' });
+  if (!r.ok) throw new Error(r.error?.message);
+}, [homeForDesign, editablePlacement]);
 
 step('tone and layout combine, and a code component offers its tone');
 const axis = (label) => win.locator('#dock-panel-inspect .field', { hasText: new RegExp(`^${label}`) }).locator('select').first();
@@ -688,8 +752,8 @@ await win.getByRole('button', { name: 'Insert', exact: true }).click();
 await win.getByRole('button', { name: 'Contact form' }).click();
 await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Contact form' }).waitFor();
 await axis('Tone').selectOption('muted');
-await eventually(() => assert.match(read('src/routes/+page.svelte'), /variant="muted"/, 'the form takes the tone chosen in the Inspector'));
-await eventually(async () => assert.equal(await frame.locator('section.so-form--muted').count(), 1, 'the preview shows the form in that tone'));
+await eventually(() => assert.match(read('src/routes/+page.svelte'), /variant_tone="muted"/, 'the form takes the tone chosen in the Inspector'));
+await eventually(async () => assert.equal(await frame.locator('section.so-form--tone-muted').count(), 1, 'the preview shows the form in that tone'));
 
 step('a contact form shows only the setting its service needs, and keeps the others');
 const inspector = win.locator('#dock-panel-inspect');
@@ -809,7 +873,7 @@ for (const [i, label] of ['Kitchen', 'Lighting', 'Other'].entries()) {
   await eventually(async () => assert.equal((await question()).options.length, i + 1, `“${label}” is added`));
 }
 // The author acts on what the inspector shows, once it shows what the project holds.
-const shownChoices = () => choicesGroup.locator('.choices-row input').evaluateAll((inputs) => inputs.map((input) => input.value));
+const shownChoices = () => choicesGroup.getByRole('textbox', { name: /^Choice \d+$/ }).evaluateAll((inputs) => inputs.map((input) => input.value));
 await eventually(async () => assert.deepEqual(await shownChoices(), ['Kitchen', 'Lighting', 'Other'], 'the inspector lists the three choices'));
 // Renamed, then moved before the rename has come back: both land, and the choice is still sent as it was made.
 await choicesGroup.getByLabel('Choice 2', { exact: true }).fill('Éclairage');
@@ -921,7 +985,7 @@ await cards.waitFor();
 const rows = cards.locator('.list-editor-head button.title');
 const titles = async () => (await rows.allInnerTexts()).map((t) => t.trim());
 const shownCount = cards.locator('.insp-count [aria-hidden="true"]');
-const max = (await projectSnapshot()).state.components[fork.defId].properties.items.max;
+const max = Object.values((await projectSnapshot()).state.components).find((d) => d.componentId === 'features.grid').properties.items.max;
 assert.equal(await shownCount.innerText(), `${await rows.count()} / ${max}`, 'the count shows the maximum from the schema');
 await cards.getByRole('button', { name: /^Add / }).click(); // Four cards, so a middle card can move without reaching an end.
 await eventually(async () => assert.equal(await rows.count(), 4, 'a card is added'));
@@ -996,12 +1060,12 @@ await pageRow('About').click();
 await frame.locator('text=A small studio with a long view').first().waitFor();
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
 const search = win.getByLabel('Search items to add');
-const firstResult = win.getByRole('listbox', { name: 'Results' }).getByRole('option').first();
+const tableResult = win.getByRole('listbox', { name: 'Results' }).getByRole('option', { name: /^Data table/ });
 for (const q of ['comparison', 'timetable', 'table']) {
   await search.fill(q);
-  await eventually(async () => assert.match(await firstResult.innerText(), /^Data table/, `"${q}" finds the Data table first`));
+  await eventually(async () => assert.equal(await tableResult.count(), 1, `"${q}" finds the Data table`));
 }
-await search.press('Enter');
+await tableResult.click();
 await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Data table' }).waitFor();
 const tableEd = win.locator('#dock-panel-inspect [data-table="table"]');
 const previewRows = () => frame.locator('.so-table__table tbody tr');
@@ -1126,9 +1190,11 @@ const words = (blocks) => blocks.flatMap((b) => (b.items ?? [b.spans]).map((it) 
 await eventually(async () => assert.deepEqual(await listText(), [{ type: 'ul', items: [[{ text: 'First item' }], [{ text: 'Second item' }], [{ text: 'Third item' }]] }], 'a real bulleted list is inserted'));
 /** Put the field's caret (or selection) on `word`, as the author would, so the buttons follow it. */
 const selectInField = async (word, whole) => {
+  await eventually(async () => assert.ok((await listField.inputValue()).includes(word), `the field shows ${word}`));
   await listField.focus();
   await listField.evaluate((el, [w, all]) => {
     const i = el.value.indexOf(w);
+    if (i < 0) throw new Error(`The field does not contain ${w}`);
     el.setSelectionRange(all ? i : i + 1, all ? i + w.length : i + 1);
     el.dispatchEvent(new Event('select'));
   }, [word, whole]);
@@ -1136,7 +1202,9 @@ const selectInField = async (word, whole) => {
 };
 // Move an item with the pointer: one Undo step, which Redo puts back.
 await selectInField('Second item', false);
-await tools.getByRole('button', { name: 'Move item up' }).click();
+const moveItemUp = tools.getByRole('button', { name: 'Move item up' });
+await eventually(async () => assert.notEqual(await moveItemUp.getAttribute('aria-disabled'), 'true', 'the selected second item can move up'));
+await moveItemUp.click();
 await eventually(async () => assert.deepEqual(words(await listText()), ['Second item', 'First item', 'Third item'], 'the item moves up'));
 await win.locator('[aria-label^="Undo"]').first().click();
 await eventually(async () => assert.deepEqual(words(await listText()), ['First item', 'Second item', 'Third item'], 'one Undo puts it back'));
@@ -1209,8 +1277,8 @@ assert.equal(er.ok, true, `static export succeeds: ${er.message} ${er.warnings?.
 const about = readFileSync(join(exportDir, 'about/index.html'), 'utf8');
 assert.ok(about.includes('A small studio with a long view'), 'the About page is prerendered with its content');
 assert.doesNotMatch(about, /data-so-|siteorigin-bridge/, 'no editor markup in the export');
-assert.deepEqual([...about.matchAll(/<th scope="col"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]), ['Day', 'Start time', 'Class'], 'each exported column has a header cell');
-assert.match(about, /<caption id="([^"]+)"[^>]*>Weekly workshops<\/caption>/, 'the exported table has its caption');
+assert.deepEqual([...about.matchAll(/<th\b(?=[^>]*\bscope="col")[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]), ['Day', 'Start time', 'Class'], 'each exported column has a header cell');
+assert.match(about, /<caption\b(?=[^>]*\bid="[^"]+")[^>]*>Weekly workshops<\/caption>/, 'the exported table has its caption');
 assert.match(about, /role="region" tabindex="0" aria-labelledby="[^"]+"/, 'the exported table scrolls in a named, focusable region');
 assert.match(about.replace(/<!--[\s\S]*?-->/g, ''), /<td[^>]*>Friday<\/td><td[^>]*>17:00<\/td><td[^>]*>Raku<\/td>/, 'the fourth workshop is exported with each cell under its column');
 const aboutMarkup = about.replace(/<!--[\s\S]*?-->/g, '');

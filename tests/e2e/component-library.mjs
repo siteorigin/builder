@@ -177,14 +177,19 @@ await removal.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${onFloor}"]`).getAttribute('aria-selected'), 'true', 'going to a placement on another page opens it and selects the placement there'));
 assert.ok((await snapshot()).components[card], 'the component stays');
 await eventually(async () => {
+  const path = await frame.locator('body').evaluate(() => location.pathname);
+  assert.equal(path, '/floor-plan/', 'the preview opened the placement’s page');
+  assert.ok((await frame.locator(`[data-so-ctx$="|${onFloor}"]`).count()) > 0, `the placement is rendered on ${path}: ${(await frame.locator('body').innerText()).slice(0, 160)}`);
   const box = await frame.locator(`[data-so-ctx$="|${onFloor}"]`).first().evaluate((el) => {
     const r = el.getBoundingClientRect();
     return { top: r.top, bottom: r.bottom, height: innerHeight };
   });
   assert.ok(box.top > 0 && box.top < box.height, `the preview scrolls to the placement on the new page (${JSON.stringify(box)})`);
 });
+await openInsert();
 await manage('Exhibitor card').click();
 await menu.getByRole('menuitem', { name: (await snapshot()).pages[pageId].title }).click();
+await openRail('Layers');
 await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${first}"]`).getAttribute('aria-selected'), 'true', 'and back to the first page'));
 
 step('Rename gives a variant a descriptive name and a description');
@@ -228,7 +233,7 @@ const at = rows.findIndex((r) => r.name === 'Exhibitor card copy');
 // Its family: the original, then nothing but copies down to the new one.
 assert.ok(from >= 0 && at > from && rows.slice(from + 1, at + 1).every((r) => r.sub), `listed under the original (${JSON.stringify(rows)})`);
 await manage('Exhibitor card copy').click();
-await menu.getByText('Copy of Exhibitor card', { exact: true }).waitFor();
+await menu.getByText(/^Copy of Exhibitor card/).waitFor();
 await win.keyboard.press('Escape');
 await menu.waitFor({ state: 'detached' });
 // The list is closed up while it still has more than four to show.
@@ -275,7 +280,13 @@ await eventually(async () => assert.deepEqual((await snapshot()).components[blue
 await tile('Exhibitor card blue').waitFor();
 
 step('a Section holding content becomes a component from its Layers row, and a copy shows that content (#173)');
-const [{ nodeId: band }] = await apply([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }], 'Insert section');
+const [{ definitionId: sectionDef }] = await apply([{ type: 'component.upsert', name: 'Editable hall section',
+  properties: {},
+  slots: { content: { label: 'Content' } },
+  nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['content'] },
+    { kind: 'slot', id: 'content', slot: 'content' }]
+}], 'Make editable hall section');
+const [{ nodeId: band }] = await apply([{ type: 'node.insert', owner, parentId: null, definitionId: sectionDef }], 'Insert section');
 const filled = await apply(
   [
     { type: 'node.insert', owner, parentId: band, slot: 'content', primitive: 'heading', text: 'Visit the hall' },

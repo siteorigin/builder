@@ -64,13 +64,15 @@ async function makeProject(parent: string, folder: string, name: string): Promis
   const created = await ProjectSession.create(dir, createStarterState('blank', name, false));
   await created.close();
   const pkg = '{"name":"site","type":"module"}';
+  const lock = JSON.stringify({ name: 'site', lockfileVersion: 3, requires: true, packages: { '': { name: 'site' } } }, null, 2) + '\n';
   writeFileSync(join(dir, 'package.json'), pkg);
+  writeFileSync(join(dir, 'package-lock.json'), lock);
   writeFileSync(join(dir, 'vite.config.js'), 'export default {};');
   mkdirSync(join(dir, 'node_modules/@sveltejs/kit'), { recursive: true });
   writeFileSync(join(dir, 'node_modules/@sveltejs/kit/package.json'), '{"name":"@sveltejs/kit"}');
   mkdirSync(join(dir, 'node_modules/.bin'));
   symlinkSync('../@sveltejs/kit/package.json', join(dir, 'node_modules/.bin/kit'));
-  writeFileSync(join(dir, '.siteorigin/cache/deps.json'), JSON.stringify({ lockHash: sha('' + pkg), preparedAt: '2026-01-01T00:00:00.000Z' }));
+  writeFileSync(join(dir, '.siteorigin/cache/deps.json'), JSON.stringify({ lockHash: sha(lock + pkg), preparedAt: '2026-01-01T00:00:00.000Z' }));
   return dir;
 }
 

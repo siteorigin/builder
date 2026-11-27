@@ -16,7 +16,7 @@ const home = await win.evaluate(async () => {
 });
 assert.ok(home.gallery, 'Business Home has a Gallery');
 // The placement's own root: the first of its elements on the page.
-const gallery = frame.locator(`[data-so-ctx="page:${home.pageId}|${home.gallery}"]`).first();
+const gallery = frame.locator(`[data-so-ctx="page:${home.pageId}"][data-so-node="${home.gallery}"] section`).first();
 /** Where Gallery is in the preview, and the preview's size, in the page's own pixels. */
 const where = () =>
   gallery.evaluate((el) => {
@@ -42,6 +42,9 @@ const scrollAway = async () => {
     const top = r.top + scrollY;
     scrollTo({ top: top > innerHeight ? 0 : top + r.height + 1, behavior: 'instant' });
   });
+  const iframe = await win.locator('.frame-box iframe').boundingBox();
+  await win.mouse.move(iframe.x + iframe.width / 2, iframe.y + iframe.height / 2);
+  await win.mouse.wheel(0, 1);
   await eventually(async () => assert.equal(await showsAtAll(), false, 'Gallery is scrolled out of view'));
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(await showsAtAll(), false, 'and stays out of view until its row is used');

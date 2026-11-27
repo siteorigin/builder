@@ -69,12 +69,27 @@ export const thumbReads = (phase: 'before' | 'after'): string => `(() => {
   // focused element may hold a selection of its own.
   const focused = document.activeElement;
   const selection = getSelection();
-  const highlighted = (!!selection && selection.rangeCount > 0 && !selection.isCollapsed) || (!!focused && focused !== document.body && focused !== document.documentElement) || (typeof CSS !== 'undefined' && !!CSS.highlights && CSS.highlights.size > 0) || location.hash.indexOf(':~:') >= 0;
+  // Focus on a button or capture control cannot paint a text selection. Counting it would make the global
+  // ::selection colour invalidate every thumbnail when the brand changes, even for a plain card.
+  const focusedText = !!focused && (focused.isContentEditable || typeof focused.selectionStart === 'number');
+  const highlighted = (!!selection && selection.rangeCount > 0 && !selection.isCollapsed) || focusedText || (typeof CSS !== 'undefined' && !!CSS.highlights && CSS.highlights.size > 0) || location.hash.indexOf(':~:') >= 0;
   const HIGHLIGHT = /::(?:selection|target-text|spelling-error|grammar-error|search-text|highlight\\()/i;
   const ELEMENTS = /::[A-Za-z-]|:(?:before|after|first-line|first-letter)(?![A-Za-z0-9_-])/i;
   // Matched in ways a query cannot tell (history, a shadow tree, a scope, nesting): taken to apply.
   const UNTESTED = /:visited|:host|::slotted|::part|:scope|&/i;
   const PSEUDO_ELEMENT = /::[A-Za-z-]+(?:\\((?:[^()]|\\([^()]*\\))*\\))?|:(?:before|after|first-line|first-letter)(?![A-Za-z0-9_-])/gi;
+  const outsideQuotes = (value) => {
+    let quote = '';
+    let out = '';
+    for (let i = 0; i < value.length; i++) {
+      const ch = value[i];
+      if (ch === '\\\\') { out += '  '; i++; continue; }
+      if (quote) { if (ch === quote) quote = ''; out += ' '; }
+      else if (ch === '"' || ch === "'") { quote = ch; out += ' '; }
+      else out += ch;
+    }
+    return out;
+  };
   const parts = (list) => {
     const out = [];
     let depth = 0;
@@ -104,7 +119,9 @@ export const thumbReads = (phase: 'before' | 'after'): string => `(() => {
   const applies = (selector) =>
     parts(selector).some((part) => {
       // A pseudo-element's name in quotes is an attribute's value, not a pseudo-element: told apart by nothing here.
-      if (UNTESTED.test(part) || (/["']/.test(part) && ELEMENTS.test(part))) return true;
+      // An attribute value can itself contain "::before"; that selector is ambiguous here. An ordinary quoted
+      // attribute alongside a real pseudo-element is testable and must not make an unrelated rule count.
+      if (UNTESTED.test(part) || (ELEMENTS.test(part) && !ELEMENTS.test(outsideQuotes(part)))) return true;
       if (HIGHLIGHT.test(part) && !highlighted) return false;
       try {
         return !!document.querySelector(part.replace(PSEUDO_ELEMENT, ':is(*)'));

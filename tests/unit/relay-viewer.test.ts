@@ -171,7 +171,9 @@ describe('the reload bridge in the preview', () => {
     const bridge = await relay.fetch(`${room.previewOrigin}/__siteorigin/live.js`);
     expect(bridge.status).toBe(200);
     expect(bridge.headers.get('content-type')).toContain('javascript');
-    expect(await bridge.text()).toContain('siteorigin-live:reload');
+    const bridgeScript = await bridge.text();
+    expect(bridgeScript).toContain('siteorigin-live:reload');
+    expect(bridgeScript).toContain('window.__siteoriginLiveViewer = true');
     room.host.close();
   });
 });

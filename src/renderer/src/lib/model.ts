@@ -443,6 +443,11 @@ export function inspectionRef(state: ProjectState, d: InspectionDesc): Inspectio
     const node = ownerTree && own(ownerTree.nodes, ref.nodeId);
     // A placement's root takes its styles through the part declared on it, which need not be called "root".
     const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+    if (def?.kind === 'code' && typeof d.part === 'string') {
+      const itemPath = d.partItem ? d.partItem.split(',').map(decodeItemId) : [];
+      const codeRef = codePartRef(state, ref.owner, [], ref.nodeId, d.part, itemPath);
+      if (codeRef) return { owner: ref.owner, nodeId: ref.nodeId, partId: d.part, ...(itemPath.length ? { itemId: itemPath.at(-1) } : {}), ...(d.inside ? { match: 'nearest-part' } : {}) };
+    }
     const rootPart = def?.kind === 'managed' && def.tree ? partIdFor(def, def.tree.rootIds[0]) : undefined;
     const alias = rootPart && rootPart !== 'root' ? { partId: rootPart } : {};
     // Markup inside a code component is the placement's as a whole; inside a design's root, that root part's; inside

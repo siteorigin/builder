@@ -162,11 +162,22 @@ await win.locator('.rail [aria-label="Layers"]').click();
 await row('Gallery').click();
 await win.keyboard.press(`${MOD}+c`);
 await win.locator('.toast', { hasText: 'Copied Gallery' }).last().waitFor();
-await row('Services grid').click();
+const editableGrid = await win.evaluate(async () => {
+  const s = await window.builder.project.snapshot();
+  const home = s.state.site.homePageId;
+  const made = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name: 'Services grid', properties: {},
+    nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['heading'] },
+      { kind: 'text', id: 'heading', tag: 'h2', text: 'Editable services' }] }] }, { label: 'Make editable grid' });
+  if (!made.ok) throw new Error(made.error?.message);
+  const placed = await window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, definitionId: made.results[0].definitionId }] }, { label: 'Place editable grid' });
+  if (!placed.ok) throw new Error(placed.error?.message);
+  return placed.results[0].nodeId;
+});
+await win.locator(`[role="tree"] .list-item[data-node="${editableGrid}"]`).click();
 const componentSection = win.locator('.section-head', { hasText: 'Component' });
 if ((await componentSection.getAttribute('aria-expanded')) === 'false') await componentSection.click();
 await win.getByRole('button', { name: 'Edit everywhere…' }).click();
-await win.getByRole('button', { name: /Make a copy and edit/ }).click();
+await win.getByRole('dialog').getByRole('button', { name: /Edit (everywhere|design)/ }).click();
 await win.locator('.mode-band').waitFor();
 const design = () =>
   win.evaluate(async () => {

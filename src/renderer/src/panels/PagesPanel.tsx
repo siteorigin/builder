@@ -1268,11 +1268,17 @@ function CollectionArchive(props: { id: string; collectionId: string; name: stri
     if (getState().templateMode) setState({ templateMode: null, ...(getState().selection?.owner.kind === 'template' ? { selection: null } : {}) });
     setMode('preview');
     // Once the canvas shows the preview; one still starting opens the index once it is ready.
-    requestAnimationFrame(() => {
+    requestAnimationFrame(() => void (async () => {
       // Edit chosen meanwhile shows the page being edited, not the index.
       if (getState().mode !== 'preview') return;
-      if (!visitAddress(route)) toast(`The preview is starting: the ${name} index opens in it once it is ready.`, 'info');
-    });
+      const ready = await api.project.previewRouteReady(route, getState().snapshot?.revision ?? 0);
+      if (getState().mode !== 'preview') return;
+      if (ready === false) {
+        toast(`The ${name} index is still getting ready. Try View index again.`, 'info');
+        return;
+      }
+      if (!visitAddress(route, true)) toast(`The preview is starting: the ${name} index opens in it once it is ready.`, 'info');
+    })());
   };
   const backToReadyMade = async () => {
     const ok = await confirmDialog({

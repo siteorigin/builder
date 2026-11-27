@@ -95,7 +95,7 @@ assert.equal(await focusedLabel(), 'Move Gallery down on Home', 'Up moves one ch
 await settle();
 assert.equal((await snapshot()).revision, before, 'moving through the list changes nothing');
 await win.keyboard.press('Enter');
-await eventually(async () => assert.equal(await history.getByRole('status').innerText(), 'Undid 2 changes, back to before “Move Gallery down on Home”.'));
+await eventually(async () => assert.equal(await history.getByRole('status').filter({ hasText: 'Undid 2 changes' }).innerText(), 'Undid 2 changes, back to before “Move Gallery down on Home”.'));
 const back = await snapshot();
 assert.equal(back.revision, before + 1, 'two changes undone in one step');
 assert.deepEqual(back.history.entries.slice(start).map((e) => e.applied), [true, true, false, false]);
@@ -108,7 +108,7 @@ assert.equal(await history.getByRole('button', { name: 'Redo', exact: true }).is
 
 step('a click redoes several forward in one step');
 await rowFor('Delete Gallery on Home').click();
-await eventually(async () => assert.equal(await history.getByRole('status').innerText(), 'Redid 2 changes, up to “Delete Gallery on Home”.'));
+await eventually(async () => assert.equal(await history.getByRole('status').filter({ hasText: 'Redid 2 changes' }).innerText(), 'Redid 2 changes, up to “Delete Gallery on Home”.'));
 const forward = await snapshot();
 assert.equal(forward.revision, before + 2, 'two changes redone in one step');
 assert.deepEqual(forward.history.entries.slice(start).map((e) => e.applied), [true, true, true, true]);
@@ -117,7 +117,7 @@ assert.equal(forward.history.entries.at(-2).label, 'Move Gallery down on Home', 
 
 step('a click steps further back, and what is undone can be redone until a new change is made');
 await rowFor('Duplicate Gallery on Home').click();
-await eventually(async () => assert.equal(await history.getByRole('status').innerText(), 'Undid 3 changes, back to before “Duplicate Gallery on Home”.'));
+await eventually(async () => assert.equal(await history.getByRole('status').filter({ hasText: 'Undid 3 changes' }).innerText(), 'Undid 3 changes, back to before “Duplicate Gallery on Home”.'));
 assert.equal((await snapshot()).revision, before + 3, 'three changes undone in one step');
 assert.deepEqual((await snapshot()).history.entries.slice(start).map((e) => e.applied), [true, false, false, false]);
 assert.equal(await focusedLabel(), 'Duplicate Gallery on Home');

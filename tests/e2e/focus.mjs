@@ -8,6 +8,23 @@ import { createProject, eventually, launch, openInspector, scratch, step, withTi
 const { WORK, SHOTS: OUT, cleanup } = scratch('focus');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Focus Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
+// Focus editing needs a managed image node; the shipped image parts are marked code elements.
+await win.evaluate(async () => {
+  const home = (await window.builder.project.snapshot()).state.site.homePageId;
+  for (const [name, assetId, ratio, index] of [
+    ['Editable focus hero', 'a_hero', '4/5', 0],
+    ['Editable focus media', 'a_studio', '4/3', 1]
+  ]) {
+    const made = await window.builder.project.apply({ operations: [{ type: 'component.upsert', name,
+      properties: { image: { type: 'image', label: 'Image', default: { assetId, alt: name } } },
+      parts: { media: { nodeId: 'media', label: 'Image', styleControls: ['aspectRatio', 'objectFit', 'objectPosition'] } },
+      nodes: [{ kind: 'element', id: 'root', tag: 'section', children: ['media'] },
+        { kind: 'image', id: 'media', image: { $prop: 'image' }, styles: { base: { aspectRatio: ratio, objectFit: 'cover' } } }] }] }, { label: `Make ${name}` });
+    if (!made.ok) throw new Error(made.error?.message);
+    const placed = await window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index, definitionId: made.results[0].definitionId }] }, { label: `Place ${name}` });
+    if (!placed.ok) throw new Error(placed.error?.message);
+  }
+});
 const dir = join(WORK, 'sites', 'focus-studio');
 const siteCss = () => readFileSync(join(dir, 'src/lib/siteorigin/styles/site.css'), 'utf8');
 const block = (css, media) => (media ? (css.split(`@media ${media}`)[1] ?? '').split('@media')[0] : css.split('@media')[0]);
@@ -44,7 +61,7 @@ step('a landscape photo cropped square for every size');
 await win.getByRole('radio', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
 const studio = frame.locator('img[src*="studio"]').first();
-await selectPart(studio, 'Content with image');
+await selectPart(studio, 'Editable focus media');
 await win.getByRole('radiogroup', { name: 'Edit styles for' }).getByRole('radio', { name: 'All sizes', exact: true }).click();
 await styleRow('Aspect ratio').locator('select').selectOption('1/1');
 await eventually(async () => assert.match(await win.locator('.focus-caption').innerText(), /67% of the picture’s width shows/, 'a 3:2 photo in a square loses a third of its width'));
@@ -65,7 +82,7 @@ await win.evaluate(async () => {
 });
 const heroImg = frame.locator('img[src*="person-1"]').first();
 await heroImg.waitFor({ timeout: 30000 });
-await selectPart(heroImg, 'Split hero');
+await selectPart(heroImg, 'Editable focus hero');
 await win.getByRole('radiogroup', { name: 'Edit styles for' }).getByRole('radio', { name: 'Phone', exact: true }).click();
 await styleRow('Aspect ratio').locator('select').selectOption('16/9');
 await eventually(() => assert.match(block(siteCss(), PHONE), /aspect-ratio: 16\/9/, 'the phone-only ratio is generated'));
@@ -151,8 +168,8 @@ const exportedCss = readdirSync(exportDir, { recursive: true })
 const ids = await win.evaluate(async () => {
   const s = await window.builder.project.snapshot();
   const page = s.state.pages[s.state.site.homePageId];
-  const of = (componentId) => page.rootIds.find((id) => s.state.components[page.nodes[id].definitionId]?.componentId === componentId);
-  return { hero: of('hero.split'), media: of('content.media') };
+  const of = (name) => page.rootIds.find((id) => s.state.components[page.nodes[id].definitionId]?.name === name);
+  return { hero: of('Editable focus hero'), media: of('Editable focus media') };
 });
 const rule = (id) => `\\.so-o-${id}-media\\.so-o-${id}-media\\{[^}]*`;
 // The minified query reads "(width<=767.98px)" or "(max-width:767.98px)", depending on the CSS minifier.

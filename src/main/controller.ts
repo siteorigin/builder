@@ -74,6 +74,7 @@ import { ComponentThumbs, writeThumb, writeThumbReads, type CaptureResult } from
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
+import { waitForPreviewPage } from '../runtime/preview-ready';
 import { addRecent, isTrusted, keyValues, wasTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
@@ -487,8 +488,10 @@ export class Controller {
       // Every write already queued (the generated tokens and styles the preview loads among them), then the private
       // copy a read-only project is previewed from, then a moment for the preview server to notice the files changed
       // (as the AI's page measurements allow).
-      await this.session?.exclusive(async () => undefined);
+      const session = this.session;
+      await session?.exclusive(async () => undefined);
       await this.stageSync;
+      if (session && this.session === session) await this.previewPublished(session.revision, 10_000);
       const wait = this.filesChangedAt + THUMB_SETTLE_MS - Date.now();
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     },
@@ -2015,6 +2018,20 @@ export class Controller {
       const timer = setTimeout(() => finish(false), capMs);
       this.publishWaits.add(look);
     });
+  }
+
+  /** A newly generated route can briefly return 404 while Vite takes the latest files. */
+  async previewRouteReady(route: string, revision: number): Promise<boolean | null> {
+    if (!route.startsWith('/') || route.startsWith('//') || !Number.isSafeInteger(revision)) return false;
+    const dev = this.dev;
+    if (!dev || dev.status.state !== 'ready') return null;
+    if (!(await this.previewPublished(revision, 10_000)) || this.dev !== dev || !dev.url) return false;
+    try {
+      await waitForPreviewPage(dev.url, route, fetch, 10_000);
+      return this.dev === dev;
+    } catch {
+      return false;
+    }
   }
 
   /** Tell the running preview server of a revision, numbered so its publication can be told apart (previewPublished). */

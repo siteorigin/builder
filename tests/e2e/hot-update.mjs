@@ -9,6 +9,7 @@ import { createProject, eventually, launch, openInspector, scratch, step } from 
 
 const { WORK, cleanup } = scratch('hot-update');
 const { app, win, errors } = await launch(WORK);
+await win.evaluate(() => window.builder.app.setSettings({ developerMode: true }));
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 const canvas = await (await win.locator('.frame-box iframe').elementHandle()).contentFrame();
 assert.ok(canvas, 'the canvas frame is found');
@@ -35,6 +36,12 @@ const apply = async (operations, label) => {
   return r;
 };
 const owner = { kind: 'page', id: ids.pageId };
+const sourceOf = async (id) => (await win.evaluate(() => window.builder.project.snapshot())).state.components[id].source;
+const replaceSource = async (id, oldText, newText, label) => {
+  const source = await sourceOf(id);
+  assert.ok(source.includes(oldText), `${label}: the source contains the text to change`);
+  await apply([{ type: 'component.updateSource', definitionId: id, source: source.replace(oldText, newText) }], label);
+};
 
 /**
  * What a document shows: its h1 headings, main elements, and the images and lead paragraphs in main, in order.
@@ -100,33 +107,24 @@ async function single(doc, sections, headline, firstImage) {
 }
 /** Long enough for a stale copy to show once an update has landed: the check before it can pass first. */
 const settle = () => win.waitForTimeout(1000);
-/**
- * Until the canvas shows the project copy at section `index`. The copy has its own class names and no theme
- * ones left; once they show, its update has landed and a reload loads a page no update has touched since.
- */
-const showsCopy = (index) =>
+/** The fork is in the project and the preview has published the revision before this test reloads the frame. */
+const showsCopy = (definitionId) =>
   eventually(async () => {
-    const cls = (await frame.locator('main section').nth(index).getAttribute('class')) ?? '';
-    assert.match(cls, /so-proj-/, 'the canvas shows the copy');
-    assert.doesNotMatch(cls, /so-foundation-/, 'the theme component is gone');
+    const s = await win.evaluate(() => window.builder.project.snapshot());
+    assert.equal(s.state.components[definitionId]?.owner, 'project', 'the fork belongs to the project');
+    assert.equal(await win.evaluate((revision) => window.builder.project.previewRouteReady('/', revision), s.revision), true, 'the preview serves the fork');
   }, 30000);
 
 step('the hero: a project copy, on a freshly loaded page');
 // Theme components are edited through a project copy.
 const heroCopy = (await apply([{ type: 'component.fork', definitionId: ids.heroDef }], 'Fork hero')).results[0].definitionId;
-await showsCopy(0);
+await showsCopy(heroCopy);
 let { doc, sections } = await reloadCanvas(0);
 await single(doc, sections, 'Calm, considered spaces for everyday life', ids.heroImage);
 
 step('a change to the hero component alone');
-// The heading stops following the placement's text and gets its own: only the component's file changes.
-await apply(
-  [
-    { type: 'node.setBinding', owner: { kind: 'component', id: heroCopy }, nodeId: 'heading', field: 'text', binding: null },
-    { type: 'node.setContent', owner: { kind: 'component', id: heroCopy }, nodeId: 'heading', field: 'text', value: 'Rooms that feel like home' }
-  ],
-  'Hero component headline'
-);
+// The code component's source gets its own heading: only the component's file changes.
+await replaceSource(heroCopy, '{heading}</svelte:element>', "{'Rooms that feel like home'}</svelte:element>", 'Hero component headline');
 await eventually(() => single(doc, sections, 'Rooms that feel like home', ids.heroImage), 30000);
 const marks = (await shown()).canvas.marks;
 assert.equal(marks[0], null, 'the hero section was replaced');
@@ -155,19 +153,13 @@ step('the features grid: a component that places another, on a freshly loaded pa
 // gets a project copy. Neither changes what the page shows.
 const outer = (await apply([{ type: 'component.createFromNode', owner, nodeId: ids.featuresId, name: 'Services band' }], 'Services band')).results[0].definitionId;
 const featuresCopy = (await apply([{ type: 'component.fork', definitionId: ids.featuresDef }], 'Fork features')).results[0].definitionId;
-await showsCopy(2);
+await showsCopy(featuresCopy);
 ({ doc, sections } = await reloadCanvas(2));
 assert.deepEqual(content(await shown()), afterHero, 'a full reload shows what the hot updates did');
 const inner = await win.evaluate(async (outer) => (await window.builder.project.snapshot()).state.components[outer].tree.rootIds[0], outer);
 
 step('a change to the features grid alone');
-await apply(
-  [
-    { type: 'node.setBinding', owner: { kind: 'component', id: featuresCopy }, nodeId: 'eyebrow', field: 'text', binding: null },
-    { type: 'node.setContent', owner: { kind: 'component', id: featuresCopy }, nodeId: 'eyebrow', field: 'text', value: 'Services, start to finish' }
-  ],
-  'Features eyebrow'
-);
+await replaceSource(featuresCopy, '{eyebrow}</p>', "{'Services, start to finish'}</p>", 'Features eyebrow');
 await eventually(async () => {
   await single(doc, sections, 'Rooms that feel like home', ids.reading);
   assert.equal(await textCount('Services, start to finish'), 1, 'the new eyebrow appears once');
@@ -207,7 +199,7 @@ const headline2 = 'Homes with room to breathe';
 const lead2 = 'Measured plans and honest materials.';
 await apply(
   [
-    { type: 'node.setContent', owner: { kind: 'component', id: heroCopy }, nodeId: 'heading', field: 'text', value: headline2 },
+    { type: 'component.updateSource', definitionId: heroCopy, source: (await sourceOf(heroCopy)).replace("{'Rooms that feel like home'}</svelte:element>", `{'${headline2}'}</svelte:element>`) },
     { type: 'instance.setProp', owner, nodeId: ids.heroId, prop: 'lead', value: lead2 }
   ],
   'Hero headline and lead'
@@ -220,8 +212,10 @@ const bothShown = async () => {
 await eventually(bothShown, 30000);
 await settle();
 const probe = await canvas.evaluate(() => ({ updates: window.__soUpdates, hero: window.__soHero }));
-assert.equal(probe.updates.length, 1, `the save reached the page as one hot update: ${JSON.stringify(probe.updates)}`);
-assert.ok(probe.updates[0].length >= 2, `the update carries the component and the page: ${JSON.stringify(probe.updates[0])}`);
+// Vite may send stylesheet updates separately; the page and component must still arrive in one content packet.
+const pageUpdates = probe.updates.filter((paths) => paths.includes('/src/routes/+page.svelte'));
+assert.equal(pageUpdates.length, 1, `the save reached the page as one content update: ${JSON.stringify(probe.updates)}`);
+assert.ok(pageUpdates[0].some((path) => /^\/src\/lib\/siteorigin\/(generated|custom)\/.*\.svelte$/.test(path)), `the update carries the component and the page: ${JSON.stringify(pageUpdates[0])}`);
 const half = probe.hero.filter((h) => h === `${headline2} | ${lead}` || h === `Rooms that feel like home | ${lead2}`);
 assert.deepEqual(half, [], 'the canvas never showed half of the save');
 const hot = content(await bothShown());

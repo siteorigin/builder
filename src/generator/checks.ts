@@ -1217,8 +1217,10 @@ export interface RenderedContent {
  * (`namesFormFields`), so a copy's fields are left to the inspector.
  */
 export function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
-  if (def.owner === 'theme')
-    return def.componentId === 'shell.header' || def.componentId === 'data.table' || isVideoContract(def.componentId) || (isFormContract(def.componentId) && namesFormFields(def)) ? def.componentId : undefined;
+  if (def.owner === 'theme') {
+    const foundationCode = ['foundation', 'foundation-alt'].includes(def.provenance?.pack ?? '') && ['content.text', 'content.media', 'intro.page', 'contact.details', 'shell.footer'].includes(def.componentId);
+    return def.componentId === 'shell.header' || def.componentId === 'data.table' || foundationCode || isVideoContract(def.componentId) || (isFormContract(def.componentId) && namesFormFields(def)) ? def.componentId : undefined;
+  }
   // Back through every copy (a copy of a copy) to where it started.
   let from = def.provenance?.forkedFrom;
   for (let guard = 0; from && guard < 20; guard++) {
@@ -1242,6 +1244,11 @@ const headerNoticeLinkNamed = (props: Record<string, unknown>) => headerNoticeSh
  * a label and somewhere to go; the form's words, never its service settings or the names answers are sent under.
  */
 function shippedCodeShows(state: ProjectState, which: string, props: Record<string, unknown>): Set<string> {
+  // These packed Foundation sections render their words directly; heading level and image choice are settings.
+  if (which === 'content.text' || which === 'content.media') return new Set(['eyebrow', 'heading', 'body']);
+  if (which === 'intro.page') return new Set(['eyebrow', 'heading', 'lead']);
+  if (which === 'contact.details') return new Set(['eyebrow', 'heading', 'lead', 'items.label', 'items.value', 'items.link', ...(words(props.actionLabel) ? ['actionLabel', 'actionLink'] : [])]);
+  if (which === 'shell.footer') return new Set(['siteName', 'tagline', 'linksHeading', 'links.label', 'links.link', 'contactHeading', 'contact.label', 'contact.link', 'copyright', 'legal.label', 'legal.link', 'social.label', 'social.link']);
   if (isFormContract(which)) return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
   // The table's words around it. Its cells are a table value, edited in the inspector's table editor.
   if (which === 'data.table') return new Set(['eyebrow', 'heading', 'lead', 'caption']);
@@ -2669,8 +2676,9 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
         const which = shippedCode(state, def);
         // Other code's headings are not known here: the page's review cannot say it has no title.
         if (!which) uninspected ||= owner.kind === 'page';
-        // The shipped contact form, data table and video show their heading as an `<h2>`; the signup form, a block, as an `<h3>`.
-        const level = which === 'block.signup' ? 3 : which === 'contact.form' || which === 'data.table' || which === 'media.video' ? 2 : 0;
+        // Packed Foundation introductions and content sections expose their heading level as a property.
+        const packedHeading = which === 'intro.page' || which === 'content.text' || which === 'content.media';
+        const level = packedHeading ? levelOf(props.headingLevel) : which === 'block.signup' ? 3 : which === 'contact.form' || which === 'data.table' || which === 'media.video' ? 2 : 0;
         if (!level || typeof props.heading !== 'string' || !props.heading.trim()) return;
         add({ level, text: props.heading.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}) }, scope);
       }

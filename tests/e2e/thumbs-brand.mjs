@@ -66,10 +66,10 @@ step('a brand colour change draws again only the card that shows it');
 await apply([{ type: 'token.set', tokenId: 'color.brand', value: '#1f7a5c' }], 'Green brand');
 await eventually(async () => assert.notEqual(await picture('Brand card'), brandBefore, 'the card on the brand colour is drawn again'), 90000);
 const after = await quiet();
-assert.equal(after - drawn, 1, `one photograph for the brand change, of the card that shows it (${after - drawn})`);
 const plainKept = await picture('Plain card');
 const brandAfter = await picture('Brand card');
 assert.equal(plainKept, plainBefore, 'the card that never shows the brand colour keeps its picture');
+assert.equal(after - drawn, 1, `one photograph for the brand change, of the card that shows it (${after - drawn})`);
 
 step('what each card keeps is what a new photograph of it gives');
 const dir = await win.evaluate(async () => (await window.builder.project.snapshot()).dir);
