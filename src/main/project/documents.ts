@@ -131,6 +131,8 @@ export function componentDocPath(id: string): string {
 /** Serialize the canonical documents. Keys are project-relative paths. */
 export function stateToDocs(state: ProjectState): Map<string, string> {
   const docs = new Map<string, string>();
+  // Every document is serialized again (src/shared/perf.ts counts them).
+  if (perf.on) perf.count('docs.serialized', 5 + (state.brief ? 1 : 0) + (state.published ? 1 : 0) + Object.keys(state.pages).length + Object.keys(state.components).length + Object.values(state.collections ?? {}).reduce((n, c) => n + 1 + Object.keys(c.entries).length, 0) + Object.keys(state.sources ?? {}).length);
   docs.set(MANIFEST_FILE, toJson(state.manifest));
   docs.set(`${DOC_DIR}/site.json`, toJson(state.site));
   docs.set(`${DOC_DIR}/tokens.json`, toJson(state.tokens));

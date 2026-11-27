@@ -409,6 +409,7 @@ const compileCacheFor = (session: object): CompileCache => {
 
 const orchestrator = new Orchestrator({
   session: () => controller.session,
+  ...(perf.on ? { perfSpan: (name: string) => perf.span(name) } : {}),
   adapter: markedAdapter(orchestratorDeps.adapter),
   emit: (e) => {
     aiJournal?.record(e);

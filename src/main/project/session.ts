@@ -526,7 +526,7 @@ export class ProjectSession extends EventEmitter {
    */
   private manifestRead: { text: string; stamp: string } | null = null;
   /** Generated files kept between generations, each given back while what it was made from is unchanged. */
-  private generation = new GenerationCache();
+  private generation = Object.assign(new GenerationCache(), { timing: perf.on });
   /**
    * Generated files as last read from disk, by absolute path: the file's stat then and the hash of its bytes. A file
    * whose stat has not changed since is not read again.
@@ -1971,7 +1971,14 @@ export class ProjectSession extends EventEmitter {
     const generatingDev = perf.span('session.generate', { variant: 'dev' });
     const generated = { clean, dev: this.generate(next, true) };
     generatingDev();
+    // The documents the change rewrites, adds and removes: every document serialized, each compared with its last text.
+    const finding = perf.span('session.changedDocs');
     const nextDocs = stateToDocs(next);
+    const rewritten: Array<[string, string]> = [];
+    for (const [path, content] of nextDocs) if (this.docs.get(path) !== content) rewritten.push([path, content]);
+    const removed: Array<[string, string]> = [];
+    for (const [path, prev] of this.docs) if (!nextDocs.has(path)) removed.push([path, prev]);
+    finding({ docs: nextDocs.size, changed: rewritten.length + removed.length });
     const changed: Record<string, { before: string | null; after: string | null }> = {};
     const writes: Array<{ path: string; blob: string; content: string; before: string | null }> = [];
     const deletes: Array<{ path: string; before: string }> = [];
@@ -1982,14 +1989,12 @@ export class ProjectSession extends EventEmitter {
       if (!blobs.has(h) && !existsSync(this.local('history', 'blobs', `${h}.json`))) blobs.set(h, content);
       return h;
     };
-    for (const [path, content] of nextDocs) {
+    for (const [path, content] of rewritten) {
       const prev = this.docs.get(path);
-      if (prev === content) continue;
       changed[path] = { before: prev === undefined ? null : blobOf(prev), after: blobOf(content) };
       writes.push({ path, blob: changed[path].after!, content, before: changed[path].before });
     }
-    for (const [path, prev] of this.docs) {
-      if (nextDocs.has(path)) continue;
+    for (const [path, prev] of removed) {
       changed[path] = { before: blobOf(prev), after: null };
       deletes.push({ path, before: changed[path].before! });
     }
@@ -2188,7 +2193,10 @@ export class ProjectSession extends EventEmitter {
 
   /** Every generated file for `state`, reusing what earlier generations made from inputs that are unchanged. */
   private generate(state: ProjectState, instrument: boolean): Map<string, string> {
-    return generateProject(state, { instrument }, this.generation);
+    const files = generateProject(state, { instrument }, this.generation);
+    // How long the generation cache spent finding which files' inputs are unchanged (src/generator/cache.ts).
+    if (perf.on) perf.mark('session.generateCheck', { variant: instrument ? 'dev' : 'clean', ms: this.generation.checkMs, files: this.generation.checked });
+    return files;
   }
 
   /**
@@ -2997,6 +3005,7 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
       }
       applying({ ok: true });
+      if (perf.on) perf.count('apply.docsCopied', docsCopied(this.state, next));
       const pin = themePinProblem(next);
       if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: pin, recoverable: false } };
       // Any authored code that is new or changed must pass the safety checks before it can be saved. Imports
@@ -4643,7 +4652,7 @@ export class ProjectSession extends EventEmitter {
   // -------------------------------------------------------------------------
 
   beginRun(runId: string): Promise<string | null> {
-    return this.serialize(async () => {
+    return this.serialize(timed('session.beginRun', async () => {
       if (this.activeRun) return 'Another AI request is already running.';
       if (!(await this.stillOwner())) return this.readOnly?.reason ?? LOCK_UNCHECKED;
       if (this.unsettled) return UNSETTLED;
@@ -4652,7 +4661,7 @@ export class ProjectSession extends EventEmitter {
       this.activeRun = { id: runId, before, beforeState: structuredClone(this.state), startRevision: this.revision, written: new Map() };
       await this.writeRunMarker();
       return null;
-    });
+    }));
   }
 
   /**
@@ -4664,12 +4673,14 @@ export class ProjectSession extends EventEmitter {
    */
   private async writeRunMarker(docs: Map<string, string> = this.docs) {
     if (!this.activeRun) return;
+    const marking = perf.span('session.runMarker');
     const run = this.activeRun;
     const paths: Record<string, { before: string | null; after: string | null; written: Array<string | null> }> = {};
     const all = new Set([...run.before.keys(), ...docs.keys(), ...run.written.keys()]);
     for (const path of all) {
       const b = run.before.get(path);
       const a = docs.get(path);
+      if (a !== undefined) perf.count('run.docsHashed');
       const after = a === undefined ? null : sha(a);
       const written = run.written.get(path) ?? new Set<string | null>();
       if (b !== a) written.add(after);
@@ -4677,6 +4688,8 @@ export class ProjectSession extends EventEmitter {
       if (b === a && !written.size) continue;
       paths[path] = { before: b === undefined ? null : await this.putBlob(b), after, written: [...written] };
     }
+    // Building the marker: every document hashed, the run's versions stored. Its write is not in the span.
+    marking({ paths: Object.keys(paths).length });
     await atomicWrite(this.local('sessions', 'active-run.json'), toJson({ id: run.id, paths }));
   }
 
@@ -5382,6 +5395,29 @@ function sameContent(path: string, disk: string | null, expected: string | null)
 }
 
 /** Whether two document maps hold the same documents with the same text, `except` one path. */
+/**
+ * How many of `next`'s canonical documents are not the very objects `prev` holds: the documents a change copied (or
+ * made). Only for the timing marks (src/shared/perf.ts).
+ */
+function docsCopied(prev: ProjectState, next: ProjectState): number {
+  let n = 0;
+  const one = (a: unknown, b: unknown) => {
+    if (b !== undefined && a !== b) n++;
+  };
+  const each = <T>(a: Record<string, T> | undefined, b: Record<string, T> | undefined, fn: (x: T | undefined, y: T) => void) => {
+    for (const k of Object.keys(b ?? {})) fn(a && Object.hasOwn(a, k) ? a[k] : undefined, b![k]);
+  };
+  for (const k of ['manifest', 'site', 'tokens', 'assets', 'themeLock', 'brief', 'published'] as const) one(prev[k], next[k]);
+  each(prev.pages, next.pages, one);
+  each(prev.components, next.components, one);
+  each(prev.sources, next.sources, one);
+  each(prev.collections, next.collections, (a, b) => {
+    one(a?.settings, b.settings);
+    each(a?.entries, b.entries, one);
+  });
+  return n;
+}
+
 function sameDocs(a: Map<string, string>, b: Map<string, string>, except?: string): boolean {
   for (const p of new Set([...a.keys(), ...b.keys()])) if (p !== except && a.get(p) !== b.get(p)) return false;
   return true;

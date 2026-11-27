@@ -176,6 +176,13 @@ export class GenerationCache {
   private counter = 0;
   /** Keys of the files the last run had to make, for tests and timing. */
   made: string[] = [];
+  /**
+   * With `timing` on (only while timing marks are, src/main/perf.ts), how long the last run spent checking whether each
+   * file's dependencies are unchanged, in ms, and how many files it checked. Off, nothing is timed.
+   */
+  timing = false;
+  checkMs = 0;
+  checked = 0;
 
   private dep(name: string): Dep {
     let d = this.deps.get(name);
@@ -206,6 +213,8 @@ export class GenerationCache {
     const tracked = view(state, [], SHAPE, rec);
     const used = new Set<string>();
     this.made = [];
+    this.checkMs = 0;
+    this.checked = 0;
     deriving.set(tracked, <T>(name: string, compute: (state: ProjectState) => T): T => {
       const n = '@' + JSON.stringify([name]);
       rec.deps?.add(n);
@@ -218,7 +227,15 @@ export class GenerationCache {
       used.add(key);
       try {
         const hit = this.entries.get(key);
-        if (hit && hit.deps.every(([dep, v]) => this.version(state, dep) === v)) return hit.content;
+        if (hit) {
+          const started = this.timing ? performance.now() : 0;
+          const same = hit.deps.every(([dep, v]) => this.version(state, dep) === v);
+          if (this.timing) {
+            this.checkMs += performance.now() - started;
+            this.checked++;
+          }
+          if (same) return hit.content;
+        }
         this.entries.delete(key);
         rec.deps = new Set();
         const content = make(tracked);

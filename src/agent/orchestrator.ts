@@ -124,6 +124,8 @@ export interface RunSession {
 }
 
 export interface OrchestratorDeps {
+  /** Starts a timing span (src/main/perf.ts) while timing marks are on; absent otherwise. */
+  perfSpan?: (name: string) => () => void;
   session(): RunSession | null;
   /**
    * `signal` ends anything the factory asks a server while preparing, such as reading a local model's window. `repair`
@@ -596,6 +598,16 @@ ${themeGuidance(theme)}${preferred}`;
 
 export class Orchestrator {
   private run: ActiveRun | null = null;
+
+  /** `check`, timed as the span `name` while timing marks are on. */
+  private timedCheck<T>(name: string, check: () => T): T {
+    const end = this.deps.perfSpan?.(name);
+    try {
+      return check();
+    } finally {
+      end?.();
+    }
+  }
   /** Calls removing conversations in progress (Clear history, or a delete of the open one): no request may start. */
   private clearing = 0;
   /** Clear-history calls in progress: nothing is renamed or deleted meanwhile, or it would come back after the clear. */
@@ -1618,7 +1630,7 @@ export class Orchestrator {
         if (operations.some((o) => o.type === 'component.import')) return refused('SCOPE_MISMATCH', 'The assistant cannot import component packages. Ask the user to import the package from the component library.', false);
         // Code, and copies that would make new code (duplicating a code component, say), need Developer mode.
         if (!codeEnabled) {
-          const refusal = developerModeRefusal(session.state, operations);
+          const refusal = this.timedCheck('agent.devModeCheck', () => developerModeRefusal(session.state, operations));
           if (refusal)
             return refused(
               'SCOPE_MISMATCH',
@@ -1656,9 +1668,9 @@ export class Orchestrator {
             return refused(asked.code, `${asked.message} Nothing in this batch was applied.${asked.reread ? ' Read the project again for the right ID.' : ''}`, true);
           return beyond(asked.message);
         }
-        const denied = checkAuthority(session.state, operations, authority, grants);
+        const denied = this.timedCheck('agent.authorityCheck', () => checkAuthority(session.state, operations, authority, grants));
         if (denied) return beyond(denied);
-        const own = asked && asked.authority !== authority ? checkAuthority(session.state, operations, asked.authority, grants) : null;
+        const own = asked && asked.authority !== authority ? this.timedCheck('agent.authorityCheck', () => checkAuthority(session.state, operations, asked.authority, grants)) : null;
         if (own) return refused('SCOPE_MISMATCH', `${own} This call asked to change only ${authorityLabel(asked!.authority)}. Nothing in this batch was applied: send it with a scope that covers what it changes.`, true);
         // The pages the batch will change are measured as they are, before this run reached them, for the preview check.
         const endBaselines = perf ? perf.span('ai.baselines') : NO_SPAN;

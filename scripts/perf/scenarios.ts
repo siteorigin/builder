@@ -466,6 +466,23 @@ function switchReady(t: Trace, fixture: FixtureFacts): PerfRecord | undefined {
 // edit
 // ---------------------------------------------------------------------------
 
+/**
+ * `<prefix>.generate`, every generation of both variants in [from, to] (the website's and the preview's), and
+ * `<prefix>.generateCheck`, the part of them the generation cache spent finding which files' inputs are unchanged: a
+ * sum missing a variant would look faster than it is.
+ */
+function generation(m: Collector, trace: Trace, prefix: string, from: number, to: number) {
+  const variant = (name: string, v: string) => trace.all(name, (r) => r.proc === 'main' && r.attrs?.variant === v, from, to);
+  const clean = variant('session.generate', 'clean');
+  const dev = variant('session.generate', 'dev');
+  if (!clean.length) m.need('session.generate (clean)', undefined);
+  if (!dev.length) m.need('session.generate (dev)', undefined);
+  if (clean.length && dev.length) m.ms(`${prefix}.generate`, [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
+  const checks = [...variant('session.generateCheck', 'clean'), ...variant('session.generateCheck', 'dev')];
+  if (!checks.some((r) => r.attrs?.variant === 'clean') || !checks.some((r) => r.attrs?.variant === 'dev')) m.need('session.generateCheck (both variants)', undefined);
+  else m.ms(`${prefix}.generateCheck`, checks.reduce((n, r) => n + (typeof r.attrs?.ms === 'number' ? r.attrs.ms : NaN), 0));
+}
+
 export const EDITED_HEADING = 'Benchmark heading';
 
 /**
@@ -525,12 +542,10 @@ function measureEdit(trace: Trace, scenario: string): Collector {
   m.span(name('applyOperations'), inApply('session.applyOperations'));
   m.span(name('validate'), inApply('session.validateState'));
   // Every generation of both variants, the website's and the preview's: a sum missing one would look faster than it is.
-  const variant = (v: string) => trace.all('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === v, at, until);
-  const clean = variant('clean');
-  const dev = variant('dev');
-  if (!clean.length) m.need('session.generate (clean)', undefined);
-  if (!dev.length) m.need('session.generate (dev)', undefined);
-  if (clean.length && dev.length) m.ms(name('generate'), [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
+  generation(m, trace, scenario, at, until);
+  m.span(name('changedDocs'), inApply('session.changedDocs'));
+  m.count(name('docsCopied'), delta(applied, 'apply.docsCopied'));
+  m.count(name('docsSerialized'), delta(applied, 'docs.serialized'));
   m.span(name('persist'), inApply('session.persist'));
   const publish = inApply('session.publish');
   m.span(name('publish'), publish);
@@ -721,6 +736,155 @@ export const edits: Scenario = {
     m.since('edits.outsideSent', fired, sentOut);
     m.since('edits.outsideApplied', fired, m.need('canvas.revisionApplied (the change made outside)', trace.first('canvas.revisionApplied', atRevision(outRev), to)));
     m.count('edits.outsideReloads', trace.all('session.reloadFromDisk', inProc('main'), to, endMain?.t ?? -Infinity).length);
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// batch
+// ---------------------------------------------------------------------------
+
+/** How many operations the `batch` scenario's one change makes: the most one apply_operations call may carry. */
+export const BATCH_OPERATIONS = 30;
+/** What is asked, in Edit mode on the home page, and the scripted model's answer once its change has landed. */
+export const BATCH_REQUEST = 'Rewrite the wording of every section on this page.';
+export const BATCH_REPLY = 'Rewrote the wording of every section on the home page.';
+
+/** The text properties the batch rewrites: each placement's own string properties on the page, in document order. */
+export function batchTargets(state: ProjectState, pageId: string): Array<{ nodeId: string; prop: string }> {
+  const out: Array<{ nodeId: string; prop: string }> = [];
+  for (const node of Object.values(state.pages[pageId]?.nodes ?? {})) {
+    if (node.kind !== 'instance') continue;
+    const props = state.components[node.definitionId]?.properties ?? {};
+    for (const [prop, value] of Object.entries(node.props)) if (typeof value === 'string' && props[prop]?.type === 'string') out.push({ nodeId: node.id, prop });
+  }
+  return out;
+}
+
+/**
+ * The batch: BATCH_OPERATIONS `instance.setProp` operations over the page's text properties in turn (one set twice
+ * keeps its later text), and the text each property holds once it has landed, by `nodeId:prop`.
+ */
+export function batchOperations(state: ProjectState, pageId: string, iteration: number): { operations: Array<Record<string, unknown>>; final: Map<string, string> } {
+  const targets = batchTargets(state, pageId);
+  const operations: Array<Record<string, unknown>> = [];
+  const final = new Map<string, string>();
+  for (let k = 0; targets.length && k < BATCH_OPERATIONS; k++) {
+    const { nodeId, prop } = targets[k % targets.length];
+    const value = `Batch ${iteration}.${k}`;
+    operations.push({ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId, prop, value });
+    final.set(`${nodeId}:${prop}`, value);
+  }
+  return { operations, final };
+}
+
+/** Whether `page` (a page's document, as the project holds it or as saved) holds every text of `final`. */
+function holdsBatch(page: unknown, final: Map<string, string>): boolean {
+  const nodes = (page as { nodes?: Record<string, { props?: Record<string, unknown> }> } | null)?.nodes ?? {};
+  return [...final].every(([key, value]) => {
+    const [nodeId, prop] = key.split(':');
+    return Object.hasOwn(nodes, nodeId) && nodes[nodeId].props?.[prop] === value;
+  });
+}
+
+export const batch: Scenario = {
+  name: 'batch',
+  after: 'open',
+  description: 'In the AI panel, in Edit mode on the home page, ask for a change the scripted model makes as one apply_operations call of 30 operations, and wait for the preview to show it and the request to end.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const server = await new MockOpenAIServer().start();
+    try {
+      // The scripted model, in native tool mode; untimed, as is the reload that takes the setting.
+      await win.evaluate((url) => (globalThis as unknown as EditorPage).builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL: url, allowRemote: false, toolMode: 'native', contextWindow: 131_072 } } } as never), server.baseURL);
+      await win.reload();
+      await win.locator('.editor').waitFor({ timeout: 60_000 });
+      await preview(win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
+      await win.locator('.dock-tab', { hasText: 'AI' }).first().click();
+      await composer(win).waitFor({ timeout: 15_000 });
+      // An edit, limited to the page: the run checks each batch against what the page may change.
+      const asking = win.getByRole('button', { name: /^What your next message does: Ask/ });
+      if (await asking.count()) {
+        await asking.first().click();
+        await win.getByRole('menuitemradio', { name: /^Edit/ }).click();
+      }
+      const before = await snapshotOf(win);
+      expect(before, 'no project is open');
+      await win.getByRole('button', { name: /^What the AI may change: / }).first().click();
+      await win.getByRole('menuitemradio', { name: /^This page/ }).or(win.getByRole('menuitem', { name: /^This page/ })).first().click();
+      const title = before.state.pages[fixture.homePageId].title;
+      expect(await win.getByRole('button', { name: `What the AI may change: ${title}`, exact: true }).count(), 'the request is not limited to the home page');
+      const { operations, final } = batchOperations(before.state, fixture.homePageId, ctx.iteration);
+      expect(operations.length === BATCH_OPERATIONS && final.size > BATCH_OPERATIONS / 2, `the home page has ${final.size} text properties to rewrite, too few for a batch of ${BATCH_OPERATIONS}`);
+      const heroHeading = final.get(`${fixture.heroId}:heading`);
+      expect(heroHeading, 'the batch does not rewrite the home hero’s heading');
+      server.script(toolCallReply('apply_operations', { expectedRevision: before.revision, operations }));
+      server.respond = () => textReply(BATCH_REPLY);
+      await composer(win).fill(BATCH_REQUEST);
+      // Choosing the mode and the scope saves the workspace 300 ms later: that lands before the request is sent.
+      await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+      await ctx.mark('scenario.start', { scenario: 'batch' });
+      await win.keyboard.press('Enter');
+      await preview(win).getByRole('heading', { name: heroHeading, exact: true, level: 1 }).first().waitFor({ timeout: 120_000 });
+      await win.waitForFunction(
+        (reply) => {
+          const doc = (globalThis as unknown as DomPage).document;
+          return !doc.querySelector('.run-strip') && ([...doc.querySelectorAll('.chat-log .msg-ai')].at(-1)?.textContent ?? '').includes(reply);
+        },
+        BATCH_REPLY,
+        { timeout: 120_000 }
+      );
+      const after = await snapshotOf(win);
+      expect(after && after.revision === before.revision + 1, `the request left the project at revision ${after?.revision}, not ${before.revision + 1}`);
+      expect(holdsBatch(after.state.pages[fixture.homePageId], final), 'the project does not hold every text the batch wrote on the home page');
+      const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+      expect(holdsBatch(existsSync(doc) ? JSON.parse(readFileSync(doc, 'utf8')) : null, final), 'the home page’s document on disk does not hold every text the batch wrote');
+      const applied = await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(after.revision)), 30_000);
+      expect(applied.first('canvas.revisionApplied', atRevision(after.revision)), 'the canvas never reported the batch applied');
+      await sleep(ctx.settleMs);
+      await ctx.mark('scenario.end', { scenario: 'batch' });
+      await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('batch', 'renderer')) && !!t.first('scenario.end', forScenario('batch', 'main')));
+    } finally {
+      await server.stop();
+    }
+  },
+  measure(trace) {
+    const m = new Collector();
+    const begin = m.need('scenario.start (main)', trace.first('scenario.start', forScenario('batch', 'main')));
+    const end = m.need('scenario.end (main)', trace.first('scenario.end', forScenario('batch', 'main')));
+    const from = begin?.t ?? Infinity;
+    const to = end?.t ?? -Infinity;
+    m.span('batch.beginRun', m.need('session.beginRun', trace.first('session.beginRun', inProc('main'), from, to)));
+    // The batch's own apply: the one that moved the project.
+    const applied = m.need('session.apply (the batch)', trace.first('session.apply', (r) => r.proc === 'main' && r.attrs?.ok === true, from, to));
+    const start = applied ? applied.t - (applied.ms ?? 0) : Infinity;
+    const until = applied?.t ?? -Infinity;
+    const inApply = (name: string) => m.need(name, trace.first(name, inProc('main'), start, until));
+    // What the run checks before it hands the batch to the project: Developer mode's copies and the request's reach.
+    const checks = [...trace.all('agent.devModeCheck', inProc('main'), from, start), ...trace.all('agent.authorityCheck', inProc('main'), from, start)];
+    m.need('agent.authorityCheck', trace.first('agent.authorityCheck', inProc('main'), from, start));
+    m.ms('batch.checks', checks.reduce((n, r) => n + (r.ms ?? NaN), 0));
+    m.span('batch.sessionApply', applied);
+    m.span('batch.applyOperations', inApply('session.applyOperations'));
+    m.span('batch.validate', inApply('session.validateState'));
+    generation(m, trace, 'batch', start, until);
+    m.span('batch.changedDocs', inApply('session.changedDocs'));
+    m.span('batch.persist', inApply('session.persist'));
+    m.span('batch.publish', inApply('session.publish'));
+    // The run's recovery marker, written as it starts and again with each batch: every document hashed each time.
+    const markers = trace.all('session.runMarker', inProc('main'), from, to);
+    m.need('session.runMarker', markers[0]);
+    m.ms('batch.runMarker', markers.reduce((n, r) => n + (r.ms ?? NaN), 0));
+    m.count('batch.runMarkers', markers.length);
+    m.count('batch.runDocsHashed', counter(end, 'run.docsHashed') - counter(begin, 'run.docsHashed'));
+    m.count('batch.docsCopied', delta(applied, 'apply.docsCopied'));
+    m.count('batch.docsSerialized', delta(applied, 'docs.serialized'));
+    m.count('batch.durableWrites', delta(applied, 'fs.durableWrites'));
+    m.count('batch.fsyncs', delta(applied, 'fs.fsyncs'));
+    const revision = typeof applied?.attrs?.revision === 'number' ? applied.attrs.revision : NaN;
+    const shown = m.need('canvas.revisionApplied', trace.first('canvas.revisionApplied', atRevision(revision), from));
+    m.since('batch.previewApplied', begin, shown);
+    m.ms('batch.mainStallMax', stallMax(trace, begin, shown));
     return m;
   }
 };
@@ -3075,7 +3239,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, panels, chat, aiEdit, ai, canvas, drag, colour, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, chat, aiEdit, ai, canvas, drag, colour, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

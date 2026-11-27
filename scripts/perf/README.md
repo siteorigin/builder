@@ -94,9 +94,13 @@ main-process stall.
 **`edit`**: change the home hero's Heading in the Inspector, to the preview showing it. Checks: the project moved exactly
 one revision, the page's document on disk holds the new heading, the preview shows it. Times from `edit.requested` (the
 editor sending the edit): `apply` (the whole edit in the main process, queue included), `sessionApply`,
-`validateOperations`, `applyOperations`, `validate` (the saving checks), `generate` (both variants), `persist`,
-`publish` (spans); `hmrRelease`, `changed`, `snapshotSent`, `snapshotReceived`, `rendererCommit`, `previewPublished`
-and `previewApplied` (the headline). Counts: durable writes, fsyncs, file writes, synchronous filesystem calls, path
+`validateOperations`, `applyOperations`, `validate` (the saving checks), `generate` (both variants), `generateCheck`
+(the part of both generations the generation cache spent finding which files' inputs are unchanged,
+`session.generateCheck`), `changedDocs` (every document serialized and compared with its last text to find what the
+edit changed, `session.changedDocs`), `persist`, `publish` (spans); `hmrRelease`, `changed`, `snapshotSent`, `snapshotReceived`, `rendererCommit`, `previewPublished`
+and `previewApplied` (the headline). Counts: `docsCopied` (the
+canonical documents of the new state that are not the very objects of the one before, `apply.docsCopied`),
+`docsSerialized` (`docs.serialized`), durable writes, fsyncs, file writes, synchronous filesystem calls, path
 stats and bytes hashed in the edit; the publication's files read, hashed and written, its bytes hashed, durable writes,
 fsyncs, synchronous filesystem calls and path stats (`publish…`); `project:changed` sends and bytes, `reloadFromDisk`
 calls and React commits until the scenario ends; the sweeps of history blobs and unused assets (`session.sweep`) the
@@ -107,6 +111,21 @@ edit waited on before `changed` (`sweepsAwaited`, their time `sweepAwaited`) and
 scenario starts (untimed), 100 edits of the hero's Heading are made through the editor's API, each a step of its own.
 Checks: History held 100 applied steps before the edit, and after it still holds 100, the edit's step is the last
 applied one and the oldest is gone; then the same as `edit`. The same metrics as `edit`, named `editFullHistory.*`.
+
+**`batch`** (after `open`): in the AI panel, in Edit mode limited to the home page (This page), ask for a change that the
+scripted model (no live provider) makes as one `apply_operations` call of 30 operations, the most one call may carry:
+`instance.setProp` on the home page's text properties in turn (each placement's string properties; one set twice keeps
+its later text); then the model answers. Until the preview shows the hero's new heading and the request has ended.
+Checks: the request was limited to the home page, the project moved exactly one revision and holds every text the batch
+wrote, so does the home page's document on disk, the answer is in the log, and the canvas reported the revision
+applied. Times from the request being sent: `beginRun` (the run's start, `session.beginRun`), `checks` (what the run
+checks before handing the batch to the project: Developer mode's copies and the request's reach,
+`agent.devModeCheck` and `agent.authorityCheck`), and in the batch's own `session.apply` (`sessionApply`):
+`applyOperations`, `validate`, `generate`, `generateCheck`, `changedDocs`, `persist`, `publish`; `runMarker` (the run's
+recovery marker built at its start and with the batch, `session.runMarker`, its write left out) and `previewApplied`.
+Counts: `runMarkers`, `runDocsHashed` (documents the markers hashed, `run.docsHashed`), `docsCopied`,
+`docsSerialized`, durable writes and fsyncs in the apply; the longest main-process stall until the preview shows it
+(the run's compile before its first model call is in it).
 
 **`edits`** (after `open`): change the home hero's Heading in the Inspector 20 times, each edit sent once the one
 before it is saved and the file watch has gone off for that save (`controller.watchFired`, when the reload a save sets
@@ -519,7 +538,10 @@ counted in `files.read`; `src/main/project/documents.ts`), `export.filesRead`, `
 in the main process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as
 IPC serializes the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's
 events, sized the same way), `compile.files` and `compile.svelte` (Svelte files a build check looked at, and the
-compiler runs it made for them: `src/main/compile.ts`), `session.reloadFromDisk`, `session.reloadUnchanged` (a reload that read the project and
+compiler runs it made for them: `src/main/compile.ts`), `apply.docsCopied` (per applied edit, the canonical documents
+its new state does not share with the old, `src/main/project/session.ts`), `docs.serialized` (canonical documents
+serialized, `src/main/project/documents.ts`), `run.docsHashed` (documents an AI run's recovery marker hashed),
+`session.reloadFromDisk`, `session.reloadUnchanged` (a reload that read the project and
 found nothing changed), `tools.npmRuns` (npm runs that set up a project's website tools), `tools.idealTrees` (the npm
 dependency trees worked out to check what they need, `src/main/runtime/manager.ts`), `main.stalls` (main), and
 `react.commits`, `react.renders`
