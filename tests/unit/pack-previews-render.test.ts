@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { BUILTIN_PACKS } from "@catalogue/builtin";
 import { registerPacks } from "@catalogue/index";
-import { generateProject, pageFile } from "@generator/index";
+import { STYLES_DIR, generateProject, pageFile } from "@generator/index";
 import { buildPack } from "../../src/main/packs/build";
 import {
   packCss,
@@ -23,10 +23,21 @@ describe("renderPages", () => {
     expect(html).toHaveLength(2);
     for (const doc of html) {
       expect(doc.startsWith("<!doctype html>")).toBe(true);
-      expect(doc).toContain(packCss(generated).slice(0, 200));
+      for (const sheet of [
+        "tokens.css",
+        "theme.css",
+        "components.css",
+        "site.css",
+      ])
+        expect(doc).toContain(
+          (generated.get(`${STYLES_DIR}/${sheet}`) ?? "").slice(0, 120),
+        );
       expect(doc).toContain('<main id="main">');
     }
     expect(html[0]).not.toBe(html[1]);
+    expect(await renderPages(generated, pages.slice().reverse())).toEqual(
+      html.slice().reverse(),
+    );
     const block = await renderPages(generated, pages.slice(0, 1), {
       blocks: new Set(pages),
     });

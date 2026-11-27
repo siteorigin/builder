@@ -201,8 +201,13 @@ export async function bundlePages(files: Map<string, string>, pages: string[]): 
   const chunk = (Array.isArray(out) ? out[0] : out).output.find((o) => o.type === 'chunk');
   if (!chunk || chunk.type !== 'chunk') throw new Error('The preview pages did not bundle.');
   const dir = mkdtempSync(join(tmpdir(), 'so-pack-previews-'));
-  writeFileSync(join(dir, 'pages.mjs'), chunk.code);
-  return { module: (await import(pathToFileURL(join(dir, 'pages.mjs')).href)) as Rendered, dir };
+  try {
+    writeFileSync(join(dir, 'pages.mjs'), chunk.code);
+    return { module: (await import(pathToFileURL(join(dir, 'pages.mjs')).href)) as Rendered, dir };
+  } catch (e) {
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
 }
 
 /** The pack's stylesheets, joined: what every rendered page carries in its head. */
