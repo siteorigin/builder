@@ -34,7 +34,7 @@ import { walkChecks } from '@engine/apply';
 import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
 import { applyContextBudget, contextVerdict, estimateRequestTokens, MIN_OUTPUT_TOKENS } from './budget';
-import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, type MissingPage, type WantedPage } from './completeness';
+import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, upsertCreatesIn, type MissingPage, type WantedPage } from './completeness';
 import { blueprintSection, exampleSection, retrieveBlueprints, retrieveExamples } from './examples';
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
 import { modelInfo } from './models';
@@ -211,7 +211,9 @@ interface ActiveRun {
   abort: AbortController;
   status: RunStatus;
   /** The question waiting for an answer; an answer or Stop takes it, so it is settled exactly once. */
-  pendingQuestion: { id: string; resolve: (answer: string) => void } | null;
+  pendingQuestion: PendingQuestion | null;
+  /** What the author saved while the question just answered waited (PendingQuestion.edits), for its answer to say. */
+  authorEdits: AuthorSave[];
   message: ChatMessage;
   /**
    * The conversation the run was filed in, as its events name it. Emptied when its project closes: a run may still
@@ -224,6 +226,30 @@ interface ActiveRun {
   recipient: Recipient | null;
   /** Where the run's turn is saved when it ends, however it ends: taken when it was admitted (see RunTranscript). */
   transcript: RunTranscript;
+}
+
+interface PendingQuestion {
+  id: string;
+  resolve: (answer: string) => void;
+  /**
+   * The author's held edits can be saved while it waits (#1281): a question the model asked. Never the app's own about
+   * where forms send, whose grant is for the project as the author is shown it, which a save would move on.
+   */
+  saveable: boolean;
+  /** Saves admitted while it waits that have not finished: its answer goes to the model once they have. */
+  saving: Set<Promise<void>>;
+  /** The edits saved while it waited. */
+  edits: AuthorSave[];
+}
+
+/** An edit the author saved while a run waited for their answer (#1281), as Orchestrator.admitSave is told of it. */
+export interface AuthorSave {
+  /** What it changed, in the author's words, for the model. */
+  summary: string;
+  operations: EditOperation[];
+  /** The project just before and just after it was saved. */
+  before: ProjectState;
+  after: ProjectState;
 }
 
 /**
@@ -942,7 +968,7 @@ export class Orchestrator {
     const run = this.run;
     // Ended once its turn has a result, whatever the status says until the run is let go.
     if (!run || run.transcript.opening !== this.opening || run.message.result) return null;
-    return { runId: run.id, status: run.status, mode: run.mode, conversationId: run.transcript.conv.id };
+    return { runId: run.id, status: run.status, mode: run.mode, conversationId: run.transcript.conv.id, ...(this.saveable(run) ? { saveable: true } : {}) };
   }
 
   /**
@@ -1217,7 +1243,38 @@ export class Orchestrator {
   private setStatus(status: RunStatus) {
     if (!this.run) return;
     this.run.status = status;
-    this.deps.emit({ runId: this.run.id, conversationId: this.run.conversationId, kind: 'status', status, mode: this.run.mode });
+    this.deps.emit({ runId: this.run.id, conversationId: this.run.conversationId, kind: 'status', status, mode: this.run.mode, ...(this.saveable(this.run) ? { saveable: true } : {}) });
+  }
+
+  /** Whether `run` waits for an answer to a question the author's held edits can be saved beside (#1281). */
+  private saveable(run: ActiveRun): boolean {
+    // Never a live-session guest's request: what the host saves would reach a model working for the guest, the
+    // project brief among it, which the guest is never shown.
+    return run.mode === 'edit' && !run.delegation && run.status === 'awaiting-input' && !run.abort.signal.aborted && !!run.pendingQuestion?.saveable;
+  }
+
+  /**
+   * Admit a save of the author's held edit while request `runId` waits for their answer (#1281), or null when it does
+   * not: it is working, stopping, or asking the app's own question about where forms send. The answer waits for every
+   * save admitted before it, so the model hears of each: `done` says what one changed, or null when nothing was saved.
+   */
+  admitSave(runId: string): { done: (edit: AuthorSave | null) => void } | null {
+    const run = this.run;
+    if (!run || run.id !== runId || !this.saveable(run)) return null;
+    const pending = run.pendingQuestion!;
+    let finish!: () => void;
+    const finished = new Promise<void>((r) => (finish = r));
+    pending.saving.add(finished);
+    let settled = false;
+    return {
+      done: (edit) => {
+        if (settled) return;
+        settled = true;
+        if (edit) pending.edits.push(edit);
+        pending.saving.delete(finished);
+        finish();
+      }
+    };
   }
 
   /**
@@ -1342,7 +1399,7 @@ export class Orchestrator {
     conv.messages.push(userMsg, assistant);
     if (!titled && text.trim()) conv.title = autoTitle(text);
     const transcript: RunTranscript = { opening: this.opening, session, dir: session.local('sessions', 'chat'), conv, deleted: this.deleted, names: this.names };
-    const active: ActiveRun = { id: runId, delegation: delegation ?? null, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended, transcript };
+    const active: ActiveRun = { id: runId, delegation: delegation ?? null, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, authorEdits: [], message: assistant, conversationId: conv.id, reached: false, recipient: intended, transcript };
     this.run = active;
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
@@ -1419,7 +1476,16 @@ export class Orchestrator {
       if (chosen) q.answeredAssetId = chosen.assetId;
     }
     this.emitMessage(run.message, runId);
-    pending.resolve(chosen ? imageAnswer(chosen) : text);
+    // An edit the author is saving as they answer reaches the project first, and the model hears of it with the answer.
+    // Meanwhile no other save is admitted, and the editor hears so at once.
+    const reply = () => {
+      run.authorEdits = pending.edits;
+      pending.resolve(chosen ? imageAnswer(chosen) : text);
+    };
+    if (pending.saving.size) {
+      this.setStatus(run.status);
+      void Promise.all(pending.saving).then(reply);
+    } else reply();
     return true;
   }
 
@@ -1916,6 +1982,9 @@ export class Orchestrator {
         const id = newId('q');
         run.pendingQuestion = {
           id,
+          saveable: !routing,
+          saving: new Set(),
+          edits: [],
           resolve: (a) => {
             lastResume = Date.now();
             // Stop settles the question too; the run is stopping, not working again.
@@ -2088,7 +2157,20 @@ export class Orchestrator {
       ...(this.deps.inspectComponent ? { inspectComponent: (steps: ComponentPreviewStep[]) => this.deps.inspectComponent!(steps, signal) } : {}),
       // A collaborator's request never reaches the project's external sources, whose settings name the host's secrets.
       ...(this.deps.sources && !delegation ? { sources: this.deps.sources(signal) } : {}),
-      ask: (question, choices, widenScope, images) => askUser(question, choices, widenScope, images)
+      ask: (question, choices, widenScope, images) => askUser(question, choices, widenScope, images),
+      authorEdits: () => {
+        const saves = run.authorEdits.splice(0);
+        // What the author saved is in no page the run was refused before: such a page is sent whole again rather than
+        // repaired from a draft that would put back what the author changed. It is still owed until then.
+        if (saves.length) for (const route of macros.drafts.keys()) (macros.outdated ??= new Set()).add(route);
+        // Nor in a check of the preview made before it: each page it reaches is measured again before the run finishes,
+        // and what the author changed there is never the run's to repair.
+        for (const s of saves) {
+          const reach = preview.authorSaved(s.operations, s.before, s.after);
+          inspections.invalidate(reach.shared || reach.lists ? 'all' : reach.pages, pagesTouched(s.operations, s.after));
+        }
+        return saves.map((s) => s.summary);
+      }
     };
 
     const addActivity = (label: string, tool: string): ChatActivity => {
@@ -2734,6 +2816,9 @@ export class Orchestrator {
         // Calls are reported in order, and reads that come one after another run together. Only the first change of
         // a turn is applied: each change moves the revision, so later ones in the same turn were planned against stale state.
         let mutationTried = false;
+        // An answer that says the author saved edits of their own while it waited (#1281): every change after it in this
+        // response was planned before the model knew of them.
+        let authorEdited = false;
         const endTurn = perf ? perf.span('ai.turnTools', { turn: turns, calls: done.toolCalls.length, reads: done.toolCalls.filter((c) => !MUTATING_TOOLS.has(c.name as never)).length }) : NO_SPAN;
         const runCall = async (call: ToolCall) => {
           const endTool = perf ? perf.span('ai.tool', { tool: call.name, turn: turns }) : NO_SPAN;
@@ -2766,11 +2851,28 @@ export class Orchestrator {
             started.set(c, p);
           }
         };
+        // The project as the model planned this response's calls against: as the run left it, before the author saved
+        // anything while it waited for an answer (taken again as each question is asked).
+        let planned = readState();
         for (const [index, call] of done.toolCalls.entries()) {
           if (signal.aborted) throw new Error('Canceled');
+          if (QUESTION_TOOLS.has(call.name)) planned = readState();
           const mutating = MUTATING_TOOLS.has(call.name as never);
           // Page and selection tools work from the current project, so several can safely run in one turn.
           const revisionBound = REVISION_BOUND_TOOLS.has(call.name as never);
+          if (mutating && authorEdited && tools.some((t) => t.name === call.name)) {
+            const skipped = stamp(
+              toolError(
+                'STALE_REVISION',
+                `Skipped, not applied: the author saved edits of their own while you waited for the answer before this, and this change was planned before you knew of them. Read what they changed (the answer's authorEdits), then send it again in your next step, against the current revision (${readRevision()}).`
+              ),
+              readRevision()
+            );
+            items.push(resultItem(call, skipped));
+            // A page it would have made is still owed, whichever tool was to make it.
+            for (const p of call.name === 'apply_operations' ? pageCreatesIn(call.arguments) : call.name === 'upsert_page_with_sections' ? upsertCreatesIn(call.arguments, planned) : []) rememberPage(wanted, { ...p, reason: 'skipped' });
+            continue;
+          }
           if (revisionBound && mutationTried) {
             const skipped = stamp(
               toolError(
@@ -2825,6 +2927,7 @@ export class Orchestrator {
           // An answered question is a finished step that says what was asked; the answer is shown with it.
           const asked = msg.questions?.at(-1);
           if (outcome.ok && QUESTION_TOOLS.has(call.name) && asked?.answered !== undefined) activity.label = `Asked: ${asked.text}`;
+          if (outcome.ok && QUESTION_TOOLS.has(call.name) && Array.isArray((outcome.content as { authorEdits?: unknown }).authorEdits)) authorEdited = true;
           const key = `${call.name}:${call.arguments}`;
           if (outcome.ok) failures.delete(key);
           else {

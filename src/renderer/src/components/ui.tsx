@@ -5,7 +5,7 @@ import { Children, cloneElement, createContext, isValidElement, useCallback, use
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronUp, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, StoreViewContext, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
+import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, saveHeldNow, StoreViewContext, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
 import { afterLanding, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
@@ -1472,6 +1472,7 @@ function DraftField({
 }
 
 const HELD_LABELS: Record<HeldAction, string> = {
+  'save-now': 'Save now',
   'stop-apply': 'Stop AI and apply my edit',
   apply: 'Apply my edit',
   replace: 'Replace with my edit',
@@ -1498,13 +1499,14 @@ export function handOffNoticeFocus(going: HTMLElement) {
 }
 
 /** The answers that keep the author's edit: the first of them on offer is the row's expected answer. */
-const KEEPS_EDIT = new Set<HeldAction>(['stop-apply', 'apply', 'replace', 'retry']);
+const KEEPS_EDIT = new Set<HeldAction>(['save-now', 'stop-apply', 'apply', 'replace', 'retry']);
 
 /** A typed edit that could not be saved as it was made (the AI was working, or its field changed somewhere else
  *  meanwhile): kept, with what can be done with it now. */
 function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
   const phase = useStore((s) => runPhase(editRunStatus(s)));
-  const { message, actions } = heldPrompt(h, !!aiRunId, phase);
+  const saveable = useStore((s) => s.runSaveable && s.runMode !== 'ask' && s.activeRunId === aiRunId);
+  const { message, actions } = heldPrompt(h, !!aiRunId, phase, saveable);
   const row = useRef<HTMLDivElement>(null);
   // The buttons change with the edit's state and the AI's. Focus that was on one stays in the row, and a
   // row that goes (saved or discarded) hands focus to the next one, never dropping it on the page.
@@ -1536,6 +1538,8 @@ function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
   }, [copied]);
   const run = (a: HeldAction) => {
     if (a === 'discard') discardHeld(h.id);
+    // Saved beside the question the AI waits on: nothing is stopped.
+    else if (a === 'save-now') void saveHeldNow(h.id);
     else if (a === 'copy')
       void (navigator.clipboard?.writeText(h.text ?? '') ?? Promise.reject(new Error('No clipboard'))).then(
         () => setCopied('yes'),

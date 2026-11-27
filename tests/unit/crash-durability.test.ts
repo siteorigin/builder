@@ -7,6 +7,8 @@ import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
 import { sha } from '../../src/main/project/fsutil';
 import { ProjectSession } from '../../src/main/project/session';
+import type { EditOperation } from '@shared/ops';
+import { readFields } from '../../src/renderer/src/lib/held';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -149,6 +151,76 @@ describe('crash durability', { timeout: 300_000 }, () => {
     });
     expect(points).toBeGreaterThan(0);
     expect(outcomes).toEqual(new Set(['complete', 'checkpoint']));
+  });
+
+  it('keeps an edit saved while the AI waits (#1281) whole or not at all, wherever a crash stops it, and the run rolled back', async () => {
+    const URL = 'https://example.com/builder';
+    let base: unknown[] = [];
+    let ops: EditOperation[] = [];
+    let before: { baseUrl?: string; title: string } = { title: '' };
+    let marker = '';
+    let revision = 0;
+    const setup = {
+      build: async (s: ProjectSession) => {
+        expect((await s.apply({ operations: [{ type: 'site.update', name: 'Before run' }] }, { label: 'Rename' })).ok).toBe(true);
+      },
+      start: async (s: ProjectSession) => {
+        const home = s.state.site.homePageId;
+        // One field in the document the run changes too (site.json), and one in a document it leaves alone (the home page).
+        ops = [
+          { type: 'site.update', baseUrl: URL },
+          { type: 'page.update', pageId: home, title: 'My home' }
+        ];
+        base = readFields(s.state, ops)!.map((r) => (r.found ? r.value : undefined));
+        before = { baseUrl: s.state.site.baseUrl, title: s.state.pages[home].title };
+        expect(await s.beginRun('run_s')).toBeNull();
+        const r = await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }, { type: 'page.create', title: 'AI page' }] }, { label: 'AI', source: 'ai', runId: 'run_s', history: false });
+        expect(r.ok).toBe(true);
+        marker = readFileSync(join(s.dir, '.siteorigin/sessions/active-run.json'), 'utf8');
+        revision = s.revision;
+      },
+      // Until the save's journal is on disk, the run's marker is just as it was: a crash restores the checkpoint without the edit.
+      afterCrash: (dir: string) => {
+        const site = JSON.parse(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')) as { baseUrl?: string };
+        if (!existsSync(join(dir, '.siteorigin/journal.json')) && site.baseUrl !== URL) expect(readFileSync(join(dir, '.siteorigin/sessions/active-run.json'), 'utf8')).toBe(marker);
+      }
+    };
+    const outcomes = new Set<string>();
+    const points = await eachCrashPoint(
+      setup,
+      (s) => s.apply({ operations: ops }, { label: 'My edit', source: 'user', asking: { runId: 'run_s', base } }),
+      async (s) => {
+        expect(s.conflicts).toEqual([]);
+        expect(existsSync(join(s.dir, '.siteorigin/sessions/active-run.json'))).toBe(false);
+        // The run is rolled back whichever way the save went.
+        expect(s.state.site.name).toBe('Before run');
+        expect(pageTitles(s)).not.toContain('AI page');
+        expect(filesContaining(join(s.dir, 'src'), 'AI page')).toEqual([]);
+        const home = s.state.pages[s.state.site.homePageId];
+        const steps = s.historyInfo().entries.map((e) => e.label);
+        if (s.state.site.baseUrl === URL) {
+          outcomes.add('saved');
+          expect(s.revision).toBe(revision + 1);
+          // The whole edit, as the author's own step, which takes back only what it changed.
+          expect(home.title).toBe('My home');
+          expect(steps).toEqual(['Rename', 'My edit']);
+          expect((await s.undo()).ok).toBe(true);
+          expect(s.state.site.baseUrl).toBe(before.baseUrl);
+          expect(s.state.pages[s.state.site.homePageId].title).toBe(before.title);
+          expect(s.state.site.name).toBe('Before run');
+        } else {
+          outcomes.add('not saved');
+          expect(s.revision).toBe(revision);
+          expect(s.state.site.baseUrl).toBe(before.baseUrl);
+          expect(home.title).toBe(before.title);
+          expect(steps).toEqual(['Rename']);
+          expect((await s.undo()).ok).toBe(true);
+          expect(s.state.site.name).toBe('Persist');
+        }
+      }
+    );
+    expect(points).toBeGreaterThan(0);
+    expect(outcomes).toEqual(new Set(['saved', 'not saved']));
   });
 
   it('rolls an AI change interrupted at any point back to its checkpoint, generated files included', async () => {

@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, ProjectSnapshot, RunStatus } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
+import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { saveStatusAnnouncement as saveAnnouncement } from '../../src/renderer/src/lib/announce';
+import { heldPrompt } from '../../src/renderer/src/lib/held';
 
 /**
  * The "Stop AI and apply my edit" handoff end to end: the renderer store, talking through a stand-in for
@@ -76,6 +78,7 @@ interface Held {
   text: string | null;
   currentText?: string | null;
   note?: string;
+  waitsForEnd?: boolean;
 }
 interface StoreState {
   snapshot: ProjectSnapshot | null;
@@ -83,6 +86,7 @@ interface StoreState {
   aiOutcome: { run: RunStatus | null; runId?: string; edit?: 'saved' | 'held' } | null;
   runStatus: RunStatus | null;
   runMode: 'ask' | 'edit' | null;
+  runSaveable: boolean;
   pendingSave: number;
   toasts: Array<{ action?: { label: string } }>;
   renameOffer: { opening: string; pageId: string; from: string; to: string; revision: number } | null;
@@ -91,6 +95,7 @@ interface StoreModule {
   applyOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<unknown>;
   renamePage(pageId: string, from: string, title: string): Promise<unknown>;
   applyHeld(id: number, opts?: { replace?: boolean; stopRunId?: string }): Promise<void>;
+  saveHeldNow(id: number): Promise<void>;
   discardHeld(id: number): void;
   commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean; shown?: string; review?: boolean }): void;
   holdEdit(base: ProjectSnapshot, operations: EditOperation[], label: string, opts?: { text?: string | null; seq?: number }): { id: number | null } | null;
@@ -140,6 +145,21 @@ beforeAll(async () => {
           // As the controller does: the AI owns the project from the moment it starts.
           if (current!.orch.editing) return Promise.resolve({ ok: false, revision: current!.session.revision, error: { code: 'BUSY', message: 'The AI is making changes.' } });
           return current!.session.apply(batch, { label: opts?.label ?? 'Edit', coalesceKey: opts?.coalesceKey, source: 'user' });
+        },
+        // As the controller does (Controller.saveWhileAsking): admitted by the request, then saved into its checkpoint too.
+        saveWhileAsking: async (batch: { operations: EditOperation[] }, opts: { runId: string; base: unknown[]; label?: string; opening?: string }) => {
+          applyCalls++;
+          const admitted = current!.orch.admitSave(opts.runId);
+          if (!admitted) return { ok: false, revision: current!.session.revision, error: { code: 'BUSY', message: 'The AI is no longer waiting for your answer.' } };
+          let saved: { summary: string; operations: EditOperation[]; before: ProjectState; after: ProjectState } | null = null;
+          try {
+            const before = current!.session.state;
+            const r = await current!.session.apply({ operations: batch.operations }, { label: opts.label ?? 'Edit', source: 'user', asking: { runId: opts.runId, base: opts.base } });
+            if (r.ok) saved = { summary: opts.label ?? 'Edit', operations: batch.operations, before, after: current!.session.state };
+            return r;
+          } finally {
+            admitted.done(saved);
+          }
         }
       }
     }
@@ -159,7 +179,7 @@ afterEach(async () => {
   stopCalls.length = 0;
   applyCalls = 0;
   beforeApply = null;
-  store.setState({ snapshot: null, heldEdits: [], aiOutcome: null, runStatus: null, pendingSave: 0, renameOffer: null });
+  store.setState({ snapshot: null, heldEdits: [], aiOutcome: null, runStatus: null, runSaveable: false, pendingSave: 0, renameOffer: null });
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
@@ -212,6 +232,59 @@ async function commitWhileBusy(op: EditOperation, label = 'Change browser title'
 const stopAndApply = (id: number) => store.applyHeld(id, { stopRunId: store.getState().snapshot!.aiRunId! });
 
 const outcomeText = () => saveAnnouncement('working', 'saved', store.getState().aiOutcome);
+
+describe('Save now while the AI waits for an answer (#1281)', () => {
+  it('saves the edit without stopping the request, which goes on waiting and then finishes', async () => {
+    const { session, orch, about, send } = await setup([() => call('q', 'request_clarification', { question: 'Formal or conversational?', choices: ['Formal', 'Conversational'] })]);
+    const runId = await send('Offer formal and conversational choices before editing');
+    await until(() => statusOf() === 'awaiting-input', 'the clarification');
+    store.setState({ snapshot: snapshot() });
+    expect(store.getState().runSaveable).toBe(true);
+    const held = await commitWhileBusy(browserTitle(about, 'Meet our design team'));
+    expect(heldPrompt(held, true, 'asking', store.getState().runSaveable).actions[0]).toBe('save-now');
+
+    await store.saveHeldNow(held.id);
+    expect(store.getState().heldEdits).toEqual([]);
+    expect(session.state.pages[about].seo.title).toBe('Meet our design team');
+    // Nothing was stopped: the request still waits for its answer.
+    expect(stopCalls).toEqual([]);
+    expect(statusOf()).toBe('awaiting-input');
+    expect(orch.runId).toBe(runId);
+    expect(store.getState().toasts.some((t) => (t as { text?: string }).text === 'Your edit is saved. The AI is still waiting for your answer.')).toBe(true);
+    const q = orch.conversation!.messages.at(-1)!.questions!.at(-1)!;
+    expect(orch.answer(runId, q.id!, 'Formal')).toBe(true);
+    await until(() => !orch.busy && statusOf() === null, 'the request to end');
+    expect(session.state.pages[about].seo.title).toBe('Meet our design team');
+  });
+
+  it('keeps an edit of a field the request changed held, saying it waits for the request to end', async () => {
+    let aboutId = '';
+    const { session, orch, about, send } = await setup([
+      () => aiEdit('t', [{ type: 'page.update', pageId: aboutId, seoTitle: 'AI title' }]),
+      () => call('q', 'request_clarification', { question: 'Keep going?', choices: ['Yes', 'No'] })
+    ]);
+    aboutId = about;
+    await send('Retitle the About page, then ask');
+    await until(() => statusOf() === 'awaiting-input', 'the clarification');
+    store.setState({ snapshot: snapshot() });
+    // The author saw the AI's title and edited it: stopping would take the AI's title back, so it is not saved early.
+    const held = await commitWhileBusy(browserTitle(about, 'Meet our design team'));
+    await store.saveHeldNow(held.id);
+    const kept = store.getState().heldEdits[0];
+    expect(kept).toMatchObject({ id: held.id, phase: 'waiting', waitsForEnd: true });
+    expect(kept.note).toMatch(/once the AI request ends/);
+    expect(heldPrompt(kept, true, 'asking', true).actions).toEqual(['stop-apply', 'discard']);
+    expect(session.state.pages[about].seo.title).toBe('AI title');
+    expect(stopCalls).toEqual([]);
+    // Once that request has ended, the edit no longer waits on it: a later request's question may save it.
+    const q = orch.conversation!.messages.at(-1)!.questions!.at(-1)!;
+    expect(orch.answer(orch.runId!, q.id!, 'Yes')).toBe(true);
+    await until(() => !orch.busy && statusOf() === null, 'the request to end');
+    expect(store.getState().heldEdits[0]).toMatchObject({ id: held.id, phase: 'waiting' });
+    expect(store.getState().heldEdits[0].waitsForEnd).toBeUndefined();
+    expect(store.getState().heldEdits[0].note).toBeUndefined();
+  });
+});
 
 describe('Stop AI and apply my edit', () => {
   it('saves an edit typed while a read-only question runs, never holding it or treating the question as an edit (#203)', async () => {

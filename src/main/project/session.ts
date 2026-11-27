@@ -55,6 +55,7 @@ import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytes
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, shareUnchanged, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
+import { checkHeld, readFields, sameValue } from '../../renderer/src/lib/held';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
 
 export { statTrusted };
@@ -424,6 +425,25 @@ interface HistoryFile {
 /** Where an AI run's step stood when History let it go: still in the site, or undone. */
 type DroppedRun = 'applied' | 'undone';
 
+/** The AI run holding the project (ProjectSession.activeRun): its checkpoint, and what it has written. */
+interface ActiveRunInfo {
+  id: string;
+  before: Map<string, string>;
+  beforeState: ProjectState;
+  startRevision: number;
+  written: Map<string, Set<string | null>>;
+  hashes: Map<string, { text: string; hash: string }>;
+}
+
+/**
+ * `sessions/active-run.json`: what an AI run has changed, file by file, so a crash restores its checkpoint. `before` and
+ * `after` name stored versions; `written` every version the run has put in the file.
+ */
+interface RunMarker {
+  id: string;
+  paths: Record<string, { before: string | null; after: string | null; written: Array<string | null> }>;
+}
+
 /**
  * The publication journal: everything one change does, written durably before any of it is. Recovery rolls it
  * forward, so a crash leaves the whole change or none of it. Besides the documents it carries the history the change
@@ -439,6 +459,12 @@ interface Journal {
   revision?: number;
   /** The AI run this change completes: its marker goes once the change is done. */
   finishRun?: string;
+  /**
+   * The marker of the AI run this change was saved into the checkpoint of (an edit saved while the run waits for an
+   * answer, #1281): it replaces the run's marker once the change is done, so stopping the run, or a crash, restores a
+   * checkpoint that holds the change.
+   */
+  runMarker?: RunMarker;
   /**
    * The versions (by hash) the change's writes and History name that were not stored when it was journaled: they are
    * stored after its documents, and from here by a recovery that comes first.
@@ -461,6 +487,89 @@ interface GeneratedManifest {
 /** Whether a value names a collection's layout template (or archive layout) as an owner, at most a few levels in (`target.owner`). */
 const namesTemplate = (v: unknown, depth = 0): boolean =>
   !!v && typeof v === 'object' && depth < 4 && ((v as { kind?: unknown }).kind === 'template' || (v as { kind?: unknown }).kind === 'archive' || Object.values(v as Record<string, unknown>).some((x) => namesTemplate(x, depth + 1)));
+/** Why an edit saved while the AI waits (#1281) waits for the request to end after all, said first. */
+const EARLY_SAVE_WAITS = 'Your edit can be saved once the AI request ends.';
+
+/**
+ * Why the author's held edit (`ops`, made where each field it writes held `base`) cannot be saved while the AI waits
+ * for their answer, or null when it can: every field must hold what they saw both in the project (`state`) and in the
+ * checkpoint stopping the request restores (`start`). `details.held` says which: changed, gone, or differs.
+ */
+function heldRefusal(state: ProjectState, start: ProjectState, ops: EditOperation[], base: unknown[]): ToolError | null {
+  if (!Array.isArray(base) || base.length !== ops.length || !readFields(state, ops))
+    return { code: 'INVALID_ARGUMENT', message: 'Only a typed edit can be saved while the AI waits for your answer.', recoverable: false };
+  const now = checkHeld(state, ops, base);
+  if (now.kind === 'gone') return { code: 'CONFLICT', message: `The ${now.what} this edit was for no longer exists.`, recoverable: true, details: { held: 'gone' } };
+  if (now.kind === 'changed') return { code: 'CONFLICT', message: 'This changed while you were typing.', recoverable: true, details: { held: 'changed' } };
+  const there = checkHeld(start, ops, base);
+  if (there.kind === 'gone') return { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} The AI made the ${there.what} it is for in this request.`, recoverable: true, details: { held: 'differs' } };
+  if (there.kind === 'changed') return { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} The AI changed this in this request.`, recoverable: true, details: { held: 'differs' } };
+  return null;
+}
+
+const plainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** The step of a stateDelta path that names the order of a list's items: no item's ID makes it (those are `#{id}`). */
+const ORDER_STEP = '\u0001order';
+
+/** The items of a list each with an ID of their own, by ID, or null for any other list. */
+function itemsById(list: unknown[]): Map<string, unknown> | null {
+  const out = new Map<string, unknown>();
+  for (const item of list) {
+    const id = plainObject(item) ? item.id : undefined;
+    if (typeof id !== 'string' || out.has(id)) return null;
+    out.set(id, item);
+  }
+  return out;
+}
+
+/**
+ * Every value that differs between two states, by its path through them, with its value in each. Parts the two share
+ * are skipped unread (an edit copies only what it changes). A list whose items have IDs is compared item by item by ID,
+ * with their order as a value of its own (ORDER_STEP), so an edit of one item is told apart from a change to another, or a move;
+ * any other two lists of the same length item by item; lists of different lengths are one value. A path is missing on
+ * one side when its value is undefined there, so an object made on the way to a field is never told apart from the
+ * field itself.
+ */
+function stateDelta(a: unknown, b: unknown, at = '', out = new Map<string, [unknown, unknown]>()): Map<string, [unknown, unknown]> {
+  if (a === b) return out;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const x = itemsById(a);
+    const y = itemsById(b);
+    if (x && y) {
+      for (const id of new Set([...x.keys(), ...y.keys()])) stateDelta(x.get(id), y.get(id), `${at}\u0000#${id}`, out);
+      const order = (m: Map<string, unknown>) => [...m.keys()];
+      if (!sameValue(order(x), order(y))) out.set(`${at}\u0000${ORDER_STEP}`, [order(x), order(y)]);
+      return out;
+    }
+    if (a.length === b.length) {
+      a.forEach((v, i) => stateDelta(v, b[i], `${at}\u0000${i}`, out));
+      return out;
+    }
+  }
+  if ((plainObject(a) || a === undefined) && (plainObject(b) || b === undefined) && (plainObject(a) || plainObject(b))) {
+    const x: Record<string, unknown> = plainObject(a) ? a : {};
+    const y: Record<string, unknown> = plainObject(b) ? b : {};
+    for (const k of new Set([...Object.keys(x), ...Object.keys(y)])) stateDelta(Object.hasOwn(x, k) ? x[k] : undefined, Object.hasOwn(y, k) ? y[k] : undefined, `${at}\u0000${k}`, out);
+    return out;
+  }
+  if (!sameValue(a, b)) out.set(at, [a, b]);
+  return out;
+}
+
+/** The value at a path stateDelta names, or undefined where there is none. */
+function valueAt(root: unknown, at: string): unknown {
+  let v = root;
+  for (const step of at.split('\u0000').slice(1)) {
+    if (Array.isArray(v)) {
+      if (step === ORDER_STEP) return itemsById(v) ? [...itemsById(v)!.keys()] : undefined;
+      v = step.startsWith('#') ? itemsById(v)?.get(step.slice(1)) : v[Number(step)];
+    } else v = plainObject(v) && Object.hasOwn(v, step) ? v[step] : undefined;
+    if (v === undefined) return undefined;
+  }
+  return v;
+}
+
 /** An edit of a collection, of its entries, or of its layout template. */
 const isCollectionOperation = (o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.') || namesTemplate(o);
 
@@ -553,6 +662,20 @@ export interface CommitOptions {
    */
   guard?: (next: ProjectState | null) => ToolError | null;
 }
+
+/** How a change is saved (ProjectSession.persist). */
+type PersistOptions = CommitOptions & {
+  runId?: string;
+  cursor?: number;
+  wholeProject?: boolean;
+  amendHistory?: boolean;
+  /**
+   * The active run's checkpoint with this change made to it too (#1281): an author's edit saved while the run waits for
+   * an answer. Its History step goes from the checkpoint to this, and the run's checkpoint becomes this in the same
+   * journaled step, so stopping the run, or a crash, keeps the edit, and the run's own step never holds it.
+   */
+  rebaseRun?: ProjectState;
+};
 
 /** A change its guard refused at the last moment (CommitOptions.guard): nothing of it was written. */
 class GuardRefusal extends Error {
@@ -746,7 +869,7 @@ export class ProjectSession extends EventEmitter {
   private folderGone = false;
   /** Run currently holding the writer lock. */
   /** `hashes`: the SHA-256 of each document's text as the run's markers last hashed it, by path. */
-  activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>>; hashes: Map<string, { text: string; hash: string }> } | null = null;
+  activeRun: ActiveRunInfo | null = null;
   private writing: Promise<unknown> = Promise.resolve();
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
   /** What the user allowed of AI batches that change where a contact form sends, and what they may yet be asked (#1129). */
@@ -1976,6 +2099,15 @@ export class ProjectSession extends EventEmitter {
       if (!sameRun || !whole)
         return keepAside(readable ? 'An interrupted AI change could not be finished, so it was undone instead.' : 'An interrupted AI change could not be finished or undone, so its changes were kept as they are.');
     }
+    // An edit saved into a waiting run's checkpoint (#1281) carries the marker naming that checkpoint, which replaces the
+    // run's own once the save is done. Checked before anything is rolled forward: one that cannot stand in for the marker
+    // on disk leaves the save undone, so the run's recovery restores the checkpoint as it was before the edit.
+    let runMarker: RunMarker | null = null;
+    if (journal.runMarker !== undefined && markerText !== null) {
+      const fit = await this.markerFit(journal.runMarker, markerText);
+      if (fit === 'unfit') return keepAside('An edit saved while the AI waited for an answer could not be finished, so it was set aside. The AI change was undone.');
+      if (fit === 'fits') runMarker = journal.runMarker as RunMarker;
+    }
     let conflicts = 0;
     for (const w of journal.writes) {
       // An earlier recovery of this journal already held this file for the user to choose.
@@ -2066,6 +2198,9 @@ export class ProjectSession extends EventEmitter {
     if (Number.isInteger(journal.revision)) await this.writeRevision(journal.revision!);
     const finished = typeof journal.finishRun === 'string';
     if (finished) await removeDurable(marker);
+    // The marker an edit saved into a waiting run's checkpoint leaves, checked above, before the journal goes: the run's
+    // recovery after this restores the edit with the rest of the checkpoint.
+    else if (runMarker) await atomicWrite(marker, toJson(runMarker));
     await removeDurable(this.local('journal.json'));
     this.recoveryNotes.push(
       conflicts
@@ -2076,6 +2211,46 @@ export class ProjectSession extends EventEmitter {
             : 'Finished saving an AI change that was interrupted. It was saved before the app was updated, so it cannot be undone.'
           : `Finished an interrupted save (${journal.writes.length + journal.deletes.length} file(s)).`
     );
+  }
+
+  /**
+   * Whether `m`, the marker an interrupted save carries (Journal.runMarker), may replace the marker on disk
+   * (`markerText`). `fits`: one of the same run, naming only project documents, every file the marker on disk names
+   * and every version it lists as the run's, each checkpoint version it names stored. `other`: the marker on disk is
+   * another run's, or unreadable (run recovery discards that), so it is left alone. `unfit`: it cannot stand in for it.
+   * A version that cannot be read for any other reason than being missing or damaged stops recovery, to be tried again.
+   */
+  private async markerFit(m: unknown, markerText: string): Promise<'fits' | 'other' | 'unfit'> {
+    let onDisk: { id?: unknown; paths?: Record<string, { written?: unknown } | null> } | null;
+    try {
+      onDisk = JSON.parse(markerText);
+    } catch {
+      return 'other';
+    }
+    if (!onDisk || typeof onDisk !== 'object' || typeof onDisk.id !== 'string') return 'other';
+    const marker = m as Partial<RunMarker> | null;
+    const id = marker && typeof marker === 'object' ? marker.id : undefined;
+    if (typeof id === 'string' && id !== onDisk.id) return 'other';
+    if (typeof id !== 'string' || !marker!.paths || typeof marker!.paths !== 'object') return 'unfit';
+    const paths = marker!.paths;
+    const hash = (h: unknown) => h === null || (typeof h === 'string' && /^[a-f0-9]{64}$/.test(h));
+    for (const [path, d] of Object.entries(paths)) if (!isCanonicalPath(path) || !d || typeof d !== 'object' || !hash(d.before) || !hash(d.after) || !Array.isArray(d.written) || !d.written.every(hash)) return 'unfit';
+    // It covers all the run has done: a file the marker on disk names, and a version it lists as the run's, are in it too.
+    for (const [path, d] of Object.entries(onDisk.paths && typeof onDisk.paths === 'object' ? onDisk.paths : {})) {
+      const now = Object.hasOwn(paths, path) ? paths[path] : undefined;
+      const had = Array.isArray(d?.written) ? (d.written as unknown[]) : [];
+      if (!now || had.some((h) => !now.written.includes(h as string | null))) return 'unfit';
+    }
+    for (const d of Object.values(paths)) {
+      if (d.before === null) continue;
+      try {
+        await this.getBlob(d.before);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT' || (e as Error).message === 'A history blob is corrupted.') return 'unfit';
+        throw e;
+      }
+    }
+    return 'fits';
   }
 
   /**
@@ -2180,7 +2355,7 @@ export class ProjectSession extends EventEmitter {
    * instead of recording a new step (undo and redo). A save that fails is kept for the editor to show until a later one
    * succeeds; one stopped cleanly by a file saved outside the app is a conflict instead, which Project health lists.
    */
-  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; amendHistory?: boolean }): Promise<SessionEvent> {
+  private async persist(next: ProjectState, opts: PersistOptions): Promise<SessionEvent> {
     try {
       return await this.writeState(next, opts);
     } catch (e) {
@@ -2193,7 +2368,7 @@ export class ProjectSession extends EventEmitter {
     }
   }
 
-  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; amendHistory?: boolean }): Promise<SessionEvent> {
+  private async writeState(next: ProjectState, opts: PersistOptions): Promise<SessionEvent> {
     // Frozen now, as it will be once it is the project: generated and serialized as it will stay.
     frozen(next);
     // A state whose theme is not available here would be generated from the wrong pack.
@@ -2233,6 +2408,18 @@ export class ProjectSession extends EventEmitter {
       changed[path] = { before: blobOf(prev), after: null };
       deletes.push({ path, before: changed[path].before! });
     }
+    // An edit saved into a waiting run's checkpoint (#1281) is the author's step from that checkpoint: what the run
+    // changed before it is the run's own, recorded when the run finishes, from the checkpoint the edit leaves.
+    const run = opts.rebaseRun ? this.activeRun : null;
+    if (opts.rebaseRun && !run) throw new Error('That AI request is no longer running.');
+    const rebased = opts.rebaseRun ? stateToDocs(frozen(opts.rebaseRun)) : null;
+    const step: HistoryEntry['docs'] = {};
+    if (run && rebased)
+      for (const path of new Set([...run.before.keys(), ...rebased.keys()])) {
+        const b = run.before.get(path);
+        const a = rebased.get(path);
+        if (b !== a) step[path] = { before: b === undefined ? null : blobOf(b), after: a === undefined ? null : blobOf(a) };
+      }
     // Authored sources go before the definitions that name them, so a component's definition is never missing
     // beside its source part way through a delete: recovery can then tell that from a definition deleted outside.
     // Entries go before their collection's settings for the same reason: an entry is never left without the collection
@@ -2268,12 +2455,19 @@ export class ProjectSession extends EventEmitter {
     if (this.activeRun) {
       await this.storeBlobs(blobs);
       blobs.clear();
-      await this.writeRunMarker(nextDocs);
+      // The marker an edit saved into the checkpoint leaves goes with its journal instead: until that is on disk, a crash
+      // restores the checkpoint without it, and the files without it are still the run's own.
+      if (!rebased) await this.writeRunMarker(nextDocs);
     }
+    const rebasedMarker = run && rebased ? await this.runMarker(rebased, nextDocs) : undefined;
+    const runMarker = rebasedMarker?.marker;
     // The undo position is part of the change: planned now, journaled with the documents, installed with them. A change
     // folded into History (amendHistory) is journaled with the History it leaves too.
-    const planned =
-      opts.history !== false && Object.keys(changed).length
+    const planned = rebased
+      ? Object.keys(step).length
+        ? this.planHistory(step, opts, this.revision + 1)
+        : null
+      : opts.history !== false && Object.keys(changed).length
         ? this.planHistory(changed, opts, this.revision + 1)
         : opts.cursor !== undefined
           ? { history: { ...this.history, cursor: opts.cursor }, pruned: false, entryId: undefined }
@@ -2311,7 +2505,7 @@ export class ProjectSession extends EventEmitter {
       }
       if (journaled)
         await this.placeJournal(
-          { writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1, ...(blobs.size ? { versions: Object.fromEntries(blobs) } : {}) },
+          { writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1, ...(runMarker ? { runMarker } : {}), ...(blobs.size ? { versions: Object.fromEntries(blobs) } : {}) },
           async () => {
             journalPlaced = true;
             return stillAllowed();
@@ -2341,6 +2535,12 @@ export class ProjectSession extends EventEmitter {
           this.carryChecks(this.state, next, Object.keys(changed));
           this.state = next;
           this.docs = nextDocs;
+          // The run's checkpoint holds the edit from now on, as its marker will once the journal is done.
+          if (run && rebased && rebasedMarker) {
+            run.before = rebased;
+            run.beforeState = opts.rebaseRun!;
+            run.written = rebasedMarker.written;
+          }
           if (planned) this.history = planned.history;
           this.revision++;
           return this.publishGenerated(false, generated);
@@ -2365,6 +2565,7 @@ export class ProjectSession extends EventEmitter {
         await this.finishSave(staged, [
           ...this.blobWrites(blobs),
           ...(planned ? [{ path: this.local('history', 'history.json'), data: toJson(planned.history) }] : []),
+          ...(runMarker ? [{ path: this.local('sessions', 'active-run.json'), data: toJson(runMarker) }] : []),
           { path: this.local('state.json'), data: toJson({ revision: this.revision }) }
         ]);
         if (!journaled) announce();
@@ -2376,8 +2577,9 @@ export class ProjectSession extends EventEmitter {
       // Turned away by its guard before its journal took its place: nothing of it reached the project.
       if (e instanceof GuardRefusal) throw e;
       // Stopped by a file saved outside the app before anything was replaced: nothing of this change is on disk, so
-      // its journal goes and the project carries on (an AI request's own recovery marker is left to its rollback).
-      if (journaled && installed === 0 && !this.activeRun && e instanceof DiskConflictError) {
+      // its journal goes and the project carries on (an AI request's own recovery marker is left to its rollback). An
+      // edit saved into a run's checkpoint left the run's marker as it was, so that goes on too.
+      if (journaled && installed === 0 && (!this.activeRun || !!runMarker) && e instanceof DiskConflictError) {
         const cleared = await removeDurable(this.local('journal.json')).then(
           () => true,
           () => false
@@ -3164,7 +3366,23 @@ export class ProjectSession extends EventEmitter {
    */
   apply(
     batch: EditBatch,
-    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; formRouting?: FormRoutingGrant; stillWanted?: () => boolean }
+    opts: CommitOptions & {
+      runId?: string;
+      idempotencyKey?: string;
+      codeAllowed?: boolean;
+      componentImport?: ComponentImport;
+      collectionWrite?: CollectionWriteGrant;
+      sourceWrite?: SourceWriteGrant;
+      sourceSync?: SourceSyncGrant;
+      formRouting?: FormRoutingGrant;
+      stillWanted?: () => boolean;
+      /**
+       * The author's held edit, saved while AI run `runId` waits for their answer (#1281), with what each field it writes
+       * held when they made it (`base`): it lands only while every one still holds that both in the project and in the
+       * run's checkpoint, which it is saved into too.
+       */
+      asking?: { runId: string; base: unknown[] };
+    }
   ): Promise<ApplyResult> {
     // A form routing grant is good for one call at most, whichever way it goes, even one that never gets its turn.
     const routingGrant = opts.formRouting ? this.routingGrants.take(opts.formRouting) : null;
@@ -3180,7 +3398,10 @@ export class ProjectSession extends EventEmitter {
       }
       if (opts.runId && this.activeRun?.id !== opts.runId)
         return { ok: false, revision: this.revision, error: { code: 'CANCELLED', message: 'That AI request is no longer running.', recoverable: false } };
-      if (this.activeRun && opts.runId !== this.activeRun.id)
+      const asking = opts.asking && !opts.runId && opts.source !== 'ai' ? opts.asking : null;
+      if (opts.asking && (!asking || this.activeRun?.id !== asking.runId))
+        return { ok: false, revision: this.revision, error: { code: 'CANCELLED', message: 'The AI request is no longer waiting for your answer.', recoverable: true } };
+      if (this.activeRun && opts.runId !== this.activeRun.id && !asking)
         return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
       if (batch.expectedRevision !== undefined && batch.expectedRevision !== this.revision)
         return { ok: false, revision: this.revision, error: { code: 'STALE_REVISION', message: `Expected revision ${batch.expectedRevision} but the project is at ${this.revision}. Read the latest state and try again.`, recoverable: true } };
@@ -3197,6 +3418,12 @@ export class ProjectSession extends EventEmitter {
         ops.push(v.op);
       }
       decoding();
+      // Saved while the AI waits: only a typed edit of fields that hold, in the project and in the run's checkpoint, what
+      // the author saw. One the run changed, or on something the run made, waits for the request to end.
+      if (asking) {
+        const refusal = heldRefusal(this.state, this.activeRun!.beforeState, ops, asking.base);
+        if (refusal) return { ok: false, revision: this.revision, error: refusal };
+      }
       // Checked here, in turn with every other edit and with the editor's clipboard, so what it copies is what lands.
       const importing = ops.some((o) => o.type === 'component.import');
       // A package is read and checked by the editor's import, which is the only way one reaches a project.
@@ -3439,11 +3666,38 @@ export class ProjectSession extends EventEmitter {
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The site could not be saved first, so the theme was not changed. ${(e as Error).message}`, recoverable: true } };
         }
       }
+      // The same edit made to the run's checkpoint, which stopping the run or a crash restores: it must land there as it
+      // lands in the project, and leave the checkpoint as valid as it was.
+      let rebaseRun: ProjectState | undefined;
+      if (asking) {
+        const start = this.activeRun!.beforeState;
+        let made: ProjectState;
+        try {
+          made = applyOperations(start, ops, context).state;
+        } catch (e) {
+          return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} ${(e as Error).message}`, recoverable: true, details: { held: 'differs' } } };
+        }
+        // Everything the edit changes, as it lands in either: the fields it names and what the engine changes with them (a
+        // header that follows the site's name, the pages inside a moved one). Each must end up the same in both, or the
+        // request touched something the edit changes, and stopping it would take part of the edit back.
+        const touched = new Set([...stateDelta(this.state, next).keys(), ...stateDelta(start, made).keys()]);
+        const differs = [...touched].some((at) => !sameValue(valueAt(next, at), valueAt(made, at)));
+        const problem = themePinProblem(made) ?? (differs ? 'The AI changed something this edit changes too, in this request.' : null);
+        const introducedThere = problem ? [] : introducedDiagnostics(this.savingProblems(start), this.savingProblems(made));
+        if (problem || introducedThere.length)
+          return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} ${problem ?? introducedThere.map((d) => d.message).join(' ')}`, recoverable: true, details: { held: 'differs' } } };
+        rebaseRun = made;
+      }
       let ev: SessionEvent;
       const persisting = perf.span('session.persist');
       try {
-        // A sync is planned from the whole collection, its source's settings and every link to its entries.
-        ev = await this.persist(next, { ...opts, wholeProject: !!opts.sourceSync || ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
+        // A sync is planned from the whole collection, its source's settings and every link to its entries. An edit saved
+        // while the AI waits is a step of its own, never joined to one before the request.
+        ev = await this.persist(next, {
+          ...opts,
+          ...(rebaseRun ? { rebaseRun, coalesceKey: undefined } : {}),
+          wholeProject: !!opts.sourceSync || ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state))
+        });
       } catch (e) {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
         if (e instanceof GuardRefusal) return { ok: false, revision: this.revision, error: e.refusal };
@@ -5424,25 +5678,38 @@ export class ProjectSession extends EventEmitter {
    * publishing the batch (the file still holds the previous batch) is still recognised as the run's own work.
    */
   private async writeRunMarker(docs: Map<string, string> = this.docs) {
-    if (!this.activeRun) return;
-    const marking = perf.span('session.runMarker');
     const run = this.activeRun;
-    const paths: Record<string, { before: string | null; after: string | null; written: Array<string | null> }> = {};
-    const all = new Set([...run.before.keys(), ...docs.keys(), ...run.written.keys()]);
+    if (!run) return;
+    const { marker, written } = await this.runMarker(run.before, docs);
+    await atomicWrite(this.local('sessions', 'active-run.json'), toJson(marker));
+    run.written = written;
+  }
+
+  /**
+   * The active run's marker, were its checkpoint `before` and its documents `docs`, and the versions it lists as the
+   * run's (`written`, for the run to take once the marker is on disk: a save turned away keeps none of its own). The
+   * checkpoint's versions are stored before this returns, as a marker naming them may be written.
+   */
+  private async runMarker(before: Map<string, string>, docs: Map<string, string>): Promise<{ marker: RunMarker; written: ActiveRunInfo['written'] }> {
+    const marking = perf.span('session.runMarker');
+    const run = this.activeRun!;
+    const paths: RunMarker['paths'] = {};
+    const all = new Set([...before.keys(), ...docs.keys(), ...run.written.keys()]);
+    const kept: ActiveRunInfo['written'] = new Map([...run.written].map(([p, w]) => [p, new Set(w)]));
     for (const path of all) {
-      const b = run.before.get(path);
+      const b = before.get(path);
       const a = docs.get(path);
-      const written = run.written.get(path) ?? new Set<string | null>();
+      const written = kept.get(path) ?? new Set<string | null>();
       // A document the run has not changed, nor written before, is not in the marker: it needs no hash.
       if (b === a && !written.size) continue;
       const after = a === undefined ? null : this.docHash(path, a);
       if (b !== a) written.add(after);
-      if (written.size) run.written.set(path, written);
+      if (written.size) kept.set(path, written);
       paths[path] = { before: b === undefined ? null : await this.putBlob(b), after, written: [...written] };
     }
     // Building the marker: every document hashed, the run's versions stored. Its write is not in the span.
     marking({ paths: Object.keys(paths).length });
-    await atomicWrite(this.local('sessions', 'active-run.json'), toJson({ id: run.id, paths }));
+    return { marker: { id: run.id, paths }, written: kept };
   }
 
   /** `text`'s SHA-256, worked out again only when the document at `path` holds other text than the run last hashed. */

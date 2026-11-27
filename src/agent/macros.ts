@@ -132,6 +132,12 @@ export interface MacroMemory {
   componentDrafts?: Map<string, { args: Record<string, unknown>; target: string | null }>;
   /** Finished calls by call ID: a replayed call returns its first result and changes nothing. */
   replay: Map<string, { args: string; result: ToolResult }>;
+  /**
+   * Routes whose rejected draft predates an edit the author saved while the run waited for an answer (#1281): it is
+   * never repaired, which would put back what the draft held of what the author changed, but still counts as a page
+   * not built until the page is sent whole again.
+   */
+  outdated?: Set<string>;
 }
 
 export const newMacroMemory = (): MacroMemory => ({ drafts: new Map(), pendingLinks: [], replay: new Map() });
@@ -756,6 +762,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   if (rawArgs.repair) {
     const draft = memory.drafts.get(route);
     if (!draft) return fieldError([{ field: 'repair', message: `there is no rejected draft of ${route}` }], 'Send the whole page in sections, without repair.');
+    if (memory.outdated?.has(route)) return fieldError([{ field: 'repair', message: `the author saved edits of their own since that draft of ${route} was rejected` }], 'Read the page again, then send it whole in sections, without repair.');
     if (draft.pageId !== (page?.id ?? null)) {
       memory.drafts.delete(route);
       return fieldError([{ field: 'repair', message: `${route} changed since that draft was rejected` }], 'Send the whole page in sections, without repair.');
@@ -787,7 +794,9 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   const sections = args.sections ?? [];
   const keepDraft = () => {
     const { repair: _r, sections: _s, ...meta } = args;
-    if (sections.length) memory.drafts.set(route, { ...meta, pageId: page?.id ?? null, sections: sections.map(({ index: _i, ...section }) => section) });
+    if (!sections.length) return;
+    memory.drafts.set(route, { ...meta, pageId: page?.id ?? null, sections: sections.map(({ index: _i, ...section }) => section) });
+    memory.outdated?.delete(route);
   };
 
   // Check against the project as it will be once the page exists, so a page can link to itself.
@@ -999,6 +1008,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     }
   });
   memory.drafts.delete(route);
+  memory.outdated?.delete(route);
 
   const waiting = [...new Set(memory.pendingLinks.map((p) => p.route))].filter((r) => !pageAtRoute(after, r));
   const fullNav = Object.entries(nav).filter(([, s]) => s === 'full').map(([k]) => k);

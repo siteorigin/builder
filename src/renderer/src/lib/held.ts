@@ -627,16 +627,41 @@ export function whereOf(state: ProjectState, op: EditOperation): string {
   return typeof node === 'string' ? place : `${displayName(state, node)} ${owner.kind === 'page' ? 'on' : 'in'} ${place}`;
 }
 
-export type HeldAction = 'stop-apply' | 'apply' | 'replace' | 'copy' | 'retry' | 'discard';
+/** The most of a value a held edit's summary for the AI quotes. */
+const SUMMARY_VALUE_MAX = 200;
+
+/**
+ * A held edit in words for the AI, told of it with the answer it was saved beside (#1281): what it is, where, and what
+ * it wrote there, e.g. `Update site settings in Site settings (site.update: baseUrl = "https://example.com")`. The
+ * values are what the field holds now, which a run with no tool to read it again cannot see otherwise.
+ */
+export function heldSummary(state: ProjectState, operations: EditOperation[], label: string): string {
+  const where = [...new Set(operations.map((op) => whereOf(state, op)))].join(', ');
+  const shown = (v: unknown) => {
+    const text = JSON.stringify(v) ?? 'null';
+    return text.length > SUMMARY_VALUE_MAX ? `${text.slice(0, SUMMARY_VALUE_MAX)}…` : text;
+  };
+  const writes = operations.map((op) => {
+    const o = op as Record<string, unknown>;
+    const target = Object.keys(o).filter((k) => TARGET_KEYS.has(k) && (typeof o[k] === 'string' || typeof o[k] === 'number')).map((k) => `${k} ${JSON.stringify(o[k])}`);
+    const fields = Object.keys(o).filter((k) => k !== 'type' && !TARGET_KEYS.has(k) && o[k] !== undefined).map((k) => `${k} = ${shown(o[k])}`);
+    return `${op.type}${target.length ? ` ${target.join(' ')}` : ''}: ${fields.join(', ')}`;
+  });
+  return `${label} in ${where} (${writes.join('; ')})`;
+}
+
+export type HeldAction = 'save-now' | 'stop-apply' | 'apply' | 'replace' | 'copy' | 'retry' | 'discard';
 
 /** The most of a field's text a held edit's status quotes. */
 const QUOTE_MAX = 120;
 
 /** What a held edit's row says, and the actions it offers, in each phase. */
 export function heldPrompt(
-  h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean; cause?: 'elsewhere' },
+  h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean; cause?: 'elsewhere'; waitsForEnd?: boolean },
   aiBusy: boolean,
-  phase: 'working' | 'asking' | 'checking' | 'stopping' | null = null
+  phase: 'working' | 'asking' | 'checking' | 'stopping' | null = null,
+  /** The AI waits for an answer its held edits can be saved beside, without stopping it (#1281). */
+  saveable = false
 ): { message: string; actions: HeldAction[] } {
   // Said in the row's status, which is read out: long text (working notes) is cut short there, and shown in full above it.
   const quote = (t: string | null | undefined) => (t === '' ? 'nothing' : t ? `“${t.length > QUOTE_MAX ? `${t.slice(0, QUOTE_MAX).trimEnd()}…` : t}”` : null);
@@ -668,6 +693,9 @@ export function heldPrompt(
     case 'failed':
       return { message: `Not applied: ${h.note ?? 'the change could not be made.'}`, actions: ['retry', 'discard'] };
   }
-  if (aiBusy) return { message: `Not saved yet: the AI is ${phase === 'asking' ? 'waiting for your answer' : phase === 'stopping' ? 'stopping' : 'working'}.${h.note ? ` ${h.note}` : ''}`, actions: ['stop-apply', 'discard'] };
+  // While the AI waits for an answer, nothing moves under the edit: it can be saved now, unless the request changed
+  // what it writes (`waitsForEnd`), when it waits for the request to end as it would while the AI works.
+  const now: HeldAction[] = aiBusy && phase === 'asking' && saveable && !h.waitsForEnd && h.cause !== 'elsewhere' ? ['save-now'] : [];
+  if (aiBusy) return { message: `Not saved yet: the AI is ${phase === 'asking' ? 'waiting for your answer' : phase === 'stopping' ? 'stopping' : 'working'}.${h.note ? ` ${h.note}` : ''}`, actions: [...now, 'stop-apply', 'discard'] };
   return { message: 'Not saved yet: the AI has finished. Your edit is checked against its changes before it is applied.', actions: ['apply', 'discard'] };
 }

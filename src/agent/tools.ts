@@ -36,7 +36,7 @@ import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentIns
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import type { LayoutOwner } from '@shared/collection-grant';
 import { LAYOUT_TARGET, MAX_LAYOUT_TARGETS, resolveLayoutTargets, targetRef } from './layout-targets';
-import { applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ResultOutcome, type ToolOutcome } from './result';
+import { answered, applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ResultOutcome, type ToolOutcome } from './result';
 import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, wholeSelection, type UpdateReach } from './theme-update';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template', 'archive']), id: z.string() });
@@ -809,6 +809,11 @@ export interface ToolHost {
   inspectComponent?(steps: ComponentPreviewStep[]): Promise<ComponentPreviewResult[]>;
   /** `images`: library images offered as choices, already checked to be in the project. */
   ask(question: string, choices: string[], widenScope?: boolean, images?: ChatImageRef[]): Promise<string>;
+  /**
+   * What the author saved of their own while the question just answered waited (#1281), in their words, each once:
+   * taken by the answer that tells the model.
+   */
+  authorEdits?(): string[];
   /** What the macro tools remember during a run. */
   macros?: MacroMemory;
   /** The element a selection-scoped run is working on. */
@@ -1328,7 +1333,7 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       if (missing.length) return toolError('INVALID_ARGUMENT', `No library image has the assetId ${missing.map((id) => `"${id}"`).join(', ')}. Use the assetIds search_assets returns.`);
       const images = ids.map((id) => imageRef(libraryImage(state, id)!));
       const answer = await host.ask(a.question, a.choices ?? [], a.widenScope, images.length ? images : undefined);
-      return { ok: true, content: { answer } };
+      return { ok: true, content: answered(answer, host) };
     }
     case 'upsert_page_with_sections':
       return runUpsert(args as z.infer<typeof UPSERT_ARGS>, host, callId, (host.macros ??= newMacroMemory()));

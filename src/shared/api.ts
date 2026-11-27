@@ -840,7 +840,7 @@ export interface Conversation {
  */
 export interface ConversationState {
   conversation: Conversation;
-  run: { runId: string; status: RunStatus; mode: ChatMode; conversationId: string } | null;
+  run: { runId: string; status: RunStatus; mode: ChatMode; conversationId: string; saveable?: boolean } | null;
 }
 
 export interface ConversationSummary {
@@ -861,6 +861,11 @@ export interface AiEvent {
   status?: RunStatus;
   /** With a status: what kind of request is running. A question never holds the project, so editing goes on. */
   mode?: ChatMode;
+  /**
+   * With an `awaiting-input` status: the author's held edits can be saved while it waits, without stopping it
+   * (project.saveWhileAsking, #1281). Absent for the app's own question about where forms send.
+   */
+  saveable?: boolean;
   /**
    * With `text`: the turn's text, whole; or, with `at`, the piece it gained, which follows its first `at` characters
    * (the text sent before). A turn streams as pieces, so what is sent grows with the reply, not with its square.
@@ -1339,6 +1344,13 @@ export interface BuilderApi {
     reloadFromDisk(): Promise<{ ok: boolean; message?: string }>;
     /** `opening` is the snapshot's workspaceKey of the project the change was made in: any other refuses it. */
     apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string; opening?: string }): Promise<ApplyResult>;
+    /**
+     * Save a held edit while AI request `runId` waits for the author's answer, without stopping it (#1281). `base` is what
+     * each field the edit writes held when the author made it: the edit lands only while every one still holds that, in
+     * the project and where the request started, so stopping it later keeps the edit. Refused otherwise (CONFLICT, its
+     * `details.held` saying why), and BUSY once the request no longer waits. `opening` as for apply.
+     */
+    saveWhileAsking(batch: EditBatch, opts: { runId: string; base: unknown[]; label?: string; opening?: string }): Promise<ApplyResult>;
     /**
      * Copy page content as it is now, for a later `node.paste` with the returned clipboard ID: one node, or several
      * siblings together. `opening` is the snapshot's workspaceKey of the project it was pressed in: the copy is kept

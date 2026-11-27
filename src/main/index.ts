@@ -462,6 +462,7 @@ aiJournal?.onSpent(() => {
 });
 controller.aiBusy = () => orchestrator.editing;
 controller.aiRunId = () => (orchestrator.editing ? orchestrator.runId : null);
+controller.admitSave = (runId) => orchestrator.admitSave(runId);
 controller.onSessionOpened = async (s) => {
   orchestrator.reset();
   // Another app took the project over: stop the assistant (the session already refuses its writes).
@@ -678,6 +679,7 @@ function registerIpc() {
   handle('project:resync', () => controller.resyncEditor());
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
+  handle('project:saveWhileAsking', (batch, opts) => controller.saveWhileAsking(batch, opts));
   // One node, or several siblings copied together (the session checks they are siblings on that page).
   const nodeIds = (v: unknown): v is string | string[] => typeof v === 'string' || (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string'));
   handle('project:copy', (pageId: unknown, nodeId: unknown, rev: unknown, key: unknown) =>

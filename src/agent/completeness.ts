@@ -89,6 +89,25 @@ export interface WantedPage {
   existing?: string[];
 }
 
+/**
+ * The page an upsert_page_with_sections call's raw arguments would make: none when its slug names a page `state` has
+ * already (an update), the Home page, or no valid address.
+ */
+export function upsertCreatesIn(rawArgs: string, state: ProjectState): Array<Omit<WantedPage, 'reason'>> {
+  let args: unknown;
+  try {
+    args = JSON.parse(rawArgs || '{}');
+  } catch {
+    return [];
+  }
+  const { slug, title } = (args && typeof args === 'object' ? args : {}) as { slug?: unknown; title?: unknown };
+  if (typeof slug !== 'string' || !slug.trim() || slug.trim().toLowerCase() === 'home') return [];
+  const route = normalizeRoute(slug);
+  if (route === '/' || validateRoute(route) || Object.values(state.pages).some((p) => normalizeRoute(p.route) === route)) return [];
+  const named = typeof title === 'string' && title.trim() ? title.trim() : slug.trim().replace(/^\/+|\/+$/g, '');
+  return named ? [{ title: named.slice(0, 80), route }] : [];
+}
+
 /** The page.create operations in a change's raw arguments. A bad sibling operation never hides a valid one. */
 export function pageCreatesIn(rawArgs: string): Array<Omit<WantedPage, 'reason'>> {
   let args: unknown;

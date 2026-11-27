@@ -15,7 +15,7 @@ import { checkProps, chooseVariants, fieldError, variantsJsonSchema, type FieldI
 import { propJsonSchema, propsJsonSchema, type JsonSchema } from './propschema';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
-import { applyFailure, toolError } from './result';
+import { answered, applyFailure, toolError } from './result';
 import { repeatedPartList } from '@shared/item-styles';
 import { partReach, type PartReach } from './scope';
 import { enclosingGroup, partInInteractionGroup } from '@shared/interaction-groups';
@@ -407,7 +407,7 @@ export async function applySelected(ops: EditOperation[], host: ToolHost, label:
 export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: unknown, host: ToolHost, callId: string): Promise<ToolOutcome> {
   if (name === 'request_wider_scope') {
     const a = args as z.infer<(typeof SELECTION_ARGS)['request_wider_scope']>;
-    return { ok: true, content: { answer: await host.ask(a.question, [], true) } };
+    return { ok: true, content: answered(await host.ask(a.question, [], true), host) };
   }
   const target = host.selection?.() ?? null;
   const state = host.state();
