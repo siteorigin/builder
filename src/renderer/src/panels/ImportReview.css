@@ -42,8 +42,7 @@
   .import-review-what > span { min-width: 0; overflow-wrap: anywhere; }
   .import-review-what svg { flex: none; width: 13px; height: 13px; margin-top: 3px; color: var(--text-2); }
   /* The one choice in a row: the app's checkbox, the whole line its target. */
-  .import-review-choice { cursor: default; }
-  .import-review-choice input { flex: none; width: 14px; height: 14px; margin: 2px 0 0; accent-color: var(--accent); }
+  .import-review-choice { cursor: default; gap: 8px; }
   .import-review-refused svg { color: var(--red); }
   .import-review-rest { margin: 12px 0 0; font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
   .import-review-meta { display: block; margin-top: 2px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
@@ -86,8 +85,7 @@
   .post-import-lines.wrap .import-review-meta { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
   .post-import-missing ul { padding-left: 20px; }
   /* Every line's details, on demand: the whole address wraps instead of being cut. */
-  .post-import-details { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 12px; color: var(--text-2); }
-  .post-import-details input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+  .post-import-details { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 6px; font-size: 12px; color: var(--text-2); }
   .post-import-line.full { flex-direction: column; gap: 2px; }
   .post-import-line-more { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .post-import-line-more .import-review-meta, .post-import-line-more .import-review-filed { max-width: none; margin: 0; overflow: visible; white-space: normal; text-align: left; overflow-wrap: anywhere; }
