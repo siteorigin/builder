@@ -64,6 +64,19 @@ export interface OpenOptions {
   force?: boolean | string;
   /** Start the project's preview just before its generated files are published; stopped, and waited for, if it then fails. */
   preview?: { start(s: ProjectSession): void; stop(s: ProjectSession): Promise<void> };
+  /**
+   * Called once the documents are read and sound and the preview started, just before the open's publication, which
+   * waits for the promise it returns: the editor shows the project meanwhile (src/main/controller.ts, openTrusted). The
+   * open still resolves after the publication and its sweep. A publication that fails once the project is shown leaves
+   * it open with its save unfinished (saveUnfinished), as a reload whose files could not be written does, rather than
+   * failing the open. Not called for a project whose format is updated on opening: that update is shown when done.
+   */
+  shown?: (s: ProjectSession) => Promise<void>;
+  /**
+   * The open's sweep of history blobs and unused assets runs as the next command after it instead of inside it, so
+   * neither the editor's first sight of the project nor its preview waits for it.
+   */
+  sweepLater?: boolean;
 }
 /** Sources AI runs wrote or tried to write, a folder per run, in the recovery folder (see keepSourceDraft). */
 export const SOURCE_DRAFTS = 'ai-runs';
@@ -582,6 +595,15 @@ export class ProjectSession extends EventEmitter {
   /** Checks worked out from a state, kept for as long as it is the session's: the state is replaced, never changed. */
   private derived = new WeakMap<ProjectState, { core?: CoreValidation; diagnostics?: Diagnostic[]; saving?: Diagnostic[]; usages?: Record<string, number>; updates?: ThemeUpdates }>();
   conflicts: Conflict[] = [];
+  /** While the open's publication runs after the project is shown: the conflicts as they were before it (shownConflicts). */
+  private conflictsBeforeOpen: Conflict[] | null = null;
+  /**
+   * The conflicts the editor is shown: while the open's publication checks the generated files, the list from before
+   * it, never a list it is part way through; its own once it is done.
+   */
+  get shownConflicts(): Conflict[] {
+    return this.conflictsBeforeOpen ?? this.conflicts;
+  }
   /**
    * For each canonical document in conflict, the version SiteOrigin Builder holds (null = the document should not
    * exist). The in-memory state uses these versions; the external version stays on disk until the user chooses.
@@ -723,8 +745,10 @@ export class ProjectSession extends EventEmitter {
         }
         await s.ensureLocalDirs();
         preparing();
-        await s.openLocked(opts.preview?.start);
+        await s.openLocked(opts.preview?.start, opts.shown, opts.sweepLater);
       });
+      // Queued now, so it runs ahead of every command asked for once the open is done.
+      if (opts.sweepLater) void s.collectGarbage().catch(() => undefined);
     } catch (e) {
       // A preview started for this opening has gone before the lock does.
       await opts.preview?.stop(s).catch(() => undefined);
@@ -798,7 +822,7 @@ export class ProjectSession extends EventEmitter {
     return out;
   }
 
-  private async openLocked(startPreview?: (s: ProjectSession) => void) {
+  private async openLocked(startPreview?: (s: ProjectSession) => void, shown?: (s: ProjectSession) => Promise<void>, sweepLater = false) {
     const s = this;
     const dir = this.dir;
     const recovering = perf.span('session.open.recover');
@@ -840,10 +864,32 @@ export class ProjectSession extends EventEmitter {
     startPreview?.(s);
     // With a file in conflict the update waits: its stored version is the user's to choose first.
     if (s.migrationDue && !s.pending.size) await s.publishMigration();
-    else await s.publishGenerated(false);
+    else if (!shown) await s.publishGenerated(false);
+    else await s.publishShown(shown);
+    if (sweepLater) return;
     const sweeping = perf.span('session.open.sweep');
     await s.sweep();
     sweeping();
+  }
+
+  /**
+   * The open's publication once the editor has been given the project to show (OpenOptions.shown), still under the
+   * open's claim and ahead of every later command: generating and checking the website's files waits until then, so the
+   * documents reach the editor first. Shown, the open stands whatever happens here: a publication that fails leaves the
+   * save unfinished, so nothing more is written until the project is reopened (publishInstalled).
+   */
+  private async publishShown(shown: (s: ProjectSession) => Promise<void>) {
+    this.conflictsBeforeOpen = [...this.conflicts];
+    try {
+      await shown(this).catch(() => undefined);
+      // Looked at again once the editor has the project: a takeover meanwhile gets nothing written by this app.
+      if (!(await this.stillOwner())) return;
+      await this.publishGenerated(false);
+    } catch {
+      if (!this.readOnly) this.unsettled = true;
+    } finally {
+      this.conflictsBeforeOpen = null;
+    }
   }
 
   /**
@@ -907,7 +953,10 @@ export class ProjectSession extends EventEmitter {
     // Recorded durably: a journal written later relies on the blobs folder being there after a power loss. Each is
     // flushed even when it exists, since an app that stopped part way may have created it, or a file in it, without.
     for (const d of ['history/blobs', 'sessions', 'cache/dev', 'recovery']) await ensureDir(this.local(d));
-    for (const d of [this.dir, this.local(), this.local('history'), this.local('history', 'blobs'), this.local('sessions')]) await syncDir(d);
+    // Flushed together: each must be on disk before anything relies on it (recovery, a journal), not before the others,
+    // and all have settled before this returns, failed or not.
+    const flushed = [this.dir, this.local(), this.local('history'), this.local('history', 'blobs'), this.local('sessions')];
+    await eachAtMost(flushed.length, flushed, (d) => syncDir(d));
   }
 
   /** The instance and per-acquisition token of the lock this session holds. */

@@ -230,6 +230,7 @@ describe('open metrics', () => {
     const created = new Trace(trace().records.map((x) => (x.name === 'session.publish' ? { ...x, attrs: { initial: true } } : x)));
     expect(open.measure(created, facts).missing).toEqual(['session.publish']);
     expect(open.measure(trace((x) => x.name === 'session.open.formatCheck'), facts).missing).toEqual(['session.open.formatCheck']);
+    expect(open.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'clean' && x.t < 2000), facts).missing).toEqual(['session.generate (clean)']);
     const noDev = open.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'dev'), facts);
     expect(noDev.missing).toEqual(['session.generate (dev)']);
     expect(noDev.metrics['open.generate']).toBeUndefined();
@@ -241,14 +242,15 @@ describe('open metrics', () => {
   });
 
   it('find the publication and the sweep after the first snapshot, and still count what they did', () => {
-    // The publication and its generations after the editor's first snapshot, the sweep after the canvas is ready.
+    // The publication (1,760 to 2,300) and its generations after the editor's first snapshot (1,700), the sweep after
+    // the canvas is ready; a later publication's generation after it.
     const later = new Map<string, number>([
-      ['session.publish', 1900],
+      ['session.publish', 2300],
       ['session.sweep', 3500]
     ]);
     const moved = new Trace(
       trace().records.map((x) => {
-        if (x.name === 'session.generate' && x.t < 2000) return { ...x, t: x.t + 700 };
+        if (x.name === 'session.generate') return { ...x, t: x.t < 2000 ? x.t + 700 : 2900 };
         return later.has(x.name) ? { ...x, t: later.get(x.name)! } : x;
       })
     );
@@ -259,6 +261,11 @@ describe('open metrics', () => {
     expect([v('open.generationsBeforeSnapshot'), v('open.sweepsBeforeSnapshot'), v('open.assetChecksBeforeSnapshot')]).toEqual([0, 0, 0]);
     // Counted from the scenario's start to its end, wherever in it the work ran.
     expect([v('open.filesRead'), v('open.docsRead'), v('open.filesHashed'), v('open.durableWrites'), v('open.fsyncs')]).toEqual([177, 12, 211, 2, 6]);
+  });
+
+  it('count an asset check that ended before the first snapshot as one the snapshot waited for', () => {
+    const awaited = new Trace(trace().records.map((x) => (x.name === 'controller.assetCheck' ? { ...x, t: 1699 } : x)));
+    expect(open.measure(awaited, facts).metrics['open.assetChecksBeforeSnapshot']?.value).toBe(1);
   });
 });
 

@@ -386,8 +386,9 @@ describe('exporting a project with a draft', () => {
     expect(snap.state.pages.pg_winter01.draft).toBe(true);
     expect(snap.conflicts).toEqual([]);
     await vi.waitFor(() => expect(existsSync(join(out, 'src/routes/winter-stock-preview/+page.svelte'))).toBe(true));
-    const manifest = JSON.parse(readFileSync(join(out, 'siteorigin/generated-manifest.json'), 'utf8'));
-    expect(Object.keys(manifest.files)).toContain('src/routes/winter-stock-preview/+page.svelte');
+    // The opening's publication claims it once done, which comes after the editor has the project (#959).
+    await vi.waitFor(() => expect(Object.keys(JSON.parse(readFileSync(join(out, 'siteorigin/generated-manifest.json'), 'utf8')).files)).toContain('src/routes/winter-stock-preview/+page.svelte'));
+    expect(reopened.snapshot()!.conflicts).toEqual([]);
   });
 
   it('names a header menu link with nowhere to go in the website and in the editable project (#208)', async () => {
