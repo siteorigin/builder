@@ -236,3 +236,53 @@ export async function syncPhotos(): Promise<{ dir: string; files: string[]; hash
   for (const name of names) hash.update(name).update('\0').update(readFileSync(join(dir, name))).update('\0');
   return { dir, files: names.map((n) => join(dir, n)), hash: hash.digest('hex').slice(0, 16) };
 }
+
+/** One photo of the `photoReads` library: its file in the project, its bytes, and what it carries. */
+export interface LibraryPhoto {
+  name: string;
+  file: string;
+  bytes: Buffer;
+  /** Its XMP names the city it was taken in, so Assets says it records where it was taken. */
+  located: boolean;
+  /** Stored on its side and shown upright by its orientation (portrait). */
+  turned: boolean;
+}
+
+/** An XMP packet as a photo editor writes one, naming the city when there is one, else only a title. */
+function xmpPacket(i: number, city: string | null): Buffer {
+  const what = city ? ` photoshop:City="${city}"` : ` dc:format="image/jpeg"`;
+  const ns = city ? ' xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"' : ' xmlns:dc="http://purl.org/dc/elements/1.1/"';
+  const xml = `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about=""${ns}${what} xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Label="Library ${i}"/></rdf:RDF></x:xmpmeta><?xpacket end="r"?>`;
+  return Buffer.from(xml, 'utf8');
+}
+
+/** `jpeg` with an XMP segment after its JFIF header (or its start), as an editor adds one: nothing is encoded again. */
+export function withXmpSegment(jpeg: Buffer, xmp: Buffer): Buffer {
+  const payload = Buffer.concat([Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'latin1'), xmp]);
+  const head = Buffer.from([0xff, 0xe1, 0, 0]);
+  head.writeUInt16BE(payload.length + 2, 2);
+  const at = jpeg[2] === 0xff && jpeg[3] === 0xe0 ? 4 + jpeg.readUInt16BE(4) : 2;
+  return Buffer.concat([jpeg.subarray(0, at), head, payload, jpeg.subarray(at)]);
+}
+
+export const LIBRARY_COUNT = PHOTO_COUNT;
+
+/**
+ * The `photoReads` scenario's library (#1046): the import's 20 photos of 12 megapixels as originals an author kept,
+ * every other one (the odd ones) naming the city it was taken in, and a favicon that is a 12-megapixel photo too (the
+ * second, with a packet of its own so its bytes are not a library photo's). Made from the import's JPEGs by adding an
+ * XMP segment, so nothing is encoded again and the same bytes come out on every machine with the same JPEGs.
+ */
+export async function libraryPhotos(): Promise<{ photos: LibraryPhoto[]; favicon: { file: string; bytes: Buffer }; hash: string }> {
+  const jpegs = await scenarioPhotos();
+  const two = (i: number) => String(i).padStart(2, '0');
+  const photos = jpegs.files.map((f, n): LibraryPhoto => {
+    const i = n + 1;
+    const located = i % 2 === 1;
+    return { name: `Library photo ${two(i)}`, file: `static/assets/library-photo-${two(i)}.jpg`, bytes: withXmpSegment(readFileSync(f), xmpPacket(i, located ? 'Cape Town' : null)), located, turned: photoSpec(i).turned };
+  });
+  const favicon = { file: 'static/assets/perf-large-favicon.jpg', bytes: withXmpSegment(readFileSync(jpegs.files[1]), xmpPacket(0, null)) };
+  const hash = createHash('sha256');
+  for (const p of [...photos, favicon]) hash.update(p.file).update('\0').update(p.bytes).update('\0');
+  return { photos, favicon, hash: hash.digest('hex').slice(0, 16) };
+}

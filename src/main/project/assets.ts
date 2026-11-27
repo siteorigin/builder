@@ -10,7 +10,7 @@ import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
 import { COPY_EXTENSIONS, copyMime, isCopyMime, type CopyMime } from '@shared/picture-formats';
 import { atomicWrite, safeJoin, sha } from './fsutil';
-import { perf } from '../perf';
+import { countMediaRead, perf } from '../perf';
 import { readRegularFile } from '../packs/files';
 import { sanitizeSvg } from './svg';
 import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng, type ImageProblem } from './media';
@@ -191,7 +191,9 @@ async function prepareFile(sourcePath: string, refuse: Refusal): Promise<Prepare
   if (!mime) throw new Error(`${basename(sourcePath)}: only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, WOFF2 or WOFF fonts, and PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP documents can be imported.`);
   const stat = await fs.stat(sourcePath);
   if (stat.size > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
-  return prepareBytes(sourcePath, await fs.readFile(sourcePath), mime, ext, refuse);
+  const bytes = await fs.readFile(sourcePath);
+  countMediaRead(bytes.length);
+  return prepareBytes(sourcePath, bytes, mime, ext, refuse);
 }
 
 /** Check a file's bytes for the library as `mime`, stored with `ext`. */
@@ -319,6 +321,7 @@ async function prepareImport(sourcePath: string, refuse: Refusal, opts: ImportOp
   const stat = await fs.stat(sourcePath);
   if (stat.size > CONVERT_MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 64 MB.`);
   const buf = await fs.readFile(sourcePath);
+  countMediaRead(buf.length);
   if (opts.fingerprint && sha(buf) !== opts.fingerprint) throw refuse('it changed while it was being reviewed. Add it again.');
   if (!heic && !copyOf) {
     if (!MIME[ext]) return prepareFile(sourcePath, refuse);
@@ -391,6 +394,7 @@ export async function reviewImportFile(sourcePath: string, opts: { converter: bo
   if (stat.size > CONVERT_MAX_BYTES) return { ...row, action: 'refuse', format: label, reason: 'it is larger than 64 MB.' };
   const buf = await fs.readFile(sourcePath).catch(() => null);
   if (!buf) return row;
+  countMediaRead(buf.length);
   // Everything the row says is about the bytes just read, which its fingerprint names.
   row.bytes = buf.length;
   const c = classify(sourcePath, buf, opts.converter);
@@ -963,7 +967,8 @@ const mediaWorker = createVariantClient(spawnMediaWorker, {
             jpegMs: s.formatMs['image/jpeg'] ?? 0,
             pngMs: s.formatMs['image/png'] ?? 0,
             webpMs: s.formatMs['image/webp'] ?? 0,
-            avifMs: s.formatMs['image/avif'] ?? 0
+            avifMs: s.formatMs['image/avif'] ?? 0,
+            readBytes: s.readBytes
           })
       }
     : {})

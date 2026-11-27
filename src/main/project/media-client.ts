@@ -81,6 +81,8 @@ export interface MediaStats {
   webCopyMs: number;
   /** Making each format's responsive copies (each one's decode and resize included when it has its own). */
   formatMs: Partial<Record<CopyMime, number>>;
+  /** The bytes of the file a request named by its path (a HEIC photo's TIFF), read here or handed to the decoder. */
+  readBytes: number;
 }
 
 /** One square PNG icon made from a picture: its size, and the colour see-through parts are filled with, if any. */

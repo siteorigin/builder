@@ -2982,7 +2982,11 @@ export class Controller {
   }
 
   /** What private metadata an image asset's original carries. Only a library file inside the project is read. */
-  async photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null> {
+  photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null> {
+    return timed('controller.photoMetadata', () => this.photoMetadataNow(assetId), (r) => ({ answered: !!r, location: r?.location ?? false, device: r?.device ?? false }))();
+  }
+
+  private async photoMetadataNow(assetId: string): Promise<{ location: boolean; device: boolean } | null> {
     const s = this.session;
     const a = s?.state.assets.assets[assetId];
     const buf = s && a ? await readLibraryImage(s.dir, a) : null;
@@ -3897,7 +3901,11 @@ export class Controller {
   }
 
   /** What a web-sized copy of a large library image would be (see libraryWebCopyPlan). */
-  async webCopyPlan(assetId: string): Promise<WebCopyPlan> {
+  webCopyPlan(assetId: string): Promise<WebCopyPlan> {
+    return timed('controller.webCopyPlan', () => this.webCopyPlanNow(assetId), (r) => ({ plan: !r ? 'none' : 'format' in r ? 'offer' : 'lighter' }))();
+  }
+
+  private async webCopyPlanNow(assetId: string): Promise<WebCopyPlan> {
     const s = this.session;
     const a = s?.state.assets.assets[assetId];
     const buf = s && a ? await readLibraryImage(s.dir, a) : null;

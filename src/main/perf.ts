@@ -175,3 +175,13 @@ export const perf: Perf = sink
       stallMs: 50
     })
   : PERF_OFF;
+
+/**
+ * A picture or other media file read by the main process to answer about it or keep it (`media.reads`,
+ * `media.readBytes`): a library image's metadata or web-sized copy, the favicon, a saved version's media, a file
+ * being imported.
+ */
+export function countMediaRead(bytes: number): void {
+  perf.count('media.reads');
+  perf.count('media.readBytes', bytes);
+}

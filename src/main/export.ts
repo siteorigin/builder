@@ -27,7 +27,7 @@ import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } fro
 import { isPrivateFileName } from './project/private-files';
 import { converterDocPath, sourceDocPath, storedSourceDoc } from './project/documents';
 import { CONVERTER_FILE, holdsSecretValue, isSourceId } from '@shared/sources';
-import { perf } from './perf';
+import { countMediaRead, perf } from './perf';
 import { handleStamp, hashFileAt, lookAt, stampOf, statTrusted } from './project/stable-read';
 
 const UNREADABLE = Symbol('unreadable');
@@ -658,7 +658,9 @@ export async function readLibraryImage(root: string, a: AssetRecord): Promise<Bu
   try {
     const st = await fs.lstat(path);
     if (!st.isFile() || st.size > MAX_LIBRARY_FILE) return null;
-    return await readExportFile(path);
+    const buf = await readExportFile(path);
+    countMediaRead(buf.length);
+    return buf;
   } catch {
     return null;
   }

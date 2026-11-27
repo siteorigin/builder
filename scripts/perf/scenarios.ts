@@ -30,7 +30,7 @@ import { projectFolderName } from '../../src/shared/project-name';
 import { fixturePng, ROOT, type FixtureSpec } from './fixtures';
 import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
 import { electronSource, growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
-import { GALLERY_COUNT, galleryPhotos, type GalleryPhoto, PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos, SYNC_PHOTO_COUNT, syncPhotoName, syncPhotos } from './photos';
+import { GALLERY_COUNT, galleryPhotos, type GalleryPhoto, LIBRARY_COUNT, libraryPhotos, PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos, SYNC_PHOTO_COUNT, syncPhotoName, syncPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
 import { WP_DRAFTS, WP_MENU_ITEMS, WP_PAGES, WP_PICTURES, WP_POSTS, wordpressExport, wpPost } from './wordpress';
 import { ATTACHED_PX, readFrame, summarizeOffsets, type FrameReading, type Pixels, type ReadingGeometry } from './outline';
@@ -7303,6 +7303,279 @@ export const postsImport: Scenario = {
   }
 };
 
+// ---------------------------------------------------------------------------
+// photoReads
+// ---------------------------------------------------------------------------
+
+/** The windows `photoReads` takes a peak over, in order, each with the reading at rest that follows it. */
+export const PHOTO_READ_WINDOWS = [
+  ['select', 'selected'],
+  ['save', 'saved'],
+  ['heic', 'imported'],
+  ['version', 'versioned']
+] as const;
+export type PhotoReadWindow = (typeof PHOTO_READ_WINDOWS)[number][0];
+/** The favicon `photoReads` gives the site: a 12-megapixel photo, its file where an import puts it. */
+export const LARGE_FAVICON_ID = 'img-perf-large-favicon';
+const PHOTO_READS_ADDED_AT = '2026-01-04T00:00:00.000Z';
+const PHOTO_READS_VERSION = 'Benchmark photo version';
+export const libraryPhotoId = (i: number) => `img-library-${String(i).padStart(2, '0')}`;
+
+/** The size a web-sized copy of a library photo is offered at: its longest side WEB_EDGE, upright. */
+export function offeredSize(turned: boolean): string {
+  const short = Math.round((WEB_EDGE * PHOTO_HEIGHT) / PHOTO_WIDTH);
+  return turned ? `${short} × ${WEB_EDGE}` : `${WEB_EDGE} × ${short}`;
+}
+
+const atPhotoReads = (window: string, edge: 'start' | 'end', proc: 'main' | 'renderer') => (r: PerfRecord) => r.proc === proc && r.attrs?.scenario === 'photoReads' && r.attrs?.window === window && r.attrs?.edge === edge;
+
+/** The spans of `name` in the main process that ended in [from, to]. */
+const mainSpans = (trace: Trace, name: string, from: PerfRecord | undefined, to: PerfRecord | undefined) => (from && to ? trace.all(name, inProc('main'), from.t, to.t) : []);
+
+/**
+ * Whole photos read for small answers (#1046): a library of 20 photos of 12 megapixels kept as they were taken, half
+ * of them naming where, on a site whose favicon is a 12-megapixel photo. Not measured: the photos and the favicon
+ * written where an import stores them and added as one change, the site's icons drawn from the favicon, and once its
+ * file has settled a first save that reads it. Then four windows, each sampled for its peak and followed by a reading
+ * at rest: each photo chosen in Assets in turn until its details say what a web-sized copy would be and, for those
+ * that do, that it records where it was taken (`select`); the home hero's Heading changed in the Inspector until the
+ * preview shows it (`save`); one HEIC photo added in Assets until it is in the library with its copies (`heic`); and a
+ * version saved (`version`).
+ */
+export const photoReads: Scenario = {
+  name: 'photoReads',
+  after: 'open',
+  memory: true,
+  deadlineMs: 15 * 60_000,
+  description: `Choose each of ${LIBRARY_COUNT} photos of 12 megapixels in Assets in turn, save an edit on a site whose favicon is a 12-megapixel photo, add a HEIC photo and save a version: the bytes of pictures each reads and the peak memory of the main process and the media worker in each, with a reading at rest after each.`,
+  async run(ctx) {
+    const { win, app, projectDir } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('photoReads was run without a memory probe');
+    const at = (rel: string) => join(projectDir, ...rel.split('/'));
+    const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+    const first = await snapshotOf(win);
+    expect(first, 'no project is open');
+    const apply = async (operations: unknown[], label: string) => {
+      const r = await win.evaluate(
+        async ([ops, l]) => {
+          const x = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: ops as never }, { label: l });
+          return x.ok ? { revision: x.revision } : { error: x.error?.message ?? 'no reason given' };
+        },
+        [operations, label] as const
+      );
+      if ('error' in r) throw new PredicateError(`${label} was refused: ${r.error}`);
+      return r.revision as number;
+    };
+    // Not measured: the photos and the favicon where an import stores them, added and chosen as one change, then left
+    // until every icon drawn from the favicon is on disk.
+    const library = await libraryPhotos();
+    const heic = (await scenarioHeicPhotos()).files[0];
+    const sharp = (await import('sharp')).default;
+    const records: Array<Record<string, unknown>> = [];
+    for (const [n, p] of library.photos.entries()) {
+      mkdirSync(dirname(at(p.file)), { recursive: true });
+      writeFileSync(at(p.file), p.bytes);
+      const [w, h] = p.turned ? [PHOTO_HEIGHT, PHOTO_WIDTH] : [PHOTO_WIDTH, PHOTO_HEIGHT];
+      records.push({ id: libraryPhotoId(n + 1), name: p.name, file: p.file, mime: 'image/jpeg', bytes: p.bytes.length, width: w, height: h, hash: sha(p.bytes), kind: 'image', createdAt: PHOTO_READS_ADDED_AT });
+    }
+    writeFileSync(at(library.favicon.file), library.favicon.bytes);
+    const faviconAt = Date.now();
+    const monogram = DRAWN_ICONS.map((rel) => (existsSync(at(rel)) ? readFileSync(at(rel)) : null));
+    const favicon = { id: LARGE_FAVICON_ID, name: 'Large favicon', file: library.favicon.file, mime: 'image/jpeg', bytes: library.favicon.bytes.length, width: PHOTO_WIDTH, height: PHOTO_HEIGHT, hash: sha(library.favicon.bytes), kind: 'image', createdAt: PHOTO_READS_ADDED_AT };
+    await apply([...records.map((asset) => ({ type: 'asset.add', asset })), { type: 'asset.add', asset: favicon }, { type: 'site.update', favicon: LARGE_FAVICON_ID }], 'Benchmark library photos');
+    let drawn: Array<Buffer | null> = [];
+    for (let i = 0; i < 240; i++) {
+      drawn = DRAWN_ICONS.map((rel) => (existsSync(at(rel)) ? readFileSync(at(rel)) : null));
+      if (drawn.every((b, k) => b && !(monogram[k] && b.equals(monogram[k]!)))) break;
+      await sleep(250);
+    }
+    const undrawn = DRAWN_ICONS.filter((_, k) => !drawn[k] || (monogram[k] && drawn[k]!.equals(monogram[k]!)));
+    expect(!undrawn.length, `the site’s icons were not drawn from the large favicon within 60 s: ${undrawn.join(', ')}`);
+    // The save the window measures is not the first since the favicon settled: that one reads it once, as any save
+    // does after its file has been written.
+    await sleep(Math.max(0, faviconAt + FILES_SETTLE_MS - Date.now()));
+    const primed = await apply([{ type: 'instance.setProp', owner: { kind: 'page', id: ctx.fixture.homePageId }, nodeId: ctx.fixture.heroId, prop: 'heading', value: `Library heading ${ctx.iteration}` }], 'Benchmark first save');
+    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(primed)), 30_000);
+    await settledAgain(ctx);
+    // Assets shown on its images, as each window that uses it starts.
+    await showSidebar(win, 'Assets');
+    const search = win.getByRole('searchbox', { name: 'Search images by name or description' });
+    await search.waitFor({ timeout: 15_000 });
+    await sleep(WORKSPACE_SAVE_WAIT_MS);
+    await ctx.mark('scenario.start', { scenario: 'photoReads', photos: library.hash });
+    await probe.rest('start');
+
+    const windowed = async (window: PhotoReadWindow, rest: string, work: () => Promise<void>) => {
+      await probe.peak(window, async () => {
+        await ctx.mark('photoReads.window', { scenario: 'photoReads', window, edge: 'start' });
+        await work();
+        await ctx.mark('photoReads.window', { scenario: 'photoReads', window, edge: 'end' });
+      });
+      await probe.rest(rest);
+    };
+    const traceCount = async (name: string, from: string) => {
+      const t = await ctx.waitTrace(() => true, 0);
+      const start = t.first('photoReads.window', atPhotoReads(from, 'start', 'main'));
+      return start ? t.all(name, inProc('main'), start.t).length : 0;
+    };
+
+    // select: each photo found by its name in Assets, chosen, until its details say what a web-sized copy would be and
+    // the main process has answered what metadata it carries; then back to the grid.
+    await windowed('select', 'selected', async () => {
+      for (const [n, p] of library.photos.entries()) {
+        const id = libraryPhotoId(n + 1);
+        await search.fill(p.name);
+        const tile = win.locator(`${ASSET_BODY} .asset-grid [data-asset="${id}"]`);
+        await tile.waitFor({ timeout: 15_000 });
+        await tile.click();
+        const name = win.locator('#editor-sidebar .asset-detail .asset-ident h4');
+        await name.waitFor({ timeout: 15_000 });
+        expect(((await name.textContent()) ?? '').trim() === p.name, `choosing ${p.name} opened “${await name.textContent()}”`);
+        const offer = win.getByTestId('asset-web-copy');
+        await offer.waitFor({ timeout: 60_000 }).catch(() => undefined);
+        const note = ((await win.getByTestId('asset-large-note').textContent()) ?? '').replace(/\s+/g, ' ');
+        expect(await offer.count(), `${p.name}'s details offer no web-sized copy: “${note}”`);
+        expect(note.includes(`A web-sized copy (JPEG · ${offeredSize(p.turned)}) keeps it light.`), `${p.name}'s details do not offer a ${offeredSize(p.turned)} JPEG: “${note}”`);
+        for (let i = 0; i < 300 && (await traceCount('controller.photoMetadata', 'select')) < n + 1; i++) await sleep(100);
+        expect((await traceCount('controller.photoMetadata', 'select')) === n + 1, `the main process answered ${await traceCount('controller.photoMetadata', 'select')} questions about photos' metadata, not ${n + 1}`);
+        const located = win.getByTestId('asset-location-note');
+        if (p.located) await located.waitFor({ timeout: 15_000 }).catch(() => undefined);
+        else await sleep(100);
+        expect((await located.count()) === (p.located ? 1 : 0), `${p.name}'s details ${p.located ? 'do not say' : 'say'} it records where it was taken`);
+        await win.locator('#editor-sidebar .asset-detail .asset-back').click();
+        await search.waitFor({ timeout: 15_000 });
+      }
+      await search.fill('');
+    });
+    expect((await traceCount('controller.webCopyPlan', 'select')) >= LIBRARY_COUNT, `the main process weighed ${await traceCount('controller.webCopyPlan', 'select')} web-sized copies, not ${LIBRARY_COUNT}`);
+
+    // save: the home hero's Heading changed in the Inspector, until the preview shows it; the site keeps its icons.
+    const heading = `Photo reads heading ${ctx.iteration}`;
+    const hero = win.getByRole('treeitem', { name: 'Split hero' }).first();
+    if (!(await hero.isVisible())) await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
+    await hero.click();
+    await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+    const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
+    await field.waitFor({ timeout: 15_000 });
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    const beforeSave = (await snapshotOf(win))!;
+    await windowed('save', 'saved', async () => {
+      await field.fill(heading);
+      await win.keyboard.press('Tab');
+      await preview(win).getByRole('heading', { name: heading, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+      await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(beforeSave.revision + 1)), 30_000);
+      await sleep(ctx.settleMs);
+    });
+    const saved = (await snapshotOf(win))!;
+    expect(saved.revision === beforeSave.revision + 1, `the edit left the project at revision ${saved.revision}, not ${beforeSave.revision + 1}`);
+    expect(findHeading(saved.state.pages[ctx.fixture.homePageId], ctx.fixture.heroId)?.heading === heading, 'the project does not hold the new heading');
+    const doc = join(projectDir, 'siteorigin', 'pages', `${ctx.fixture.homePageId}.json`);
+    expect(findHeading(JSON.parse(readFileSync(doc, 'utf8')), ctx.fixture.heroId)?.heading === heading, 'the home page’s document on disk does not hold the new heading');
+    expect(saved.state.site.favicon === LARGE_FAVICON_ID, 'the site lost its favicon');
+    for (const [k, rel] of DRAWN_ICONS.entries()) expect(existsSync(at(rel)) && readFileSync(at(rel)).equals(drawn[k]!), `the site’s icon ${rel} changed with the edit`);
+
+    // heic: one HEIC photo added in Assets, the review confirmed, until it is in the library with its copies.
+    await showSidebar(win, 'Assets');
+    const back = win.locator('#editor-sidebar .asset-detail .asset-back');
+    if (await back.count()) await back.first().click();
+    const add = win.locator('#editor-sidebar').getByRole('button', { name: /Add images/ }).first();
+    await add.waitFor({ timeout: 15_000 });
+    const set = (await app.evaluate(desktopInMain, { op: 'setAnswers', answers: [{ dialog: 'open', selection: 'files', paths: [heic] }], request: null } satisfies DesktopCall)) as { error?: string };
+    if (set.error) throw new Error(`The file chooser could not be answered: ${set.error}`);
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    const had = new Set(Object.keys((await snapshotOf(win))!.state.assets.assets));
+    let added: ImportedRecord[] = [];
+    await windowed('heic', 'imported', async () => {
+      await add.click();
+      const confirm = win.getByTestId('import-review-add');
+      await confirm.waitFor({ timeout: 60_000 });
+      expect((await win.locator('.modal [data-testid="import-review-row"].convert').count()) === 1, 'the import review does not convert the HEIC photo');
+      await confirm.click();
+      const deadline = Date.now() + SCENARIO_IMPORT_MS;
+      while (Date.now() < deadline) {
+        const snap = await snapshotOf(win);
+        added = Object.values((snap?.state.assets.assets ?? {}) as Record<string, ImportedRecord>).filter((a) => !had.has(a.id));
+        if (added.length === 1 && !copiesProblem(added[0])) break;
+        await sleep(50);
+      }
+      await sleep(ctx.settleMs);
+    });
+    expect(added.length === 1, `${added.length} images reached the library from one HEIC photo`);
+    const [w, h] = storedPhotoSize('heic', photoSpec(1).turned);
+    const rec = added[0];
+    expect(rec.mime === 'image/jpeg' && rec.width === w && rec.height === h, `the HEIC photo was added as a ${rec.width} × ${rec.height} ${rec.mime}, not a ${w} × ${h} JPEG`);
+    const problem = copiesProblem(rec);
+    expect(!problem, `the HEIC photo has ${problem}`);
+    for (const f of [{ file: rec.file, width: w }, ...(rec.variants ?? [])]) {
+      expect(existsSync(at(f.file)), `${f.file} is not in the project`);
+      const meta = await sharp(at(f.file)).metadata();
+      expect(meta.width === f.width, `${f.file} is ${meta.width} wide, not ${f.width}`);
+    }
+
+    // version: a version saved, as History's Save version saves one, holding every photo as it is on disk.
+    const key = (await snapshotOf(win))!.workspaceKey ?? '';
+    let id: string | undefined;
+    await windowed('version', 'versioned', async () => {
+      const r = await win.evaluate(([name, k]) => (globalThis as unknown as EditorPage).builder.project.saveVersion(name, k), [PHOTO_READS_VERSION, key] as const);
+      expect(r.ok && r.id, `saving a version failed: ${r.message ?? 'no reason given'}`);
+      id = r.id;
+    });
+    const list = JSON.parse(readFileSync(join(projectDir, '.siteorigin', 'versions', 'versions.json'), 'utf8')) as { versions: Array<{ id: string; name: string; media: Record<string, string | null> }> };
+    const version = list.versions.find((v) => v.id === id);
+    expect(version && version.name === PHOTO_READS_VERSION, 'the saved version is not in the list');
+    for (const f of [...library.photos.map((p) => p.file), library.favicon.file, rec.file]) {
+      const want = sha(readFileSync(at(f)));
+      expect(version.media[f] === want, `the saved version holds ${f} as ${version.media[f] ?? 'nothing'}, not the file on disk`);
+      const object = join(projectDir, '.siteorigin', 'versions', 'objects', want);
+      expect(existsSync(object) && sha(readFileSync(object)) === want, `the saved version's copy of ${f} is not the file on disk`);
+    }
+    await ctx.mark('scenario.end', { scenario: 'photoReads' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('photoReads', 'renderer')) && !!t.first('scenario.end', forScenario('photoReads', 'main')));
+  },
+  measure(trace, _fixture, readings = []) {
+    const m = new Collector();
+    // Only from a build that counts the bytes of pictures it reads: the saves before the windows read the new favicon.
+    const startMain = m.need('scenario.start (main)', trace.first('scenario.start', forScenario('photoReads', 'main')));
+    if (startMain && !(counter(startMain, 'media.readBytes') > 0)) m.need('media.readBytes (counted before the windows)', undefined);
+    const byLabel = new Map(readings.map((r) => [r.label, r]));
+    readingMetrics(m, 'start', byLabel.get('start'));
+    for (const [window, rest] of PHOTO_READ_WINDOWS) {
+      readingMetrics(m, window, byLabel.get(window));
+      readingMetrics(m, rest, byLabel.get(rest));
+      const start = m.need(`photoReads.window ${window} start`, trace.first('photoReads.window', atPhotoReads(window, 'start', 'main')));
+      const end = m.need(`photoReads.window ${window} end`, trace.first('photoReads.window', atPhotoReads(window, 'end', 'main')));
+      const p = `photoReads.${window}`;
+      m.count(`${p}.mediaReads`, counter(end, 'media.reads') - counter(start, 'media.reads'));
+      m.count(`${p}.mediaReadBytes`, counter(end, 'media.readBytes') - counter(start, 'media.readBytes'), 'bytes');
+      m.count(`${p}.faviconReads`, counter(end, 'favicon.read') - counter(start, 'favicon.read'));
+      m.count(`${p}.faviconReadBytes`, counter(end, 'favicon.readBytes') - counter(start, 'favicon.readBytes'), 'bytes');
+      m.count(`${p}.filesRead`, counter(end, 'files.read') - counter(start, 'files.read'));
+      m.count(`${p}.hashedBytes`, counter(end, 'files.hashedBytes') - counter(start, 'files.hashedBytes'), 'bytes');
+      const asked = mainSpans(trace, 'media.request', start, end);
+      m.count(`${p}.workerRequests`, asked.length);
+      m.count(`${p}.workerDecodes`, asked.reduce((n, r) => n + (typeof r.attrs?.decodes === 'number' ? r.attrs.decodes : 0), 0));
+      // What the worker read from files it was given by path; a build whose worker never says is missing, never a zero.
+      if (asked.some((r) => typeof r.attrs?.readBytes !== 'number')) m.need(`${p}.workerReadBytes (a worker request that did not say what it read)`, undefined);
+      else m.count(`${p}.workerReadBytes`, asked.reduce((n, r) => n + (r.attrs!.readBytes as number), 0), 'bytes');
+      if (start && end) m.ms(`${p}.ms`, end.t - start.t);
+      m.ms(`${p}.mainStallMax`, stallMax(trace, start, end));
+    }
+    // Each photo's two questions, answered in the main process (medians), and how many were asked.
+    const sStart = trace.first('photoReads.window', atPhotoReads('select', 'start', 'main'));
+    const sEnd = trace.first('photoReads.window', atPhotoReads('select', 'end', 'main'));
+    const metadata = mainSpans(trace, 'controller.photoMetadata', sStart, sEnd);
+    const plans = mainSpans(trace, 'controller.webCopyPlan', sStart, sEnd);
+    if (metadata.length < LIBRARY_COUNT || plans.length < LIBRARY_COUNT) m.need(`controller.photoMetadata and webCopyPlan spans (${metadata.length} and ${plans.length} of ${LIBRARY_COUNT})`, undefined);
+    m.count('photoReads.select.metadataAnswers', metadata.length);
+    m.count('photoReads.select.planAnswers', plans.length);
+    m.count('photoReads.select.located', metadata.filter((r) => r.attrs?.location === true).length);
+    m.ms('photoReads.select.metadataMs', median(metadata.map((r) => r.ms ?? NaN)));
+    m.ms('photoReads.select.planMs', median(plans.map((r) => r.ms ?? NaN)));
+    return m;
+  }
+};
+
 /** The composer's chip says the next edit may change the whole site. */
 async function expectChip(win: Page) {
   const chip = win.getByRole('button', { name: /^What the AI may change: Whole site/ });
@@ -7552,7 +7825,7 @@ export const sourceSync: Scenario = {
 /** The scenarios that show every panel, Insert among them, before `thumbs` could run in the same launch. */
 const PANEL_TOURS = ['firstShow', 'panels', 'panelsInUse'] as const;
 
-export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, outlineScroll, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync, exportMemory, postsImport];
+export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, outlineScroll, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync, exportMemory, postsImport, photoReads];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

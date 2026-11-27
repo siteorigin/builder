@@ -30,8 +30,8 @@ export interface Variant extends VariantTarget {
 sharp.cache(false);
 
 /** What a request's pictures cost, counted as they are made (for MediaStats). */
-export type Tally = Pick<MediaStats, 'decodes' | 'encodes' | 'decodeMs' | 'webCopyMs' | 'formatMs'>;
-export const newTally = (): Tally => ({ decodes: 0, encodes: 0, decodeMs: 0, webCopyMs: 0, formatMs: {} });
+export type Tally = Pick<MediaStats, 'decodes' | 'encodes' | 'decodeMs' | 'webCopyMs' | 'formatMs' | 'readBytes'>;
+export const newTally = (): Tally => ({ decodes: 0, encodes: 0, decodeMs: 0, webCopyMs: 0, formatMs: {}, readBytes: 0 });
 
 /** `work`, timed into `tally` (when there is one) by `into`, as one decode of an encoded picture. */
 async function tallied<T>(tally: Tally | undefined, into: (t: Tally, ms: number) => void, work: () => Promise<T>): Promise<T> {
@@ -324,6 +324,7 @@ export async function handleVariantRequest(m: VariantRequest): Promise<VariantRe
 async function handle(m: VariantRequest, tally?: Tally): Promise<VariantReply> {
   try {
     const buf = m.path ? await readFile(m.path) : Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
+    if (tally && m.path) tally.readBytes += buf.length;
     if (m.kind === 'opaque') return { id: m.id, ok: true, variants: [], opaque: await isOpaque(buf, tally) };
     if (m.kind === 'icons') {
       // Whatever stops the drawing here (a picture the decoder refuses, or too many pixels to decode) is the picture's

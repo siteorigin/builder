@@ -409,7 +409,7 @@ describe('media worker client', () => {
     await tick();
     const req = workers[1].sent[0];
     expect(req.stats).toBe(true);
-    const stats = { pid: 1, ms: 5, cpuMs: 9, cpuStartMs: 100, cpuEndMs: 109, peakRss: 1000, decodes: 2, encodes: 1, decodeMs: 1, webCopyMs: 3, formatMs: {} };
+    const stats = { pid: 1, ms: 5, cpuMs: 9, cpuStartMs: 100, cpuEndMs: 109, peakRss: 1000, decodes: 2, encodes: 1, decodeMs: 1, webCopyMs: 3, formatMs: {}, readBytes: 0 };
     workers[1].reply({ id: req.id, ok: false, error: 'no', unreadable: true, stats });
     expect(await web).toEqual({ ok: false, unreadable: true });
     expect(seen).toEqual([['web', 2, true]]);

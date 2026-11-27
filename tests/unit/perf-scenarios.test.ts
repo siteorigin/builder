@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, aiMemory, AI_MEMORY_RUNS, aiMemoryReply, BATCH_REPLY, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, EXPORT_MEMORY_READINGS, exportMemory, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, welcome, emptyAppMain, emptyAppSwitches, EMPTY_PAGE, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, FIRST_SHOW, firstShow, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, aiMemory, AI_MEMORY_RUNS, aiMemoryReply, BATCH_REPLY, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, EXPORT_MEMORY_READINGS, exportMemory, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, welcome, emptyAppMain, emptyAppSwitches, EMPTY_PAGE, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, FIRST_SHOW, firstShow, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS, photoReads, PHOTO_READ_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
-import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
+import { LIBRARY_COUNT, PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 import { PROJECT_DEFINITION_ID } from '../../src/shared/component-ids';
 import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, ASSET_PICKERS, grownImages, GALLERY_PAGE, galleryComponent, galleryDefinitionId, galleryPlacements, galleryRecord, PREVIEW_IMAGE_READINGS, previewImages, windowPictures, memoryBrowse, BROWSE_PAGES, BROWSE_PREVIEWS, fixturePages } from '../../scripts/perf/scenarios';
@@ -2756,5 +2756,46 @@ describe('assets metrics', () => {
     expect(grown[0].record).toMatchObject({ id: 'img-301', name: 'Fixture image 301', file: 'static/assets/fixture-301.png', width: 96, height: 72, kind: 'image' });
     expect(grown.at(-1)!.record.id).toBe('img-1000');
     expect(new Set(grown.map((g) => g.file)).size).toBe(700);
+  });
+});
+
+describe('photoReads metrics', () => {
+  const MiB = 2 ** 20;
+  const reading = (label: string, kind: 'rest' | 'peak', main: number, media: number): MemoryReading => {
+    const roles = { main: { processes: 1, bytes: main * MiB }, media: { processes: 1, bytes: media * MiB } };
+    return { label, kind, at: 0, processes: [], roles, total: (main + media) * MiB, count: 2, ...(kind === 'rest' ? { heap: { main: 10 * MiB, editor: 20 * MiB } } : {}), how: {} as MemoryReading['how'] };
+  };
+  const readings = [reading('start', 'rest', 200, 50), ...PHOTO_READ_WINDOWS.flatMap(([w, rest], k) => [reading(w, 'peak', 300 + k, 150 + k), reading(rest, 'rest', 210, 60)])];
+  // Each window's marks in the main process, its counters cumulative; a renderer copy carries none.
+  const windows = (counted = true): PerfRecord[] =>
+    PHOTO_READ_WINDOWS.flatMap(([w], k) => {
+      const t = 1000 * (k + 1);
+      const c = (bytes: number): Record<string, number> => (counted ? { 'media.reads': bytes / 1000, 'media.readBytes': bytes, 'favicon.read': k, 'favicon.readBytes': k * 10, 'files.read': 5 * k, 'files.hashedBytes': 7 * k } : {});
+      return [m('photoReads.window', t, { attrs: { scenario: 'photoReads', window: w, edge: 'start' }, c: c(1000 * k * k) }), r('photoReads.window', t, { attrs: { scenario: 'photoReads', window: w, edge: 'start' } }), m('photoReads.window', t + 500, { attrs: { scenario: 'photoReads', window: w, edge: 'end' }, c: c(1000 * (k * k + 10 * (k + 1))) })];
+    });
+  const answers = (n: number): PerfRecord[] => Array.from({ length: n }, (_, i) => [span('controller.photoMetadata', 1100 + i, 4, { attrs: { answered: true, location: i % 2 === 0, device: true } }), span('controller.webCopyPlan', 1100 + i, 200 + i, { attrs: { plan: 'offer' } })]).flat();
+  const start = m('scenario.start', 900, { attrs: { scenario: 'photoReads' }, c: { 'media.readBytes': 4_000_000 } });
+
+  it('report each window’s bytes read, favicon reads, peaks and the reading after it', () => {
+    const asked = [m('media.request', 3200, { attrs: { kind: 'web', decodes: 2, readBytes: 36_000_000 } }), m('media.request', 3300, { attrs: { kind: 'variants', decodes: 1, readBytes: 0 } })];
+    const got = photoReads.measure(new Trace([start, ...windows(), ...answers(LIBRARY_COUNT), ...asked]), facts, readings);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('photoReads.select.mediaReadBytes'), v('photoReads.select.mediaReads'), v('photoReads.save.mediaReadBytes'), v('photoReads.heic.mediaReadBytes'), v('photoReads.version.mediaReadBytes')]).toEqual([10_000, 10, 20_000, 30_000, 40_000]);
+    expect([v('photoReads.save.faviconReads'), v('photoReads.save.faviconReadBytes'), v('photoReads.save.filesRead'), v('photoReads.save.hashedBytes'), v('photoReads.save.ms')]).toEqual([0, 0, 0, 0, 500]);
+    expect([v('photoReads.heic.workerRequests'), v('photoReads.heic.workerDecodes'), v('photoReads.heic.workerReadBytes'), v('photoReads.select.workerRequests'), v('photoReads.select.workerReadBytes')]).toEqual([2, 3, 36_000_000, 0, 0]);
+    // A worker that never says what it read leaves the bytes missing.
+    const silent = photoReads.measure(new Trace([start, ...windows(), ...answers(LIBRARY_COUNT), m('media.request', 3200, { attrs: { kind: 'web', decodes: 2 } })]), facts, readings);
+    expect(silent.missing).toEqual(['photoReads.heic.workerReadBytes (a worker request that did not say what it read)']);
+    expect([v('photoReads.select.metadataAnswers'), v('photoReads.select.planAnswers'), v('photoReads.select.located'), v('photoReads.select.metadataMs'), v('photoReads.select.planMs')]).toEqual([20, 20, 10, 4, 209.5]);
+    expect([v('memory.start.mem.main'), v('memory.select.peak.mem.main'), v('memory.heic.peak.mem.media'), v('memory.versioned.mem.media'), v('memory.version.peak.total')]).toEqual([200, 300, 152, 60, 303 + 153]);
+  });
+
+  it('name what is missing rather than report a window, an answer or a reading it did not see', () => {
+    const lacking = photoReads.measure(new Trace([start, ...windows().filter((x) => x.attrs?.window !== 'heic'), ...answers(LIBRARY_COUNT - 1)]), facts, readings.filter((x) => x.label !== 'versioned'));
+    expect(lacking.missing).toEqual(['photoReads.window heic start', 'photoReads.window heic end', 'memory reading versioned', `controller.photoMetadata and webCopyPlan spans (19 and 19 of ${LIBRARY_COUNT})`]);
+    // A build that never counted its media reads reports none of them, never a zero.
+    const uncounted = photoReads.measure(new Trace([{ ...start, c: {} }, ...windows(false), ...answers(LIBRARY_COUNT)]), facts, readings);
+    expect(uncounted.missing).toEqual(['media.readBytes (counted before the windows)']);
   });
 });
