@@ -16,17 +16,18 @@ import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, Save
 import { validateOperation } from '@shared/ops';
 import { axesOf, choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
-import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, type Clipboard } from '@engine/apply';
+import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, walkOperations, type Clipboard } from '@engine/apply';
 import { frozen } from '@engine/draft';
 import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
-import { anchorsInUse, displayName, EngineError } from '@engine/tree';
+import { anchorsInUse, displayName, EngineError, instancesOf } from '@engine/tree';
 import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
 import { syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
-import { formRoutingChanges, formRoutingGranted, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
+import { formRoutingChanges, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
+import { admits, FormRoutingGrants, reviewed } from './form-routing-grants';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
@@ -696,6 +697,8 @@ export class ProjectSession extends EventEmitter {
   activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>>; hashes: Map<string, { text: string; hash: string }> } | null = null;
   private writing: Promise<unknown> = Promise.resolve();
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
+  /** What the user allowed of AI batches that change where a contact form sends, and what they may yet be asked (#1129). */
+  private routingGrants = new FormRoutingGrants();
   /** The documents were read in an older format and the update has not been stored yet. */
   private migrationDue = false;
   /** Publishing an update failed and may have left its journal, which only reopening the project can finish. */
@@ -3088,13 +3091,16 @@ export class ProjectSession extends EventEmitter {
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
    * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant), and
    * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts).
-   * `formRouting` is what the user allowed of an AI batch that changes where a contact form sends (engine/form-routing).
+   * `formRouting` is the grant `grantFormRouting` gave when the user allowed an AI batch that changes where a contact
+   * form sends: used up by this call, whatever it does.
    * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
    */
   apply(
     batch: EditBatch,
     opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; formRouting?: FormRoutingGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
+    // A form routing grant is good for one call at most, whichever way it goes, even one that never gets its turn.
+    const routingGrant = opts.formRouting ? this.routingGrants.take(opts.formRouting) : null;
     // An edit's own work, once it is its turn (src/shared/perf.ts): the wait for that is the rest of controller.apply.
     return this.serialize(timed('session.apply', async (): Promise<ApplyResult> => {
       const refused = opts.guard?.(null);
@@ -3187,6 +3193,22 @@ export class ProjectSession extends EventEmitter {
       if (granted) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: granted, recoverable: true } };
       if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection and upsert_collection_entry write and a layout edited from a request sent while it is open.', recoverable: true } };
+      // A fork of every placement moves a collection layout's too, which is the editor's in the same way: the placements
+      // the request covers are listed instead. So does new code's whole property schema, which renames or drops the values
+      // a layout's placement holds: the code alone may change. Each is checked against the project as the batch leaves it
+      // then (a theme switch before it rebinds a layout's placements to the new theme's component).
+      const reachesLayouts = (o: EditOperation): o is Extract<EditOperation, { type: 'component.fork' | 'component.updateSource' }> => (o.type === 'component.fork' && !o.placements) || (o.type === 'component.updateSource' && o.properties !== undefined);
+      const inLayouts =
+        ai && !opts.collectionWrite && ops.some(reachesLayouts)
+          ? walkOperations(this.state, ops, (draft, o) => {
+              if (!reachesLayouts(o) || !instancesOf(draft, o.definitionId).some((u) => u.owner.kind === 'template' || u.owner.kind === 'archive')) return null;
+              const name = `“${draft.components[o.definitionId]?.name ?? o.definitionId}”`;
+              return o.type === 'component.fork'
+                ? `${name} is also placed in a collection layout, which only the editor changes. List the placements the copy is for in placements.`
+                : `${name} is placed in a collection layout, whose values only the editor changes: change its code alone, or ask the user to change its properties in the editor.`;
+            }, context)
+          : null;
+      if (inLayouts) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: inLayouts, recoverable: true } };
       // A library image's file is only ever one the importer checked and wrote.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };
@@ -3196,8 +3218,12 @@ export class ProjectSession extends EventEmitter {
       let next: ProjectState;
       let results;
       const applying = perf.span('session.applyOperations');
+      // A batch the user allowed lands as it was when they were shown it (#1129): made again, it would have new IDs, and
+      // an item's ID is something a form's code may send by.
+      const run = this.activeRun?.id ?? null;
+      const allowed = ai ? reviewed(routingGrant, this.state, this.revision, run, fingerprint) : null;
       try {
-        ({ state: next, results } = applyOperations(this.state, ops, context));
+        ({ state: next, results } = allowed ? { state: allowed.state, results: allowed.results } : applyOperations(this.state, ops, context));
       } catch (e) {
         applying({ ok: false });
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
@@ -3236,6 +3262,20 @@ export class ProjectSession extends EventEmitter {
           return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
         };
         if (was?.source === def.source) {
+          // The assistant's change to the properties of a project's own code is held to the contract of the unchanged
+          // code too: renaming or removing one can leave text the code marks for typing over naming a property or field it
+          // no longer has. Only what the new properties bring counts (the code passed its checks when it was saved): it is
+          // checked against the contract as it lands with the old properties and with the new, so an error that is there
+          // either way refuses nothing. What the code takes from $props() is held to the new ones by the manifest check.
+          if (ai && def.owner === 'project' && JSON.stringify(was.properties) !== JSON.stringify(def.properties)) {
+            const source = def.source;
+            const contracted = async (properties: ComponentDefinition['properties']) =>
+              (await checkSvelteSource(source, { filename: def.sourcePath, resolve, contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties } })).filter((p) => p.severity === 'error');
+            const had = new Set((await contracted(was.properties)).map((p) => p.message));
+            const fresh = (await contracted(def.properties)).filter((p) => !had.has(p.message));
+            if (fresh.length)
+              return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" does not fit its new properties: ${fresh.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: fresh } };
+          }
           // Unchanged code passed its checks when it was saved: only a change of what it is held to of its manifest is.
           if (manifestKey(was) === manifestKey(def)) continue;
           const refused = await axesOnly();
@@ -3311,11 +3351,12 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       // Where a contact form sends visitors' messages is the user's to change (#1128), however a batch of the assistant's
       // gets there: it lands only with the user's say for exactly the changes it makes, given when the app asked them
-      // (agent/orchestrator.ts). Asked last, so the user is never asked about a batch that could not land anyway.
+      // (agent/orchestrator.ts), at the revision it was asked at (#1129). Asked last, so the user is never asked about a
+      // batch that could not land anyway.
       if (ai) {
         const routing = formRoutingChanges(this.state, next);
-        if (!formRoutingGranted(routing, fingerprint, opts.formRouting)) {
-          const review: FormRoutingReview = { operations: fingerprint, changes: routing };
+        if (!admits(routingGrant, this.revision, run, fingerprint, routing)) {
+          const review: FormRoutingReview = this.routingGrants.review(this.revision, run, fingerprint, routing, { base: this.state, state: next, results });
           return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: formRoutingRefusal(routing), recoverable: true, details: { formRouting: review } } };
         }
       }
@@ -3331,10 +3372,22 @@ export class ProjectSession extends EventEmitter {
       } finally {
         persisting();
       }
+      // Nothing filed before this save can be granted or used now.
+      this.routingGrants.forget(this.revision);
       const result: ApplyResult = { ok: true, revision: this.revision, results, changed: ev.changedDocs, entryId: ev.entryId };
       if (opts.idempotencyKey) this.idempotency.set(opts.idempotencyKey, { fingerprint, result });
       return result;
     }, (r) => ({ ok: r?.ok ?? false, revision: this.revision })));
+  }
+
+  /**
+   * The grant for a form routing review this session filed (`apply`'s refusal), once the user allowed it when the app
+   * asked them: the app's own call, never the model's (agent/orchestrator.ts). Null when the review is not one this
+   * session filed, was already granted, was filed under another run, or the project changed since: what the user saw
+   * is no longer what would land.
+   */
+  grantFormRouting(reviewId: string): FormRoutingGrant | null {
+    return this.routingGrants.grant(reviewId, this.revision, this.activeRun?.id ?? null);
   }
 
   /** The definitions a batch's `component.import` brought or kept from the theme, as they are in `next`. */

@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { LiveJoinRequest, LiveRun, RemoteState } from '../../src/shared/api';
 import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '../../src/agent/types';
 import type { LiveProjectSnapshot } from '../../src/shared/live/snapshot';
+import type { LiveNotes } from '../../src/shared/live/notes';
 import { randomAddress, startRelay, wait, type Relay } from './relay-harness';
 
 class FakeWorker extends EventEmitter {
@@ -142,6 +143,7 @@ function guest() {
   const states: RemoteState[] = [];
   const snapshots: LiveProjectSnapshot[] = [];
   const reloads: Array<number | null> = [];
+  const notes: LiveNotes[] = [];
   const address = randomAddress();
   const manager = new LiveGuestManager(
     {
@@ -149,12 +151,13 @@ function guest() {
         if (channel === 'remote:state') states.push(payload as RemoteState);
         if (channel === 'remote:changed') snapshots.push((payload as { snapshot: LiveProjectSnapshot }).snapshot);
         if (channel === 'remote:reload') reloads.push((payload as { revision: number | null }).revision);
+        if (channel === 'remote:notes') notes.push((payload as { notes: LiveNotes }).notes);
       }
     },
     { createSocket: (url) => new WebSocket(url.replace('//relay.localhost:', '//127.0.0.1:'), { headers: { 'cf-connecting-ip': address } } as never) }
   );
   cleanups.push(() => manager.dispose());
-  return { manager, states, snapshots, reloads, admitted: () => manager.state as Extract<RemoteState, { phase: 'admitted' }> };
+  return { manager, states, snapshots, reloads, notes, admitted: () => manager.state as Extract<RemoteState, { phase: 'admitted' }> };
 }
 
 /** A page of the host's preview, asked of the guest's loopback server as the editor's window asks it. */
@@ -385,5 +388,39 @@ describe('a collaborator using the host’s AI (#769)', () => {
     expect(g.manager.ai(joinId)).toMatchObject({ activeRunId: null, turns: [{ runId: sent.runId, result: { status: 'cancelled', summary: 'The host turned off AI editing for you, so this request was stopped.' } }] });
     expect(await g.manager.aiSend(joinId, 'Again', { scope: 'page', pageId: home, selection: null, viewport: 1280 })).toMatchObject({ ok: false });
     expect(model.requests).toHaveLength(2);
+  });
+});
+
+describe('pinned notes in the remote shell (#770)', () => {
+  it('pins a collaborator’s note to its selected element, shows it on the host at once, and follows the host’s changes', async () => {
+    const h = await host();
+    const g = guest();
+    const guestId = await joined(h, g, 'collaborator');
+    const joinId = g.admitted().joinId;
+    const home = h.c.session!.state.site.homePageId;
+    const nodeId = Object.keys(h.c.session!.state.pages[home].nodes)[0] ?? 'n_any';
+    const target = { owner: { kind: 'page' as const, id: home }, instancePath: [], nodeId };
+    expect(await g.manager.notes(joinId)).toEqual({ notes: [], guestNotes: true });
+    const left = await g.manager.addNote(joinId, { text: 'Swap this hero photo', pageId: home, target });
+    expect(left).toMatchObject({ ok: true, notes: { notes: [{ text: 'Swap this hero photo', authorName: 'Sarah', authorRole: 'collaborator', pageId: home, target }] } });
+    // The host's editor has it at once, with who left it and what it is pinned to.
+    const opening = h.c.snapshot()!.workspaceKey;
+    expect(await h.c.listNotes(opening)).toMatchObject({ notes: [{ authorName: 'Sarah', target }] });
+    expect(h.sent.some(([ch, p]) => ch === 'notes:changed' && (p as LiveNotes).notes.length === 1)).toBe(true);
+
+    // The host's own changes reach the guest's editor.
+    const id = (left as { notes: LiveNotes }).notes.notes[0].id;
+    expect(await h.c.resolveNote(opening, id, true)).toMatchObject({ ok: true });
+    await until(() => g.notes.at(-1)?.notes[0]?.resolved === true, 'the resolve at the guest');
+    expect(h.c.live.setGuestNotes(h.run, false)).toEqual({ ok: true });
+    await until(() => g.notes.at(-1)?.guestNotes === false, 'guest notes turned off at the guest');
+    expect(await g.manager.addNote(joinId, { text: 'Another', pageId: home })).toMatchObject({ ok: false, message: expect.stringMatching(/turned off/) });
+
+    // A collaborator deletes; made a viewer, it can no longer.
+    expect(await g.manager.resolveNote(joinId, id, false)).toMatchObject({ ok: true });
+    expect(h.c.live.setRole(h.run, guestId, 'viewer')).toEqual({ ok: true });
+    await until(() => g.admitted().role === 'viewer', 'the demotion');
+    expect(await g.manager.deleteNote(joinId, id)).toMatchObject({ ok: false });
+    expect((await h.c.listNotes(opening))!.notes).toHaveLength(1);
   });
 });

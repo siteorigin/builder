@@ -248,8 +248,9 @@ const rpcResponse = <E extends z.ZodRawShape, N extends typeof method | typeof l
  * The host's editor events guests follow. Payloads are the host's own, made safe to share before they are sent.
  * `ai:access` (whether the host lets a collaborator use its AI, and how many requests are left) and `ai:turn` (that
  * collaborator's own AI request as it runs) go only to the one guest they are about, never to everyone (shared/live/ai.ts).
+ * `notes:changed` says the project's pinned notes changed (#770), to everyone.
  */
-export const LIVE_EVENTS = ['project:changed', 'runtime:status', 'ai:access', 'ai:turn'] as const;
+export const LIVE_EVENTS = ['project:changed', 'runtime:status', 'ai:access', 'ai:turn', 'notes:changed'] as const;
 /** The events the host sends one guest alone: a frame of one with no guest named is never sent, nor passed on. */
 export const PRIVATE_LIVE_EVENTS: readonly LiveEvent[] = ['ai:access', 'ai:turn'];
 export type LiveEvent = (typeof LIVE_EVENTS)[number];
@@ -259,9 +260,9 @@ const rpcEvent = <E extends z.ZodRawShape>(extra: E) => msg('rpc:event', { ...ex
 // Presence
 
 const shortId = z.string().min(1).max(MAX_ID_LENGTH);
-/** The editor's ElementRef, as presence carries it (capabilities.ts checks the two stay the same). */
+/** The editor's ElementRef, as presence and notes carry it (capabilities.ts checks the two stay the same). */
 const OWNER_KINDS = ['page', 'shell', 'component', 'template', 'archive'] as const;
-const elementRef = z
+export const ELEMENT_REF_SCHEMA = z
   .object({
     owner: z.object({ kind: z.enum(OWNER_KINDS), id: shortId }).strict(),
     instancePath: z.array(shortId).max(MAX_SELECTION_DEPTH),
@@ -271,8 +272,18 @@ const elementRef = z
     slot: shortId.optional()
   })
   .strict();
+const elementRef = ELEMENT_REF_SCHEMA;
 /** The editor's ElementRef as the live contract reads it, for checks outside this module (capabilities.ts). */
 export const ELEMENT_REF = elementRef;
+/**
+ * Where a page is in the preview: the path and query on the room's preview origin, as a URL serializes them. Printable
+ * ASCII, less what a URL serializer would percent-encode in a path or query, so it compares equal to the address the
+ * guest's browser reports for the same page.
+ */
+export const PREVIEW_PATH_SCHEMA = z
+  .string()
+  .refine((path) => /^[\x21-\x7e]+$/.test(path) && !/["<>`{}]/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' });
+const previewPath = PREVIEW_PATH_SCHEMA;
 /**
  * What a participant is looking at, replacing whatever it showed before. Null clears a page or a selection.
  * `previewPath` is where that page is in the preview (the path and query on the room's preview origin, as a URL
@@ -280,11 +291,6 @@ export const ELEMENT_REF = elementRef;
  * and tell when it already is; null when the participant is on nothing the preview serves. A guest in the browser
  * cannot read its own preview's address, and sends null.
  */
-const previewPath = z
-  .string()
-  // Printable ASCII, less what a URL serializer would percent-encode in a path or query, so it compares equal to
-  // the address the guest's browser reports for the same page.
-  .refine((path) => /^[\x21-\x7e]+$/.test(path) && !/["<>`{}]/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' });
 const presence = z
   .object({
     pageId: shortId.nullable(),

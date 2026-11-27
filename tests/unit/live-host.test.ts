@@ -8,7 +8,10 @@ import type { GuestRole } from '../../src/shared/live/limits';
 import type { FrameOf, Participant, Presence } from '../../src/shared/live/messages';
 import type { LiveApplyResult, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { resolveRelayUrl, type ResolvedRelayUrl } from '../../src/shared/live/relay-url';
-import { editTarget, GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostTimings } from '../../src/main/live/host';
+import { editTarget, GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_GUEST_NOTE_CALLS, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostNotes, type LiveHostTimings, type LiveNotesAnswer } from '../../src/main/live/host';
+import { GUEST_NOTE_BURST, GUEST_NOTE_LIMIT, NOTE_KEPT, NOTES_CHANGED, type LiveNote, type NoteDraft } from '../../src/shared/live/notes';
+import type { LiveMethod } from '../../src/shared/live/roles';
+import type { RpcError } from '../../src/shared/live/messages';
 
 /**
  * The host's live session manager against sockets the test drives frame by frame, for the orderings a real relay
@@ -64,7 +67,7 @@ afterEach(async () => {
   }
 });
 
-function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<ResolvedRelayUrl>; preview?: { port: number } | null; publishing?: () => boolean } & Pick<LiveHostContext, 'guestSnapshot' | 'applyGuest' | 'hostPaths'> = {}) {
+function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<ResolvedRelayUrl>; preview?: { port: number } | null; publishing?: () => boolean } & Pick<LiveHostContext, 'guestSnapshot' | 'applyGuest' | 'hostPaths' | 'notes'> = {}) {
   const sockets: FakeSocket[] = [];
   const states: LiveHostState[] = [];
   const requests: LiveJoinRequest[] = [];
@@ -78,6 +81,7 @@ function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<
       guestSnapshot: opts.guestSnapshot,
       applyGuest: opts.applyGuest,
       hostPaths: opts.hostPaths,
+      notes: opts.notes,
       emit: (channel, payload) =>
         void (channel === 'live:state' ? states.push(payload as LiveHostState) : channel === 'live:presence' ? presence.push(payload as LivePresence) : requests.push(payload as LiveJoinRequest))
     },
@@ -579,7 +583,7 @@ async function letIn(h: ReturnType<typeof editor>, role: GuestRole = 'collaborat
 
 const admittedAs = (guestId: string, displayName: string, role: GuestRole, guestExpiresAt: number | null = null, connected = true): Participant => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt, colorSlot: 0, connected });
 const roster = (role: GuestRole, guestExpiresAt: number | null = null): FrameOf<'relay-to-host'> => ({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', role, guestExpiresAt)] });
-const call = (socket: FakeSocket, requestId: string, method: 'project.snapshot' | 'project.apply', args: unknown[] = []) => socket.receive({ type: 'rpc:request', guestId: 'g1', requestId, method, args });
+const call = (socket: FakeSocket, requestId: string, method: LiveMethod, args: unknown[] = []) => socket.receive({ type: 'rpc:request', guestId: 'g1', requestId, method, args });
 const answerTo = (socket: FakeSocket, requestId: string) => until(() => socket.sent.find((f) => f.type === 'rpc:response' && f.requestId === requestId) as Extract<FrameOf<'host-to-relay'>, { type: 'rpc:response' }> | undefined, `the answer to ${requestId}`);
 
 describe('guests’ editor calls', () => {
@@ -1523,5 +1527,171 @@ describe('the host’s AI for collaborators (#769)', () => {
     (h.manager as unknown as { timings: LiveHostTimings }).timings.stopMs = 20;
     await h.manager.end();
     expect(ai.stops).toEqual(['run-1']);
+  });
+});
+
+/**
+ * A host whose notes are kept in memory. Each change is held until the test lets it go, as the notes file's queue
+ * would hold it, then checked as the keeper checks it just before writing.
+ */
+function noteKeeper(opts: { timings?: Partial<LiveHostTimings> } = {}) {
+  const kept: LiveNote[] = [];
+  const changes: Array<{ kind: string; args: unknown[]; release: () => void; result: Promise<LiveNotesAnswer> }> = [];
+  const hold = (kind: string, args: unknown[], check: () => RpcError | null, make: () => void) => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const result = held.then((): LiveNotesAnswer => {
+      const refused = check();
+      if (refused) return { ok: false, error: refused };
+      make();
+      return { ok: true, notes: { notes: [...kept], guestNotes: true } };
+    });
+    changes.push({ kind, args, release, result });
+    return result;
+  };
+  const notes: LiveHostNotes = {
+      list: async () => ({ ok: true, notes: { notes: [...kept], guestNotes: true } }),
+      add: (_opening, author, draft, check) =>
+        hold('add', [author, draft], check, () => kept.unshift({ id: `n${kept.length + 1}`, text: draft.text, authorName: author.name, authorRole: author.role, createdAt: 1, pageId: 'p_home', target: null, resolved: false })),
+      resolve: (_opening, id, resolved, check) => hold('resolve', [id, resolved], check, () => kept.forEach((n) => n.id === id && (n.resolved = resolved))),
+      delete: (_opening, id, check) => hold('delete', [id], check, () => kept.splice(kept.findIndex((n) => n.id === id), 1))
+  };
+  const h = editor({ ...opts, notes } as never);
+  return { ...h, kept, changes };
+}
+
+const NOTE: NoteDraft = { text: 'Swap this hero photo', previewPath: '/' };
+const releaseAll = (h: ReturnType<typeof noteKeeper>) => h.changes.forEach((c) => c.release());
+
+describe('guests’ notes (#770)', () => {
+  it('lets a viewer read the notes and leave one, naming them, and nothing more', async () => {
+    const h = noteKeeper();
+    const { socket } = await letIn(h, 'viewer');
+    call(socket, 'q1', 'notes.add', [NOTE]);
+    const add = await until(() => h.changes[0], 'the note');
+    expect(add.args).toEqual([{ name: 'Ann', role: 'viewer' }, NOTE]);
+    add.release();
+    expect(await answerTo(socket, 'q1')).toEqual({ type: 'rpc:response', guestId: 'g1', requestId: 'q1', method: 'notes.add', ok: true, result: NOTE_KEPT });
+    call(socket, 'q2', 'notes.list');
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true, result: { notes: [{ text: 'Swap this hero photo', authorName: 'Ann', authorRole: 'viewer' }], guestNotes: true } });
+    for (const [method, args] of [['notes.resolve', ['n1', true]], ['notes.delete', ['n1']]] as const) {
+      const id = method.replace('.', '-');
+      call(socket, id, method, [...args]);
+      expect(await answerTo(socket, id), method).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    }
+    expect(h.changes.map((c) => c.kind)).toEqual(['add']);
+  });
+
+  it('lets a collaborator resolve and delete notes', async () => {
+    const h = noteKeeper();
+    const { socket } = await letIn(h, 'collaborator');
+    call(socket, 'q1', 'notes.add', [NOTE]);
+    (await until(() => h.changes[0], 'the note')).release();
+    await answerTo(socket, 'q1');
+    call(socket, 'q2', 'notes.resolve', ['n1', true]);
+    (await until(() => h.changes[1], 'the resolve')).release();
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true, result: NOTE_KEPT });
+    expect(h.kept[0].resolved).toBe(true);
+    call(socket, 'q3', 'notes.delete', ['n1']);
+    (await until(() => h.changes[2], 'the delete')).release();
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: true });
+    expect(h.kept).toEqual([]);
+  });
+
+  it('refuses a malformed note, or one with fields a guest may not set, before the keeper sees it', async () => {
+    const h = noteKeeper();
+    const { socket } = await letIn(h, 'viewer');
+    const bad = [[], [NOTE, NOTE], [{ ...NOTE, authorName: 'Host' }], [{ ...NOTE, resolved: true }], [{ text: 'x' }], [{ text: 'x', pageId: 'p', previewPath: '/' }], [{ text: 'x'.repeat(2000), previewPath: '/' }], [{ ...NOTE, target: { nodeId: 'n' } }]];
+    for (const [i, args] of bad.entries()) {
+      call(socket, `b${i}`, 'notes.add', args);
+      expect(await answerTo(socket, `b${i}`), JSON.stringify(args).slice(0, 80)).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    }
+    expect(h.changes).toEqual([]);
+  });
+
+  it('holds guests to Allow guest notes, a burst, and a count for the session', async () => {
+    const h = noteKeeper();
+    const { socket, run } = await letIn(h, 'viewer');
+    // Only so many wait their turn at once.
+    for (let i = 0; i < MAX_GUEST_NOTE_CALLS; i++) call(socket, `w${i}`, 'notes.add', [NOTE]);
+    call(socket, 'waiting', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'waiting')).toMatchObject({ ok: false, error: { code: 'BUSY', recoverable: true } });
+    releaseAll(h);
+    await answerTo(socket, `w${MAX_GUEST_NOTE_CALLS - 1}`);
+    // And only so many in a burst, one after another.
+    for (let i = MAX_GUEST_NOTE_CALLS; i < GUEST_NOTE_BURST; i++) {
+      call(socket, `a${i}`, 'notes.add', [NOTE]);
+      (await until(() => h.changes[i], `note ${i}`)).release();
+      expect(await answerTo(socket, `a${i}`)).toMatchObject({ ok: true });
+    }
+    call(socket, 'fast', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'fast')).toMatchObject({ ok: false, error: { code: 'BUSY', recoverable: true } });
+    expect(h.changes.length).toBe(GUEST_NOTE_BURST);
+    expect(h.manager.setGuestNotes(run, false)).toEqual({ ok: true });
+    expect(h.manager.state).toMatchObject({ guestNotes: false });
+    expect(socket.sent).toContainEqual({ type: 'rpc:event', event: 'notes:changed', payload: NOTES_CHANGED });
+    call(socket, 'off', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'off')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    // Reading is still allowed.
+    call(socket, 'read', 'notes.list');
+    expect(await answerTo(socket, 'read')).toMatchObject({ ok: true });
+    // The count: a guest that has left GUEST_NOTE_LIMIT notes this session leaves no more, however slowly.
+    const internal = (h.manager as unknown as { run: { notesLeft: Map<string, number>; noteWrites: Map<string, { tokens: number }> } }).run;
+    h.manager.setGuestNotes(run, true);
+    internal.notesLeft.set('g1', GUEST_NOTE_LIMIT);
+    internal.noteWrites.set('g1', { tokens: GUEST_NOTE_BURST, at: performance.now() } as never);
+    call(socket, 'many', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'many')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+  });
+
+  it('counts notes sent together against the session’s count, and gives back one that was not kept', async () => {
+    const h = noteKeeper();
+    const { socket } = await letIn(h, 'viewer');
+    const internal = (h.manager as unknown as { run: { notesLeft: Map<string, number> } }).run;
+    internal.notesLeft.set('g1', GUEST_NOTE_LIMIT - 1);
+    call(socket, 'last', 'notes.add', [NOTE]);
+    call(socket, 'over', 'notes.add', [NOTE]);
+    expect(await answerTo(socket, 'over')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(h.changes.length).toBe(1);
+    // Turned off before the one waiting is written: it is not kept, and does not count.
+    h.manager.setGuestNotes((h.manager.state as LiveRun), false);
+    h.changes[0].release();
+    expect(await answerTo(socket, 'last')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(internal.notesLeft.get('g1')).toBe(GUEST_NOTE_LIMIT - 1);
+  });
+
+  it('keeps no change a guest asked for once it was made a viewer, removed, or its connection dropped', async () => {
+    for (const change of ['demote and restore', 'kick', 'drop'] as const) {
+      const h = noteKeeper();
+      const { socket, run } = await letIn(h, 'collaborator');
+      h.kept.push({ id: 'n1', text: 'Fix', authorName: 'Bo', authorRole: 'viewer', createdAt: 1, pageId: 'p_home', target: null, resolved: false });
+      call(socket, 'q1', 'notes.delete', ['n1']);
+      const del = await until(() => h.changes[0], 'the delete');
+      if (change === 'kick') h.manager.kick(run, 'g1');
+      else if (change === 'drop') socket.drop(1006);
+      else {
+        h.manager.setRole(run, 'g1', 'viewer');
+        socket.receive(roster('viewer'));
+        h.manager.setRole(run, 'g1', 'collaborator');
+        socket.receive(roster('collaborator'));
+      }
+      del.release();
+      expect(await del.result, change).toMatchObject({ ok: false });
+      expect(h.kept.length, change).toBe(1);
+    }
+  });
+
+  it('tells only guests it still lets in that the notes changed', async () => {
+    const h = noteKeeper();
+    const o = await opened(h, [{ guestId: 'g1', displayName: 'Ann', status: 'pending' }, { guestId: 'g2', displayName: 'Bo', status: 'pending' }]);
+    h.manager.admit(o.run, 'g1', 'viewer');
+    h.manager.admit(o.run, 'g2', 'viewer');
+    o.socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'viewer'), admittedAs('g2', 'Bo', 'viewer')] });
+    h.manager.notesChanged();
+    expect(o.socket.sent.filter((f) => f.type === 'rpc:event')).toEqual([{ type: 'rpc:event', event: 'notes:changed', payload: NOTES_CHANGED }]);
+    h.manager.kick(o.run, 'g2');
+    o.socket.sent.length = 0;
+    h.manager.notesChanged();
+    expect(o.socket.sent.filter((f) => f.type === 'rpc:event')).toEqual([{ type: 'rpc:event', event: 'notes:changed', payload: NOTES_CHANGED, guestId: 'g1' }]);
   });
 });

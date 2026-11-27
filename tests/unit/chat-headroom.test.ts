@@ -64,13 +64,13 @@ describe('composer headroom for a local model', () => {
     expect(messageRoom(32_768, 'constrained-json')).toBe(16_384);
     expect(messageRoom(8192, 'auto')).toBe(8192 - 3584 - 1024);
     // Native tools: the small set below 64,000 tokens, the full set from there.
-    expect(messageRoom(12_288, 'native')).toBe(12_288 - 10_752 - 1024);
+    expect(messageRoom(12_288, 'native')).toBe(12_288 - 11_264 - 1024);
     expect(messageRoom(65_536, 'native')).toBe(32_768);
     expect(messageRoom(8192, 'native')).toBe(0);
     expect(messageRoom(8192, 'constrained-json')).toBe(8192 - 3584 - 1024);
     // From the focused cutoff up the full set leaves the half free; under it, the small set's reserve can bind.
     expect(messageRoom(FOCUSED_WINDOW_TOKENS, 'native')).toBe(FOCUSED_WINDOW_TOKENS / 2);
-    expect(messageRoom(20_000, 'native')).toBe(20_000 - 10_752 - 1024);
+    expect(messageRoom(20_000, 'native')).toBe(20_000 - 11_264 - 1024);
     expect(messageRoom(20_000, 'auto')).toBe(10_000);
     // A request without the page tools (a selection, a component, a question) is charged its small tools only.
     expect(messageRoom(8192, 'native', false)).toBe(8192 - 3584 - 1024);
@@ -84,8 +84,8 @@ describe('composer headroom for a local model', () => {
     // "Change this heading" about a selection on a small native window fits; the same words for the whole page do not.
     expect(warn('Change this heading to Services', { contextWindow: 8192, toolMode: 'native', pageTools: false })).toBeNull();
     expect(warn('Change this heading to Services', { contextWindow: 8192, toolMode: 'native' })?.kind).toBe('setup');
-    expect(warn(a(1500), { contextWindow: 12_288, toolMode: 'native', pageTools: false })).toBeNull();
-    expect(warn(a(1500), { contextWindow: 12_288, toolMode: 'native' })?.kind).toBe('draft');
+    expect(warn(a(1500), { contextWindow: 13_312, toolMode: 'native', pageTools: false })).toBeNull();
+    expect(warn(a(1500), { contextWindow: 13_312, toolMode: 'native' })?.kind).toBe('draft');
     // A window too small for any request says so, whatever the request is about.
     expect(warn('Hello', { contextWindow: 1024, pageTools: false })?.kind).toBe('setup');
   });

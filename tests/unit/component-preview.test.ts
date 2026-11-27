@@ -291,8 +291,12 @@ describe('what a preview is made of', () => {
 
 describe('a preview and the site’s colours', () => {
   it('is the same whatever the site’s colours, in every theme, which reach it only through the token stylesheet', () => {
+    const themes = listThemes().filter((t) => !t.devOnly);
+    expect(themes.length).toBeGreaterThan(0);
+    const unshown: string[] = [];
     let checked = 0;
-    for (const theme of listThemes().filter((t) => !t.devOnly)) {
+    let expected = 0;
+    for (const theme of themes) {
       const started = applyOperations(createStarterState('business', 'Preview Studio', false, theme.id), [
         { type: 'token.setColorScheme', mode: 'toggle' },
         { type: 'component.upsert', name: 'Brand card', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'article', children: ['title'] }, { kind: 'text', id: 'title', tag: 'h3', text: 'On the brand' }] }
@@ -308,12 +312,17 @@ describe('a preview and the site’s colours', () => {
           recoloured.tokens.darkOverrides = { ...(recoloured.tokens.darkOverrides ?? {}), [t.id]: `#${(0x302010 + i * 0x030201).toString(16).padStart(6, '0')}` };
         });
       const specs = [...Object.values(base.components).filter((d) => d.owner === 'project').map((d) => ({ definitionId: d.id })), ...theme.components.map((c) => ({ componentId: c.componentId }))];
+      // The brand card and every component the theme ships.
+      expect(specs.length).toBe(1 + theme.components.length);
+      expect(new Set(specs.map((s) => JSON.stringify(s))).size, theme.id).toBe(specs.length);
+      expected += specs.length;
       for (const spec of specs) {
         const a = generateComponentPreview(base, spec);
         const b = generateComponentPreview(recoloured, spec);
         // One that cannot be shown cannot be shown whatever the colours, and for the same reason.
         if ('error' in a || 'error' in b) {
           expect(b, JSON.stringify(spec)).toEqual(a);
+          unshown.push(`${theme.id}: ${JSON.stringify(spec)}`);
           continue;
         }
         expect([...b.files], JSON.stringify(spec)).toEqual([...a.files]);
@@ -323,7 +332,9 @@ describe('a preview and the site’s colours', () => {
       expect(pb.tokens).not.toBe(pa.tokens);
       expect(colourProjection(pb.tokens, pb.colours, new Set())).toBe(colourProjection(pa.tokens, pa.colours, new Set()));
     }
-    expect(checked).toBeGreaterThan(40);
+    // Every one of them is shown and compared, so none is passed over unseen.
+    expect(unshown).toEqual([]);
+    expect(checked).toBe(expected);
   });
 });
 

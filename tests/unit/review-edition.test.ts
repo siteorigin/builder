@@ -7,17 +7,23 @@
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const env = vi.hoisted(() => ({ userData: '', builds: 0, duringBuild: null as null | (() => Promise<void>) }));
+const env = vi.hoisted(() => ({ userData: '', documents: '', builds: 0, duringBuild: null as null | (() => Promise<void>), saveAs: null as null | string, saveDialogs: [] as Array<{ defaultPath?: string; filters?: unknown }>, revealed: [] as string[], dialogHold: null as null | Promise<void> }));
 vi.mock('electron', () => ({
-  app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
+  app: { isPackaged: false, getPath: (name: string) => (name === 'documents' ? env.documents || env.userData : env.userData), getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
   BrowserWindow: class {},
-  shell: { showItemInFolder: () => undefined },
+  shell: { showItemInFolder: (p: string) => void env.revealed.push(p) },
   nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
-  dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+  dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async (_win: unknown, opts: { defaultPath?: string }) => {
+      env.saveDialogs.push(opts);
+      await env.dialogHold;
+      return env.saveAs ? { canceled: false, filePath: env.saveAs } : { canceled: true };
+    }
+  },
   utilityProcess: { fork: () => undefined }
 }));
 
@@ -51,6 +57,7 @@ const { applyOperations } = await import('@engine/apply');
 const { withPublished } = await import('@shared/published');
 const { REVIEWS_DIR, reviewDigestInput, isReviewEditionId } = await import('@shared/review-edition');
 const { listReviewEditions, reviewSiteDigest, writeReviewEdition } = await import('../../src/main/review-edition');
+const { writeReviewSheet } = await import('../../src/main/review-sheet');
 const { StaticPreviews } = await import('../../src/main/static-preview');
 type ReviewShot = import('../../src/main/review-shot').ReviewShot;
 type Manifest = import('@shared/review-edition').ReviewEditionManifest;
@@ -66,6 +73,11 @@ beforeEach(() => {
   env.userData = temp('userdata');
   env.builds = 0;
   env.duringBuild = null;
+  env.documents = '';
+  env.saveAs = null;
+  env.saveDialogs = [];
+  env.revealed = [];
+  env.dialogHold = null;
 });
 afterEach(async () => {
   for (const c of controllers.splice(0)) await c.close();
@@ -154,6 +166,8 @@ describe('capturing a review edition', () => {
     expect(r.path).toBe(join(dir, REVIEWS_DIR, m.editionId));
     expect(Date.parse(m.createdAt)).toBeGreaterThanOrEqual(before - 1000);
     expect(m.editionId.slice(0, 19)).toBe(m.createdAt.slice(0, 19).replace(/:/g, '-'));
+    // Named as the site was called when it was captured, for the offline sheet's title (#1134).
+    expect(m.siteName).toBe('Bookshop');
     expect(m.routes).toEqual([
       { route: '/', title: 'Home' },
       { route: '/about/', title: 'About' }
@@ -340,6 +354,7 @@ describe('writing a review edition', () => {
       projectDir: project,
       site: s.root,
       server: s.server,
+      siteName: 'Bookshop',
       basePath: '',
       revision: 3,
       pages: [
@@ -423,5 +438,171 @@ describe('writing a review edition', () => {
     } finally {
       s.stop();
     }
+  });
+});
+
+describe('saving a review edition as its offline sheet (#1134)', () => {
+  /** The bookshop with one edition of its home and about pages, the about page unavailable on a phone. */
+  async function captured() {
+    const b = await bookshop();
+    b.c.reviewShoot = fakeShooter({ unavailable: { '/about/': [390] } }).shoot;
+    const r = await b.c.captureReviewEdition({ routes: ['/', '/about/'] });
+    if (!r.ok) throw new Error(r.message);
+    return { ...b, edition: r.edition, path: r.path };
+  }
+
+  it('writes one HTML file with every picture, title, width and the edition ID, where the chooser says, and can show it', async () => {
+    const { c, dir, edition, path } = await captured();
+    const out = temp('out');
+    env.documents = out;
+    env.saveAs = join(out, 'for the client.html');
+    const records = recordFiles(dir);
+    const r = await c.exportReviewSheet(edition.editionId);
+    expect(r).toEqual({ ok: true, path: env.saveAs, message: 'Saved the review pages as one file.' });
+    // Offered in Documents under the site's and the edition's names.
+    expect(env.saveDialogs).toEqual([expect.objectContaining({ defaultPath: join(out, `bookshop-review-${edition.editionId}.html`), filters: [{ name: 'Web page', extensions: ['html'] }] })]);
+    expect(readdirSync(out)).toEqual(['for the client.html']);
+    const html = readFileSync(env.saveAs, 'utf8');
+    expect(html).toContain(`<meta name="siteorigin-review-edition" content="${edition.editionId}">`);
+    expect(html).toContain('<h1>Bookshop</h1>');
+    for (const title of ['Home', 'About']) expect(html).toContain(`<h2>${title}</h2>`);
+    expect(html).toContain('Desktop <span>· 1440 px</span>');
+    expect(html).toContain('Phone <span>· 390 px</span>');
+    // Each captured picture's own bytes, and the one that could not be taken said as such.
+    for (const cap of edition.captures.filter((x) => x.status === 'captured')) expect(html).toContain(`data:image/png;base64,${readFileSync(join(path, cap.file)).toString('base64')}`);
+    expect(html.match(/data:image\/png;base64,/g)).toHaveLength(3);
+    expect(html).toContain('Not pictured. A font did not load.');
+    expect(html).toContain('Links, menus, forms and anything else that moves or responds only work in a live preview');
+    // The project is only read.
+    expect(recordFiles(dir)).toEqual(records);
+    // The saved file can be shown in its folder, as an export's can.
+    c.revealInFinder(env.saveAs);
+    await vi.waitFor(() => expect(env.revealed).toEqual([realpathSync(env.saveAs!)]));
+  });
+
+  it('adds .html to a name typed without it, never replacing a file of that name the chooser did not ask about', async () => {
+    const { c, edition } = await captured();
+    const out = temp('out');
+    writeFileSync(join(out, 'client.html'), 'kept');
+    writeFileSync(join(out, 'client-2.html'), 'kept too');
+    // A link to nothing is a name taken all the same.
+    symlinkSync(join(out, 'nowhere'), join(out, 'client-3.html'));
+    env.saveAs = join(out, 'client');
+    const r = await c.exportReviewSheet(edition.editionId);
+    expect(r).toMatchObject({ ok: true, path: join(out, 'client-4.html') });
+    expect(readFileSync(join(out, 'client.html'), 'utf8')).toBe('kept');
+    expect(readFileSync(join(out, 'client-2.html'), 'utf8')).toBe('kept too');
+    expect(existsSync(join(out, 'nowhere'))).toBe(false);
+    expect(readFileSync(join(out, 'client-4.html'), 'utf8')).toContain(edition.editionId);
+    // The name ".html" was added to: typed with it, the chooser's own answer (it asked before replacing) is used as is.
+    env.saveAs = join(out, 'client.html');
+    expect(await c.exportReviewSheet(edition.editionId)).toMatchObject({ ok: true, path: join(out, 'client.html') });
+    expect(readFileSync(join(out, 'client.html'), 'utf8')).toContain(edition.editionId);
+  });
+
+  it('never puts a sheet over a file that appeared under the name it chose, and puts nothing in place once the project is gone', async () => {
+    const out = temp('out');
+    const sheet = async function* () {
+      yield '<!doctype html>';
+    };
+    writeFileSync(join(out, 'taken.html'), 'arrived meanwhile');
+    expect(await writeReviewSheet(join(out, 'taken.html'), sheet(), { fresh: true, stillOpen: () => true })).toBe('taken');
+    expect(readFileSync(join(out, 'taken.html'), 'utf8')).toBe('arrived meanwhile');
+    writeFileSync(join(out, 'confirmed.html'), 'the earlier sheet');
+    expect(await writeReviewSheet(join(out, 'confirmed.html'), sheet(), { fresh: false, stillOpen: () => false })).toBe('closed');
+    expect(await writeReviewSheet(join(out, 'new.html'), sheet(), { fresh: true, stillOpen: () => false })).toBe('closed');
+    expect(readFileSync(join(out, 'confirmed.html'), 'utf8')).toBe('the earlier sheet');
+    expect(await writeReviewSheet(join(out, 'confirmed.html'), sheet(), { fresh: false, stillOpen: () => true })).toBe('written');
+    expect(readFileSync(join(out, 'confirmed.html'), 'utf8')).toBe('<!doctype html>');
+    // No temporary file is left behind.
+    expect(readdirSync(out).sort()).toEqual(['confirmed.html', 'taken.html']);
+    // A drive that gives no file a second name: the name, still free, is taken by moving the finished file there.
+    const link = vi.spyOn(fsp, 'link').mockRejectedValueOnce(Object.assign(new Error('not permitted'), { code: 'EPERM' }));
+    try {
+      expect(await writeReviewSheet(join(out, 'usb.html'), sheet(), { fresh: true, stillOpen: () => true })).toBe('written');
+      expect(link).toHaveBeenCalledTimes(1);
+    } finally {
+      link.mockRestore();
+    }
+    expect(readFileSync(join(out, 'usb.html'), 'utf8')).toBe('<!doctype html>');
+    expect(readdirSync(out).sort()).toEqual(['confirmed.html', 'taken.html', 'usb.html']);
+  });
+
+  it('writes nothing when the chooser is closed, for an edition that is not there, or into the project', async () => {
+    const { c, dir, edition } = await captured();
+    expect(await c.exportReviewSheet(edition.editionId)).toEqual({ ok: false });
+    expect(env.saveDialogs).toHaveLength(1);
+    // Asked about before any chooser opens.
+    for (const id of ['2026-11-27T10-00-00Z-0badc0de', '../reviews', 42]) expect(await c.exportReviewSheet(id)).toEqual({ ok: false, message: 'That review edition is no longer in this project.' });
+    expect(env.saveDialogs).toHaveLength(1);
+    expect(await c.exportReviewSheet(edition.editionId, join(dir, 'sheet.html'))).toEqual({ ok: false, message: 'Choose a location outside the project folder.' });
+    expect(existsSync(join(dir, 'sheet.html'))).toBe(false);
+  });
+
+  it('refuses an edition whose picture changed, went missing or is a link, or whose manifest no longer adds up, and keeps the file it would have replaced', async () => {
+    const { c, edition, path } = await captured();
+    const out = temp('out');
+    const dest = join(out, 'sheet.html');
+    writeFileSync(dest, 'the earlier sheet');
+    const changed = { ok: false, message: 'That review edition has changed or lost pictures since it was captured. Capture the pages again.' };
+    const first = join(path, (edition.captures[0] as { file: string }).file);
+    const png = readFileSync(first);
+    // A picture with other bytes.
+    writeFileSync(first, Buffer.concat([png, Buffer.from('x')]));
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toEqual(changed);
+    // A picture that is gone.
+    rmSync(first);
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toEqual(changed);
+    // A link to the right bytes, kept somewhere else.
+    const elsewhere = join(temp('elsewhere'), 'picture.png');
+    writeFileSync(elsewhere, png);
+    symlinkSync(elsewhere, first);
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toEqual(changed);
+    rmSync(first);
+    writeFileSync(first, png);
+    // The images folder a link to a copy of itself.
+    const copy = temp('images');
+    cpSync(join(path, 'images'), copy, { recursive: true });
+    rmSync(join(path, 'images'), { recursive: true });
+    symlinkSync(copy, join(path, 'images'));
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toEqual(changed);
+    rmSync(join(path, 'images'));
+    cpSync(copy, join(path, 'images'), { recursive: true });
+    // The last picture, with other bytes: every picture is checked, not only the first.
+    const last = join(path, (edition.captures.filter((x) => x.status === 'captured').at(-1) as { file: string }).file);
+    const lastPng = readFileSync(last);
+    writeFileSync(last, Buffer.concat([lastPng, Buffer.from('x')]));
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toEqual(changed);
+    writeFileSync(last, lastPng);
+    // A manifest whose pages, or only the site's name, were changed without its digest.
+    const manifest = join(path, 'manifest.json');
+    const whole = readFileSync(manifest, 'utf8');
+    writeFileSync(manifest, whole.replace('"title": "About"', '"title": "Abort"'));
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toEqual(changed);
+    writeFileSync(manifest, whole.replace('"siteName": "Bookshop"', '"siteName": "Bookshop Ltd"'));
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toEqual(changed);
+    // Two pictures given one file, with a digest made to match: not an edition at all.
+    const m = JSON.parse(whole) as Manifest;
+    const twice = { ...m, captures: m.captures.map((x) => (x.status === 'captured' ? { ...x, file: (m.captures[0] as { file: string }).file, sha256: (m.captures[0] as { sha256: string }).sha256 } : x)) };
+    writeFileSync(manifest, JSON.stringify({ ...twice, contentDigest: sha(reviewDigestInput(twice)) }));
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toEqual({ ok: false, message: 'That review edition is no longer in this project.' });
+    writeFileSync(manifest, whole);
+    expect(readFileSync(dest, 'utf8')).toBe('the earlier sheet');
+    // Put back as it was, it saves.
+    expect(await c.exportReviewSheet(edition.editionId, dest)).toMatchObject({ ok: true, path: dest });
+  });
+
+  it('writes nothing once the project closes while the chooser is open', async () => {
+    const { c, edition } = await captured();
+    const out = temp('out');
+    env.saveAs = join(out, 'sheet.html');
+    let answer!: () => void;
+    env.dialogHold = new Promise<void>((r) => (answer = r));
+    const closing = c.exportReviewSheet(edition.editionId);
+    await vi.waitFor(() => expect(env.saveDialogs).toHaveLength(1));
+    await c.close();
+    answer();
+    expect(await closing).toEqual({ ok: false, message: 'The project was closed before the review pages were saved.' });
+    expect(readdirSync(out)).toEqual([]);
   });
 });

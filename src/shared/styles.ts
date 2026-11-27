@@ -172,7 +172,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   edge('borderInlineStart', 'Border left', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderInlineEnd', 'Border right', 'appearance', 'border', 'border', '1px solid #ddd'),
   { id: 'radius', label: 'Corner radius', group: 'appearance', kind: 'length', tokenGroup: 'radius', placeholder: '8px' },
-  { id: 'shadow', label: 'Shadow', group: 'appearance', kind: 'shadow', tokenGroup: 'shadow' },
+  { id: 'shadow', label: 'Shadow', group: 'appearance', kind: 'shadow', tokenGroup: 'shadow', options: [{ value: 'none', label: 'None' }] },
   { id: 'opacity', label: 'Opacity', group: 'appearance', kind: 'number', min: 0, max: 1, step: 0.05 },
   { id: 'backdropBlur', label: 'Backdrop blur', group: 'appearance', kind: 'length', advanced: true, placeholder: '12px', description: `Blurs what shows through a see-through background, for frosted glass: pair it with a background at less than full strength. 0 or one length in px, rem or em, at most ${BLUR_LIMITS.px}px.`, options: [
     { value: '0', label: 'None' }, { value: '4px', label: 'Light' }, { value: '12px', label: 'Frosted' }, { value: '24px', label: 'Heavy' }
@@ -734,6 +734,17 @@ export function gridTemplateShares(value: unknown): number[] | null {
  * A style's value with its links to other styles followed to the end, for showing it or copying it out.
  * Undefined when a link names a style that does not exist, or the links loop.
  */
+/** The Site styles a style menu lists: the property's token groups, leaving out any shadow that resolves to none (the menu's own None covers it). */
+export function menuTokens(tokens: TokenDef[], group: StylePropDef['tokenGroup']): TokenDef[] {
+  const groups = Array.isArray(group) ? group : group ? [group] : [];
+  return tokens.filter((t) => {
+    if (!groups.includes(t.group)) return false;
+    if (t.group !== 'shadow') return true;
+    const v = followToken(tokens, t.id);
+    return !(typeof v === 'string' && v.trim().toLowerCase() === 'none');
+  });
+}
+
 export function followToken(tokens: TokenDef[], id: string): TokenValue | undefined {
   const byId = new Map(tokens.map((t) => [t.id, t]));
   const seen = new Set<string>();

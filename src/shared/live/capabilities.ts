@@ -7,6 +7,7 @@ import { canCall, LIVE_METHODS } from './roles';
 import { COPY_EDITOR_OPERATIONS, copyEditorOperationProblem } from './copy-editor';
 import { ELEMENT_REF, type Presence, type RpcError, type RpcErrorCode } from './messages';
 import { LIVE_AI_LABEL_MAX, LIVE_AI_TEXT_MAX, type LiveAiContext } from './ai';
+import { NOTE_DRAFT_SCHEMA, NOTE_ID_RE, type NoteDraft } from './notes';
 
 /**
  * What each guest role may do, checked by the host before anything runs: deny by default. Only the methods and
@@ -21,7 +22,7 @@ export { canCall, COLLABORATOR_METHODS, COPY_EDITOR_METHODS, LIVE_METHODS, VIEWE
 export { HOST_ONLY_PROPS, LIVE_BATCH_LABEL_MAX };
 
 // Every method a guest may call is one the app's API has.
-type ProjectMethod = `project.${keyof BuilderApi['project'] & string}` | `ai.${keyof BuilderApi['ai'] & string}`;
+type ProjectMethod = `project.${keyof BuilderApi['project'] & string}` | `ai.${keyof BuilderApi['ai'] & string}` | `notes.${keyof BuilderApi['notes'] & string}`;
 const _methodsExist: readonly ProjectMethod[] = LIVE_METHODS;
 void _methodsExist;
 
@@ -203,7 +204,11 @@ export type LiveCall =
   | { method: 'project.apply'; args: [LiveEditBatch] }
   | { method: 'ai.send'; args: [string, LiveAiContext] }
   | { method: 'ai.stop'; args: [string] }
-  | { method: 'ai.answer'; args: [string, string, string] };
+  | { method: 'ai.answer'; args: [string, string, string] }
+  | { method: 'notes.list'; args: [] }
+  | { method: 'notes.add'; args: [NoteDraft] }
+  | { method: 'notes.resolve'; args: [string, boolean] }
+  | { method: 'notes.delete'; args: [string] };
 
 /** Text a person wrote, with something in it. */
 const words = (max: number) => z.string().max(max).refine((t) => t.trim().length > 0, { message: 'Must not be blank.' });
@@ -239,6 +244,25 @@ const issueOf = (method: string, error: z.ZodError) => {
   return invalid(`${method}: ${issue.path.map(String).join('.') || 'arguments'}: ${issue.message}`);
 };
 
+const isNoteId = (id: unknown): id is string => typeof id === 'string' && NOTE_ID_RE.test(id);
+
+/** A note call's arguments, checked: a draft, or the note named (and, to resolve it, whether it is done). */
+function checkNoteCall(method: string, args: readonly unknown[]): CapabilityResult<LiveCall> {
+  if (method === 'notes.list') return args.length === 0 ? { ok: true, value: { method, args: [] } } : invalid('notes.list takes no arguments.');
+  if (method === 'notes.add') {
+    if (args.length !== 1) return invalid('notes.add takes one note.');
+    const draft = NOTE_DRAFT_SCHEMA.safeParse(args[0]);
+    if (!draft.success) {
+      const issue = draft.error.issues[0];
+      return invalid(`${issue.path.map(String).join('.') || 'note'}: ${issue.message}`);
+    }
+    return { ok: true, value: { method, args: [draft.data] } };
+  }
+  if (method === 'notes.resolve') return args.length === 2 && isNoteId(args[0]) && typeof args[1] === 'boolean' ? { ok: true, value: { method, args: [args[0], args[1]] } } : invalid('notes.resolve takes a note’s ID and whether it is resolved.');
+  if (method === 'notes.delete') return args.length === 1 && isNoteId(args[0]) ? { ok: true, value: { method, args: [args[0]] } } : invalid('notes.delete takes a note’s ID.');
+  return denied(`${method.slice(0, 80)} is not a note call.`);
+}
+
 /**
  * Check a guest's call before it runs: whether its role allows the method, then its arguments. A method takes exactly
  * the arguments named here, so nothing a guest adds (an opening, a history label key, a second options object, a
@@ -246,6 +270,7 @@ const issueOf = (method: string, error: z.ZodError) => {
  */
 export function checkRpcRequest(role: GuestRole, method: string, args: readonly unknown[]): CapabilityResult<LiveCall> {
   if (!canCall(role, method)) return denied(`A ${role.replace('-', ' ')} cannot use ${method.slice(0, 80)}.`);
+  if (method.startsWith('notes.')) return checkNoteCall(method, args);
   switch (method) {
     case 'project.snapshot':
       return args.length === 0 ? { ok: true, value: { method, args: [] } } : invalid('project.snapshot takes no arguments.');

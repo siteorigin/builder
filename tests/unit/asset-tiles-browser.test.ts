@@ -1,8 +1,10 @@
 /**
- * The Assets grid draws a tile again only when what it shows changed (#973). Every snapshot reaches the editor as new
- * objects, so before this an edit anywhere drew every tile of the library again, six components each. The real panel
- * and store run in a real browser, counting the components React renders with the editor's own counter
- * (`react.renders`, which counts while marks are on: the page offers the perf bridge, as the preload does).
+ * The Assets grid draws a tile again only when what it shows changed, and puts in the page only the rows in and near its
+ * view (#973). Every snapshot reaches the editor as new objects, so before the first an edit anywhere drew every tile of
+ * the library again, six components each; before the second, every tile of the library was in the page and every
+ * picture scrolled past was held. The real panel and store run in a real browser, counting the components React renders
+ * with the editor's own counter (`react.renders`, which counts while marks are on: the page offers the perf bridge, as
+ * the preload does).
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -11,12 +13,13 @@ import { build, type Rolldown } from 'vite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import type { AssetRecord, ProjectState } from '@shared/types';
+import { sortAssets } from '@shared/asset-order';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://asset-tiles.test';
 const DEV = 'http://preview.asset-tiles.test';
 const src = (path: string) => JSON.stringify(resolve('src', path));
-const IMAGES = 60;
+const IMAGES = 120;
 /** The editor's styles and the panel's, which size the tiles: a picture loads only once its box has a size. */
 const CSS = ['styles/tokens.css', 'styles/reset.css', 'styles/primitives.css', 'styles/layout.css', 'panels/AssetsPanel.css'].map((f) => readFileSync(resolve('src/renderer/src', f), 'utf8')).join('\n');
 /** A 1 × 1 PNG, for every picture the tiles load. */
@@ -85,7 +88,7 @@ function library(): ProjectState {
   return state;
 }
 
-describe.skipIf(!browserInstalled)('Assets grid tiles render only when they change (#973)', { timeout: 30_000 }, () => {
+describe.skipIf(!browserInstalled)('Assets grid tiles render only when they change, and only the rows in view are drawn (#973)', { timeout: 30_000 }, () => {
   let browser: Browser;
   let script: string;
   let context: BrowserContext;
@@ -128,8 +131,166 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
   const renders = () => page.evaluate<number>('so.renders()');
   const receive = (s: ProjectState) => page.evaluate((x) => (globalThis as unknown as { so: { receive(s: unknown): void } }).so.receive(x), s as unknown);
 
+  /** The library's images in the grid's order (newest first, as a new profile sorts them). */
+  const order = () => sortAssets(Object.values(state.assets.assets), 'newest').map((a) => a.id);
+  const BODY = "document.querySelector('.asset-host .panel-body')";
+  const focused = () => page.evaluate<string | null>("document.activeElement?.getAttribute('data-asset') ?? null");
+  const inPage = () => page.evaluate<string[]>("[...document.querySelectorAll('[data-asset]')].map((e) => e.getAttribute('data-asset'))");
+  /** Tiles to a row: those level with the first in the page. */
+  const columns = () => page.evaluate<number>("(() => { const els = [...document.querySelectorAll('[data-asset]')]; return els.filter((e) => e.offsetTop === els[0].offsetTop).length; })()");
+  /** The tiles wholly inside the grid's view, in order. */
+  const inView = () => page.evaluate<string[]>(`(() => { const b = ${BODY}; const box = b.getBoundingClientRect(); return [...b.querySelectorAll('[data-asset]')].filter((t) => t.getBoundingClientRect().top >= box.top && t.getBoundingClientRect().bottom <= box.bottom).map((t) => t.getAttribute('data-asset')); })()`);
+  const scrollTop = () => page.evaluate<number>(`${BODY}.scrollTop`);
+  const scrollTo = async (top: number | 'end') => {
+    await page.evaluate(`(() => { const b = ${BODY}; b.scrollTop = ${top === 'end' ? 'b.scrollHeight' : top}; })()`);
+    // The grid moves its window on the scroll event, then draws.
+    await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+  };
+
+  it('puts only the rows in and near its view in the page, and the rest as it scrolls to them', async () => {
+    const ids = order();
+    const first = await inPage();
+    // A few rows, never the library: the tiles in the page start with the first image and run on unbroken.
+    expect(first.length).toBeGreaterThan(5);
+    expect(first.length).toBeLessThan(IMAGES / 2);
+    expect(first).toEqual(ids.slice(0, first.length));
+    const cols = await columns();
+    // The scroller is as tall as the whole grid, so it scrolls to the last image, which is drawn there.
+    await scrollTo('end');
+    await expect.poll(() => page.locator(`[data-asset="${ids.at(-1)}"]`).count()).toBe(1);
+    const last = await inPage();
+    expect(last.length).toBeLessThan(IMAGES / 2);
+    // The row of the grid's one Tab stop (the first image, nothing focused yet) stays in the page; the rest is the end,
+    // in order.
+    expect(last.slice(0, cols)).toEqual(ids.slice(0, cols));
+    expect(last.slice(cols)).toEqual(ids.slice(IMAGES - (last.length - cols)));
+    // Only the pictures of the tiles in the page are held.
+    expect(await page.locator('[data-asset] img').count()).toBeLessThan(IMAGES / 2);
+  });
+
+  it('moves the focus with End, Home and the arrows to tiles out of view', async () => {
+    const ids = order();
+    await page.locator(`[data-asset="${ids[0]}"]`).focus();
+    expect(await page.locator(`[data-asset="${ids.at(-1)}"]`).count()).toBe(0);
+    await page.keyboard.press('End');
+    expect(await focused()).toBe(ids.at(-1));
+    // The browser scrolled to it, and the grid drew the rows there.
+    await expect.poll(() => page.locator(`[data-asset="${ids.at(-2)}"]`).count()).toBe(1);
+    await page.keyboard.press('Home');
+    expect(await focused()).toBe(ids[0]);
+    await page.keyboard.press('ArrowRight');
+    expect(await focused()).toBe(ids[1]);
+    const cols = await columns();
+    await page.keyboard.press('ArrowDown');
+    expect(await focused()).toBe(ids[1 + cols]);
+    await page.keyboard.press('ArrowUp');
+    expect(await focused()).toBe(ids[1]);
+    await page.keyboard.press('ArrowLeft');
+    expect(await focused()).toBe(ids[0]);
+    // Only the focused tile is the grid's Tab stop.
+    expect(await page.evaluate<string[]>("[...document.querySelectorAll('[data-asset][tabindex=\"0\"]')].map((e) => e.getAttribute('data-asset'))")).toEqual([ids[0]]);
+  });
+
+  it('keeps the focused tile in the page while the grid scrolls away from it', async () => {
+    const ids = order();
+    await page.locator(`[data-asset="${ids[1]}"]`).focus();
+    await scrollTo('end');
+    await expect.poll(() => page.locator(`[data-asset="${ids.at(-1)}"]`).count()).toBe(1);
+    expect(await focused()).toBe(ids[1]);
+    // Tab from the search (past the controls between) comes back to it.
+    await page.locator('.asset-tools input[type="search"]').focus();
+    for (let i = 0; i < 8 && !(await focused()); i++) await page.keyboard.press('Tab');
+    expect(await focused()).toBe(ids[1]);
+  });
+
+  it('returns from an image’s details to the same place in the grid, with the focus on that image', async () => {
+    const ids = order();
+    await scrollTo(1500);
+    // An image in view, well down the library, focused (a tile in the view's scroll padding is scrolled clear of it).
+    const id = (await inView())[1];
+    expect(ids.indexOf(id)).toBeGreaterThan(10);
+    await page.locator(`[data-asset="${id}"]`).focus();
+    const top = await scrollTop();
+    await page.keyboard.press('Enter');
+    await page.locator('.asset-detail .asset-back').waitFor();
+    expect(await page.locator('[data-asset]').count()).toBe(0);
+    await page.locator('.asset-detail .asset-back').click();
+    expect(await focused()).toBe(id);
+    expect(Math.abs((await scrollTop()) - top)).toBeLessThan(2);
+    expect(await inView()).toContain(id);
+  });
+
+  it('walks the whole grid with the keyboard, then returns from an image’s details to it', async () => {
+    const ids = order();
+    // As the benchmark does: to the end and back, then End, Home, a step right and a row down, Enter and Back.
+    await scrollTo('end');
+    await scrollTo(0);
+    await page.locator(`[data-asset="${ids[0]}"]`).focus();
+    await page.keyboard.press('End');
+    expect(await focused()).toBe(ids.at(-1));
+    await page.keyboard.press('Home');
+    expect(await focused()).toBe(ids[0]);
+    await page.keyboard.press('ArrowRight');
+    const cols = await columns();
+    await page.keyboard.press('ArrowDown');
+    expect(await focused()).toBe(ids[1 + cols]);
+    await page.keyboard.press('Enter');
+    await page.locator('.asset-detail .asset-back').waitFor();
+    // The focus is on the image as soon as Back has been pressed, and stays there.
+    await page.locator('.asset-detail .asset-back').click();
+    expect(await focused()).toBe(ids[1 + cols]);
+    await page.waitForTimeout(300);
+    expect(await focused()).toBe(ids[1 + cols]);
+  });
+
+  it('returns to the grid as it was when Back comes before the details have drawn', async () => {
+    const ids = order();
+    await scrollTo(1500);
+    const id = (await inView())[1];
+    await page.locator(`[data-asset="${id}"]`).focus();
+    const top = await scrollTop();
+    // Opened and left in the same task (React draws the details in a microtask): the details' own first frame, which
+    // starts them at their top, comes after.
+    await page.evaluate(`(async () => {
+      document.activeElement.click();
+      await Promise.resolve();
+      document.querySelector('.asset-detail .asset-back').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    })()`);
+    await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+    expect(await focused()).toBe(id);
+    expect(Math.abs((await scrollTop()) - top)).toBeLessThan(2);
+    expect(ids.indexOf(id)).toBeGreaterThan(10);
+  });
+
+  it('keeps the focus on an image a snapshot moves to the other end of the library', async () => {
+    const ids = order();
+    await page.locator(`[data-asset="${ids[1]}"]`).focus();
+    // Its date moves it from the first row to the last: far out of the rows drawn.
+    const edited = structuredClone(state);
+    edited.assets.assets[ids[1]].createdAt = '2025-01-01T00:00:00.000Z';
+    await receive(edited);
+    expect(await page.locator(`[data-asset="${ids[1]}"]`).count()).toBe(1);
+    expect(await focused()).toBe(ids[1]);
+  });
+
+  it('keeps the first image showing in view when the thumbnails change size', async () => {
+    const ids = order();
+    await scrollTo(2000);
+    // The first tile showing (its bottom more than 8px into the view): the button pressed takes the focus.
+    const id = await page.evaluate<string>(`(() => { const b = ${BODY}; const top = b.getBoundingClientRect().top; return [...b.querySelectorAll('[data-asset]')].find((t) => t.getBoundingClientRect().bottom > top + 8).getAttribute('data-asset'); })()`);
+    await page.locator('.asset-density').click();
+    expect(await page.locator('.asset-grid.compact').count()).toBe(1);
+    // Scrolled to it (as far as the browser's scrollIntoView takes it), wholly in view.
+    await expect.poll(inView).toContain(id);
+    // The grid at the new size still shows the library in order around it: the tiles in the page in order, those in
+    // view one unbroken run.
+    const drawn = (await inPage()).map((x) => ids.indexOf(x));
+    expect(drawn).toEqual([...drawn].sort((x, y) => x - y));
+    const seen = (await inView()).map((x) => ids.indexOf(x));
+    expect(seen).toEqual(seen.map((_, k) => seen[0] + k));
+  });
+
   it('draws no tile again for an edit that leaves the library as it was', async () => {
-    expect(await page.locator('[data-asset]').count()).toBe(IMAGES);
     const edited = structuredClone(state);
     edited.site.name = 'Tiles, renamed';
     const before = await renders();
@@ -139,18 +300,20 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
   });
 
   it('draws again the one tile whose image changed, with its new name', async () => {
+    // Two images in the first rows, which are in the page.
+    const [one, two] = order().slice(2, 4);
     const edited = structuredClone(state);
-    edited.assets.assets['img-007'].name = 'Harbour at dawn';
+    edited.assets.assets[one].name = 'Harbour at dawn';
     const before = await renders();
     await receive(edited);
-    await expect.poll(() => page.locator('[data-asset="img-007"]').getAttribute('aria-label')).toBe('Harbour at dawn');
-    expect(await page.locator('[data-asset="img-007"] .asset-name').textContent()).toBe('Harbour at dawn');
+    await expect.poll(() => page.locator(`[data-asset="${one}"]`).getAttribute('aria-label')).toBe('Harbour at dawn');
+    expect(await page.locator(`[data-asset="${one}"] .asset-name`).textContent()).toBe('Harbour at dawn');
     expect((await renders()) - before).toBeLessThan(IMAGES / 2);
     // Another picture's file is a change the tile shows too.
     const moved = structuredClone(edited);
-    moved.assets.assets['img-008'].file = 'static/assets/img-008-new.png';
+    moved.assets.assets[two].file = `static/assets/${two}-new.png`;
     await receive(moved);
-    await expect.poll(() => page.locator('[data-asset="img-008"] img').getAttribute('src')).toContain('img-008-new.png');
+    await expect.poll(() => page.locator(`[data-asset="${two}"] img`).getAttribute('src')).toContain(`${two}-new.png`);
   });
 
   it('takes focus, clicks and the keyboard on its tiles from the grid around them', async () => {
