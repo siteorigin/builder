@@ -10,13 +10,14 @@
  * project component it imports. It is a guard rail for generated code, not a sandbox for hostile code.
  */
 import { posix } from 'node:path';
-import type { ComponentDefinition } from '@shared/types';
+import type { ComponentDefinition, ProjectState } from '@shared/types';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { CODE_TEXT_ATTR, CODE_TEXT_HOOK, codeTextField, parseCodeTextPath } from '@shared/code-text';
-import { codeTakesBlocks, propKey, slotIdent } from '@generator/index';
+import { codeTakesBlocks, effectiveTokens, propKey, slotIdent } from '@generator/index';
+import { getTheme } from '@catalogue/index';
 import { axesOf } from '@shared/variants';
 import { richTextToParagraphs, toRichText } from '@shared/richtext';
-import { tokenVar } from '@shared/styles';
+import { tokenVar, tokenVarNames } from '@shared/styles';
 import { COPYRIGHT_PROP, copyrightYearParts } from '@shared/site-name';
 
 export interface CodeProblem {
@@ -39,6 +40,15 @@ export function componentSources(components: Record<string, ComponentDefinition>
   for (const def of Object.values(components)) if (def.kind === 'code' && def.sourcePath && def.source !== undefined) byPath.set(def.sourcePath, def.source);
   return (path) => byPath.get(path);
 }
+
+/** The `--so-…` variables a stylesheet sets. */
+const declaredVars = (css: string): string[] => [...css.matchAll(/(?:^|[^\w-])(--so-[\w-]+)\s*:/g)].map((m) => m[1]);
+
+/** The CSS variables a theme's tokens and base stylesheet define, for CheckOptions.tokens. */
+export const themeTokenVars = (tokens: ReadonlyArray<{ id: string; group: string }>, baseCss: string): Set<string> => new Set([...tokenVarNames(tokens), ...declaredVars(baseCss)]);
+
+/** The CSS variables a project's theme and own tokens define, for CheckOptions.tokens. */
+export const projectTokenVars = (state: ProjectState): Set<string> => themeTokenVars(effectiveTokens(state), getTheme(state.site.themeId).baseCss);
 
 /** Is this import specifier available to a project component? */
 export function importAllowed(spec: string, strict = false): boolean {
@@ -130,6 +140,13 @@ export interface CheckOptions {
    * declares (see manifestProblems): errors under the strict policy, warnings otherwise.
    */
   manifest?: CodeManifest;
+  /**
+   * The CSS variables the site's theme defines (`--so-color-brand`, see tokenVarNames). When given, every
+   * `var(--so-…)` in the component's styles and markup that names none of them, nor a variable the component
+   * sets itself or one the generated site sets (see RUNTIME_VARS), is reported with the nearest token as a
+   * suggestion: an error in strict mode, a warning otherwise.
+   */
+  tokens?: ReadonlySet<string>;
 }
 
 /**
@@ -186,7 +203,7 @@ async function checkSibling(path: string, opts: CheckOptions, reach: Reach): Pro
   if (source === null || source === undefined) return null;
   reach.visiting.add(path);
   try {
-    const r = await check(source, { strict: true, resolve: opts.resolve, author: opts.author, generated: opts.generated, modules: opts.modules }, reach);
+    const r = await check(source, { strict: true, resolve: opts.resolve, author: opts.author, generated: opts.generated, modules: opts.modules, tokens: opts.tokens }, reach);
     const checked = { errors: r.problems.filter((p) => p.severity === 'error'), sinks: r.sinks };
     reach.done.set(path, checked);
     return checked;
@@ -502,7 +519,59 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
   visit(ast.fragment, 0, null, 'fragment', []);
   if (opts.contract) for (const p of contractProblems(ast, opts.contract)) add(p.severity, p.message, p.node);
   if (opts.manifest) for (const p of manifestProblems(ast, opts.manifest, strict)) add(p.severity, p.message, p.node);
+  if (opts.tokens) for (const p of unknownTokenProblems(source, opts.tokens, strict ? 'error' : 'warning')) add(p.severity, p.message, { type: 'Text', start: p.offset });
   return { problems, sinks };
+}
+
+/**
+ * Variables the generated site sets itself, beside the theme's tokens: the colours drawn on a dark or brand section,
+ * a button's colours, the header's measurements, a form's line colour and the pictures behind a section. A component
+ * reads them with a fallback, so none of them are typos.
+ */
+const RUNTIME_VARS = /^--so-(?:surface-ink(?:-text|-hover)?|btn-(?:bg|fg)(?:-hover)?|header-(?:offset|notice)|form-line|bg-(?:image|size|position|repeat)|bgf-.+)$/;
+
+/** Text with its comments blanked out (same length, so offsets still point into the source). */
+const withoutComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
+
+/** The edit distance between two names. */
+function distance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length];
+}
+
+/** The defined variable closest to a name, when one is close enough to be what was meant. */
+export function nearestVar(name: string, known: Iterable<string>): string | null {
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const k of known) {
+    const d = distance(name, k);
+    if (d < bestDistance) (best = k), (bestDistance = d);
+  }
+  return best !== null && bestDistance <= Math.max(3, Math.ceil(Math.max(name.length, best.length) / 2)) ? best : null;
+}
+
+/**
+ * Every `var(--so-…)` in the source (styles, inline styles and script strings alike) that names no variable the theme
+ * defines. A fallback does not excuse one: `var(--so-color-primry, red)` renders red without a word. A variable the
+ * component sets itself (`--so-gap: 1rem`, `style:--so-gap`, `setProperty('--so-gap', …)`) is its own to read.
+ */
+export function unknownTokenProblems(source: string, tokens: ReadonlySet<string>, severity: CodeProblem['severity']): Array<{ severity: CodeProblem['severity']; message: string; offset: number; line: number }> {
+  const text = withoutComments(source);
+  const own = new Set<string>();
+  for (const m of text.matchAll(/(?:^|[^\w-])(--so-[\w-]+)\s*:|style:(--so-[\w-]+)|setProperty\(\s*['"`](--so-[\w-]+)/g)) own.add(m[1] ?? m[2] ?? m[3]);
+  const out: Array<{ severity: CodeProblem['severity']; message: string; offset: number; line: number }> = [];
+  for (const m of text.matchAll(/var\(\s*(--so-[\w-]+)/gi)) {
+    const name = m[1];
+    if (tokens.has(name) || own.has(name) || RUNTIME_VARS.test(name)) continue;
+    const near = nearestVar(name, [...tokens, ...own]);
+    out.push({ severity, offset: m.index ?? 0, line: text.slice(0, m.index ?? 0).split('\n').length, message: `${name} is not a token of this theme.${near ? ` Did you mean ${near}?` : ''}` });
+  }
+  return out;
 }
 
 /** What a part a code component's author marks may be called: a declared part's ID. */

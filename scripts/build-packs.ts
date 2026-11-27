@@ -18,7 +18,7 @@ import { existsSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSyn
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AuthoredPack, ThemePack } from '@catalogue/pack';
-import { buildPack, writeRelease } from '../src/main/packs/build';
+import { buildPack, packTokenProblems, writeRelease } from '../src/main/packs/build';
 import { loadPackDir } from '../src/main/packs/loader';
 import { renderPreviews } from './packs/previews';
 import { packManifestProblems } from '../src/main/codecheck';
@@ -37,6 +37,8 @@ async function stage(authored: AuthoredPack, fontRoot: string): Promise<{ pack: 
   // Each code component takes exactly the properties its manifest declares, with the defaults it declares.
   const disagree = await packManifestProblems(pack.components);
   if (disagree.length) throw new Error(`The ${pack.id} pack's code does not match its manifest. ${disagree.join(' ')}`);
+  const unknown = packTokenProblems(pack);
+  if (unknown.length) throw new Error(`The ${pack.id} pack's code names CSS variables its theme does not define:\n${unknown.join('\n')}`);
   // A committed release ships in every package, so it always carries its thumbnails.
   const { previews, bytes, drawn } = await renderPreviews(pack, files, join(root, '.tmp', 'pack-previews'), { require: true });
   const dir = join(root, 'resources', authored.devOnly ? 'packs-dev' : 'packs');

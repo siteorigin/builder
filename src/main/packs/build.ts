@@ -10,6 +10,7 @@ import { registerPacks } from '@catalogue/index';
 import { BUILTIN_PACKS } from '@catalogue/builtin';
 import { PACK_FILE_RE, PACK_FORMAT, PACK_MANIFEST, type AuthoredPack, type ComponentPreviews, type PackFont, type PackFontFace, type PackFontSource, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { sha } from '../project/fsutil';
+import { themeTokenVars, unknownTokenProblems } from '../codecheck';
 import { registerPackFiles, type PackFileSource } from './files';
 
 /** One @font-face rule of a font stylesheet, as written. */
@@ -95,6 +96,20 @@ export function buildPack(authored: AuthoredPack, root = process.cwd(), previews
   });
   const pack: ThemePack = { ...authored, fonts, ...(previews ? { previews } : {}), source: 'bundled' };
   return { pack, files };
+}
+
+/**
+ * The `var(--so-…)` names a pack's code components use that its own tokens and base stylesheet do not define, as
+ * messages naming the component. A bundled theme must have none (`npm run build:packs` fails on one).
+ */
+export function packTokenProblems(pack: Pick<ThemePack, 'tokens' | 'baseCss' | 'components'>): string[] {
+  const tokens = themeTokenVars(pack.tokens, pack.baseCss);
+  const out: string[] = [];
+  for (const c of pack.components) {
+    if (c.kind !== 'code' || c.source === undefined) continue;
+    for (const p of unknownTokenProblems(c.source, tokens, 'error')) out.push(`${c.name} (${c.id}) line ${p.line}: ${p.message}`);
+  }
+  return out;
 }
 
 /** The inventory entry of a file on disk. */
