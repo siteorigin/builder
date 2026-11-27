@@ -130,21 +130,54 @@
     .pages-add-field { grid-template-columns: minmax(0, 1fr); gap: 3px; }
   }
 
-  /* Collections under the pages: each with Edit layout, which opens the layout its entries share on the canvas. */
+  /* Collections under the pages, by name. Each is a row in the page list's own anatomy: a glyph, the name over a
+     quieter line with its count and address (both wrap, so neither is cut), then its buttons. Edit layout opens the layout
+     its entries share; Index settings discloses the index's settings in the panel's card (the Add page form's). The
+     collection open on the canvas takes the current page's filled glyph tile and says which layout is open. A
+     collection whose entries have no pages says so in place of buttons it could not use. */
   .pages-collections { margin: 8px 6px 12px; padding-top: 10px; border-top: 1px solid var(--border); }
-  .pages-collections h4 { margin: 0 6px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3, var(--text-2)); }
+  .pages-collections h4 { margin: 0 8px 4px; font-size: 12px; font-weight: 600; line-height: 16px; color: var(--text-2); }
   .pages-collections ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-  .pages-collection { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 6px; border-radius: var(--r-sm); }
-  .pages-collection.open { background: var(--panel-2); }
-  .pages-collection > svg { flex: none; width: 15px; height: 15px; color: var(--text-2); }
-  .pages-collection-text { display: flex; flex-direction: column; min-width: 0; }
-  .pages-collection-name { font-size: 13px; color: var(--text); }
-  .pages-collection-meta { font-size: 11px; color: var(--text-2); }
-  .pages-collection { flex-wrap: wrap; }
-  .pages-collection-archive { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding-left: 23px; font-size: 12px; color: var(--text-2); }
-  .pages-collection-size { display: inline-flex; align-items: center; gap: 6px; }
-  .pages-collection-size .select { width: auto; }
-  .pages-collection-check { display: inline-flex; align-items: center; gap: 6px; }
-  .pages-collection-archive .btn { margin-left: auto; }
-  .pages-collection-description { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; }
+  .pages-collection { display: flex; align-items: flex-start; gap: 8px; padding: 6px 4px 6px 8px; border-radius: var(--r-sm); }
+  .pages-collection-glyph { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-xs); color: var(--text-3); }
+  .pages-collection-glyph svg { width: 15px; height: 15px; color: inherit; }
+  .pages-collection.open .pages-collection-glyph { background: var(--accent-fill); color: var(--on-accent); }
+  .pages-collection.open .pages-collection-glyph svg { width: 14px; height: 14px; }
+  .pages-collection-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .pages-collection-name { line-height: 20px; color: var(--text); overflow-wrap: anywhere; }
+  .pages-collection.open .pages-collection-name { font-weight: 600; }
+  .pages-collection-meta { font-size: 11.5px; line-height: 15px; color: var(--text-3); overflow-wrap: anywhere; }
+  .pages-collection-route::before { content: '·'; margin: 0 5px; }
+  /* A short address moves to a line of its own whole rather than breaking at a hyphen; a long one still wraps. */
+  .pages-collection-path { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+  .pages-collection-open { margin-top: 2px; font-size: 11.5px; line-height: 15px; font-weight: 500; color: var(--accent-text); }
+  .pages-collection-note { margin: 4px 0 0; font-size: 11.5px; line-height: 15px; color: var(--text-2); overflow-wrap: anywhere; }
+  /* Ghost buttons start 5px left, so their glyph sits on the text column whether they share a line or wrap under one. */
+  .pages-collection-buttons { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 5px 0 0 -5px; }
+  .pages-collection-buttons > .btn:not(.btn-ghost) { margin-left: 5px; }
+  .pages-collection-toggle, .pages-collection-settings { padding-left: 5px; color: var(--text-2); }
+  :is(.pages-collection-toggle, .pages-collection-settings):hover:not(:disabled) { color: var(--text); }
+  .pages-collection-settings svg { width: 14px; height: 14px; }
+  .pages-collection-buttons.flush { margin-top: 3px; }
+  .pages-collection-toggle svg { width: 14px; height: 14px; transition: transform 120ms; }
+  .pages-collection-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .pages-collection-toggle svg { transition: none; } }
+  /* The index's settings: what it shows and its two actions, then its fields, then going back to the ready-made cards. */
+  .pages-collection-index { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; padding: 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); }
+  .pages-collection-look { margin: 0 0 -6px; font-size: 12px; line-height: 16px; color: var(--text-2); }
+  .pages-collection-look strong { font-weight: 600; color: var(--text); }
+  .pages-collection-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pages-collection-size .field { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; }
+  .pages-collection-size .select { width: auto; min-width: 64px; }
+  .pages-collection-index .field-hint { line-height: 16px; overflow-wrap: anywhere; }
+  .pages-collection-index .field-hint q { color: var(--text-2); }
+  /* The switch row's hint keeps most of the card's width: the switch needs a gap from it, not the shared 24px. */
+  .pages-collection-index .switch-row { gap: 12px; }
+  /* Going back to the ready-made cards is the card's footer, set off by a rule: it is the one action that removes work. */
+  .pages-collection-reset { margin: 0 -10px; padding: 10px 10px 0; border-top: 1px solid var(--border); }
+  .pages-collection-reset .btn { max-width: 100%; height: auto; min-height: 26px; white-space: normal; text-align: left; }
+  /* In a narrow sidebar the open card spans the row from the glyph's column, so its fields keep their width. */
+  @container pages (max-width: 232px) {
+    .pages-collection-index { margin-left: -28px; }
+  }
 }

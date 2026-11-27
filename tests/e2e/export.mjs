@@ -474,9 +474,10 @@ assert.equal(feedSetup.ok, true, `the feed is placed and the posts sorted: ${fee
 // Backdated in a change of its own: it moves from newest to oldest, in the feed and in the index.
 const backdated = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_kiln01', publishedAt: '2025-11-20' }] }, { label: 'Backdate the post' }));
 assert.equal(backdated.ok, true, `the post is backdated: ${backdated.error?.message}`);
-// Two posts to a page, set where the collection is listed in Pages.
+// Two posts to a page, set in the collection's index settings in Pages.
 await openRail('Pages');
-await win.getByLabel('Posts entries per index page').selectOption('2');
+await win.getByRole('button', { name: 'Index settings of Posts' }).click();
+await win.getByRole('group', { name: 'Posts index' }).getByLabel('Entries per page').selectOption('2');
 await eventually(async () => assert.equal((await win.evaluate(() => window.builder.project.snapshot())).state.collections.posts.settings.pageSize, 2, 'the page size set in Pages is saved'), 10000);
 
 /** The published posts as a built website has them, wherever it was built (`root`, served under `base`). */
