@@ -922,7 +922,7 @@ export class Orchestrator {
 
   /**
    * Replace a conversation's file whole: written beside it, then moved over it, so a reader never sees half. With
-   * `opening`, a write that the project's closing overtook is dropped rather than moved into place.
+   * `opening`, a write that the project's closing overtook fails rather than being moved into place.
    */
   private async writeConversation(dir: string, conv: Conversation, opening?: object) {
     const bytes = JSON.stringify(conv);
@@ -931,10 +931,7 @@ export class Orchestrator {
     await fs.mkdir(dir, { recursive: true });
     try {
       await fs.writeFile(tmp, bytes);
-      if (opening && opening !== this.opening) {
-        await fs.rm(tmp, { force: true });
-        return;
-      }
+      if (opening && opening !== this.opening) throw new Error('The project closed, so the conversation was not saved.');
       await fs.rename(tmp, target);
     } catch (e) {
       await fs.rm(tmp, { force: true }).catch(() => undefined);
@@ -957,6 +954,22 @@ export class Orchestrator {
     const write = this.transcriptWrite(to);
     this.saving = this.saving.then(() => write?.()).catch(() => undefined);
     return this.saving;
+  }
+
+  /**
+   * The project is closing: stop the request, then let it finish rolling back and every queued change to the stored
+   * conversations land (its turn's save among them), waiting at most `waitMs`, before forgetting this opening.
+   */
+  async close(waitMs = 5000) {
+    this.stop();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((r) => (timer = setTimeout(r, waitMs)));
+    try {
+      await Promise.race([this.runEnded.then(() => this.saving), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+    this.reset();
   }
 
   reset() {
@@ -1127,9 +1140,11 @@ export class Orchestrator {
           this.emitMessage(assistant, runId);
         }
         this.run = null;
-        this.deps.onBusyChange(false);
+        // Queued before the app hears it is idle, so nothing it does on hearing that can land ahead of the save.
         // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
-        await this.queueSave(active.transcript);
+        const saved = this.queueSave(active.transcript);
+        this.deps.onBusyChange(false);
+        await saved;
       });
     return { ok: true, runId };
   }

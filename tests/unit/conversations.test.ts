@@ -696,4 +696,51 @@ describe('a run saves the conversation it was sent in (#1122)', () => {
     expect(readFileSync(env.file(first), 'utf8')).toBe(before);
     expect(readdirSync(env.chatDir)).toEqual([`${first}.json`]);
   });
+
+  it('closing the project stops a running request and waits for its turn to be saved, even behind other writes', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    env.adapter.hold = true;
+    const r = await env.orch.send('And a footer', env.ctx, first);
+    await until(() => env.adapter.waiting, 'the request to stream');
+    // An earlier change to the stored conversations is still under way when the close begins.
+    const release = hold(env.orch);
+    let closed = false;
+    const closing = env.orch.close().then(() => (closed = true));
+    env.adapter.release();
+    await until(() => !env.orch.busy, 'the request to stop');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(closed).toBe(false);
+    release();
+    await closing;
+    expect(env.stored(first).messages).toHaveLength(4);
+    expect(env.stored(first).messages[3]).toMatchObject({ runId: r.runId, result: { status: 'cancelled' } });
+    expect(env.orch.conversation).toBeNull();
+  });
+
+  it('a write the project’s close overtakes is never moved into place: a request’s save is dropped, a rename refused', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    const before = readFileSync(env.file(first), 'utf8');
+    const real = fsPromises.writeFile.bind(fsPromises) as (...a: unknown[]) => Promise<void>;
+    // The project closes while the next write of this conversation is being written beside its file.
+    const write = vi.spyOn(fsPromises, 'writeFile').mockImplementation(((path: unknown, ...rest: unknown[]) => {
+      if (String(path).includes(`${first}.json.`)) env.orch.reset();
+      return real(path, ...rest);
+    }) as typeof fsPromises.writeFile);
+    try {
+      expect((await env.orch.send('And a footer', env.ctx, first)).ok).toBe(true);
+      await until(() => !env.orch.busy, 'the request to finish');
+      await (env.orch as unknown as { saving: Promise<void> }).saving;
+      expect(readFileSync(env.file(first), 'utf8')).toBe(before);
+      expect(readdirSync(env.chatDir)).toEqual([`${first}.json`]);
+
+      await env.orch.openConversation(first);
+      await expect(env.orch.renameConversation(first, 'About page')).rejects.toThrow(/closed/);
+      expect(readFileSync(env.file(first), 'utf8')).toBe(before);
+      expect(readdirSync(env.chatDir)).toEqual([`${first}.json`]);
+    } finally {
+      write.mockRestore();
+    }
+  });
 });
