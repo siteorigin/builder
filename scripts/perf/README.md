@@ -458,6 +458,25 @@ at a fixed pace against 20 live previews at their own); and `.mem.preview` follo
 the other frames share only while Chromium puts them in the same process (their memory is in `total` and `gpu` either
 way).
 
+**`memoryPanels`** (after `launch`, on its own like `memory`): what hidden panels keep as edits and panel switches
+interleave (#1041). The fixture opened from its card, untimed; every dock view (AI, Site styles, Project) and sidebar
+view shown once, the two that cover the canvas (Posts' writer, the SEO view) put away again by their own buttons and
+hidden from then on (a change of what covers the canvas draws every hidden panel afresh); the hero chosen in Layers and
+the Inspector shown: at rest (`edit0`). Then 30 changes of the hero's Heading in the Inspector, before each another dock
+view and another of Pages, Layers, Insert and Assets shown, so each hidden panel holds the revision it was last shown
+at, each change applied and left 600 ms; at rest (`edit30`). Checks: everything `open` checks, the Inspector shown again
+before each change naming the hero and holding the heading before it, each change shown in the preview and reported
+applied by the canvas, the project 30 revisions on with the last heading in the project and on disk, and every panel
+the same elements throughout; after the readings, panels shown again catching up at once with what changed while they
+were hidden: the Inspector with the last change undone, Layers with the selection cleared. Metrics: each reading's, as
+`memory`'s, the growth between them (`memory.panelEdits.growth.*`), and at each reading how many of the snapshots of
+the project the editor's transport made (this computer's project, as the main process sends it) are still reachable
+(`held.<reading>.snapshots`) and how many distinct states of the project they hold (`held.<reading>.states`, one shared
+by snapshots that changed no document). The editor follows them with weak references from when the driver asks
+(`__siteoriginPerf.trackHeld`, before the open; nothing is kept in any other run) and counts them on the driver's
+`editor.held` mark, made straight after a garbage collection of its own and made again when a snapshot arrived in
+between. Memory scenarios run one per launch: each opens the fixture as the warm-up left it.
+
 **`canvas`** (after `open`): with the home hero selected by a click on it, scroll the home page with the wheel, 30 notches
 of 60 px down and as many back up, each 16 ms after the one before was taken (about 30 a second on an M4 Max, so the
 outlines move every other frame); then sweep the pointer across the page, corner to corner along both diagonals in 60
