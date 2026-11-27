@@ -51,6 +51,25 @@ export function perfCount(name: string, by = 1): void {
   counters[name] = (counters[name] ?? 0) + by;
 }
 
+/** Each selector's counting copy: one selector keeps one copy, so a stable selector stays stable while it is counted. */
+const countedSelectors = new WeakMap<object, unknown>();
+/**
+ * `selector`, a store hook's, counting each time it runs (`store.selectorRuns`): as its component renders, and as the
+ * store tells it of a change to see whether its part changed. The selector itself with marks off.
+ */
+export function perfSelector<S, T>(selector: (s: S) => T): (s: S) => T {
+  if (!bridge) return selector;
+  let counted = countedSelectors.get(selector) as ((s: S) => T) | undefined;
+  if (!counted) {
+    counted = (s) => {
+      counters['store.selectorRuns'] = (counters['store.selectorRuns'] ?? 0) + 1;
+      return selector(s);
+    };
+    countedSelectors.set(selector, counted);
+  }
+  return counted;
+}
+
 /**
  * Run `work`, an update the editor makes (handling an event, a keystroke), and time it with the React render and commit
  * it sets off: a store change schedules React's render for the end of the task, in a microtask queued during `work`,

@@ -10,25 +10,31 @@
  * render of what holds them; an update the store did not make that renders only inside the panel (its own state) is
  * not timed, though its components are counted.
  */
-import type { ReactNode } from 'react';
+import { useContext, type ReactNode } from 'react';
+import { useStore as useStoreOf } from 'zustand';
 import { countTreeWalks } from '@engine/tree';
 import { countSeoOverviews } from './seo-overview';
 import { countChatStarters } from './chatSuggestions';
-import { useStore } from '../store';
+import { StoreViewContext, useStore, type State } from '../store';
 import { perfCount, perfOn, perfPanel, setPerfPanelTypes } from './perf';
 
 const now = () => performance.now();
 /** When each panel's probe before it rendered, in the render under way. */
 const started = new Map<string, number>();
 
+const whole = (s: State) => s;
+/** The whole store, as the panel's view of it has it. Its selector is not counted with the editor's
+ *  (`store.selectorRuns`): the probes are the measurement's, as the count of renders leaves them out too. */
+const useWholeStore = () => useStoreOf(useContext(StoreViewContext) ?? useStore, whole);
+
 function PanelStart({ id }: { id: string }) {
-  useStore((s) => s);
+  useWholeStore();
   started.set(id, now());
   return null;
 }
 
 function PanelEnd({ id }: { id: string }) {
-  useStore((s) => s);
+  useWholeStore();
   const from = started.get(id);
   if (from !== undefined) {
     perfPanel(id).renderMs += now() - from;

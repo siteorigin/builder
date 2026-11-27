@@ -1046,7 +1046,9 @@ export function Canvas() {
         case 'rects': {
           if (perfOn) {
             perfCount('canvas.rectReports');
-            const seen = JSON.stringify(p);
+            // The page's own time measuring is not part of what it reports.
+            const { measureMs: _measureMs, ...report } = p;
+            const seen = JSON.stringify(report);
             if (seen === lastReport.current) perfCount('canvas.rectReportsSame');
             lastReport.current = seen;
           }
@@ -1327,7 +1329,8 @@ export function Canvas() {
       const unmeasured = staleFor(m, frameView.current.view) || m.payload.unmeasured === true;
       // The page's reports of what moved under the pointer and where its outlines are, timed with the render and
       // commit each sets off (the `canvas` scenario).
-      if (perfOn && (m.type === 'rects' || m.type === 'hover')) perfWork(`canvas.${m.type}`, () => handle(m, unmeasured));
+      // A report of where the outlines are says how long the page spent measuring them (`pageMs`).
+      if (perfOn && (m.type === 'rects' || m.type === 'hover')) perfWork(`canvas.${m.type}`, () => handle(m, unmeasured), typeof m.payload.measureMs === 'number' ? { pageMs: m.payload.measureMs } : undefined);
       else handle(m, unmeasured);
     };
     window.addEventListener('message', onMsg);
@@ -1426,7 +1429,8 @@ export function Canvas() {
     const s = getState();
     const st = s.snapshot?.state;
     if (!st) return;
-    post('track', { selected: descFor(s.selection), hovered: descFor(s.hover, hoverPlacement.current), slots: trackedSlots() });
+    // With timing marks on, the page times its measuring too (the `canvas` scenario).
+    post('track', { selected: descFor(s.selection), hovered: descFor(s.hover, hoverPlacement.current), slots: trackedSlots(), ...(perfOn ? { timed: true } : {}) });
   }
 
   /** The empty slots of the selected placement whose Add buttons are drawn on their own boxes (#657), for the page to

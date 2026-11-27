@@ -2728,12 +2728,26 @@ export const canvas: Scenario = {
       commits(m, trace, `${p}.rendererCommits`, start, end);
       if (trackless(start) || trackless(end)) m.need(`${p}.renders (the editor did not count component renders)`, undefined);
       else m.count(`${p}.renders`, gained('react.renders'));
+      // The editor's state changed, and the selectors of its store hooks that ran for that or in a render.
+      if (end.c?.['store.updates'] === undefined || end.c?.['store.selectorRuns'] === undefined) m.need(`${p}.storeUpdates, .selectorRuns (the editor did not count its store's updates and selectors)`, undefined);
+      else {
+        m.count(`${p}.storeUpdates`, gained('store.updates'));
+        m.count(`${p}.selectorRuns`, gained('store.selectorRuns'));
+      }
       // Each report from the page, handled with the render and commit it set off.
-      const reports = [...trace.all('canvas.rects', inProc('renderer'), start.t, end.t), ...trace.all('canvas.hover', inProc('renderer'), start.t, end.t)];
+      const rectSpans = trace.all('canvas.rects', inProc('renderer'), start.t, end.t);
+      const reports = [...rectSpans, ...trace.all('canvas.hover', inProc('renderer'), start.t, end.t)];
       if (!reports.length) m.need(`${p}: the page's reports (canvas.rects, canvas.hover spans)`, undefined);
       else {
         m.ms(`${p}.reportMs`, median(reports.map((r) => r.ms ?? NaN)));
         m.ms(`${p}.reportMsTotal`, reports.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      }
+      // The page's own time measuring where its outlines are, for each report of them it posted.
+      const pageMs = rectSpans.map((r) => r.attrs?.pageMs);
+      if (!rectSpans.length || pageMs.some((v) => typeof v !== 'number')) m.need(`${p}.pageMeasureMs (a report of the outlines without the page's time measuring them)`, undefined);
+      else {
+        m.ms(`${p}.pageMeasureMs`, median(pageMs as number[]));
+        m.ms(`${p}.pageMeasureMsTotal`, (pageMs as number[]).reduce((n, v) => n + v, 0));
       }
       for (const k of ['frames', 'droppedFrames', 'longTasks'] as const) {
         const v = end.attrs?.[k];

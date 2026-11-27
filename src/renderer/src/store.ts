@@ -21,7 +21,7 @@ import type { LayerSet } from './lib/layer-set';
 import { slotTargetHolds, type SlotTarget } from './lib/slot-target';
 import { leaveField } from './lib/leave-field';
 import type { PostRef } from './lib/posts';
-import { perfMark, perfOn } from './lib/perf';
+import { perfCount, perfMark, perfOn, perfSelector } from './lib/perf';
 import { notePlace, type PagePlaces } from './lib/page-place';
 import { changedPages, historyNotice } from './lib/history-notice';
 import type { TemplateMode } from './lib/template-view';
@@ -469,8 +469,10 @@ export const StoreViewContext = createContext<StoreView | null>(null);
 
 /** The part of the state `selector` picks, re-rendering when it changes, as the component's view of the store has it. */
 function useStoreView<T>(selector: (s: State) => T): T {
-  return useStoreOf(useContext(StoreViewContext) ?? live, selector);
+  return useStoreOf(useContext(StoreViewContext) ?? live, perfOn ? perfSelector(selector) : selector);
 }
+// Each change of the editor's state, for the performance harness (scripts/perf/README.md, the `canvas` scenario).
+if (perfOn) live.subscribe(() => perfCount('store.updates'));
 
 /**
  * The editor's store. As a hook, it is read through the view of the panel the component is in (StoreViewContext);

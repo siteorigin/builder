@@ -322,10 +322,17 @@ function scheduleRects() {
  * already draws it. A request from the editor (`track`) clears it, so what the editor asks for is always answered.
  */
 let rectsPosted = '';
+/**
+ * Whether the editor times the page's work (its timing marks are on): each report then says how long the page spent
+ * measuring for it (`measureMs`), with the measurements since the last report it posted that found nothing new.
+ */
+let timeRects = false;
+let measuringMs = 0;
 function isSeparator(el) {
   return el.tagName === 'HR' || el.classList.contains('so-band') || el.classList.contains('so-band-icon');
 }
 function sendRects() {
+  const t0 = timeRects ? performance.now() : 0;
   const selEls = selected ? findAll(selected) : [];
   const selBoxes = selEls.map(rectOf);
   sampleSelection(selEls, selBoxes);
@@ -348,9 +355,12 @@ function sendRects() {
   const slots = mode === 'edit' ? trackedSlots.flatMap((desc) => { const box = findAll(desc).map(rectOf).find(Boolean); return box ? [{ desc, box }] : []; }) : [];
   const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
   const seen = JSON.stringify([navigationId, revision, report]);
+  if (timeRects) measuringMs += performance.now() - t0;
   if (seen === rectsPosted) return;
   rectsPosted = seen;
-  send('rects', report);
+  if (!timeRects) return send('rects', report);
+  send('rects', { ...report, measureMs: measuringMs });
+  measuringMs = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -4925,6 +4935,7 @@ window.addEventListener('message', async (e) => {
       if (shownHold && !sameDesc(shownHold.desc, selected)) shownHold = null;
       if (m.payload.hovered !== undefined) hovered = m.payload.hovered;
       trackedSlots = Array.isArray(m.payload.slots) ? m.payload.slots.filter((d) => d && typeof d.slot === 'string').slice(0, 50) : [];
+      timeRects = m.payload.timed === true;
       rectsPosted = '';
       // Only what is hovered changed, and the next frame has nothing to do before it measures (a reveal to put in place, a
       // scroll the editor asked for, the selection held in view): measured at once too, so the editor draws the hover's
