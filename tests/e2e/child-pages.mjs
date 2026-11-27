@@ -119,9 +119,13 @@ try {
   await pageRow('Kitchens').hover();
   await pageRow('Kitchens').getByRole('button', { name: 'Kitchens options' }).click();
   await win.getByRole('menuitem', { name: 'Page settings' }).click();
-  const inside = inspector().getByLabel('Inside page');
-  await eventually(async () => assert.equal(await inside.inputValue(), lookbook.id, 'page settings say Kitchens is inside Lookbook'));
-  await inside.selectOption(workId);
+  const inside = inspector().getByRole('button', { name: /^Inside page:/ });
+  await eventually(async () => assert.equal(await inside.innerText(), 'Lookbook', 'page settings say Kitchens is inside Lookbook'));
+  await inside.click();
+  // Each place says the address the page would take there.
+  const workChoice = win.getByRole('menuitemradio', { name: /^Work/ });
+  assert.match(await workChoice.innerText(), /\/work\/kitchens\//);
+  await workChoice.click();
   await eventually(async () => assert.equal((await pageBy('Kitchens')).route, '/work/kitchens/', 'Kitchens moves into Work'));
   // Its place in the page order is unchanged, before Work: Pages says so and offers to list it under Work.
   await eventually(async () => assert.deepEqual(await outline(), ['Home', 'About', 'Contact', 'Lookbook', 'Kitchens', 'Work']));

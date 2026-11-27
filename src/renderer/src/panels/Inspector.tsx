@@ -52,7 +52,7 @@ import { validateRoute } from '@shared/routes';
 import { planPageAddress } from '@shared/page-address';
 import { wasPublishedFor } from '@shared/published';
 import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/video';
-import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { formatArticleDate, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
 import { entryQuery, listsEntries } from '@shared/entry-feed';
 import { postAt, postShown, postsCollection } from '../lib/posts';
@@ -103,7 +103,8 @@ import { canDuplicate } from '../lib/duplicate-component';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
-import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
+import { isLanguageCode, linkClash, linkedGroup, pageLanguage, sameLanguage, siteLanguage, translationPeers } from '@shared/languages';
+import { languageCodeFor } from './site-details';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
 import { searchSummary } from '../lib/sharing';
@@ -2928,46 +2929,93 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
   const peers = translationPeers(state, page);
   const group = linkedGroup(state, page);
   const own = typeof page.language === 'string' ? page.language : '';
-  // A page with translations joins only pages without any of their own: two sets are never merged. A page whose
-  // language one of the versions already has is shown, but cannot be chosen until one of them changes language.
+  const menu = useMenu();
+  const linkButton = useRef<HTMLButtonElement>(null);
+  // Set by Unlink (true) or by linking a page (its ID): once the rows have changed, focus moves on to the button for
+  // linking another version, or, when that has gone with the last page it could link, to the page just linked.
+  const refocus = useRef<string | boolean>(false);
+  useEffect(() => {
+    const to = refocus.current;
+    if (!to) return;
+    refocus.current = false;
+    // With nothing left to link (the line said why in its place), the section's own field takes focus.
+    const panel = '#dock-panel-inspect';
+    (linkButton.current ?? (typeof to === 'string' ? document.querySelector<HTMLElement>(`${panel} [data-translation="${CSS.escape(to)}"]`) : null) ?? document.querySelector<HTMLElement>(`${panel} [aria-label="Page language"]`))?.focus();
+  }, [peers.length]);
+  // Two sets of translations are never merged: a page with translations joins only pages without any of their own.
+  // A page that can't join is offered refused, with the reason under it: it is in another set, or a language this
+  // set already has would be there twice.
+  const mine = new Set([page.id, ...peers.map((p) => p.id)]);
   const candidates = state.site.pageOrder
     .map((id) => state.pages[id])
-    .filter((p) => p && p.id !== page.id && !peers.includes(p) && (!group || !linkedGroup(state, p)))
-    .map((p) => ({ page: p, clash: linkClash(state, page, p) }));
-  const link = (pageId: string, to: string | null, label: string) => void applyOps([{ type: 'page.update', pageId, linkTranslationTo: to }], label);
+    .filter((p) => p && !mine.has(p.id))
+    .map((p) => (group && linkedGroup(state, p) ? { page: p, reason: 'In another set of translations', direct: null } : { page: p, ...clashReason(state, page, p, mine) }));
+  // A link the project refuses changes no rows: nothing to move focus on from.
+  const link = (pageId: string, to: string | null, label: string) => void applyOps([{ type: 'page.update', pageId, linkTranslationTo: to }], label).then((r) => !r && (refocus.current = false));
   // Closed until wanted: its heading says what the page is written in and how many versions it has.
   const name = languageName(own || site);
   const summary = peers.length ? `${name} · ${peers.length} translation${peers.length === 1 ? '' : 's'}` : own ? name : `${name} · site language`;
+  // When nothing can be linked only because every other page is in a language this set has (a site in one language,
+  // the usual case), one line says so in place of the button: a menu of refusals would say it once a row.
+  const open = candidates.filter((c) => !c.reason);
+  const refused = candidates.filter((c) => c.reason);
+  const twins = new Set(refused.map((c) => c.direct));
+  const n = refused.length;
+  const others = n === 1 ? 'The other page is' : n === 2 ? 'Both other pages are' : `All ${n} other pages are`;
+  const give = peers.length ? 'Give one a language none of these versions has yet' : 'Give one another language';
+  const sameAll = open.length || !n || twins.has(null) ? null : twins.size === 1 ? `${others} in ${languageName([...twins][0]!)} too. ${give}, then link it here.` : `${others} in a language one of these versions already has. ${give}, then link it here.`;
+  // A page with versions of its own brings them along: said on its row, before it is chosen.
+  const joins = (p: PageDoc) => {
+    const theirs = translationPeers(state, p).map((t) => pageLanguageName(state, t));
+    return theirs.length ? ` · Also links its ${theirs.join(' and ')} version${theirs.length === 1 ? '' : 's'}` : '';
+  };
+  // The pages that can be linked first, each with its language; then those that can't, each saying why.
+  const items = (): MenuItem[] => {
+    return [
+      ...(open.length ? [] : [{ info: true, label: 'No page can be linked yet. Each one says why.' }]),
+      ...open.map(({ page: p }) => ({ id: p.id, label: p.title, description: `${pageLanguageName(state, p)}${isDraftPage(state, p) ? ' · Draft' : ''}${joins(p)}`, onSelect: () => ((refocus.current = p.id), link(page.id, p.id, 'Link translation')) })),
+      ...(open.length && refused.length ? [{ heading: 'Can’t be linked' }] : []),
+      ...refused.map(({ page: p, reason }) => ({ id: p.id, label: p.title, description: reason!, disabled: true }))
+    ];
+  };
   return (
     <Section title="Language" id="page-language" level={LEVEL} defaultOpen={false} scope={summary}>
-      <Field label="Page language" hint={own ? 'A language code, such as fr or en-GB. Clear it to use the site language.' : 'Uses the site language. Enter a code such as fr or en-GB if this page is written in another language.'}>
-        <DraftInput value={own} placeholder={site} onCommit={(v) => void applyOps([{ type: 'page.update', pageId: page.id, language: v.trim() }], `Change page language (${page.title})`)} ariaLabel="Page language" />
-      </Field>
-      <Field label="Translations" hint="Browsers and search engines learn which pages are the same page in other languages. For visitors to switch, add a link or button to the other version and choose it under Page.">
+      <PageLanguageField page={page} state={state} />
+      {/* One line under the field: why there is no Link button when there isn't one, else what linking does. */}
+      <Field
+        label="Translations"
+        hint={
+          !candidates.length || sameAll
+            ? (sameAll ?? (peers.length ? 'Every other page is already one of its translations.' : 'No other pages yet. Duplicate this page, give the copy its language, then link it here.'))
+            : peers.length
+              ? 'Search engines learn these are the same page. To let visitors switch, link to the other version from the page.'
+              : 'The same page in another language, so search engines show each visitor theirs.'
+        }
+      >
         {peers.length > 0 && (
           <ul className="insp-translations" aria-label="Translations of this page">
             {peers.map((p) => (
               <li key={p.id}>
                 <button
-                  className="insp-mini grow ellipsis"
+                  className="insp-translation"
+                  data-translation={p.id}
                   onClick={() => {
                     selectPage(p.id);
                     focusName();
                   }}
-                  title={`Open ${p.title}`}
+                  aria-label={`Open ${p.title}, ${pageLanguageName(state, p)}${isDraftPage(state, p) ? ', draft' : ''}`}
                 >
-                  {p.title}
+                  <span className="insp-translation-title">{p.title}</span>
+                  <span className="insp-translation-meta">
+                    {pageLanguageName(state, p)}
+                    {isDraftPage(state, p) ? ' · Draft' : ''}
+                  </span>
                 </button>
-                <span className="mono faint">
-                  {pageLanguage(state.site, p)}
-                  {isDraftPage(state, p) ? ' · draft' : ''}
-                </span>
                 <button
-                  className="btn btn-sm"
+                  className="btn btn-sm btn-ghost"
                   onClick={() => {
+                    refocus.current = true;
                     link(p.id, null, 'Unlink translation');
-                    // The row goes with the link: focus moves on to the menu for linking another version.
-                    requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>('#dock-panel-inspect [aria-label="Link a translation"]')?.focus()));
                   }}
                   aria-label={`Unlink ${p.title}`}
                 >
@@ -2977,16 +3025,80 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
             ))}
           </ul>
         )}
-        <select className="select" value="" aria-label="Link a translation" onChange={(e) => e.target.value && link(page.id, e.target.value, 'Link translation')}>
-          <option value="">{peers.length ? 'Link another version…' : 'Link the same page in another language…'}</option>
-          {candidates.map(({ page: p, clash }) => (
-            <option key={p.id} value={p.id} disabled={!!clash}>
-              {p.title} ({pageLanguage(state.site, p)}){clash ? ` · two versions would be in ${clash.language}` : ''}
-            </option>
-          ))}
-        </select>
+        {candidates.length > 0 && !sameAll ? (
+          <button ref={linkButton} className="btn btn-sm insp-inline-btn" data-link-translation {...menu.triggerProps()} onClick={(e) => menu.openAt(e.currentTarget, items, 'Link a translation')}>
+            <LinkIcon aria-hidden="true" /> Link a translation
+          </button>
+        ) : null}
+        {menu.node}
       </Field>
     </Section>
+  );
+}
+
+/**
+ * Why `other` can't join `page`'s translations, or no reason: a language would be there twice. Named from where the author
+ * stands: "English, like this page", or, when the clash is with a page `other` is already linked to, "Its English
+ * version, Home, would clash with About".
+ */
+function clashReason(state: ProjectState, page: PageDoc, other: PageDoc, mine: Set<string>): { reason: string | null; direct: string | null } {
+  const clash = linkClash(state, page, other);
+  if (!clash) return { reason: null, direct: null };
+  const lang = languageName(clash.language);
+  const ours = mine.has(clash.a.id) ? clash.a : clash.b;
+  const theirs = ours === clash.a ? clash.b : clash.a;
+  const here = ours.id === page.id ? 'this page' : ours.title;
+  // `direct`: the page itself is in a language this set has, the one refusal a single line can speak for.
+  if (theirs.id === other.id) return { reason: `${lang}, like ${here}`, direct: clash.language.toLowerCase() };
+  if (!mine.has(theirs.id)) return { reason: `Its ${lang} version, ${theirs.title}, would clash with ${here}`, direct: null };
+  return { reason: `${lang} twice already: ${clash.a.title} and ${clash.b.title}`, direct: null };
+}
+
+/** A page's language by name ("French"), its own or the site's. */
+const pageLanguageName = (state: ProjectState, p: PageDoc) => languageName(pageLanguage(state.site, p));
+
+/** The longest language code a page can save, as the site's. */
+const PAGE_LANGUAGE_MAX = 20;
+
+/**
+ * The page's own language, typed as a language's name ("French") or a code ("fr-CA") and saved as the code, as the
+ * site's Language field takes it. Empty uses the site language, named in the hint.
+ */
+function PageLanguageField({ page, state }: { page: PageDoc; state: ProjectState }) {
+  const site = siteLanguage(state.site);
+  const peers = translationPeers(state, page);
+  const own = typeof page.language === 'string' ? page.language : '';
+  const [error, setError] = useState<string | null>(null);
+  const shown = languageName(own || site);
+  return (
+    <Field
+      label="Page language"
+      error={error}
+      hint={
+        <>
+          <strong className="insp-lang-name">{shown}</strong>
+          {own ? '. Clear it to use the site language.' : ', the site language. Type another, such as French or en-GB, if this page is written in it.'}
+        </>
+      }
+    >
+      <DraftInput
+        value={own}
+        placeholder={languageName(site)}
+        keep={`page:${page.id}:language`}
+        keepWhile={pageAlive(page.id)}
+        check={(v) => {
+          const code = languageCodeFor(v) ?? v.trim();
+          if (code && !isLanguageCode(code)) return { message: 'Type a language, such as French, or a code, such as fr-CA.' };
+          if (code.length > PAGE_LANGUAGE_MAX) return { message: `A language code can be at most ${PAGE_LANGUAGE_MAX} characters.` };
+          // A language one of its translations already has (or, cleared, the site's) would be there twice.
+          const twin = peers.find((p) => sameLanguage(pageLanguage(state.site, p), code || site));
+          return twin ? { message: `${twin.title} is already the ${languageName(code || site)} version. Give it another language first, or unlink it.` } : null;
+        }}
+        onProblem={(p) => setError(p?.message ?? null)}
+        onCommit={(v) => void applyOps([{ type: 'page.update', pageId: page.id, language: languageCodeFor(v) ?? v.trim() }], `Change page language (${page.title})`)}
+        ariaLabel="Page language"
+      />
+    </Field>
   );
 }
 
@@ -3027,7 +3139,7 @@ function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; 
   // Open for an article; an ordinary page keeps it closed, with "Off" beside the heading.
   return (
     // Remembered apart for articles and ordinary pages, so closing one never hides the other.
-    <Section title="Article" id={article ? 'page-article' : 'page-article-off'} level={LEVEL} defaultOpen={!!article} scope={article ? (draft ? 'Dated · draft' : 'Dated') : 'Off'}>
+    <Section title="Article" id={article ? 'page-article' : 'page-article-off'} level={LEVEL} defaultOpen={!!article} scope={article ? `${formatArticleDate(article.date, 'en')}${draft ? ' · Draft' : ''}` : 'Off'}>
       <SwitchRow
         checked={!!article}
         onChange={(v) => upd(v ? { articleDate: todayArticleDate() } : { article: false }, v ? 'Make page an article' : 'Make article an ordinary page')}
@@ -3040,10 +3152,7 @@ function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; 
       />
       {article && (
         <>
-          <Field label="Article date" hint="Orders it in News lists. An earlier date backdates it.">
-            {/* A date left incomplete (or cleared) changes nothing: the saved date comes back. */}
-            <DraftInput type="date" value={article.date} onCommit={(v) => (isArticleDate(v) && v !== article.date ? upd({ articleDate: v }, 'Change publication date') : undefined)} />
-          </Field>
+          <ArticleDateField date={article.date} upd={upd} />
           <Field label="Byline" hint="Optional. Shown as written.">
             <DraftInput limit={TEXT_LIMITS.byline} keep={`page:${page.id}:byline`} keepWhile={articleAlive(page.id)} placeholder="By Ana Ruiz" value={typeof article.byline === 'string' ? article.byline : ''} onCommit={(v) => upd({ byline: v }, 'Change byline')} />
           </Field>
@@ -3058,15 +3167,54 @@ function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; 
               article.hidden === true
                 ? draft
                   ? 'Left out of every News list, even after the page is published.'
-                  : 'Left out of every News list. The page itself stays published at its address.'
+                  : 'Left out of every News list. The page itself is still exported.'
                 : draft
                   ? 'Drafts stay out of News lists until the page is published.'
-                  : 'News lists show the newest articles first, up to each list’s limit.'
+                  : 'Each News list shows as many as its limit allows.'
             }
           />
         </>
       )}
     </Section>
+  );
+}
+
+/**
+ * An article's date. One left incomplete (or cleared) changes nothing, and says so under the field: the saved date
+ * comes back. Its own component, so the reason goes with the field when the section closes.
+ */
+function ArticleDateField({ date, upd }: { date: string; upd: (patch: Record<string, unknown>, label?: string) => void }) {
+  // Set when an incomplete date was left: the field shows the saved date again, so this is news, not an error.
+  const [restored, setRestored] = useState(false);
+  // Another change to the date (undo, the assistant) makes the note old news.
+  useEffect(() => setRestored(false), [date]);
+  return (
+    <Field
+      label="Article date"
+      hint={
+        restored ? (
+          <span role="status">That date was incomplete, so it is unchanged: still {formatArticleDate(date, 'en')}.</span>
+        ) : (
+          'News lists show the newest dates first.'
+        )
+      }
+    >
+      <DraftInput
+        type="date"
+        value={date}
+        onLive={() => setRestored(false)}
+        onCommit={(v) => {
+          // A native date field gives nothing for a date with a part missing, so there is no partial text to keep: the
+          // saved date comes back, and the note says so until the field is edited again.
+          if (!isArticleDate(v)) {
+            setRestored(true);
+            return false;
+          }
+          setRestored(false);
+          if (v !== date) upd({ articleDate: v }, 'Change publication date');
+        }}
+      />
+    </Field>
   );
 }
 
@@ -3098,35 +3246,44 @@ function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
   // level) can still be chosen to move it straight there.
   const exact = (parentId ? `${state.pages[parentId].route}${leaf}/` : atTop) === page.route;
   const move = (id: string) => {
-    if (id === HERE) return;
     const to = id ? choices.find((c) => c.id === id)?.to : atTop;
     if (!to || to === page.route) return;
     void applyOps([{ type: 'page.update', pageId: page.id, route: to }], id ? `Move page ${page.title} into ${state.pages[id].title}` : `Move page ${page.title} to the top level`, undefined, revision);
   };
+  const menu = useMenu();
+  const controlId = useId();
+  const current = exact ? (parentId ? state.pages[parentId].title : 'Top level') : parentId ? `${state.pages[parentId].title}, at ${page.route}` : `Top level, at ${page.route}`;
+  // Each choice says the address the page would take there, or, refused, why it can't go there.
+  // An address with folders of its own is where it is now, checked first; choosing its parent moves it straight inside.
+  const items = (): MenuItem[] => [
+    ...(exact ? [] : [{ id: ':here', label: `${parentId ? state.pages[parentId].title : 'Top level'}, as it is`, description: page.route, checked: true, onSelect: () => {} }]),
+    { id: ':top', label: 'Top level', description: topErr ?? atTop, disabled: !!topErr, checked: exact && !parentId, onSelect: () => move('') },
+    ...choices.map((c) => ({
+      id: c.id,
+      label: state.pages[c.id].title,
+      description: c.err ?? c.to,
+      disabled: !!c.err,
+      checked: exact && parentId === c.id,
+      onSelect: () => move(c.id)
+    }))
+  ];
   return (
-    <Field label="Inside" hint={exact ? 'Moves the page and its address. Its link in the header menu stays where it is.' : `Its address, ${page.route}, has folders of its own. Choosing a page moves it straight inside that page.`}>
-      <select className="select" value={exact ? parentId : HERE} onChange={(e) => move(e.target.value)} aria-label="Inside page">
-        {!exact && (
-          <option value={HERE} disabled>
-            {parentId ? `${state.pages[parentId].title}, at ${page.route}` : `Top level, at ${page.route}`}
-          </option>
-        )}
-        <option value="" disabled={!!topErr} title={topErr ?? undefined}>
-          Top level{topErr ? ' (not possible)' : ''}
-        </option>
-        {choices.map((c) => (
-          <option key={c.id} value={c.id} disabled={!!c.err} title={c.err ?? undefined}>
-            {'\u2003'.repeat(c.depth)}
-            {state.pages[c.id].title} ({state.pages[c.id].route}){c.err ? ' (not possible)' : ''}
-          </option>
-        ))}
-      </select>
+    <Field label="Inside" controlId={controlId} hint="Its link in the header menu stays where it is.">
+      <button
+        id={controlId}
+        type="button"
+        className="select insp-inside"
+        aria-label={`Inside page: ${current}`}
+        aria-describedby={`${controlId}-note`}
+        {...menu.triggerProps()}
+        onClick={(e) => menu.openAt(e.currentTarget, items, `Move ${page.title} inside`)}
+      >
+        {current}
+      </button>
+      {menu.node}
     </Field>
   );
 }
-
-/** The Inside choice standing for where a page with folders of its own in its address is now. */
-const HERE = ':here';
 
 /** A language code by name ("fr" → "French"), or the code itself when it isn't one the system knows. */
 function languageName(code: string): string {
@@ -3203,24 +3360,21 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           </Scope>
         )}
       </Header>
-      <Section title="Page" id="page-basic" level={LEVEL}>
+      <Section title="Page" id="page-basic" level={LEVEL} scope={!isHome && draft ? 'Draft' : undefined}>
         {/* Reached by name from a finding about the title (openEditorDestination). */}
         <div data-seo-field="pageTitle">
           <Field label="Title" error={titleError}>
+            {/* An empty title is refused as Address refuses an address: the field stays empty with the reason beside
+                it until a title is typed (or Escape brings the saved one back). */}
             <DraftInput
               value={page.title}
               limit={TEXT_LIMITS.pageTitle}
               keep={`page:${page.id}:title`}
               keepWhile={pageAlive(page.id)}
-              onCommit={(v) => {
-                if (!v.trim()) {
-                  setTitleError(`A page needs a title. Kept “${page.title}”.`);
-                  return false;
-                }
-                setTitleError(null);
-                // The labels that still say the old title are offered alongside once the rename is saved.
-                void renamePage(page.id, page.title, v.trim());
-              }}
+              check={(v) => (v.trim() ? null : { message: `A page needs a title. The saved title is still “${page.title}”.` })}
+              onProblem={(p) => setTitleError(p?.message ?? null)}
+              // The labels that still say the old title are offered alongside once the rename is saved.
+              onCommit={(v) => void renamePage(page.id, page.title, v.trim())}
             />
           </Field>
         </div>
@@ -3230,7 +3384,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           hint={
             isHome
               ? 'The home page is always at /.'
-              : `Links to this page update automatically when you change it${wasPublishedFor(state, page.route, page.id) ? ', and its old address keeps working' : `. The website hasn’t been exported with it at ${page.route}, so no old address is kept`}.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} with it.` : ''}`}
+              : `Change it and links on this site follow${wasPublishedFor(state, page.route, page.id) ? ', and the old address keeps working' : ''}.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} too.` : ''}`}
         >
           {isHome ? (
             <input className="input" value="/" readOnly aria-label="Page address" />
@@ -3259,8 +3413,8 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             label="Keep as draft"
             hint={
               draft
-                ? 'Left out of the exported website. You can still edit and preview it.'
-                : 'Keep working on this page without publishing it. The website export leaves drafts out.'
+                ? 'Left out when the website is exported. You can still edit and preview it.'
+                : 'Included when the website is exported.'
             }
           />
         )}
@@ -3269,9 +3423,13 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
       <ArticleSettings page={page} draft={draft} upd={upd} />
       <PageLanguage page={page} state={state} />
       <Section title="Header & footer" id="page-shell" level={LEVEL} defaultOpen={false} scope={shellSummary(showsPart(page, 'header'), showsPart(page, 'footer'))}>
-        <SwitchRow checked={showsPart(page, 'header')} onChange={(v) => upd({ showHeader: v }, v ? 'Show shared header on page' : 'Hide shared header on page')} label="Show shared header" />
-        <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />
-        <p className="insp-note field-hint">For this page only; other pages keep their own choice. Editing the header or footer changes it on every page that shows it.</p>
+        <div className="insp-shell" role="group" aria-label="Shared header and footer" aria-describedby={`page-shell-note-${page.id}`}>
+          <SwitchRow checked={showsPart(page, 'header')} onChange={(v) => upd({ showHeader: v }, v ? 'Show shared header on page' : 'Hide shared header on page')} label="Show shared header" />
+          <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />
+          <p className="insp-note field-hint" id={`page-shell-note-${page.id}`}>
+            For this page only. Editing the header or footer changes every page that shows it.
+          </p>
+        </div>
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(page)}>
         <PageSearchSettings page={page} state={state} draft={draft} upd={upd} />
@@ -3282,11 +3440,11 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
       </Section>
       {dev && (
         <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>
-          <button className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => setState({ modal: { kind: 'page-source', pageId: page.id } })}>
-            <FileCode2 /> View generated source
+          <button className="btn btn-sm insp-inline-btn" onClick={() => setState({ modal: { kind: 'page-source', pageId: page.id } })}>
+            <FileCode2 aria-hidden="true" /> View generated source
           </button>
-          <p className="mono faint insp-note" style={{ userSelect: 'text' }}>
-            {page.id}
+          <p className="muted insp-note">
+            Page ID <span className="mono insp-page-id">{page.id}</span>
           </p>
         </Section>
       )}
