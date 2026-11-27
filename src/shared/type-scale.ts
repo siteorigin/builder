@@ -110,7 +110,7 @@ export const TYPE_SCALES: TypeScale[] = [
   {
     id: 'compact',
     label: 'Compact',
-    description: 'Modest headings and tight spacing, so more fits on each screen.',
+    description: 'Modest headings and tight spacing; more fits on screen.',
     roles: {
       'text.display': [27, 42, '1.12', '-0.02em'],
       'text.h1': [24, 35, '1.16', '-0.015em'],
@@ -124,7 +124,7 @@ export const TYPE_SCALES: TypeScale[] = [
   {
     id: 'balanced',
     label: 'Balanced',
-    description: 'Clear steps between headings and comfortable text, for most sites.',
+    description: 'Clear steps between headings, comfortable text.',
     roles: {
       'text.display': [34, 54, '1.08', '-0.025em'],
       'text.h1': [29, 43, '1.12', '-0.02em'],
@@ -138,7 +138,7 @@ export const TYPE_SCALES: TypeScale[] = [
   {
     id: 'editorial',
     label: 'Editorial',
-    description: 'Larger headings and roomy, slightly bigger text for reading.',
+    description: 'Generous headings and roomy text for reading.',
     roles: {
       'text.display': [38, 72, '1.06', '-0.03em'],
       'text.h1': [32, 54, '1.1', '-0.025em'],
@@ -152,7 +152,7 @@ export const TYPE_SCALES: TypeScale[] = [
   {
     id: 'bold-display',
     label: 'Bold display',
-    description: 'Dramatic, tightly set headlines over plain, steady text.',
+    description: 'Dramatic headlines over plain, steady text.',
     roles: {
       'text.display': [42, 108, '1.02', '-0.035em'],
       'text.h1': [34, 72, '1.06', '-0.03em'],
