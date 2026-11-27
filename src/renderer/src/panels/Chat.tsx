@@ -5,7 +5,7 @@ import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, ty
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
-import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
+import { api, getState, saveLocal, sendPicksAhead, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { importIntoChat, isFileDrag, retargetDrops } from '../lib/chat-drop';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
@@ -963,6 +963,8 @@ export function Chat() {
     // Sent for the model the composer names now: if Settings or the local server would send it elsewhere by the time it
     // runs, nothing is sent and the turn says so.
     let r: Awaited<ReturnType<typeof api.ai.send>>;
+    // A colour still being picked is saved before the AI takes the project, which would refuse it.
+    sendPicksAhead();
     try {
       r = await api.ai.send(text.trim(), ctx, conversationId, next ? { provider: next.provider, model: next.id } : undefined);
     } catch (e) {
