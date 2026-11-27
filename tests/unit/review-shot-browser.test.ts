@@ -51,6 +51,8 @@ beforeAll(async () => {
   put('bad-font/index.html', page('Bad font', "@font-face{font-family:Bad;src:url(/client/corrupt.png) format('woff2');font-display:block}body{font-family:Bad}", '<p>Bad type</p>'));
   // A background the server delivers whole that cannot be drawn: never among the page's images, nor a failed request.
   put('bad-background/index.html', page('Bad background', '.hero{height:200px;background:url(/client/corrupt.png) #ccc}', '<div class="hero">Hero</div>'));
+  // A background offering two pictures, the one painted at one pixel per pixel there, the other missing.
+  put('image-set/index.html', page('Image set', '.hero{height:200px;background-image:image-set(url(/client/blue.png) 1x, url(/client/missing-2x.png) 2x)}', '<div class="hero">Hero</div>'));
   put('über/index.html', page('Über', '', '<p>Über uns</p>'));
   put('broken/index.html', page('Broken', '', '<img src="/client/corrupt.png" width="40" height="40">'));
   put('lazy/index.html', page('Lazy', '', `${tall(3000)}<img id="late" loading="lazy" src="/client/blue.png" width="40" height="40" style="display:block">`));
@@ -148,6 +150,10 @@ describe.skipIf(!browserInstalled)('a review page pictured in Chromium', () => {
 
   it('marks a page whose background picture arrived but cannot be drawn unavailable', async () => {
     expect(await shoot('bad-background/', 800)).toMatchObject({ ok: false, reason: 'assets', detail: expect.stringContaining('/client/corrupt.png') });
+  });
+
+  it('does not hold the picture a background offers but does not paint against the page', async () => {
+    expect(await shoot('image-set/', 800)).toMatchObject({ ok: true });
   });
 
   it('pictures a page at an address of any script, under the base path', async () => {

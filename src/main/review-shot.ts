@@ -83,15 +83,16 @@ const CHECK = `(async () => {
     if (!el.getClientRects().length) continue;
     for (const pseudo of [null, '::before', '::after']) {
       const bg = getComputedStyle(el, pseudo).backgroundImage;
-      if (!bg || bg === 'none') continue;
+      // image-set() offers several pictures and paints one; only that one is fetched, and its request is watched.
+      if (!bg || bg === 'none' || bg.includes('image-set(')) continue;
       for (const m of bg.matchAll(/url\\(\\s*(['"]?)(.*?)\\1\\s*\\)/g)) backgrounds.add(new URL(m[2], document.baseURI).href);
     }
   }
-  for (const src of backgrounds) {
+  await Promise.all([...backgrounds].map(async (src) => {
     const img = new Image();
     img.src = src;
     if (!(await decodes(img))) broken.push(src);
-  }
+  }));
   const fontErrors = [...document.fonts].filter((f) => f.status === 'error').map((f) => f.family);
   await frame();
   await frame();
@@ -271,6 +272,8 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
     assetsOk();
     await shown();
     assetsOk();
+    // Something the page asked for before the picture and is still waiting for may be missing from it.
+    if (pending.size) throw new Stop('assets', `The page was still loading: ${[...pending.values()].slice(0, 5).map((u) => shortUrl(u, origin)).join(', ')}.`);
     return { ok: true, png, height };
   } catch (e) {
     if (e instanceof Stop) return { ok: false, reason: e.reason, detail: e.message };

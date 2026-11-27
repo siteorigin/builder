@@ -11,8 +11,8 @@ import type { ProjectState } from '@shared/types';
 import { archivePages, archiveWords } from '@shared/archives';
 import { siteEntries } from '@shared/collections';
 import { routeUrl } from '@shared/routes';
-import { REVIEW_MANIFEST, REVIEWS_DIR, isReviewEditionId, reviewDigestInput, reviewEditionId, type ReviewCapture, type ReviewEditionManifest, type ReviewPage, type ReviewWidth } from '@shared/review-edition';
-import { publishFolder } from './export';
+import { REVIEW_MANIFEST, REVIEWS_DIR, isReviewEditionId, reviewDigestInput, reviewEditionId, type ReviewCapture, type ReviewCaptureReason, type ReviewEditionManifest, type ReviewPage, type ReviewWidth } from '@shared/review-edition';
+import { replaceEmptyFolder } from './export';
 import type { ReviewShot } from './review-shot';
 
 /** Photographs one page of the served review build at one width. */
@@ -69,9 +69,9 @@ export interface ReviewEditionInput {
   work: string;
   /** Calls the capture off: nothing is put in place. */
   signal?: AbortSignal;
-  /** The last chance to call it off, just before the edition is put in place (the project must still be the one open). */
-  beforeCommit?: () => Promise<void>;
-  /** Runs the step that puts the edition in place (holding the project's ownership while it runs). */
+  /** The last chance to call it off, by throwing, just before the edition is put in place (the project must still be open). */
+  beforeCommit?: () => void;
+  /** Runs the quick step that puts the edition in place (holding the project's ownership while it runs). */
   commit?: (publish: () => Promise<void>) => Promise<void>;
   now?: () => Date;
 }
@@ -106,12 +106,28 @@ export async function writeReviewEdition(input: ReviewEditionInput): Promise<{ m
   await fs.writeFile(join(assembled, REVIEW_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
   const reviews = await reviewsFolder(input.projectDir, true);
   const dir = join(reviews, editionId);
-  const publish = () =>
-    publishFolder(assembled, dir, async () => {
-      signal?.throwIfAborted();
-      await input.beforeCommit?.();
-    }, { move: true });
-  await (input.commit ? input.commit(publish) : publish());
+  // Brought in beside its place first, under a name no edition has (a slow copy from another disk holds nothing up),
+  // then put in place in one step: the name claimed new, so no edition is ever replaced.
+  const near = join(reviews, `.${editionId}.${randomBytes(4).toString('hex')}.tmp`);
+  const last = () => {
+    signal?.throwIfAborted();
+    input.beforeCommit?.();
+  };
+  try {
+    await fs.rename(assembled, near).catch(() => fs.cp(assembled, near, { recursive: true, errorOnExist: true, force: false }));
+    const publish = async () => {
+      last();
+      await fs.mkdir(dir);
+      // Looked at again just before the move, after Windows has let go of the empty folder.
+      await replaceEmptyFolder(near, dir, last).catch(async (e: unknown) => {
+        await fs.rmdir(dir).catch(() => undefined);
+        throw e;
+      });
+    };
+    await (input.commit ? input.commit(publish) : publish());
+  } finally {
+    await fs.rm(near, { recursive: true, force: true }).catch(() => undefined);
+  }
   return { manifest, dir };
 }
 
@@ -156,6 +172,8 @@ export async function listReviewEditions(projectDir: string): Promise<ReviewEdit
   return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.editionId < b.editionId ? 1 : -1));
 }
 
+const REASONS: readonly string[] = ['navigation', 'fonts', 'assets', 'too-tall', 'timeout', 'failed'] satisfies readonly ReviewCaptureReason[];
+
 /** Whether `m` is a whole manifest of the edition `id`: every field there, each capture naming a picture in its folder. */
 function isManifest(m: unknown, id: string): m is ReviewEditionManifest {
   const o = m as Partial<ReviewEditionManifest> | null;
@@ -175,6 +193,8 @@ function isManifest(m: unknown, id: string): m is ReviewEditionManifest {
     Array.isArray(o.widths) &&
     o.widths.every((w) => text(w?.label) && typeof w?.width === 'number') &&
     Array.isArray(o.captures) &&
-    o.captures.every((c) => text(c?.route) && typeof c?.width === 'number' && (c.status === 'captured' ? /^images\/\d{3}-\d+\.png$/.test(c.file) && hex(c.sha256) && typeof c.height === 'number' : c?.status === 'unavailable' && text(c.reason) && text(c.detail)))
+    o.captures.length === o.routes.length * o.widths.length &&
+    o.captures.every((c, i) => c?.route === o.routes![Math.floor(i / o.widths!.length)].route && c?.width === o.widths![i % o.widths!.length].width) &&
+    o.captures.every((c) => text(c?.route) && typeof c?.width === 'number' && (c.status === 'captured' ? /^images\/\d{3,}-\d+\.png$/.test(c.file) && hex(c.sha256) && typeof c.height === 'number' : c?.status === 'unavailable' && REASONS.includes(c.reason) && text(c.detail)))
   );
 }

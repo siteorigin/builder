@@ -33,12 +33,22 @@ export interface ReviewShooter {
 
 export function createReviewShooter(): ReviewShooter {
   const open = new Set<BrowserWindow>();
+  /** How many times the windows were disposed of: a picture that began before the last one opens none. */
+  let disposals = 0;
 
   const shoot = async (url: string, width: number, signal?: AbortSignal): Promise<ReviewShot> => {
     if (signal?.aborted) return { ok: false, reason: 'failed', detail: 'The capture was stopped.' };
     const ses = guardSession();
+    const generation = disposals;
     // Each picture starts as a first visit: nothing a page stored, and no worker it registered, at another width.
-    await ses.clearStorageData().catch(() => undefined);
+    let clearing: ReturnType<typeof setTimeout> | undefined;
+    const cleared = await Promise.race([
+      ses.clearStorageData().then(() => true, () => false),
+      new Promise<false>((resolve) => (clearing = setTimeout(() => resolve(false), OPEN_MS)))
+    ]).finally(() => clearTimeout(clearing));
+    // Called off, or the windows disposed of, meanwhile: no window is made for it.
+    if (signal?.aborted || generation !== disposals) return { ok: false, reason: 'failed', detail: 'The capture was stopped.' };
+    if (!cleared) return { ok: false, reason: 'failed', detail: 'What an earlier page stored could not be cleared, so the page would not be shown as a first visit.' };
     const w = new BrowserWindow({
       show: false,
       focusable: false,
@@ -84,7 +94,8 @@ export function createReviewShooter(): ReviewShooter {
         wc.loadURL('about:blank').then(() => true, () => false),
         new Promise<false>((resolve) => {
           ready = setTimeout(() => resolve(false), OPEN_MS);
-          gone.signal.addEventListener('abort', () => resolve(false), { once: true });
+          if (gone.signal.aborted) resolve(false);
+          else gone.signal.addEventListener('abort', () => resolve(false), { once: true });
         })
       ]).finally(() => clearTimeout(ready));
       if (!opened) return { ok: false, reason: gone.signal.aborted ? 'failed' : 'timeout', detail: signal?.aborted ? 'The capture was stopped.' : 'The capture window did not open.' };
@@ -113,6 +124,7 @@ export function createReviewShooter(): ReviewShooter {
   return {
     shoot,
     dispose() {
+      disposals++;
       for (const w of open) if (!w.isDestroyed()) w.destroy();
       open.clear();
     }

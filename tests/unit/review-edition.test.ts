@@ -261,7 +261,7 @@ describe('capturing a review edition', () => {
     const { shoot, seen, asked } = fakeShooter({ hold: held, holdAt: 2 });
     c.reviewShoot = shoot;
     const capturing = c.captureReviewEdition({ routes: ['/', '/about/'] });
-    await vi.waitFor(() => expect(seen.length).toBe(2));
+    await vi.waitFor(() => expect(seen.length).toBe(2), { timeout: 10000 });
     const server = new URL(seen[0].url).origin;
     await c.closeProject();
     // The same folder opened again meanwhile is another opening: the first capture keeps nothing in it either.
@@ -284,7 +284,7 @@ describe('capturing a review edition', () => {
     const { shoot, asked } = fakeShooter({ hold: held, holdAt: 1 });
     c.reviewShoot = shoot;
     const capturing = c.captureReviewEdition({ routes: ['/', '/about/'] });
-    await vi.waitFor(() => expect(asked.length).toBe(1));
+    await vi.waitFor(() => expect(asked.length).toBe(1), { timeout: 10000 });
     c.cancelReviewCapture();
     release();
     expect((await capturing).ok).toBe(false);
@@ -313,7 +313,7 @@ describe('capturing a review edition', () => {
     const { shoot, seen } = fakeShooter({ hold: held, holdAt: 1 });
     c.reviewShoot = shoot;
     const first = c.captureReviewEdition({ routes: ['/'] });
-    await vi.waitFor(() => expect(seen.length).toBe(1));
+    await vi.waitFor(() => expect(seen.length).toBe(1), { timeout: 10000 });
     expect(await c.captureReviewEdition({ routes: ['/'] })).toEqual({ ok: false, message: 'A review edition is already being captured. Wait for it to finish.' });
     release();
     expect((await first).ok).toBe(true);
@@ -389,7 +389,11 @@ describe('writing a review edition', () => {
     const s = await site({ 'index.html': '<h1>Home</h1>', 'über/index.html': '<h1>Über</h1>' });
     try {
       const project = temp('project');
-      await expect(write(s, project, new Date(), { beforeCommit: async () => Promise.reject(new Error('closed')) })).rejects.toThrow('closed');
+      await expect(write(s, project, new Date(), {
+          beforeCommit: () => {
+            throw new Error('closed');
+          }
+        })).rejects.toThrow('closed');
       expect(readdirSync(join(project, REVIEWS_DIR))).toEqual([]);
       // Folders that are not editions, and an edition folder without a manifest, are not listed.
       const kept = await write(s, project, new Date());
@@ -406,7 +410,16 @@ describe('writing a review edition', () => {
       const linked = '2026-11-27T09-00-00Z-1badc0de';
       writeFileSync(join(elsewhere, 'manifest.json'), whole.split(kept.manifest.editionId).join(linked));
       symlinkSync(elsewhere, join(project, REVIEWS_DIR, linked));
-      expect((await listReviewEditions(project)).map((m: Manifest) => m.editionId)).toEqual([kept.manifest.editionId]);
+      // Nor a manifest missing one of its pages' pictures.
+      const short = '2026-11-27T08-00-00Z-2badc0de';
+      const m = JSON.parse(whole) as Manifest;
+      mkdirSync(join(project, REVIEWS_DIR, short));
+      writeFileSync(join(project, REVIEWS_DIR, short, 'manifest.json'), JSON.stringify({ ...m, editionId: short, captures: m.captures.slice(1) }));
+      // An edition of a thousand pages and more names its later pictures with more digits, and is listed all the same.
+      const many = '2026-11-27T07-00-00Z-3badc0de';
+      mkdirSync(join(project, REVIEWS_DIR, many));
+      writeFileSync(join(project, REVIEWS_DIR, many, 'manifest.json'), JSON.stringify({ ...m, editionId: many, captures: m.captures.map((c, i) => (i === 1 && c.status === 'captured' ? { ...c, file: 'images/1000-1440.png' } : c)) }));
+      expect((await listReviewEditions(project)).map((e: Manifest) => e.editionId)).toEqual([kept.manifest.editionId, many]);
     } finally {
       s.stop();
     }

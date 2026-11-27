@@ -3766,13 +3766,13 @@ export class Controller {
             shoot: (url, width) => shoot(url, width, job.signal),
             work: join(staging, 'edition'),
             signal: job.signal,
-            // Written only while this app owns the project, holding its claim throughout, so no takeover lands meanwhile;
-            // and only while it is still the project open, looked at just before the edition is moved into place.
+            // Written as every write into the project is (writeFence): in its queue, only while it is the open project,
+            // not closing, and owned by this app, holding its claim throughout; and looked at again just before the move.
             commit: async (publish) => {
-              if (!(await s.whileOwner(publish))) throw new Error(s.readOnly?.reason ?? READ_ONLY);
+              if (!(await this.writeFence(s)(publish))) throw new Error(gone() || this.closing ? closed : (s.readOnly?.reason ?? READ_ONLY));
             },
-            beforeCommit: async () => {
-              if (gone()) throw new Error(closed);
+            beforeCommit: () => {
+              if (gone() || this.closing) throw new Error(closed);
             }
           });
           const missing = manifest.captures.filter((c) => c.status !== 'captured').length;

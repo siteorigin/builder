@@ -99,7 +99,7 @@ vi.mock('electron', () => {
       this.destroyed = true;
     };
   }
-  const ses = { setPermissionRequestHandler: () => undefined, setPermissionCheckHandler: () => undefined, on: () => undefined, clearStorageData: async () => void env.cleared++ };
+  const ses = { setPermissionRequestHandler: () => undefined, setPermissionCheckHandler: () => undefined, on: () => undefined, clearStorageData: () => new Promise<void>((r) => setTimeout(() => (env.cleared++, r()), 5)) };
   return { BrowserWindow, session: { fromPartition: () => ses } };
 });
 
@@ -139,9 +139,19 @@ describe('the review capture window', () => {
     expect(env.windows).toHaveLength(0);
   });
 
+  it('opens no window for a picture whose windows were disposed of while its stored state was cleared', async () => {
+    const shooter = createReviewShooter();
+    const shooting = shooter.shoot('http://127.0.0.1:1/', 1440);
+    shooter.dispose();
+    expect(await shooting).toMatchObject({ ok: false, reason: 'failed', detail: 'The capture was stopped.' });
+    expect(env.windows).toHaveLength(0);
+  });
+
   it('ends a picture under way when the capture is called off, and destroys its window', async () => {
     const stop = new AbortController();
     const shooting = createReviewShooter().shoot('http://127.0.0.1:1/', 1440, stop.signal);
+    // Once the window is there, on its way to its blank page.
+    await vi.waitFor(() => expect(env.windows).toHaveLength(1));
     stop.abort();
     expect(await shooting).toMatchObject({ ok: false, reason: 'failed', detail: 'The capture was stopped.' });
     expect(env.windows[0].destroyed).toBe(true);
