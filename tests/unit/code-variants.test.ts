@@ -86,6 +86,8 @@ describe('the generator passes a code component exactly the props its axes decla
     const { s, defId } = placed();
     const def = s.components[defId];
     delete def.variantAxes!.layout.prop;
+    // The sound axis still arrives.
+    expect(call(s)).toEqual({ title: '{"Placed"}', palette: '"dark"' });
     def.variantAxes!.tone.prop = 'class';
     expect(call(s)).toEqual({ title: '{"Placed"}' });
     const said = validateState(s).filter((d) => d.code === 'VARIANT_INVALID').map((d) => d.message);
@@ -104,8 +106,10 @@ describe('adding an axis to a code component declares its prop', () => {
     const { s, defId } = made();
     const once = setVariant(s, defId, { axis: 'palette' });
     expect(once.components[defId].variantAxes!.palette.prop).toBe('palette');
-    const again = setVariant(once, defId, { axis: 'palette', variant: 'soft', label: 'Soft' });
-    expect(again.components[defId].variantAxes!.palette.prop).toBe('palette');
+    const given = setVariant(s, defId, { axis: 'shade', prop: 'mood' });
+    expect(given.components[defId].variantAxes!.shade.prop).toBe('mood');
+    const again = setVariant(given, defId, { axis: 'shade', variant: 'soft', label: 'Soft' });
+    expect(again.components[defId].variantAxes!.shade.prop).toBe('mood');
   });
 
   it('moves an axis to another prop, keeping what placements chose', () => {
@@ -113,7 +117,16 @@ describe('adding an axis to a code component declares its prop', () => {
     const next = setVariant(s, defId, { axis: 'tone', variant: 'dark', label: 'Dark', prop: 'mood' });
     expect(next.components[defId].variantAxes!.tone.prop).toBe('mood');
     expect((next.pages[next.site.homePageId].nodes[nodeId] as { variants?: unknown }).variants).toEqual({ layout: 'row', tone: 'dark' });
-    expect(call(next).mood).toBe('"dark"');
+    expect(call(next)).toEqual({ title: '{"Placed"}', arrangement: '"row"', mood: '"dark"' });
+  });
+
+  it('keeps an axis on its prop while code that places the component passes it there', () => {
+    const { s, defId } = placed();
+    const child = s.components[defId];
+    const made = applyOperations(s, [{ type: 'component.createCode', name: 'Parent', source: `<script>\n\timport Child from './${child.sourcePath!.split('/').pop()}';\n</script>\n\n<Child palette="dark" />\n` }]);
+    expect(() => setVariant(made.state, defId, { axis: 'tone', variant: 'dark', label: 'Dark', prop: 'mood' })).toThrow('"Parent" places "Two axes" in its code and passes its Tone as palette');
+    // Repeating the prop it has is no move.
+    expect(setVariant(made.state, defId, { axis: 'tone', variant: 'dark', label: 'Dark', prop: 'palette' }).components[defId].variantAxes!.tone.prop).toBe('palette');
   });
 
   it('refuses a prop a placement passes itself, one of the component’s properties, another axis’s, or no name at all', () => {
@@ -123,7 +136,9 @@ describe('adding an axis to a code component declares its prop', () => {
       ['slot_content', 'a name every placement already passes'],
       ['title', "also one of the component's properties"],
       ['arrangement', 'as the “Layout” axis does'],
-      ['two words', 'not a property name']
+      ['two words', 'not a property name'],
+      ['', 'not a property name'],
+      ['toString', 'a name every placement already passes']
     ])
       expect(() => setVariant(s, defId, { axis: 'tone', variant: 'dark', label: 'Dark', prop }), prop).toThrow(said);
   });
@@ -132,13 +147,15 @@ describe('adding an axis to a code component declares its prop', () => {
     const r = applyOperations(createStarterState('business', 'Code variants', false), [{ type: 'component.create', name: 'Block' } as EditOperation]);
     const id = r.results[0].definitionId as string;
     expect(() => setVariant(r.state, id, { axis: 'tone', prop: 'tone' })).toThrow('only a code component takes one through a property');
-    expect(setVariant(r.state, id, { axis: 'tone' }).components[id].variantAxes!.tone.prop).toBeUndefined();
+    const withAxis = setVariant(r.state, id, { axis: 'tone' });
+    expect(withAxis.components[id].variantAxes!.tone.prop).toBeUndefined();
+    expect(() => setVariant(withAxis, id, { axis: 'tone', variant: 'soft', label: 'Soft', prop: 'tone' })).toThrow('only a code component takes one through a property');
   });
 
   it('is reported when a property added later takes the axis’s name', () => {
     const { s, defId } = placed();
     s.components[defId].properties.palette = { type: 'string', label: 'Palette', default: '' };
-    expect(codeAxisProblems(s.components[defId])).toEqual([{ axis: 'tone', message: expect.stringContaining('also one of the component') }]);
+    expect(codeAxisProblems(s.components[defId])).toEqual([{ axis: 'tone', kind: 'property', message: expect.stringContaining('also one of the component') }]);
   });
 });
 
@@ -153,16 +170,23 @@ describe('the code check holds code to the props its axes declare', () => {
 
   it('refuses code that never takes an axis’s prop, however often a comment or string names it', async () => {
     const { s, defId } = placed();
-    const dropped = SOURCE.replace("palette = 'light', ", '').replace('Not read: ', 'Not read: palette, ').replace('{title}</p>', '{title} palette</p>');
+    const dropped = SOURCE.replace("palette = 'light', ", "label = 'palette', ").replace('Not read: ', 'Not read: palette, ').replace('{title}</p>', '{title} palette</p>');
     expect(await said(dropped, contract(s, defId))).toEqual([expect.stringMatching(/^error: The “Tone” variant arrives in palette, which the code never takes from \$props\(\)/)]);
   });
 
-  it('only warns when the code takes its props whole or keeps the rest, where it may read the axis', async () => {
+  it('follows props read by name from the whole object, and only warns where the object is handed on', async () => {
     const { s, defId } = placed();
-    const whole = `<script>\n\tlet props = $props();\n\tconst look = (p) => [p.arrangement, p.palette].join(' ');\n</script>\n\n<p class={look(props)}>{props.title}</p>\n`;
-    const rest = SOURCE.replace("palette = 'light', ", '').replace("class: className = ''", "class: className = '', ...others");
-    expect(await said(whole, contract(s, defId))).toEqual([expect.stringMatching(/^warning: The “Layout” variant arrives in arrangement/), expect.stringMatching(/^warning: The “Tone” variant arrives in palette/)]);
-    expect(await said(rest, contract(s, defId))).toEqual([expect.stringMatching(/^warning: The “Tone” variant arrives in palette/)]);
+    const read = `<script>\n\tlet props = $props();\n</script>\n\n<p class={[props.arrangement, props['palette']]}>{props.title}</p>\n`;
+    const handed = `<script>\n\tlet props = $props();\n\tconst look = (p) => [p.arrangement, p.palette].join(' ');\n</script>\n\n<p class={look(props)}>{props.title}</p>\n`;
+    expect(await said(read, contract(s, defId))).toEqual([]);
+    expect(await said(read.replace("props['palette']", 'props.title'), contract(s, defId))).toEqual([expect.stringMatching(/^error: The “Tone” variant arrives in palette/)]);
+    expect(await said(handed, contract(s, defId))).toEqual([expect.stringMatching(/^warning: The “Layout” variant arrives in arrangement/), expect.stringMatching(/^warning: The “Tone” variant arrives in palette/)]);
+  });
+
+  it('refuses a prop left to the rest of the props, which only passes it on unread', async () => {
+    const { s, defId } = placed();
+    const rest = SOURCE.replace("palette = 'light', ", '').replace("class: className = ''", "class: className = '', ...others").replace('<p class', '<p {...others} class');
+    expect(await said(rest, contract(s, defId))).toEqual([expect.stringMatching(/^error: The “Tone” variant arrives in palette/)]);
   });
 
   it('checks the axes alone against code that is unchanged', async () => {
@@ -171,6 +195,8 @@ describe('the code check holds code to the props its axes declare', () => {
     const moved = { ...s.components[defId].variantAxes!, tone: { ...s.components[defId].variantAxes!.tone, prop: 'mood' } };
     expect(await codeAxisPropProblems(SOURCE, moved)).toEqual([expect.objectContaining({ severity: 'error', message: expect.stringContaining('arrives in mood') })]);
     expect(await codeAxisPropProblems('<p>{', moved)).toBeNull();
+    const handed = `<script>\n\tlet props = $props();\n\tconst look = (p) => p.mood;\n</script>\n\n<p class={look(props)}></p>\n`;
+    expect(await codeAxisPropProblems(handed, { tone: moved.tone })).toEqual([expect.objectContaining({ severity: 'warning' })]);
   });
 
   it('passes every bundled theme’s code components, each axis declared and taken', async () => {
@@ -207,6 +233,21 @@ describe('saving a project’s code holds it to its axes’ props', () => {
       const dropped = await session.apply({ operations: [{ type: 'component.updateSource', definitionId: defId, source: SOURCE.replace("arrangement: layout = 'stack', ", '').replace('[className, layout, palette]', '[className, palette]') }] }, opts);
       expect(dropped.ok).toBe(false);
       expect(!dropped.ok && dropped.error.message).toContain('The “Layout” variant arrives in arrangement');
+      // Moving an existing axis to a prop the unchanged code never takes is refused, and leaves the axis where it was.
+      const revision = session.revision;
+      const moved = await session.apply({ operations: [{ type: 'component.setVariant', definitionId: defId, axis: 'tone', variant: 'dark', label: 'Dark', prop: 'mood' }] }, opts);
+      expect(moved.ok).toBe(false);
+      expect(!moved.ok && moved.error.message).toContain('The “Tone” variant arrives in mood');
+      expect(session.state.components[defId].variantAxes!.tone.prop).toBe('palette');
+      expect(session.revision).toBe(revision);
+      // The code and the axis renamed together is saved.
+      const renamed = await session.apply({ operations: [{ type: 'component.updateSource', definitionId: defId, source: SOURCE.replace("palette = 'light'", "mood: palette = 'light'") }, { type: 'component.setVariant', definitionId: defId, axis: 'tone', variant: 'dark', label: 'Dark', prop: 'mood' }] }, opts);
+      expect(renamed.ok).toBe(true);
+      expect(session.state.components[defId].variantAxes!.tone.prop).toBe('mood');
+      // A property added later under the axis's prop is refused.
+      const clash = await session.apply({ operations: [{ type: 'component.setPropSchema', definitionId: defId, prop: 'arrangement', schema: { type: 'string', label: 'Arrangement', default: '' } }] }, opts);
+      expect(clash.ok).toBe(false);
+      expect(!clash.ok && clash.error.message).toContain("also one of the component's properties");
     } finally {
       await session.close();
     }

@@ -81,7 +81,7 @@ export interface OpenOptions {
 /** Sources AI runs wrote or tried to write, a folder per run, in the recovery folder (see keepSourceDraft). */
 export const SOURCE_DRAFTS = 'ai-runs';
 /** Which property each variant axis of a definition arrives in, comparable between two versions of it. */
-const axisPropsKey = (def: ComponentDefinition) => JSON.stringify(axesOf(def).map(([axis, a]) => [axis, a.prop]));
+const axisPropsKey = (def: ComponentDefinition) => JSON.stringify(axesOf(def).map(([axis, a]) => [axis, a.prop]).sort(([a], [b]) => String(a).localeCompare(String(b))));
 /** A run's ID as the orchestrator makes it (newId): safe to name a folder with. */
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -3146,7 +3146,8 @@ export class ProjectSession extends EventEmitter {
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
         // whichever pack reuses it; nor does a package bringing that code to a site whose theme lacks it, unchanged
         // with the settings it takes (a form's destinations are emptied as it lands).
-        const shipped = (c: ComponentDefinition) => c.kind === 'code' && c.source === def.source && (def.owner === 'theme' || (importing && JSON.stringify(c.properties) === JSON.stringify(def.properties)));
+        // Shipped code is shipped with the props its axes arrive in: the same code under another mapping is checked.
+        const shipped = (c: ComponentDefinition) => c.kind === 'code' && c.source === def.source && axisPropsKey(c) === axisPropsKey(def) && (def.owner === 'theme' || (importing && JSON.stringify(c.properties) === JSON.stringify(def.properties)));
         if ((def.owner === 'theme' || importing) && listThemes().some((t) => t.source !== 'user' && t.components.some(shipped))) continue;
         // Code the AI writes is held to a stricter policy than code a developer writes, and so is an installed pack's
         // own code, which nobody here wrote or reviewed.
@@ -3163,6 +3164,8 @@ export class ProjectSession extends EventEmitter {
               : {})
           })
         ).filter((p) => p.severity === 'error');
+        // A theme's or a package's code is held to its axes' props alone (its slots and parts are the theme's to check).
+        if (!errors.length && def.owner !== 'project') errors.push(...((await codeAxisPropProblems(def.source, def.variantAxes)) ?? []).filter((p) => p.severity === 'error'));
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }

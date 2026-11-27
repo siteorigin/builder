@@ -538,7 +538,12 @@ export function setVariant(state: ProjectState, op: Op<'component.setVariant'>):
   if (!had && !validId(axisId)) fail(`Variant axis names must be camelCase identifiers ("${axisId}").`);
   if (!(had && own(had.options, op.variant)) && !validId(op.variant, /^[a-z][a-z0-9-]{0,39}$/)) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${op.variant}").`);
   if (op.prop !== undefined && def.kind !== 'code') fail(`"${def.name}" is a design, which takes every variant itself: only a code component takes one through a property.`);
-  const wrong = new Set(codeAxisProblems(def).map((p) => p.message));
+  const problemKey = (p: { axis: string; kind: string }) => `${p.axis}:${p.kind}`;
+  const wrong = new Set(codeAxisProblems(def).map(problemKey));
+  // Code that places this component passes each axis under the prop it has now, written into its source.
+  const moving = def.kind === 'code' && op.prop !== undefined && had?.prop !== undefined && op.prop !== had.prop;
+  const caller = moving ? Object.values(state.components).find((d) => codeImports(state, d, def.id)) : undefined;
+  if (caller) fail(`"${caller.name}" places "${def.name}" in its code and passes its ${had!.label || axisId} as ${had!.prop}, which would no longer reach it. Keep the axis on ${had!.prop}.`);
   def.variantAxes ??= {};
   // A new axis starts with a plain base option as its default, so placements keep the look they had and can choose the
   // new option (a picker needs two to choose between).
@@ -551,7 +556,7 @@ export function setVariant(state: ProjectState, op: Op<'component.setVariant'>):
   // Code takes the axis through the property its manifest names: the one given (a rename in the code follows it),
   // otherwise the one it has, otherwise the axis's own name.
   if (def.kind === 'code') axis.prop = op.prop ?? axis.prop ?? axisId;
-  const problem = codeAxisProblems(def).find((p) => !wrong.has(p.message));
+  const problem = codeAxisProblems(def).find((p) => !wrong.has(problemKey(p)));
   if (problem) fail(`"${def.name}": ${problem.message.charAt(0).toUpperCase()}${problem.message.slice(1)}`);
   return {};
 }

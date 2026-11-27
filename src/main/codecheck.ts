@@ -547,35 +547,53 @@ function propsLocals(ast: Node): Map<string, { local: string; defaulted: boolean
 }
 
 /**
- * Whether the script takes $props() in a way that can read a prop it does not name: as a whole object
- * (`let props = $props()`) or with the rest of them (`let { title, ...rest } = $props()`).
+ * What the script reads of $props() taken as a whole object (`let props = $props()`): the props it reads from that
+ * object by name (`props.tone`, `props['tone']`), and whether it also hands the object on (to a helper, in a spread)
+ * or reads it by a computed name, where any prop may be read.
  */
-function propsOpen(ast: Node): boolean {
-  let open = false;
+function wholePropsReads(ast: Node): { read: Set<string>; handed: boolean } {
+  const whole = new Set<string>();
   walkAst(ast.instance, (n) => {
     if (n.type !== 'VariableDeclarator' || (n.init as Node | null)?.type !== 'CallExpression') return;
     const callee = (n.init as Node).callee as Node;
-    if (callee?.type !== 'Identifier' || callee.name !== '$props') return;
-    const id = n.id as Node;
-    if (id?.type !== 'ObjectPattern' || ((id.properties as Node[]) ?? []).some((p) => p.type === 'RestElement')) open = true;
+    if (callee?.type === 'Identifier' && callee.name === '$props' && (n.id as Node)?.type === 'Identifier') whole.add(String((n.id as Node).name));
   });
-  return open;
+  const read = new Set<string>();
+  let handed = false;
+  if (!whole.size) return { read, handed };
+  const visit = (n: Node, around: Node[]) => {
+    if (n.type !== 'Identifier' || !whole.has(String(n.name))) return;
+    const parent = around[around.length - 1];
+    if (parent?.type === 'VariableDeclarator' && parent.id === n) return;
+    if (parent?.type === 'MemberExpression' && parent.object === n) {
+      const p = parent.property as Node;
+      const name = !parent.computed && p?.type === 'Identifier' ? String(p.name) : parent.computed && p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
+      if (name !== null) read.add(name);
+      else handed = true;
+      return;
+    }
+    handed = true;
+  };
+  walkAst(ast.instance, visit);
+  walkAst(ast.fragment, visit);
+  return { read, handed };
 }
 
 /**
- * Each variant axis whose property (`prop`) the code does not take from $props() by name: what placements choose
- * there never reaches the code. Certain when the code names its props one by one; when it also takes them whole or
- * takes the rest, it may read the axis there, which the check cannot follow.
+ * Each variant axis whose property (`prop`) the code does not take from $props(): what placements choose there never
+ * reaches the code. Taken by name in the destructuring, or read by name from the whole props object, it is taken; a
+ * rest element only passes it on unread. When the code hands the whole object on (to a helper, say), it may be read
+ * there, which the check cannot follow, so it only warns.
  */
 function axisProblems(ast: Node, variantAxes: ComponentDefinition['variantAxes']): Array<{ severity: CodeProblem['severity']; message: string }> {
   const out: Array<{ severity: CodeProblem['severity']; message: string }> = [];
   const locals = propsLocals(ast);
-  const open = propsOpen(ast);
+  const whole = wholePropsReads(ast);
   for (const [axis, a] of axesOf({ variantAxes })) {
-    if (typeof a.prop !== 'string' || locals.has(a.prop)) continue;
+    if (typeof a.prop !== 'string' || locals.has(a.prop) || whole.read.has(a.prop)) continue;
     const label = typeof a.label === 'string' && a.label.trim() ? a.label.trim() : axis;
     out.push(
-      open
+      whole.handed
         ? { severity: 'warning', message: `The “${label}” variant arrives in ${a.prop}, which the code does not take from $props() by name: take it (let { ${a.prop} } = $props()) so the check can see the code reads it.` }
         : { severity: 'error', message: `The “${label}” variant arrives in ${a.prop}, which the code never takes from $props(): take it (let { ${a.prop} } = $props()), or what placements choose there will not show.` }
     );
