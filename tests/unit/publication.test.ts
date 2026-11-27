@@ -13,7 +13,7 @@ import { applyOperations } from '@engine/apply';
 import { openRepo } from '../../src/main/git/repo';
 import { createGitClient, type GitWorkerHandle } from '../../src/main/git/client';
 import { createGitService } from '../../src/main/git/service';
-import { type GitRepository } from '../../src/main/git/protocol';
+import { GitError, type GitRepository } from '../../src/main/git/protocol';
 import { blobOid, commitPublication, credentialProblem, PUBLISH_BRANCH, publicationState, treeOid, type PublicationFile } from '../../src/main/publication';
 import { unusedComponents } from '../../src/main/export';
 
@@ -111,6 +111,24 @@ describe('the publication history', () => {
     await expect(commitPublication(repo, [drifted], { commit: second.commit, tree: second.tree })).rejects.toMatchObject({ code: 'changed' });
     expect(await repo.resolveRef(PUBLISH_BRANCH)).toBe(second.commit);
   });
+
+  it('reads the branch back when the worker lost whether it moved, and says so only when it cannot tell', async () => {
+    const repo = viaClient(root);
+    const lost = (moves: boolean, readable = true): GitRepository => ({
+      ...repo,
+      advanceRef: async (ref, next, expected) => {
+        if (moves) await repo.advanceRef(ref, next, expected);
+        throw new GitError('outcome-unknown', 'lost');
+      },
+      resolveRef: readable ? repo.resolveRef : async () => Promise.reject(new GitError('crashed', 'gone'))
+    });
+    const moved = await commitPublication(lost(true), [file('index.html', 'one')], null);
+    expect(moved).toMatchObject({ changed: true });
+    expect(await repo.resolveRef(PUBLISH_BRANCH)).toBe(moved.commit);
+    const last = { commit: moved.commit, tree: moved.tree };
+    await expect(commitPublication(lost(false), [file('index.html', 'two')], last)).rejects.toMatchObject({ code: 'outcome-unknown' });
+    await expect(commitPublication(lost(true, false), [file('index.html', 'three')], last)).rejects.toMatchObject({ code: 'outcome-unknown' });
+  });
 });
 
 describe('what keeps a credential out', () => {
@@ -129,6 +147,8 @@ describe('what keeps a credential out', () => {
     // In a text file saved as UTF-16, either way round, as some editors save one.
     expect(await credentialProblem(at('static/notes.txt', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`key: ${KEY}`, 'utf16le')])), [KEY])).toMatch(/^static\/notes\.txt holds one of your secrets/);
     expect(await credentialProblem(at('static/notes.txt', Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(`key: ${KEY}`, 'utf16le').swap16()])), [KEY])).toMatch(/^static\/notes\.txt holds one of your secrets/);
+    // One cut short by a byte is read as far as it goes.
+    expect(await credentialProblem(at('static/cut.txt', Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(`key: ${KEY}`, 'utf16le').swap16(), Buffer.from([0x00])])), [KEY])).toMatch(/^static\/cut\.txt holds one of your secrets/);
     // What is searched is what is committed: a file whose bytes are not the ones listed stops.
     expect(await credentialProblem([{ path: 'a.txt', oid: blobOid(text('listed')), read: async () => text('other') }], [])).toBe('a.txt changed while the publication was being prepared. Prepare the publication again.');
     // A file named with a secret is not named.
@@ -152,7 +172,11 @@ describe('what keeps a credential out', () => {
       ['src/escaped.json', '{"url":"https:\\/\\/user:pass@host.example"}'],
       // A signed storage link pasted into a page: its credential is in its query, its name sometimes encoded.
       ['src/routes/+page.svelte', '<a href="https://bucket.s3.example.com/report.pdf?X-Amz-Credential=AKIAEXAMPLE%2F20260101&X-Amz-Signature=abc123">Report</a>'],
-      ['src/routes/+page.svelte', '<a href="https://files.example.com/a.pdf?client%5Fsecret=abcdef123456">Report</a>']
+      ['src/routes/+page.svelte', '<a href="https://files.example.com/a.pdf?client%5Fsecret=abcdef123456">Report</a>'],
+      // In HTML, its parts joined as HTML writes an ampersand.
+      ['static/report.html', '<a href="https://bucket.s3.example.com/r.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Credential=AKIAEXAMPLE%2F2026">Report</a>'],
+      // A lockfile's token named as code names one.
+      ['package-lock.json', lock('https://npm.example.com/x/-/x-1.0.0.tgz?accessToken=abcdef123456')]
     ]) {
       const problem = await credentialProblem(at(path, s), []);
       expect(problem, s).toBe(`${path} holds a web address or setting with a password or access token in it. Take the credential out, then prepare the publication again.`);
@@ -168,7 +192,12 @@ describe('what keeps a credential out', () => {
       'http://localhost:5173/',
       '<iframe src="https://maps.example.com/embed?key=AIzaPublicMapsKey123&q=Shop"></iframe>',
       'Set _authToken=${NPM_TOKEN} in your .npmrc',
-      "let _password = '';"
+      "let _password = '';",
+      'export default { _password: process.env.NPM_PASSWORD };',
+      // Examples and values filled in when the site runs.
+      'Sign in at https://shop.example.com/login?password=YOUR_PASSWORD',
+      'fetch(`https://api.example.com/x?password=${env.PASSWORD}`)',
+      'const q = "?password=hunter2hunter2";'
     ])
       expect(await credentialProblem(at('src/a.js', s), []), s).toBeNull();
     // A binary file is not read as text.

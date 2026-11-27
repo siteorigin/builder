@@ -290,7 +290,9 @@ async function buildInputProblem(dir: string, staged: readonly string[]): Promis
   const have = new Set(staged);
   for (const config of BUILD_CONFIGS) {
     if (!have.has(config)) continue;
-    for (const spec of importSpecifiers((await readIfExists(join(dir, config))) ?? '')) {
+    // A type-only import is gone once the setting is compiled: nothing is loaded for it.
+    const code = ((await readIfExists(join(dir, config))) ?? '').replace(/\b(?:import|export)\s+type\b[^;]*?\bfrom\s*(['"])[^'"\n]+\1/g, '');
+    for (const spec of importSpecifiers(code)) {
       if (!spec.startsWith('./') && !spec.startsWith('../')) continue;
       const base = spec.split('/').reduce<string[]>((parts, part) => (part === '..' ? parts.slice(0, -1) : part === '.' || !part ? parts : [...parts, part]), []).join('/');
       const found = MODULE_ENDINGS.map((end) => base + end).find((rel) => have.has(rel));
@@ -436,7 +438,7 @@ export async function publicationFiles(dir: string): Promise<{ ok: true; files: 
 function textOf(bytes: Uint8Array): string | null {
   const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (b[0] === 0xff && b[1] === 0xfe) return b.subarray(2).toString('utf16le');
-  if (b[0] === 0xfe && b[1] === 0xff) return Buffer.from(b.subarray(2)).swap16().toString('utf16le');
+  if (b[0] === 0xfe && b[1] === 0xff) return Buffer.from(b.subarray(2, 2 + ((b.length - 2) & ~1))).swap16().toString('utf16le');
   return b.subarray(0, 8000).includes(0) ? null : b.toString('utf8');
 }
 
@@ -450,21 +452,28 @@ const CREDENTIAL_URL = /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@"'`<>\\]*:[^\s/?#@"'`<>\
  * npm's credential settings (`_authToken`, `_auth`, `_password`) given a value, as an `.npmrc` copied into a file holds
  * them; a setting left empty or filled from the environment (`${NPM_TOKEN}`) holds none.
  */
-const NPM_CREDENTIAL = /(?:^|[\s"'{,;])(?:\/\/[^\s"']*:)?_(?:authToken|auth|password)\s*["']?\s*[=:]\s*["']?(?![\s"'$]|\{)[^\s"']{4,}/m;
+const NPM_CREDENTIAL = /(?:^|[\s"'{,;])(?:\/\/[^\s"']*:)?_(?:authToken|auth|password)\s*["']?\s*[=:]\s*["']?(?![\s"'$]|\{|process\.env|import\.meta\.env)[^\s"']{4,}/m;
 /** A lockfile, whose addresses name where packages were installed from and never need a token in their query. */
 const LOCKFILE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock)$/;
-const QUERY_PART = /[?&]([A-Za-z0-9_.%-]+)=([^\s&"'#<>]+)/g;
+/** An address, and each `name=value` of its query. */
+const ADDRESS = /\b(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s"'`<>()\\]+/gi;
+const QUERY_PART = /[?&]([A-Za-z0-9_.%-]+)=([^&#]*)/g;
+/**
+ * Whether a query's value is one set down as it is, not one filled in later or shown as an example: `${TOKEN}`,
+ * `{token}`, `<token>`, `YOUR_PASSWORD`, or too short to be a credential.
+ */
+const literalValue = (v: string) => v.length >= 8 && !/^(?:\$|\{|<|%7B|%24|%3C)/i.test(v) && !/^[A-Z0-9_]+$/.test(v) && !/^(?:x+|\*+|your[-_].*|example.*)$/i.test(v);
 /**
  * Query names that only ever carry a credential, wherever an address is: a signed cloud storage link's, a client's
  * secret, a password. A page's own `key=` or `access_token=` is often a public one (a map's), so only a lockfile
  * is held to every name that may carry one.
  */
 const CREDENTIAL_QUERY = new Set(['x-amz-credential', 'x-amz-signature', 'x-amz-security-token', 'x-goog-credential', 'x-goog-signature', 'client_secret', 'password', 'passwd', 'private_token']);
-const queryName = (raw: string) => {
+const decoded = (raw: string) => {
   try {
-    return decodeURIComponent(raw).toLowerCase();
+    return decodeURIComponent(raw);
   } catch {
-    return raw.toLowerCase();
+    return raw;
   }
 };
 
@@ -483,10 +492,16 @@ export async function credentialProblem(files: ReadonlyArray<{ path: string; oid
     const text = textOf(bytes);
     if (text === null) continue;
     if (secrets.length && holdsSecretValue(text, secrets)) return `${f.path} holds one of your secrets. Take it out, then prepare the publication again.`;
-    // An address in JSON may have its slashes escaped (`https:\/\/`), which hides it from a pattern for one.
-    const plain = text.includes('\\/') ? text.replace(/\\\//g, '/') : text;
+    // An address in JSON may have its slashes escaped (`https:\/\/`), and one in HTML its ampersands (`&amp;`), which
+    // hides it, or the parts of its query, from a pattern for one.
+    const plain = (text.includes('\\/') ? text.replace(/\\\//g, '/') : text).replace(/&(?:amp|#0*38|#x0*26);/gi, '&');
     const lockfile = LOCKFILE.test(f.path);
-    const queried = [...plain.matchAll(QUERY_PART)].some((m) => CREDENTIAL_QUERY.has(queryName(m[1])) || (lockfile && isSensitiveName(queryName(m[1]))));
+    const queried = [...plain.matchAll(ADDRESS)].some(([address]) =>
+      [...address.matchAll(QUERY_PART)].some((m) => {
+        const name = decoded(m[1]);
+        return literalValue(decoded(m[2])) && (CREDENTIAL_QUERY.has(name.toLowerCase()) || (lockfile && isSensitiveName(name)));
+      })
+    );
     if (queried || CREDENTIAL_URL.test(plain) || NPM_CREDENTIAL.test(plain)) return `${f.path} holds a web address or setting with a password or access token in it. Take the credential out, then prepare the publication again.`;
   }
   return null;
@@ -526,7 +541,8 @@ export type PublicationStatus = { ok: true; prepared: Oid | null; changed: boole
  * own, so no request carries more than one file, then the tree from their names, then a commit that follows `last`
  * (none: the first is a root commit), and the branch is moved only from `last`, so a publication made meanwhile is a
  * conflict rather than one built on unseen. A tree the same as `last`'s writes and moves nothing, once the branch is
- * seen to be at `last` still. A move whose outcome the worker lost is said as it is: reading the branch again tells.
+ * seen to be at `last` still. A move whose outcome the worker lost is read back: it happened if the branch is at the
+ * new commit, and is said as unknown otherwise.
  */
 export async function commitPublication(repo: GitRepository, files: readonly PublicationFile[], last: { commit: Oid; tree: Oid } | null, opts: { message?: string; now?: number; signal?: AbortSignal } = {}): Promise<CommittedPublication> {
   const call = opts.signal ? { signal: opts.signal } : {};
@@ -552,6 +568,14 @@ export async function commitPublication(repo: GitRepository, files: readonly Pub
   if (tree === last?.tree) return unchanged(tree);
   const who = publicationIdentity(opts.now);
   const commit = await repo.writeCommit({ tree, parents: last ? [last.commit] : [], author: who, committer: who, message: opts.message ?? 'Publish the website' }, call);
-  await repo.advanceRef(PUBLISH_BRANCH, commit, last?.commit ?? null, call);
+  try {
+    await repo.advanceRef(PUBLISH_BRANCH, commit, last?.commit ?? null, call);
+  } catch (e) {
+    // The worker lost track of whether the branch moved: it did if it is at this commit now. If even that cannot be
+    // read, the outcome is said as unknown.
+    if (!(e instanceof GitError && e.code === 'outcome-unknown')) throw e;
+    const at = await repo.resolveRef(PUBLISH_BRANCH, call).catch(() => undefined);
+    if (at !== commit) throw e;
+  }
   return { commit, tree, changed: true };
 }
