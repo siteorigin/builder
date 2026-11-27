@@ -255,6 +255,8 @@ describe('a tiled background image', () => {
     // A share of the box is no size of its own.
     expect(size('width="100%" height="100%" viewBox="0 0 40 20"')).toEqual([40, 20]);
     expect(size('width="20" height="20"')).toEqual([20, 20]);
+    // Text inside another attribute's value is not an attribute.
+    expect(size('data-name="Pattern width=\'512\' height=\'32\'" width="16" height="16"')).toEqual([16, 16]);
     expect(size('stroke-width="4"')).toBeNull();
     expect(size('width="20"')).toBeNull();
   });

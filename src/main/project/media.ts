@@ -55,10 +55,9 @@ const SVG_UNITS: Record<string, number> = { '': 1, px: 1, pt: 4 / 3, pc: 16, in:
 function svgInfo(text: string): ImageInfo | null {
   const root = /<svg(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*/.exec(text)?.[0];
   if (!root) return null;
-  const attribute = (name: string) => {
-    const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(root);
-    return (m?.[1] ?? m?.[2])?.trim();
-  };
+  // Each attribute read whole, in order, so text inside one value never passes for another attribute.
+  const attributes = new Map([...root.matchAll(/\s([^\s=/"'>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map((m) => [m[1], (m[2] ?? m[3]).trim()]));
+  const attribute = (name: string) => attributes.get(name);
   const length = (name: string) => {
     const m = /^\+?((?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)([a-z]*)$/i.exec(attribute(name) ?? '');
     const unit = m?.[2].toLowerCase();
