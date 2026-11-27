@@ -40,6 +40,7 @@ import { stopGitWorker } from './git/process';
 import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navigationAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
+import { createReviewShooter } from './review-capture';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
 import { installAiJournal } from './ai-journal';
 import { windowIcon } from './window-icon';
@@ -104,8 +105,15 @@ const packs = createPacksGate(async () => {
 const thumbCapturer = createThumbCapturer();
 controller.thumbCapture = (server, path) =>
   win && !win.isDestroyed() ? thumbCapturer.capture(server, path) : Promise.resolve({ ok: false as const, message: 'The editor is closed.', transient: true });
-// The hidden window belongs to the project's previews: it closes with the project, not only with the editor.
-controller.onSessionClosed = () => thumbCapturer.dispose();
+/** Photographs the pages of a review edition (#1133), each in a hidden window of its own, while the editor is open. */
+const reviewShooter = createReviewShooter();
+controller.reviewShoot = (url, width, signal) =>
+  win && !win.isDestroyed() ? reviewShooter.shoot(url, width, signal) : Promise.resolve({ ok: false as const, reason: 'failed' as const, detail: 'The editor is closed.' });
+// The hidden windows belong to the project's previews: they close with the project, not only with the editor.
+controller.onSessionClosed = () => {
+  thumbCapturer.dispose();
+  reviewShooter.dispose();
+};
 
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
 app.commandLine.appendSwitch('use-mock-keychain');
@@ -1158,6 +1166,9 @@ async function createWindow() {
     // The thumbnails' hidden window goes with the editor: it must never keep the app running, or stand in for the
     // editor when macOS asks whether a window is left to show.
     thumbCapturer.dispose();
+    // A review edition being captured is called off first: pictures the closed editor could not take are not kept.
+    controller.cancelReviewCapture();
+    reviewShooter.dispose();
     menuCommands.closed(self);
     leaveGate.editorGone();
     controller.cancelOpen();
