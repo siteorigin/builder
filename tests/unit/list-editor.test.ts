@@ -26,6 +26,8 @@ describe('list capacity', () => {
     expect(removeLimitNote(0, 'Card', 1)).not.toBeNull();
     expect(removeLimitNote(1, 'Card', 1)).toContain('at least 1 card');
     expect(removeLimitNote(0, 'Card')).toBeNull();
+    // A list whose minimum is 0 has no limit to explain, even while empty.
+    expect(removeLimitNote(0, 'Card', 0)).toBeNull();
   });
 
   it('gives one reason for a fixed-size list', () => {

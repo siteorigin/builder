@@ -323,6 +323,12 @@ function applyListOp(owner: OwnerRef, nodeId: string, prop: string, op: ListOp, 
   // History and Undo name the row and what was done to it; `label` is the fallback when the project can't say.
   const snap = getState().snapshot;
   const named = snap ? listEditLabel(snap.state, owner, nodeId, prop, op, label, everywhere) : label;
+  // A removed row is said in a notice with Undo beside it, as removing a style, font or asset is.
+  if (op.kind === 'remove')
+    return commitOps([listOps(owner, nodeId, prop, op)], named).then((r) => {
+      if (r?.ok && op.title) toast(`Removed ${op.title}.`, 'info', undoAction(r));
+      return r ? (r.results ?? []) : null;
+    });
   return applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, nodeId, prop, op)], named, op.kind === 'field' ? coalesceKey : undefined);
 }
 

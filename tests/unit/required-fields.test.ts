@@ -141,11 +141,11 @@ describe('a required field in the Inspector', () => {
     const def = state.components[definitionId];
     const items = node(state).props.plans as Array<{ id: string }>;
     const plans = render({ name: 'plans', schema: def.properties.plans, value: items, state });
-    // Only the second plan, whose name is empty, is incomplete: its own row says so.
-    expect(plans.match(/list-editor-incomplete/g)).toHaveLength(1);
+    // Only the second plan, whose name is empty, is incomplete: its own closed row says which field, in words.
+    expect(plans.match(/list-editor-status/g)).toHaveLength(1);
     const row = (id: string) => plans.slice(plans.indexOf(`id="list-head-${id}"`), plans.indexOf(`id="list-item-${id}"`));
-    expect(row(items[0].id)).not.toContain('Incomplete');
-    expect(row(items[1].id)).toContain('Incomplete: Name is required.');
+    expect(row(items[0].id)).not.toContain('is required');
+    expect(row(items[1].id)).toContain('Name is required.');
     // A refused edit of a closed row's field is said on the row.
     const refusedRow = render({ name: 'plans', schema: def.properties.plans, value: items, state, refused: (at: RefusedAt) => (at.itemId === items[0].id && at.field === 'name' ? 'Name can’t be emptied.' : undefined) });
     expect(refusedRow.slice(refusedRow.indexOf(`id="list-head-${items[0].id}"`), refusedRow.indexOf(`id="list-item-${items[0].id}"`))).toContain('Name can’t be emptied.');

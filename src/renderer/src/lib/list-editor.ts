@@ -31,7 +31,8 @@ export function addLimitNote(count: number, itemLabel: string, max?: number, min
 /** Why Remove does nothing, or null while the list is above its minimum (or has none). */
 export function removeLimitNote(count: number, itemLabel: string, min?: number, max?: number): string | null {
   if (fixedSize(count, itemLabel, min, max)) return addLimitNote(count, itemLabel, max, min);
-  return min !== undefined && count <= min ? `This list needs at least ${items(min, itemLabel)}, so nothing can be removed. Add one first.` : null;
+  // A minimum of none (0) is no limit: an empty list has nothing to remove, and nothing to explain.
+  return min !== undefined && min > 0 && count <= min ? `This list needs at least ${items(min, itemLabel)}, so nothing can be removed. Add one first.` : null;
 }
 
 export type MoveDirection = 'up' | 'down';
