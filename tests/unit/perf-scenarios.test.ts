@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { canvas, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, create, createAgain, edit, edits, EDITS, expectedCopies, exportAgain, exportSite, expect as check, findHeading, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
+import { AI_EDIT_CASES, aiEdit, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, create, createAgain, edit, EDITS, edits, expect as check, expectedCopies, exportAgain, exportSite, findHeading, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, panels, PANELS, runChain, SHOWN_PANELS, switchProject, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -19,6 +19,7 @@ describe('the scenario chain', () => {
     expect(chainFor(['edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
     expect(chainFor(['edits']).map((s) => s.name)).toEqual(['launch', 'open', 'edits']);
     expect(chainFor(['chat']).map((s) => s.name)).toEqual(['launch', 'open', 'chat']);
+    expect(chainFor(['aiEdit']).map((s) => s.name)).toEqual(['launch', 'open', 'aiEdit']);
     expect(chainFor(['open']).map((s) => s.name)).toEqual(['launch', 'open']);
     expect(chainFor(['launch']).map((s) => s.name)).toEqual(['launch']);
     expect(chainFor(['edit', 'launch', 'open']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
@@ -679,6 +680,78 @@ describe('chat metrics', () => {
       expect(reply).toMatch(/^\| --- \|/m);
     }
     expect(CHAT_CASES.map((c) => c.earlier + 2)).toEqual([6, 100]);
+  });
+});
+
+describe('aiEdit metrics', () => {
+  /**
+   * One request's window, from the scenario's send mark at `at`: main receives it 2 ms later, has the adapter 10 ms
+   * after that, starts the starting build at 30 for `startMs`, asks the model 20 ms past it, compiles again for its
+   * checks 200 ms after the first model turn, and ends 100 ms after the last; decoys of each record sit just outside
+   * the window.
+   */
+  function aiCase(key: string, at: number, o: { startMs?: number; compiled?: number; checks?: Array<{ ms: number; compiled: number }>; turns?: number } = {}): PerfRecord[] {
+    const startMs = o.startMs ?? 100;
+    const compiled = o.compiled ?? 54;
+    const checks = o.checks ?? [{ ms: 40, compiled: 2 }];
+    const turns = o.turns ?? 2;
+    const modelAt = at + 32 + startMs + 20;
+    return [
+      span('ai.compile', at - 1, 500, { dc: { 'compile.svelte': 999, 'compile.files': 999 } }),
+      m('ai.modelRequest', at - 0.5),
+      m('aiEdit.send', at, { attrs: { at: key } }),
+      r('aiEdit.send', at, { attrs: { at: key } }),
+      m('ai.send', at + 2, { attrs: { mode: 'edit' } }),
+      m('ai.runStart', at + 3),
+      m('ai.adapterReady', at + 12),
+      span('ai.compile', at + 32 + startMs, startMs, { dc: { 'compile.svelte': compiled, 'compile.files': compiled / 2 } }),
+      ...Array.from({ length: turns }, (_, i) => m('ai.modelRequest', modelAt + i * 50)),
+      ...checks.map((c, i) => span('ai.compile', modelAt + 200 + i * 60, c.ms, { dc: { 'compile.svelte': c.compiled, 'compile.files': c.compiled / 2 } })),
+      m('ai.runEnd', modelAt + 200 + checks.length * 60 + 100),
+      m('aiEdit.end', modelAt + 2000, { attrs: { at: key } }),
+      span('ai.compile', modelAt + 2001, 500, { dc: { 'compile.svelte': 999 } })
+    ];
+  }
+  const both = () => [...aiCase('first', 1000, { startMs: 1500, compiled: 1316, checks: [{ ms: 900, compiled: 1316 }] }), ...aiCase('second', 10_000, { startMs: 3, compiled: 0, checks: [{ ms: 5, compiled: 2 }, { ms: 4, compiled: 0 }] })];
+
+  it('time each request from main receiving it to the first model turn, in its phases, and count what each compile compiled', () => {
+    const got = aiEdit.measure(new Trace(both()), facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    expect([v('aiEdit.first.toModel'), v('aiEdit.first.toAdapter'), v('aiEdit.first.toCompile'), v('aiEdit.first.startCompile'), v('aiEdit.first.compileToModel')]).toEqual([30 + 1500 + 20, 10, 20, 1500, 20]);
+    expect([v('aiEdit.first.startCompiled'), v('aiEdit.first.startFiles'), v('aiEdit.first.checkCompile'), v('aiEdit.first.checkCompiled'), v('aiEdit.first.compiles'), v('aiEdit.first.modelTurns')]).toEqual([1316, 658, 900, 1316, 2, 2]);
+    expect([v('aiEdit.second.toModel'), v('aiEdit.second.startCompiled'), v('aiEdit.second.checkCompile'), v('aiEdit.second.checkCompiled'), v('aiEdit.second.compiles')]).toEqual([30 + 3 + 20, 0, 9, 2, 3]);
+    expect([v('aiEdit.first.runMs'), v('aiEdit.second.runMs')]).toEqual([1550 + 200 + 60 + 100, 53 + 200 + 120 + 100]);
+    expect(got.metrics['aiEdit.second.startCompiled'].unit).toBe('count');
+  });
+
+  it('take the longest main-process stall inside each run only', () => {
+    const stall = (t: number, ms: number) => m('main.stall', t, { kind: 'span', ms });
+    const got = aiEdit.measure(new Trace([...both(), stall(1200, 1400), stall(10_100, 60), stall(5000, 3000), stall(10_500, 900)]), facts);
+    expect([got.metrics['aiEdit.first.mainStallMax'].value, got.metrics['aiEdit.second.mainStallMax'].value]).toEqual([1400, 60]);
+  });
+
+  it('name a request whose marks are missing instead of timing it without them', () => {
+    const drop = (names: string[], key: string) => both().filter((x) => !(names.includes(x.name) && x.t > (key === 'first' ? 1000 : 10_000) && x.t < (key === 'first' ? 4500 : 12_000)));
+    const noModel = aiEdit.measure(new Trace(drop(['ai.modelRequest'], 'second')), facts);
+    expect(noModel.missing).toEqual(['ai.modelRequest (second)']);
+    expect(noModel.metrics['aiEdit.second.toModel']).toBeUndefined();
+    expect(noModel.metrics['aiEdit.first.toModel']).toBeDefined();
+    // A run that never compiled before its first model turn, or never checked its change, is not a faster one.
+    const noStart = aiEdit.measure(new Trace(both().filter((x) => !(x.name === 'ai.compile' && x.t === 1000 + 32 + 1500))), facts);
+    expect(noStart.missing).toEqual(['ai.compile before the first model turn (first)']);
+    const noCheck = aiEdit.measure(new Trace(both().filter((x) => !(x.name === 'ai.compile' && x.t > 1000 + 32 + 1500 && x.t < 4000))), facts);
+    expect(noCheck.missing).toEqual(['ai.compile after the first model turn (first)']);
+    const half = aiEdit.measure(new Trace(aiCase('first', 1000)), facts);
+    expect(half.missing).toEqual(['aiEdit.send (second, main)', 'aiEdit.end (second, main)']);
+    const noEnd = aiEdit.measure(new Trace(drop(['ai.runEnd'], 'first')), facts);
+    expect(noEnd.missing).toEqual(['ai.runEnd (first)']);
+  });
+
+  it('ask for a different heading each time', () => {
+    expect(AI_EDIT_CASES.map((c) => c.key)).toEqual(['first', 'second']);
+    expect(new Set(AI_EDIT_CASES.map((c) => c.heading)).size).toBe(AI_EDIT_CASES.length);
+    expect(AI_EDIT_CASES.every((c) => c.heading !== facts.heading)).toBe(true);
   });
 });
 

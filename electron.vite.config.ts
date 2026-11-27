@@ -35,6 +35,7 @@ export default defineConfig({
           'runtime-worker': resolve('src/runtime/worker.ts'),
           'media-worker': resolve('src/main/project/media-worker.ts'),
           'tools-worker': resolve('src/main/runtime/tools-worker.ts'),
+          'compile-worker': resolve('src/main/compile-worker.ts'),
           'posts-import-worker': resolve('src/main/posts-import/worker.ts'),
           'source-sync-worker': resolve('src/main/sources/worker.ts')
         }

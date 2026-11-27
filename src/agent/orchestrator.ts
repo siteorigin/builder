@@ -22,6 +22,7 @@ import { compactProjectSummary, describeSelection, layoutGlance, diagnosticRank,
 import { outsideOffer, themeUpdateNote } from './theme-update';
 import { authorityLabel, canEditContracts, checkAuthority, layoutLabel, liveEntry, liveLayout, requestAuthority, requestedAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
+import { untilStopped } from './validation';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
@@ -1249,7 +1250,8 @@ export class Orchestrator {
     // Read with the state a question answers about: nothing has run since it was copied.
     const startDiagnostics: Diagnostic[] = session.diagnostics();
     /** The build's errors as an edit starts (a question compiles nothing). */
-    const startBuild: Diagnostic[] = ask ? [] : await this.deps.compileAll().catch(() => []);
+    // Stopped meanwhile, the run ends without waiting for the build (it goes on in its workers, its result unused).
+    const startBuild: Diagnostic[] = ask ? [] : await untilStopped(this.deps.compileAll(), signal).catch(() => []);
     const baseline = new Map<string, number>();
     if (!ask) for (const d of [...startDiagnostics, ...startBuild]) if (d.severity === 'error') baseline.set(diagnosticKey(d), (baseline.get(diagnosticKey(d)) ?? 0) + 1);
     /** The errors among `diags` the run introduced, and those it found already there (each one matched once). */
@@ -1800,7 +1802,7 @@ export class Orchestrator {
       const v = addActivity('Checking the changes so far', 'validate');
       const links = await connectLinks();
       if (signal.aborted) throw new Error('Canceled');
-      const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
+      const diags = [...session.diagnostics(), ...(await untilStopped(this.deps.compileAll(), signal))];
       if (signal.aborted) throw new Error('Canceled');
       const { fresh } = sortErrors(diags);
       if (fresh.length) {
@@ -2218,7 +2220,7 @@ export class Orchestrator {
             // Before validating, so a link write is checked with everything else.
             const links = await connectLinks();
             if (signal.aborted) throw new Error('Canceled');
-            const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
+            const diags = [...session.diagnostics(), ...(await untilStopped(this.deps.compileAll(), signal))];
             if (signal.aborted) throw new Error('Canceled');
             const { fresh } = sortErrors(diags);
             if (fresh.length) {

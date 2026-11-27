@@ -16,8 +16,9 @@ import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
 import type { BuilderApi } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
+import { generateProject } from '../../src/generator/index';
 import type { ChatMessage, Conversation } from '../../src/shared/api';
-import { MockOpenAIServer, textReply } from '../../tests/unit/mock-openai-server';
+import { envelopeReply, MockOpenAIServer, textReply } from '../../tests/unit/mock-openai-server';
 import { createStarterState, STARTER_ASSETS } from '../../src/catalogue/starters';
 import { projectFolderName } from '../../src/shared/project-name';
 import type { FixtureSpec } from './fixtures';
@@ -1069,6 +1070,174 @@ export const chat: Scenario = {
         m.count(`${p}.streamMessageRenders`, counter(streamEnd, 'chat.messageRenders') - counter(streamStart, 'chat.messageRenders'));
         m.count(`${p}.streamTextParses`, counter(streamEnd, 'chat.textParses') - counter(streamStart, 'chat.textParses'));
       }
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// aiEdit
+// ---------------------------------------------------------------------------
+
+/**
+ * Two requests that change the site, one after the other: the first after the project opened, the second with nothing
+ * changed since the first ended. Each asks the scripted model to change the selected home hero's Heading, which it
+ * does with one tool call before it finishes.
+ */
+export const AI_EDIT_CASES = [
+  { key: 'first', heading: 'Assistant heading one', done: 'Changed the hero heading to the first one.' },
+  { key: 'second', heading: 'Assistant heading two', done: 'Changed the hero heading to the second one.' }
+] as const;
+
+/** The model turns each request takes: the edit, then the finish. */
+const AI_EDIT_TURNS = 2;
+
+/** The Svelte files the website has for `state`, by path: every one a build check looks at, whether it compiles it again or not. */
+const svelteFiles = (state: ProjectState) => new Map([...generateProject(state, { instrument: false })].filter(([p]) => p.endsWith('.svelte')));
+
+/** The composer's scope chip, inside `win.waitForFunction`. */
+type ScopeChip = DomElement & { getAttribute(name: string): string | null };
+
+export const aiEdit: Scenario = {
+  name: 'aiEdit',
+  after: 'open',
+  description: 'In the AI panel, with the home hero selected, ask twice for its Heading to change, the scripted model doing it each time.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const server = await new MockOpenAIServer().start();
+    try {
+      // The scripted model, answering as the driver's does (constrained JSON); untimed, with the reload that takes it.
+      await win.evaluate((url) => (globalThis as unknown as EditorPage).builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL: url, allowRemote: false, toolMode: 'constrained-json', contextWindow: 131_072 } } } as never), server.baseURL);
+      await win.reload();
+      await win.locator('.editor').waitFor({ timeout: 60_000 });
+      await preview(win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
+      // The hero is what each request is about: selected in Layers, as a person picks it.
+      await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
+      await win.getByRole('treeitem', { name: HERO_NAME }).first().click();
+      await win.locator('.dock-tab', { hasText: 'AI' }).first().click();
+      await composer(win).waitFor({ timeout: 15_000 });
+      const mode = win.getByRole('button', { name: /^What your next message does: Ask/ });
+      if (await mode.count()) {
+        await mode.first().click();
+        await win.getByRole('menuitemradio', { name: /^Edit/ }).click();
+      }
+      const about = await win
+        .waitForFunction(
+          (name) => {
+            const chip = (globalThis as unknown as DomPage).document.querySelector('.composer .scope-chip') as ScopeChip | null;
+            return `${chip?.getAttribute('aria-label') ?? ''} ${chip?.textContent ?? ''}`.includes(name);
+          },
+          HERO_NAME,
+          { timeout: 15_000 }
+        )
+        .then(
+          () => true,
+          () => false
+        );
+      expect(about, `the composer is not about the selected ${HERO_NAME}`);
+      // Choosing the panel, the selection and the mode save the workspace 300 ms later: that lands before the first request.
+      await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+      await ctx.mark('scenario.start', { scenario: 'aiEdit' });
+      const posts = () => server.requests.filter((r) => r.method === 'POST');
+      for (const c of AI_EDIT_CASES) {
+        const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+        expect(before, 'no project is open');
+        const asked = posts().length;
+        server.script(envelopeReply('update_selected_props', { props: { heading: c.heading } }, 'Changing the heading'), envelopeReply('finish', { message: c.done }));
+        await composer(win).fill(`Make the hero heading say “${c.heading}”`);
+        await ctx.mark('aiEdit.send', { at: c.key });
+        await composer(win).press('Enter');
+        // The run is over once the strip has gone and the reply says what it did.
+        await win.waitForFunction(
+          (done) => {
+            const doc = (globalThis as unknown as DomPage).document;
+            return !doc.querySelector('.run-strip') && ([...doc.querySelectorAll('.chat-log .msg-ai')].at(-1)?.textContent ?? '').includes(done);
+          },
+          c.done,
+          { timeout: 120_000 }
+        );
+        // Every model turn was about the selected hero, and there were as many as the script has.
+        const sent = posts().slice(asked);
+        expect(sent.length === AI_EDIT_TURNS, `the request took ${sent.length} model turns, not ${AI_EDIT_TURNS}`);
+        expect(JSON.stringify(sent[0].body).includes(fixture.heroId), 'the request did not name the selected hero to the model');
+        // The run finished as a completed change whose checks, the build's among them, passed.
+        const { active } = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.ai.conversations());
+        const reply = active.messages.at(-1);
+        expect(reply?.role === 'assistant' && reply.result?.status === 'completed', `the request ended ${reply?.result?.status ?? 'without a result'}, not completed`);
+        const checks = reply.result!.checks ?? [];
+        expect(reply.result!.summary.includes(c.done), 'the reply is not the scripted model’s summary');
+        expect(checks.some((k) => k.status === 'pass' && /build/.test(k.text)), 'the result does not say the build was checked');
+        expect(!checks.some((k) => k.status !== 'pass' && /build/.test(k.text)), 'the result reports a build problem');
+        // The change is in the project, on disk and in the preview.
+        await preview(win).getByRole('heading', { name: c.heading, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+        const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+        expect(after && after.revision > before.revision, `the request left the project at revision ${after?.revision}, from ${before.revision}`);
+        expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === c.heading, 'the project does not hold the new heading on the home hero');
+        const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+        const saved = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
+        expect(findHeading(saved, fixture.heroId)?.heading === c.heading, 'the home page’s document on disk does not hold the new heading on the home hero');
+        await sleep(ctx.settleMs);
+        await ctx.mark('aiEdit.end', { at: c.key });
+        // Every build check of the run looked at every Svelte file the website has, before the change and after it,
+        // and those after the change compiled, both ways, at least every file it changed (an outcome kept from
+        // before the change would be stale).
+        const was = svelteFiles(before.state);
+        const now = svelteFiles(after.state);
+        const files = now.size;
+        expect(was.size === files && [...now.keys()].every((p) => was.has(p)), 'the change added or removed a Svelte file');
+        const changed = [...now].filter(([p, source]) => was.get(p) !== source).length;
+        expect(changed > 0, 'the change changed no Svelte file');
+        const atKey = (r: PerfRecord) => r.proc === 'main' && r.attrs?.at === c.key;
+        const t = await ctx.waitTrace((t) => !!t.first('aiEdit.end', atKey));
+        const from = t.first('aiEdit.send', atKey)?.t ?? Infinity;
+        const builds = t.all('ai.compile', inProc('main'), from, t.first('aiEdit.end', atKey)?.t);
+        expect(builds.length >= 2, `the request checked the build ${builds.length} times, not before and after its change`);
+        for (const b of builds) expect(delta(b, 'compile.files') === files, `a build check looked at ${delta(b, 'compile.files')} of the website's ${files} Svelte files`);
+        const compiledAfter = builds.slice(1).reduce((n, b) => n + delta(b, 'compile.svelte'), 0);
+        expect(compiledAfter >= 2 * changed, `the checks after the change compiled ${compiledAfter} times, fewer than both builds of the ${changed} Svelte files it changed`);
+      }
+      await ctx.mark('scenario.end', { scenario: 'aiEdit' });
+      await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('aiEdit', 'renderer')) && !!t.first('scenario.end', forScenario('aiEdit', 'main')));
+    } finally {
+      await server.stop();
+    }
+  },
+  measure(trace) {
+    const m = new Collector();
+    for (const c of AI_EDIT_CASES) {
+      const p = `aiEdit.${c.key}`;
+      const begin = m.need(`aiEdit.send (${c.key}, main)`, trace.first('aiEdit.send', (r) => r.proc === 'main' && r.attrs?.at === c.key));
+      const end = m.need(`aiEdit.end (${c.key}, main)`, trace.first('aiEdit.end', (r) => r.proc === 'main' && r.attrs?.at === c.key));
+      if (!begin || !end) continue;
+      const within = (name: string, from: number) => m.need(`${name} (${c.key})`, trace.first(name, inProc('main'), from, end.t));
+      const sent = within('ai.send', begin.t);
+      if (!sent) continue;
+      const runEnd = within('ai.runEnd', sent.t);
+      const model = within('ai.modelRequest', sent.t);
+      const adapter = within('ai.adapterReady', sent.t);
+      if (!runEnd || !model || !adapter) continue;
+      // The compile before the first model turn is the run's starting build; those after it, its checks.
+      const compiles = trace.all('ai.compile', inProc('main'), sent.t, runEnd.t);
+      const startCompile = m.need(`ai.compile before the first model turn (${c.key})`, compiles.find((r) => r.t <= model.t));
+      const checks = compiles.filter((r) => r.t > model.t);
+      if (!checks.length) m.need(`ai.compile after the first model turn (${c.key})`, undefined);
+      // Send to the first model turn, in its phases: the adapter prepared, the run set up (the project taken), the
+      // starting build, and the request put together after it.
+      m.since(`${p}.toModel`, sent, model);
+      m.since(`${p}.toAdapter`, sent, adapter);
+      if (startCompile) {
+        m.ms(`${p}.toCompile`, startCompile.t - (startCompile.ms ?? NaN) - adapter.t);
+        m.span(`${p}.startCompile`, startCompile);
+        m.ms(`${p}.compileToModel`, model.t - startCompile.t);
+        m.count(`${p}.startFiles`, delta(startCompile, 'compile.files'));
+        m.count(`${p}.startCompiled`, delta(startCompile, 'compile.svelte'));
+      }
+      m.ms(`${p}.checkCompile`, checks.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      m.count(`${p}.checkCompiled`, checks.reduce((n, r) => n + delta(r, 'compile.svelte'), 0));
+      m.count(`${p}.compiles`, compiles.length);
+      m.count(`${p}.modelTurns`, trace.all('ai.modelRequest', inProc('main'), sent.t, runEnd.t).length);
+      m.since(`${p}.runMs`, sent, runEnd);
+      m.ms(`${p}.mainStallMax`, stallMax(trace, sent, runEnd));
     }
     return m;
   }
@@ -2147,7 +2316,7 @@ function createScenario(name: 'create' | 'createAgain', after: 'launch' | 'creat
 export const create = createScenario('create', 'launch');
 export const createAgain = createScenario('createAgain', 'create');
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, edits, panels, chat, canvas, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, edits, panels, chat, aiEdit, canvas, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

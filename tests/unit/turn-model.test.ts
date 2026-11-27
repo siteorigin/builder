@@ -191,6 +191,24 @@ describe('the model that handled each turn', () => {
     expect(last?.message?.model?.unanswered).toBe(true);
   });
 
+  it('ends a run stopped while it checks the build, without waiting for the check (#975)', async () => {
+    let started!: () => void;
+    const preparing = new Promise<void>((r) => (started = r));
+    // A build check that never answers: a compile worker that hangs, say.
+    const { models, orch, ctx, settle, lastTurn } = await setup({
+      compileAll: () => {
+        started();
+        return new Promise<[]>(() => undefined);
+      }
+    });
+    await orch.send('Rename the site', { ...ctx, mode: 'edit' });
+    await preparing;
+    orch.stop();
+    await settle();
+    expect(lastTurn().result?.status).toBe('cancelled');
+    expect(models['studio-a'].requests).toHaveLength(0);
+  });
+
   it('keeps a turn stopped once the model has started answering, which it did handle', async () => {
     const { models, events, orch, ctx, settle, lastTurn } = await setup();
     models['studio-a'].preface = 'Noting';
