@@ -129,7 +129,7 @@ export function App() {
         // Notices (an error stays until dismissed) belong to the project that closed.
         // A request still ending holds the app until it ends, but is filed in no thread of the project opened next.
         // An open from Welcome still on its way ends here too: its project closed before it could show.
-        setState({ toasts: [], screen: 'welcome', openingProject: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
+        setState({ toasts: [], screen: 'welcome', openingProject: null, frameReady: false, previewIssue: null, snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, ...detachedRun(), inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -145,7 +145,12 @@ export function App() {
           }
         );
       }),
-      api.on('runtime:status', (runtime) => setState({ runtime })),
+      api.on('runtime:status', (runtime) => {
+        setState({ runtime });
+        // An open that failed once its project was attached closes it again, then says why here: Welcome, where the
+        // author is back, has no preview to say it on.
+        if (runtime.state === 'error' && getState().screen === 'welcome' && /^The project could not be opened/.test(runtime.message)) toast(runtime.message, 'error');
+      }),
       // Each assistant event timed with the render it sets off, while marks are on (scripts/perf: the chat scenario).
       api.on('ai:event', perfOn ? (e) => perfWork('chat.aiEvent', () => applyAiEvent(e), { kind: e.kind }) : applyAiEvent),
       // Asked for only while a project is open, so the editor's code is loaded or on its way (in order: a cancel follows
@@ -304,7 +309,8 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
   takeEarlyRecents();
   const local = snap.localState ?? {};
   forgetKeptDrafts();
-  const pageId = local.pageId && Object.hasOwn(snap.state.pages, local.pageId) ? local.pageId : snap.state.site.homePageId;
+  // A saved page that is not a page's ID (a hand-edited file) opens the home page.
+  const pageId = typeof local.pageId === 'string' && Object.hasOwn(snap.state.pages, local.pageId) ? local.pageId : snap.state.site.homePageId;
   // Each page's place is this opening's own; the page opens where the author left it, brought into view (see Canvas).
   const pagePlaces = readPlaces(snap.state, local.pagePlaces);
   // Another opening's request (still ending) is in none of this one's threads. A status that arrived while this window
@@ -317,6 +323,9 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     screen: 'editor',
     // The project has arrived: the outline from a click on its card is the editor's now (App).
     openingProject: null,
+    // Its frame has shown nothing yet, and nothing has gone wrong on it: the last opening's page is not this one's.
+    frameReady: false,
+    previewIssue: null,
     snapshot: snap,
     runtime: snap.runtime,
     pageId,

@@ -209,6 +209,7 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     await expect.poll(() => count('.editor-skeleton')).toBe(0);
     await expect.poll(() => visible('.welcome')).toBe(true);
     await expect.poll(() => page.getByRole('dialog').first().isVisible()).toBe(true);
+    expect(await page.getByRole('dialog').first().textContent()).toContain('Harbour Dental');
   });
 
   it('brings Welcome back with the notice and focus on the card when the open fails, and offers a held command again', async () => {
@@ -266,5 +267,23 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     await so('status', { runtime: { state: 'ready', url: 'http://127.0.0.1:1' }, outlined: false });
     await so('status', { runtime: { state: 'starting' }, outlined: true });
     expect(await slow()).toBe('false');
+    // Stopped part way through and started again: timed from the new start, never the old one's deadline.
+    await page.clock.runFor(10_000);
+    await so('status', { runtime: { state: 'error', message: 'The preview process stopped unexpectedly.' }, outlined: false });
+    await so('status', { runtime: { state: 'starting' }, outlined: true });
+    await page.clock.runFor(10_000);
+    expect(await slow()).toBe('false');
+    await page.clock.runFor(5_500);
+    expect(await slow()).toBe('true');
+  });
+
+  it('keeps the slow-start announcer as the same region when the card takes over from the outline', async () => {
+    await so('status', { runtime: { state: 'starting' }, outlined: true, slow: false });
+    await page.evaluate(() => ((window as unknown as { region: Element | null }).region = document.querySelector('#status [role="status"]')));
+    await so('status', { runtime: { state: 'starting' }, outlined: true, slow: true });
+    expect(await page.evaluate(() => {
+      const region = (window as unknown as { region: Element | null }).region;
+      return !!region?.isConnected && region === document.querySelector('#status [role="status"]') && region.textContent;
+    })).toBe('Starting the preview is taking longer than usual.');
   });
 });

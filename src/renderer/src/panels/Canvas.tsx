@@ -51,6 +51,7 @@ import { notePointerInput, openMenus, Spinner, useMenu, type MenuTriggerProps } 
 import { PreviewStatus, StatusCard, openLayers, stoppedAnnouncement, useSlowWait } from './PreviewStatus';
 import { CanvasSkeleton } from '../components/EditorSkeleton';
 import { isRemoteOpening } from '../lib/remote-snapshot';
+import { outlinesFirstPage } from '../lib/first-page';
 import { projectDisplayName } from '@shared/project-name';
 import { newPostOps } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
@@ -3030,13 +3031,19 @@ export function Canvas() {
   // Not for a project followed from another computer, whose preview is the host's to start or pause.
   const slowWait = useSlowWait(runtime);
   const [firstPageOf, setFirstPageOf] = useState<string | null>(null);
-  // Marked only by this opening's own server: the frame of the project open before has stopped by the time the next
-  // one's preview is ready.
+  // Marked by this opening's own frame: a new opening starts with the frame not ready and no page problem (App's
+  // openSnapshot), so nothing the project open before reported can mark it.
   useEffect(() => {
     if (frameReady && runtime.state === 'ready' && workspaceKey) setFirstPageOf(workspaceKey);
   }, [frameReady, runtime.state, workspaceKey]);
-  const firstPage = !!workspaceKey && firstPageOf !== workspaceKey && !isRemoteOpening(workspaceKey) && !frameError && !retrying;
-  const outlined = firstPage && (runtime.state === 'idle' || (runtime.state === 'starting' && !slowWait) || (runtime.state === 'ready' && frameShown && !frameReady && mode === 'edit'));
+  const outlined = outlinesFirstPage({
+    pending: !!workspaceKey && firstPageOf !== workspaceKey && !isRemoteOpening(workspaceKey) && !frameError && !retrying,
+    runtime: runtime.state,
+    slow: slowWait,
+    frameShown,
+    frameReady,
+    onPage: mode === 'edit' && !templateMode && !studioView
+  });
 
   if (!snapshot) return <div className="canvas" />;
 
@@ -3254,9 +3261,10 @@ export function Canvas() {
       )}
       {outlined && <CanvasSkeleton label={`Opening ${projectDisplayName(snapshot.state)}…`} />}
       {/* Said in the strip above the page (see frame-status below), and here for screen readers. The project's first
-          page is part of its opening, which App announces. */}
+          page is part of its opening: said as the project opening, which an outline App showed first has said already
+          (this is mounted with the editor, already saying it, so it is not heard again). */}
       <p className="sr-only" role="status">
-        {opening && !outlined ? `Opening ${view?.title ?? 'the page'}…` : ''}
+        {outlined ? `Opening ${projectDisplayName(snapshot.state)}…` : opening ? `Opening ${view?.title ?? 'the page'}…` : ''}
       </p>
       <p className="sr-only" role="status">
         {announcement}
@@ -3759,8 +3767,9 @@ export function Canvas() {
             <span className="sr-only" role="status">
               {marksAnnouncement(peerMarks.marks, peerMarks.away)}
             </span>
-            {frameHandle('left')}
-            {frameHandle('right')}
+            {/* Not while the page is outlined: drawn over, they would still take focus and a drag. */}
+            {!outlined && frameHandle('left')}
+            {!outlined && frameHandle('right')}
           </div>
         )}
       </div>

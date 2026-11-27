@@ -237,7 +237,8 @@ function Waiting({ runtime, slow, outlined }: { runtime: Extract<RuntimeState, {
       {slow ? `${copying ? 'Preparing the preview' : preparing ? 'Setting up website tools' : 'Starting the preview'} is taking longer than usual.` : ''}
     </p>
   );
-  if (outlined && !preparing && !slow) return announcer;
+  // The announcer keeps its place whether or not the card shows, so it is the same region when its words arrive.
+  if (outlined && !preparing && !slow) return <>{null}{announcer}</>;
   return (
     <>
       <StatusCard

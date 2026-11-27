@@ -703,11 +703,13 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
           </section>
         )}
       </main>
-      {creating && <NewProjectModal onClose={() => setCreating(false)} />}
-      {trust && (
+      {/* Drawn over the window, not inside Welcome: they go with it while the outline covers it, a project having
+          arrived from them (or, from a card, before either could have been asked for). */}
+      {creating && !covered && <NewProjectModal onClose={() => setCreating(false)} />}
+      {trust && !covered && (
         <TrustProjectModal project={trust} onClose={() => setTrust(null)} />
       )}
-      {modal?.kind === 'settings' && <SettingsModal />}
+      {modal?.kind === 'settings' && !covered && <SettingsModal />}
     </div>
   );
 }
