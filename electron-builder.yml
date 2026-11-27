@@ -46,9 +46,12 @@ mac:
     NSBluetoothPeripheralUsageDescription: null
     NSCameraUsageDescription: null
     NSMicrophoneUsageDescription: null
+    # The macOS 26 icon, from the asset catalog build/after-pack.cjs adds (scripts/app-icon/build.mjs).
+    CFBundleIconName: AppIcon
   # The DMG for people to download; the zip for updates, which Squirrel.Mac installs only from a zip.
   target: [dmg, zip]
-  icon: build/icon.png
+  # The disk image's icon, and the app's on macOS before 26. Every icon file is written by scripts/app-icon/build.mjs.
+  icon: build/icon.icns
   # Releases are built by .github/workflows/release.yml (docs/releasing.md). build/after-pack.cjs signs every
   # macOS build ad-hoc. electron-builder then signs it again when it finds a "Developer ID Application" identity
   # (in the keychain, or from CSC_LINK / CSC_KEY_PASSWORD), and then notarizes and staples it when APPLE_API_KEY
@@ -65,9 +68,14 @@ dmg:
   writeUpdateInfo: false
 win:
   target: [nsis]
-  icon: build/icon.png
+  icon: build/icon.ico
 linux:
   target: [AppImage]
-  icon: build/icon.png
+  # One PNG per size, each drawn for it (scripts/app-icon/build.mjs).
+  icon: build/icons
+  # The picture a window shows in the title bar and taskbar (src/main/window-icon.ts): the executable carries none.
+  extraResources:
+    - from: build/icon-flat.png
+      to: icon.png
   # A main category and an additional one that goes with it, from the freedesktop.org menu specification.
   category: Graphics;Publishing

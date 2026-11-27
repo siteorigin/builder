@@ -1,11 +1,10 @@
 /*
  * SiteOrigin Builder editor design system. Light and dark are both first-class.
  *
- * Identity: ink and sky, taken from the elephant mark (AppMark.tsx). Text and icons are the mark's ink
- * navy; neutrals are faintly ink-tinted; one blue (deep sky in light, the tile's own sky in dark) is the
- * only accent: selection, focus, the selected row and the primary action. Other hues carry meaning only,
- * always with an icon and words: green = shared header/footer, amber = site-wide, plum = component
- * definition, red = danger. AI has no hue of its own (it uses the accent and the Sparkles icon).
+ * Identity: ink and sky. Text and icons are ink navy; neutrals are faintly ink-tinted; one blue (deep sky in
+ * light, the brand sky in dark) is the only accent: selection, focus, the selected row and the primary action.
+ * Other hues carry meaning only, always with an icon and words: green = shared header/footer, amber = site-wide,
+ * plum = component definition, red = danger. AI has no hue of its own (it uses the accent and the Sparkles icon).
  * The canvas stays neutral so the user's website keeps its own colours.
  *
  * Contrast floors (WCAG 2.2): every text token is at least 4.5:1 on --panel, --panel-2 and --raised in its
