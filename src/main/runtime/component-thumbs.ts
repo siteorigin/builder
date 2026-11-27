@@ -3,6 +3,9 @@
  * preview (see @shared/component-preview) and kept in the editor's cache, `.siteorigin/cache/thumbs/`, under a key
  * made from everything that changes how it looks (the component and what it places or needs, the site's brand, its
  * language and the way its text runs, and how thumbnails are drawn), so an unchanged component is never drawn again.
+ * A picture of a component made only of designs is kept under a key that leaves out the site's colours its page never
+ * reads (main/runtime/thumb-reads tells which it reads, as it is photographed), so a colour change draws again only
+ * what shows that colour.
  * The cache is the editor's alone: exports leave `.siteorigin` out. Nothing here depends on Electron, so it is unit
  * tested directly; the photograph itself is taken by main/thumb-capture.
  */
@@ -17,9 +20,12 @@ import { articleRows } from '@shared/articles';
 import { entryRow, listsEntries, publishedEntries } from '@shared/entry-feed';
 import { getTheme } from '@catalogue/index';
 import { codeNeeds, directDependencies } from '@engine/definitions';
-import { generateTokensCss } from '@generator/index';
+import { effectiveTokens, generateTokensCss } from '@generator/index';
+import { tokenVar } from '@shared/styles';
+import { PREVIEW_PROJECT_STYLES } from '@shared/component-preview';
 import { atomicWrite } from '../project/fsutil';
 import { perf } from '../perf';
+import { parseReads } from './thumb-reads';
 
 /** The folder in the editor's cache (.siteorigin/cache) holding the thumbnails. */
 export const THUMBS_DIR = 'thumbs';
@@ -62,20 +68,59 @@ export function shownDefinitions(state: ProjectState, definitionId: string): Com
   return first ? [first, ...rest.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))] : [];
 }
 
-/**
- * The site's brand as a preview shows it: its theme (and the release of it), the token stylesheet the preview loads
- * from the project (colours, type, spacing and the fonts' faces), the theme's base styles, and what is in the files
- * of the project's own fonts (a font replaced under the same name is a new look).
- */
-export function brandFingerprint(state: ProjectState): string {
-  perf.count('thumbs.brands');
+/** What a preview shows of the site's brand, worked out once per project state (see brandFingerprint). */
+export interface BrandParts {
+  theme: string;
+  release: string;
+  /** The token stylesheet the preview loads from the project. */
+  tokens: string;
+  baseCss: string;
+  fonts: unknown[];
+  /** The custom properties of the site's colours, as the token stylesheet names them. */
+  colours: ReadonlySet<string>;
+}
+
+export function brandParts(state: ProjectState): BrandParts {
   const theme = getTheme(state.site.themeId);
   const fonts = Object.values(state.assets.assets)
     .filter((a) => a.kind === 'font')
     .map((a) => [a.id, a.file, a.hash])
     .sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  const colours = new Set(effectiveTokens(state).flatMap((t) => (t.group === 'color' ? [tokenVar(t.id)] : [])));
+  return { theme: theme.id, release: theme.digest ?? theme.version ?? '', tokens: generateTokensCss(state), baseCss: theme.baseCss, fonts, colours };
+}
+
+/** A colour's declaration, one to a line as the token stylesheet writes them (light and dark): its indent, name and value. */
+const COLOUR_LINE = /^(\s*)(--[A-Za-z0-9_-]+): ([^;{}]*);$/;
+
+/**
+ * The token stylesheet with the value of every colour not in `reads` left out (each declaration kept where it is,
+ * its value replaced). Anything else, a colour written any other way among it, stays as it is.
+ */
+export function colourProjection(tokens: string, colours: ReadonlySet<string>, reads: ReadonlySet<string>): string {
+  return tokens
+    .split('\n')
+    .map((line) => {
+      const m = COLOUR_LINE.exec(line);
+      return m && colours.has(m[2]) && !reads.has(m[2]) ? `${m[1]}${m[2]}: *;` : line;
+    })
+    .join('\n');
+}
+
+/**
+ * The site's brand as a preview shows it: its theme (and the release of it), the token stylesheet the preview loads
+ * from the project (colours, type, spacing and the fonts' faces), the theme's base styles, and what is in the files
+ * of the project's own fonts (a font replaced under the same name is a new look). With `reads`, the custom properties
+ * a component's page reads, only those of the site's colours count (see colourProjection), and they are part of it.
+ */
+export function brandFingerprint(state: ProjectState | BrandParts, reads?: readonly string[] | null, scheme: 'light' | 'dark' = 'light'): string {
+  perf.count('thumbs.brands');
+  const b = 'baseCss' in state ? state : brandParts(state);
+  const tokens = reads ? colourProjection(b.tokens, b.colours, new Set(reads)) : b.tokens;
+  // Kept by the colours it reads, a picture is also kept by the palette the window drew it in (light or dark), which
+  // a site with a dark palette follows.
   return createHash('sha256')
-    .update(JSON.stringify([theme.id, theme.digest ?? theme.version ?? '', generateTokensCss(state), theme.baseCss, fonts]))
+    .update(JSON.stringify([b.theme, b.release, tokens, b.baseCss, b.fonts, reads ? [reads, scheme] : null]))
     .digest('hex');
 }
 
@@ -86,9 +131,10 @@ const readsPages = (d: ComponentDefinition) => Object.values(d.properties).some(
  * The key of a project component's thumbnail as the project is now, or null when the project has no such
  * component. `brand` is brandFingerprint(state), when already known.
  */
-export function thumbKey(state: ProjectState, definitionId: string, brand?: string): string | null {
+export function thumbKey(state: ProjectState, definitionId: string, brand?: string, content?: string | null): string | null {
   const started = perf.on ? performance.now() : 0;
-  const key = keyOf(state, definitionId, brand);
+  const what = content === undefined ? keyContent(state, definitionId) : content;
+  const key = what === null ? null : createHash('sha256').update(JSON.stringify(brand ?? brandFingerprint(state))).update('\n').update(what).digest('hex');
   // What working keys out costs the main process (scripts/perf: the thumbs scenario).
   if (perf.on) {
     perf.count('thumbs.keys');
@@ -97,10 +143,13 @@ export function thumbKey(state: ProjectState, definitionId: string, brand?: stri
   return key;
 }
 
-function keyOf(state: ProjectState, definitionId: string, known?: string): string | null {
+/**
+ * Everything of a component's key but the site's brand (see thumbKey), as text: the same for every key of one
+ * component in one project state. Null when the project has no such component.
+ */
+export function keyContent(state: ProjectState, definitionId: string): string | null {
   const defs = shownDefinitions(state, definitionId);
   if (!defs.length) return null;
-  const brand = known ?? brandFingerprint(state);
   const json = JSON.stringify(defs);
   // The images they show, by what is in their files: a replaced file under the same ID is a new picture.
   const assets = Object.values(state.assets.assets)
@@ -119,9 +168,7 @@ function keyOf(state: ProjectState, definitionId: string, known?: string): strin
           publishedEntries(state, state.collections[id]).map((e) => [entryRow(state, state.collections[id], e), e.terms ?? null, e.featuredImage ? (state.assets.assets[e.featuredImage]?.hash ?? null) : null])
         ])
     : null;
-  return createHash('sha256')
-    .update(JSON.stringify([RECIPE, definitionId, siteLanguage(state.site), siteDirection(state.site), brand, json, assets, rows, ...(posts ? [posts] : [])]))
-    .digest('hex');
+  return JSON.stringify([RECIPE, definitionId, siteLanguage(state.site), siteDirection(state.site), json, assets, rows, ...(posts ? [posts] : [])]);
 }
 
 /** A box on the preview's page, in CSS pixels. */
@@ -202,9 +249,43 @@ export async function writeThumb(root: string, key: string, png: Buffer, kept = 
   await pruneThumbs(dir, kept);
 }
 
-/** Remove the oldest thumbnails beyond `kept`. Only the editor's own files are touched. */
-async function pruneThumbs(dir: string, kept: number): Promise<void> {
-  const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => /^[0-9a-f]{64}\.png$/.test(n));
+/** The largest file of what a component's page reads that the editor wrote. */
+const MAX_READS_BYTES = 256 * 1024;
+
+/**
+ * What a component's page was found to read when last photographed (see thumb-reads), under the key it has with every
+ * colour left out (`base`): how to find its picture, once colours change, in a later launch. Null when there is none,
+ * or what is there is not one the editor wrote. Whatever it says, a picture is only found under a key that holds the
+ * colours its own page read.
+ */
+export async function readThumbReads(root: string, base: string): Promise<string[] | null> {
+  if (!THUMB_KEY.test(base)) return null;
+  const dir = await thumbsFolder(root);
+  if (!dir) return null;
+  const file = join(dir, `${base}.json`);
+  const st = await fs.lstat(file).catch(() => null);
+  if (!st || !st.isFile() || st.size > MAX_READS_BYTES) return null;
+  try {
+    return parseReads(JSON.parse(await fs.readFile(file, 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+/** Keep what a component's page reads beside its thumbnails, then remove the oldest beyond `kept`. */
+export async function writeThumbReads(root: string, base: string, reads: readonly string[], kept = THUMBS_KEPT): Promise<void> {
+  const text = JSON.stringify({ reads });
+  if (!THUMB_KEY.test(base) || !parseReads({ reads }) || Buffer.byteLength(text) > MAX_READS_BYTES) return;
+  const dir = await thumbsFolder(root);
+  if (!dir) return;
+  await atomicWrite(join(dir, `${base}.json`), text, { durable: false });
+  await pruneThumbs(dir, kept, 'json');
+}
+
+/** Remove the oldest thumbnails (or files of what pages read) beyond `kept`. Only the editor's own files are touched. */
+async function pruneThumbs(dir: string, kept: number, ext: 'png' | 'json' = 'png'): Promise<void> {
+  const own = new RegExp(`^[0-9a-f]{64}\\.${ext}$`);
+  const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => own.test(n));
   if (names.length <= kept) return;
   const dated = await Promise.all(names.map(async (n) => ({ n, st: await fs.lstat(join(dir, n)).catch(() => null) })));
   const files = dated.filter((d) => d.st?.isFile()).sort((a, b) => b.st!.mtimeMs - a.st!.mtimeMs);
@@ -219,7 +300,7 @@ const isPng = (b: Buffer) => b.length > PNG_SIGNATURE.length && b.subarray(0, PN
  * What a photograph of a prepared preview came to. A failure is `transient` when it may not be the component's
  * doing (the page did not load, its renderer stopped, it timed out): such a version is tried once more.
  */
-export type CaptureResult = { ok: true; png: Buffer } | { ok: false; message: string; transient?: boolean };
+export type CaptureResult = { ok: true; png: Buffer; reads?: string[] | null } | { ok: false; message: string; transient?: boolean };
 
 /** What the thumbnails need of the editor, given by the controller (and by tests). */
 export interface ThumbHost {
@@ -235,12 +316,26 @@ export interface ThumbHost {
   capture(server: string, path: string): Promise<CaptureResult>;
   /** Keep a new thumbnail in the project's cache, while the project is still this app's to write. */
   persist(root: string, key: string, png: Buffer): Promise<void>;
+  /** Keep what a component's page was found to read (see writeThumbReads), while the project is still this app's. */
+  persistReads(root: string, base: string, reads: readonly string[]): Promise<void>;
+  /**
+   * Whether the stylesheets every preview loads from the project (its tokens and the theme's base styles) are, as
+   * far as the app knows, the ones it generated (no file of them edited outside it, no private copy shown): only then
+   * may a picture be found by the colours its page reads.
+   */
+  ownStyles(): boolean;
+  /** Whether the preview server shows exactly these stylesheets: the files read now, before a picture is kept by its colours. */
+  showsStyles(tokens: string, baseCss: string): Promise<boolean>;
+  /** The palette the hidden window draws in now, as the system's appearance sets it. */
+  scheme(): 'light' | 'dark';
 }
 
 /** Thumbnails kept in memory for the opening, so a tile shown again never waits on the disk. */
 const MEMORY_KEPT = 200;
 /** Versions remembered as failed (or as tried once already) for the opening. */
 const FAILURES_KEPT = 500;
+/** What components' pages read, kept in memory for the opening. */
+const HINTS_KEPT = 500;
 
 /** Keep `key` → `value` as the newest of `map`, dropping the oldest beyond `kept`. */
 function keep<V>(map: Map<string, V>, key: string, value: V, kept: number) {
@@ -271,7 +366,27 @@ export class ComponentThumbs {
    * (applyOperations never changes one), and a theme pack registered again is a new object, so an entry for either is
    * never asked again: the site's brand is worked out once per change, not for every tile and check.
    */
-  private keys: { state: ProjectState; theme: unknown; brand: string; byId: Map<string, string | null> } | null = null;
+  private keys: {
+    state: ProjectState;
+    theme: unknown;
+    parts: BrandParts;
+    brand: string;
+    byId: Map<string, string | null>;
+    /** What each component's keys hold besides the brand (see keyContent). */
+    contents: Map<string, string | null>;
+    /** The brand as pages that read the same custom properties see it, by those properties. */
+    brands: Map<string, string>;
+    /** Picture keys, by component and what its page reads. */
+    pictures: Map<string, string | null>;
+    /** Whether a component's preview is made of designs alone (see eligible). */
+    designs: Map<string, boolean>;
+  } | null = null;
+  /**
+   * What each component's page read when last photographed, by its key with every colour left out (see
+   * readThumbReads); null when the cache has none. Only a hint where to look: a picture is kept under a key that holds
+   * the colours its own page read, so a hint that is out of date finds nothing.
+   */
+  private hints = new Map<string, string[] | null>();
   /** How many thumbnails were photographed, for tests. */
   captures = 0;
   /** How many times the site's brand was worked out, for tests. */
@@ -279,20 +394,89 @@ export class ComponentThumbs {
 
   constructor(private host: ThumbHost) {}
 
-  /** thumbKey(state, definitionId), worked out once for each state and theme. */
-  private keyOf(state: ProjectState, definitionId: string): string | null {
+  private memo(state: ProjectState) {
     const theme = getTheme(state.site.themeId);
     let k = this.keys;
     if (!k || k.state !== state || k.theme !== theme) {
       const started = perf.on ? performance.now() : 0;
       this.brands++;
-      k = this.keys = { state, theme, brand: brandFingerprint(state), byId: new Map() };
+      const parts = brandParts(state);
+      k = this.keys = { state, theme, parts, brand: brandFingerprint(parts), byId: new Map(), contents: new Map(), brands: new Map(), pictures: new Map(), designs: new Map() };
       // Counted with the keys' time, as when every key worked the brand out itself (scripts/perf: the thumbs scenario).
       if (perf.on) perf.count('thumbs.keyMs', performance.now() - started);
     }
+    return k;
+  }
+
+  /** keyContent(state, definitionId), worked out once for each state and theme. */
+  private contentOf(state: ProjectState, definitionId: string): string | null {
+    const k = this.memo(state);
+    let content = k.contents.get(definitionId);
+    if (content === undefined) {
+      const started = perf.on ? performance.now() : 0;
+      k.contents.set(definitionId, (content = keyContent(state, definitionId)));
+      if (perf.on) perf.count('thumbs.keyMs', performance.now() - started);
+    }
+    return content;
+  }
+
+  /** thumbKey(state, definitionId), worked out once for each state and theme: the version of the component as it is. */
+  private keyOf(state: ProjectState, definitionId: string): string | null {
+    const k = this.memo(state);
     let key = k.byId.get(definitionId);
-    if (key === undefined) k.byId.set(definitionId, (key = thumbKey(state, definitionId, k.brand)));
+    if (key === undefined) k.byId.set(definitionId, (key = thumbKey(state, definitionId, k.brand, this.contentOf(state, definitionId))));
     return key;
+  }
+
+  /**
+   * The key of the component's picture when its page reads `reads` of the site's custom properties: the version, with
+   * the values of the colours it does not read left out. With no reads, every colour is left out (the component's
+   * `base`, under which what its page read is kept).
+   */
+  private pictureKeyOf(state: ProjectState, definitionId: string, reads: readonly string[]): string | null {
+    const k = this.memo(state);
+    const scheme = this.host.scheme();
+    const sig = JSON.stringify([scheme, reads]);
+    const id = JSON.stringify([definitionId, sig]);
+    let key = k.pictures.get(id);
+    if (key !== undefined) return key;
+    const started = perf.on ? performance.now() : 0;
+    let brand = k.brands.get(sig);
+    if (brand === undefined) k.brands.set(sig, (brand = brandFingerprint(k.parts, reads, scheme)));
+    if (perf.on) perf.count('thumbs.keyMs', performance.now() - started);
+    k.pictures.set(id, (key = thumbKey(state, definitionId, brand, this.contentOf(state, definitionId))));
+    return key;
+  }
+
+  /**
+   * Whether the component's picture may be kept by the colours its page reads: its preview is made of designs alone
+   * (a code component's script can read any colour, and draw with it), from the stylesheets the app generated.
+   */
+  private eligible(state: ProjectState, definitionId: string): boolean {
+    const k = this.memo(state);
+    let designs = k.designs.get(definitionId);
+    if (designs === undefined) {
+      const started = perf.on ? performance.now() : 0;
+      k.designs.set(definitionId, (designs = shownDefinitions(state, definitionId).every((d) => d.kind === 'managed')));
+      if (perf.on) perf.count('thumbs.keyMs', performance.now() - started);
+    }
+    return designs && this.host.ownStyles();
+  }
+
+  /** The key to look for the component's picture under: by the colours its page read, when that is known, else its version. */
+  private async pictureOf(now: { state: ProjectState; readRoot: string }, definitionId: string, key: string, opening: string): Promise<string> {
+    if (!this.eligible(now.state, definitionId)) return key;
+    const base = this.pictureKeyOf(now.state, definitionId, [])!;
+    let reads = this.hints.get(base);
+    if (reads === undefined) {
+      const found = await readThumbReads(now.readRoot, base).catch(() => null);
+      // Another opening (or none) meanwhile: nothing of this one is kept for it.
+      if (this.opening !== opening) return key;
+      // A photograph that finished meanwhile knows better.
+      reads = this.hints.get(base);
+      if (reads === undefined) keep(this.hints, base, (reads = found), HINTS_KEPT);
+    }
+    return reads ? (this.pictureKeyOf(now.state, definitionId, reads) ?? key) : key;
   }
 
   /** Forget the thumbnails and failures of an earlier opening. */
@@ -304,6 +488,7 @@ export class ComponentThumbs {
     this.failed.clear();
     this.running.clear();
     this.retried.clear();
+    this.hints.clear();
   }
 
   /** Forget every thumbnail and failure kept in memory (the project closed): nothing under way may keep one. */
@@ -314,10 +499,12 @@ export class ComponentThumbs {
     this.failed.clear();
     this.running.clear();
     this.retried.clear();
+    this.hints.clear();
   }
 
-  private remember(key: string, url: string) {
-    keep(this.memory, key, url, MEMORY_KEPT);
+  /** Keep a picture of version `key` in memory, under its picture key. */
+  private remember(key: string, picture: string, url: string) {
+    keep(this.memory, picture, url, MEMORY_KEPT);
     this.retried.delete(key);
   }
 
@@ -333,9 +520,14 @@ export class ComponentThumbs {
     if (!def || def.owner !== 'project') return { state: 'unavailable' };
     const key = this.keyOf(now.state, definitionId);
     if (!key) return { state: 'unavailable' };
-    const answer = (url: string): ComponentThumb => (have === key ? { state: 'ready', key } : { state: 'ready', key, url });
-    const known = this.memory.get(key);
-    if (known) return answer(known);
+    const picture = await this.pictureOf(now, definitionId, key, opening);
+    if (this.opening !== opening) return { state: 'unavailable' };
+    const answer = (at: string, url: string): ComponentThumb => (have === at ? { state: 'ready', key: at } : { state: 'ready', key: at, url });
+    const known = this.memory.get(picture);
+    if (known) return answer(picture, known);
+    // Photographed as this very version when its page could not tell what it read: kept by the version.
+    const exact = picture !== key ? this.memory.get(key) : undefined;
+    if (exact) return answer(key, exact);
     const failure = this.failed.get(key);
     if (failure && failure.server !== undefined && failure.server !== this.host.previewServer()) {
       this.failed.delete(key);
@@ -343,23 +535,25 @@ export class ComponentThumbs {
     } else if (failure) return { state: 'failed', key, message: failure.message };
     let run = this.running.get(key);
     if (!run) {
-      run = this.make(definitionId, opening, key, now.readRoot).finally(() => {
+      run = this.make(definitionId, opening, key, picture, now.readRoot).finally(() => {
         if (this.running.get(key) === run) this.running.delete(key);
       });
       this.running.set(key, run);
     }
     const got = await run;
-    return got.state === 'ready' && got.url ? answer(got.url) : got;
+    // The key the picture is kept under: what its photograph found the page to read may differ from what was known.
+    return got.state === 'ready' && got.url ? answer(got.key, got.url) : got;
   }
 
   /** The thumbnail from the project's cache, else a new photograph. */
-  private async make(definitionId: string, opening: string, key: string, readRoot: string): Promise<ComponentThumb> {
-    const cached = await readThumb(readRoot, key).catch(() => null);
-    if (cached) {
+  private async make(definitionId: string, opening: string, key: string, picture: string, readRoot: string): Promise<ComponentThumb> {
+    for (const at of picture === key ? [key] : [picture, key]) {
+      const cached = await readThumb(readRoot, at).catch(() => null);
+      if (!cached) continue;
       if (this.opening !== opening) return { state: 'unavailable' };
       const url = dataUrl(cached);
-      this.remember(key, url);
-      return { state: 'ready', key, url };
+      this.remember(key, at, url);
+      return { state: 'ready', key: at, url };
     }
     const job = this.queue.then(() => this.photograph(definitionId, opening, key));
     this.queue = job.catch(() => undefined);
@@ -399,10 +593,12 @@ export class ComponentThumbs {
     endPrepare();
     if (!prepared.ok) return same() ? fail(prepared.message, true) : gone;
     let shot: CaptureResult;
+    let scheme: 'light' | 'dark' = 'light';
     try {
       // Changed while it was prepared (the project closed, among others): nothing is photographed, and the hidden
       // window is not opened again for it.
       if (!same()) return gone;
+      scheme = this.host.scheme();
       this.captures++;
       perf.count('thumbs.captures');
       perf.mark('thumbs.captureStart', { definitionId });
@@ -418,11 +614,25 @@ export class ComponentThumbs {
     // Changed while it was photographed (an edit, the brand, another project, the server): the picture may show either.
     if (!same()) return gone;
     if (!shot.ok) return fail(shot.message, !!shot.transient);
+    const now = this.host.current()!;
+    // Kept by the colours its page read, when that could be told and may be trusted (drawn in the palette it is kept
+    // by, from the stylesheets the app generated); else by its version alone.
+    const parts = this.memo(now.state).parts;
+    const trusted = !!shot.reads && this.eligible(now.state, definitionId) && this.host.scheme() === scheme && (await this.host.showsStyles(parts.tokens, parts.baseCss).catch(() => false));
+    if (!same()) return gone;
+    const reads = trusted ? shot.reads! : null;
+    const picture = (reads && this.pictureKeyOf(now.state, definitionId, reads)) || key;
+    const base = reads ? this.pictureKeyOf(now.state, definitionId, []) : null;
     const url = dataUrl(shot.png);
-    this.remember(key, url);
-    const root = this.host.current()?.cacheRoot;
-    if (root) await this.host.persist(root, key, shot.png).catch(() => undefined);
-    return { state: 'ready', key, url };
+    this.remember(key, picture, url);
+    if (reads && base) keep(this.hints, base, reads, HINTS_KEPT);
+    const root = now.cacheRoot;
+    if (root) {
+      // The picture first, then where to find it.
+      await this.host.persist(root, picture, shot.png).catch(() => undefined);
+      if (reads && base) await this.host.persistReads(root, base, reads).catch(() => undefined);
+    }
+    return { state: 'ready', key: picture, url };
   }
 }
 

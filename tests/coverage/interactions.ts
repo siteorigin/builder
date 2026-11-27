@@ -1288,8 +1288,10 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'Rename gives a variant a descriptive name and a description' },
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'deleting an unused variant keeps the others, and Undo brings it back' },
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'each component in Your components shows a thumbnail, drawn again when its style changes (#370)' },
+      { test: 'tests/e2e/thumbs-brand.mjs', kind: 'e2e', step: 'a brand colour change draws again only the card that shows it' },
       { test: 'tests/unit/component-library.test.ts', kind: 'unit' },
-      { test: 'tests/unit/component-thumbs.test.ts', kind: 'unit' }
+      { test: 'tests/unit/component-thumbs.test.ts', kind: 'unit' },
+      { test: 'tests/unit/thumb-reads-browser.test.ts', kind: 'unit' }
     ]
   },
   {
