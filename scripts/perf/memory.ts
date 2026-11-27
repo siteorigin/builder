@@ -543,6 +543,29 @@ export class MemoryProbe {
   }
 
   /**
+   * A reading at rest of another application, a control the app's readings are set beside (an empty Electron window:
+   * the floor any Electron app holds), taken exactly as `rest` takes the app's and kept with them as `label`. The
+   * processes it saw as that application's are added to `seen`, failure or not, for the caller's own teardown of it:
+   * they are never given to the app's sweep. Closing this probe stops it too.
+   */
+  async control(label: string, src: MemorySource, seen: ProcessEntry[]): Promise<MemoryReading> {
+    this.live();
+    const other = new MemoryProbe(src, this.clock, this.rest_, this.periodMs);
+    const close = () => void other.dispose();
+    this.abort.signal.addEventListener('abort', close);
+    try {
+      const reading = await other.rest(label);
+      this.live();
+      this.readings.push(reading);
+      return reading;
+    } finally {
+      this.abort.signal.removeEventListener('abort', close);
+      await other.dispose();
+      seen.push(...other.seen());
+    }
+  }
+
+  /**
    * `work`, with the process table sampled from before it starts until after it ends; its result once the peak,
    * `label`, is recorded. Sampling never waits on the app (a busy main process cannot hide its own spike): the app is
    * asked who the processes are only when one appears that has no role yet, beside the sampling, and again if more

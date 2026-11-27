@@ -4,11 +4,16 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import type * as Notices from './build/notices.cjs';
+import type * as OneByte from './build/one-byte.cjs';
 import { readBuildStamp } from './src/main/build-info';
 
 // Each build records the packages compiled into it, for the app's third-party notices (build/notices.cjs).
 const { bundledPackagesPlugin } = createRequire(import.meta.url)('./build/notices.cjs') as typeof Notices;
 const notices = (target: 'main' | 'preload' | 'renderer') => bundledPackagesPlugin(target, resolve('.tmp/notices', `${target}.json`));
+// Every script is written in characters V8 holds one byte each, or the build fails (build/one-byte.cjs): a single wide
+// character makes V8 hold the whole script's source two bytes per character for as long as it runs (#1043).
+const { oneByteScriptsPlugin } = createRequire(import.meta.url)('./build/one-byte.cjs') as typeof OneByte;
+const oneByte = { charset: 'ascii' } as const;
 
 // Each build says which commit it was made from and when (src/main/build-info.ts), for About and bug reports.
 const stamp = readBuildStamp((args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
@@ -35,7 +40,7 @@ export default defineConfig({
   main: {
     resolve: { alias },
     define: { __BUILD_COMMIT__: JSON.stringify(stamp.commit), __BUILD_DATE__: JSON.stringify(stamp.builtAt) },
-    plugins: [notices('main'), syncCli()],
+    plugins: [notices('main'), syncCli(), oneByteScriptsPlugin('main')],
     build: {
       externalizeDeps: { exclude: ['zod'] },
       rollupOptions: {
@@ -48,30 +53,32 @@ export default defineConfig({
           'posts-import-worker': resolve('src/main/posts-import/worker.ts'),
           'source-sync-worker': resolve('src/main/sources/worker.ts'),
           'git-worker': resolve('src/main/git/worker.ts')
-        }
+        },
+        // Not minified, so its JSDoc comments would stay in the script the main process holds: they are left out.
+        output: { ...oneByte, comments: { legal: true, annotation: true, jsdoc: false } }
       }
     }
   },
   preload: {
     resolve: { alias },
-    plugins: [notices('preload')],
+    plugins: [notices('preload'), oneByteScriptsPlugin('preload')],
     build: {
       rollupOptions: {
         input: { index: resolve('src/preload/index.ts') },
-        output: { format: 'cjs', entryFileNames: '[name].cjs' }
+        output: { format: 'cjs', entryFileNames: '[name].cjs', ...oneByte }
       }
     }
   },
   renderer: {
     root: resolve('src/renderer'),
     resolve: { alias: { ...alias, '@renderer': resolve('src/renderer/src') } },
-    plugins: [react(), notices('renderer')],
+    plugins: [react(), notices('renderer'), oneByteScriptsPlugin('renderer')],
     build: {
       // The editor's scripts are minified (#958), keeping every function's and class's name, so a stack trace from a
       // packaged build still names what failed. The stylesheet is left as written.
       minify: 'oxc',
       cssMinify: false,
-      rollupOptions: { input: { index: resolve('src/renderer/index.html') }, output: { keepNames: true } }
+      rollupOptions: { input: { index: resolve('src/renderer/index.html') }, output: { keepNames: true, ...oneByte } }
     }
   }
 });

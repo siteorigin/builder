@@ -10,11 +10,14 @@
  * (memory.ts), and is never reported beside a timing scenario.
  */
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { _electron as electron } from 'playwright';
 import type { CDPSession, ElectronApplication, FrameLocator, Locator, Page } from 'playwright';
 import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
-import { editorWindow } from '../../tests/driver/session';
+import { killTree, processTable, type ProcessEntry } from '../../tests/driver/processes';
+import { editorWindow, sessionEnv } from '../../tests/driver/session';
+import { headlessSwitches } from '../../src/main/headless-desktop';
 import { HISTORY_LIMIT, type BuilderApi, type ProjectSnapshot } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
@@ -25,7 +28,7 @@ import { createStarterState, STARTER_ASSETS } from '../../src/catalogue/starters
 import { projectFolderName } from '../../src/shared/project-name';
 import { fixturePng, ROOT, type FixtureSpec } from './fixtures';
 import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
-import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
+import { electronSource, growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
 import { GALLERY_COUNT, galleryPhotos, type GalleryPhoto, PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
 import { displayName } from '../../src/engine/tree';
@@ -3166,6 +3169,182 @@ export const aiMemory: Scenario = {
     for (const [label, kind] of AI_MEMORY_READINGS) readingMetrics(m, label, reading(label, kind));
     growthMetrics(m, 'aiRun', reading('aiIdle'), reading('aiDone'));
     growthMetrics(m, 'aiRuns', reading('aiDone'), reading(`aiDone${AI_MEMORY_RUNS}`));
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// welcome
+// ---------------------------------------------------------------------------
+
+/** The size of the empty app's window: the editor window's (src/main/index.ts), never shown. */
+export const EMPTY_WINDOW = { width: 1480, height: 920 };
+/** The empty app's page: nothing in it. */
+export const EMPTY_PAGE = `data:text/html;charset=utf-8,${encodeURIComponent('<!doctype html><title>Empty</title>')}`;
+
+/**
+ * The switches the empty app sets: those the app sets in every automated launch that bear on what Chromium runs (the
+ * mock keychain, src/main/index.ts; a hidden window kept at full speed, headless-desktop.ts), so the two differ only in
+ * what the app does. The app's own memory choices (#1043) are its own and not here.
+ */
+export const emptyAppSwitches = (platform: NodeJS.Platform = process.platform): string[] => ['use-mock-keychain', ...headlessSwitches(platform)];
+
+/**
+ * The empty app's main script: Electron with those switches, its profile in `userData`, kept out of the Dock (as a
+ * headless launch of the app is), and one hidden window of the editor's size with Electron's own defaults on an empty
+ * page. What it holds is the floor any Electron app with one window holds on this machine.
+ */
+export function emptyAppMain(userData: string, switches: string[]): string {
+  return [
+    "const { app, BrowserWindow } = require('electron');",
+    `app.setPath('userData', ${JSON.stringify(userData)});`,
+    `app.setPath('crashDumps', ${JSON.stringify(join(userData, 'Crashpad'))});`,
+    `for (const name of ${JSON.stringify(switches)}) app.commandLine.appendSwitch(name);`,
+    "if (process.platform === 'darwin') app.setActivationPolicy('accessory');",
+    "app.on('window-all-closed', () => app.quit());",
+    'app.whenReady().then(() => {',
+    `  const win = new BrowserWindow({ width: ${EMPTY_WINDOW.width}, height: ${EMPTY_WINDOW.height}, show: false });`,
+    `  void win.loadURL(${JSON.stringify(EMPTY_PAGE)});`,
+    '});',
+    ''
+  ].join('\n');
+}
+
+/** How long the empty app's launch, its reading and its quitting may each take: bounded, so its teardown always runs
+ *  within the scenario's own deadline, and nothing of it is left for the next iteration. */
+export const EMPTY_LAUNCH_MS = 60_000;
+export const EMPTY_READING_MS = 90_000;
+export const EMPTY_QUIT_MS = 30_000;
+
+/** The empty app's own folders inside `dir`: its profile, and the home and temp folders the app's launches get too. */
+function emptyPaths(dir: string) {
+  const p = { root: dir, profile: join(dir, 'profile'), workspace: join(dir, 'documents'), projects: join(dir, 'documents', 'SiteOrigin'), imports: join(dir, 'imports'), exports: join(dir, 'exports'), home: join(dir, 'home'), tmp: join(dir, 'tmp'), artifacts: join(dir, 'artifacts') };
+  for (const d of [p.home, p.tmp]) mkdirSync(d, { recursive: true });
+  return p;
+}
+
+/**
+ * The empty app launched as the runner launches the app (Playwright's Electron, this checkout's, with the environment
+ * the app's launches get: their own home and temp folders), from a folder of its own under .tmp/perf, until its one
+ * window has loaded its page: with its process's identity, for its teardown to check against. A launch that fails part
+ * way ends what it started and removes the folder.
+ */
+async function launchEmptyApp(): Promise<{ app: ElectronApplication; win: Page; pid: number; root: ProcessEntry[]; dir: string }> {
+  mkdirSync(join(ROOT, '.tmp', 'perf'), { recursive: true });
+  const dir = mkdtempSync(join(ROOT, '.tmp', 'perf', 'empty-'));
+  let app: ElectronApplication | null = null;
+  let pid = 0;
+  let root: ProcessEntry[] = [];
+  try {
+    const paths = emptyPaths(dir);
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'empty-electron-window', private: true, main: 'main.cjs' }) + '\n');
+    writeFileSync(join(dir, 'main.cjs'), emptyAppMain(paths.profile, emptyAppSwitches()));
+    app = await electron.launch({ args: ['.'], cwd: dir, env: sessionEnv(paths), timeout: EMPTY_LAUNCH_MS });
+    pid = app.process().pid ?? 0;
+    root = pid ? (await processTable()).filter((p) => p.pid === pid) : [];
+    if (!pid || !root.length) throw new Error('the empty Electron window’s process could not be read, so it could not be told apart from others when it ends');
+    const launched = app;
+    const win = await withDeadline(
+      (async () => {
+        const w = launched.windows()[0] ?? (await launched.waitForEvent('window', { timeout: EMPTY_LAUNCH_MS }));
+        await w.waitForURL((u) => u.protocol === 'data:', { waitUntil: 'load', timeout: EMPTY_LAUNCH_MS });
+        await w.setViewportSize({ width: 1440, height: 900 });
+        return w;
+      })(),
+      EMPTY_LAUNCH_MS,
+      'the empty Electron window'
+    );
+    return { app, win, pid, root, dir };
+  } catch (e) {
+    if (app) await closeEmptyApp(app, pid, root, dir);
+    else rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+}
+
+/**
+ * Quit the empty app (for a while), then end anything of it left, whatever state Playwright's connection to it is in
+ * (`known`: every process seen as its), and remove its folder. Processes that will not end fail the scenario.
+ */
+async function closeEmptyApp(app: ElectronApplication, pid: number, known: ProcessEntry[], dir: string) {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([app.close().catch(() => undefined), new Promise<void>((r) => (timer = setTimeout(r, EMPTY_QUIT_MS)))]);
+  clearTimeout(timer);
+  try {
+    if (pid) {
+      const { survivors } = await killTree(pid, { known });
+      expect(!survivors.length, `the empty Electron window’s processes would not end (${survivors.map((s) => s.pid).join(', ')})`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Welcome as `launch` left it: the theme catalogue received, the fixture among its recent projects, New project, Open
+ * project… and Settings there and enabled, no project open, nothing shown. A build that left any of it out would hold
+ * less memory without being the same Welcome.
+ */
+async function checkWelcome(ctx: ScenarioContext) {
+  const { win, app } = ctx;
+  const received = (t: Trace) => t.first('launch.catalogueReceived', inProc('renderer'));
+  expect(received(await ctx.waitTrace((t) => !!received(t), 15_000)), 'the theme catalogue never reached the editor on Welcome');
+  expect(await win.locator('.welcome').isVisible(), 'Welcome is not the screen');
+  const card = win.locator('.recent-card', { hasText: ctx.fixture.spec.title }).first();
+  expect((await card.isVisible()) && (await card.isEnabled()), 'Welcome does not list the fixture among its recent projects');
+  for (const [label, button] of [
+    ['New project', win.locator('.welcome-action', { hasText: 'New project' })],
+    ['Open project…', win.locator('.welcome-action', { hasText: 'Open project…' })],
+    ['Settings', win.getByRole('button', { name: 'Settings', exact: true })]
+  ] as const) {
+    const b = button.first();
+    expect((await b.isVisible()) && (await b.isEnabled()), `${label} is not on Welcome, enabled`);
+  }
+  expect((await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot())) === null, 'a project is open on Welcome');
+  expect(!(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()))), 'a window was shown: the run must stay headless');
+}
+
+/** The empty app as launched: one window, never shown, on the empty page, whose page Playwright has looked into as the
+ *  app's checks look into Welcome (so its injected scripts are in both pages). */
+async function checkEmpty(app: ElectronApplication, win: Page) {
+  const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => ({ visible: w.isVisible(), url: w.webContents.getURL() })));
+  expect(windows.length === 1 && windows[0].url === EMPTY_PAGE && (await win.title()) === 'Empty', 'the empty Electron app does not have exactly one window on its empty page');
+  expect(!windows[0].visible, 'the empty Electron window was shown: the run must stay headless');
+  await win.locator('body').first().waitFor({ state: 'attached', timeout: 10_000 });
+  expect((await win.locator('body').count()) === 1, 'the empty Electron window has no page');
+}
+
+export const welcome: Scenario = {
+  name: 'welcome',
+  after: 'launch',
+  memory: true,
+  deadlineMs: 8 * 60_000,
+  description: 'The memory of every process of the app at rest on a fresh Welcome, beside an empty Electron window’s (Electron’s floor on this machine) read the same way, and the difference: the part that is the app’s own.',
+  async run(ctx) {
+    const probe = ctx.memory;
+    if (!probe) throw new Error('the welcome scenario was run without a memory probe');
+    await checkWelcome(ctx);
+    await probe.rest('welcome');
+    await checkWelcome(ctx);
+    // Then the floor, while the app stays on Welcome: an empty Electron window, read the same way. Every step is
+    // bounded, so its teardown always runs before the scenario's deadline.
+    const empty = await launchEmptyApp();
+    const seen: ProcessEntry[] = [...empty.root];
+    try {
+      await withDeadline(checkEmpty(empty.app, empty.win), EMPTY_LAUNCH_MS, 'the empty Electron window’s check');
+      await withDeadline(probe.control('empty', electronSource(empty.app, () => empty.win), seen), EMPTY_READING_MS, 'the empty Electron window’s reading');
+      await withDeadline(checkEmpty(empty.app, empty.win), EMPTY_LAUNCH_MS, 'the empty Electron window’s check');
+    } finally {
+      await closeEmptyApp(empty.app, empty.pid, seen, empty.dir);
+    }
+  },
+  measure(_trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string) => readings.find((r) => r.label === label && r.kind === 'rest');
+    readingMetrics(m, 'welcome', reading('welcome'));
+    readingMetrics(m, 'empty', reading('empty'));
+    // What the app holds over Electron's floor: Welcome less the empty window, role by role.
+    growthMetrics(m, 'overEmpty', reading('empty'), reading('welcome'));
     return m;
   }
 };
@@ -6376,7 +6555,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

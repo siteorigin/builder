@@ -454,6 +454,23 @@ the last preview closes, Insert closed once its thumbnails are quiet, and read a
 reading's metrics as `memory`'s, and growth: `memory.visits.growth.*` (`pages20` − `canvas`), `memory.peeks.growth.*`
 (`previews` − `pages20`) and `memory.browse.growth.*` (`previews` − `canvas`).
 
+**`welcome`** (after `launch`, a memory scenario, on its own; `--fixture small` is enough: no project opens): the memory
+of the app at rest on a fresh Welcome, beside an empty Electron window's, so the part that is the app's own is known
+(#1043). Readings: the app at rest on Welcome (`welcome`); then, with the app still there, an empty Electron app launched
+the way the runner launches the app (Playwright's Electron, this checkout's, with the environment the app's launches
+get, from a folder of its own under `.tmp/perf`) and read the same way (`empty`): one hidden window of the editor's size
+with Electron's own defaults on an empty page, its profile its own, kept out of the Dock, with the switches the app sets
+in every automated launch that bear on what Chromium runs (`use-mock-keychain` and the headless ones,
+`emptyAppSwitches`), nothing of the app's own choices. Its launch, its reading and its quitting are each bounded, so it
+is quit and every process of it ended before the scenario's deadline. Checks: before and after the app's reading, the
+theme catalogue has reached the editor, Welcome is the screen, lists the fixture among its recent projects, has New
+project, Open project… and Settings there and enabled, no project is open and no window is shown; before and after the
+empty app's, it has exactly one window, on its empty page, not shown, whose page Playwright has looked into as it looks
+into Welcome (so its injected scripts are in both pages). Metrics: each reading's (`memory.welcome…`,
+`memory.empty…`, as `memory`'s, the empty window's renderer as `editor`), and the app's own part,
+`memory.overEmpty.growth.*` (`welcome` − `empty`, role by role). The empty app's figures are a control: on one machine
+they should not move between two builds of the app, and a run where they do was disturbed.
+
 **`previewImages`** (after `open`, a memory scenario, on its own; `--fixture small` is enough: the page it measures is
 its own): the memory of the app's processes while frames other than the canvas show a page of photographs (#1037).
 Before the readings (untimed): 20 photographs written into `static/assets/` as an import stores them, each a web-sized
@@ -757,6 +774,9 @@ applied, an app race the 50 quick edits find, not the reading's.
 usual five minutes), after `launch` for something done from Welcome. In `run`, take readings with
 `ctx.memory.rest(label)` once the app is where the reading belongs (after the step's own check) and wrap work whose
 cost is a spike in `ctx.memory.peak(label, () => work)`; never inside a timed window, and never in a timing scenario.
+A control, another application read beside the app (`welcome`'s empty window), is `ctx.memory.control(label, source,
+seen)`: read as `rest` reads the app and kept with its readings, its processes added to `seen` for the scenario's own
+teardown of it, never the app's sweep.
 In `measure(trace, fixture, readings)`, `readingMetrics(m, label, reading)` for each and `growthMetrics(m, name, from,
 to)` for each difference; a reading the run did not take is reported missing. Labels are lowercase-first words
 (`canvas`, `edit50`). A role one side of a comparison has in a reading and the other does not counts as none on the
