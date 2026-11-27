@@ -222,54 +222,66 @@
   .insp-image .insp-pick:not(:last-child) { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
   .insp-pick-tools { display: flex; align-items: center; gap: 6px; }
   .insp-pick-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; max-height: 260px; overflow: auto; padding: 2px; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
-  .insp-pick-tile { display: flex; flex-direction: column; gap: 3px; padding: 4px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-2); font-size: 11px; text-align: left; cursor: pointer; min-width: 0; }
-  .insp-pick-tile img, .insp-pick-tile > svg { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 4px; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border); }
+  .insp-pick-tile { display: flex; flex-direction: column; gap: 3px; padding: 4px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-2); font-size: 12px; text-align: left; cursor: pointer; min-width: 0; }
+  .insp-pick-tile img, .insp-pick-tile > svg { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: var(--r-xs); background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border); }
   .insp-pick-tile > svg { padding: 18%; color: var(--text-3); }
   .insp-pick-tile:hover { background: var(--hover); }
-  .insp-pick-id { margin-top: -2px; font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-  /* As in the icon grid: the chosen picture is a tinted tile, keyboard focus a ring inside it. */
-  .insp-pick-tile.current { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent); }
+  .insp-pick-id { margin-top: -2px; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  /* A chosen picture takes the house's selected face: raised, with a full control edge and its name in full ink. Keyboard
+     focus is the one blue outline, drawn inside the tile, so the two never read as each other. */
+  .insp-pick-tile.current { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
   .insp-pick-tile:focus-visible { outline-offset: -2px; }
+  /* The several-image picker: as many columns as the right panel has room for, three at its default width. */
+  .insp-pick-many { container-type: inline-size; scroll-margin-top: calc(var(--insp-head-h, 124px) + 44px); }
+  .insp-pick-many .insp-pick-grid { max-height: min(46vh, 380px); padding: 4px; }
+  /* Once there is a choice the grid gives up a little height, so the first rows of the order show above Add. */
+  .insp-pick-many.has-choice .insp-pick-grid { max-height: min(36vh, 300px); }
+  /* While the foot says what stops Add, the grid gives up more, so the order rows it names stay in view above it. */
+  .insp-pick-many.has-broken .insp-pick-grid { max-height: min(26vh, 220px); }
+  @container (min-width: 380px) { .insp-pick-many .insp-pick-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  @container (min-width: 470px) { .insp-pick-many .insp-pick-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
   .insp-pick-many .insp-pick-tile { position: relative; padding: 4px 4px 5px; }
   /* Two lines of name that keep the ending, so "team offsite … 1100" and "… 700" stay apart. */
-  .insp-pick-many .insp-pick-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; line-height: 1.3; }
-  .insp-pick-order-num { flex: none; min-width: 16px; font-size: 11px; font-weight: 600; color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
-  /* Add and Cancel stay in view while the author scrolls through the choice, set off from what scrolls under them. */
-  .insp-pick-many > .insp-pick-tools:last-child { position: sticky; bottom: 0; z-index: 1; padding: 8px 0 2px; border-top: 1px solid var(--border); background: var(--panel); }
-  .insp-pick-many { scroll-margin-top: 124px; }
+  .insp-pick-many .insp-pick-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; line-height: 16px; }
+  /* At the narrowest panel a name can take a third line rather than lose the ending that tells it apart. */
+  @container (max-width: 289px) { .insp-pick-many .insp-pick-name { -webkit-line-clamp: 3; } }
+  /* A picture with no file left: an empty frame, the same size as a picture. */
+  .insp-pick-frame { display: grid; place-items: center; width: 100%; aspect-ratio: 4 / 3; border-radius: var(--r-xs); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); }
+  .insp-pick-frame svg { width: 20px; height: 20px; color: var(--text-3); }
+  .insp-pick-skip { align-self: flex-start; margin-bottom: 4px; }
+  .insp-pick-skip:not(:focus) { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+  /* A tile that can't be chosen is drawn unavailable, never faded: the neutral fill and edge, quieter ink. Its picture
+     and any warning keep full strength. */
+  .insp-pick-many .insp-pick-tile[aria-disabled='true'] { cursor: not-allowed; background: var(--disabled-fill); color: var(--disabled-ink); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .insp-pick-many .insp-pick-tile.current[aria-disabled='true'] { color: var(--text-2); }
+  /* Add and Cancel, with what stops Add and the room left, stay in view while the author scrolls through the choice. */
+  .insp-pick-foot { position: sticky; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: 6px; padding: 8px 0 2px; border-top: 1px solid var(--border); background: var(--panel); }
+  .insp-pick-foot .insp-pick-tools { flex-wrap: wrap; }
+  .insp-pick-room { margin-left: auto; }
+  .insp-pick-fix { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .insp-pick-foot .field-error { margin: 0; }
   .insp-pick-many > .field { padding-top: 8px; border-top: 1px solid var(--border); }
-  .insp-pick-many .insp-pick-tile.missing img { opacity: 0.45; }
+  .insp-pick-order-num { flex: none; min-width: 16px; font-size: 12px; font-weight: 600; color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
   /* Logos and transparent pictures shown whole sit on the same neutral checker as in Assets, in every image picker and its preview. */
   .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { object-fit: contain; background-color: #e6e9ee; background-image: conic-gradient(#d3d8df 25%, transparent 0 50%, #d3d8df 0 75%, transparent 0); background-size: 10px 10px; }
   .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { padding: 2px; background-clip: content-box; background-origin: content-box; }
   :where(:root[data-appearance='dark']) {
     .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { background-color: #9aa2b0; background-image: conic-gradient(#8a93a2 25%, transparent 0 50%, #8a93a2 0 75%, transparent 0); }
   }
-  /* Room inside the scrolling grid for a focused tile's whole ring. */
-  .insp-pick-many .insp-pick-grid { padding: 4px; }
-  .insp-pick-order li.missing { color: var(--text-2); }
-  .insp-pick-order-thumb svg.insp-pick-order-warn { color: var(--red); }
-  .insp-pick-gone { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; gap: 3px; height: 16px; padding: 0 5px 0 3px; border-radius: var(--r-sm); background: rgb(150 32 28); color: #fff; font-size: 10px; font-weight: 600; }
-  /* A chosen tile keeps its order number in the corner: its warning sits under it. */
-  .insp-pick-many .insp-pick-tile.current.missing .insp-pick-gone { top: 28px; left: 7px; right: auto; }
-  .insp-pick-gone { max-width: calc(100% - 14px); white-space: nowrap; pointer-events: none; }
-  .insp-pick-gone svg { flex: none; width: 10px; height: 10px; }
-  .insp-pick-gone > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  /* The picker's chips follow the house chip shape. */
-  .insp-pick-many .insp-pick-num, .insp-pick-many .insp-count { border-radius: var(--r-sm); }
-  .insp-pick-order-miss { flex: none; padding: 0 5px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--red); font-size: 11px; font-weight: 600; }
-  .insp-pick-order-name { display: flex; min-width: 0; gap: 4px; }
-  .insp-pick-order-end { flex: none; }
   .insp-pick-nomatch { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .insp-pick-result { margin: -2px 0 0; }
-  /* A tile that can't be chosen dims its picture only: its name and any warning keep full contrast. */
-  .insp-pick-many .insp-pick-tile[aria-disabled='true'] { cursor: not-allowed; color: var(--text-3); }
-  .insp-pick-many .insp-pick-tile[aria-disabled='true'] img { opacity: 0.45; }
-  .insp-pick-num { position: absolute; top: 6px; left: 6px; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: 9px; background: var(--accent-fill); color: var(--on-accent); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--panel); }
+  .insp-pick-num { position: absolute; top: 6px; left: 6px; min-width: 20px; height: 20px; padding: 0 5px; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--accent-fill); color: var(--on-accent); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--panel); }
+  .insp-pick-many .insp-count { border-radius: var(--r-sm); }
   .insp-pick-order { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-  .insp-pick-order li { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 2px 0 4px; border-radius: var(--r-sm); font-size: 12px; color: var(--text); }
+  .insp-pick-order li { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 2px 3px 4px; border-radius: var(--r-sm); font-size: 12px; color: var(--text); }
   .insp-pick-order li:hover { background: var(--hover); }
-  .insp-pick-order-thumb, .list-editor-thumb { flex: none; display: grid; place-items: center; overflow: hidden; border-radius: 3px; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border); }
+  /* The whole name, wrapped, then what is wrong with it in words. */
+  .insp-pick-order-name { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; line-height: 16px; overflow-wrap: anywhere; }
+  /* Missing, in the grid and in the order alike: the red chip with its glyph and word. */
+  .insp-pick-gone, .insp-pick-order-miss { display: inline-flex; align-self: flex-start; align-items: center; gap: 3px; min-height: 18px; padding: 0 6px 0 4px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--red-ink); font-size: 11px; font-weight: 600; line-height: 14px; white-space: nowrap; }
+  .insp-pick-gone svg, .insp-pick-order-miss svg { flex: none; width: 11px; height: 11px; }
+  .insp-pick-order-acts { flex: none; display: flex; gap: 2px; }
+  .insp-pick-order-thumb, .list-editor-thumb { flex: none; display: grid; place-items: center; overflow: hidden; border-radius: var(--r-xs); background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border); }
   .insp-pick-order-thumb { width: 32px; height: 24px; }
   .list-editor-thumb { width: 24px; height: 18px; }
   .insp-pick-order-thumb img, .list-editor-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
