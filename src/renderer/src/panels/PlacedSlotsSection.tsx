@@ -3,6 +3,7 @@ import { ArrowRight, ArrowUpFromLine, Plus, Trash2 } from 'lucide-react';
 import type { ElementRef, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { refKey } from '@shared/types';
 import { Section } from '../components/ui';
+import { BlockedNote, BlockedStatus, useProjectBlock } from '../components/BlockedNote';
 import { getState, useStore, type State } from '../store';
 import { emptySlot, insertHere } from '../lib/actions';
 import { slotItems, type QuickItem } from '../lib/inline-insert';
@@ -55,9 +56,8 @@ const shownNow = (s: State) =>
 
 function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props, 'level'> & { rows: SlotOverview[] }) {
   const id = useId();
-  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
-  const aiBusy = useStore((s) => !!s.snapshot?.aiBusy);
-  const locked = readOnly ? 'This project is open read-only, so its slots can’t be changed.' : aiBusy ? 'The AI is making changes. Stop it to change what the slots hold.' : null;
+  const hold = useProjectBlock('change what the slots hold');
+  const locked = hold?.text ?? null;
   const moveWhy = moveOutRefusal(owner);
   const [adding, setAdding] = useState<Adding | null>(null);
   // A second choice from a list already acted on adds nothing.
@@ -113,11 +113,9 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
 
   return (
     <>
-      {locked && (
-        <p className="insp-note muted" id={`${id}-locked`}>
-          {locked}
-        </p>
-      )}
+      {/* Mounted before the lock comes, so it is heard when the AI starts or the project turns read-only. */}
+      <BlockedStatus block={hold} lifted="You can change what the slots hold now." />
+      {hold && <BlockedNote block={hold} id={`${id}-locked`} live={false} className="slots-blocked" />}
       {rows.map((row, i) => {
         const addWhy = row.damaged ? 'Undo the change that damaged this slot before adding to it.' : row.closed;
         const takeOutWhy = row.shared ?? moveWhy;

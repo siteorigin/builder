@@ -3,6 +3,7 @@ import { Sparkles } from 'lucide-react';
 import { useStore } from '../store';
 import { openSeoChat } from '../lib/actions';
 import type { SeoHandoff } from '../lib/seoHandoff';
+import { aiRunning } from '../lib/blocked';
 
 /**
  * Fix with AI and Optimize with AI (#599): opens the AI panel with a request in its message box, ready to send or
@@ -12,7 +13,8 @@ import type { SeoHandoff } from '../lib/seoHandoff';
  * waits, as Write with AI does.
  */
 export function AiHandoffButton({ label, request, disabled, describedBy, className = 'btn btn-sm' }: { label: string; request: () => SeoHandoff | null | Promise<SeoHandoff | null>; disabled?: boolean; describedBy?: string; className?: string }) {
-  const working = useStore((s) => !!s.runStatus);
+  const runStatus = useStore((s) => s.runStatus);
+  const working = !!runStatus;
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   const pending = useRef(false);
   if (readOnly) return null;
@@ -22,7 +24,7 @@ export function AiHandoffButton({ label, request, disabled, describedBy, classNa
       className={className}
       disabled={disabled || working}
       aria-describedby={describedBy}
-      title={working ? 'Available once the AI finishes' : 'Open the AI panel with this request in the message box, ready to send'}
+      title={working ? aiRunning(runStatus, 'use this') : 'Open the AI panel with this request in the message box, ready to send'}
       onClick={() => {
         if (pending.current) return;
         let r: ReturnType<typeof request>;

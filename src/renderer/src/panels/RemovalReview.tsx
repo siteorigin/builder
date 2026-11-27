@@ -11,6 +11,7 @@ import type { OwnerRef } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { commitOps, getState, setState, showLayer, toast, undoAction, useStore } from '../store';
 import { Modal } from '../components/ui';
+import { BlockedNote, BlockedStatus, projectBlock, type Blocked } from '../components/BlockedNote';
 import { treeFor } from '../lib/model';
 import { openEditorDestination } from '../lib/open-destination';
 import { componentRemovalReview, planSlotRemoval, type PlacementRow } from '../lib/removal-review';
@@ -53,13 +54,15 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
   const rows = busy && confirmed.current ? confirmed.current.rows : (plan?.rows ?? review?.rows ?? []);
   const items = busy && confirmed.current ? confirmed.current.items : (plan?.items ?? 0);
   const dependents = review?.dependents ?? [];
-  const readOnly = !!snap?.readOnly;
   // What the button removes now: the slot with its content, the slot alone once nothing fills it, or the component
   // once nothing uses it. Nothing while something is in the way that this review can't remove.
   const operations: EditOperation[] | undefined = slot !== undefined ? plan?.operations : review && !review.rows.length && !dependents.length ? [{ type: 'component.remove', definitionId }] : undefined;
-  const problem = gone || busy ? undefined : readOnly ? 'This project is open read-only, so nothing can be removed.' : snap?.aiBusy && operations ? 'The AI is changing the project. Removing waits until it has finished.' : plan?.problem;
+  // Read-only, or the AI at work while there is something to remove, only holds the review: said in the info face.
+  const runStatus = useStore((s) => s.runStatus);
+  const hold: Blocked | null = gone || busy ? null : projectBlock({ readOnly: snap?.readOnly, aiBusy: !!snap?.aiBusy && !!operations }, slot !== undefined ? 'remove this slot' : 'delete this component', runStatus);
+  const problem = gone || busy || hold ? undefined : plan?.problem;
   // Whether the review can remove anything now, which decides what it says it does.
-  const can = !!operations && !problem && !busy;
+  const can = !!operations && !problem && !hold && !busy;
   // The revision the remove button was pressed on: a press the project changed under (a held Space, a slow click)
   // acts on content the author was not shown, so it is let go and a fresh press is needed.
   const pressed = useRef<number | null>(null);
@@ -86,7 +89,7 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
     const shown = pressed.current;
     pressed.current = null;
     if (shown !== null && shown !== snap?.revision) return;
-    if (!operations || busy || problem || !snap || !now || now.workspaceKey !== opening) return;
+    if (!operations || busy || problem || hold || !snap || !now || now.workspaceKey !== opening) return;
     const what = slot === undefined ? `Delete component ${name}` : rows.length ? `Remove ${label} slot and its content` : `Remove ${label} slot`;
     confirmed.current = { rows, items };
     setBusy(true);
@@ -136,7 +139,7 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
       icon={<Badge icon={<Trash2 />} tone={gone || problem ? 'caution' : 'neutral'} />}
       onClose={close}
       busy={busy}
-      describedBy={gone ? GONE_ID : `removal-review-desc removal-review-subject${details.length ? ' removal-review-details' : ''}${problem ? ` ${GONE_ID}` : ''}`}
+      describedBy={gone ? GONE_ID : `removal-review-desc removal-review-subject${details.length ? ' removal-review-details' : ''}${problem || hold ? ` ${GONE_ID}` : ''}`}
       footer={
         gone ? (
           <GoneClose onClose={close} />
@@ -146,7 +149,7 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
               {operations ? 'Cancel' : 'Close'}
             </SafeButton>
             {operations && (
-              <button className="btn btn-danger" disabled={busy || !!problem} onPointerDown={arm} onKeyDown={(e) => {
+              <button className="btn btn-danger" disabled={busy || !!problem || !!hold} onPointerDown={arm} onKeyDown={(e) => {
                   if (e.key !== ' ' && e.key !== 'Enter') return;
                   // A held key repeats: only its first press counts, and only for what was shown then.
                   if (e.repeat) return e.preventDefault();
@@ -215,6 +218,8 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
             </div>
           )}
           {details.length > 0 && <Details id="removal-review-details" items={details} />}
+          <BlockedStatus block={hold} lifted={slot !== undefined ? 'You can remove this slot now.' : 'You can delete this component now.'} />
+          {hold && <BlockedNote block={hold} id={GONE_ID} live={false} />}
           {problem && <GoneNotice>{problem}</GoneNotice>}
         </div>
       )}

@@ -1,12 +1,13 @@
 import './StylePaste.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, ChevronRight, CircleCheck, ClipboardPaste, Eraser, Info, Lock, Paintbrush, Palette, X } from 'lucide-react';
+import { ArrowRight, ChevronRight, CircleCheck, ClipboardPaste, Eraser, Info, Paintbrush, Palette, X } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';
 import type { ElementRef, StyleValue, TokenDef } from '@shared/types';
 import { STYLE_PROP_MAP, cssRivals } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
-import { ChoiceField, Modal, Spinner, type MenuItem } from '../components/ui';
+import { ChoiceField, Modal, type MenuItem } from '../components/ui';
 import { ColorChip } from '../components/ColorPick';
+import { BlockedNote, useProjectBlock } from '../components/BlockedNote';
 import { commitOps, dismissToast, getState, setState, toast, undoAction, useStore, type State } from '../store';
 import { SCOPE_LABELS, STATE_LABELS, captureStyle, changeSize, planStylePaste, styleSelection, type PasteRow, type PasteScope } from '../lib/style-copy';
 import { CONTAINER_SCOPES, isContainerScope, styleScopeKey, type StyleState } from '@shared/types';
@@ -216,14 +217,13 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
     : same.length
       ? `${destination?.label} already matches for ${SCOPE_LABELS[scope]}.`
       : `The copy has no changes for ${SCOPE_LABELS[scope]} that apply here.`;
-  // Why Paste style can't be pressed, said once, icon first, beside it.
-  const blocked = readOnly
-    ? { icon: <Lock aria-hidden="true" />, text: 'This project is open read-only.' }
-    : aiBusy
-      ? { icon: <Spinner decorative />, text: 'The AI is changing the site. Paste once it’s done.' }
-      : destination && !changing.length
-        ? { icon: <Info aria-hidden="true" />, text: empty }
-        : null;
+  // Why Paste style can't be pressed, said once: read-only or the AI at work on a row of its own above the buttons,
+  // anything else beside them.
+  // Held only while there is something to paste: with nothing to change, that is what the footer says instead.
+  const projectHold = useProjectBlock('paste');
+  const hold = changing.length ? projectHold : null;
+  const heldId = useId();
+  const blocked = hold ?? (destination && !changing.length ? { icon: <Info aria-hidden="true" />, text: empty } : null);
   const showSkipped = skippedOpen ?? !changing.length;
   // The copy is gone, or the selection takes no style now: there is nothing to review, only the reason and a way out.
   const gone = !copy
@@ -272,7 +272,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
       icon={<ClipboardPaste />}
       onClose={close}
       busy={busy}
-      describedBy={summaryId}
+      describedBy={`${summaryId}${hold ? ` ${heldId}` : ''}`}
       footer={
         gone ? (
           <button ref={closeRef} className="btn" onClick={close}>
@@ -280,16 +280,18 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
           </button>
         ) : (
           <>
-            {blocked && (
+            {hold && <BlockedNote block={hold} id={heldId} live={false} className="foot-blocked" />}
+            {blocked && 'icon' in blocked && (
               <span className="paste-foot-note grow">
                 {blocked.icon}
                 {blocked.text}
               </span>
             )}
+            {hold && <span className="grow" />}
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn btn-primary paste-go" disabled={!canPaste} onClick={() => void paste()}>
+            <button className="btn btn-primary paste-go" disabled={!canPaste} aria-describedby={hold ? heldId : undefined} onClick={() => void paste()}>
               {busy ? 'Pasting…' : changing.length ? `Paste ${plural(changing.length, 'style')}` : 'Paste style'}
             </button>
           </>

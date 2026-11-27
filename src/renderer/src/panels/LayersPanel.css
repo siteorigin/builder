@@ -161,6 +161,7 @@
   .outline-view { container: outline / inline-size; padding: 0 12px 12px 10px; }
   .outline-summary { padding: 0 0 10px 4px; }
   .outline-summary:empty { padding: 0; }
+  .outline-held { margin: 0 0 8px 4px; }
   .outline-summary-action { display: flex; align-items: center; gap: 5px; height: auto; min-height: 26px; max-width: 100%; margin-top: 8px; padding-block: 4px; white-space: normal; text-align: start; }
   .outline-summary-action svg, .outline-empty .btn svg { width: 14px; height: 14px; }
   /* Something to check: the neutral note with the warning's amber icon, the hue the status bar and SEO use for it. A

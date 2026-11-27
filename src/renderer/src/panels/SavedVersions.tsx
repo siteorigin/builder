@@ -1,10 +1,11 @@
 import './SavedVersions.css';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArchiveRestore, ArrowLeft, Bookmark, BookmarkPlus, Check, CircleAlert, Lock, Pencil, Sparkles, Trash2 } from 'lucide-react';
+import { ArchiveRestore, ArrowLeft, Bookmark, BookmarkPlus, Check, CircleAlert, Pencil, Trash2 } from 'lucide-react';
 import type { SavedVersionInfo, VersionReview } from '@shared/api';
 import { api, confirmDialog, getState, setState, toast, undoAction, useStore } from '../store';
 import { Spinner } from '../components/ui';
+import { BlockedNote, BlockedStatus, projectBlock, type Blocked } from '../components/BlockedNote';
 import { settleEdits } from '../lib/leave';
 import { formatBytes, plural } from '../lib/storage';
 import { describeReview, fileName, restoredNotice, savedAt } from '../lib/versions';
@@ -26,14 +27,8 @@ async function settled(): Promise<string | null> {
  * that tab: the AI is at work (Changes can't step; versions can't be saved or restored, though they can be reviewed,
  * renamed and deleted), or the project is open read-only. Null when nothing is held.
  */
-export function historyLock(snap: { readOnly?: { reason: string } | null; aiBusy?: boolean } | null | undefined, tab: 'changes' | 'versions'): { text: string; icon: ReactNode } | null {
-  if (snap?.readOnly) return { text: snap.readOnly.reason, icon: <Lock aria-hidden="true" /> };
-  if (snap?.aiBusy)
-    return {
-      text: tab === 'changes' ? 'The AI is making changes. Undo and redo are paused until it finishes.' : 'The AI is making changes. You can look over saved versions now, and save or restore one once it finishes.',
-      icon: <Sparkles aria-hidden="true" />
-    };
-  return null;
+export function historyLock(snap: { readOnly?: { reason: string } | null; aiBusy?: boolean } | null | undefined, tab: 'changes' | 'versions', runStatus?: string | null): Blocked | null {
+  return projectBlock(snap, tab === 'changes' ? 'undo and redo' : 'save or restore a version', runStatus);
 }
 
 /** A pinned note: a neutral state (role status) or a failure (role alert, in the danger face). */
@@ -53,6 +48,7 @@ export function HistoryNote({ id, tone, icon, children }: { id?: string; tone: '
  */
 export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; foot: HTMLElement | null; onBusy: (busy: boolean) => void }) {
   const snap = useStore((s) => s.snapshot);
+  const runStatus = useStore((s) => s.runStatus);
   const info = snap?.versions;
   const list = info?.list ?? [];
   const [name, setName] = useState('');
@@ -71,7 +67,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
   // The review asked for last: an answer to an earlier one (the author went back, and opened another) is dropped.
   const asked = useRef(0);
   const [reviewSaid, setReviewSaid] = useState('');
-  const lock = historyLock(snap, 'versions');
+  const lock = historyLock(snap, 'versions', runStatus);
   const readOnly = snap?.readOnly?.reason ?? null;
   // Saving and restoring wait for the AI; renaming and deleting a version change only the versions, as deleting always has.
   const blocked = lock?.text ?? info?.problem ?? null;
@@ -236,7 +232,8 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
       tone: 'danger',
       icon: 'delete'
     });
-    if (!yes || getState().snapshot?.workspaceKey !== key) return;
+    // Read-only since the question was asked: nothing is deleted, and History's note, back in view, says why.
+    if (!yes || getState().snapshot?.workspaceKey !== key || getState().snapshot?.readOnly) return;
     setBusy(true);
     const r = await api.project.deleteVersion(version.id, key).catch((err: Error) => ({ ok: false, message: err.message, freed: undefined }));
     setBusy(false);
@@ -263,10 +260,9 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
   const failure = error ?? info?.problem ?? null;
   const note = (
     <>
+      {active && <BlockedStatus block={lock} lifted="You can save or restore a version now." />}
       {lock && (
-        <HistoryNote tone="info" icon={lock.icon}>
-          {lock.text}
-        </HistoryNote>
+        <BlockedNote block={lock} live={false} />
       )}
       {failure && (
         <HistoryNote tone="danger" icon={<CircleAlert aria-hidden="true" />}>

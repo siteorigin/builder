@@ -20,6 +20,7 @@ import { dialogFixes, nothingToFix, pagesSummaryText, sampleContactsHeading, seo
 import { auditForHealth, seoCountsText, seoPreflight, type SeoAuditResult } from '../lib/seo-health';
 import { findingHandoff } from '../lib/seoHandoff';
 import { AiHandoffButton } from '../components/AiHandoff';
+import { BlockedNote, aiAwaiting, aiChanging, readOnlyBlock } from '../components/BlockedNote';
 import './ExportModal.css';
 
 type ExportKind = 'static' | 'source';
@@ -513,7 +514,9 @@ function listedFixes(state: ProjectState, kept: readonly string[]): string[] {
 
 export function ExportModal() {
   // A read-only question changes nothing, so exporting goes on while it runs.
-  const aiBusy = useStore((s) => !!editRunStatus(s));
+  // An edit request in the chat, or the project held for the AI: either way the export waits for it.
+  const aiBusy = useStore((s) => !!editRunStatus(s) || !!s.snapshot?.aiBusy);
+  const awaiting = useStore((s) => s.runStatus === 'awaiting-input');
   const conflicts = useStore((s) => s.snapshot?.conflicts.length ?? 0);
   // Kept by the project, not this dialog: closing and reopening it still shows what was handed off.
   const recent = useStore((s) => s.snapshot?.recentExports ?? NO_EXPORTS);
@@ -524,7 +527,9 @@ export function ExportModal() {
   const draftTargets = new Set(draftLinks.map((l) => l.pageId ?? `entry:${l.entryId}`)).size;
   // The starter's sample contact details the website would publish: reviewed, apart from those kept on purpose.
   const keptValues = useStore((s) => s.keptSamples);
-  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
+  // Export builds from the project folder and needs its lock, so a read-only project exports nothing (controller.ts).
+  const readOnlyReason = useStore((s) => s.snapshot?.readOnly?.reason ?? null);
+  const readOnly = readOnlyReason !== null;
   const samples = useMemo(() => (state ? sampleContactMatches(state) : []), [state]);
   const samplesToReview = samples.filter((g) => !keptValues.includes(g.value));
   const samplesKept = samples.filter((g) => keptValues.includes(g.value));
@@ -545,7 +550,7 @@ export function ExportModal() {
   const shortWindow = useShortWindow();
   const longLinks = draftLinks.length > LONG_LINK_LIST || shortWindow;
   const close = () => !busy && setState({ modal: null });
-  const blocked = aiBusy || conflicts > 0;
+  const blocked = readOnly || aiBusy || conflicts > 0;
   // The last report stays until a new one replaces it, so cancelling the save picker on a retry keeps it to copy.
   const shown = !busy && result?.message ? result : null;
   const succeeded = !!shown?.ok;
@@ -577,7 +582,17 @@ export function ExportModal() {
   // The first control the author can see and use: never one folded away or unavailable.
   const firstControl = () => [...(rootRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled):not([aria-disabled="true"])') ?? [])].find((b) => b.offsetParent !== null);
   // Said once when it changes: a note that simply appears or disappears is not reliably announced.
-  const availability = aiBusy ? 'Wait for the AI to finish before exporting.' : conflicts > 0 ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : draftLinks.length ? 'The website cannot be exported until its links to drafts are changed. The editable project can still be exported.' : 'Both exports are available.';
+  // With something else also in the way, the AI's note can't promise an export once it finishes: it says the export
+  // waits, and the other note says what else to do.
+  const otherBlocker = conflicts > 0 || draftLinks.length > 0;
+  const aiNote = otherBlocker
+    ? awaiting
+      ? 'The AI is waiting for your answer in the AI panel. Exporting waits until you answer and it finishes.'
+      : 'The AI is making changes. Exporting waits until it finishes.'
+    : awaiting
+      ? aiAwaiting('export')
+      : aiChanging('export');
+  const availability = readOnlyReason ?? (aiBusy ? aiNote : conflicts > 0 ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : draftLinks.length ? 'The website cannot be exported until its links to drafts are changed. The editable project can still be exported.' : 'Both exports are available.');
   const [announced, setAnnounced] = useState('');
   const lastAvailability = useRef(availability);
   useEffect(() => {
@@ -638,7 +653,7 @@ export function ExportModal() {
     setNotesOpen(false);
     setResult(null);
   };
-  const blockedBy = [aiBusy && 'export-blocked-ai', conflicts > 0 && 'export-blocked-conflict'].filter(Boolean) as string[];
+  const blockedBy = [readOnly && 'export-blocked-read-only', aiBusy && !readOnly && 'export-blocked-ai', conflicts > 0 && 'export-blocked-conflict'].filter(Boolean) as string[];
   const websiteBlockedBy = [...blockedBy, ...(draftLinks.length ? ['export-draft-links-summary'] : [])];
   const cardState = (kind: ExportKind) => (busy === kind ? ' is-running' : '');
   const formatWords = format === 'zip' ? 'in one ZIP file' : 'as a folder';
@@ -720,7 +735,7 @@ export function ExportModal() {
     <Modal
       title="Export your website"
       icon={<Upload />}
-      describedBy={succeeded ? undefined : aiBusy ? 'export-blocked-ai' : conflicts > 0 ? 'export-blocked-conflict' : draftLinks.length ? 'export-draft-links-summary' : undefined}
+      describedBy={succeeded ? undefined : readOnly ? 'export-blocked-read-only' : aiBusy ? 'export-blocked-ai' : conflicts > 0 ? 'export-blocked-conflict' : draftLinks.length ? 'export-draft-links-summary' : undefined}
       onClose={close}
       busy={!!busy}
       footer={
@@ -813,15 +828,11 @@ export function ExportModal() {
         ) : (
           <>
             {!shown && !busy && <p className="export-intro">Host it anywhere or hand it to a developer. It runs without SiteOrigin Builder.</p>}
-            {aiBusy && (
-              // A wait, not a fault: it clears itself, so it is drawn as work in progress rather than an error.
-              <div className="scope-note info export-blocker">
-                <Spinner decorative />
-                <span className="export-note-body export-blocker-text" id="export-blocked-ai">
-                  <strong>Both exports wait for the AI to finish.</strong>
-                  <span>They become available as soon as it’s done.</span>
-                </span>
-              </div>
+            {/* A state, not a fault: read-only or the AI at work, said as every dialog says it; `availability` announces the change. */}
+            {readOnly ? (
+              <BlockedNote block={readOnlyBlock({ readOnly: { reason: readOnlyReason } })!} id="export-blocked-read-only" live={false} className="export-blocker" />
+            ) : (
+              aiBusy && <BlockedNote block={{ kind: 'ai', text: aiNote }} id="export-blocked-ai" live={false} className="export-blocker" />
             )}
             {conflicts > 0 && (
               <div className="scope-note danger export-blocker">

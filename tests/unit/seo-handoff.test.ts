@@ -327,13 +327,14 @@ describe('opening the chat with the request', () => {
   it('waits while the AI works on another request, or while the conversation loads', async () => {
     store.setState({ activeRunId: 'run_1', runStatus: 'awaiting-input' });
     expect(await actions.openSeoChat(toAbout)).toBe(false);
+    expect(store.getState().toasts.map((t) => t.text)).toEqual(['The AI is waiting for your answer in the AI panel. You can try again once you answer and it finishes.']);
     store.setState({ toasts: [], runStatus: 'running' });
     expect(await actions.openSeoChat(toAbout)).toBe(false);
     store.setState({ activeRunId: null, runStatus: null, conversation: null });
     expect(await actions.openSeoChat(toAbout)).toBe(false);
     const s = store.getState();
     expect([s.pageId, s.rightTab, s.chatDrafts]).toEqual([home, 'inspect', {}]);
-    expect(s.toasts.map((t) => t.text)).toEqual(['The AI is still working on a request. Try again once it has finished.', 'The AI conversation is still loading. Try again in a moment.']);
+    expect(s.toasts.map((t) => t.text)).toEqual(['The AI is working. You can try again once it finishes.', 'The AI conversation is still loading. Try again in a moment.']);
   });
 
   it('opens once the last request has ended, though the chat still names that run', async () => {

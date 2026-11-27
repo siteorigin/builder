@@ -618,9 +618,9 @@ describe('placing a library image from Assets (issue #13)', () => {
     store.setState({ mode: 'edit' });
     // What the project itself says: the AI is working on it, it is read-only, or the picture's file is missing.
     store.setState({ snapshot: { ...snapshot()!, aiBusy: true } });
-    expect(actions.imagePlacement()).toEqual({ at: null, reason: 'The AI is making changes. Stop it to place the image.' });
+    expect(actions.imagePlacement()).toEqual({ at: null, reason: 'The AI is making changes. You can place the image once it finishes.' });
     store.setState({ snapshot: { ...snapshot()!, readOnly: { reason: 'Made by a newer version.' } } as unknown as ProjectSnapshot });
-    expect(actions.imagePlacement()).toEqual({ at: null, reason: 'This project is open read-only, so the image can’t be placed.' });
+    expect(actions.imagePlacement()).toEqual({ at: null, reason: 'Made by a newer version.' });
     store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
     expect(await actions.placeAsset(photo.id, actions.imagePlacement().key!)).toBe(false);
     expect(lastToast()).toMatchObject({ kind: 'error', text: 'Locate the file to place this image.' });
@@ -1128,9 +1128,9 @@ describe('placing a library image from Assets (issue #13)', () => {
       store.setState({ mode: 'edit', definitionMode: { definitionId: (page().nodes[hero] as InstanceNode).definitionId, returnPageId: page().id } });
       await refused('Finish editing this component to place the image on a page.');
       store.setState({ definitionMode: null, snapshot: { ...snapshot()!, aiBusy: true } });
-      await refused('The AI is making changes. Stop it to place the image.');
+      await refused('The AI is making changes. You can place the image once it finishes.');
       store.setState({ snapshot: { ...snapshot()!, readOnly: { reason: 'Made by a newer version.' } } as unknown as ProjectSnapshot });
-      await refused('This project is open read-only, so the image can’t be placed.');
+      await refused('Made by a newer version.');
       store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
       await refused('Locate the file to place this image.');
       // Smaller copies missing: the page shows those, so they are made again first, as the Place on page button says.
@@ -1282,9 +1282,9 @@ describe('placing a library image from Assets (issue #13)', () => {
       store.setState({ mode: 'edit', definitionMode: { definitionId: (page().nodes[section] as InstanceNode).definitionId, returnPageId: page().id } });
       await refused('Finish editing this component to place the image on a page.');
       store.setState({ definitionMode: null, snapshot: { ...snapshot()!, aiBusy: true } });
-      await refused('The AI is making changes. Stop it to place the image.');
+      await refused('The AI is making changes. You can place the image once it finishes.');
       store.setState({ snapshot: { ...snapshot()!, readOnly: { reason: 'Made by a newer version.' } } as unknown as ProjectSnapshot });
-      await refused('This project is open read-only, so the image can’t be placed.');
+      await refused('Made by a newer version.');
       store.setState({ snapshot: { ...snapshot()!, missingAssets: [{ assetId: photo.id, original: true, variants: [] }] } as unknown as ProjectSnapshot });
       await refused('Locate the file to place this image.');
       expect(applyCalls).toBe(calls);

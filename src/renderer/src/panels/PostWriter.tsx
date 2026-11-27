@@ -67,7 +67,7 @@ function draftOutcome(o: CheckedOutcome): DraftSaveOutcome {
 function problemText(p: DraftProblem, noun = 'post'): string {
   switch (p.kind) {
     case 'busy':
-      return 'The AI is changing the site. Your text is saved as soon as it finishes.';
+      return 'The AI is making changes. Your text is saved once it finishes.';
     case 'changed':
       return `This ${noun}’s text was changed somewhere else while you were writing. Keep yours, or review the saved text and choose it instead.`;
     case 'gone':

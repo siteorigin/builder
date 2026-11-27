@@ -4,6 +4,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { displayName } from '@engine/tree';
 import { commitOps, getState, setState, useStore } from '../store';
 import { Field, Modal } from '../components/ui';
+import { BlockedNote, BlockedStatus, projectBlock, readOnlyBlock, type Blocked } from '../components/BlockedNote';
 import { isImeComposing } from '../lib/ime';
 import { SLOT_LABEL_MAX } from '../lib/slot-contract';
 import { defaultSlotLabel, turnIntoSlotOp, turnIntoSlotPreflight, turnIntoSlotScope, turnIntoSlotTarget, type SlotKeep } from '../lib/turn-into-slot';
@@ -61,7 +62,12 @@ export function TurnIntoSlotModal({ target, workspaceKey }: { target: ElementRef
   // Read as an editable project would be, so a read-only one says so rather than calling the container gone.
   const offered = st && node ? turnIntoSlotTarget({ state: st }, target) : null;
   const gone = !busy && !offered;
-  const problem = busy || gone ? null : snap?.readOnly ? 'This project is open read-only, so nothing can change.' : (offered?.problem ?? null);
+  // Read-only is a state, not a fault: said as the session's reason, in the info face, in place of the form.
+  const hold = busy || gone ? null : readOnlyBlock(snap);
+  const problem = busy || gone || hold ? null : (offered?.problem ?? null);
+  // The AI at work only holds the change: the form stays as it is, with why under it.
+  const runStatus = useStore((s) => s.runStatus);
+  const wait: Blocked | null = busy || gone || hold ? null : projectBlock({ aiBusy: snap?.aiBusy }, 'turn it into a slot', runStatus);
   const why = busy ? null : refused && refused.state === st ? refused.why : keep === 'none' ? (tried?.none ?? null) : null;
   const input = useSelectedOnOpen();
   const close = () => {
@@ -69,7 +75,7 @@ export function TurnIntoSlotModal({ target, workspaceKey }: { target: ElementRef
   };
   const labelError = label.trim() ? undefined : 'Enter a name for the slot.';
   const turn = async () => {
-    if (!keep || busy || labelError || problem || gone || why) return;
+    if (!keep || busy || labelError || problem || hold || wait || gone || why) return;
     setNotice(null);
     // Checked and planned against the project as it is now, and made only if nothing changes it first.
     const now = getState().snapshot;
@@ -122,24 +128,27 @@ export function TurnIntoSlotModal({ target, workspaceKey }: { target: ElementRef
       icon={<Badge icon={<SquareDashed />} tone={gone || problem ? 'caution' : 'definition'} />}
       onClose={close}
       busy={busy}
-      describedBy={gone || problem ? GONE_ID : 'turn-into-slot-desc turn-into-slot-subject turn-into-slot-details'}
+      describedBy={gone || problem || hold ? GONE_ID : `turn-into-slot-desc turn-into-slot-subject turn-into-slot-details${wait ? ' turn-into-slot-wait' : ''}`}
       footer={
-        gone || problem ? (
+        gone || problem || hold ? (
           <GoneClose onClose={close} />
         ) : (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn btn-primary" disabled={!keep || !!labelError || !!why || busy} onClick={() => void turn()}>
+            <button className="btn btn-primary" disabled={!keep || !!labelError || !!why || !!wait || busy} aria-describedby={wait ? 'turn-into-slot-wait' : undefined} onClick={() => void turn()}>
               {busy ? 'Turning into a slot…' : 'Turn into slot'}
             </button>
           </>
         )
       }
     >
+      <BlockedStatus block={hold ?? wait} lifted="You can turn it into a slot now." />
       {gone ? (
         <GoneNotice>{sameOpening ? <>{name} was removed, so nothing changed.</> : 'The project was closed or opened again, so nothing changed.'}</GoneNotice>
+      ) : hold ? (
+        <BlockedNote block={hold} id={GONE_ID} live={false} />
       ) : problem ? (
         <GoneNotice>{problem}</GoneNotice>
       ) : (
@@ -198,6 +207,7 @@ export function TurnIntoSlotModal({ target, workspaceKey }: { target: ElementRef
               {notice}
             </p>
           )}
+          {wait && <BlockedNote block={wait} id="turn-into-slot-wait" live={false} />}
         </div>
       )}
     </Modal>

@@ -4,6 +4,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { displayName, instancesOf } from '@engine/tree';
 import { commitOps, getState, setState, useStore } from '../store';
 import { Field, Modal } from '../components/ui';
+import { BlockedNote, BlockedStatus, projectBlock, readOnlyBlock, type Blocked } from '../components/BlockedNote';
 import { isImeComposing } from '../lib/ime';
 import { planRepeatAsList, repeatAsListPreflight, repeatAsListTarget, STARTER_ITEMS, type RepeatPlan } from '../lib/repeat-as-list';
 import { Badge, Count, Details, FormStatus, GONE_ID, GoneClose, GoneNotice, Subject, limitSaid, useSelectedOnOpen } from './Dialogs';
@@ -47,7 +48,12 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
   const ready = plan && !('problem' in plan) ? plan : busy ? confirmed.current : null;
   // The container is still there after the change, inside its new repeat: only one that went counts as gone.
   const gone = !busy && (!sameOpening || !node);
-  const problem = busy || gone ? null : snap?.readOnly ? 'This project is open read-only, so nothing can be repeated.' : plan && 'problem' in plan ? plan.problem : refused && refused.state === st ? refused.why : preflight;
+  // Read-only is a state, not a fault: said as the session's reason, in the info face, in place of the form.
+  const hold = busy || gone ? null : readOnlyBlock(snap);
+  const problem = busy || gone || hold ? null : plan && 'problem' in plan ? plan.problem : refused && refused.state === st ? refused.why : preflight;
+  // The AI at work only holds the change: the form stays as it is, with why under it.
+  const runStatus = useStore((s) => s.runStatus);
+  const wait: Blocked | null = busy || gone || hold ? null : projectBlock({ aiBusy: snap?.aiBusy }, 'repeat it as a list', runStatus);
   const input = useSelectedOnOpen();
   const close = () => {
     if (getState().modal === own) setState({ modal: null });
@@ -55,7 +61,7 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
   const labelError = label.trim() ? undefined : 'Enter a name for the list.';
   const placements = st && def ? instancesOf(st, def.id).length : 0;
   const repeat = async () => {
-    if (!ready || busy || labelError || problem) return;
+    if (!ready || busy || labelError || problem || hold || wait) return;
     // Checked and planned against the project as it is now, and made only if nothing changes it first.
     const now = getState().snapshot;
     if (!now || now.workspaceKey !== workspace || now.readOnly) return;
@@ -82,22 +88,23 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
       icon={<Badge icon={<Repeat />} tone={gone || problem ? 'caution' : 'definition'} />}
       onClose={close}
       busy={busy}
-      describedBy={gone || problem ? GONE_ID : 'repeat-list-desc repeat-list-subject repeat-list-details'}
+      describedBy={gone || problem || hold ? GONE_ID : `repeat-list-desc repeat-list-subject repeat-list-details${wait ? ' repeat-list-wait' : ''}`}
       footer={
-        gone || problem ? (
+        gone || problem || hold ? (
           <GoneClose onClose={close} />
         ) : (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className="btn btn-primary" disabled={!ready || !!labelError || busy} onClick={() => void repeat()}>
+            <button className="btn btn-primary" disabled={!ready || !!labelError || !!wait || busy} aria-describedby={wait ? 'repeat-list-wait' : undefined} onClick={() => void repeat()}>
               {busy ? 'Repeating…' : 'Repeat as list'}
             </button>
           </>
         )
       }
     >
+      <BlockedStatus block={hold ?? wait} lifted="You can repeat it as a list now." />
       {gone ? (
         <GoneNotice>
           {sameOpening ? (
@@ -108,6 +115,8 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
             'The project was closed or opened again, so nothing was repeated.'
           )}
         </GoneNotice>
+      ) : hold ? (
+        <BlockedNote block={hold} id={GONE_ID} live={false} />
       ) : problem ? (
         <GoneNotice>{problem}</GoneNotice>
       ) : (
@@ -140,6 +149,7 @@ export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef
               onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void repeat()}
             />
           </Field>
+          {wait && <BlockedNote block={wait} id="repeat-list-wait" live={false} />}
         </div>
       )}
     </Modal>
