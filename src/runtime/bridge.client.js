@@ -16,6 +16,12 @@ let selected = null; // descriptor
 let hovered = null;
 // The empty slots of the selected placement the editor draws Add buttons in (#657): measured with each outline.
 let trackedSlots = [];
+/**
+ * What the others in a live session are on (#768), for the editor to outline in their colors: each an element (`desc`)
+ * or a point on the page as shares of its whole width and height (`point`), under the editor's own key. Measured with
+ * the selection, and reported with it as `marks`: one box each, for those that show.
+ */
+let trackedMarks = [];
 /** The innermost element under the pointer, as last reported to the editor. */
 let pointerAt = null;
 /** The element `pointerAt` describes. */
@@ -420,6 +426,27 @@ let rectsPosted = '';
  */
 let timeRects = false;
 let measuringMs = 0;
+/** Where a point given as shares of the page's whole width and height is in the frame now: a box of no size. */
+function pointBox(point) {
+  const root = document.documentElement;
+  const width = Math.max(root.scrollWidth, document.body?.scrollWidth ?? 0);
+  const height = Math.max(root.scrollHeight, document.body?.scrollHeight ?? 0);
+  return { x: point.x * width - scrollX, y: point.y * height - scrollY, width: 0, height: 0 };
+}
+/** The marks a `track` names, as far as they are well formed: at most 32, each keyed, an element or a point. */
+function marksOf(list) {
+  if (!Array.isArray(list)) return [];
+  const share = (n) => typeof n === 'number' && n >= 0 && n <= 1;
+  return list
+    .flatMap((m) => {
+      if (!m || typeof m.key !== 'string' || m.key.length > 8192) return [];
+      const desc = m.desc && typeof m.desc.ctx === 'string' && typeof m.desc.node === 'string' ? m.desc : null;
+      const point = m.point && share(m.point.x) && share(m.point.y) ? { x: m.point.x, y: m.point.y } : null;
+      return desc || point ? [{ key: m.key, desc, point }] : [];
+    })
+    .slice(0, 32);
+}
+const sameMarks = (a, b) => a.length === b.length && a.every((m, i) => m.key === b[i].key && sameDesc(m.desc, b[i].desc) && m.point?.x === b[i].point?.x && m.point?.y === b[i].point?.y);
 function isSeparator(el) {
   return el.tagName === 'HR' || el.classList.contains('so-band') || el.classList.contains('so-band-icon');
 }
@@ -445,7 +472,12 @@ function sendRects() {
   const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   // Each tracked slot's placeholder where it first shows, with what it was measured for.
   const slots = mode === 'edit' ? trackedSlots.flatMap((desc) => { const box = findAll(desc).map(rectOf).find(Boolean); return box ? [{ desc, box }] : []; }) : [];
-  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
+  const marks = trackedMarks.flatMap((m) => {
+    // An element that shows nowhere at this width (a spotlight on a copy hidden here) falls back to its point.
+    const box = (m.desc ? findAll(m.desc).map(rectOf).find((r) => r && (r.width || r.height)) : null) ?? (m.point ? pointBox(m.point) : null);
+    return box ? [{ key: m.key, box }] : [];
+  });
+  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, marks, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
   const seen = JSON.stringify([navigationId, revision, report]);
   if (timeRects) measuringMs += performance.now() - t0;
   if (seen === rectsPosted) return;
@@ -5161,6 +5193,8 @@ window.addEventListener('message', async (e) => {
       if (shownHold && !sameDesc(shownHold.desc, selected)) shownHold = null;
       if (m.payload.hovered !== undefined) hovered = m.payload.hovered;
       trackedSlots = Array.isArray(m.payload.slots) ? m.payload.slots.filter((d) => d && typeof d.slot === 'string').slice(0, 50) : [];
+      const marksWere = trackedMarks;
+      trackedMarks = marksOf(m.payload.marks);
       timeRects = m.payload.timed === true;
       rectsPosted = '';
       // Only what is hovered changed, and the next frame has nothing to do before it measures (a reveal to put in place, a
@@ -5168,7 +5202,7 @@ window.addEventListener('message', async (e) => {
       // outline in its next frame, not the one after, and it keeps up with the pointer. The next frame measures again
       // either way, after what the page itself does in it (a component moving what the pointer reached), and reports
       // only what that changed.
-      const hoverOnly = !sameDesc(was.hovered, hovered) && sameDesc(was.selected, selected) && was.slots.length === trackedSlots.length && was.slots.every((d, i) => sameDesc(d, trackedSlots[i]));
+      const hoverOnly = !sameDesc(was.hovered, hovered) && sameDesc(was.selected, selected) && was.slots.length === trackedSlots.length && was.slots.every((d, i) => sameDesc(d, trackedSlots[i])) && sameMarks(marksWere, trackedMarks);
       if (hoverOnly && !revealDirty && !revealPlace && !pendingScroll && !shownHold && !keepHold) sendRects();
       scheduleRects();
       break;
@@ -5435,7 +5469,7 @@ window.addEventListener('message', async (e) => {
 window.addEventListener(
   'scroll',
   (e) => {
-    if (e.target === document || selected || reveal || (hovered && mode === 'edit')) scheduleRects();
+    if (e.target === document || selected || reveal || trackedMarks.length || (hovered && mode === 'edit')) scheduleRects();
   },
   { passive: true, capture: true }
 );
@@ -5478,7 +5512,7 @@ new MutationObserver(() => {
   // Outlines are measured again only while there is one to keep in place, or an element a scroll waits for. With
   // nothing selected, hovered while editing or revealed, the editor already has none, so a change to the page is
   // neither measured nor reported.
-  if (revealDirty || selected || pendingScroll || emptySpace || (hovered && mode === 'edit')) scheduleRects();
+  if (revealDirty || selected || pendingScroll || emptySpace || trackedMarks.length || (hovered && mode === 'edit')) scheduleRects();
   // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
   if (forced) markForced();
   // A text marker changing in place is watched too: the row being typed in may now show another list item.

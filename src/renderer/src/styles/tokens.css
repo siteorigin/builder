@@ -82,6 +82,18 @@
     --toast-action-ink: var(--ink);
     /* The canvas selection colour is the same in both themes: it sits on the user's website, not the app. */
     --select: #1766c0;
+    /* The others in a live session (#768), the same in both themes for the same reason: one color for each guest's
+       place in the room (the relay gives each its own) and one for the host. None is the selection's blue or the shared
+       header's green, and each holds white text at 4.5:1; a name always goes with the color, never the hue alone. */
+    --peer-0: #b42318;
+    --peer-1: #6941c6;
+    --peer-2: #b54708;
+    --peer-3: #0e7090;
+    --peer-4: #c11574;
+    --peer-5: #4e5ba6;
+    --peer-6: #7a5c00;
+    --peer-7: #3b7c0f;
+    --peer-host: #344054;
     --green: #0b6b45;
     --green-soft: rgb(11 107 69 / 0.1);
     --amber: #925600;

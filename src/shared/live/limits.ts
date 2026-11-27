@@ -5,7 +5,7 @@
  */
 
 /** Bumped on any change a peer built against the older contract would misread. A peer on another version is refused. */
-export const LIVE_PROTOCOL_VERSION = 1;
+export const LIVE_PROTOCOL_VERSION = 2;
 
 const KiB = 1024;
 const MiB = 1024 * KiB;

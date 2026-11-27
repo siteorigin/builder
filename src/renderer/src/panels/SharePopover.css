@@ -92,6 +92,11 @@
   .share-popover .live-row { display: flex; flex-direction: column; gap: 6px; padding: 7px 8px; border-radius: var(--r-sm); background: var(--panel-2); }
   .share-popover .live-name-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; margin: -2px 0; }
   .share-popover .live-name { min-width: 0; overflow-wrap: anywhere; }
+  /* Each guest's color on the canvas (#768), beside their name: a dot edged so it holds on the row's fill. */
+  .share-popover .peer-dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; background: var(--peer); box-shadow: 0 0 0 1px var(--raised); vertical-align: 0; }
+  .share-popover .live-where { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: -4px; font-size: 12px; overflow-wrap: anywhere; }
+  .share-popover .live-where .link-btn { font-size: 12px; }
+  .share-popover .live-where .link-btn svg { width: 13px; height: 13px; }
   /* Quiet on every row (it asks first, and a removed guest can ask again); red once it is pointed at or focused.
      End session keeps the one red label at rest. */
   .share-popover .live-remove { flex: none; margin: -2px -4px -2px 0; padding: 0 6px; }

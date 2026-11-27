@@ -2,12 +2,14 @@
 // session and copies its invite link, the waiting room admits and declines guests, and the roster changes roles,
 // sets a guest's own end of access, removes guests, locks and extends the room and ends it. Guests are played over
 // the relay's own sockets, as browsers would join, and each change is checked on their side as well as the host's.
-// Closing the project ends the session for everyone and leaves Share as it was.
+// Closing the project ends the session for everyone and leaves Share as it was. A collaborator's selection and a
+// guest's spotlight show on the canvas with their names, go to another page with the host, and go with the guest (#768).
 //
 // Run with the repository's TypeScript loader, which the relay harness needs: node --import tsx tests/e2e/live-share.mjs
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 import { joinGuest, redeemTicket, startRelay } from '../unit/relay-harness.ts';
 import { parseInviteLink } from '../../src/shared/live/relay-url.ts';
 
@@ -157,7 +159,7 @@ try {
   await eventually(async () => assert.equal(await dialog.getByRole('switch', { name: 'Lock session' }).getAttribute('aria-checked'), 'true'));
   const late = await relay.socket(`/s/${roomId}/ws`);
   guests.push(late);
-  late.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Dee' });
+  late.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Dee' });
   assert.equal((await late.next('guest:status')).status, 'locked', 'a locked room turns a new guest away');
   await dialog.getByRole('switch', { name: 'Lock session' }).click();
   assert.equal((await ann.guest.next('room:state')).locked, false);
@@ -170,6 +172,33 @@ try {
   assert.equal(extended.expiresAt, before + 30 * 60_000);
   await eventually(async () => assert.match(await share().innerText(), /Live · (59m|1h 00m)/));
 
+  step('a collaborator’s selection and a guest’s spotlight show on the canvas, in their colors, with their names (#768)');
+  await closeShare();
+  const pages = (await win.evaluate(() => window.builder.project.snapshot())).state.pages;
+  const onAbout = { owner: { kind: 'page', id: about.id }, instancePath: [], nodeId: pages[about.id].rootIds[0] };
+  ann.guest.send('guest-to-relay', { type: 'presence:update', presence: { pageId: about.id, viewportWidth: 1280, selection: onAbout, previewPath: '/about/' } });
+  const annOutline = win.locator(`.ov-peer.selection[data-peer="${ann.guestId}"]`);
+  await annOutline.waitFor({ state: 'attached' });
+  await win.locator('.ov-peer-tag', { hasText: /^Ann$/ }).waitFor({ state: 'attached' });
+  assert.match(await annOutline.getAttribute('style'), /--peer:\s*var\(--peer-0\)/, 'Ann shows in her own place in the palette');
+  dialog = await openShare();
+  await dialog.locator('.live-where', { hasText: 'on About' }).waitFor();
+  await closeShare();
+  // Bo points from the browser viewer, as its bridge reports a click: at the element on this page, then at Home.
+  bo.guest.send('guest-to-relay', { type: 'spotlight:point', spotlight: { previewPath: '/about/', target: onAbout, x: 0.5, y: 0.05 } });
+  await win.locator(`.ov-peer.spotlight[data-peer="${bo.guestId}"]`).waitFor({ state: 'attached' });
+  await win.locator('.ov-peer-tag.spotlight', { hasText: /^Bo$/ }).waitFor({ state: 'attached' });
+  await win.screenshot({ path: join(SHOTS, 'live-share-marks.png') });
+  await wait(600);
+  bo.guest.send('guest-to-relay', { type: 'spotlight:point', spotlight: { previewPath: '/', target: null, x: 0.5, y: 0.2 } });
+  const away = win.locator('.peer-away-row', { hasText: 'Bo pointed at Home' });
+  await away.waitFor();
+  await away.getByRole('button', { name: 'Go to page' }).click();
+  // On Home, the spot is ringed where it was pointed; Ann, on About, is outlined no longer.
+  await win.locator(`.ov-spot-dot[data-peer="${bo.guestId}"]`).waitFor({ state: 'attached' });
+  await eventually(async () => assert.equal(await annOutline.count(), 0, 'a collaborator on another page is not outlined here'));
+  dialog = await openShare();
+
   step('removing a guest');
   await dialog.getByRole('button', { name: 'Remove Bo' }).click();
   // Asked first, in the app's own dialog; the popover waits behind it.
@@ -177,6 +206,8 @@ try {
   await statusOf(bo.guest, 'kicked');
   await bo.guest.closed();
   await dialog.getByRole('region', { name: 'In the session (1)' }).waitFor();
+  // Whatever of Bo's the canvas showed goes with Bo.
+  await eventually(async () => assert.equal(await win.locator(`[data-peer="${bo.guestId}"]`).count(), 0, 'a removed guest’s spotlight is gone at once'), 2000);
 
   step('ending the session');
   await dialog.getByRole('button', { name: 'End session' }).click();
@@ -184,6 +215,7 @@ try {
   await statusOf(ann.guest, 'ended');
   await ann.guest.closed();
   await eventually(async () => assert.equal((await hostState()).phase, 'idle'));
+  assert.equal(await win.locator('.ov-peers [data-peer]').count(), 0, 'nothing of anyone’s shows once the session ends');
   await win.getByRole('dialog', { name: 'Share a live session' }).waitFor();
   assert.equal(await share().getAttribute('aria-label'), 'Share: start a live session');
   await closeShare();

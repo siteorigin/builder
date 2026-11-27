@@ -165,7 +165,7 @@ describe('joining', () => {
     await until(() => g.sockets.length, 'the socket');
     expect(g.socket().url).toBe(`ws://relay.localhost:8787/s/${ROOM}/ws`);
     g.socket().open();
-    expect(g.socket().sent[0]).toEqual({ type: 'guest:join', version: 1, displayName: 'Sarah Lee' });
+    expect(g.socket().sent[0]).toEqual({ type: 'guest:join', version: 2, displayName: 'Sarah Lee' });
     g.socket().receive(pending);
     const result = await joined;
     expect(result.ok && result.state.phase).toBe('waiting');
@@ -263,7 +263,7 @@ describe('keeping its place', () => {
     expect(g.manager.state).toMatchObject({ phase: 'admitted', reconnecting: true });
     await until(() => g.sockets.length === 2, 'the reconnect');
     g.sockets[1].open();
-    expect(g.sockets[1].sent[0]).toEqual({ type: 'guest:join', version: 1, displayName: 'Sarah Lee', resumeToken: 'resume-token-0123456789abcd' });
+    expect(g.sockets[1].sent[0]).toEqual({ type: 'guest:join', version: 2, displayName: 'Sarah Lee', resumeToken: 'resume-token-0123456789abcd' });
     g.sockets[1].receive(admitted({ previewTicket: 'ticket-after-the-drop-01' }));
     expect(g.manager.state).toMatchObject({ phase: 'admitted', reconnecting: false });
     expect(g.sockets[1].last('rpc:request')).toMatchObject({ method: 'project.snapshot' });
@@ -573,10 +573,88 @@ describe('presence', () => {
     const joinId = await inRoom(g);
     g.socket().receive({ type: 'presence:changed', participant: { kind: 'host' }, presence });
     g.socket().receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g-2' }, presence });
-    expect(g.presence.at(-1)).toEqual({ joinId, host: presence, guests: { 'g-2': presence } });
-    g.socket().receive({ type: 'room:roster', participants: [{ guestId: 'g-2', displayName: 'Tom', status: 'admitted', role: 'viewer', guestExpiresAt: null }] });
-    expect(g.presence.at(-1)).toEqual({ joinId, host: presence, guests: {} });
+    expect(g.presence.at(-1)).toEqual({ joinId, host: presence, guests: { 'g-2': presence }, activity: {} });
+    g.socket().receive({ type: 'room:roster', participants: [{ guestId: 'g-2', displayName: 'Tom', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 1, connected: true }] });
+    expect(g.presence.at(-1)).toEqual({ joinId, host: presence, guests: {}, activity: {} });
     expect(g.manager.state).toMatchObject({ participants: [{ guestId: 'g-2', displayName: 'Tom', role: 'viewer' }] });
+  });
+});
+
+describe('who is where, in color (#768)', () => {
+  const presence = { pageId: state.site.homePageId, viewportWidth: 1280, selection: null, previewPath: '/' };
+  const target = { owner: { kind: 'page' as const, id: state.site.homePageId }, instancePath: [], nodeId: 'n_title' };
+  const tom = (over: Record<string, unknown> = {}) => ({ guestId: 'g-2', displayName: 'Tom', status: 'admitted', role: 'collaborator', guestExpiresAt: null, colorSlot: 1, connected: true, ...over });
+  const me = { guestId: 'g-1', displayName: 'Sarah Lee', status: 'admitted', role: 'collaborator', guestExpiresAt: null, colorSlot: 0, connected: true };
+
+  it('lists each participant with its palette place and whether it is connected', async () => {
+    const g = guest();
+    await inRoom(g);
+    g.socket().receive({ type: 'room:roster', participants: [me, tom({ connected: false })] });
+    expect(g.manager.state).toMatchObject({ participants: [{ guestId: 'g-1', colorSlot: 0, connected: true }, { guestId: 'g-2', colorSlot: 1, connected: false }] });
+  });
+
+  it('stops showing a collaborator whose connection dropped', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    g.socket().receive({ type: 'room:roster', participants: [me, tom()] });
+    g.socket().receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g-2' }, presence });
+    g.socket().receive({ type: 'activity:edited', guestId: 'g-2', target });
+    expect(g.presence.at(-1)).toMatchObject({ joinId, guests: { 'g-2': presence }, activity: { 'g-2': { target } } });
+    g.socket().receive({ type: 'room:roster', participants: [me, tom({ connected: false })] });
+    expect(g.presence.at(-1)).toEqual({ joinId, host: null, guests: {}, activity: {} });
+  });
+
+  it('shows another collaborator’s edit for a while, and none of a viewer, of itself or of one not connected', async () => {
+    const g = guest({ activityMs: 40 });
+    const joinId = await inRoom(g);
+    g.socket().receive({ type: 'room:roster', participants: [me, tom(), tom({ guestId: 'g-3', displayName: 'Ann', role: 'viewer', colorSlot: 2 }), tom({ guestId: 'g-4', displayName: 'Lee', colorSlot: 3, connected: false })] });
+    const shown = g.presence.length;
+    for (const guestId of ['g-1', 'g-3', 'g-4', 'g-9']) g.socket().receive({ type: 'activity:edited', guestId, target });
+    expect(g.presence.length).toBe(shown);
+    g.socket().receive({ type: 'activity:edited', guestId: 'g-2', target: null });
+    expect(g.presence.at(-1)).toEqual({ joinId, host: null, guests: {}, activity: { 'g-2': { seq: expect.any(Number), target: null } } });
+    await until(() => Object.keys((g.presence.at(-1) as { activity: object }).activity).length === 0 && g.presence.at(-1), 'the edit’s cue to go');
+  });
+
+  it('shows a viewer nobody’s edits: none once it is made one, and none that arrive after', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    g.socket().receive({ type: 'room:roster', participants: [me, tom()] });
+    g.socket().receive({ type: 'activity:edited', guestId: 'g-2', target });
+    expect(g.presence.at(-1)).toMatchObject({ activity: { 'g-2': { target } } });
+    g.socket().receive(admitted({ role: 'viewer' }));
+    expect(g.presence.at(-1)).toEqual({ joinId, host: null, guests: {}, activity: {} });
+    const shown = g.presence.length;
+    g.socket().receive({ type: 'activity:edited', guestId: 'g-2', target });
+    expect(g.presence.length).toBe(shown);
+  });
+
+  it('tells someone who arrives or comes back where this collaborator is, and the host on its return', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    g.socket().receive({ type: 'room:roster', participants: [me] });
+    g.manager.presence(joinId, presence);
+    await until(() => g.socket().last('presence:update'), 'the presence');
+    const sent = () => g.socket().sent.filter((f) => f.type === 'presence:update').length;
+    const before = sent();
+    // Tom arrives: told once, though nothing changed.
+    g.socket().receive({ type: 'room:roster', participants: [me, tom()] });
+    await until(() => sent() === before + 1, 'the presence again for Tom');
+    // The same roster again tells nobody new.
+    g.socket().receive({ type: 'room:roster', participants: [me, tom()] });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sent()).toBe(before + 1);
+    // Tom drops and comes back: told again.
+    g.socket().receive({ type: 'room:roster', participants: [me, tom({ connected: false })] });
+    g.socket().receive({ type: 'room:roster', participants: [me, tom()] });
+    await until(() => sent() === before + 2, 'the presence again for Tom back');
+    // The host goes and comes back: told again.
+    g.socket().receive({ type: 'host:availability', connected: false });
+    g.socket().receive({ type: 'host:availability', connected: true });
+    await until(() => sent() === before + 3, 'the presence again for the host');
+    // The host takes over from a connection that never dropped as far as this guest knew: told again too.
+    g.socket().receive({ type: 'host:availability', connected: true });
+    await until(() => sent() === before + 4, 'the presence again for the host’s new connection');
   });
 });
 

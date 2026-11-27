@@ -441,30 +441,30 @@ describe('presence', () => {
     const at = { pageId: home, viewportWidth: 1280, selection: headline(), previewPath: '/' };
     const remote = admitted({
       participants: [
-        { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' },
-        { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' },
-        { guestId: 'g-3', displayName: 'Ann', role: 'viewer' }
+        { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator', colorSlot: 1, connected: true },
+        { guestId: 'g-2', displayName: 'Tom', role: 'collaborator', colorSlot: 2, connected: true },
+        { guestId: 'g-3', displayName: 'Ann', role: 'viewer', colorSlot: 3, connected: true }
       ]
     });
-    const lines = view.presenceLines(state, remote, { joinId: 'join-1', host: { ...at, selection: null }, guests: { 'g-1': at, 'g-2': at, 'g-3': at } });
+    const lines = view.presenceLines(state, remote, { joinId: 'join-1', host: { ...at, selection: null }, guests: { 'g-1': at, 'g-2': at, 'g-3': at }, activity: {} });
     expect(lines.map((l: { who: string; pageId: string | null }) => [l.who, l.pageId])).toEqual([
       ['Host', home],
       ['Tom', home]
     ]);
     expect(lines[0].where).toBe(state.pages[home].title);
     expect(lines[1].where).toMatch(new RegExp(` on ${state.pages[home].title}$`));
-    expect(view.presenceLines(state, remote, { joinId: 'join-0', host: at, guests: {} })).toEqual([]);
+    expect(view.presenceLines(state, remote, { joinId: 'join-0', host: at, guests: {}, activity: {} })).toEqual([]);
   });
 
   it('lists everyone else the count counts: the host while connected, collaborators where they are or not yet known, then viewers', () => {
     const at = { pageId: home, viewportWidth: 1280, selection: null, previewPath: '/' };
     const participants = [
-      { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' as const },
-      { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' as const },
-      { guestId: 'g-4', displayName: 'Lee', role: 'collaborator' as const },
-      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const }
+      { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' as const, colorSlot: 4, connected: true },
+      { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' as const, colorSlot: 5, connected: true },
+      { guestId: 'g-4', displayName: 'Lee', role: 'collaborator' as const, colorSlot: 6, connected: true },
+      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const, colorSlot: 7, connected: true }
     ];
-    const roster = view.remoteRoster(state, admitted({ participants }), { joinId: 'join-1', host: at, guests: { 'g-2': at } });
+    const roster = view.remoteRoster(state, admitted({ participants }), { joinId: 'join-1', host: at, guests: { 'g-2': at }, activity: {} });
     expect(roster.map((l: { who: string; where: string; pageId: string | null; watching: boolean }) => [l.who, l.where, l.pageId, l.watching])).toEqual([
       ['Host', state.pages[home].title, home, false],
       ['Tom', state.pages[home].title, home, false],
@@ -472,7 +472,7 @@ describe('presence', () => {
       ['Ann', 'Watching', null, true]
     ]);
     // A host that is away is not counted as here; presence from another join says nothing about where anyone is.
-    expect(view.remoteRoster(state, admitted({ participants, hostConnected: false }), { joinId: 'join-0', host: at, guests: {} }).map((l: { who: string; where: string }) => [l.who, l.where])).toEqual([
+    expect(view.remoteRoster(state, admitted({ participants, hostConnected: false }), { joinId: 'join-0', host: at, guests: {}, activity: {} }).map((l: { who: string; where: string }) => [l.who, l.where])).toEqual([
       ['Tom', 'Location not known yet'],
       ['Lee', 'Location not known yet'],
       ['Ann', 'Watching']

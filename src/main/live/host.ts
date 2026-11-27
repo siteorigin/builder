@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import type { LiveCommandResult, LiveHostState, LiveJoinRequest, LivePresence, LiveRun, LiveStartResult } from '@shared/api';
+import type { LiveActivity, LiveCommandResult, LiveHostState, LiveJoinRequest, LivePresence, LiveRun, LiveSpotlight, LiveStartResult } from '@shared/api';
 import { checkRpcRequest, type LiveEditBatch } from '@shared/live/capabilities';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { generateHostKeyPair, signHostChallenge, type HostKeyPair } from '@shared/live/crypto';
 import { checkGuestExpiry, checkSessionExpiry, guestAccessEndsAt, isExpired, isSessionDuration, type SessionDuration } from '@shared/live/expiry';
-import { GUEST_ID_RE, GUEST_ROLES, LIVE_PROTOCOL_VERSION, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
-import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type HostToRelay, type Participant, type Presence, type RpcError } from '@shared/live/messages';
+import { GUEST_ID_RE, GUEST_ROLES, LIVE_PROTOCOL_VERSION, MAX_ID_LENGTH, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
+import { encodeFrame, normalizeDisplayName, parseFrame, type ElementTarget, type Frame, type HostToRelay, type Participant, type Presence, type RpcError } from '@shared/live/messages';
 import type { LiveApplyResult, LiveProjectChanged, LiveProjectSnapshot } from '@shared/live/snapshot';
 import { formatInviteLink, HOST_SOCKET_PATH, RELAY_URL_ENV, relaySocketUrl, roomSocketPath, type ResolvedRelayUrl } from '@shared/live/relay-url';
 import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
@@ -73,6 +73,10 @@ export interface LiveHostTimings {
   expiryGraceMs: number;
   /** Changes to the project this close together reach guests as one project:changed. */
   eventsMs: number;
+  /** How long a guest's spotlight is shown in the editor (#768): its ring, or the prompt to go to the page it is on. */
+  spotlightMs: number;
+  /** How long a collaborator's edit shows it as editing (#768). */
+  activityMs: number;
 }
 
 export const LIVE_HOST_TIMINGS: LiveHostTimings = {
@@ -85,7 +89,9 @@ export const LIVE_HOST_TIMINGS: LiveHostTimings = {
   outageMs: 15 * 60_000,
   reloadMs: 250,
   expiryGraceMs: 5_000,
-  eventsMs: 250
+  eventsMs: 250,
+  spotlightMs: 8_000,
+  activityMs: 3_000
 };
 
 /** A guest's edits waiting their turn at once: one guest cannot fill the project's write queue. */
@@ -120,6 +126,32 @@ export const MAX_SOCKET_BACKLOG_BYTES = 64 * 1024 * 1024;
 const ASKED_EXPIRY_MS = 10_000;
 
 const OPEN = 1;
+/** Numbers each spotlight and edit shown, so the editor tells a new one from one it already shows. */
+let markSeq = 0;
+
+/**
+ * The one element a guest's batch of edits changed, when every operation in it names the same node of a page or its
+ * header or footer; null for anything else (several elements, a component everywhere, the site's settings); undefined
+ * for a batch that copies or duplicates, whose operations name the element it leaves as it was: no edit is shown for it.
+ */
+export function editTarget(batch: unknown): ElementTarget | null | undefined {
+  const operations = (batch as { operations?: unknown } | null)?.operations;
+  if (!Array.isArray(operations) || !operations.length) return null;
+  type Op = { type?: unknown; owner?: { kind?: unknown; id?: unknown }; nodeId?: unknown; toOwner?: unknown };
+  // A copy or a duplicate names the element it was made from, which it leaves as it was: anywhere in the batch.
+  if ((operations as Op[]).some((op) => !!op && typeof op === 'object' && (op.toOwner !== undefined || (typeof op.type === 'string' && /\.(copy|duplicate)$/.test(op.type))))) return undefined;
+  let target: ElementTarget | null = null;
+  for (const op of operations as Op[]) {
+    if (!op || typeof op !== 'object') return null;
+    const kind = op?.owner?.kind;
+    const id = op?.owner?.id;
+    const nodeId = op?.nodeId;
+    if ((kind !== 'page' && kind !== 'shell') || typeof id !== 'string' || typeof nodeId !== 'string' || !id || !nodeId || id.length > MAX_ID_LENGTH || nodeId.length > MAX_ID_LENGTH) return null;
+    if (target && (target.owner.kind !== kind || target.owner.id !== id || target.nodeId !== nodeId)) return null;
+    target = { owner: { kind, id }, instancePath: [], nodeId };
+  }
+  return target;
+}
 /** The code the host closes a connection it gives up on with (one of the codes a client may send). */
 const ABANDONED = 4000;
 
@@ -229,6 +261,11 @@ interface Run {
   reads: Map<string, { tokens: number; at: number }>;
   /** Where each collaborator is, as each last said. */
   presence: Map<string, Presence>;
+  /** Each guest's latest spotlight and each collaborator's latest edit (#768), until it is no longer shown. */
+  spotlights: Map<string, LiveSpotlight & { until: number }>;
+  activity: Map<string, LiveActivity & { until: number }>;
+  /** Takes spotlights and edits off once their time is up: one timer, for the soonest. */
+  marksTimer: ReturnType<typeof setTimeout> | null;
   /** The editor's state guests were last sent, so a change reaches them once. */
   sentSnapshot: LiveProjectSnapshot | null;
   sentRuntime: string | null;
@@ -355,6 +392,9 @@ export class LiveHostManager {
       edits: new Map(),
       reads: new Map(),
       presence: new Map(),
+      spotlights: new Map(),
+      activity: new Map(),
+      marksTimer: null,
       sentSnapshot: null,
       sentRuntime: null,
       eventsTimer: null,
@@ -483,8 +523,8 @@ export class LiveHostManager {
   }
 
   private clearTimers(run: Run): void {
-    for (const timer of [run.retryTimer, run.expiryTimer, run.reloadTimer, run.eventsTimer]) if (timer) clearTimeout(timer);
-    run.retryTimer = run.expiryTimer = run.reloadTimer = run.eventsTimer = null;
+    for (const timer of [run.retryTimer, run.expiryTimer, run.reloadTimer, run.eventsTimer, run.marksTimer]) if (timer) clearTimeout(timer);
+    run.retryTimer = run.expiryTimer = run.reloadTimer = run.eventsTimer = run.marksTimer = null;
   }
 
   /** Whether `run` is still the session starting or running in the open project. */
@@ -576,6 +616,8 @@ export class LiveHostManager {
         return this.onCall(conn, frame);
       case 'presence:changed':
         return this.onPresence(conn, frame);
+      case 'spotlight:pointed':
+        return this.onSpotlight(conn, frame);
       case 'protocol:error':
         // Proving itself with a key the room was not made with, or for a room that has changed, never comes right.
         if (frame.code === 'AUTH_FAILED' && conn.stage !== 'host') return this.lost(conn, LIVE_CLOSE_CODES.POLICY, 'The relay did not accept this computer as the live session’s host.');
@@ -842,7 +884,8 @@ export class LiveHostManager {
    * host's page for latecomers (#766).
    */
   private presentToNewcomers(run: Run, conn: Connection): void {
-    const admitted = run.room!.participants.filter((p) => p.status === 'admitted').map((p) => p.guestId);
+    // A guest back from a dropped connection is a newcomer again: it heard nothing while it was away.
+    const admitted = run.room!.participants.filter((p) => p.status === 'admitted' && p.connected).map((p) => p.guestId);
     const fresh = admitted.some((id) => !run.presentedTo.has(id));
     run.presentedTo = new Set(admitted);
     if (fresh && run.hostPresence?.selection) this.sendOn(conn, { type: 'presence:update', presence: run.hostPresence });
@@ -885,7 +928,8 @@ export class LiveHostManager {
         if (frame.role === 'viewer') grant.generation++;
         grant.role = frame.role;
         grant.unconfirmed.push(frame.role);
-        if (frame.role === 'viewer') this.dropPresence(run, frame.guestId);
+        // A viewer shows nobody where it is, but may still point.
+        if (frame.role === 'viewer') this.dropPresence(run, frame.guestId, { keepSpotlight: true });
         return;
       }
       case 'guest:set-expiry': {
@@ -945,7 +989,17 @@ export class LiveHostManager {
         }
       }
     }
-    for (const guestId of run.presence.keys()) if (this.collaborator(run, guestId) === null) this.dropPresence(run, guestId);
+    for (const guestId of new Set([...run.presence.keys(), ...run.spotlights.keys(), ...run.activity.keys()])) {
+      // A guest gone, or only away: nothing of it is shown until it is back and says where it is again.
+      if (!this.connected(run, guestId)) this.dropPresence(run, guestId);
+      else if (this.collaborator(run, guestId) === null) this.dropPresence(run, guestId, { keepSpotlight: true });
+    }
+  }
+
+  /** Whether the relay lists the guest as let in and connected, and the host has not removed it. */
+  private connected(run: Run, guestId: string): boolean {
+    const p = run.room?.participants.find((x) => x.guestId === guestId);
+    return p?.status === 'admitted' && p.connected && !('code' in this.grantOf(run, guestId));
   }
 
   /**
@@ -1014,6 +1068,8 @@ export class LiveHostManager {
         const left = (run.edits.get(guestId) ?? 1) - 1;
         if (left > 0) run.edits.set(guestId, left);
         else run.edits.delete(guestId);
+        // Shown as editing only for an edit that was made, by a guest still a collaborator on this connection.
+        if (result.ok && check() === null) this.edited(run, conn, guestId, call.value.args[0]);
         answer(result.ok ? { ok: true, result: { revision: result.revision, results: result.results } } : { ok: false, error: result.error });
       });
   }
@@ -1052,17 +1108,63 @@ export class LiveHostManager {
     const run = conn.run;
     if (conn.stage !== 'host' || run.phase !== 'active' || frame.participant.kind !== 'guest') return;
     const { guestId } = frame.participant;
-    if (!this.collaborator(run, guestId)) return;
+    if (!this.collaborator(run, guestId) || !this.connected(run, guestId)) return;
     run.presence.set(guestId, frame.presence);
     this.publishPresence(run);
   }
 
-  private dropPresence(run: Run, guestId: string): void {
-    if (run.presence.delete(guestId)) this.publishPresence(run);
+  /**
+   * A guest pointed at something on its preview (#768): shown in the editor for a while, for any guest let in, a viewer
+   * too, while it is connected. Its newest spotlight replaces the one before.
+   */
+  private onSpotlight(conn: Connection, frame: Frame<'relay-to-host', 'spotlight:pointed'>): void {
+    const run = conn.run;
+    if (conn.stage !== 'host' || run.phase !== 'active' || !this.connected(run, frame.guestId)) return;
+    run.spotlights.set(frame.guestId, { seq: ++markSeq, spotlight: frame.spotlight, until: performance.now() + this.timings.spotlightMs });
+    this.publishPresence(run);
+    this.armMarks(run);
+  }
+
+  /**
+   * A collaborator's edit was just saved: shown as editing for a moment, here and to the other collaborators, on what
+   * it changed when that is one element of a page or its header or footer.
+   */
+  private edited(run: Run, conn: Connection, guestId: string, batch: unknown): void {
+    if (this.run !== run || run.phase !== 'active' || run.conn !== conn || !this.collaborator(run, guestId) || !this.connected(run, guestId)) return;
+    const target = editTarget(batch);
+    if (target === undefined) return;
+    run.activity.set(guestId, { seq: ++markSeq, target, until: performance.now() + this.timings.activityMs });
+    this.publishPresence(run);
+    this.armMarks(run);
+    if (conn.stage === 'host') this.sendOn(conn, { type: 'activity:edit', guestId, target });
+  }
+
+  /** Take what has had its time off, and wake again for the next. */
+  private armMarks(run: Run): void {
+    if (run.marksTimer) clearTimeout(run.marksTimer);
+    run.marksTimer = null;
+    const due = Math.min(...[...run.spotlights.values(), ...run.activity.values()].map((m) => m.until));
+    if (!Number.isFinite(due)) return;
+    run.marksTimer = setTimeout(() => {
+      run.marksTimer = null;
+      if (this.run !== run || run.ended) return;
+      const now = performance.now();
+      let changed = false;
+      for (const marks of [run.spotlights, run.activity]) for (const [guestId, mark] of marks) if (mark.until <= now) changed = marks.delete(guestId) || changed;
+      if (changed) this.publishPresence(run);
+      this.armMarks(run);
+    }, Math.max(0, due - performance.now()));
+  }
+
+  /** Stop showing a guest: where it is, its edits, and (unless it may still point) its spotlight. */
+  private dropPresence(run: Run, guestId: string, options: { keepSpotlight?: boolean } = {}): void {
+    const dropped = [run.presence.delete(guestId), run.activity.delete(guestId), !options.keepSpotlight && run.spotlights.delete(guestId)].some(Boolean);
+    if (dropped) this.publishPresence(run);
   }
 
   private publishPresence(run: Run): void {
-    this.ctx.emit('live:presence', { workspaceKey: run.workspaceKey, runId: run.runId, guests: Object.fromEntries(run.presence) });
+    const shown = <T extends { until: number }>(marks: Map<string, T>) => Object.fromEntries([...marks].map(([guestId, { until: _until, ...mark }]) => [guestId, mark]));
+    this.ctx.emit('live:presence', { workspaceKey: run.workspaceKey, runId: run.runId, guests: Object.fromEntries(run.presence), spotlights: shown(run.spotlights), activity: shown(run.activity) });
   }
 
   /**
@@ -1219,6 +1321,9 @@ export class LiveHostManager {
     if (!encoded.ok) return { ok: false, message: 'That is not a place in the editor guests can follow.' };
     // What was checked, as it was checked: never the caller's own object.
     const next = (JSON.parse(encoded.frame) as { presence: Presence }).presence;
+    // The editor says where it is whenever it starts following a session, a reloaded one too: it hears in return where
+    // everyone else is, rather than only once someone next moves.
+    this.publishPresence(run);
     if (run.hostPresence && encoded.frame === JSON.stringify({ type: 'presence:update', presence: run.hostPresence })) return { ok: true };
     run.hostPresence = next;
     const conn = run.conn;

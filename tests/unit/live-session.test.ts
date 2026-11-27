@@ -40,7 +40,7 @@ function room(extra: Partial<LiveRoomState> = {}): LiveRoomState {
     relayClockOffsetMs: 0,
     locked: false,
     participants: [
-      { guestId: 'g1', displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null },
+      { guestId: 'g1', displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true },
       { guestId: 'g2', displayName: 'Bo', status: 'pending' }
     ],
     previewReady: true,
@@ -134,7 +134,7 @@ describe('extending', () => {
       ['15m', 15 * MIN],
       ['30m', 30 * MIN]
     ]);
-    const ann = { guestId: 'g1', displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: T0 + 15 * MIN } as const;
+    const ann = { guestId: 'g1', displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: T0 + 15 * MIN, colorSlot: 0, connected: true } as const;
     expect(guestTimeLeft(state, ann, T0 + 5 * MIN)).toBe('10m left');
     expect(guestTimeLeft(state, { ...ann, guestExpiresAt: null }, T0)).toBeNull();
   });

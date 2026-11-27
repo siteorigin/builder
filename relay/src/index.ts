@@ -388,6 +388,7 @@ async function guestPage(request: Request, relay: string, roomId: string): Promi
       </div>
     </div>
     <label class="switch-row"><input type="checkbox" role="switch" id="follow" checked><span>Follow host’s page</span></label>
+    <button type="button" class="btn" id="point" aria-pressed="false" disabled title="Click something on the site to point it out to the host"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></svg><span>Point</span></button>
     <button type="button" class="btn" id="copy-invite" aria-expanded="false" aria-controls="handoff" hidden>How to edit</button>
   </div>
 </header>
@@ -398,6 +399,7 @@ async function guestPage(request: Request, relay: string, roomId: string): Promi
 </section>
 <p class="host-note" id="host-note" hidden></p>
 <main class="stage" id="stage" hidden>
+  <p class="point-hint" id="point-hint" hidden>Click anything on the site to point it out to the host. <kbd>Esc</kbd> cancels.</p>
   <div class="frame" id="frame"></div>
   <div class="veil" id="veil" hidden>
     <div class="notice"><span class="glyph" id="veil-glyph" aria-hidden="true"></span><h2 id="veil-title" tabindex="-1"></h2><p id="veil-text"></p><p class="veil-time" id="veil-time" hidden></p><button type="button" class="btn btn-primary" id="veil-action" hidden>Try again</button></div>

@@ -13,7 +13,7 @@ import type { Recipient, TurnModel } from './turn-model';
 import type { EarlierSummary } from './earlier-summary';
 import type { SessionDuration } from './live/expiry';
 import type { GuestRole } from './live/limits';
-import type { Participant, Presence } from './live/messages';
+import type { ElementTarget, Participant, Presence, Spotlight } from './live/messages';
 import type { LiveEditBatch } from './live/capabilities';
 import type { LiveApplyResult, LiveProjectSnapshot } from './live/snapshot';
 
@@ -1046,12 +1046,27 @@ export type LiveHostState =
   | (LiveRun & { phase: 'starting' | 'stopping' })
   | (LiveRun & LiveRoom & { phase: 'active' | 'reconnecting'; previewReady: boolean; lastError: string | null });
 
+/** Where a guest just pointed (#768). `seq` tells a new spotlight from one already shown. */
+export interface LiveSpotlight {
+  seq: number;
+  spotlight: Spotlight;
+}
+
+/** A collaborator's edit just made (#768): the one element it changed, or null for more or other than one. */
+export interface LiveActivity {
+  seq: number;
+  target: ElementTarget | null;
+}
+
 /**
- * Where the live session's collaborators are in the project, as each last said, by guest ID (`live:presence`): sent
- * whenever one moves, and when one leaves or stops being a collaborator.
+ * Where the live session's collaborators are in the project, as each last said, by guest ID (`live:presence`), with
+ * each guest's latest spotlight and each collaborator's latest edit while they are shown: sent whenever any of them
+ * changes, and when a guest leaves, drops its connection, or stops being a collaborator.
  */
 export interface LivePresence extends LiveRun {
   guests: Record<string, Presence>;
+  spotlights: Record<string, LiveSpotlight>;
+  activity: Record<string, LiveActivity>;
 }
 
 /** A guest asking to join, sent once when it starts waiting (`live:request`). */
@@ -1067,11 +1082,16 @@ export interface LiveJoinRequest extends LiveRun {
  */
 export type RemoteEnding = 'left' | 'declined' | 'kicked' | 'expired-guest' | 'expired-session' | 'ended' | 'host-gone' | 'locked' | 'full' | 'replaced' | 'lost' | 'unavailable' | 'refused';
 
-/** Someone admitted to the live session this app is a guest in, as the relay lists them. */
+/**
+ * Someone admitted to the live session this app is a guest in, as the relay lists them: with their place in the
+ * session's palette, and whether their connection is up now.
+ */
 export interface RemoteParticipant {
   guestId: string;
   displayName: string;
   role: GuestRole;
+  colorSlot: number;
+  connected: boolean;
 }
 
 /** One join of a live session, so a late event from an earlier join never reaches the next. */
@@ -1117,11 +1137,15 @@ export type RemoteState =
       participants: RemoteParticipant[];
     });
 
-/** Where the others in the live session are, as each last said (`remote:presence`): the host, and collaborators by guest ID. */
+/**
+ * Where the others in the live session are, as each last said (`remote:presence`): the host, and collaborators by guest
+ * ID, with each other collaborator's latest edit while it is shown (#768).
+ */
 export interface RemotePresence {
   joinId: string;
   host: Presence | null;
   guests: Record<string, Presence>;
+  activity: Record<string, LiveActivity>;
 }
 
 export type RemoteJoinResult = { ok: true; state: RemoteState } | { ok: false; message: string };

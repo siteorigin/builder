@@ -129,7 +129,7 @@ const room = (over = {}) => ({
   lastError: null,
   ...over
 });
-const admitted = (guestId, displayName, role = 'viewer', guestExpiresAt = null) => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt });
+const admitted = (guestId, displayName, role = 'viewer', guestExpiresAt = null, colorSlot = 0) => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt, colorSlot, connected: true });
 const pending = (guestId, displayName) => ({ guestId, displayName, status: 'pending' });
 const crowd = [
   pending('g5', 'Priya Raman'),
