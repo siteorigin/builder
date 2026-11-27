@@ -251,7 +251,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     const page = await openSite(browser, []);
     try {
       // On screen, the form says it cannot be sent yet.
-      expect(await page.locator('.so-form__status', { hasText: NOT_CONNECTED }).isVisible()).toBe(true);
+      expect(await page.locator('.so-form__notice', { hasText: NOT_CONNECTED }).isVisible()).toBe(true);
       // Controls from an author's own component: a form's submit, reset and typeless buttons, which do nothing on
       // paper, and a button whose label is a contact detail it copies, which a handout keeps.
       await page.evaluate(`(() => {
@@ -327,7 +327,8 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         skip: 'none',
         trap: 'none',
         formActions: 'none',
-        formMessages: 'none',
+        // Two regions: the confirmation above the fields and the failure beside the button.
+        formMessages: 'none,none',
         header: 'static'
       });
       const text = squash((await print(page)).join('\n'));

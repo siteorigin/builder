@@ -215,6 +215,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       button: page.locator('.so-form__actions button'),
       status: () => page.locator('.so-form__status[role="status"]').innerText(),
       alert: () => page.locator('.so-form__status[role="alert"]').innerText(),
+      // Why the form cannot be sent, shown above its fields.
+      notice: () => page.locator('.so-form__notice').innerText(),
       /** Calls to fetch so far, counted in the page as each send starts. */
       fetches: () => page.evaluate<number>('window.fetches'),
       nextPost: () =>
@@ -289,14 +291,16 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     });
   }, 20_000);
 
-  it('clears the sent message as soon as the visitor starts the next enquiry', async () => {
-    await withForm({ provider: 'netlify', formName: 'contact', fields: FIELDS }, async ({ field, button, status, nextPost, typeInto }) => {
+  it('heads the emptied form with the sent message, focused, and clears it as soon as the visitor starts the next enquiry', async () => {
+    await withForm({ provider: 'netlify', formName: 'contact', fields: FIELDS }, async ({ page, field, button, status, nextPost, typeInto }) => {
       await field('Name').fill('Ada');
       await field('Email').fill('ada@example.com');
       await field('Message').fill('First request');
       await button.click();
       await (await nextPost()).respond(200);
       await expect.poll(status).toBe(SENT);
+      // Out of sight of the button at the form's end, the confirmation takes the focus.
+      await expect.poll(() => page.evaluate<string | null>(`document.activeElement?.getAttribute('role') ?? null`)).toBe('status');
 
       // A text input this time; the failure case below edits the textarea.
       await typeInto('Name', 'Grace');
@@ -346,7 +350,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       { id: 'item-3', label: 'Phone', name: 'EMAIL', type: 'tel', required: false, placeholder: '' },
       { id: 'item-4', label: 'Message', name: 'message', type: 'textarea', required: true, placeholder: '' }
     ];
-    await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, field, button, status, posts, fetches }) => {
+    await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, field, button, notice, posts, fetches }) => {
       // Any POST, a native one included, is counted the moment it starts.
       let sends = 0;
       page.on('request', (r) => void (r.method() === 'POST' && sends++));
@@ -355,7 +359,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       await field('Phone').fill('+44 20 7946 0000');
       await field('Message').fill('Hello');
       expect(await button.isDisabled()).toBe(true);
-      expect(await status()).toBe('Two fields of this form have the same name, so it cannot be sent.');
+      expect(await notice()).toBe('Two fields of this form have the same name, so it cannot be sent.');
       // Neither Enter nor a scripted submit sends it.
       await field('Email').press('Enter');
       await page.evaluate(`document.querySelector('form').requestSubmit()`);
@@ -547,10 +551,10 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
 
     it('refuses to send while a question has nothing to choose from, and says why', async () => {
       const fields = [...FIELDS, { id: 'f4', label: SERVICE, name: 'service', type: 'choice', required: true, placeholder: '', options: [] }];
-      await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, button, status, fetches }) => {
+      await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, button, notice, fetches }) => {
         expect(await page.getByRole('group', { name: SERVICE }).getByRole('radio').count()).toBe(0);
         expect(await button.isDisabled()).toBe(true);
-        expect(await status()).toBe('A question in this form has no answers to choose from yet, so it cannot be sent.');
+        expect(await notice()).toBe('A question in this form has no answers to choose from yet, so it cannot be sent.');
         await page.evaluate(`document.querySelector('form').requestSubmit()`);
         await page.waitForTimeout(250);
         expect(await fetches()).toBe(0);
