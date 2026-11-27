@@ -42,7 +42,13 @@ export const DURATION_CHOICES: ReadonlyArray<{ id: SessionDuration; label: strin
   { id: 'project', label: 'Until closed' }
 ];
 
-export const ROLE_LABELS: Readonly<Record<GuestRole, string>> = { viewer: 'Viewer', collaborator: 'Collaborator' };
+export const ROLE_LABELS: Readonly<Record<GuestRole, string>> = { viewer: 'Viewer', 'copy-editor': 'Copy editor', collaborator: 'Collaborator' };
+
+/**
+ * The roles the host picks from for a guest. The host enforces a copy editor's grant (#1149), but a guest's editor
+ * still opens the project read-only for one, so it is not offered until the guest's side can edit as one.
+ */
+export const OFFERED_ROLES: readonly GuestRole[] = ['viewer', 'collaborator'];
 
 /**
  * The relay's clock, read when a state arrived and carried forward on this computer's monotonic clock, so a change to

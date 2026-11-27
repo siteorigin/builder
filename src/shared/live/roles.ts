@@ -14,11 +14,16 @@ import type { GuestRole } from './limits';
 export const VIEWER_METHODS = ['project.snapshot'] as const;
 /** A collaborator also makes visual edits, and shares its own presence (the relay passes on no viewer's). */
 export const COLLABORATOR_METHODS = [...VIEWER_METHODS, 'project.apply'] as const;
+/**
+ * A copy editor edits through the same method: which edits it may make is the host's to check, with the arguments
+ * (capabilities.ts) and against the project the edit would leave (engine/copy-editor.ts).
+ */
+export const COPY_EDITOR_METHODS = [...VIEWER_METHODS, 'project.apply'] as const;
 /** Every method any guest may call: all a forwarded call or the host's answer can name. */
 export const LIVE_METHODS = COLLABORATOR_METHODS;
 export type LiveMethod = (typeof LIVE_METHODS)[number];
 
-const METHODS: Record<GuestRole, readonly string[]> = { viewer: VIEWER_METHODS, collaborator: COLLABORATOR_METHODS };
+const METHODS: Record<GuestRole, readonly string[]> = { viewer: VIEWER_METHODS, 'copy-editor': COPY_EDITOR_METHODS, collaborator: COLLABORATOR_METHODS };
 
 /** Whether a guest holding `role` may call the dotted `BuilderApi` method. Unknown roles and names are refused. */
 export function canCall(role: GuestRole, method: string): method is LiveMethod {

@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RemoteState } from '../../src/shared/api';
 import { LIVE_CLOSE_CODES } from '../../src/shared/live/close-codes';
+import type { GuestRole } from '../../src/shared/live/limits';
 import type { LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { createStarterState } from '../../src/catalogue/starters';
 import { LiveGuestManager, type LiveGuestTimings, type RemotePreviewAccess } from '../../src/main/live/guest';
@@ -137,7 +138,7 @@ const pending = { type: 'guest:status', status: 'pending', guestId: 'g-1', resum
 const admitted = (extra: Record<string, unknown> = {}) => ({ type: 'guest:status', status: 'admitted', guestId: 'g-1', role: 'collaborator', guestExpiresAt: null, sessionExpiresAt: Date.now() + 3_600_000, projectName: 'Acme Bakery', now: Date.now(), ...extra });
 
 /** Join, and be let straight in as `role`, answering the first snapshot with revision 3. */
-async function inRoom(g: ReturnType<typeof guest>, role: 'viewer' | 'collaborator' = 'collaborator') {
+async function inRoom(g: ReturnType<typeof guest>, role: GuestRole = 'collaborator') {
   const joined = g.manager.join({ inviteLink: INVITE, displayName: '  Sarah   Lee ' });
   await until(() => g.sockets.length, 'the socket');
   g.socket().open();
@@ -239,6 +240,21 @@ describe('editing the host’s project', () => {
     expect(g.manager.state).toMatchObject({ role: 'collaborator' });
     g.socket().receive(admitted({ role: 'viewer' }));
     expect(await g.manager.apply(joinId, { operations: [] })).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+  });
+
+  it('sends a copy editor’s edit for the host to check, and none once the host makes it a viewer', async () => {
+    const g = guest();
+    const joinId = await inRoom(g, 'copy-editor');
+    const batch = { operations: [{ type: 'node.setContent', owner: { kind: 'page', id: state.site.homePageId }, nodeId: 'n_title', field: 'text', value: 'Welcome' }] };
+    const result = g.manager.apply(joinId, batch);
+    const ask = g.socket().last('rpc:request')!;
+    expect(ask).toMatchObject({ method: 'project.apply', args: [batch] });
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'project.apply', ok: true, result: { revision: 4, results: [] } });
+    expect(await result).toEqual({ ok: true, revision: 4, results: [] });
+    g.socket().receive(admitted({ role: 'viewer' }));
+    const sent = g.socket().sent.length;
+    expect(await g.manager.apply(joinId, batch)).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(g.socket().sent).toHaveLength(sent);
   });
 
   it('says an edit on its way when the connection drops may have been made, and never sends it again', async () => {

@@ -208,6 +208,27 @@ describe('admitted guests', () => {
     room.host.close();
   });
 
+  it('passes a copy editor’s edits to the host to check, and none of its presence', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann', 'copy-editor');
+    expect(ann.status).toMatchObject({ status: 'admitted', role: 'copy-editor' });
+    // Its preview cookie is for its own role, and works.
+    expect(await previewStatus(relay, room, ann.cookie)).toBe(204);
+    // Which edits it may make is the host's to say, with the arguments and against the project.
+    ann.guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'edit', method: 'project.apply', args: [{ operations: [] }] });
+    expect(await room.host.next('rpc:request')).toMatchObject({ guestId: ann.guestId, requestId: 'edit', method: 'project.apply' });
+    ann.guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'secret', method: 'settings.get', args: [] });
+    expect(await ann.guest.next('rpc:response')).toMatchObject({ requestId: 'secret', ok: false, error: { code: 'PERMISSION_DENIED' } });
+    // Only a collaborator shows the others where it is.
+    room.host.discard('presence:changed');
+    ann.guest.send('guest-to-relay', { type: 'presence:update', presence: { pageId: 'about', viewportWidth: 390, selection: null, previewPath: null } });
+    expect(await ann.guest.next('protocol:error')).toMatchObject({ code: 'FORBIDDEN' });
+    await wait(100);
+    expect(room.host.has('presence:changed')).toBe(false);
+    expect(room.host.has('rpc:request')).toBe(false);
+    room.host.close();
+  });
+
   it('delivers the host’s events, presence and reloads to admitted guests only', async () => {
     const room = await openRoom(relay);
     const ann = await admittedGuest(relay, room, 'Ann', 'collaborator');

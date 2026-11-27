@@ -538,6 +538,8 @@ describe('ending', () => {
 
 const SNAPSHOT: LiveProjectSnapshot = { revision: 3, state: {} as LiveProjectSnapshot['state'], readOnly: false, aiBusy: false, runtime: { state: 'ready' } };
 const EDIT = { operations: [{ type: 'node.setContent', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title', field: 'text', value: 'Hello' }] };
+/** A layout edit: one a collaborator may make, and a copy editor may not. */
+const LAYOUT = { operations: [{ type: 'node.remove', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title' }] };
 const HERE: Presence = { pageId: 'pg_home', viewportWidth: 1280, selection: null, previewPath: '/' };
 
 /**
@@ -820,6 +822,93 @@ describe('guests’ editor calls', () => {
     call(socket, 'q2', 'project.apply', [EDIT]);
     (await until(() => h.edits[0], 'the edit')).release();
     expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true });
+  });
+
+  it('holds a copy editor to its own edits, and hands the editor each with the role it was checked as', async () => {
+    const h = editor();
+    const { socket } = await letIn(h, 'copy-editor');
+    call(socket, 'q1', 'project.apply', [LAYOUT]);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    expect(h.edits).toEqual([]);
+    call(socket, 'q2', 'project.apply', [EDIT]);
+    const edit = await until(() => h.edits[0], 'the edit');
+    expect(edit.guest).toMatchObject({ guestId: 'g1', displayName: 'Ann', role: 'copy-editor' });
+    edit.release();
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true });
+  });
+
+  it('never lands a layout edit asked for before a collaborator was made a copy editor, though made a collaborator again', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    // Ann's layout edit is waiting its turn when the host makes her a copy editor, then a collaborator again.
+    call(socket, 'q1', 'project.apply', [LAYOUT]);
+    const queued = await until(() => h.edits[0], 'the queued edit');
+    expect(queued.guest.role).toBe('collaborator');
+    expect(h.manager.setRole(run, 'g1', 'copy-editor')).toEqual({ ok: true });
+    expect(h.manager.setRole(run, 'g1', 'collaborator')).toEqual({ ok: true });
+    // One arriving before the relay confirms either may have been forwarded before the first: a copy editor's.
+    call(socket, 'q2', 'project.apply', [LAYOUT]);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    // A roster the relay sent before it had either still shows a collaborator: still a copy editor's.
+    socket.receive(roster('collaborator'));
+    call(socket, 'q3', 'project.apply', [LAYOUT]);
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    // Meanwhile her copy edits are made, as a copy editor's.
+    call(socket, 'q4', 'project.apply', [EDIT]);
+    const copy = await until(() => h.edits[1], 'the copy edit');
+    expect(copy.guest.role).toBe('copy-editor');
+    socket.receive(roster('copy-editor'));
+    socket.receive(roster('collaborator'));
+    // Both confirmed, and Ann a collaborator again: the edit asked for before the demotion still lands nothing.
+    queued.release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    copy.release();
+    expect(await answerTo(socket, 'q4')).toMatchObject({ ok: true });
+    // Her layout edits from now on are a collaborator's.
+    call(socket, 'q5', 'project.apply', [LAYOUT]);
+    const later = await until(() => h.edits[2], 'the later edit');
+    expect(later.guest.role).toBe('collaborator');
+    later.release();
+    expect(await answerTo(socket, 'q5')).toMatchObject({ ok: true });
+  });
+
+  it('keeps a copy editor’s waiting edit to its grant when made a collaborator, and refuses it when made a viewer', async () => {
+    for (const role of ['collaborator', 'viewer'] as const) {
+      const h = editor();
+      const { socket, run } = await letIn(h, 'copy-editor');
+      call(socket, 'q1', 'project.apply', [EDIT]);
+      const edit = await until(() => h.edits[0], 'the edit');
+      h.manager.setRole(run, 'g1', role);
+      socket.receive(roster(role));
+      // The editor still holds it to what a copy editor may change.
+      expect(edit.guest.role).toBe('copy-editor');
+      edit.release();
+      expect(await answerTo(socket, 'q1'), role).toMatchObject(role === 'collaborator' ? { ok: true } : { ok: false, error: { code: 'PERMISSION_DENIED' } });
+    }
+  });
+
+  it('refuses a waiting edit when the relay says the guest holds less than it was asked as, whatever the host decided', async () => {
+    const h = editor();
+    const { socket } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [LAYOUT]);
+    const edit = await until(() => h.edits[0], 'the edit');
+    // A roster that lists Ann as a copy editor, which the host never asked for.
+    socket.receive(roster('copy-editor'));
+    edit.release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+  });
+
+  it('stops showing where a collaborator is once made a copy editor', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE } });
+    h.manager.setRole(run, 'g1', 'copy-editor');
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {} });
+    const shown = h.presence.length;
+    socket.receive(roster('copy-editor'));
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    expect(h.presence.length).toBe(shown);
   });
 
   it('sends the project only to guests it still lets in, when the relay lists one it has removed', async () => {

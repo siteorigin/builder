@@ -319,6 +319,79 @@ describe('a live session hosted by the open project', () => {
     }
   });
 
+  it('lets a copy editor reword the pages over the live protocol, and refuses at commit what its grant does not reach', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { guest } = await hosting(c, sent, dir, 'copy-editor');
+    const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
+    const host = async (operations: unknown[]) => {
+      const r = await c.apply({ operations } as never);
+      if (!r.ok) throw new Error(r.error?.message);
+      return r.results!;
+    };
+    // The host's page: a split hero, whose heading and eyebrow are marked as copy, and a section of text.
+    const hero = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }]))[0].nodeId as string;
+    const section = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]))[0].nodeId as string;
+    const paragraph = (await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Opening hours vary.' }]))[0].nodeId as string;
+    const rich = (await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'richtext' }]))[0].nodeId as string;
+    await host([{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: 'Call us or [read the FAQ](https://example.com/faq).' }]);
+    const file = join(dir, `siteorigin/pages/${owner.id}.json`);
+
+    // Its copy lands through the host's own pipeline, as a step of its own that names it.
+    const before = c.session!.revision;
+    const reword = [
+      { type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open every day.' },
+      { type: 'instance.setProp', owner, nodeId: hero, prop: 'heading', value: 'Fresh bread daily' }
+    ];
+    expect(await rpc(guest, 'project.apply', [{ operations: reword, expectedRevision: before, label: 'Reword' }])).toMatchObject({ ok: true, result: { revision: before + 1 } });
+    expect(readFileSync(file, 'utf8')).toContain('Open every day.');
+    expect(readFileSync(file, 'utf8')).toContain('Fresh bread daily');
+    expect(c.snapshot()!.history.entries.at(-1)).toMatchObject({ label: 'Reword (Ann)', guestName: 'Ann', applied: true });
+
+    const saved = readFileSync(file, 'utf8');
+    const revision = c.session!.revision;
+    const steps = c.snapshot()!.history.entries.length;
+    // A layout edit is refused before the editor sees it.
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'node.remove', owner, nodeId: section }] }])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    // Each of these passes every check of the operations alone, sent straight over the protocol: the project as the
+    // batch would leave it refuses them as it is saved, the whole batch with them.
+    const refusals: Array<{ operations: unknown[]; message: RegExp; operationIndex?: number }> = [
+      {
+        operations: [
+          { type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open on Sundays.' },
+          { type: 'instance.setProp', owner, nodeId: hero, prop: 'primaryLabel', value: 'Buy now' }
+        ],
+        message: /Primary button label/,
+        operationIndex: 1
+      },
+      { operations: [{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: 'Call us or [read the FAQ](https://evil.example/faq).' }], message: /links/ },
+      { operations: [{ type: 'instance.setProp', owner, nodeId: hero, prop: 'eyebrow', value: '   ' }], message: /clearing/ }
+    ];
+    for (const { operations, message, operationIndex } of refusals) {
+      const answer = await rpc(guest, 'project.apply', [{ operations }]);
+      expect(answer, message.source).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', message: expect.stringMatching(message) } });
+      if (operationIndex !== undefined) expect(answer).toMatchObject({ error: { operationIndex } });
+    }
+    expect(c.session!.revision).toBe(revision);
+    expect(readFileSync(file, 'utf8')).toBe(saved);
+    expect(c.snapshot()!.history.entries.length).toBe(steps);
+    expect(c.snapshot()!.saveFailure ?? null).toBeNull();
+  });
+
+  it('holds a copy editor made a collaborator to its new grant only once its edits are a collaborator’s', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { run, guest } = await hosting(c, sent, dir, 'copy-editor');
+    const home = c.session!.state.site.homePageId;
+    const rename = [{ operations: [{ type: 'page.update', pageId: home, title: 'Fresh bread daily' }] }];
+    expect(await rpc(guest, 'project.apply', rename)).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    expect(c.live.setRole(run, guest.guestId, 'collaborator')).toEqual({ ok: true });
+    await guest.guest.next('guest:status');
+    await until(() => (c.live.state as { participants?: Array<{ guestId: string; role?: string }> }).participants?.some((p) => p.guestId === guest.guestId && p.role === 'collaborator'), 'the role confirmed');
+    expect(await rpc(guest, 'project.apply', rename)).toMatchObject({ ok: true });
+    expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+  });
+
   it('never lets a collaborator change where a contact form sends, however a design passes it on', async () => {
     const dir = await makeProject('acme');
     const { c, sent } = controller();
