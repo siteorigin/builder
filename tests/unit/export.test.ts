@@ -16,6 +16,7 @@ import {
   cleanWebsitePhotos,
   copyProjectSource,
   copyTree,
+  inProjectSource,
   editedGeneratedFile,
   explainBuildFailure,
   exportedAssetFilter,
@@ -594,6 +595,31 @@ describe('source export helpers', () => {
     expect(existsSync(join(dest, '.env'))).toBe(false);
     expect(existsSync(join(dest, 'src/linked.svelte'))).toBe(false);
     expect(readFileSync(join(dest, '.siteorigin/preview-copy.json'), 'utf8')).toBe('{}');
+  });
+
+  it('leaves Wrangler’s local secrets and state out of the source, folder and ZIP alike, and keeps the function and its settings (#1126)', async () => {
+    const src = temp();
+    for (const f of ['functions/api/hello.ts', 'wrangler.toml', 'wrangler.jsonc', 'worker/wrangler.json', 'worker/src/index.ts']) write(src, f, f);
+    // Harmless sentinels standing in for local secrets and Wrangler's own state, at the top and beside a worker.
+    const secret = ['.dev.vars', '.dev.vars.production', '.DEV.VARS.staging', 'worker/.dev.vars', 'functions/.dev.vars.preview', '.wrangler/state/v3/d1/db.sqlite', '.wrangler/tmp/bundle.js', 'worker/.wrangler/state/kv.bin', 'site/.Wrangler/cache/x.json'];
+    for (const f of secret) write(src, f, 'SENTINEL_1126');
+    for (const f of ['static/dev.vars.txt', 'static/my.wrangler']) write(src, f, f);
+    const dest = join(temp(), 'out');
+    await copyProjectSource(src, dest);
+    for (const f of secret) expect(existsSync(join(dest, f)), f).toBe(false);
+    for (const f of ['.wrangler', 'worker/.wrangler']) expect(existsSync(join(dest, f)), f).toBe(false);
+    for (const f of ['functions/api/hello.ts', 'wrangler.toml', 'wrangler.jsonc', 'worker/wrangler.json', 'worker/src/index.ts', 'static/dev.vars.txt', 'static/my.wrangler']) expect(readFileSync(join(dest, f), 'utf8'), f).toBe(f);
+    const zip = join(temp(), 'site.zip');
+    await zipDirectory(dest, zip);
+    const entries = readZip(readFileSync(zip));
+    expect([...entries.keys()].filter((name) => /(^|\/)\.(dev\.vars|wrangler\/)/i.test(name))).toEqual([]);
+    expect([...entries.values()].some((b) => b.toString('utf8').includes('SENTINEL_1126'))).toBe(false);
+    for (const f of ['functions/api/hello.ts', 'wrangler.toml', 'wrangler.jsonc']) expect(entries.has(f), f).toBe(true);
+    // Only those names: a file whose name merely contains one is the owner's.
+    expect(inProjectSource(src, join(src, 'static/dev.vars.txt'))).toBe(true);
+    expect(inProjectSource(src, join(src, 'static/my.wrangler'))).toBe(true);
+    expect(inProjectSource(src, join(src, 'worker/.wrangler/state/kv.bin'))).toBe(false);
+    expect(inProjectSource(src, join(src, 'worker/.dev.vars'))).toBe(false);
   });
 
   it('checks generated files against the hashes the fingerprint took, and reads only those it did not take', async () => {
