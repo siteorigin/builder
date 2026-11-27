@@ -290,9 +290,7 @@ async function buildInputProblem(dir: string, staged: readonly string[]): Promis
   const have = new Set(staged);
   for (const config of BUILD_CONFIGS) {
     if (!have.has(config)) continue;
-    // A type-only import is gone once the setting is compiled: nothing is loaded for it.
-    const code = ((await readIfExists(join(dir, config))) ?? '').replace(/\b(?:import|export)\s+type\b[^;]*?\bfrom\s*(['"])[^'"\n]+\1/g, '');
-    for (const spec of importSpecifiers(code)) {
+    for (const spec of importSpecifiers((await readIfExists(join(dir, config))) ?? '', { runtime: true })) {
       if (!spec.startsWith('./') && !spec.startsWith('../')) continue;
       const base = spec.split('/').reduce<string[]>((parts, part) => (part === '..' ? parts.slice(0, -1) : part === '.' || !part ? parts : [...parts, part]), []).join('/');
       const found = MODULE_ENDINGS.map((end) => base + end).find((rel) => have.has(rel));
@@ -452,23 +450,29 @@ const CREDENTIAL_URL = /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@"'`<>\\]*:[^\s/?#@"'`<>\
  * npm's credential settings (`_authToken`, `_auth`, `_password`) given a value, as an `.npmrc` copied into a file holds
  * them; a setting left empty or filled from the environment (`${NPM_TOKEN}`) holds none.
  */
-const NPM_CREDENTIAL = /(?:^|[\s"'{,;])(?:\/\/[^\s"']*:)?_(?:authToken|auth|password)\s*["']?\s*[=:]\s*["']?(?![\s"'$]|\{|process\.env|import\.meta\.env)[^\s"']{4,}/m;
+const NPM_CREDENTIAL = /(?:^|[\s"'{,;])(?:\/\/[^\s"']*:)?_(?:authToken|auth|password)\s*["']?\s*[=:]\s*["']?(?![\s"'$]|\{|process\.env\.\w|import\.meta\.env\.\w)[^\s"']{4,}/m;
 /** A lockfile, whose addresses name where packages were installed from and never need a token in their query. */
 const LOCKFILE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock)$/;
 /** An address, and each `name=value` of its query. */
-const ADDRESS = /\b(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s"'`<>()\\]+/gi;
+const ADDRESS = /(?:\b[a-z][a-z0-9+.-]*:)?\/\/[^\s"'`<>\\]+/gi;
 const QUERY_PART = /[?&]([A-Za-z0-9_.%-]+)=([^&#]*)/g;
 /**
  * Whether a query's value is one set down as it is, not one filled in later or shown as an example: `${TOKEN}`,
  * `{token}`, `<token>`, `YOUR_PASSWORD`, or too short to be a credential.
  */
-const literalValue = (v: string) => v.length >= 8 && !/^(?:\$|\{|<|%7B|%24|%3C)/i.test(v) && !/^[A-Z0-9_]+$/.test(v) && !/^(?:x+|\*+|your[-_].*|example.*)$/i.test(v);
+const literalValue = (v: string) => v.length >= 8 && !/^(?:\$|\{|<|%7B|%24|%3C)/i.test(v) && !/^[A-Z]+(?:_[A-Z]+)*$/.test(v) && !/^(?:x+|\*+|your[-_].*|example.*)$/i.test(v);
 /**
  * Query names that only ever carry a credential, wherever an address is: a signed cloud storage link's, a client's
  * secret, a password. A page's own `key=` or `access_token=` is often a public one (a map's), so only a lockfile
  * is held to every name that may carry one.
  */
 const CREDENTIAL_QUERY = new Set(['x-amz-credential', 'x-amz-signature', 'x-amz-security-token', 'x-goog-credential', 'x-goog-signature', 'client_secret', 'password', 'passwd', 'private_token']);
+/** A lockfile query name that carries a credential (`access_token`, `apiKey`, `sig`), by its words: `cacheKey` is no key to anything. */
+const LOCKFILE_WORDS = new Set(['token', 'secret', 'password', 'passwd', 'pwd', 'auth', 'authorization', 'credential', 'credentials', 'bearer', 'jwt', 'signature', 'sig']);
+const lockfileCredential = (name: string) => {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return isSensitiveName(name) && (words.some((w) => LOCKFILE_WORDS.has(w)) || ['key', 'apikey', 'api key', 'access key', 'private key'].includes(words.join(' ')));
+};
 const decoded = (raw: string) => {
   try {
     return decodeURIComponent(raw);
@@ -496,10 +500,11 @@ export async function credentialProblem(files: ReadonlyArray<{ path: string; oid
     // hides it, or the parts of its query, from a pattern for one.
     const plain = (text.includes('\\/') ? text.replace(/\\\//g, '/') : text).replace(/&(?:amp|#0*38|#x0*26);/gi, '&');
     const lockfile = LOCKFILE.test(f.path);
+    // The query only: what follows `#` stays in the browser and is no part of the request.
     const queried = [...plain.matchAll(ADDRESS)].some(([address]) =>
-      [...address.matchAll(QUERY_PART)].some((m) => {
+      [...address.split('#')[0].matchAll(QUERY_PART)].some((m) => {
         const name = decoded(m[1]);
-        return literalValue(decoded(m[2])) && (CREDENTIAL_QUERY.has(name.toLowerCase()) || (lockfile && isSensitiveName(name)));
+        return literalValue(decoded(m[2])) && (CREDENTIAL_QUERY.has(name.toLowerCase()) || (lockfile && lockfileCredential(name)));
       })
     );
     if (queried || CREDENTIAL_URL.test(plain) || NPM_CREDENTIAL.test(plain)) return `${f.path} holds a web address or setting with a password or access token in it. Take the credential out, then prepare the publication again.`;

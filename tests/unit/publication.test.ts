@@ -176,7 +176,11 @@ describe('what keeps a credential out', () => {
       // In HTML, its parts joined as HTML writes an ampersand.
       ['static/report.html', '<a href="https://bucket.s3.example.com/r.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Credential=AKIAEXAMPLE%2F2026">Report</a>'],
       // A lockfile's token named as code names one.
-      ['package-lock.json', lock('https://npm.example.com/x/-/x-1.0.0.tgz?accessToken=abcdef123456')]
+      ['package-lock.json', lock('https://npm.example.com/x/-/x-1.0.0.tgz?accessToken=abcdef123456')],
+      ['src/a.html', '<a href="//downloads.example.com/archive?private_token=abcd1234efgh5678">x</a>'],
+      ['src/a.js', 'fetch("https://api.example.com/Products(42)?client_secret=abcd1234efgh5678")'],
+      ['src/db.js', 'const db = "postgresql://db.example.com/site?password=R7M4Q9V2K8B3N6T5";'],
+      ['package.json', JSON.stringify({ config: { '//registry.example.com/:_authToken': 'process.env-build-7d9ba421c12a' } })]
     ]) {
       const problem = await credentialProblem(at(path, s), []);
       expect(problem, s).toBe(`${path} holds a web address or setting with a password or access token in it. Take the credential out, then prepare the publication again.`);
@@ -197,9 +201,12 @@ describe('what keeps a credential out', () => {
       // Examples and values filled in when the site runs.
       'Sign in at https://shop.example.com/login?password=YOUR_PASSWORD',
       'fetch(`https://api.example.com/x?password=${env.PASSWORD}`)',
-      'const q = "?password=hunter2hunter2";'
+      'const q = "?password=hunter2hunter2";',
+      '<a href="https://docs.example.com/accounts#search?lang=en&amp;password=reset-options">Reset</a>'
     ])
       expect(await credentialProblem(at('src/a.js', s), []), s).toBeNull();
+    // A lockfile's public cache key is no credential.
+    expect(await credentialProblem(at('package-lock.json', lock('https://registry.example.com/x/-/x-1.0.0.tgz?cacheKey=a93f84c17d25')), [])).toBeNull();
     // A binary file is not read as text.
     expect(await credentialProblem(at('static/a.png', Buffer.concat([Buffer.from([0x89, 0, 0]), text(KEY)])), [KEY])).toBeNull();
   });

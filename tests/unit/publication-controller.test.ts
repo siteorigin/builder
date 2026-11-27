@@ -363,7 +363,7 @@ describe('preparing a publication', { timeout: 30_000 }, () => {
       writeFileSync(join(d, 'build-options.js'), 'export default {};\n');
       // A type-only import loads nothing once compiled, so it is no reason to stop, though it comes first.
       writeFileSync(join(d, 'build-types.ts'), 'export interface Options {}\n');
-      writeFileSync(join(d, 'vite.config.js'), `import type { Options } from './build-types';\nimport options from './build-options.js';\n${readFileSync(join(d, 'vite.config.js'), 'utf8')}`);
+      writeFileSync(join(d, 'vite.config.js'), `// To import type definitions:\n/* import type { Old } from './old-types'; */\nimport type { Options } from './build-types';\nimport options from './build-options.js';\n${readFileSync(join(d, 'vite.config.js'), 'utf8')}`);
     });
     const b = await open(helped);
     expect(await b.c.preparePublication()).toEqual({ ok: false, message: 'vite.config.js loads build-options.js, which a publication does not carry. Move it into src/, then prepare the publication again.', warnings: [] });
