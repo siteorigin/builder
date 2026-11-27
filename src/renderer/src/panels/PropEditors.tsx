@@ -35,7 +35,7 @@ import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
 import type { PictureStandIn } from '../lib/sharing';
-import { effectiveItem } from '@shared/page-teasers';
+import { effectiveItem, teaserPage } from '@shared/page-teasers';
 import { articleRows, feedLimit, pageArticle } from '@shared/articles';
 import { entryQuery, feedCollection, hasCollections, listedEntries, publishedEntries, termsNamed, type EntryQuery } from '@shared/entry-feed';
 import { findEntry } from '@shared/collections';
@@ -583,23 +583,30 @@ function LinkRelDisclosure({ value, onChange }: { value: readonly string[] | und
  * the site's pages (the APG combobox: focus stays in the field, the arrow keys move through the pages, Enter chooses,
  * Escape closes and changes nothing).
  */
-function PagePicker({ state, value, label, id, onPick }: { state: ProjectState; value: string; label: string; id?: string; onPick: (id: string) => void }) {
+function PagePicker({ state, value, label, id, onPick, pages, currentNote = 'linked now', describedBy, onActive }: { state: ProjectState; value: string; label: string; id?: string; onPick: (id: string) => void; /** Only these pages, in Pages order (a page list offers the pages it doesn't list yet). */ pages?: readonly string[]; /** What the chosen page is, said after its name in the list. */ currentNote?: string; describedBy?: string; /** The highlighted page while open (null when the search matches none), undefined once closed. */ onActive?: (id: string | null | undefined) => void }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [active, setActive] = useState<string | null>(null);
+  // The highlight the keys set (not a passing pointer), for what onActive reports.
+  const keyed = useRef<string | null>(null);
   const listId = useId();
   const btn = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
   // A click between rows or on the scrollbar focuses the list, which hands focus straight back to the field.
   const field = useRef<HTMLInputElement>(null);
   const page = Object.hasOwn(state.pages, value) ? state.pages[value] : undefined;
-  const all = state.site.pageOrder.filter((p) => Object.hasOwn(state.pages, p));
+  const all = state.site.pageOrder.filter((p) => Object.hasOwn(state.pages, p) && (!pages || pages.includes(p)));
   const needle = q.trim().toLowerCase();
   const shown = needle ? all.filter((p) => state.pages[p].title.toLowerCase().includes(needle) || state.pages[p].route.toLowerCase().includes(needle)) : all;
   // The highlighted page: the one moved to while it is still shown, else the linked one, else the first.
   // While searching, the first match: Enter takes what was typed for, not the page already linked.
   const current = active && shown.includes(active) ? active : !needle && shown.includes(value) ? value : (shown[0] ?? null);
   const optionId = (p: string) => `${listId}-${p}`;
+  // Reported while open: the page the keys or the search point at (the chosen one while neither does), so a pointer
+  // crossing the list on its way to a button beside it doesn't change what that button takes.
+  const reported = keyed.current && shown.includes(keyed.current) ? keyed.current : !needle && shown.includes(value) ? value : (shown[0] ?? null);
+  useEffect(() => onActive?.(open ? reported : undefined), [open, reported]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onActive?.(undefined), []); // eslint-disable-line react-hooks/exhaustive-deps
   // The highlighted page is kept in view by scrolling the list alone, never the Inspector around it.
   useEffect(() => {
     const box = list.current;
@@ -612,6 +619,7 @@ function PagePicker({ state, value, label, id, onPick }: { state: ProjectState; 
     setOpen(false);
     setQ('');
     setActive(null);
+    keyed.current = null;
     if (focus) requestAnimationFrame(() => btn.current?.focus());
   };
   const choose = (p: string) => {
@@ -624,7 +632,9 @@ function PagePicker({ state, value, label, id, onPick }: { state: ProjectState; 
     const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : e.key === 'PageDown' ? 8 : e.key === 'PageUp' ? -8 : 0;
     if (step && shown.length) {
       e.preventDefault();
-      setActive(shown[Math.max(0, Math.min(shown.length - 1, at + step))]);
+      const next = shown[Math.max(0, Math.min(shown.length - 1, at + step))];
+      keyed.current = next;
+      setActive(next);
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (current) choose(current);
@@ -647,6 +657,7 @@ function PagePicker({ state, value, label, id, onPick }: { state: ProjectState; 
         id={id}
         className="select sm insp-page-btn"
         aria-label={page ? `${label}: ${page.title}, ${page.route}` : label}
+        aria-describedby={describedBy}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
@@ -687,7 +698,7 @@ function PagePicker({ state, value, label, id, onPick }: { state: ProjectState; 
               aria-activedescendant={current ? optionId(current) : undefined}
               autoFocus
               value={q}
-              onChange={(e) => (setQ(e.target.value), setActive(null))}
+              onChange={(e) => ((keyed.current = null), setQ(e.target.value), setActive(null))}
               onKeyDown={keys}
             />
           </div>
@@ -710,7 +721,7 @@ function PagePicker({ state, value, label, id, onPick }: { state: ProjectState; 
                 {p === value && (
                   <>
                     <Check aria-hidden="true" className="insp-page-check" />
-                    <span className="sr-only">, linked now</span>
+                    <span className="sr-only">, {currentNote}</span>
                   </>
                 )}
               </div>
@@ -2478,7 +2489,7 @@ export interface ListItemNote {
 export type ListOp =
   | { kind: 'insert'; item?: Record<string, unknown> }
   | { kind: 'pick'; assetIds: string[]; replace: string[] }
-  | { kind: 'remove'; itemId: string }
+  | { kind: 'remove'; itemId: string; /** The row's name, for the notice that offers Undo. */ title?: string }
   | { kind: 'move'; itemId: string; index: number }
   | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit }
   | { kind: 'repair'; itemId: string; field: string; value: unknown; label: string; revision?: number };
@@ -2495,6 +2506,16 @@ export interface ListReveal {
  */
 const fillRoots = new Map<string, HTMLElement>();
 
+/** The drag data a list row carries: its item ID, for a move within the same list. */
+const LIST_DRAG = 'application/x-siteorigin-list-item';
+/** The first words of a text, up to about 60 characters and ending on a whole word, for a row with no title. */
+const openingWords = (text: string | undefined): string | undefined => {
+  const t = text?.replace(/\s+/g, ' ').trim();
+  if (!t) return undefined;
+  if (t.length <= 60) return t;
+  const cut = t.slice(0, 60);
+  return `${cut.slice(0, cut.lastIndexOf(' ') > 30 ? cut.lastIndexOf(' ') : 60).replace(/[,;:.]$/, '')}…`;
+};
 /** "A", "A and B", "A, B and C". */
 const listWords = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? ''));
 
@@ -2527,7 +2548,7 @@ export interface ListOrder {
   locked: string | null;
 }
 
-export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill, order, refused, setProps }: {
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill, order, refused, setProps }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -2544,7 +2565,6 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   /** For a list: whether a row's field is still there (the row, and the field in the list's schema). */
   itemAlive?: (itemId: string, field: string) => () => boolean;
   state: ProjectState;
-  focusItem?: string;
   /** For a list: open this item, once per request ("Open in inspector"); the author can close it again. */
   openItem?: ListReveal;
   /** A shorter visible label, when a group heading already says what the field belongs to. */
@@ -2582,7 +2602,7 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   if (schema.type === 'list')
     return (
       <FieldHome part={`prop:${name}`} alive={alive}>
-        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} fill={fill} order={order} refused={refused} error={refused?.({}) ?? missingNote(schema, value)} />
+        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} fill={fill} order={order} refused={refused} error={refused?.({}) ?? missingNote(schema, value)} />
       </FieldHome>
     );
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} refused={refused?.({})} />;
@@ -3157,13 +3177,17 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
 }
 
 /**
- * A repeatable list. Focus follows the edit: a new item opens with its row focused, and removing an item moves
- * focus to the row that takes its place (or to Add when the list is empty). A moved item keeps focus on the button
- * that moved it, and on its own disclosure once that button is disabled at the end of the list; the new position is
- * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
- * with the reason once the list is full or at its minimum.
+ * A repeatable list. Each row is a disclosure named by its item, with what is wrong with the item said under its name
+ * in words while it is closed, and a submenu link says which link it shows under. Focus follows the edit: a new item
+ * opens with its row focused and is announced, and removing an item moves focus to the row that takes its place (or
+ * to Add when the list is empty) while a notice offers Undo. A row moves one place with its buttons, or anywhere by
+ * dragging it; a moved item keeps focus on the button that moved it, and on its own disclosure once that button is
+ * disabled at the end of the list, and the new position (and any link that changed submenu with it) is announced.
+ * The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable with the
+ * reason once the list is full or at its minimum. While the order is set elsewhere the rows have no moves at all,
+ * and the note above them says why.
  */
-function ListEditor({ name, schema, items, onList, read, itemAlive, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, fill, order, refused, error }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; fill?: ListFill; order?: ListOrder; refused?: (at: { field?: string; itemId?: string }) => string | undefined; /** A problem with the list as a whole (a required list with no items, or a refused removal of its last). */ error?: string }) {
+function ListEditor({ name, schema, items, onList, read, itemAlive, state, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, fill, order, refused, error }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; fill?: ListFill; order?: ListOrder; refused?: (at: { field?: string; itemId?: string }) => string | undefined; /** A problem with the list as a whole (a required list with no items, or a refused removal of its last). */ error?: string }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -3176,7 +3200,12 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
   }, [openItem?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
   const labelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
-  const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | { kind: 'moved'; id: string; direction: MoveDirection; index: number; from: number; title: string; at: number } | null>(null);
+  const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | { kind: 'moved'; id: string; direction: MoveDirection; index: number; from: number; title: string; at: number; parents: Map<string, string | null> } | null>(null);
+  // Each row's submenu parent as last shown (a menu with submenus), so a move can say which links it regrouped.
+  const parents = useRef(new Map<string, string | null>());
+  // A row being dragged within this list, and where it would land: before the row at `at` (items.length: at the end).
+  const [drag, setDrag] = useState<{ id: string; at: number | null } | null>(null);
+  const [dropTop, setDropTop] = useState<number | null>(null);
   // Images added in one pass, named by the rows the change made: focus goes to the first once this list shows it.
   const [landed, setLanded] = useState<{ ids: string[]; said: string; at: number } | null>(null);
   const [said, setSaid] = useState({ text: '', count: 0 });
@@ -3205,13 +3234,14 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
       const added = items.find((i) => !a.before.includes(i.id));
       if (!added) return;
       after.current = null;
+      setSaid((p) => announcementText(`Added ${nameOf(added, items.indexOf(added))}.`, p.count) ?? p);
+      // Opened and focused only from where Add left it: Add (or the page picker beside it), or nowhere (the page). An
+      // author who has gone on to a field meanwhile, even in another row of this list, keeps it open and keeps their place.
+      const active = document.activeElement;
+      const fromAdd = (el: Element | null) => !el || el === document.body || (!!root?.contains(el) && !!el.closest('.insp-add, .list-editor-add-page'));
+      if (!fromAdd(active)) return;
       setOpen(added.id);
-      requestAnimationFrame(() => {
-        // From Add, or nowhere (the page); an author who has gone to another field keeps their place.
-        const active = document.activeElement;
-        if (active && active !== document.body && !root?.contains(active)) return;
-        focusRow(added.id);
-      });
+      requestAnimationFrame(() => fromAdd(document.activeElement) && focusRow(added.id));
     } else if (a.kind === 'moved') {
       // The move lands with a later saved revision. Until then the item is still where it was (another item's move
       // may land first) and the request stays pending. Once the item is anywhere but where the move put it, or the
@@ -3229,12 +3259,20 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
         const el = root?.querySelector<HTMLElement>(`#list-${target}-${CSS.escape(a.id)}`) ?? root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(a.id)}`);
         el?.focus();
       });
-      setSaid((p) => announcementText(moveAnnouncement(a.title, a.index, items.length), p.count) ?? p);
+      // Links whose submenu changed with the move: the one moved, or the ones after it it took into or out of a submenu.
+      const regrouped = [...parents.current].filter(([id, under]) => a.parents.has(id) && a.parents.get(id) !== under);
+      const moved = [moveAnnouncement(nameOf(items[at], at), a.index, items.length), ...regrouped.map(([id, under]) => {
+        const t = titleOf(items.find((x) => x.id === id)!, items.findIndex((x) => x.id === id));
+        const parent = under ? items.find((x) => x.id === under) : undefined;
+        return parent ? `${t} now shows under ${titleOf(parent, items.indexOf(parent))}.` : `${t} now shows in the menu itself.`;
+      })].join(' ');
+      setSaid((p) => announcementText(moved, p.count) ?? p);
     } else {
       after.current = null;
       requestAnimationFrame(() => {
+        // The Remove button went with its row, leaving focus on the page: anywhere else, the author has moved on.
         const active = document.activeElement;
-        if (active && active !== document.body && !root?.contains(active)) return;
+        if (active && active !== document.body) return;
         focusRow(a.focus);
       });
     }
@@ -3255,12 +3293,18 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
       rootRef.current?.querySelector<HTMLElement>(`#list-head-${CSS.escape(first)}`)?.focus();
     });
   }, [ids, landed]); // eslint-disable-line react-hooks/exhaustive-deps
-  const openId = focusItem ?? open;
+  const openId = open;
   const reveal = useRevealedItem(place, openId ? items.find((x) => x.id === openId) : undefined);
   // A page list names each card by the title it shows: the page's own while the card has none. A row without a
   // title is named by the image it shows.
   const imageOf = (raw: ListItem) => listItemImage(schema, effectiveItem(state, schema, raw), state.assets.assets);
   const titleOf = (raw: ListItem, i: number) => listRowTitle(schema, effectiveItem(state, schema, raw), i, imageOf(raw)?.name);
+  // A page list's cards that share a title are told apart by their page's address, seen and in their buttons' names.
+  const routeOf = (raw: ListItem) => (schema.pageTeaser ? teaserPage(state, schema.pageTeaser, raw)?.route : undefined);
+  const titleCount = new Map<string, number>();
+  if (schema.pageTeaser) items.forEach((x, i) => titleCount.set(titleOf(x, i), (titleCount.get(titleOf(x, i)) ?? 0) + 1));
+  const twinRoute = (raw: ListItem, i: number) => ((titleCount.get(titleOf(raw, i)) ?? 0) > 1 ? routeOf(raw) : undefined);
+  const nameOf = (raw: ListItem, i: number) => (twinRoute(raw, i) ? `${titleOf(raw, i)} (${twinRoute(raw, i)})` : titleOf(raw, i));
   // The text a row is named by when it has some (see listRowTitle), so a blank row is told from one titled "Card 4".
   const ownTitle = (x: ListItem) => {
     const t = schema.titleField ? x[schema.titleField] : Object.values(x).find((v) => typeof v === 'string' && v && v !== x.id);
@@ -3269,14 +3313,18 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
   // In a menu with submenus, the link each item shows under (null for a top-level one), so the rows show the
   // grouping the website will: moving or removing a link can regroup the ones after it.
   const underOf: Array<string | null> = [];
+  const underId: Array<string | null> = [];
   if (menuGroups(schema)) {
     const under = shownUnder(items);
-    let top: string | null = null;
+    let top: { id: string; title: string } | null = null;
     items.forEach((it, i) => {
-      if (!under[i]) top = titleOf(it, i);
-      underOf[i] = under[i] ? top : null;
+      if (!under[i]) top = { id: it.id, title: titleOf(it, i) };
+      underOf[i] = under[i] && top ? top.title : null;
+      underId[i] = under[i] && top ? top.id : null;
     });
   }
+  // By ID, so a move between two links of the same name is still a regroup.
+  parents.current = new Map(underId.length ? items.map((it, i) => [it.id, underId[i]]) : []);
   const runtime = useStore((st) => st.runtime);
   const snapshot = useStore((st) => st.snapshot);
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
@@ -3317,13 +3365,61 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
   }, [asked]);
   const addable = schema.pageTeaser ? pagesToAdd(state, schema, items, currentPageId) : [];
   const [toAdd, setToAdd] = useState('');
+  // While the page chooser is open: the page it highlights, or null when its search matches none.
+  const [searching, setSearching] = useState<string | null | undefined>(undefined);
   const adding = addable.includes(toAdd) ? toAdd : (addable[0] ?? '');
   const L = onList;
-  const move = (it: ListItem, i: number, direction: MoveDirection) => {
-    if (locked) return;
-    const index = direction === 'up' ? i - 1 : i + 1;
-    after.current = { kind: 'moved', id: it.id, direction, index, from: i, title: titleOf(it, i), at: Date.now() };
+  const moveTo = (it: ListItem, i: number, index: number) => {
+    if (locked || index === i || index < 0 || index >= items.length) return;
+    after.current = { kind: 'moved', id: it.id, direction: index < i ? 'up' : 'down', index, from: i, title: titleOf(it, i), at: Date.now(), parents: new Map(parents.current) };
     L({ kind: 'move', itemId: it.id, index });
+  };
+  const move = (it: ListItem, i: number, direction: MoveDirection) => moveTo(it, i, direction === 'up' ? i - 1 : i + 1);
+  // Dragging a row: rows drag by their head, as layers do, and only within their own list. The line shows between
+  // rows where it will land; the move buttons stay the way to do it without dragging.
+  const canDrag = !locked && items.length > 1;
+  // Off the rows (Add, the notes, outside the list) nothing would land: the line goes, and a drop there does nothing.
+  const dragAway = () => {
+    if (drag?.at !== null && drag) setDrag({ id: drag.id, at: null });
+    setDropTop(null);
+  };
+  // Where a held row would land, from the pointer's height over the rows: before the first row whose middle is below
+  // it. Over the rows, the 4px between them and a nested row's indent alike; off them (the order control, Add, the
+  // notes, or past either end) nothing would land. `null` is no move: off the rows, or where the row already is.
+  const slotAt = (e: React.DragEvent): { at: number; top: number } | 'off' | null => {
+    if (!drag || !e.dataTransfer.types.includes(LIST_DRAG)) return 'off';
+    const rows = [...(rootRef.current?.querySelectorAll<HTMLElement>(':scope .list-editor > .list-editor-item') ?? [])];
+    const first = rows[0]?.getBoundingClientRect();
+    const last = rows[rows.length - 1]?.getBoundingClientRect();
+    const target = e.target as Element;
+    const off = !target.closest?.('.list-editor-item') && target.closest?.('.list-editor-order, .insp-add, .insp-link-row, .insp-note, .insp-pick-open, .insp-fill');
+    if (off || !first || !last || e.clientY < first.top - 8 || e.clientY >= last.bottom + 4) return 'off';
+    const at = rows.filter((r) => {
+      const b = r.getBoundingClientRect();
+      return b.top + b.height / 2 < e.clientY;
+    }).length;
+    const from = items.findIndex((x) => x.id === drag.id);
+    if (from < 0 || at === from || at === from + 1) return null;
+    const near = rows[Math.min(at, rows.length - 1)];
+    return { at, top: at < rows.length ? near.offsetTop - 3 : near.offsetTop + near.offsetHeight + 1 };
+  };
+  const dragOver = (e: React.DragEvent) => {
+    const slot = slotAt(e);
+    if (slot === 'off') return dragAway();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (drag && drag.at !== (slot?.at ?? null)) setDrag({ id: drag.id, at: slot?.at ?? null });
+    setDropTop(slot?.top ?? null);
+  };
+  // Read from the drop itself, so the last place shown is the one taken even before the list has drawn it.
+  const drop = (e: React.DragEvent) => {
+    if (!drag) return;
+    const slot = slotAt(e);
+    if (slot !== 'off') e.preventDefault();
+    const from = items.findIndex((x) => x.id === drag.id);
+    if (from >= 0 && slot && slot !== 'off') moveTo(items[from], from, slot.at > from ? slot.at - 1 : slot.at);
+    setDrag(null);
+    setDropTop(null);
   };
   const addNote = addLimitNote(items.length, schema.itemLabel, schema.max, schema.min);
   const removeNote = removeLimitNote(items.length, schema.itemLabel, schema.min, schema.max);
@@ -3336,7 +3432,19 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
     return hidden?.length ? groupFields(Object.entries(schema.fields).filter(([key]) => !hidden.includes(key)).map(([key, s]) => ({ key, schema: s, data: null }))) : fields;
   };
   return (
-    <div className="field" role="group" aria-labelledby={labelId} aria-describedby={error ? `${labelId}-error` : undefined} data-list={name} ref={rootRef}>
+    <div
+      className="field"
+      role="group"
+      aria-labelledby={labelId}
+      aria-describedby={[error && `${labelId}-error`, locked && lockedNoteId].filter(Boolean).join(' ') || undefined}
+      data-list={name}
+      ref={rootRef}
+      // The whole field takes a held row (dragOver), so the line above the first row, over the gap under the label,
+      // takes a drop as surely as the rows do.
+      onDragOver={drag ? dragOver : undefined}
+      onDragLeave={drag ? (e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && dragAway() : undefined}
+      onDrop={drop}
+    >
       <div className="field-label" id={labelId}>
         <span className="grow">
           {schema.label}
@@ -3352,7 +3460,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
           {error}
         </div>
       )}
-      <div className="list-editor">
+      <div className="list-editor" data-drag={drag ? '' : undefined}>
         {order && (
           <div className="list-editor-order">
             {order.control}
@@ -3399,14 +3507,43 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
           const untitled = !thumb && !ownTitle(effectiveItem(state, schema, it));
           // Fields the component requires that this item leaves empty: the closed row says it is incomplete.
           const empty = Object.entries(schema.fields).filter(([k, f]) => !hiddenFields?.(it).includes(k) && missingNote(f, Object.hasOwn(it, k) ? it[k] : f.default));
-          const incomplete = empty.length ? `Incomplete: ${listWords(empty.map(([, f]) => f.label))} ${empty.length === 1 ? 'is' : 'are'} required.` : undefined;
+          const required = empty.length ? `${listWords(empty.map(([, f]) => f.label))} ${empty.length === 1 ? 'is' : 'are'} required.` : undefined;
+          const incomplete = required && `Incomplete: ${required}`;
           // An edit of one of its fields that was refused is said on the closed row too, until the row is opened.
           const refusedHere = refused ? Object.keys(schema.fields).map((k) => refused({ itemId: it.id, field: k })).find(Boolean) : undefined;
-          // A contact link that opens something other than its text is flagged on the closed row too.
-          const flag = refusedHere ?? note?.error ?? (linkPairs?.some((p) => contactMismatch(it[p.text], it[p.link])) ? 'The link doesn’t open what visitors see.' : undefined) ?? incomplete;
+          // A contact link that opens something other than its text is a caution; the rest are problems to fix.
+          const mismatch = linkPairs?.map((p) => contactMismatch(it[p.text], it[p.link])).find(Boolean);
+          // Where the link goes, as the open row's note words it (ContactMismatch): the visible text is already the name.
+          const caution = mismatch ? `${/^mailto:/i.test(mismatch.opens) ? 'Link emails' : /^tel:/i.test(mismatch.opens) ? 'Link calls' : 'Link opens'} ${mismatch.opens.replace(/^(mailto|tel):/i, '')}.` : undefined;
+          const problem = refusedHere ?? note?.error;
+          const flag = problem ?? caution ?? incomplete;
+          // What the closed row says under its name, in words: red as its field says it once open, amber for a caution.
+          const says = [problem ? { text: problem, tone: 'error' } : caution ? { text: caution, tone: 'caution' } : null, required && required !== problem ? { text: required, tone: 'error' } : null].filter((x): x is { text: string; tone: string } => !!x);
+          // An item with nothing to name it by is told from others like it by the opening words of what it does have.
+          const excerpt = untitled ? openingWords(Object.entries(it).find(([k, v]) => k !== 'id' && k !== schema.titleField && schema.fields[k] && typeof v === 'string' && v.trim())?.[1] as string | undefined) : undefined;
+          const isOpen = openId === it.id;
           return (
-          <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}${underOf[i] ? ' nested' : ''}`}>
-            <div className="list-editor-head">
+          <div
+            key={it.id}
+            className={`list-editor-item${underOf[i] ? ' nested' : ''}`}
+            data-dragging={drag?.id === it.id || undefined}
+          >
+            <div
+              className="list-editor-head"
+              draggable={canDrag}
+              onDragStart={(e) => {
+                if (!canDrag) return;
+                e.dataTransfer.setData(LIST_DRAG, it.id);
+                e.dataTransfer.effectAllowed = 'move';
+                // The head alone, so an open row's form doesn't cover the places it could go.
+                e.dataTransfer.setDragImage(e.currentTarget, 16, 16);
+                setDrag({ id: it.id, at: null });
+              }}
+              onDragEnd={() => {
+                setDrag(null);
+                setDropTop(null);
+              }}
+            >
               {/* The chevron and title are one disclosure button, so the whole leading area opens the item. */}
               <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} aria-describedby={flag ? `list-flag-${it.id}` : undefined} onClick={() => setOpen(openId === it.id ? null : it.id)}>
                 <DisclosureMark />
@@ -3415,41 +3552,68 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
                     <AssetImage key={missingKey(snapshot, thumb.id)} asset={thumb} devUrl={devUrl} cover alt="" loading="lazy" />
                   </span>
                 )}
-                {underOf[i] && <CornerDownRight size={12} className="faint list-editor-under" aria-hidden="true" />}
-                <span className={`list-editor-name${untitled ? ' untitled' : ''}`}>
-                  {untitled ? `Untitled ${schema.itemLabel.toLowerCase()}` : title}
-                  {/* Its place in the list, which its move and remove buttons are named by. */}
-                  {untitled && <span className="sr-only">, {title}</span>}
+                {underOf[i] && <CornerDownRight size={12} className="list-editor-under" aria-hidden="true" />}
+                <span className="list-editor-text">
+                  <span className={`list-editor-name${untitled ? ' untitled' : ''}`}>
+                    {untitled ? `Untitled ${schema.itemLabel.toLowerCase()}` : title}
+                    {/* Its place in the list, which its move and remove buttons are named by. */}
+                    {untitled && <span className="sr-only">, {title}</span>}
+                  </span>
+                  {underOf[i] && (
+                    <span className="list-editor-meta">
+                      <span className="sr-only">, </span>Under {underOf[i]}
+                    </span>
+                  )}
+                  {twinRoute(it, i) && (
+                    <span className="list-editor-meta">
+                      <span className="sr-only">, </span>
+                      {twinRoute(it, i)}
+                    </span>
+                  )}
+                  {excerpt && (
+                    <span className="list-editor-meta list-editor-excerpt">
+                      <span className="sr-only">, </span>
+                      {excerpt}
+                    </span>
+                  )}
+                  {/* Read once, as the row's description (below); seen here while the row is closed. */}
+                  {!isOpen &&
+                    says.map((x) =>
+                      x.tone === 'error' ? (
+                        <span key={x.text} className="field-error list-editor-status" aria-hidden="true">
+                          {x.text}
+                        </span>
+                      ) : (
+                        <span key={x.text} className="insp-check list-editor-status" aria-hidden="true">
+                          <TriangleAlert />
+                          {x.text}
+                        </span>
+                      )
+                    )}
                 </span>
-                {underOf[i] && <span className="sr-only">, under {underOf[i]}</span>}
-                {incomplete && (
-                  <span className="list-editor-incomplete" aria-hidden="true">
-                    Incomplete
-                  </span>
-                )}
-                {/* A closed item still shows it needs attention. */}
-                {flag && flag !== incomplete && (
-                  <span className="list-editor-flag" title={flag} aria-hidden="true">
-                    <TriangleAlert />
-                  </span>
-                )}
               </button>
               {/* Outside the button, so the problem describes the row without becoming part of its name. */}
               {flag && (
                 <span className="sr-only" id={`list-flag-${it.id}`}>
-                  {flag === incomplete || !incomplete ? flag : `${flag} ${incomplete}`}
+                  {says.map((x) => x.text).join(' ')}
                 </span>
               )}
-              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} id={`list-up-${it.id}`} disabled={!locked && i === 0} aria-disabled={locked ? true : undefined} aria-describedby={locked ? lockedNoteId : undefined} title={locked ?? undefined} onClick={() => move(it, i, 'up')}>
-                <ArrowUp />
-              </button>
-              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} down`} id={`list-down-${it.id}`} disabled={!locked && i === items.length - 1} aria-disabled={locked ? true : undefined} aria-describedby={locked ? lockedNoteId : undefined} title={locked ?? undefined} onClick={() => move(it, i, 'down')}>
-                <ArrowDown />
-              </button>
-              <button className="icon-btn sm list-editor-remove" aria-label={`Remove ${titleOf(it, i)}`} aria-disabled={removeNote ? true : undefined} aria-describedby={removeNote ? (removeNoteShared ? addNoteId : removeNoteId) : undefined} title={removeNote ?? undefined} onClick={() => {
+              {/* While the order is set elsewhere, or the list has one item, there is no move to offer; a locked list's
+                  note above the rows says why. */}
+              {canDrag && (
+                <>
+                  <button className="icon-btn sm" aria-label={`Move ${nameOf(it, i)} up`} id={`list-up-${it.id}`} disabled={i === 0} onClick={() => move(it, i, 'up')}>
+                    <ArrowUp />
+                  </button>
+                  <button className="icon-btn sm" aria-label={`Move ${nameOf(it, i)} down`} id={`list-down-${it.id}`} disabled={i === items.length - 1} onClick={() => move(it, i, 'down')}>
+                    <ArrowDown />
+                  </button>
+                </>
+              )}
+              <button className="icon-btn sm list-editor-remove" aria-label={`Remove ${nameOf(it, i)}`} aria-disabled={removeNote ? true : undefined} aria-describedby={removeNote ? (removeNoteShared ? addNoteId : removeNoteId) : undefined} title={removeNote ?? undefined} onClick={() => {
                   if (removeNote) return;
                   after.current = { kind: 'removed', focus: (items[i + 1] ?? items[i - 1])?.id ?? null };
-                  L({ kind: 'remove', itemId: it.id });
+                  L({ kind: 'remove', itemId: it.id, title: nameOf(it, i) });
                 }}>
                 <Trash2 />
               </button>
@@ -3492,24 +3656,32 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
           </div>
           );
         })}
+        {dropTop !== null && <div className="list-editor-drop" style={{ top: dropTop }} aria-hidden="true" />}
         {schema.pageTeaser ? (
           // A page list adds a card for a page chosen here; each page appears once.
           addable.length > 0 ? (
-            <div className="insp-link-row">
-              <select className="select sm grow" value={adding} aria-label={`${schema.itemLabel} to add`} aria-describedby={addNote ? addNoteId : undefined} onChange={(e) => setToAdd(e.target.value)}>
-                {addable.map((id) => (
-                  <option key={id} value={id}>
-                    {state.pages[id].title} ({state.pages[id].route})
-                  </option>
-                ))}
-              </select>
-              <button className="btn btn-sm insp-add" aria-disabled={addNote || addPending ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
-                  if (addNote || addPending || !adding) return;
+            <div className="insp-link-row list-editor-add-page">
+              {/* One page left: the button names it. Otherwise the page chooser the link editor uses, offering the pages
+                  this list doesn't have yet. */}
+              {addable.length > 1 && <PagePicker key={ids} state={state} pages={addable} value={adding} label={`${schema.itemLabel} to add`} currentNote="chosen" describedBy={addNote ? addNoteId : undefined} onPick={setToAdd} onActive={setSearching} />}
+              {/* While the chooser is open, Add takes the page it highlights (Enter's choice), and a press keeps focus in
+                  it so the list doesn't close and move Add out from under the pointer. */}
+              <button
+                className="btn btn-sm insp-add"
+                aria-label={addable.length === 1 ? `Add ${state.pages[addable[0]].title}, ${state.pages[addable[0]].route}` : undefined}
+                aria-disabled={addNote || addPending || searching === null ? true : undefined}
+                aria-describedby={addNote ? addNoteId : undefined}
+                title={addNote ?? undefined}
+                onMouseDown={searching !== undefined ? (e) => e.preventDefault() : undefined}
+                onClick={() => {
+                  const page = searching === undefined ? adding : searching;
+                  if (addNote || addPending || !page) return;
                   after.current = { kind: 'added', before: items.map((x) => x.id) };
                   setAsked(ids);
-                  L({ kind: 'insert', item: { [schema.pageTeaser!.link]: { type: 'page', target: adding } } });
-                }}>
-                <Plus /> Add {schema.itemLabel.toLowerCase()}
+                  L({ kind: 'insert', item: { [schema.pageTeaser!.link]: { type: 'page', target: page } } });
+                }}
+              >
+                <Plus /> Add {addable.length === 1 ? state.pages[addable[0]].title : schema.itemLabel.toLowerCase()}
               </button>
             </div>
           ) : (
@@ -3521,7 +3693,9 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
               after.current = { kind: 'added', before: items.map((x) => x.id) };
               L({ kind: 'insert' });
             }}>
+            {/* Beside Choose images…, this one adds a row to fill in by hand. */}
             <Plus /> Add {schema.itemLabel.toLowerCase()}
+            {pickImages ? ' manually' : ''}
           </button>
         )}
         {addNote && (

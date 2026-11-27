@@ -1,5 +1,5 @@
 @layer components {
-  .list-editor { display: flex; flex-direction: column; gap: 4px; }
+  .list-editor { position: relative; display: flex; flex-direction: column; gap: 4px; }
   .choices-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .choices-row { display: flex; flex-direction: column; gap: 2px; }
   /* "Sent as" sits under its label's text, close enough to read as part of that row. */
@@ -43,10 +43,13 @@
   .computed-page-excerpt { margin-top: 4px; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .computed-page > .btn { margin-top: 8px; }
   .list-editor-item { border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); overflow: hidden; }
-  .list-editor-item.focused { border-color: var(--accent); box-shadow: var(--ring); }
   /* A menu link shown under the link above it, in that link’s submenu. */
   .list-editor-item.nested { margin-left: 18px; }
   .list-editor-under { flex: none; }
+  /* The row being dragged stays in place, drawn as a slot, until it lands. */
+  .list-editor-item[data-dragging] { border-style: dashed; background: var(--panel-2); }
+  /* Where a dragged row will land: the accent line with its dot, as Layers draws one, in the 4px between rows. */
+  .list-editor-drop { position: absolute; left: -3px; right: 0; height: 8px; margin-top: -3px; pointer-events: none; background: radial-gradient(circle at 4px 4px, var(--accent) 0 3px, transparent 3.5px) no-repeat, linear-gradient(var(--accent), var(--accent)) 6px 3px / calc(100% - 6px) 2px no-repeat; }
   .list-editor-head { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 4px 0 8px; }
   .list-editor-head button.title { flex: 1; min-width: 0; text-align: left; border: 0; background: none; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .list-editor-body { padding: 4px 10px 10px; display: flex; flex-direction: column; gap: 9px; border-top: 1px solid var(--border); background: var(--panel-2); }
@@ -55,7 +58,7 @@
   /* Every part of a row sits on its first line, so a title that wraps grows the row downward only. */
   .list-editor-item > .list-editor-head { align-items: flex-start; padding-left: 3px; }
   .list-editor-item > .list-editor-head > .icon-btn { margin-top: 4px; }
-  .list-editor-item > .list-editor-head button.title { align-items: flex-start; align-self: auto; margin-block: 3px; padding: 4px 5px; border-radius: var(--r-xs); }
+  .list-editor-item > .list-editor-head button.title { align-items: flex-start; align-self: auto; margin-block: 3px; padding: 4px 5px; border-radius: var(--r-sm); }
   .list-editor-item > .list-editor-head button.title:hover { background: var(--hover); }
   /* Chevron and thumbnail sit on the title's first line, on whole pixels, however many lines the title takes. */
   .list-editor-item > .list-editor-head button.title > svg:not(.disclosure-mark) { flex: none; margin-top: 2px; color: var(--text-2); }
@@ -65,15 +68,31 @@
   .list-editor-item > .list-editor-head button.title[aria-expanded='true'] { font-weight: 600; }
   .list-editor-name { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
   .list-editor-name.untitled { color: var(--text-3); font-style: italic; }
+  /* A row's thumbnail is 32×24 (Inspector.css), so on the title's first line it overhangs that line by 4px each way. */
+  .list-editor-item > .list-editor-head button.title > span.list-editor-thumb { margin-block: -4px; }
+  /* Name first; under it, what a submenu link shows under, a nameless item's opening words, and what is wrong. */
+  .list-editor-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; white-space: normal; }
+  .list-editor-meta { font-size: 12px; font-weight: 400; line-height: 1.35; color: var(--text-3); overflow-wrap: anywhere; }
+  /* A nameless row's opening words are what tell it from others like it: a step louder than the metadata. */
+  .list-editor-excerpt { color: var(--text-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .list-editor-status { font-weight: 400; line-height: 1.35; }
+  .list-editor-status.field-error::before { top: 1px; }
+  .list-editor-status.insp-check { font-size: 12px; }
+  .list-editor-status.insp-check svg { margin-top: 1px; }
   /* Remove stands apart from the move pair, so a quick second click on a move never lands on it. */
   .icon-btn.list-editor-remove { margin-left: 4px; }
-  .icon-btn.list-editor-remove:hover:not(:disabled):not([aria-disabled='true']) { background: var(--red-soft); color: var(--red); }
-  .list-editor-flag { display: inline-flex; flex: none; margin-left: auto; color: var(--amber); }
-  .list-editor-incomplete { flex: none; margin-left: auto; padding: 0 5px; border-radius: 999px; background: var(--amber-soft); color: var(--text-2); font-size: 10px; font-weight: 500; line-height: 16px; }
-  .list-editor-incomplete + .list-editor-flag { margin-left: 4px; }
-  .field-required { margin-left: 6px; color: var(--text-3); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
-  .list-editor-item > .list-editor-head .list-editor-flag { margin-top: 2px; }
-  .list-editor-flag svg { width: 13px; height: 13px; }
+  .icon-btn.list-editor-remove:hover:not(:disabled):not([aria-disabled='true']) { background: var(--red-soft); color: var(--red-ink); }
+  /* The row's actions sit back in the quietest readable ink until the row is pointed at or holds focus, so the names
+     lead the list; they are never faded, and an unavailable one keeps the house's drawn look. */
+  .list-editor-head > .icon-btn:not(:disabled, [aria-disabled='true']) { color: var(--text-3); }
+  .list-editor-item:is(:hover, :focus-within) > .list-editor-head > .icon-btn:not(:disabled, [aria-disabled='true']) { color: var(--text-2); }
+  .list-editor-item > .list-editor-head > .icon-btn:not(.list-editor-remove):hover:not(:disabled, [aria-disabled='true']) { color: var(--text); }
+  .list-editor-item > .list-editor-head > .icon-btn.list-editor-remove:hover:not(:disabled, [aria-disabled='true']) { color: var(--red-ink); }
+  /* A row that can be dragged says so under the pointer; the title still opens it on a click. */
+  .list-editor-head[draggable='true'], .list-editor-head[draggable='true'] > button.title { cursor: grab; }
+  .list-editor[data-drag], .list-editor[data-drag] .list-editor-head > button.title { cursor: grabbing; }
+  /* After a field's name when its component requires a value there (RequiredMark): quiet, at the type floor. */
+  .field-required { margin-left: 6px; color: var(--text-3); font-size: 12px; font-weight: 400; }
 
   /* Focus rings sit inside clipped rows so they are never cut off. */
   .list-editor-head :focus-visible { outline-offset: -2px; }
