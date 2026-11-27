@@ -3,13 +3,15 @@
  * entries (blog posts) counted by their collection, so a published post is seen to go out and a draft post to stay.
  */
 import { describe, expect, it } from 'vitest';
+import type { Diagnostic } from '@shared/api';
 import type { PageDoc, ProjectState } from '@shared/types';
+import type { SeoFinding } from '@shared/seo';
 import type { EditOperation } from '@shared/ops';
 import { siteEntries, type SiteEntry } from '@shared/collections';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { publicationPlan } from '@generator/checks';
-import { dialogFixes, draftEntriesSentence, entryCounts, exportedCounts, nothingToFix, pagesSummaryText, publishedEntriesSentence } from '../../src/renderer/src/lib/export-summary';
+import { dialogFixes, draftEntriesSentence, entryCounts, exportedCounts, healthNotes, healthNotesText, nothingToFix, pagesSummaryText, publishedEntriesSentence, sampleContactsLine } from '../../src/renderer/src/lib/export-summary';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const entry = (collectionId: string, id: string, draft: boolean): EditOperation => ({ type: 'entry.create', collectionId, entryId: id, title: `Entry ${id}`, publishedAt: '2026-01-12', draft });
@@ -145,19 +147,63 @@ describe('the export result in the dialog’s words (#884)', () => {
     expect(exportedCounts(2, plan.publishedEntries.slice(0, 1))).toBe('2 pages and 1 entry from Posts');
   });
 
-  it('lists what the dialog still had to fix, in its headings’ words', () => {
-    expect(dialogFixes({ samples: 0, seo: 0 })).toEqual([]);
-    expect(dialogFixes({ samples: 3, seo: 2 })).toEqual(['3 sample contact details from the starter are still on the website.', '2 things keep the website from being found or shared well.']);
-    expect(dialogFixes({ samples: 1, seo: 1 })).toEqual(['A sample contact detail from the starter is still on the website.', 'One thing keeps the website from being found or shared well.']);
+  it('lists what the dialog still had to fix, in its own words', () => {
+    expect(dialogFixes({ samples: [], seo: 0 })).toEqual([]);
+    expect(dialogFixes({ samples: ['hello@example.com', '+1 555 0134'], seo: 2 })).toEqual(['hello@example.com and +1 555 0134 are sample details from the starter.', '2 search and sharing suggestions are in Project health.']);
+    expect(dialogFixes({ samples: ['hello@example.com'], seo: 1 })).toEqual(['hello@example.com is a sample detail from the starter.', '1 search and sharing suggestion is in Project health.']);
   });
 
   it('says nothing is left to fix only when neither the export nor the dialog found anything', () => {
     expect(nothingToFix({ ok: true, warnings: [], fixesListed: [] })).toBe(true);
     expect(nothingToFix({ ok: true, warnings: [] })).toBe(true);
-    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: 3, seo: 2 }) })).toBe(false);
+    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: ['a', 'b', 'c'], seo: 2 }) })).toBe(false);
     expect(nothingToFix({ ok: true, warnings: ['One image has not been chosen yet and shows a placeholder.'] })).toBe(false);
     expect(nothingToFix({ ok: false, warnings: [] })).toBe(false);
-    expect(dialogFixes({ samples: 2, seo: 0 })).toEqual(['2 sample contact details from the starter are still on the website.']);
-    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: 1, seo: 0 }) })).toBe(false);
+    expect(dialogFixes({ samples: ['a', 'b'], seo: 0 })).toEqual(['a and b are sample details from the starter.']);
+    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: ['a'], seo: 0 }) })).toBe(false);
+  });
+});
+
+describe('what keeps visitors from reaching the author (#1288)', () => {
+  it('names the sample contact details on one line while they are few and short, and counts them otherwise', () => {
+    expect(sampleContactsLine(['hello@example.com'])).toBe('hello@example.com is a sample detail from the starter.');
+    expect(sampleContactsLine(['hello@example.com', '+1 555 0134'])).toBe('hello@example.com and +1 555 0134 are sample details from the starter.');
+    expect(sampleContactsLine(['hello@example.com', '+1 555 0134', '12 Harbor Lane, Millbrook'])).toBe('hello@example.com, +1 555 0134 and 12 Harbor Lane, Millbrook are sample details from the starter.');
+    expect(sampleContactsLine(['a', 'b', 'c', 'd'])).toBe('4 sample contact details from the starter are on the website.');
+    expect(sampleContactsLine(['x'.repeat(40), 'y'.repeat(40)])).toBe('2 sample contact details from the starter are on the website.');
+  });
+});
+
+describe('the rest of Project health, as one counted line (#1288)', () => {
+  const finding = (code: string, severity: SeoFinding['severity'], extra: Partial<SeoFinding> = {}): SeoFinding => ({ code, severity, message: `${code}.`, pillar: 'technical', explanation: '', aiFixable: false, ...extra });
+  const diag = (code: string, severity: Diagnostic['severity'], extra: Partial<Diagnostic> = {}): Diagnostic => ({ code, severity, message: `${code}.`, ...extra });
+  const form = (id: string, message = `${id}: the contact form is not connected.`) => diag('FORM_UNCONNECTED', 'warning', { owner: { kind: 'page', id }, nodeId: 'n1', message });
+
+  it('counts the search and sharing findings to fix apart from the suggestions and the project’s other notes', () => {
+    const notes = healthNotes({ seo: [finding('SEO_BASE_URL_MISSING', 'warning'), finding('SEO_PUBLISHER', 'error'), finding('SEO_TIP', 'info')], diagnostics: [diag('HEADINGS', 'warning'), diag('IMAGE_ALT', 'info')], shown: [] });
+    expect(notes).toEqual({ seo: 2, other: 3, atSeo: true });
+    expect(healthNotesText(notes)).toBe('2 search and sharing suggestions and 3 more notes.');
+  });
+
+  it('counts each finding once: a diagnostic the audit also lists, a form the dialog names, and never a conflict', () => {
+    const shared = finding('ENTRY_IMAGE_ALT', 'warning', { owner: { kind: 'entry', id: 'en_1' } });
+    // The same form, named as the published site names its page: still the one the dialog shows.
+    const notes = healthNotes({ seo: [shared], diagnostics: [{ ...shared }, form('pg_a', 'Lookbook: the contact form is not connected.'), diag('CONFLICT', 'error')], shown: [form('pg_a', 'Lookbook (published): the contact form is not connected.')] });
+    expect(notes).toEqual({ seo: 1, other: 0, atSeo: true });
+    // A form the dialog doesn't name (on a draft page, say), or another warning about a named form, still counts.
+    expect(healthNotes({ seo: [], diagnostics: [form('pg_draft'), diag('FORM_FIELD_KEYS', 'warning', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n1' })], shown: [form('pg_a')] })).toEqual({ seo: 0, other: 2, atSeo: false });
+  });
+
+  it('opens Project health at Search & AI readiness when the line leads with it, or it is all there is', () => {
+    expect(healthNotes({ seo: [finding('SEO_TIP', 'info')], diagnostics: [], shown: [] })).toEqual({ seo: 0, other: 1, atSeo: true });
+    expect(healthNotes({ seo: [finding('SEO_TIP', 'info')], diagnostics: [diag('HEADINGS', 'warning')], shown: [] })).toEqual({ seo: 0, other: 2, atSeo: false });
+  });
+
+  it('says whichever counts there are, and nothing on a clean site', () => {
+    expect(healthNotesText({ seo: 0, other: 0 })).toBe('');
+    expect(healthNotesText({ seo: 1, other: 0 })).toBe('1 search and sharing suggestion.');
+    expect(healthNotesText({ seo: 0, other: 1 })).toBe('1 note.');
+    expect(healthNotesText({ seo: 0, other: 4 })).toBe('4 notes.');
+    expect(healthNotesText({ seo: 1, other: 1 })).toBe('1 search and sharing suggestion and 1 more note.');
   });
 });

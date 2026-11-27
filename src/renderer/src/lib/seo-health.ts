@@ -1,7 +1,7 @@
 /**
  * The SEO and agentic readiness audit (engine/seo-audit.ts) as Project health and the export dialog show it: its
- * findings by pillar, the counts its filters show, a one-line readiness summary, and the findings worth seeing before
- * a website export. Everything here only reads the findings, so the dialogs and their tests read one answer.
+ * findings by pillar, the counts its filters show, and a one-line readiness summary. Everything here only reads the
+ * findings, so the dialogs and their tests read one answer.
  */
 import type { ProjectState } from '@shared/types';
 import type { SeoFinding, SeoPillar } from '@shared/seo';
@@ -106,23 +106,4 @@ export function seoReadiness(findings: readonly SeoFinding[]): { tone: 'warn' | 
     headline: seoCountsText(findings),
     detail: `${namesText(attention.map((p) => SEO_PILLAR_NAMES[p]))} ${attention.length === 1 ? 'needs' : 'need'} attention; ${ready === 0 ? 'no area is' : `${ready} of ${SEO_PILLARS.length} areas ${ready === 1 ? 'is' : 'are'}`} ready.`
   };
-}
-
-/** How many findings the export dialog shows before it counts the rest. */
-export const PREFLIGHT_EXAMPLES = 4;
-
-/**
- * The findings worth seeing before a website export: every problem and warning (a suggestion waits for Project
- * health), problems first, each severity in the audit's order. Up to `limit` are shown, one of each kind first, so many
- * pages without a description never hide a picture without one; the rest are counted. None of them stops the export.
- */
-export function seoPreflight(findings: readonly SeoFinding[], limit = PREFLIGHT_EXAMPLES): { total: number; examples: SeoFinding[]; more: number; notes: number } {
-  const due = [...findings.filter((f) => f.severity === 'error'), ...findings.filter((f) => f.severity === 'warning')];
-  const cap = Math.max(0, Math.floor(limit));
-  // By place in the list, so a finding is shown (and counted) once for each time it is listed.
-  const picked = new Set<number>();
-  const codes = new Set<string>();
-  due.forEach((f, i) => void (picked.size < cap && !codes.has(f.code) && (codes.add(f.code), picked.add(i))));
-  due.forEach((_, i) => void (picked.size < cap && picked.add(i)));
-  return { total: due.length, examples: due.filter((_, i) => picked.has(i)), more: due.length - picked.size, notes: findings.length - due.length };
 }

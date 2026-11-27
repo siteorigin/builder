@@ -259,18 +259,18 @@ await eventually(async () => assert.equal(await writer.count(), 0, 'the post wri
 await openRail('Layers');
 await eventually(async () => assert.equal(await win.locator(`[role="treeitem"][data-owner="shell:header"][data-node="${header}"]`).getAttribute('aria-selected'), 'true', 'the header’s menu is selected'));
 
-step('the export dialog names what to fix before the website goes out, without stopping it');
+step('the export dialog counts what to fix before the website goes out, without stopping it, and leads to Project health (#1288)');
 await win.getByRole('button', { name: 'Export', exact: true }).click();
-const preflight = modal.getByTestId('export-seo-preflight');
-const preRows = preflight.locator('.export-review-list > li .export-review-what');
-await eventually(async () => assert.match(await preflight.innerText(), /^6 things keep the website from being found or shared well\./));
-assert.match(await preflight.innerText(), /This won’t stop the export\./);
-assert.deepEqual(await preRows.allInnerTexts(), ['No public site URL is set.', 'The Home page asks search engines not to list it.', 'Posts: “Spring pottery classes”: picture 2 in its text has no description.', '“Spring pottery classes” (Posts) has no description.'], 'one of each kind, problems and warnings only, in the audit’s order');
-assert.match(await preflight.locator('.export-seo-more').innerText(), /^2 more are in Project health\./);
+const preflight = modal.getByTestId('export-health-summary');
+await eventually(async () => assert.match(await preflight.innerText(), /^6 search and sharing suggestions( and \d+ more notes?)?\./));
+assert.doesNotMatch(await modal.innerText(), /won’t stop the export/);
+// The findings themselves, and their ways to the fix, are in Project health.
+assert.equal(await modal.getByText('No public site URL is set.').count(), 0, 'no finding is listed in the dialog');
+assert.equal(await modal.getByRole('button', { name: 'Go to Public URL' }).count(), 0, 'no finding leads anywhere from the dialog');
 const siteCard = modal.getByRole('button', { name: /Website files, ready to upload/ });
 assert.equal(await siteCard.getAttribute('aria-disabled'), null, 'the website export is still available');
 await modal.screenshot({ path: join(SHOTS, 'seo-preflight.png') });
-await preflight.getByRole('button', { name: 'View all in Project health' }).click();
+await preflight.getByRole('button', { name: 'Review in Project health' }).click();
 health = win.getByRole('dialog', { name: 'Project health' });
 await health.waitFor();
 await eventually(async () => assert.equal(await isFocused(health.getByTestId('health-seo').getByRole('heading', { level: 3 })), true, 'Project health opens at Search & AI readiness'));
@@ -280,7 +280,7 @@ step('a real website export runs with every warning still there, the missing pub
 const exportsDir = join(WORK, 'exports');
 mkdirSync(exportsDir, { recursive: true });
 await win.getByRole('button', { name: 'Export', exact: true }).click();
-await preflight.locator('li', { hasText: 'No public site URL is set.' }).waitFor();
+await preflight.filter({ hasText: /^6 search and sharing suggestions/ }).waitFor();
 await answerChoosers(app, [{ dialog: 'open', selection: 'folder', paths: [exportsDir] }]);
 await siteCard.click();
 const result = modal.locator('.export-result');
@@ -289,18 +289,17 @@ assert.match(await result.innerText(), /^Exported \d+ pages/, `the website expor
 assert.ok(existsSync(join(exportsDir, 'riverside-studio-site', 'kiln-hire', 'index.html')), 'the website was written, Kiln hire with it');
 await closeDialog();
 
-step('the preflight leads to the public URL; once it is saved, the export no longer names it');
+step('the count leads to the public URL through Project health; once it is saved, the export counts one fewer');
 await win.getByRole('button', { name: 'Export', exact: true }).click();
-await preflight.locator('li', { hasText: 'No public site URL is set.' }).getByRole('button', { name: 'Go to Public URL' }).click();
+await preflight.getByRole('button', { name: 'Review in Project health' }).click();
+await row('No public site URL is set.').getByRole('button', { name: 'Go to Public URL' }).click();
 await modal.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal(await isFocused(urlField), true, 'the Public URL field has focus'));
 await urlField.fill('https://riverside.example');
 await urlField.press('Tab');
 await eventually(async () => assert.equal((await snapshot()).state.site.baseUrl, 'https://riverside.example'));
 await win.getByRole('button', { name: 'Export', exact: true }).click();
-await eventually(async () => assert.match(await preflight.innerText(), /^5 things keep the website from being found or shared well\./));
-assert.deepEqual(await preRows.allInnerTexts(), ['The Home page asks search engines not to list it.', 'Posts: “Spring pottery classes”: picture 2 in its text has no description.', '“Spring pottery classes” (Posts) has no description.', 'No link on the rest of the site leads to “Kiln hire”.']);
-assert.match(await preflight.locator('.export-seo-more').innerText(), /^1 more is in Project health\./);
+await eventually(async () => assert.match(await preflight.innerText(), /^5 search and sharing suggestions( and \d+ more notes?)?\./));
 await closeDialog();
 
 assert.deepEqual(errors, [], `no page errors: ${errors.join('\n')}`);

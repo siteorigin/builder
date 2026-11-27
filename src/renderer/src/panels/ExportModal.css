@@ -1,6 +1,7 @@
 @layer components {
-  /* Export dialog. Order of the setup: what stops an export, what to look at before the public does, the choice, then
-     what the website includes and what was exported before. Red is a blocker or a failure (CircleAlert), amber is an
+  /* Export dialog. Order of the setup: what stops an export, what keeps visitors from reaching the author, one counted
+     line for the rest of Project health, then what was exported before; the choice, with what the website publishes,
+     is in the footer. Red is a blocker or a failure (CircleAlert), amber is an
      advisory (TriangleAlert), neutral is information. Wide enough that a reviewed detail and its actions share a row. */
   .modal:has(> .modal-body > .export-dialog) { width: min(600px, calc(100vw - 48px)); }
   /* The title glyph names the dialog quietly; accent is for selection, focus and the primary action. */
@@ -52,8 +53,14 @@
   .export-draft-links li > .btn { flex: none; }
   .export-draft-links li:last-child { padding-bottom: 0; }
 
-  /* Advisory: the starter's sample contact details. A counted amber head, then one neutral row per detail. */
-  .export-samples-review { display: flex; flex-direction: column; gap: 8px; }
+  /* Advisory: what keeps visitors from reaching the author. An amber head, then one neutral row per problem; the sample
+     contact details' row opens one row per detail. */
+  .export-visitors { display: flex; flex-direction: column; gap: 8px; }
+  .export-samples-list { list-style: none; margin: 6px 0 0; padding: 0 0 0 10px; border-left: 2px solid var(--border); }
+  .export-samples-list[hidden] { display: none; }
+  .export-samples-list > li { padding: 6px 0; }
+  .export-samples-list > li:last-child { padding-bottom: 0; }
+  .export-samples-list > li + li { border-top: 1px solid var(--border); }
   .export-review { display: flex; flex-direction: column; border-radius: var(--r-sm); background: var(--panel); box-shadow: inset 0 0 0 1px var(--border); overflow: hidden; }
   .export-review-head { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; background: var(--amber-soft); line-height: 1.45; }
   .export-review-head > svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--amber); }
@@ -86,11 +93,10 @@
   .export-samples-kept { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 0 2px; font-size: 12.5px; color: var(--text-2); }
   .export-review + .export-samples-kept { padding: 0 12px; }
   /* The SEO and agentic preflight: what keeps the website from being found or shared, with the way to all of it. */
-  .export-seo-more { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 8px 12px 9px 34px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); }
-  .export-review-list[hidden] + .export-seo-more { border-top: 0; }
-  .export-seo-ready { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 0 2px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
-  .export-seo-ready > svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--green); }
-  .export-seo-ready strong { font-weight: 600; color: var(--text); }
+  /* Everything else Project health lists: one quiet counted line, with the way there. */
+  .export-health { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin: 0; padding: 0 2px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); }
+  .export-health-go { display: inline-flex; align-items: center; gap: 1px; min-height: 24px; color: var(--text); }
+  .export-health-go svg { color: var(--text-2); }
   .export-samples-kept > svg { width: 14px; height: 14px; flex: none; margin-top: 4px; color: var(--green); }
   /* A secondary way back, so neutral: accent stays for selection, focus and the primary action. */
   .export-samples-kept .link-btn { min-height: 24px; color: var(--text-2); }
@@ -129,18 +135,12 @@
   .export-choice .export-card.is-running[aria-disabled='true'] strong { color: var(--text); }
   .export-choice .export-card.is-running[aria-disabled='true'] .export-card-end { font-weight: 600; color: var(--text); }
 
-  /* What the website includes: published pages and the drafts it leaves out. */
-  .export-pages { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 4px; padding: 0 2px; color: var(--text-2); font-size: 12.5px; text-wrap: pretty; }
-  .export-pages > p { grid-column: 1; }
-  .export-pages > p + p { grid-column: 1 / -1; }
+  /* Every page the website publishes and leaves out, for a site the website card counts rather than names. */
+  .export-pages { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 0 2px; color: var(--text-2); font-size: 12.5px; text-wrap: pretty; }
+  .export-pages > .export-pages-all { align-self: stretch; }
   /* The disclosure sits beside the counts it opens, not on a row of its own. */
-  .export-pages > .export-pages-toggle { grid-column: 2; grid-row: 1; align-self: start; margin: -3px -6px 0 0; }
-  .export-pages > .export-pages-all { grid-column: 1 / -1; }
-  .export-pages p { display: flex; gap: 8px; align-items: flex-start; margin: 0; line-height: 1.45; overflow-wrap: anywhere; }
-  .export-pages p svg { flex: none; margin-top: 2px; color: var(--text-3); }
-  .export-pages strong { color: var(--text); font-weight: 600; }
-  .export-pages-toggle { gap: 4px; padding-left: 4px; }
-  .export-pages-all { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; padding: 2px 0 2px 22px; }
+  .export-pages-toggle { gap: 4px; margin-left: -6px; padding-left: 4px; }
+  .export-pages-all { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; padding: 2px 0 2px 16px; }
   .export-pages-all[hidden] { display: none; }
   .export-pages-all h3 { margin: 0 0 3px; font-size: 12px; font-weight: 600; color: var(--text); }
   .export-pages-all ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -183,7 +183,7 @@
 
   /* What this opening of the project exported, newest first; the newest is raised after a success. */
   .export-history { display: flex; flex-direction: column; gap: 8px; }
-  .export-pages ~ .export-history { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--border); }
+  :is(.export-visitors, .export-health, .export-pages) ~ .export-history { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--border); }
   .export-history-title { display: flex; flex-direction: column; gap: 1px; }
   .export-history-title h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
   .export-history-title span { font-size: 12px; color: var(--text-2); }

@@ -76,11 +76,14 @@ await expectAtForm('from Project health');
 step('the export dialog names the form before the export, without stopping it');
 await openPage(homeTitle, '/');
 await win.getByRole('button', { name: 'Export', exact: true }).click();
-const review = modal.getByTestId('export-form-review');
+// One line in the dialog's "Visitors can’t reach you yet" box (#1288), with its one action.
+const box = modal.getByTestId('export-visitor-review');
+const review = box.getByTestId('export-form-note').filter({ hasText: 'Lookbook: the contact form is not connected' });
 await review.waitFor();
-assert.match(await review.innerText(), /A form on the website can’t send messages yet\./);
-assert.match(await review.innerText(), /You can still export the website\./);
+assert.match(await box.innerText(), /^Visitors can’t reach you yet/);
+assert.doesNotMatch(await box.innerText(), /won’t stop the export|You can still export/);
 assert.match(await review.innerText(), /Lookbook: the contact form is not connected to a form service, so visitors cannot send it\./);
+assert.equal(await review.getByRole('button').count(), 1, 'one action for the form');
 const siteCard = modal.getByRole('button', { name: /Website files, ready to upload/ });
 assert.equal(await siteCard.getAttribute('aria-disabled'), null, 'the website export is still available');
 await modal.screenshot({ path: join(SHOTS, 'export-readiness-review.png') });
@@ -145,7 +148,7 @@ assert.equal(await reopened.locator('.export-note-line', { hasText: 'contact for
 const connected = await apply([{ type: 'instance.setProp', owner: { kind: 'page', id: lookbookId }, nodeId: formId, prop: 'endpoint', value: 'https://formspree.io/f/abcd1234' }], 'Connect the form');
 assert.ok(connected.ok, JSON.stringify(connected));
 await eventually(async () => assert.match(await reopened.innerText(), /Connected since this export\. Export again so visitors can send it\./));
-await eventually(async () => assert.equal(await modal.getByTestId('export-form-review').count(), 0, 'nothing left to review before the next export'));
+await eventually(async () => assert.equal(await modal.getByTestId('export-form-note').count(), 0, 'nothing left to review before the next export'));
 await modal.screenshot({ path: join(SHOTS, 'export-readiness-since.png') });
 await closeDialog();
 
