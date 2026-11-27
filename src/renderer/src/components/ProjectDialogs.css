@@ -64,7 +64,7 @@
   .starter-card .mark svg { width: 11px; height: 11px; stroke-width: 3; }
   .starter-card strong { font-size: 13px; font-weight: 600; }
   .starter-card .pages { display: flex; gap: 4px; margin-left: auto; }
-  .starter-card .pages span { padding: 1px 7px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-size: 13px; line-height: 18px; color: var(--text-2); }
+  .starter-card .pages span { white-space: nowrap; padding: 1px 7px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-size: 13px; line-height: 18px; color: var(--text-2); }
   .starter-card .blurb { padding-left: 24px; font-size: 13px; line-height: 18px; color: var(--text-2); }
 
   /* The starter's pages on a quiet desk, in the site's own colours and type (set inline from its theme), light in

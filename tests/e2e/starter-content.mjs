@@ -224,7 +224,7 @@ try {
   const blog = readFileSync(join(showcase, 'blog', 'index.html'), 'utf8');
   assert.match(blog, /Notes from the studio/, 'the Blog page lists the sample posts');
   const media = readFileSync(join(showcase, 'media', 'index.html'), 'utf8');
-  const photo = media.match(/src="\/?(assets\/[^"?]+\.(?:jpg|webp|avif))/)?.[1];
+  const photo = media.match(/src="(?:\.\.\/)*(assets\/[^"?]+\.(?:jpg|webp|avif))"/)?.[1];
   assert.ok(photo && existsSync(join(showcase, photo)), `the Media page shows a sample photo the export holds: ${photo}`);
   await closeDialog(exportDialog);
 
