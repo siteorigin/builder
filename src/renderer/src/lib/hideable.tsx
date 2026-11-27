@@ -10,7 +10,7 @@
  * follow the store while it is hidden (announcing, sending, acting on a request made of it) is not wrapped in this.
  */
 import { createContext, memo, useContext, useMemo, useRef, type ReactNode } from 'react';
-import { StoreViewContext, useStore, type State, type StoreView } from '../store';
+import { getOverlay, StoreViewContext, useStore, type OverlayState, type State, type StoreView } from '../store';
 import { activeWorkspace } from './workspace';
 
 /** Whether the panel a component is in is hidden (false outside any). */
@@ -21,9 +21,9 @@ export const usePanelHidden = () => useContext(HiddenContext);
 const unsubscribe = () => {};
 const subscribe = () => unsubscribe;
 
-/** A view of the store that holds `state` and never changes. */
-function heldView(state: State): StoreView {
-  return { getState: () => state, getInitialState: () => state, subscribe };
+/** A view of the store that holds `state` (and the overlay's `drawn`) and never changes. */
+function heldView(state: State, drawn: OverlayState): StoreView {
+  return { getState: () => state, getInitialState: () => state, subscribe, overlay: { getState: () => drawn, getInitialState: () => drawn, subscribe } };
 }
 
 /**
@@ -35,7 +35,7 @@ function heldView(state: State): StoreView {
 export function Hideable({ hidden, children }: { hidden: boolean; children: ReactNode }) {
   const era = useStore((s) => `${activeWorkspace(s)}:${s.snapshot?.workspaceKey ?? ''}`);
   // Taken when the panel is hidden (or a project opens, or the workspace changes, while it is): the state that render draws.
-  const view = useMemo(() => (hidden ? heldView(useStore.getState()) : null), [hidden, era]);
+  const view = useMemo(() => (hidden ? heldView(useStore.getState(), getOverlay()) : null), [hidden, era]);
   return (
     <HiddenContext.Provider value={hidden}>
       <StoreViewContext.Provider value={view}>

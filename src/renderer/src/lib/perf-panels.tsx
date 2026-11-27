@@ -6,29 +6,41 @@
  *
  * The time is read from render order. React renders a parent's children one after the other, each child's subtree
  * whole before the next sibling, so the time between the probe before the panel and the probe after it is the time
- * spent in the panel. Both probes read the whole store, so they render in every update the store makes, and in every
- * render of what holds them; an update the store did not make that renders only inside the panel (its own state) is
- * not timed, though its components are counted.
+ * spent in the panel. Both probes read the whole store (and the canvas overlay's state), so they render in every update
+ * either makes, and in every render of what holds them; an update neither made that renders only inside the panel (its
+ * own state) is not timed, though its components are counted.
  */
-import type { ReactNode } from 'react';
+import { useContext, type ReactNode } from 'react';
+import { useStore as useStoreOf } from 'zustand';
 import { countTreeWalks } from '@engine/tree';
 import { countSeoOverviews } from './seo-overview';
 import { countChatStarters } from './chatSuggestions';
-import { useStore } from '../store';
+import { overlayView, StoreViewContext, useStore, type OverlayState, type State } from '../store';
 import { perfCount, perfOn, perfPanel, setPerfPanelTypes } from './perf';
 
 const now = () => performance.now();
 /** When each panel's probe before it rendered, in the render under way. */
 const started = new Map<string, number>();
 
+const whole = (s: State) => s;
+const wholeOverlay = (s: OverlayState) => s;
+/** The whole store and the canvas overlay's state, as the panel's view of them has them, so the probes render in every
+ *  update of either that can render the panel. Their selectors are not counted with the editor's
+ *  (`store.selectorRuns`): the probes are the measurement's, as the count of renders leaves them out too. */
+const useWholeStore = () => {
+  const view = useContext(StoreViewContext);
+  useStoreOf(view ?? useStore, whole);
+  useStoreOf(view?.overlay ?? overlayView, wholeOverlay);
+};
+
 function PanelStart({ id }: { id: string }) {
-  useStore((s) => s);
+  useWholeStore();
   started.set(id, now());
   return null;
 }
 
 function PanelEnd({ id }: { id: string }) {
-  useStore((s) => s);
+  useWholeStore();
   const from = started.get(id);
   if (from !== undefined) {
     perfPanel(id).renderMs += now() - from;

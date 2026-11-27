@@ -21,7 +21,7 @@ import type { LayerSet } from './lib/layer-set';
 import { slotTargetHolds, type SlotTarget } from './lib/slot-target';
 import { leaveField } from './lib/leave-field';
 import type { PostRef } from './lib/posts';
-import { perfMark, perfOn } from './lib/perf';
+import { perfCount, perfMark, perfOn, perfSelector } from './lib/perf';
 import { notePlace, type PagePlaces } from './lib/page-place';
 import { changedPages, historyNotice } from './lib/history-notice';
 import type { TemplateMode } from './lib/template-view';
@@ -190,7 +190,6 @@ export interface State {
    * it go (see Canvas), and so does opening a page.
    */
   previewReturn: { pageId: string; ref: ElementRef; revision: number; definitionId: string | null } | null;
-  hover: ElementRef | null;
   viewport: number;
   /**
    * The palette the canvas previews on a site with a dark one: the one this computer's setting would show a visitor
@@ -230,8 +229,6 @@ export interface State {
   styleState: StyleState | null;
   /** The part of the selected element that `styleState` styles, when not its whole self (a code component's part). */
   styleStatePart: string | null;
-  /** `revealed`: the list item open in the inspector, outlined on the page (see revealedItem). */
-  rects: { selected: Rect[]; hovered: Rect[]; revealed: Rect[] };
   /** The list item open in the inspector, revealed on the page while it is edited. Never saved. */
   revealedItem: RevealedItem | null;
   /** Bumped when a Layers row asks for its layer to be shown on the page, even one already selected (see showLayer). */
@@ -396,7 +393,6 @@ const live = create<State>((set) => ({
   slotTarget: null,
   pagePlaces: {},
   previewReturn: null,
-  hover: null,
   viewport: 1280,
   previewScheme: 'system',
   zoom: 'fit',
@@ -416,7 +412,6 @@ const live = create<State>((set) => ({
   styleScope: 'base',
   styleState: null,
   styleStatePart: null,
-  rects: { selected: [], hovered: [], revealed: [] },
   revealedItem: null,
   showSelection: 0,
   showMoved: null,
@@ -459,8 +454,35 @@ const live = create<State>((set) => ({
   setState: (p) => set(slotFollows(oneSelection(p)))
 }));
 
-/** What the editor's components read the store through: the store itself, or a hidden panel's view of it. */
-export type StoreView = Pick<StoreApi<State>, 'getState' | 'getInitialState' | 'subscribe'>;
+/**
+ * What the canvas draws over the page from moment to moment: what the pointer is over, and where the page's outlines
+ * are. Kept apart from the editor's store, which runs the selector of every component reading it on each change: the
+ * page reports where its outlines are every frame while it scrolls, and the pointer reaches another element many times
+ * a second, so only what reads these hears of them (#969).
+ */
+export interface OverlayState {
+  /** What the pointer is over on the page, or a Layers row is. */
+  hover: ElementRef | null;
+  /** `revealed`: the list item open in the inspector, outlined on the page (see revealedItem). */
+  rects: { selected: Rect[]; hovered: Rect[]; revealed: Rect[] };
+}
+const overlay = create<OverlayState>(() => ({ hover: null, rects: { selected: [], hovered: [], revealed: [] } }));
+export const getOverlay = overlay.getState;
+export const setOverlay = (p: Partial<OverlayState>) => overlay.setState(p);
+/** The shape of the selection's first box on the canvas (its width over its height), or null with none to measure: what
+ *  the Inspector reads of it, which a scroll leaves as it is. */
+export const selectedRatio = (s: OverlayState): number | null => {
+  const box = s.rects.selected[0];
+  return box && box.width > 0 && box.height > 0 ? box.width / box.height : null;
+};
+
+/** A view of the overlay's state, as a hidden panel holds it. */
+export type OverlayView = Pick<StoreApi<OverlayState>, 'getState' | 'getInitialState' | 'subscribe'>;
+/** The overlay's own view, for what reads it outside a component's hook (the performance harness's panel probes). */
+export const overlayView: OverlayView = overlay;
+/** What the editor's components read the store through: the store itself, or a hidden panel's view of it (with its
+ *  view of the overlay's state). */
+export type StoreView = Pick<StoreApi<State>, 'getState' | 'getInitialState' | 'subscribe'> & { overlay?: OverlayView };
 /**
  * The view of the store for the components inside it, when that is not the store itself: a panel that can be hidden
  * gives its contents one that holds still while it is (lib/hideable.tsx).
@@ -469,8 +491,15 @@ export const StoreViewContext = createContext<StoreView | null>(null);
 
 /** The part of the state `selector` picks, re-rendering when it changes, as the component's view of the store has it. */
 function useStoreView<T>(selector: (s: State) => T): T {
-  return useStoreOf(useContext(StoreViewContext) ?? live, selector);
+  return useStoreOf(useContext(StoreViewContext) ?? live, perfOn ? perfSelector(selector) : selector);
 }
+/** The part of the overlay's state `selector` picks (OverlayState), re-rendering when it changes, as the component's
+ *  view of the store has it: a hidden panel's holds still. */
+export function useOverlay<T>(selector: (s: OverlayState) => T): T {
+  return useStoreOf(useContext(StoreViewContext)?.overlay ?? overlay, perfOn ? perfSelector(selector) : selector);
+}
+// Each change of the editor's state, for the performance harness (scripts/perf/README.md, the `canvas` scenario).
+if (perfOn) for (const store of [live, overlay] as Array<Pick<StoreApi<unknown>, 'subscribe'>>) store.subscribe(() => perfCount('store.updates'));
 
 /**
  * The editor's store. As a hook, it is read through the view of the panel the component is in (StoreViewContext);

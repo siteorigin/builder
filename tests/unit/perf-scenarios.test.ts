@@ -1343,14 +1343,14 @@ describe('export metrics', () => {
 describe('canvas metrics', () => {
   /** One window of `canvas`: its edges with the editor's counters, a report span each (a decoy just outside), and the
    *  frame watch's findings on its end mark. */
-  function window(name: 'scroll' | 'sweep', at: number, o: { reports?: number[]; hovers?: number[]; counts?: [number, number]; frames?: Record<string, number> } = {}): PerfRecord[] {
+  function window(name: 'scroll' | 'sweep', at: number, o: { reports?: number[]; hovers?: number[]; counts?: [number, number]; frames?: Record<string, number>; untimed?: boolean } = {}): PerfRecord[] {
     const [c0, c1] = o.counts ?? [0, 10];
-    const c = (n: number) => ({ c: { 'canvas.renders': n * 2, 'canvas.rectReports': n, 'canvas.rectReportsSame': Math.floor(n / 5), 'canvas.hoverReports': n * 3, 'react.commits': n, 'react.renders': n * 20 } });
+    const c = (n: number) => ({ c: { 'canvas.renders': n * 2, 'canvas.rectReports': n, 'canvas.rectReportsSame': Math.floor(n / 5), 'canvas.hoverReports': n * 3, 'react.commits': n, 'react.renders': n * 20, 'store.updates': n * 4, 'store.selectorRuns': n * 100 } });
     const frames = o.frames ?? { frames: 120, droppedFrames: 1, longTasks: 0, longTaskMs: 0, longestFrameMs: 33.4 };
     return [
       r('canvas.rects', at - 1, { kind: 'span', ms: 50 }),
       r('canvas.window', at, { attrs: { scenario: 'canvas', window: name, edge: 'start' }, ...c(c0) }),
-      ...(o.reports ?? [1, 2, 3]).map((ms, i) => r('canvas.rects', at + 1 + i, { kind: 'span', ms })),
+      ...(o.reports ?? [1, 2, 3]).map((ms, i) => r('canvas.rects', at + 1 + i, { kind: 'span', ms, attrs: o.untimed ? {} : { pageMs: ms / 4 } })),
       ...(o.hovers ?? []).map((ms, i) => r('canvas.hover', at + 50 + i, { kind: 'span', ms })),
       r('canvas.window', at + 2000, { attrs: { scenario: 'canvas', window: name, edge: 'end', ...frames }, ...c(c1) }),
       r('canvas.rects', at + 2001, { kind: 'span', ms: 50 })
@@ -1366,6 +1366,10 @@ describe('canvas metrics', () => {
     expect([v('canvas.framePeriodMs'), v('canvas.scroll.ms'), v('canvas.scroll.canvasRenders'), v('canvas.scroll.rectReports'), v('canvas.scroll.rectReportsSame'), v('canvas.scroll.hoverReports')]).toEqual([16.7, 2000, 20, 10, 2, 30]);
     expect([v('canvas.scroll.rendererCommits'), v('canvas.scroll.renders'), v('canvas.scroll.reportMs'), v('canvas.scroll.reportMsTotal')]).toEqual([10, 200, 2, 6]);
     expect([v('canvas.scroll.frames'), v('canvas.scroll.droppedFrames'), v('canvas.scroll.longTasks'), v('canvas.scroll.longTaskMs'), v('canvas.scroll.longestFrameMs')]).toEqual([120, 1, 0, 0, 33.4]);
+    // The store's updates and selector runs in the window, and the page's time measuring for each report of its outlines
+    // (a hover report has none).
+    expect([v('canvas.scroll.storeUpdates'), v('canvas.scroll.selectorRuns'), v('canvas.scroll.pageMeasureMs'), v('canvas.scroll.pageMeasureMsTotal')]).toEqual([40, 1000, 0.5, 1.5]);
+    expect([v('canvas.sweep.storeUpdates'), v('canvas.sweep.selectorRuns'), v('canvas.sweep.pageMeasureMs'), v('canvas.sweep.pageMeasureMsTotal')]).toEqual([20, 500, 0.5, 0.5]);
     // The sweep's own counters and spans, the hover reports with the rect reports; the outline after its window is not its.
     expect([v('canvas.sweep.canvasRenders'), v('canvas.sweep.rectReports'), v('canvas.sweep.reportMs'), v('canvas.sweep.reportMsTotal')]).toEqual([10, 5, 1.5, 8]);
     expect([v('canvas.sweep.hoversOutlined'), v('canvas.sweep.hoverOutlineMs')]).toEqual([3, 20]);
@@ -1377,6 +1381,7 @@ describe('canvas metrics', () => {
       'scenario.start (renderer)',
       'scenario.start (renderer, with the frame period)',
       "canvas.scroll: the page's reports (canvas.rects, canvas.hover spans)",
+      "canvas.scroll.pageMeasureMs (a report of the outlines without the page's time measuring them)",
       'canvas.scroll.frames (the frame watch)',
       'canvas.scroll.droppedFrames (the frame watch)',
       'canvas.scroll.longTasks (the frame watch)',
@@ -1389,6 +1394,11 @@ describe('canvas metrics', () => {
     // A frame watch that stalled: 40 frames in a window of 2 s at 16.7 ms is fewer than half.
     const stalled = canvas.measure(new Trace([start, ...window('scroll', 1000, { frames: { frames: 40, droppedFrames: 0, longTasks: 0, longTaskMs: 0, longestFrameMs: 16.7 } }), ...window('sweep', 4000), outlined(4100, 4080)]), facts);
     expect(stalled.missing).toEqual(['canvas.scroll.frames (the frame watch saw 40 frames in 2000 ms)']);
+    // A report of the outlines from a page that did not time its measuring, and an editor that did not count its store.
+    const untimed = canvas.measure(new Trace([start, ...window('scroll', 1000, { untimed: true }), ...window('sweep', 4000), outlined(4100, 4080)]), facts);
+    expect(untimed.missing).toEqual(["canvas.scroll.pageMeasureMs (a report of the outlines without the page's time measuring them)"]);
+    const uncounted = canvas.measure(new Trace([start, ...window('scroll', 1000).map((x) => (x.c ? { ...x, c: { ...x.c, 'store.selectorRuns': undefined as unknown as number } } : x)), ...window('sweep', 4000), outlined(4100, 4080)]), facts);
+    expect(uncounted.missing).toEqual(["canvas.scroll.storeUpdates, .selectorRuns (the editor did not count its store's updates and selectors)"]);
     const half = canvas.measure(new Trace([start, ...window('scroll', 1000)]), facts);
     expect(half.missing).toEqual(['canvas.window sweep start', 'canvas.window sweep end']);
   });

@@ -375,8 +375,13 @@ sits on the hero (half out of view) and the hover's on an element under the poin
 room a part gets). Per window (`canvas.scroll.*`, `canvas.sweep.*`): `ms` (its length), `canvasRenders` (the canvas
 component rendered), `rectReports` (the page's reports of where its outlines are), `rectReportsSame` (those identical
 to the report before), `hoverReports` (the page saying the pointer reached another element), `rendererCommits`,
-`renders` (every component React rendered), `reportMs` and `reportMsTotal` (median and sum of the `canvas.rects` and
-`canvas.hover` spans: one report handled with the React render and commit it set off), and from a watch the scenario
+`renders` (every component React rendered), `storeUpdates` (changes of the editor's state) and `selectorRuns` (the
+selectors of the editor's store hooks run, for a change or in a render, across the whole editor; the panel probes of
+`panels` are the harness's and left out), `reportMs` and
+`reportMsTotal` (median and sum of the `canvas.rects` and `canvas.hover` spans: one report handled with the React render
+and commit it set off), `pageMeasureMs` and `pageMeasureMsTotal` (median and sum, over the reports of the outlines, of
+the page's own time measuring for each, with its measurements since the report before that found nothing new: the
+editor asks the page to time it while marks are on), and from a watch the scenario
 runs in the editor's page for the window, `frames` (animation frames), `droppedFrames` (a frame a period or more late
 counts the frames it missed; a watch that saw fewer than half the frames the window should have had fails the
 iteration), `longestFrameMs`, `longTasks` and `longTaskMs` (tasks of 50 ms or more); the frame
@@ -666,8 +671,10 @@ fingerprints worked out, and the time the keys took: `src/main/runtime/component
 (components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes
 React renders before and after the panel), `chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model
-text read into blocks), `canvas.renders`, `canvas.rectReports`, `canvas.rectReportsSame` and `canvas.hoverReports` (the
-`canvas` scenario's), `canvas.dropShows`, `canvas.dropMeasures`, `canvas.dropMeasured` and `canvas.dropScrolls` (a drag
+text read into blocks), `store.updates` (a change of the editor's state) and `store.selectorRuns` (a selector of a store
+hook run, as its component renders or as the store tells it of a change, the harness's panel probes left out;
+`src/renderer/src/store.ts`), `canvas.renders`,
+`canvas.rectReports`, `canvas.rectReportsSame` and `canvas.hoverReports` (the `canvas` scenario's), `canvas.dropShows`, `canvas.dropMeasures`, `canvas.dropMeasured` and `canvas.dropScrolls` (a drag
 onto the page, `drag`'s), `layers.rows` (a Layers row rendered), `tree.findParent` and `tree.subtreeIds` (the editor's
 calls of the two scans of a tree in `src/engine/tree.ts`, counted from zero), `seo.overviews` (the SEO overview worked
 out for a project state), `seo.routes` (the website read for an entry's address in its search previews) and
