@@ -414,6 +414,20 @@ export const INTERACTIONS: Interaction[] = [
     gaps: [{ missing: 'Add page… from the command menu is never chosen by a test', owner: 'pages' }]
   },
   {
+    id: 'pages.get-started',
+    area: 'pages',
+    intent: 'Bring back the Get started list after hiding it',
+    start: 'A new Business site with its Get started list hidden',
+    routes: ['command:getstarted'],
+    outcome: 'The Get started list shows again in Pages, and the hidden flag is cleared in the saved first-steps record',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/unit/first-steps.test.ts', kind: 'unit', step: 'reads a record back from the workspace file, and nothing that is not one' },
+      { test: 'tests/e2e/design/first-steps.mjs', kind: 'design' }
+    ],
+    gaps: [{ missing: 'No e2e script chooses Show Get started from the command menu and checks the list is back; only the opt-in design capture shows the command', owner: 'pages' }]
+  },
+  {
     id: 'pages.child',
     area: 'pages',
     intent: 'Put a page inside another page',
