@@ -319,6 +319,60 @@ describe('conversations in the assistant', () => {
     }
   });
 
+  it('a thread whose save failed is renamed from memory, whole, and is then read from its file', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
+    const o = orch as unknown as { writeConversation: (...a: unknown[]) => Promise<void> };
+    const real = o.writeConversation.bind(orch);
+    let fail = true;
+    o.writeConversation = async (...a: unknown[]) => {
+      if (fail) throw new Error('The disk is full.');
+      return real(...a);
+    };
+    const kept = (await orch.loadConversations()).active;
+    adapter.release();
+    expect((await orch.send('Write an About page', ctx, kept.id)).ok).toBe(true);
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    await orch.loadConversations();
+    const file = join(chatDir, `${kept.id}.json`);
+    expect(existsSync(file)).toBe(false);
+    fail = false;
+    // Renamed while another thread is open: its turn is written with its name, not refused for having no file.
+    await orch.newConversation();
+    expect(await orch.renameConversation(kept.id, 'About page')).toEqual({ id: kept.id, title: 'About page' });
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as Conversation;
+    expect([saved.title, saved.messages.map((m) => m.role)]).toEqual(['About page', ['user', 'assistant']]);
+    expect((await orch.loadConversations()).list.find((c) => c.id === kept.id)?.title).toBe('About page');
+  });
+
+  it('an earlier save that lands never lets go of a later turn whose save failed', async () => {
+    const { orch, ctx, adapter } = await setup();
+    const o = orch as unknown as { writeConversation: (...a: unknown[]) => Promise<void> };
+    const real = o.writeConversation.bind(orch);
+    let calls = 0;
+    let land!: () => void;
+    const landing = new Promise<void>((r) => (land = r));
+    o.writeConversation = async (...a: unknown[]) => {
+      const n = ++calls;
+      if (n === 1) await landing;
+      if (n === 2) throw new Error('The disk is full.');
+      return real(...a);
+    };
+    const thread = (await orch.loadConversations()).active;
+    adapter.release();
+    expect((await orch.send('First request', ctx, thread.id)).ok).toBe(true);
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    // The second turn ends while the first one's save is still being written.
+    expect((await orch.send('Second request', ctx, thread.id)).ok).toBe(true);
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    land();
+    await orch.loadConversations();
+    expect(calls).toBe(2);
+    // Left and opened again: both turns, from memory (the file holds only the first).
+    await orch.newConversation();
+    const back = await orch.openConversation(thread.id);
+    expect(back.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['First request', 'Second request']);
+  });
+
   it('opens nothing while the history is being cleared, so the fresh conversation it leaves is the one open', async () => {
     const { orch, ctx, settle } = await setup();
     await orch.send('Earlier request', ctx);
