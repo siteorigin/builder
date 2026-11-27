@@ -207,7 +207,7 @@
   .question-card .choice svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--amber); }
   .question-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
   /* On a short window the card scrolls before the conversation disappears. */
-  .chat:has(> .question-card) .chat-body { min-height: 64px; }
+  .chat.asking .chat-body { min-height: 64px; }
   /* Library images in the chat: offered as choices, attached to a message, or shown in the log. The pictures load
      from the local preview server; only their IDs and names go to the AI. */
   .image-choices { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px; }

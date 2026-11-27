@@ -5,13 +5,23 @@
  * spent most of its time doing it. Such state is said on the body instead (src/renderer/src/lib/previewing.ts, the
  * seams in Editor.tsx). A `:has()` on a small part of the page (a toolbar group, a row), or one that styles the element
  * it is on (`#root:has(> .fatal)`), costs only that part.
+ *
+ * Nor does a `:has()` style what comes after it without naming it (`.row:has(.x) > *`, #974). Chromium keeps one set of
+ * what any `:has()` could restyle and applies it under every element a `:has()` is on, whatever its own rule: one rule
+ * that styles `*` there made it all of them, so each key typed in Chat, and each piece of a streamed reply, restyled the
+ * whole panel (some 1,400 elements with a long conversation open). Named by class, ID, attribute or element, it finds
+ * only those.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-/** The elements that hold the whole window, or the whole editor, as a compound names them (in an `:is()` too). */
-const WHOLE = /(?:^|[(,\s])(?:html|body)(?![\w-])|:root(?![\w-])|#root(?![\w-])|\.(?:editor|workspace)(?![\w-])/;
+/**
+ * The elements that hold the whole window, or the whole editor, as a compound names them (in an `:is()` too), and the AI
+ * panel and its log, which hold the whole conversation (#974: `.chat:has(> .question-card) .chat-body` restyled part of
+ * every message at each key typed in the composer and each piece of a reply).
+ */
+const WHOLE = /(?:^|[(,\s])(?:html|body)(?![\w-])|:root(?![\w-])|#root(?![\w-])|\.(?:editor|workspace|chat|chat-log)(?![\w-])/;
 
 /** `text` split at each of `at` outside parentheses, brackets and quotes. */
 function splitTop(text: string, at: (c: string) => boolean): string[] {
@@ -98,16 +108,64 @@ function anchoredOnWhole(selector: string): boolean {
   return compounds.some((c, i) => i < compounds.length - 1 && c.includes(':has(') && WHOLE.test(own(c)));
 }
 
+/** `compound` with every `name(...)` group in it removed. */
+function without(compound: string, name: string): string {
+  let out = '';
+  for (let i = 0; i < compound.length; i++) {
+    if (!compound.startsWith(`${name}(`, i)) {
+      out += compound[i];
+      continue;
+    }
+    let depth = 0;
+    for (i += name.length; i < compound.length; i++) {
+      if (compound[i] === '(') depth++;
+      else if (compound[i] === ')' && --depth === 0) break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a compound names what it matches by something Chromium can look for: a class, an ID, an attribute or an
+ * element, or an `:is()` or `:where()` each of whose choices does. What it is not (`:not()`), what it holds (`:has()`),
+ * a state or a position (`:hover`, `:nth-child()`) and a pseudo-element name nothing.
+ */
+function named(compound: string): boolean {
+  const bare = without(without(compound.replace(/::?(?:before|after|marker|placeholder|selection|backdrop)\b/g, ''), ':not'), ':has');
+  if (/[.#[]/.test(without(without(bare, ':is'), ':where')) || /^[a-z]/i.test(bare)) return true;
+  // Each `:is()` or `:where()` of the compound itself (one inside them is a choice's own), by what is inside it.
+  const groups: string[] = [];
+  for (let i = 0, depth = 0, from = -1; i < bare.length; i++) {
+    if (depth === 0 && /^:(?:is|where)\(/.test(bare.slice(i))) {
+      i = bare.indexOf('(', i);
+      from = i + 1;
+      depth = 1;
+    } else if (bare[i] === '(') depth++;
+    else if (bare[i] === ')' && --depth === 0 && from >= 0) {
+      groups.push(bare.slice(from, i));
+      from = -1;
+    }
+  }
+  // A choice matches what its last compound names.
+  return groups.some((g) => splitTop(g, (c) => c === ',').every((choice) => named(splitTop(choice, (c) => /[\s>+~]/.test(c)).at(-1) ?? '')));
+}
+
+/** Whether a selector puts `:has()` on an element and styles something after it without naming it (`.row:has(.x) > *`). */
+function unnamedAfterHas(selector: string): boolean {
+  const compounds = splitTop(selector, (c) => /[\s>+~]/.test(c));
+  return compounds.slice(0, -1).some((c) => c.includes(':has(')) && !named(compounds.at(-1)!);
+}
+
 function stylesheets(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? stylesheets(join(dir, e.name)) : e.name.endsWith('.css') ? [join(dir, e.name)] : []));
 }
 
 describe('the editor’s stylesheets', () => {
   it('tell a :has() that restyles the whole window from one that costs only its own part', () => {
-    for (const whole of ['body:has(.preview-pill:not([inert] *)) .toasts', '.editor:has(.resizer.dragging) .frame-box iframe', ':root:has(.modal) > .editor', '.editor.defining:has(.x) .y', '.ready.editor:has(.x) .y', ':is(body, .editor):has(.x) .toasts', 'html:has([data-a="1, 2"]) .b'])
+    for (const whole of ['body:has(.preview-pill:not([inert] *)) .toasts', '.editor:has(.resizer.dragging) .frame-box iframe', ':root:has(.modal) > .editor', '.editor.defining:has(.x) .y', '.ready.editor:has(.x) .y', ':is(body, .editor):has(.x) .toasts', 'html:has([data-a="1, 2"]) .b', '.chat:has(> .question-card) .chat-body', '.chat-log:has(> .chat-empty) .x'])
       expect(anchoredOnWhole(whole), whole).toBe(true);
     // On the element it styles, on a small part of the page, or with the window's elements only inside what it looks for.
-    for (const part of ['#root:has(> .fatal)', '.toolbar-group:has(.save-state:is(.ask, .wait)) .project-title .site', '.editor-panel:has(.x) .y', 'body.previewing .toasts', '.row:has(.editor) .name', 'body .row:has(.x) .y'])
+    for (const part of ['#root:has(> .fatal)', '.toolbar-group:has(.save-state:is(.ask, .wait)) .project-title .site', '.editor-panel:has(.x) .y', 'body.previewing .toasts', '.row:has(.editor) .name', 'body .row:has(.x) .y', '.chat-log:has(> .chat-empty)', '.chat.asking .chat-body', '.chat-head:has(.x) .y'])
       expect(anchoredOnWhole(part), part).toBe(false);
   });
 
@@ -124,6 +182,19 @@ describe('the editor’s stylesheets', () => {
     const found = selectors(css);
     expect(found).toEqual(['.a:has(.b, .c)', '[title="x, y"]', '.e', 'body', 'body:has(.pill) .toasts', 'body .row:has(.x) .y', ':where(:root[data-dark])', ':where(:root[data-dark]) .toasts']);
     expect(found.filter(anchoredOnWhole)).toEqual(['body:has(.pill) .toasts']);
+  });
+
+  it('tell a :has() that styles what comes after it without naming it from one that names it', () => {
+    for (const unnamed of ['.seo-ov-row:has(.seo-ov-open:focus-visible) > *', '.a:has(.b) .c > *', '.a:has(.b) + *', '.a:has(.b) > :not(.c)', '.a:has(.b) > ::before', '.a:has(.b) > :hover', '.a:has(.b) > :is(.c, *)', '.a:has(.b) > *:nth-child(2)', '.a:has(.b) > :is(*, :is(.c))', '.a:has(.b) > :is(.c > *)'])
+      expect(unnamedAfterHas(unnamed), unnamed).toBe(true);
+    for (const named of ['.seo-ov-row:has(.seo-ov-open:focus-visible) > :where(th, td)', '.a:has(.b) > .c', '.a:has(.b) td', '.a:has(.b) > [data-x]', '.a:has(.b) > #c', '.a:has(.b) > :where(.c, .d)', '.a:has(.b) > .c:not(.d)::before', '.a:has(> *)', '.seo-ov-row:hover > *', '.a > *:has(.b)', '.a:has(.b) > :is(:hover > .c, .d)', '.a:has(.b) > :is(.c, :where(.d, td))'])
+      expect(unnamedAfterHas(named), named).toBe(false);
+  });
+
+  it('never put a :has() before something it styles without naming it', () => {
+    const root = join(import.meta.dirname, '../../src/renderer');
+    const found = stylesheets(root).flatMap((file) => selectors(readFileSync(file, 'utf8')).filter(unnamedAfterHas).map((s) => `${relative(root, file)}: ${s}`));
+    expect(found).toEqual([]);
   });
 
   it('never put a :has() on the window or the editor to style something inside it', () => {

@@ -316,9 +316,16 @@ const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)'
 function sizeToFit(ta: HTMLTextAreaElement | null) {
   // A hidden panel measures nothing; it is sized again when it is shown.
   if (!ta || !ta.offsetParent) return;
-  ta.style.height = 'auto';
   // The stylesheet's max-height is the cap, so the box and the text agree on where scrolling starts.
-  const cap = parseFloat(getComputedStyle(ta).maxHeight) || 240;
+  const style = getComputedStyle(ta);
+  const cap = parseFloat(style.maxHeight) || 240;
+  // A box at its least height can only need to grow, which its text overflowing shows, so it is not reset to measure:
+  // that lays out the whole panel twice, its log included, at every key.
+  if (ta.style.height && parseFloat(ta.style.height) <= (parseFloat(style.minHeight) || 0)) {
+    if (ta.scrollHeight > ta.clientHeight) ta.style.height = `${Math.min(cap, ta.scrollHeight)}px`;
+    return;
+  }
+  ta.style.height = 'auto';
   ta.style.height = `${Math.min(cap, ta.scrollHeight)}px`;
 }
 
@@ -412,8 +419,6 @@ export function Chat() {
   // The local server or model failed the last time anything asked it: Chat says so instead of offering starters.
   const notReady = configured && provider?.id === 'local' && provider.check && !provider.check.ok ? provider.check : null;
   const msgs = conversation?.messages ?? [];
-  // Summarising a long conversation's older messages is worked out again only when they change, not at every key typed.
-  const replayed = useMemo(() => replayedWords(conversation?.messages ?? []), [conversation?.messages]);
   const running = !!runStatus;
   const waiting = runStatus === 'awaiting-input';
   // While the AI waits on a question, the composer answers it from its own box; the unsent message stays put.
@@ -421,6 +426,11 @@ export function Chat() {
   // in the composer must not render them all again.
   const asking = useMemo(() => waitingQuestion(conversation, activeRunId, runStatus), [conversation, activeRunId, runStatus]);
   const askingKey = asking ? `${asking.runId}:${asking.question.id}` : null;
+  // Summarising a long conversation's older messages is for the length warning alone, which a local model shows while
+  // a message is written: worked out only then, and again only when they change, never at every key typed nor at every
+  // piece of a reply that streams while the box is empty.
+  const replayWanted = configured && provider?.id === 'local' && !asking && !!draft.trim();
+  const replayed = useMemo(() => (replayWanted ? replayedWords(conversation?.messages ?? []) : []), [replayWanted, conversation?.messages]);
   const [answerBox, setAnswerBox] = useState({ key: '', text: '' });
   const answerText = askingKey && answerBox.key === askingKey ? answerBox.text : '';
   const composerText = asking ? answerText : draft;
@@ -1143,7 +1153,8 @@ export function Chat() {
       : `Page text and structure go to ${configured && provider ? provider.label : 'the provider you choose'}. ${attachedImages}`;
 
   return (
-    <div className="chat">
+    // Marked while a question waits (its card below), so the stylesheet need not ask with `:has()` at every change.
+    <div className={`chat${asking ? ' asking' : ''}`}>
       {/* Shown with or without a provider, so earlier conversations stay reachable after one is removed. */}
       {conversation && (
         <div className="chat-head">
