@@ -4,7 +4,7 @@
  * is saved first as a version of its own, so the way back outlasts history too.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir, userInfo } from 'node:os';
 import { join, relative } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -1099,6 +1099,33 @@ describe('saved versions in Git (#1153)', () => {
     symlinkSync(join(dir, '.git', 'objects'), join(dir, '.siteorigin/versions/objects'));
     expect(await s.saveVersion('Through the link')).toMatchObject({ ok: false, message: expect.stringMatching(/link/) });
     expect(before()).toEqual(git0);
+    // Changing the list itself writes no object: renaming and deleting still work.
+    await ok(s.renameVersion(saved.id!, 'Renamed'));
+    await ok(s.deleteVersion(saved.id!));
+    expect(before()).toEqual(git0);
+  });
+
+  both('puts the library back when the whole static folder is gone, and restores past media that a link holds unchanged', async () => {
+    const { dir, s } = await make();
+    const pic = picture(dir, 'photo', 1);
+    await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_photo', ...pic.asset } }] }, { label: 'Import photo' }));
+    const saved = await ok(s.saveVersion('With the photo'));
+    await describe1(s, 'Later', 'Later');
+    rmSync(join(dir, 'static'), { recursive: true });
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(review!.problem).toBeUndefined();
+    await ok(s.restoreVersion(saved.id!, review!.revision));
+    pic.files.forEach((f, i) => expect(read(dir, f).equals(pic.bytes[i])).toBe(true));
+    // The library folder moved and linked back, its files the same: nothing to put back there, so the restore goes on.
+    await describe1(s, 'Later again', 'Later again');
+    const moved = join(dir, 'static', 'assets-moved');
+    renameSync(join(dir, ASSETS), moved);
+    symlinkSync(moved, join(dir, ASSETS));
+    const again = await ok(s.reviewVersion(saved.id!));
+    expect(again.review).toMatchObject({ files: [] });
+    expect(again.review!.problem).toBeUndefined();
+    await ok(s.restoreVersion(saved.id!, again.review!.revision));
+    expect(s.state.site.description).not.toBe('Later again');
   });
 
   it('saves the work a restore replaces beside the list when the history’s newest version is damaged', async () => {

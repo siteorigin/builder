@@ -200,6 +200,17 @@ class RestoreStopped extends Error {}
 /** A version could not be saved to Git because the project's version history is damaged. */
 class HistoryDamaged extends Error {}
 
+/** Whether a part of project path `rel` that is there is a link: looked at from the top down; a part not there ends it. */
+async function linkOnTheWay(root: string, rel: string): Promise<boolean> {
+  let at = root;
+  for (const part of rel.split('/')) {
+    const st = await fs.lstat((at = join(at, part))).catch(() => null);
+    if (!st) return false;
+    if (st.isSymbolicLink()) return true;
+  }
+  return false;
+}
+
 /** The name of the version saved before restoring the one named `name`, kept short however often restores nest. */
 function backupName(name: string): string {
   const short = name.length > 50 ? `${name.slice(0, 49).trimEnd()}…` : name;
@@ -4294,9 +4305,9 @@ export class ProjectSession extends EventEmitter {
       }
       const st = await fs.lstat(abs).catch(() => null);
       if (st && !st.isFile()) return refuse(`${path} is not a file, so “${v.name}” can’t put back its own.`);
-      // Never through a link inside the project, which could lead into its own `.git` or `.siteorigin`.
-      if (safeJoinLooking(this.dir, path).st === undefined) return refuse(`${path} is reached through a link, so “${v.name}” can’t put it back.`);
       if (st && sha(await fs.readFile(abs)) === h) continue;
+      // Never through a link inside the project, which could lead into its own `.git` or `.siteorigin`.
+      if (await linkOnTheWay(this.dir, path)) return refuse(`${path} is reached through a link, so “${v.name}” can’t put it back.`);
       try {
         await this.versions.readFile(v, path, h);
       } catch (e) {
@@ -4451,7 +4462,7 @@ export class ProjectSession extends EventEmitter {
             // Read before the file is checked, so as little time as possible passes between the check and the write.
             const bytes = await this.versions.readFile(v, f.path, f.hash);
             const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
-            if (now !== before) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
+            if (now !== before || (await linkOnTheWay(this.dir, f.path))) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
             // Noted before writing: a write that lands but fails to report so is still undone.
             written.push({ path: f.path, hash: f.hash, prior: before });
             await atomicWrite(abs, bytes);

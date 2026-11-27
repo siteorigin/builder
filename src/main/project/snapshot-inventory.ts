@@ -293,7 +293,9 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
     // read. The marker itself is never opened. The project's own `.git`, at its top, leaves the project as it is.
     if (rel && names.some(({ name }) => fold(name) === '.git')) return;
     // Nor a bare repository's folder (a clone kept as Git keeps one): its objects hold whatever it ever held.
-    if (rel && ['head', 'objects', 'refs'].every((n) => names.some(({ name }) => fold(name) === n))) return;
+    const kind = async (n: string) => (await fs.lstat(join(abs, n)).catch(() => null))?.isDirectory();
+    const head = async () => /^(ref: refs\/|[0-9a-f]{40})/.test(await fs.readFile(join(abs, 'HEAD'), 'utf8').catch(() => ''));
+    if (rel && names.some(({ name }) => name === 'HEAD') && (await kind('objects')) && (await kind('refs')) && (await head())) return;
     for (const { name, raw: bytes } of names) {
       const r = rel ? `${rel}/${name}` : name;
       const place = snapshotPlace(r);

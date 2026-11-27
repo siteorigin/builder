@@ -297,6 +297,11 @@ describe('capturing a project', () => {
     expect(paths).toContain('src/routes/+page.svelte');
     expect(paths.filter((p) => p.startsWith('src/vendor/lib') || p.startsWith('src/vendor/kept.git') || p.startsWith('static/kit'))).toEqual([]);
     expect(paths).toContain('static/assets/photo-1234abcd.jpg');
+    // A site folder that merely has entries of those names is the site's own.
+    write(root, 'static/docs/HEAD', 'Heading notes');
+    write(root, 'static/docs/objects/list.txt', 'a list');
+    write(root, 'static/docs/refs/index.txt', 'references');
+    expect((await captureSnapshotInventory(root, { settleMs: 0 })).tree.map((f) => f.path)).toEqual(expect.arrayContaining(['static/docs/HEAD', 'static/docs/objects/list.txt', 'static/docs/refs/index.txt']));
   });
 
   it('refuses a project that is not a folder', async () => {

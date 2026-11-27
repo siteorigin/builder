@@ -293,8 +293,8 @@ export class VersionStore {
    * Refuse to write when a folder of this store is not one of its own: a link there could lead anywhere, the project's
    * own `.git` included. Looked at before a version is captured and before the list is written.
    */
-  async checkFolders(): Promise<void> {
-    for (const dir of [join(this.root, '..'), this.root, this.objectDir]) {
+  async checkFolders(objects = true): Promise<void> {
+    for (const dir of [join(this.root, '..'), this.root, ...(objects ? [this.objectDir] : [])]) {
       const st = await fs.lstat(dir).catch(() => null);
       if (st && !st.isDirectory()) throw new Error(VERSIONS_LINKED);
     }
@@ -371,7 +371,8 @@ export class VersionStore {
   /** Replace the index with `next`, durably, then use it. */
   async publish(next: SavedVersion[]): Promise<void> {
     if (this.problem) throw new Error(this.problem);
-    await this.checkFolders();
+    // The list's own folders: renaming or deleting writes no object.
+    await this.checkFolders(false);
     try {
       await atomicWrite(this.indexPath, toJson({ format: VERSIONS_FORMAT, versions: next } satisfies VersionsFile));
     } catch (e) {

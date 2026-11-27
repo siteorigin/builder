@@ -78,7 +78,7 @@ export async function writeVersionCommit(repo: GitRepository, files: FileInput[]
   // A tip that can't be read is damaged history: nothing is built on it.
   if (tip)
     await repo.readCommit(tip).catch((e: unknown) => {
-      throw e instanceof GitError && !['not-found', 'corrupt', 'invalid'].includes(e.code) ? e : new GitError('corrupt', 'The newest version in the history is damaged or gone.');
+      throw e instanceof GitError && ['cancelled', 'timeout', 'busy', 'stopped', 'crashed'].includes(e.code) ? e : new GitError('corrupt', 'The newest version in the history is damaged or gone.');
     });
   const tree = await repo.writeFiles(files);
   const who = appIdentity(time);
