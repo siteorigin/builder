@@ -142,15 +142,21 @@ step('Site styles switches to Foundation and back, keeping every section and wha
 const before = await snapshot();
 const content = (s) => Object.fromEntries(Object.values(s.pages).map((p) => [p.id, { rootIds: p.rootIds, nodes: Object.fromEntries(Object.values(p.nodes).map((n) => [n.id, n.kind === 'instance' ? { ...n, definitionId: s.components[n.definitionId]?.componentId } : n])) }]));
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
-const theme = win.locator('#dock-panel-styles .ss-theme-meta').getByLabel('Theme');
-await theme.waitFor();
-await theme.selectOption('foundation');
+const card = win.locator('#dock-panel-styles .ss-theme');
+await card.waitFor();
+// Picking a theme in the chooser only picks it; Use {name} makes the switch.
+const switchTo = async (id, name) => {
+  await card.getByRole('button', { name: 'Change theme' }).click();
+  await card.locator(`[data-theme-option="${id}"]`).click();
+  await card.getByRole('button', { name: `Use ${name}` }).click();
+};
+await switchTo('foundation', 'Foundation');
 await eventually(async () => assert.equal((await snapshot()).site.themeId, 'foundation'));
 const onFoundation = await snapshot();
 assert.deepEqual(content(onFoundation), content(before), 'every placement keeps its content, links, images and styles on Foundation');
 for (const n of placements(onFoundation)) assert.match(n.definitionId, /^foundation\./);
 await eventually(async () => assert.match(await frame.locator('h1').first().evaluate((h) => getComputedStyle(h).fontFamily), /Fraunces Variable/), 30000, 300);
-await theme.selectOption('editorial');
+await switchTo('editorial', 'Editorial');
 await eventually(async () => assert.equal((await snapshot()).site.themeId, 'editorial'));
 const back = await snapshot();
 assert.deepEqual(back.pages, before.pages, 'back on Editorial, the pages are exactly as they were');

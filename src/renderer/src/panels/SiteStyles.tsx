@@ -1,19 +1,19 @@
 import { variantOptions } from '@shared/variants';
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, ChevronRight, Globe, Link2, RotateCcw, TriangleAlert } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, Globe, Link2, RotateCcw, TriangleAlert } from 'lucide-react';
 import type { EntityKind, ProjectState, SiteIdentity, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { ColorSchemeControls } from './ColorSchemeControls';
 import { PaletteHarmony } from './PaletteHarmony';
-import { getTheme, listThemes, type ThemePack } from '@catalogue/index';
+import { getTheme, listThemes, themePinProblem, type ThemePack } from '@catalogue/index';
 import { usePackPreview } from '../components/PackPreview';
 import { installedFonts } from '@catalogue/fonts';
 import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRoles, sizeAtWidth, typeScale, typeScaleOps, TYPE_SCALE_CHOICES, type TypeScaleChoice } from '@shared/type-scale';
 import { allTrees, instancesOf } from '@engine/tree';
 import { forEachTokenPropRef } from '@engine/tokens';
-import { api, applyOps, commitOps, dismissToast, getState, setState, shownAt, toast, undoAction, useStore } from '../store';
+import { api, applyOps, claimRefusals, commitOps, dismissToast, getState, setState, shownAt, toast, undoAction, undoAvailable, useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
@@ -430,7 +430,7 @@ function ResetDot({ label, theme, onReset, from = 'theme' }: { label: string; th
         const trigger = e.currentTarget;
         // Said once the change has saved, never before: a refused reset says nothing.
         void Promise.resolve(onReset()).then((ok) => ok !== null && ok !== false && say(`${label} is back to ${whose} ${theme}.`));
-        refocus(trigger, row, next, () => panel?.querySelector<HTMLElement>('.ss-changes button, .ss-theme-switch, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
+        refocus(trigger, row, next, () => panel?.querySelector<HTMLElement>('.ss-changes button, .ss-theme-change, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
       }}
     >
       <RotateCcw />
@@ -611,8 +611,393 @@ function themeShotFile(theme: Pick<ThemePack, 'previews'>): string | undefined {
  */
 function ThemeShot({ theme }: { theme: ThemePack }) {
   const url = usePackPreview(theme.id, themeShotFile(theme));
-  if (!url) return null;
+  // A pack built without thumbnails is pictured by its own colours and display font instead of an empty frame.
+  if (!url) return <ThemeSketch theme={theme} />;
   return <img className="ss-theme-shot" src={url} alt="" draggable={false} data-theme={theme.id} />;
+}
+
+/** A theme's own colour, as its pack sets it: a literal or one reference deep. */
+function packHex(theme: ThemePack, id: string): string | undefined {
+  const v = theme.tokens.find((t) => t.id === id)?.value;
+  const ref = refOf(v);
+  const value = ref ? theme.tokens.find((t) => t.id === ref)?.value : v;
+  return typeof value === 'string' && /^#[0-9a-f]{3,8}$/i.test(value) ? value : undefined;
+}
+
+/** The stand-in for a theme with no thumbnail: a heading and a button on its background, in its own colours. */
+function ThemeSketch({ theme }: { theme: ThemePack }) {
+  const font = theme.tokens.find((t) => t.id === 'font.display')?.value;
+  return (
+    <span className="ss-theme-shot ss-theme-sketch" style={{ background: packHex(theme, 'color.background'), color: packHex(theme, 'color.text') }} aria-hidden="true">
+      <span style={{ fontFamily: typeof font === 'string' ? font : undefined }}>Aa</span>
+      <i style={{ background: packHex(theme, 'color.brand') }} />
+    </span>
+  );
+}
+
+/** A folder's path, breaking only after its separators so no folder name is split across lines. */
+function FolderPath({ path }: { path: string }) {
+  const parts = path.split(/(?<=[\\/])/);
+  return (
+    <code>
+      {parts.map((p, i) => (
+        <span key={i}>
+          {p}
+          <wbr />
+        </span>
+      ))}
+    </code>
+  );
+}
+
+/** What the theme card draws of the site's own look: its colours and display font. */
+interface SiteLook {
+  background?: string;
+  text?: string;
+  brand?: string;
+  dots: string[];
+  font?: string;
+  /** For the larger sample of a theme before it is used: its text on the brand colour, and the font's name. */
+  onBrand?: string;
+  fontName?: string;
+}
+
+/** The site's name set in a theme's colours and display font, on a button and its palette: the site as it would be. */
+function LookSample({ look, name }: { look: SiteLook; name: string }) {
+  return (
+    <div className="ss-theme-sample" style={{ background: look.background, color: look.text }} aria-hidden="true">
+      <span className="ss-theme-sample-name" style={{ fontFamily: look.font }}>
+        {name}
+      </span>
+      <span className="ss-theme-sample-row">
+        <span className="ss-theme-sample-button" style={{ background: look.brand, color: look.onBrand }}>
+          Button
+        </span>
+        <span className="ss-look-dots">
+          {look.dots.map((c, i) => (
+            <i key={i} style={{ background: c }} />
+          ))}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+/** A tiny page in a site's colours and display font: a heading, a button and the palette. */
+function LookSwatch({ look }: { look: SiteLook }) {
+  return (
+    <div className="ss-look" style={{ background: look.background, color: look.text }} aria-hidden="true">
+      <span className="ss-look-type" style={{ fontFamily: look.font }}>
+        Aa
+      </span>
+      <span className="ss-look-button" style={{ background: look.brand }} />
+      <span className="ss-look-dots">
+        {look.dots.map((c, i) => (
+          <i key={i} style={{ background: c }} />
+        ))}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The theme card: what the site is built on, a deliberate way to move it to another installed theme, and how far it
+ * has moved from its theme (`changes`). Picking a theme in the chooser only picks it, and shows it as designed and
+ * with the site's own changes on it (`lookOf`); the button under the list makes the switch and says what it keeps,
+ * and the card then says it happened, with an Undo for that switch while it can still be undone. A project open
+ * read-only gets the reason in the card instead, and nothing the project would refuse.
+ */
+function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say }: { st: ProjectState; theme: ThemePack; themes: ThemePack[]; look: SiteLook; lookOf: (themeId: string) => SiteLook; changedCount: number; changes: ReactNode; say: (text: string) => void }) {
+  const uid = useId();
+  const snap = useStore((s) => s.snapshot);
+  const refusedPacks = useStore((s) => s.packs.refused);
+  const packsDir = useStore((s) => s.packs.userDir);
+  const [choosing, setChoosing] = useState(false);
+  const [picked, setPicked] = useState(theme.id);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [why, setWhy] = useState(false);
+  const [packsWhy, setPacksWhy] = useState(false);
+  // The switch this card just made, for its receipt and Undo, shown while that history entry can still be undone.
+  const [done, setDone] = useState<{ from: ThemePack; to: string; kept: number; undo: ReturnType<typeof undoAction> } | null>(null);
+  const missing = theme.id !== st.site.themeId;
+  // Why the project is open read-only because of its theme: not installed, or not the copy it was made with.
+  const pin = themePinProblem(st);
+  const readOnly = snap?.readOnly;
+  const live = !!done && done.to === st.site.themeId && !!done.undo?.undoes && undoAvailable(done.undo.undoes, snap);
+  // Undone, by any route: said once. The switch is kept, so a redo brings its receipt and Undo back.
+  const wasLive = useRef(false);
+  // Set when this card makes the switch, which it says itself; a later return of the same entry is a redo.
+  const fresh = useRef(false);
+  useEffect(() => {
+    if (wasLive.current && !live && done && st.site.themeId === done.from.id) say(`Back on ${done.from.name}.`);
+    if (!wasLive.current && live && done) {
+      if (fresh.current) fresh.current = false;
+      else say(`Switched to ${getTheme(done.to).name} again.`);
+    }
+    wasLive.current = live;
+  }, [live, done, st.site.themeId, say]);
+  // A project held read-only by its theme: the card shows what the project records, never the copy it refused.
+  const blocked = missing || !!pin;
+  const canSwitch = themes.length > 1 && !readOnly && !pin;
+  const next = themes.find((t) => t.id === picked) ?? theme;
+  const chooserId = `${uid}-chooser`;
+  const changeId = `${uid}-change`;
+  const focusChange = () => requestAnimationFrame(() => document.getElementById(changeId)?.focus());
+  const close = (focus = true) => {
+    if (busy) return;
+    setChoosing(false);
+    setRefusal(null);
+    if (focus) focusChange();
+  };
+  const open = () => {
+    setPicked(theme.id);
+    setRefusal(null);
+    setChoosing(true);
+    // Into the list at the theme in use, as a radio group is entered.
+    requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`#${CSS.escape(chooserId)} input:checked`)?.focus());
+  };
+  // A click brings the picked theme's preview and the switch into view, as a long list can push them below the panel.
+  // Arrowing through the list leaves the scroll to the focused row, so browsing never loses its place.
+  const pointer = useRef(false);
+  const pick = (id: string) => {
+    setPicked(id);
+    setRefusal(null);
+    if (pointer.current) requestAnimationFrame(() => document.querySelector(`#${CSS.escape(chooserId)} .ss-theme-confirm`)?.scrollIntoView({ block: 'nearest' }));
+    pointer.current = false;
+  };
+  const use = async () => {
+    if (next.id === theme.id || busy) return;
+    setBusy(true);
+    setRefusal(null);
+    const from = theme;
+    // The refusal is said where it is shown (role=alert), once.
+    const r = await claimRefusals(
+      (e) => {
+        setRefusal(e.message);
+        return true;
+      },
+      () => commitOps([{ type: 'theme.apply', themeId: next.id }], `Switch theme to ${next.name}`)
+    );
+    setBusy(false);
+    if (!r?.ok) return;
+    fresh.current = true;
+    setDone({ from, to: next.id, kept: changedCount, undo: undoAction(r) });
+    say(`Switched to ${next.name}. Your content${changedCount ? ` and ${plural(changedCount, 'changed style', 'changed styles')} were` : ' was'} kept. You can undo this.`);
+    setChoosing(false);
+    focusChange();
+  };
+  const lock = st.themeLock?.theme?.id === st.site.themeId ? st.themeLock.theme : undefined;
+  // The first thing to do for each way the installed copy can be the wrong one (themePinProblem's cases).
+  const pinFix =
+    theme.source === 'user' && !lock?.digest
+      ? 'The site doesn’t record which copy of the theme it was made with. Open it in the copy of SiteOrigin Builder it was made with and switch its theme there.'
+      : lock?.digest && theme.source !== 'user'
+        ? 'A theme that comes with SiteOrigin Builder now has the same name as the theme this site was made with. Open the site in the version of SiteOrigin Builder it was made with and switch it to another theme there.'
+        : 'The installed copy isn’t the one the site was made with: reinstall that copy, then restart SiteOrigin Builder.';
+  const kept = changedCount ? `Your content and the ${plural(changedCount, 'style', 'styles')} you changed are kept.` : 'Your content and any style changes are kept.';
+  const nextLook = next.id !== theme.id ? lookOf(next.id) : null;
+  // The picked theme's own picture, once it has loaded: without one, the sample takes the room.
+  const nextShot = usePackPreview(nextLook ? next.id : undefined, themeShotFile(next));
+  // An installed copy of the site's own theme that could not be loaded is the same problem as the missing theme.
+  const ownRefusal = missing ? refusedPacks.find((r) => r.packId === st.site.themeId) : undefined;
+  const otherRefused = refusedPacks.filter((r) => r !== ownRefusal);
+
+  return (
+    <div className="ss-theme" data-missing={missing ? '' : undefined}>
+      {blocked ? (
+        <>
+          <div className="ss-theme-text">
+            <div className="ss-eyebrow">Theme</div>
+            <div className="ss-theme-name">
+              <strong>{missing ? st.site.themeId : theme.name}</strong>
+              {lock && <span className="ss-theme-version">{lock.version}</span>}
+              <span className="ss-theme-chip">{!missing ? 'Can’t be used' : ownRefusal ? 'Couldn’t load' : 'Not installed'}</span>
+            </div>
+          </div>
+          {/* What it means and what to do, in the owner's words; the exact reason stays one click away, for support. */}
+          <div className="scope-note danger" role="note">
+            <TriangleAlert />
+            <div className="ss-theme-blocked">
+              <span>
+                {missing ? (
+                  <>
+                    <strong>This site’s theme {ownRefusal ? 'couldn’t be loaded' : 'isn’t installed'}</strong>, so the site is open read-only and can’t be previewed. {ownRefusal ? 'Reinstall a fresh copy of it' : 'Install it'}, then restart SiteOrigin Builder. A theme that came with the app comes back when you reinstall the app.
+                  </>
+                ) : (
+                  <>
+                    <strong>This site’s theme can’t be used here</strong>, so the site is open read-only. {pinFix}
+                  </>
+                )}
+              </span>
+              {packsDir && (
+                <span className="ss-theme-folder">
+                  Installed themes go in <FolderPath path={packsDir} />
+                </span>
+              )}
+              {(ownRefusal || !missing) && (
+                <span>
+                  <button type="button" className="link" aria-expanded={why} aria-controls={`${uid}-blocked-why`} onClick={() => setWhy(!why)}>
+                    {why ? 'Hide why' : 'Show why'}
+                  </button>
+                  <span id={`${uid}-blocked-why`} className="ss-theme-reason ss-packs-detail" hidden={!why}>
+                    {ownRefusal ? ownRefusal.reason : pin}
+                  </span>
+                </span>
+              )}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="ss-theme-id">
+          <LookSwatch look={look} />
+          <div className="ss-theme-text">
+            <div className="ss-eyebrow">Theme</div>
+            <div className="ss-theme-name">
+              <strong>{theme.name}</strong>
+              <span className="ss-theme-version">{theme.version}</span>
+            </div>
+            {!choosing && <div className="ss-theme-desc">{theme.description}</div>}
+          </div>
+        </div>
+      )}
+      {!pin && readOnly && themes.length > 1 && (
+        <p className="ss-theme-what">This site is open read-only, so its theme can’t be changed.</p>
+      )}
+      {live && !choosing && done && (
+        <div className="ss-theme-receipt">
+          <Check />
+          <span>
+            Switched from {done.from.name}. Your content{done.kept ? ` and ${plural(done.kept, 'changed style', 'changed styles')}` : ''} came with it.{' '}
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => {
+                done.undo?.run();
+                focusChange();
+              }}
+            >
+              Undo
+            </button>
+          </span>
+        </div>
+      )}
+      {canSwitch && (
+        <div className="ss-theme-actions">
+          <button type="button" id={changeId} className="btn btn-sm ss-theme-change" data-theme-chooser="" aria-expanded={choosing} aria-controls={chooserId} disabled={busy} onClick={() => (choosing ? close() : open())}>
+            Change theme
+            <ChevronDown className={choosing ? 'ss-flip' : undefined} />
+          </button>
+          <span className="ss-theme-count">{themes.length - 1 === 1 ? '1 other installed' : `${themes.length - 1} others installed`}</span>
+        </div>
+      )}
+      {canSwitch && (
+        <div
+          className="ss-theme-chooser"
+          id={chooserId}
+          hidden={!choosing}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              close();
+            }
+          }}
+        >
+          {choosing && (
+            <>
+              <fieldset className="ss-theme-options" disabled={busy} onKeyDown={() => (pointer.current = false)}>
+                <legend className="ss-theme-legend">Choose a theme</legend>
+                {themes.map((t) => (
+                  <label key={t.id} className="ss-theme-option" data-theme-option={t.id} onPointerDown={() => (pointer.current = true)}>
+                    <input type="radio" name={`${uid}-theme`} value={t.id} checked={picked === t.id} onChange={() => pick(t.id)} />
+                    <span className="ss-theme-radio" aria-hidden="true" />
+                    <ThemeShot theme={t} />
+                    <span className="ss-theme-option-text">
+                      <span className="ss-theme-option-name">
+                        <strong>{t.name}</strong>
+                        {t.id === theme.id && <span className="ss-theme-chip">Current</span>}
+                      </span>
+                      <span className="ss-theme-option-desc">{t.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+              {nextLook && (
+                <div className="ss-theme-preview" role="group" aria-label={`${next.name}, before you switch`} data-single={nextShot ? undefined : ''}>
+                  {/* Your site first: it is what the switch gives you. The pack's picture shows its layouts. */}
+                  <figure>
+                    <LookSample look={nextLook} name={st.site.name || next.name} />
+                    <figcaption>
+                      {changedCount ? 'With your changes' : 'Its colors and font'}
+                      <span className="sr-only">
+                        : headings in {nextLook.fontName}, brand color {nextLook.brand}
+                      </span>
+                    </figcaption>
+                  </figure>
+                  {/* A pack built without thumbnails has no layout to show: the sample takes the room. */}
+                  {nextShot && (
+                    <figure>
+                      <img className="ss-theme-shot" src={nextShot} alt="" draggable={false} data-theme={next.id} />
+                      <figcaption>Example layout</figcaption>
+                    </figure>
+                  )}
+                </div>
+              )}
+              <p className="ss-theme-what" id={`${uid}-what`}>
+                {next.id === theme.id
+                  ? 'Pick a theme to see it here before you switch.'
+                  : `${next.name} restyles every page: its layouts, colors and fonts. ${kept} You can undo the switch.`}
+              </p>
+              {refusal && (
+                <p className="field-error" role="alert">
+                  {refusal} {theme.name} is still this site’s theme.
+                </p>
+              )}
+              <div className="ss-theme-confirm">
+                {/* Kept focusable while the switch is on its way, so a refusal leaves focus where it was. */}
+                <button type="button" className="btn btn-sm btn-primary" data-theme-switch-to={next.id} disabled={next.id === theme.id} aria-disabled={busy || undefined} aria-describedby={`${uid}-what`} onClick={() => void use()}>
+                  {busy ? 'Switching…' : next.id === theme.id ? 'Use this theme' : `Use ${next.name}`}
+                </button>
+                <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => close()}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {otherRefused.length > 0 && (
+        <div className="scope-note info ss-packs-refused">
+          <CircleAlert />
+          <div>
+            <span>
+              {otherRefused.length === 1 ? '1 installed theme' : `${otherRefused.length} installed themes`} couldn’t be loaded{missing ? '' : otherRefused.length === 1 ? ', so it isn’t offered here' : ', so they aren’t offered here'}.{' '}
+              <button type="button" className="link" aria-expanded={packsWhy} aria-controls={`${uid}-why`} onClick={() => setPacksWhy(!packsWhy)}>
+                {packsWhy ? 'Hide why' : 'Show why'}
+              </button>
+            </span>
+            <div id={`${uid}-why`} className="ss-packs-why" hidden={!packsWhy}>
+              <p className="ss-packs-fix">Reinstall a fresh copy of {otherRefused.length === 1 ? 'the theme' : 'each theme'} from wherever it came from, then restart SiteOrigin Builder.</p>
+              <ul>
+                {otherRefused.map((r) => (
+                  <li key={r.dir}>
+                    <strong>{r.packId ?? r.dir.split(/[\\/]/).pop()}</strong>
+                    <span className="ss-packs-detail">{r.reason}</span>
+                  </li>
+                ))}
+              </ul>
+              {packsDir && !missing && (
+                <p className="ss-theme-folder">
+                  Installed themes go in <FolderPath path={packsDir} />
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {!blocked && !readOnly && changes}
+    </div>
+  );
 }
 
 export function SiteStyles() {
@@ -644,8 +1029,6 @@ export function SiteStyles() {
   const contrast = useMemo(() => buildContrastModel(shownTokens, pairs), [shownTokens, pairs]);
   const otherContrast = useMemo(() => (dual ? buildContrastModel(palette === 'dark' ? tokens : darkTokens, pairs) : null), [dual, palette, tokens, darkTokens, pairs]);
   const contrastStatus = useContrastStatus(contrast);
-  const refusedPacks = useStore((s) => s.packs.refused);
-  const packsDir = useStore((s) => s.packs.userDir);
   // What a reset just did, for the status region; a repeat of the same words still changes the text, so it is read again.
   const [said, setSaid] = useState('');
   // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings.
@@ -718,7 +1101,7 @@ export function SiteStyles() {
     const n = changedIds.length;
     void applyOps(savedIds.map((id) => ({ type: 'token.set' as const, tokenId: id, value: null })), 'Use theme defaults').then((ok) => ok && say(`${plural(n, 'change', 'changes')} put back to ${theme.name}. You can undo this.`));
     // The changes bar goes with the reset: focus moves to the theme, the next thing down, not back to the top.
-    refocus(trigger, null, null, () => panel?.querySelector<HTMLElement>('.ss-theme-switch, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
+    refocus(trigger, null, null, () => panel?.querySelector<HTMLElement>('.ss-theme-change, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
   };
   const themes = listThemes().filter((t) => !t.devOnly || dev || t.id === theme.id);
   const hex = (id: string) => resolveColor(tokens, byId(id)?.value);
@@ -1211,7 +1594,6 @@ export function SiteStyles() {
     );
   };
 
-  const look = ['color.brand', 'color.accent', 'color.inverse', 'color.surface-alt'].map(hex).filter(Boolean);
   const displayStack = fontStack('font.display') || fontStack(fontIds[0] ?? '');
   // Headings first: the display font is the one that sets a site's character.
   const fontsOrdered = [...group('font')].sort((a, b) => Number(b.id === 'font.display') - Number(a.id === 'font.display'));
@@ -1374,73 +1756,26 @@ export function SiteStyles() {
       </div>
 
       <div className="ss-intro">
-        <div className="ss-theme ss-theme-meta">
-          <div className="ss-theme-id">
-            <div className="ss-look" style={{ background: hex('color.background') || undefined, color: hex('color.text') || undefined }} aria-hidden="true">
-              <span className="ss-look-type" style={{ fontFamily: shownStack(displayStack) }}>
-                Aa
-              </span>
-              <span className="ss-look-button" style={{ background: hex('color.brand') || undefined }} />
-              <span className="ss-look-dots">
-                {look.map((c, i) => (
-                  <i key={i} style={{ background: c }} />
-                ))}
-              </span>
-            </div>
-            <div className="ss-theme-text">
-              <div className="ss-eyebrow">
-                Theme <span className="ss-theme-version">{theme.version}</span>
-              </div>
-              {/* With themes to choose from, the selector is the theme's name; with one, the name stands alone. */}
-              {themes.length > 1 ? (
-                <select className="select ss-theme-switch" title={theme.name} value={theme.id} aria-label="Theme" aria-describedby={`${uid}-theme-hint`} onChange={(e) => void applyOps([{ type: 'theme.apply', themeId: e.target.value }], 'Switch theme')}>
-                  {themes.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div className="ss-theme-name">
-                  <strong>{theme.name}</strong>
-                </div>
-              )}
-              <div className="ss-theme-desc">{theme.description}</div>
-            </div>
-          </div>
-          <ThemeShot theme={theme} />
-          {themes.length > 1 && (
-            <div className="ss-theme-hint" id={`${uid}-theme-hint`}>
-              Switching keeps your content and changes.
-            </div>
-          )}
-          {theme.id !== st.site.themeId && (
-            <div className="ss-theme-hint" role="note">
-              This site's theme, “{st.site.themeId}”, is not installed, so {theme.name}'s styles are shown.{' '}
-              <button className="link-btn" onClick={() => void applyOps([{ type: 'theme.apply', themeId: theme.id }], 'Switch theme')}>
-                Use {theme.name}
-              </button>
-            </div>
-          )}
-          {refusedPacks.length > 0 && (
-            <details className="ss-packs-refused">
-              <summary>
-                {refusedPacks.length === 1 ? '1 theme pack' : `${refusedPacks.length} theme packs`} could not be loaded
-              </summary>
-              <ul>
-                {refusedPacks.map((r) => (
-                  <li key={r.dir}>
-                    <strong>{r.packId ?? r.dir.split(/[\\/]/).pop()}</strong>: {r.reason}
-                  </li>
-                ))}
-              </ul>
-              {packsDir && <p className="faint">Installed packs are read from {packsDir} when SiteOrigin Builder starts.</p>}
-            </details>
-          )}
-        {changedIds.length > 0 && (
+        <ThemeCard
+          st={st}
+          theme={theme}
+          themes={themes}
+          look={{ background: shownHex('color.background') || undefined, text: shownHex('color.text') || undefined, brand: shownHex('color.brand') || undefined, dots: ['color.brand', 'color.accent', 'color.inverse', 'color.surface-alt'].map(shownHex).filter(Boolean), font: shownStack(displayStack) }}
+          lookOf={(themeId) => {
+            // The site as it would be under that theme: its styles, with the owner's changes kept on top.
+            // In the palette being edited, as the canvas shows it.
+            const t = effectiveTokens({ ...st, site: { ...st.site, themeId } }, palette);
+            const c = (id: string) => resolveColor(t, t.find((x) => x.id === id)?.value) || undefined;
+            const display = resolvedText(t, 'font.display');
+            return { background: c('color.background'), text: c('color.text'), brand: c('color.brand'), onBrand: c('color.on-brand'), dots: ['color.brand', 'color.accent', 'color.inverse', 'color.surface-alt'].flatMap((id) => c(id) ?? []), font: shownStack(display), fontName: familyName(display) };
+          }}
+          changedCount={changedIds.length}
+          say={say}
+          changes={
+        changedIds.length > 0 && (
           <div className="ss-changes">
             <div className="ss-changes-row">
-              <span className="ss-changes-count">
+              <span>
                 <strong>{changedIds.length} changed</strong>
                 <span className="sr-only"> from {theme.name}</span>
               </span>
@@ -1487,8 +1822,9 @@ export function SiteStyles() {
               )}
             </ul>
           </div>
-        )}
-        </div>
+        )
+          }
+        />
         <div className="scope-note site">
           <Globe />
           <span>
