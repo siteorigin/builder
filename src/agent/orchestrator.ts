@@ -26,6 +26,8 @@ import { authorityCheck, authorityLabel, canEditContracts, layoutLabel, liveEntr
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { untilStopped } from './validation';
 import { developerModeCheck } from '@engine/developer-mode';
+import { formRoutingGrant, formRoutingQuestion, formRoutingReview, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
+import { FORM_ROUTING_PROPS } from '@engine/form-destinations';
 import { walkChecks } from '@engine/apply';
 import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
@@ -118,7 +120,11 @@ export interface RunSession {
   discardAppliedDrafts(runId: string, paths: string[]): Promise<void>;
   runChanged(): boolean;
   /** `collectionWrite`: the post tool's grant for this one batch, never the model's (see shared/collection-grant). */
-  apply(batch: { operations: EditOperation[]; expectedRevision?: number }, opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant }): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
+  /** `formRouting`: what the user allowed, when the app asked them, of a batch that changes where a form sends (engine/form-routing). */
+  apply(
+    batch: { operations: EditOperation[]; expectedRevision?: number },
+    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; formRouting?: FormRoutingGrant }
+  ): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   diagnostics(): Diagnostic[];
   undoGroup(runId: string): Promise<{ ok: boolean; error?: { message: string } }>;
   historyInfo(): TurnHistory;
@@ -1734,6 +1740,52 @@ export class Orchestrator {
     /** A call's result as the model receives it, in the one shape every tool result has. */
     // A change that worked landed, this time or the first time it was sent: a cut report of it never asks for it again.
     const resultItem = (call: ToolCall, outcome: ResultOutcome): CanonicalItem => ({ kind: 'tool_result', callId: call.id, name: call.name, content: serializeResult(outcome.content, call.name, outcome.ok && MUTATING_TOOLS.has(call.name as never)), isError: !outcome.ok });
+    /**
+     * Ask the user a question and wait for the answer. `resume` is what the run goes back to once it is answered: the
+     * app's own question, asked while the run checks its work, goes back to checking.
+     */
+    const askUser = (question: string, choices: string[], widenScope?: boolean, images?: ChatImageRef[], resume: RunStatus = 'running') =>
+      new Promise<string>((resolve) => {
+        // Stopped before the question could be shown: there is nothing to wait for.
+        if (signal.aborted) return resolve(STOPPED_ANSWER);
+        activeMs += Date.now() - lastResume;
+        // A question can never be granted more: nothing in it may change.
+        // Nor a layout's run: what it may change is the layout open on the canvas.
+        const widen = !ask && !!widenScope && authority.kind !== 'site' && authority.kind !== 'template';
+        const limit = authority.kind === 'component' ? 'the component' : authority.kind === 'page' || authority.kind === 'entry' ? authority.label : 'the selection';
+        const [yes, no] = widenChoices(authority);
+        const id = newId('q');
+        run.pendingQuestion = {
+          id,
+          resolve: (a) => {
+            lastResume = Date.now();
+            // Stop settles the question too; the run is stopping, not working again.
+            if (signal.aborted) return resolve(a);
+            this.setStatus(resume);
+            if (widen && (a === yes || TYPED_YES.test(a))) {
+              authority = { kind: 'site' };
+              resolve(`${a}. You may now change anything needed for this request.`);
+            } else if (widen) resolve(`${a}. Keep changes within ${limit}.`);
+            else resolve(a);
+          }
+        };
+        // Each question is added to the turn, so earlier questions and their answers stay with it.
+        (msg.questions ??= []).push({ id, text: question, choices: widen ? [yes, no] : choices, ...(widen ? { widen: true } : {}), ...(!widen && images?.length ? { images } : {}) });
+        this.setStatus('awaiting-input');
+        this.emitMessage(msg, runId);
+      });
+    /**
+     * A batch the session refused because it changes where a contact form sends (engine/form-routing), sent again
+     * once the user allows exactly those changes when the app asks, in its own words. The model never asks for it,
+     * words it, or answers it: only this question's Allow (or a typed yes to it) grants the batch it names.
+     */
+    const approveRouting = async (review: FormRoutingReview, send: (grant: FormRoutingGrant) => ReturnType<RunSession['apply']>) => {
+      const { text, choices, allow } = formRoutingQuestion(review.changes);
+      const answer = await askUser(text, choices, false, undefined, run.status === 'awaiting-input' ? 'running' : run.status);
+      if (signal.aborted) return refused('CANCELLED', 'Canceled', false);
+      if (answer === allow || TYPED_YES.test(answer)) return send(formRoutingGrant(review));
+      return refused('SCOPE_MISMATCH', `The user kept where the contact form sends its messages. Nothing in this batch was applied: send the rest of it again without changing a form's ${FORM_ROUTING_PROPS.join(', ')}, or the design or code that decides them.`, true);
+    };
     const host: ToolHost = {
       macros,
       // Stays valid for the rest of a turn in which the user widens the scope.
@@ -1818,7 +1870,12 @@ export class Orchestrator {
         try {
           // A layout's run writes that layout: the grant is the run's own authority, never the model's (see shared/collection-grant).
           const collectionWrite = authority.kind === 'template' ? ({ kind: 'layout', owner: authority.owner } as const) : grants?.collectionWrite;
-          res = await session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}) });
+          const send = (formRouting?: FormRoutingGrant) =>
+            session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(formRouting ? { formRouting } : {}) });
+          res = await send();
+          // Asked once: a batch refused again, with the user's say, changes something they were not shown.
+          const review = res.ok ? null : formRoutingReview(res.error);
+          if (review) res = await approveRouting(review, send);
         } catch (e) {
           // A save that failed part way may have published the source before it threw: the run is undone, so it is kept.
           await keepDrafts(operations, { ok: true });
@@ -1841,36 +1898,7 @@ export class Orchestrator {
       signal,
       ...(this.deps.inspectComponent ? { inspectComponent: (steps: ComponentPreviewStep[]) => this.deps.inspectComponent!(steps, signal) } : {}),
       ...(this.deps.sources ? { sources: this.deps.sources(signal) } : {}),
-      ask: (question, choices, widenScope, images) =>
-        new Promise<string>((resolve) => {
-          // Stopped before the question could be shown: there is nothing to wait for.
-          if (signal.aborted) return resolve(STOPPED_ANSWER);
-          activeMs += Date.now() - lastResume;
-          // A question can never be granted more: nothing in it may change.
-          // Nor a layout's run: what it may change is the layout open on the canvas.
-          const widen = !ask && !!widenScope && authority.kind !== 'site' && authority.kind !== 'template';
-          const limit = authority.kind === 'component' ? 'the component' : authority.kind === 'page' || authority.kind === 'entry' ? authority.label : 'the selection';
-          const [yes, no] = widenChoices(authority);
-          const id = newId('q');
-          run.pendingQuestion = {
-            id,
-            resolve: (a) => {
-              lastResume = Date.now();
-              // Stop settles the question too; the run is stopping, not working again.
-              if (signal.aborted) return resolve(a);
-              this.setStatus('running');
-              if (widen && (a === yes || TYPED_YES.test(a))) {
-                authority = { kind: 'site' };
-                resolve(`${a}. You may now change anything needed for this request.`);
-              } else if (widen) resolve(`${a}. Keep changes within ${limit}.`);
-              else resolve(a);
-            }
-          };
-          // Each question is added to the turn, so earlier questions and their answers stay with it.
-          (msg.questions ??= []).push({ id, text: question, choices: widen ? [yes, no] : choices, ...(widen ? { widen: true } : {}), ...(!widen && images?.length ? { images } : {}) });
-          this.setStatus('awaiting-input');
-          this.emitMessage(msg, runId);
-        })
+      ask: (question, choices, widenScope, images) => askUser(question, choices, widenScope, images)
     };
 
     const addActivity = (label: string, tool: string): ChatActivity => {

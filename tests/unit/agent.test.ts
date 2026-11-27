@@ -5995,3 +5995,80 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(kept).toEqual({ rejected: long, reverted: attempted });
   });
 });
+
+describe('a change to where a contact form sends (#1128)', () => {
+  const SALES = 'https://forms.example.com/sales';
+  const EVIL = 'https://evil.example/f';
+  const content = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+
+  /**
+   * A run whose one call sets the home page form's `prop`, the form placed by the user to send to Sales; `answer`
+   * replies to the question the app asks, if it asks one. What the model was told comes back as `told`.
+   */
+  async function editForm(prop: string, value: unknown, answer: (orch: Orchestrator, runId: string, q: NonNullable<ChatMessage['questions']>[number]) => void | Promise<void>) {
+    let told: { ok?: boolean; error?: { code?: string; message?: string } } = {};
+    const env = await setup([
+      () => [call('f1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner, nodeId: form, prop, value }] })],
+      (req) => {
+        told = content(req);
+        return finish('Done.');
+      }
+    ]);
+    const owner = { kind: 'page' as const, id: env.session.state.site.homePageId };
+    const placed = await env.session.apply({ operations: [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }] }, { label: 'Add a form' });
+    const form = placed.results![0].nodeId as string;
+    const r = await env.orch.send('Change the form', { pageId: owner.id, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 });
+    let asked: NonNullable<ChatMessage['questions']>[number] | undefined;
+    while (env.orch.busy) {
+      const q = [...env.events].reverse().find((e) => e.message?.questions?.length)?.message?.questions?.at(-1);
+      if (q && !asked && env.events.some((e) => e.status === 'awaiting-input')) {
+        asked = q;
+        await answer(env.orch, r.runId!, q);
+      }
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    const node = env.session.state.pages[owner.id].nodes[form] as InstanceNode;
+    return { env, asked, told, node };
+  }
+
+  it('asks the user in the app’s own words, and lands the change once they allow it', async () => {
+    const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[1]));
+    expect(asked?.text).toContain(EVIL);
+    expect(asked?.text).toContain('“Home”');
+    expect(asked?.choices).toEqual(['Keep it as it is', 'Allow this change']);
+    expect(asked?.widen).toBeUndefined();
+    expect(told.ok).toBe(true);
+    expect(node.props.endpoint).toBe(EVIL);
+  });
+
+  it('keeps the form sending where it did when the user says no, and tells the model so', async () => {
+    const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[0]));
+    expect(asked).toBeDefined();
+    expect(told.error?.code).toBe('SCOPE_MISMATCH');
+    expect(told.error?.message).toMatch(/The user kept where the contact form sends/);
+    expect(node.props.endpoint).toBe(SALES);
+  });
+
+  it('takes a typed reply that is not a plain yes as keeping it', async () => {
+    const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, 'only if that is the new inbox'));
+    expect(asked).toBeDefined();
+    expect(told.error?.code).toBe('SCOPE_MISMATCH');
+    expect(node.props.endpoint).toBe(SALES);
+  });
+
+  it('lands nothing when the request is stopped while the question waits', async () => {
+    const { asked, env, node } = await editForm('provider', 'web3forms', async (orch, runId) => void (await orch.stopRun(runId)));
+    expect(asked).toBeDefined();
+    expect(node.props.provider).toBe('endpoint');
+    expect(env.session.revision).toBe(1);
+  });
+
+  it('asks nothing for an ordinary edit to the form', async () => {
+    const { asked, told, node } = await editForm('heading', 'Write to us', () => {
+      throw new Error('Nothing should be asked.');
+    });
+    expect(asked).toBeUndefined();
+    expect(told.ok).toBe(true);
+    expect(node.props.heading).toBe('Write to us');
+  });
+});
