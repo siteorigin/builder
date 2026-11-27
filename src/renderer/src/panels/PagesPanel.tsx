@@ -1,15 +1,15 @@
 import './PagesPanel.css';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, LayoutTemplate, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
+import { ChevronRight, Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, LayoutTemplate, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';
-import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasCategoryArchives } from '@shared/collections';
+import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasCategoryArchives, hasDetailPages } from '@shared/collections';
 import { defaultArchiveDescription } from '@shared/archives';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { aiActivity, api, applyOps, commitDraft, commitOps, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
+import { aiActivity, api, applyOps, commitDraft, commitOps, confirmDialog, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { limitNote } from '../lib/kept-drafts';
 import { TEXT_LIMITS } from '@shared/text-limits';
-import { DraftInput, keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
+import { DraftInput, Field, SwitchRow, keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { goToShellPart, openArchiveLayout, openLayout, selectPage, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
@@ -23,6 +23,8 @@ import { followsPageOrder } from '@engine/header-order';
 import { setHeaderMenuOrder } from '../lib/header-menu-order';
 import { listPageClicks, pageClicks } from '../lib/page-clicks';
 import { Marked, Runs, fold, found, shortDate } from '../components/ListText';
+import { CollectionSchemaDialog } from './CollectionSchemaDialog';
+import { saveOpenPost } from '../lib/post-draft';
 
 /** Addresses are at most four levels deep, so a page four levels down cannot have pages inside it. */
 const MAX_DEPTH = 4;
@@ -1191,16 +1193,42 @@ export function PagesPanel() {
   );
 }
 
-/** The page sizes offered for a collection's index, besides its own (a size set in its settings file is kept). */
-const PAGE_SIZES = [1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 50, MAX_PAGE_SIZE];
+/** Every page size a collection's index can have, so any of them is one choice away (typing a number jumps to it). */
+const PAGE_SIZES = Array.from({ length: MAX_PAGE_SIZE }, (_, i) => i + 1);
 
 /**
- * How a collection's index and category archives list its published entries: how many to a page, whether each
- * category has an archive of its own, its own layout, what the index tells search engines and link previews
- * (`fallback` while the collection says nothing of its own), and a way to see the index in the preview, as visitors get it.
+ * Which collections have their index settings open, remembered for this viewer and project (a convenience, so it may
+ * be lost): collection IDs such as "posts" recur across projects, so the project's folder is part of the key.
  */
-function CollectionArchive(props: { collectionId: string; name: string; route: string; pageSize: number; categories: boolean; designed: boolean; description: string | null; fallback: string }) {
-  const { collectionId, name, route, pageSize, categories, designed, description, fallback } = props;
+const indexOpenKey = (dir: string, collectionId: string) => `pages-collection-index:${dir}:${collectionId}`;
+function readIndexOpen(dir: string, collectionId: string): boolean {
+  try {
+    return localStorage.getItem(indexOpenKey(dir, collectionId)) === '1';
+  } catch {
+    return false;
+  }
+}
+function saveIndexOpen(dir: string, collectionId: string, open: boolean) {
+  try {
+    if (open) localStorage.setItem(indexOpenKey(dir, collectionId), '1');
+    else localStorage.removeItem(indexOpenKey(dir, collectionId));
+  } catch {
+    // Not kept: the settings start closed next time.
+  }
+}
+
+/**
+ * How a collection's index and category archives list its published entries: whether the index shows the ready-made
+ * cards or a design of its own (with a way to see it in the preview, as visitors get it, and to design it), how many
+ * to a page, whether each category has an archive of its own, and what the index tells search engines and link
+ * previews (`fallback` while the collection says nothing of its own). Going back to the ready-made cards asks first.
+ */
+function CollectionArchive(props: { id: string; collectionId: string; name: string; route: string; pageSize: number; categories: boolean; designed: boolean; description: string; fallback: string }) {
+  const { id, collectionId, name, route, pageSize, categories, designed, description, fallback } = props;
+  const designRef = useRef<HTMLButtonElement>(null);
+  // The text the field shows, so the fallback is named as soon as the description is cleared, before it is saved.
+  const [shown, setShown] = useState(description);
+  useEffect(() => setShown(description), [description]);
   const update = (patch: { pageSize?: number; categoryArchives?: boolean; archiveTemplate?: null; description?: string }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
   const viewIndex = () => {
     // The index is a page of the website: a layout being edited closes first, as opening a page closes it.
@@ -1213,109 +1241,192 @@ function CollectionArchive(props: { collectionId: string; name: string; route: s
       if (!visitAddress(route)) toast(`The preview is starting: the ${name} index opens in it once it is ready.`, 'info');
     });
   };
+  const backToReadyMade = async () => {
+    const ok = await confirmDialog({
+      title: 'Use the ready-made cards?',
+      body: `The ${name} index goes back to listing its entries as the ready-made cards.`,
+      confirmLabel: 'Use ready-made cards',
+      cancelLabel: 'Keep design',
+      tone: 'caution',
+      icon: 'revert',
+      subject: `${name} index`,
+      details: [
+        { kind: 'lose', text: 'The index’s own design is removed.' },
+        { kind: 'keep', text: 'Its entries, and the layout of each entry’s page, stay as they are.' },
+        { kind: 'undo', text: 'Undo brings the design back.' }
+      ]
+    });
+    if (!ok) return;
+    if (await update({ archiveTemplate: null }, `Show the ready-made cards on the ${name} index`)) requestAnimationFrame(() => designRef.current?.focus());
+  };
   return (
-    <div className="pages-collection-archive" role="group" aria-label={`The ${name} index`}>
-      <label className="pages-collection-size">
-        Per page
-        {/* A choice made at once, so no typed value is ever held while the project changes under it. */}
-        <select
-          className="select sm"
-          aria-label={`${name} entries per index page`}
-          value={String(pageSize)}
-          onChange={(e) => {
-            const n = Number(e.target.value);
-            if (Number.isInteger(n) && n !== pageSize) void update({ pageSize: n }, `Show ${n} per page on the ${name} index`);
-          }}
-        >
-          {[...new Set([...PAGE_SIZES, pageSize])]
-            .sort((a, b) => a - b)
-            .map((n) => (
+    <div className="pages-collection-index" id={id} role="group" aria-label={`${name} index`}>
+      <p className="pages-collection-look">
+        {designed ? (
+          <>
+            Shows <strong>its own design</strong>
+          </>
+        ) : (
+          <>
+            Shows <strong>the ready-made cards</strong>. Design index starts a design of its own from them.
+          </>
+        )}
+      </p>
+      <div className="pages-collection-actions">
+        <button className="btn btn-sm" onClick={viewIndex} aria-label={`View index of ${name}`} data-testid={`view-index-${collectionId}`}>
+          View index
+        </button>
+        {/* The index's own layout, designed on the canvas, in place of the ready-made cards. */}
+        <button ref={designRef} className="btn btn-sm" onClick={() => void openArchiveLayout(collectionId)} aria-label={designed ? `Edit design of ${name} index` : `Design index of ${name}`} data-testid={`design-index-${collectionId}`}>
+          {designed ? 'Edit design' : 'Design index'}
+        </button>
+      </div>
+      <div className="pages-collection-size">
+        <Field label="Entries per page">
+          {/* A choice made at once, so no typed value is ever held while the project changes under it. */}
+          <select
+            className="select sm"
+            value={String(pageSize)}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isInteger(n) && n !== pageSize) void update({ pageSize: n }, `Show ${n} per page on the ${name} index`);
+            }}
+          >
+            {PAGE_SIZES.map((n) => (
               <option key={n} value={n}>
                 {n}
               </option>
             ))}
-        </select>
-      </label>
-      <label className="pages-collection-check">
-        <input type="checkbox" checked={categories} onChange={(e) => void update({ categoryArchives: e.target.checked }, e.target.checked ? 'Give categories their own pages' : 'Stop giving categories their own pages')} />
-        Category pages
-      </label>
-      <button className="btn btn-sm btn-ghost" onClick={viewIndex} aria-label={`View the ${name} index`} data-testid={`view-index-${collectionId}`}>
-        View index
-      </button>
-      {/* The index's own layout, designed on the canvas, in place of the ready-made cards. */}
-      <button className="btn btn-sm btn-ghost" onClick={() => void openArchiveLayout(collectionId)} aria-label={`Design the ${name} index`} data-testid={`design-index-${collectionId}`}>
-        Design index
-      </button>
+          </select>
+        </Field>
+      </div>
+      <SwitchRow checked={categories} label="Category pages" hint="Each category gets a page listing its entries." onChange={(on) => void update({ categoryArchives: on }, on ? 'Give categories their own pages' : 'Stop giving categories their own pages')} />
+      <Field label="Index description" hint={shown.trim() ? 'For search results and link previews.' : <>For search results and link previews. While it is empty, this index uses: <q>{fallback}</q></>}>
+        <DraftInput
+          multiline
+          rows={2}
+          limit={TEXT_LIMITS.pageDescription}
+          keep={`collection:${collectionId}:description`}
+          keepWhile={() => {
+            // Only while the collection has its index, so a draft hidden by turning it off is offered to copy.
+            const c = getState().snapshot?.state.collections[collectionId];
+            return !!c && hasArchivePages(c.settings);
+          }}
+          value={description}
+          onDirty={(_, draft) => setShown(draft)}
+          onCommit={(v) => update({ description: v }, `Change the ${name} index description`)}
+        />
+      </Field>
       {designed && (
-        <button className="btn btn-sm btn-ghost" onClick={() => void update({ archiveTemplate: null }, `Show the ready-made cards on the ${name} index`)} aria-label={`Use the ready-made ${name} index`}>
-          Use ready-made cards
-        </button>
-      )}
-      {description !== null && (
-        <label className="pages-collection-description">
-          Index description
-          <DraftInput
-            multiline
-            rows={2}
-            limit={TEXT_LIMITS.pageDescription}
-            keep={`collection:${collectionId}:description`}
-            keepWhile={() => {
-              // Only while the collection has its index, so a draft hidden by turning it off is offered to copy.
-              const c = getState().snapshot?.state.collections[collectionId];
-              return !!c && hasArchivePages(c.settings);
-            }}
-            ariaLabel={`Index description of ${name}, for search engines and link previews`}
-            value={description}
-            placeholder={fallback}
-            onCommit={(v) => update({ description: v }, `Change the ${name} index description`)}
-          />
-        </label>
+        <div className="pages-collection-reset">
+          <button className="btn btn-sm" onClick={() => void backToReadyMade()} aria-label={`Use ready-made cards on ${name} index`}>
+            Use ready-made cards…
+          </button>
+        </div>
       )}
     </div>
   );
 }
 
+/** One collection: what it is and where it lives, its layout, and (behind a disclosure) the settings of its index. */
+function CollectionRow({ state, id, open }: { state: ProjectState; id: string; open: 'entry' | 'index' | null }) {
+  const c = state.collections[id];
+  const name = c.settings.name;
+  const dir = useStore((s) => s.snapshot?.dir ?? '');
+  const [expanded, setExpanded] = useState(() => readIndexOpen(dir, id));
+  const [settings, setSettings] = useState(false);
+  const n = Object.keys(c.entries ?? {}).length;
+  const paged = hasDetailPages(c.settings);
+  const indexed = hasArchivePages(c.settings);
+  const regionId = `pages-collection-index-${id}`;
+  const openSettings = () => void saveOpenPost().then((ok) => (ok ? setSettings(true) : toast('The entry you are writing has a change that is not saved yet. See the note beside it.', 'error')));
+  // Where a collection without an index, or without entry pages, turns them on.
+  const settingsButton = (
+    <button className="btn btn-sm btn-ghost pages-collection-settings" aria-label={`Collection settings of ${name}`} onClick={openSettings}>
+      <Settings2 aria-hidden="true" />
+      Collection settings…
+    </button>
+  );
+  const toggle = () => {
+    setExpanded(!expanded);
+    saveIndexOpen(dir, id, !expanded);
+  };
+  return (
+    <li className={`pages-collection${open ? ' open' : ''}`} aria-current={open ? 'true' : undefined}>
+      <span className="pages-collection-glyph">
+        <LayoutTemplate aria-hidden="true" />
+      </span>
+      <div className="pages-collection-body">
+        <span className="pages-collection-name">{name}</span>
+        <span className="pages-collection-meta">
+          {n} {n === 1 ? 'entry' : 'entries'}
+          {/* The address an index lives at; with no index it is only where the entries' own pages go. */}
+          {paged && c.settings.route ? (
+            <span className="pages-collection-route">
+              {indexed ? '' : 'Entry pages under '}
+              <span className="pages-collection-path">{c.settings.route}</span>
+            </span>
+          ) : !paged ? (
+            <span className="pages-collection-route">Lists only</span>
+          ) : null}
+        </span>
+        {open && <span className="pages-collection-open">{open === 'index' ? 'Index design open on the canvas' : 'Layout open on the canvas'}</span>}
+        {paged ? (
+          <div className="pages-collection-buttons">
+            <button className="btn btn-sm" aria-label={`Edit layout of ${name}`} data-testid={`edit-layout-${id}`} onClick={() => openLayout(id)}>
+              Edit layout
+            </button>
+            {indexed ? (
+              <button className="btn btn-sm btn-ghost pages-collection-toggle" aria-expanded={expanded} aria-controls={regionId} aria-label={`Index settings of ${name}`} onClick={toggle}>
+                <ChevronRight aria-hidden="true" />
+                Index settings
+              </button>
+            ) : (
+              settingsButton
+            )}
+          </div>
+        ) : (
+          <>
+            <p className="pages-collection-note">Its entries show in lists on other pages, with no pages of their own.</p>
+            <div className="pages-collection-buttons flush">{settingsButton}</div>
+          </>
+        )}
+        {indexed && !expanded && <div id={regionId} hidden />}
+        {indexed && expanded && (
+          <CollectionArchive
+            id={regionId}
+            collectionId={id}
+            name={name}
+            route={c.settings.route ?? ''}
+            pageSize={archivePageSize(c.settings)}
+            categories={hasCategoryArchives(c.settings)}
+            designed={!!c.settings.archiveTemplate}
+            description={c.settings.description ?? ''}
+            fallback={defaultArchiveDescription(state, id)}
+          />
+        )}
+      </div>
+      {settings && <CollectionSchemaDialog collectionId={id} onClose={() => setSettings(false)} />}
+    </li>
+  );
+}
+
 /**
- * The site's collections, each with the layout its entries' pages share. Edit layout opens it on the canvas, shown on
- * the collection's first entry; a change there changes every entry's page.
+ * The site's collections, by name, each with the layout its entries' pages share. Edit layout opens it on the canvas,
+ * shown on the collection's first entry; a change there changes every entry's page. The one open on the canvas is
+ * marked, saying whether it is the entries' layout or the index's design.
  */
 function CollectionLayouts({ state }: { state: ProjectState }) {
-  const open = useStore((s) => s.templateMode?.collectionId ?? null);
-  const ids = Object.keys(state.collections ?? {}).sort();
+  const template = useStore((s) => s.templateMode);
+  const ids = Object.keys(state.collections ?? {}).sort((a, b) => state.collections[a].settings.name.localeCompare(state.collections[b].settings.name) || a.localeCompare(b));
   if (!ids.length) return null;
   return (
     <section className="pages-collections" aria-labelledby="pages-collections-head">
       <h4 id="pages-collections-head">Collections</h4>
       <ul>
-        {ids.map((id) => {
-          const c = state.collections[id];
-          const n = Object.keys(c.entries ?? {}).length;
-          return (
-            <li key={id} className={`pages-collection${open === id ? ' open' : ''}`}>
-              <LayoutTemplate aria-hidden="true" />
-              <span className="grow pages-collection-text">
-                <span className="pages-collection-name ellipsis">{c.settings.name}</span>
-                <span className="pages-collection-meta ellipsis">
-                  {n} {n === 1 ? 'entry' : 'entries'} · {c.settings.route}
-                </span>
-              </span>
-              <button className="btn btn-sm" aria-pressed={open === id} aria-label={`Edit the ${c.settings.name} layout`} data-testid={`edit-layout-${id}`} onClick={() => openLayout(id)}>
-                Edit layout
-              </button>
-              <CollectionArchive
-                collectionId={id}
-                name={c.settings.name}
-                route={c.settings.route ?? ''}
-                pageSize={archivePageSize(c.settings)}
-                categories={hasCategoryArchives(c.settings)}
-                designed={!!c.settings.archiveTemplate}
-                description={hasArchivePages(c.settings) ? (c.settings.description ?? '') : null}
-                fallback={defaultArchiveDescription(state, id)}
-              />
-            </li>
-          );
-        })}
+        {ids.map((id) => (
+          <CollectionRow key={id} state={state} id={id} open={template?.collectionId === id ? (template.archive ? 'index' : 'entry') : null} />
+        ))}
       </ul>
     </section>
   );
