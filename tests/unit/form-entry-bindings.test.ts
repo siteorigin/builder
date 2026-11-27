@@ -214,3 +214,29 @@ describe('a list that passes its items on to a contact form', () => {
     expect(formDestinationProblems(placed.state)).toEqual([]);
   });
 });
+
+describe('Entry content for a contact form in a layout', () => {
+  it('offers its copy, never where it sends, unless a setting already reads the entry and can be set back', async () => {
+    (globalThis as unknown as { localStorage: unknown }).localStorage = { getItem: () => null, setItem: () => undefined, removeItem: () => undefined };
+    (globalThis as unknown as { window: unknown }).window = {
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      matchMedia: () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }),
+      builder: { platform: 'test' }
+    };
+    const { createElement } = await import('react');
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    // Renderer code, outside the Node type-check project: loaded by path at run time.
+    const PANEL_PATH = '../../src/renderer/src/panels/EntryFields';
+    const Panel = (await import(PANEL_PATH)).EntryFieldsSection;
+    const { state, form, wrapped } = posts();
+    const offered = (s: ProjectState, nodeId: string) => [...renderToStaticMarkup(createElement(Panel, { state: s, owner: LAYOUT, node: s.collections.posts.settings.template!.nodes[nodeId] })).matchAll(/data-testid="entry-field-([^"]+)"/g)].map((m) => m[1]);
+    expect(offered(state, form)).toContain('heading');
+    for (const prop of ROUTING) expect(offered(state, form)).not.toContain(prop);
+    expect(offered(state, wrapped)).toContain('title');
+    expect(offered(state, wrapped)).not.toContain('recipient');
+    const hand = structuredClone(state);
+    (hand.collections.posts.settings.template!.nodes[form] as InstanceNode).props.endpoint = { $entry: 'excerpt' };
+    expect(offered(hand, form)).toContain('endpoint');
+  });
+});
