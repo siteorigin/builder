@@ -28,7 +28,9 @@
     "perf:compare": "tsx --tsconfig tsconfig.node.json scripts/perf/compare.ts",
     "perf:static": "tsx --tsconfig tsconfig.node.json scripts/perf/static.ts",
     "perf:prompt": "tsx --tsconfig tsconfig.node.json scripts/perf/prompt.ts",
-    "perf:git": "tsx --tsconfig tsconfig.node.json scripts/perf/git-snapshots.ts"
+    "perf:git": "tsx --tsconfig tsconfig.node.json scripts/perf/git-snapshots.ts",
+    "relay:smoke": "tsx --tsconfig tsconfig.node.json scripts/relay-smoke.ts",
+    "relay:deploy": "wrangler deploy --config relay/wrangler.toml --env production"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261125.1",

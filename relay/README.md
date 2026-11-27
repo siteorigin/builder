@@ -105,6 +105,10 @@ cp relay/.dev.vars.example relay/.dev.vars   # a local SESSION_SIGNING_KEY
 npm run relay:dev                            # listens on 127.0.0.1:8787
 ```
 
+`npm run relay:smoke` then drives one room through it end to end: the host opens it, a guest joins and is admitted,
+a preview request is tunnelled, the host drops and re-proves itself, and the room ends (`scripts/relay-smoke.ts`; pass
+another relay's URL to test that one).
+
 Point the app at it with `SITEORIGIN_LIVE_RELAY_URL=http://relay.localhost:8787`. Not `127.0.0.1`, which has no
 subdomains, and not bare `localhost`: previews are served on `http://p-<label>.relay.localhost:8787`, and only under a
 host with a dot are the viewer and its previews the same site, which the preview cookie needs. Chrome, Firefox and
@@ -120,8 +124,8 @@ Workers types, as part of `npm run typecheck`.
 ## Configuration
 
 `wrangler.toml` holds the bindings and the tunables (reconnect graces, handshake and preview timeouts). Its default
-environment is the local one. The only secret is `SESSION_SIGNING_KEY`, at least 32 characters; without it the relay
-refuses to open rooms or serve previews. A deployment adds a `production` environment, below.
+environment is the local one; `[env.production]` is the deployed relay, below. The only secret is
+`SESSION_SIGNING_KEY`, at least 32 characters; without it the relay refuses to open rooms or serve previews.
 
 ## Deploying and operating
 
@@ -150,48 +154,18 @@ answers:
 | `AAAA` | `@` | `100::` | Proxied |
 | `AAAA` | `*` | `100::` | Proxied |
 
-### 1. Add the production environment
+### 1. Point the production environment at your domain
 
-Append this to `relay/wrangler.toml` in the checkout you deploy from, with your domain in place of every
-`example.live`:
+`relay/wrangler.toml` already has the deployed relay's environment, `[env.production]`: the Worker
+`siteorigin-builder-relay`, with its bindings and tunables repeated (Wrangler does not pass them down to a named
+environment; the assets, the Durable Object migration, the entry point and the compatibility date are inherited) and
+observability off, because stored request logs would hold request addresses, and an invite link's address holds its
+room ID. Until it has a domain it is served on `workers.dev`, where everything but previews works: a room's preview is
+`p-<label>.<relay host>`, and `workers.dev` has no names below a Worker's own.
 
-```toml
-[env.production]
-workers_dev = false   # no *.workers.dev address: the relay answers on its own domain only
-preview_urls = false
-routes = [
-  { pattern = "example.live/*", zone_name = "example.live" },
-  { pattern = "*.example.live/*", zone_name = "example.live" },
-]
-
-# Wrangler does not pass bindings or vars down to a named environment, so they are repeated here. The assets, the
-# Durable Object migration, the entry point and the compatibility date are inherited from the top of the file.
-[[env.production.durable_objects.bindings]]
-name = "ROOMS"
-class_name = "SessionRoom"
-
-[[env.production.ratelimits]]
-name = "ROOM_CREATION_LIMITER"
-namespace_id = "7610"
-simple = { limit = 6, period = 60 }
-
-[[env.production.ratelimits]]
-name = "ROOM_CONNECT_LIMITER"
-namespace_id = "7611"
-simple = { limit = 30, period = 60 }
-
-# Off on purpose: stored request logs would hold request addresses, and an invite link's address holds its room ID.
-[env.production.observability]
-enabled = false
-
-[env.production.vars]
-RELAY_ORIGIN = "https://example.live"
-HOST_RECONNECT_GRACE_MS = "120000"
-GUEST_RECONNECT_GRACE_MS = "120000"
-HANDSHAKE_TIMEOUT_MS = "30000"
-PREVIEW_HEAD_TIMEOUT_MS = "30000"
-PREVIEW_IDLE_TIMEOUT_MS = "30000"
-```
+To move it onto your domain, edit `[env.production]`: set `workers_dev = false`, and uncomment `routes` and
+`RELAY_ORIGIN` with your domain in place of every `example.live`. Make that change through a pull request: whatever is
+on `develop` is what the next deploy ships.
 
 - **`RELAY_ORIGIN`** is the viewer's origin: scheme and host, no path. The viewer's routes are then served only there,
   and preview origins only directly under it. Unset, as locally, any host serves them. Set to something that is not an
@@ -209,14 +183,15 @@ From the repository root:
 ```sh
 npm ci
 npx wrangler login
-npx wrangler deploy --config relay/wrangler.toml --env production
+npm run relay:deploy        # wrangler deploy --config relay/wrangler.toml --env production
 ```
 
-This provisions everything: one Worker, `siteorigin-live-relay-production`, with the viewer's files as its assets, its
-two rate limiters, and one SQLite-backed Durable Object class, `SessionRoom`, created by the `v1` migration. Each live
-session gets its own object of that class. There is no database, bucket or queue to create. WebSocket Hibernation needs
-no setting: the object accepts its sockets with `ctx.acceptWebSocket()`, so it can sleep between frames and restore the
-room from its sockets' attachments when it wakes.
+This provisions everything: one Worker, `siteorigin-builder-relay`, with the viewer's files as its assets, its two rate
+limiters, and one SQLite-backed Durable Object class, `SessionRoom`, created by the `v1` migration. Each live session
+gets its own object of that class. There is no database, bucket or queue to create. WebSocket Hibernation needs no
+setting: the object accepts its sockets with `ctx.acceptWebSocket()`, so it can sleep between frames and restore the
+room from its sockets' attachments when it wakes. The `release-relay` skill (`.agents/skills/release-relay/`) runs
+this whole sequence, with a local check first and a smoke test after.
 
 ### 3. Set the signing key
 
@@ -235,7 +210,9 @@ curl -i https://example.live/_viewer/viewer.js                      # 200: the a
 curl -i https://p-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.live/    # 401: the wildcard route and certificate
 ```
 
-Neither needs a live session, and neither checks the key. For that, [point Builder at the
+Neither needs a live session, and neither checks the key. `npm run relay:smoke -- https://example.live` does: it
+opens a real room, admits a guest, tunnels a preview request through the host, drops and re-proves the host, and ends
+the room. Against the `workers.dev` address it skips the preview steps. For that, [point Builder at the
 relay](#pointing-the-app-at-a-deployed-relay), start a live session, open its invite link in a browser, admit the guest
 and see that the preview appears. This covers both kinds of host, the WebSockets and the preview cookie.
 
