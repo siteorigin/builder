@@ -1012,7 +1012,7 @@ export const INTERACTIONS: Interaction[] = [
     outcome: 'Every saved colour shows on its swatch, starts the picker from itself, keeps its opacity, survives a reopen in its own format and undoes as one step; a white brand colour is flagged with a readable text colour on offer; a palette from the brand previews without saving, applies in one step and one Undo puts every colour back',
     scenario: 'Business starter · none',
     proof: [
-      { test: 'tests/e2e/colors.mjs', kind: 'e2e', step: 'a fast drag that goes out and comes back ends where it was left, as one undo step' },
+      { test: 'tests/e2e/colors.mjs', kind: 'e2e', step: 'a run of steps in the picker is one undo step' },
       { test: 'tests/e2e/colors.mjs', kind: 'e2e', step: 'each format survives closing and reopening the project' },
       { test: 'tests/e2e/colors.mjs', kind: 'e2e', step: 'a white brand color is flagged where it is set, with a readable text color on offer' },
       { test: 'tests/e2e/colors.mjs', kind: 'e2e', step: 'a color that follows another stays linked' },
