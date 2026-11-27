@@ -882,7 +882,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
 }
 
 /** What a property, or a field of a list or object, keeps through a rebuild that this tool has no field for. */
-const KEPT_PROPERTY_KEYS = ['group', 'feed', 'pageTeaser', 'plainAs', 'codeForm'] as const;
+const KEPT_PROPERTY_KEYS = ['group', 'feed', 'pageTeaser', 'plainAs', 'codeForm', 'copyEditable'] as const;
 
 /** `sent` with the settings `old` had that this tool cannot give, its fields' included, where `sent` names none. */
 function keptSettings(old: Record<string, unknown>, sent: Record<string, unknown>): Record<string, unknown> {

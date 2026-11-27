@@ -654,6 +654,17 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(s.state.components[id].slots!.notes).toMatchObject({ label: 'Small print', categories: ['media'] });
   });
 
+  it('keeps through a rebuild a property the host offered to a live Copy Editor', async () => {
+    const { s, call } = await session();
+    const made = await call(pricing());
+    expect(made.ok).toBe(true);
+    const id = made.content.definitionId;
+    const r = await s.apply({ operations: [{ type: 'component.setPropSchema', definitionId: id, prop: 'heading', schema: { ...s.state.components[id].properties.heading, copyEditable: true } }] }, { label: 'Mark' });
+    expect(r.ok).toBe(true);
+    expect((await call(pricing({ definitionId: id, description: 'Prices.' }))).ok).toBe(true);
+    expect(s.state.components[id].properties.heading).toMatchObject({ copyEditable: true });
+  });
+
   it('rebuilds a placed component whole, keeping its placement values, and places it again', async () => {
     const { s, call, home } = await session();
     const made = await call(pricing({ placeOnPage: { pageId: home } }));

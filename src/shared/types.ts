@@ -244,6 +244,13 @@ export interface StringProp extends PropBase {
   default: string;
   multiline?: boolean;
   maxLength?: number;
+  /**
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export interface RichTextProp extends PropBase {
   type: 'richtext';
@@ -257,6 +264,13 @@ export interface RichTextProp extends PropBase {
    * item, with **bold** and *italic*. Managed components always take blocks.
    */
   codeForm?: RichCodeForm;
+  /**
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export type RichCodeForm = 'blocks' | 'paragraphs';
 export const RICH_CODE_FORMS: readonly RichCodeForm[] = ['blocks', 'paragraphs'];
@@ -283,6 +297,13 @@ export interface LinkProp extends PropBase {
 export interface ImageProp extends PropBase {
   type: 'image';
   default: ImageValue;
+  /**
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export interface IconProp extends PropBase {
   type: 'icon';
