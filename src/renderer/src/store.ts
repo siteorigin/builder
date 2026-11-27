@@ -1475,6 +1475,7 @@ export function refreshProviders(): Promise<void> {
 export function applyAiEvent(e: AiEvent) {
   const s = getState();
   if (e.kind === 'status') {
+    statusSeen++;
     const terminal = ['completed', 'partial', 'no-changes', 'cancelled', 'failed', 'conflicted'].includes(e.status!);
     // A question never changes the site, so edits typed while it runs are not held or checked against it.
     const ask = e.mode === 'ask';
@@ -1489,6 +1490,8 @@ export function applyAiEvent(e: AiEvent) {
     return;
   }
   const conv = s.conversation;
+  // The conversation is still being read for (showConversation): what it says now is read again once it shows.
+  if (showing && e.conversationId === showing.id) showing.missed = true;
   // A run's messages belong to the conversation it was filed in: one shown in any other thread (or from a project
   // closed mid-run, tagged with none) would look sent there while being saved elsewhere. Status stays app-wide.
   if (!conv || e.conversationId !== conv.id) return;
@@ -1517,6 +1520,8 @@ export function applyAiEvent(e: AiEvent) {
         lost = true;
         return m;
       }
+      // A piece that follows what is shown makes this copy as new as main's: a read under way is no newer.
+      shownWhole?.add(m.id);
       return { ...m, text: m.text + piece };
     });
     // Text for a turn this window does not show at all is as lost as a piece that does not fit.
@@ -1533,6 +1538,35 @@ let catchingUp: { key: string; again: boolean } | null = null;
  */
 let shownWhole: Set<string> | null = null;
 
+/** Status events received, counted: a run's status read from main is older than any that arrived while it was read. */
+let statusSeen = 0;
+/** The conversation showConversation is reading, and whether events for it arrived meanwhile (with nothing to land in). */
+let showing: { id: string; missed: boolean } | null = null;
+
+/**
+ * Show conversation `fallback.id` of opening `opening` as main has it now, with the request running in it, if any: a
+ * window reloaded mid-run has neither its newest text nor the run's status, which is sent only when it changes. Shown
+ * with what `extra()` gives then, and only while `current()` says the restore that asked is still the latest. `fallback` is shown when
+ * it cannot be read. Events for it that arrive meanwhile have nothing to land in, so it is read again once it shows.
+ */
+export async function showConversation(fallback: Conversation, opening: string, current: () => boolean, extra: () => Partial<State> = () => ({})): Promise<void> {
+  const id = fallback.id;
+  const mine = { id, missed: false };
+  showing = mine;
+  const seen = statusSeen;
+  const read = await Promise.resolve()
+    .then(() => api.ai.readConversation(id, opening))
+    .catch(() => null);
+  if (showing === mine) showing = null;
+  if (!current() || getState().snapshot?.workspaceKey !== opening) return;
+  const run = read?.conversation.id === id ? read.run : null;
+  // A status that arrived while it was read is newer than the one read (the run may have ended meanwhile).
+  const status = run && statusSeen === seen ? { runStatus: run.status, activeRunId: run.runId, runMode: run.mode } : {};
+  if (run && statusSeen === seen && run.mode !== 'ask') aiEpoch++;
+  setState({ conversation: read?.conversation.id === id ? read.conversation : fallback, ...extra(), ...status });
+  if (mine.missed) catchUpConversation(id, opening);
+}
+
 /**
  * Show the open conversation as main has it now, read without opening anything (main keeps its open conversation as it
  * is), only while the same conversation of the same opening is on screen. Text that did not fit while the read was
@@ -1545,11 +1579,12 @@ function catchUpConversation(id: string, opening: string | undefined) {
   catchingUp = reading;
   const kept = (shownWhole = new Set());
   void Promise.resolve()
-    .then(() => api.ai.conversations())
+    .then(() => api.ai.readConversation(id, opening ?? ''))
     .then(
-      ({ active }) => {
+      ({ conversation: active }) => {
         const s = getState();
-        if (active.id !== id || s.conversation?.id !== id || s.snapshot?.workspaceKey !== opening) return;
+        // A read overtaken by another (this thread left and shown again meanwhile) is older than that one.
+        if (catchingUp !== reading || active.id !== id || s.conversation?.id !== id || s.snapshot?.workspaceKey !== opening) return;
         const mine = new Map(s.conversation.messages.map((m) => [m.id, m]));
         const messages = active.messages.map((m) => (kept.has(m.id) ? (mine.get(m.id) ?? m) : m));
         for (const k of kept) if (!active.messages.some((m) => m.id === k) && mine.has(k)) messages.push(mine.get(k)!);

@@ -118,6 +118,7 @@ const api: BuilderApi = {
     conversations: invoke('ai:conversations'),
     newConversation: invoke('ai:newConversation'),
     openConversation: invoke('ai:openConversation'),
+    readConversation: invoke('ai:readConversation'),
     renameConversation: invoke('ai:renameConversation'),
     deleteConversation: invoke('ai:deleteConversation'),
     clearHistory: invoke('ai:clearHistory'),
