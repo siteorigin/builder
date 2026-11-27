@@ -105,37 +105,48 @@ describe('the frame a page is measured in', () => {
 
   /**
    * A page whose entrance starts when the test says (so it is under way when the check begins), in one step or two, the
-   * second set off as the first ends, beside a spinner that never stops; the page tells the test as each step ends.
+   * second set off as the first ends, beside a spinner that never stops. The page tells the test as each step ends, and
+   * records whether the bridge looked at its animations and which of them it waited on (document.getAnimations wrapped),
+   * so the checks are told apart by what the bridge did, never by how long frames took.
    */
   const entrancePage = (first: number, second: number, entrance = true) =>
     '<style>@keyframes in { from { transform: translateX(3000px); } } @keyframes again { from { transform: translateX(3000px); } }' +
     ` .in.go { animation: in ${first}ms linear; } .in.go.again { animation: again ${second}ms linear; }` +
     ' @keyframes spin { to { transform: rotate(1turn); } } .spin { width: 10px; height: 10px; animation: spin 1s linear infinite; }</style>' +
     `<main data-so-node="n" data-so-ctx="page:p">${entrance ? '<div class="in">Sliding in</div>' : ''}<div class="spin"></div></main>` +
-    `<script>addEventListener('message', (e) => { if (e.data && e.data.startEntrance) document.querySelector('.in')?.classList.add('go'); });` +
+    '<script>const probe = { looked: 0, waitedOn: [] }; const all = document.getAnimations.bind(document);' +
+    " document.getAnimations = () => { probe.looked++; return all().map((a) => new Proxy(a, { get(t, k) { if (k === 'finished') probe.waitedOn.push(t.animationName); const v = Reflect.get(t, k, t); return typeof v === 'function' ? v.bind(t) : v; } })); };" +
+    " addEventListener('message', (e) => { if (e.data && e.data.startEntrance) document.querySelector('.in')?.classList.add('go'); if (e.data && e.data.probe) parent.postMessage({ probed: probe }, '*'); });" +
     ` addEventListener('animationend', (e) => { parent.postMessage({ ended: e.animationName }, '*'); if (e.animationName === 'in' && ${second} > 0) e.target.classList.add('again'); });</script>`;
+  /** A frame shown in full, which the browser draws every frame: a check's frames then come at the display's rate. */
+  const SHOWN = { position: 'fixed', left: '0', top: '0', width: '1280px', height: '900px', border: '0' };
   /**
    * Start the page's entrance and check it at once, asking (or not, as the Insert panel's and Inspector's previews being
    * sized do, with no field at all) for animations under way to be let end: the steps that had ended when the answer
-   * came, in the order the page said so, and the answer.
+   * came, in the order the page said so, the answer, and what the bridge did with the page's animations.
    */
-  async function checkWhileEntering(body: string, askToLetEnd: boolean) {
+  async function checkWhileEntering(body: string, askToLetEnd: boolean, style: Record<string, string>) {
     const { browser, page } = await previewPage(body);
     try {
-      return await page.evaluate<{ ended: string[]; report: { documentWidth: number; viewportWidth: number; settled: { frame: number } } }>(`new Promise((done, fail) => {
+      return await page.evaluate<{ ended: string[]; report: { error?: string; documentWidth: number; viewportWidth: number }; probe: { looked: number; waitedOn: string[] } }>(`new Promise((done, fail) => {
         const frame = document.createElement('iframe');
         frame.name = 'so-entrance';
-        Object.assign(frame.style, ${JSON.stringify(measuringFrameStyle(1280))});
+        Object.assign(frame.style, ${JSON.stringify(style)});
         frame.src = 'http://preview.test/page';
         const ended = [];
+        let report = null;
         window.addEventListener('message', (e) => {
           if (e.source !== frame.contentWindow) return;
           if (e.data?.ended) ended.push(e.data.ended);
-          if (e.data?.type === 'inspectResult') done({ ended: [...ended], report: e.data.payload.report });
+          if (e.data?.type === 'inspectResult') {
+            report = { ended: [...ended], report: e.data.payload.report };
+            frame.contentWindow.postMessage({ probe: true }, '*');
+          }
+          if (e.data?.probed && report) done({ ...report, probe: e.data.probed });
         });
         frame.onload = () => {
           frame.contentWindow.postMessage({ startEntrance: true }, '*');
-          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-entrance', type: 'inspect', payload: { requestId: 'r', timing: true, ...(${askToLetEnd} ? { animations: true } : {}) } }, '*');
+          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-entrance', type: 'inspect', payload: { requestId: 'r', ...(${askToLetEnd} ? { animations: true } : {}) } }, '*');
         };
         setTimeout(() => fail(new Error('No inspection result.')), 12000);
         document.body.appendChild(frame);
@@ -146,21 +157,27 @@ describe('the frame a page is measured in', () => {
   }
 
   it.skipIf(!browserInstalled)('waits, when asked, for an entrance under way and the step it sets off to end, before measuring', async () => {
-    const { ended, report } = await checkWhileEntering(entrancePage(400, 400), true);
+    const { ended, report, probe } = await checkWhileEntering(entrancePage(300, 300), true, SHOWN);
+    expect(report.error).toBeUndefined();
     // Both steps had ended when it answered, so the box was measured where it comes to rest, not 3,000 px to its right.
     expect(ended).toEqual(['in', 'again']);
+    expect(probe.waitedOn).toEqual(['in', 'again']);
     expect(report.documentWidth).toBeLessThanOrEqual(report.viewportWidth);
   }, 30000);
 
   it.skipIf(!browserInstalled)('never waits for an animation that never ends, even when asked', async () => {
-    // Only the spinner runs: the answer comes after the page's frames, well before the 4 s deadline it would otherwise use.
-    const { report } = await checkWhileEntering(entrancePage(400, 0, false), true);
-    expect(report.settled.frame).toBeLessThan(3000);
+    const { report, probe } = await checkWhileEntering(entrancePage(300, 0, false), true, measuringFrameStyle(1280));
+    expect(report.error).toBeUndefined();
+    // It looked at the page's animations and found only the spinner, which it did not wait on.
+    expect(probe.looked).toBeGreaterThan(0);
+    expect(probe.waitedOn).toEqual([]);
   }, 30000);
 
   it.skipIf(!browserInstalled)('does not hold up a preview being sized, which asks again every 600 ms and keeps only the latest answer', async () => {
-    // A 3 s entrance has not ended when the answer comes: it was not waited for.
-    const { ended } = await checkWhileEntering(entrancePage(3000, 0), false);
-    expect(ended).toEqual([]);
+    const { report, probe } = await checkWhileEntering(entrancePage(3000, 0), false, measuringFrameStyle(1280));
+    expect(report.error).toBeUndefined();
+    expect(report.viewportWidth).toBe(1280);
+    // Asked with no `animations`, as Insert and the Inspector ask: the page's animations were not even looked at.
+    expect(probe).toEqual({ looked: 0, waitedOn: [] });
   }, 30000);
 });
