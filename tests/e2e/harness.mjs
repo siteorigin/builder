@@ -71,6 +71,19 @@ export async function createProject(win, opts) {
  * passes or `timeout` ms elapse; then the last failure is thrown. Use it for anything the app writes
  * or renders asynchronously instead of a fixed sleep.
  */
+/**
+ * The project's snapshot once the pictures an import added (`ids`) have their copies: an import answers as soon as its
+ * pictures land, and makes their copies after (#979).
+ */
+export async function copiesMade(win, ids, timeout = 120000) {
+  return eventually(async () => {
+    const snap = await win.evaluate(() => window.builder.project.snapshot());
+    const waiting = ids.filter((id) => snap.state.assets.assets[id]?.copiesPending);
+    assert.deepEqual(waiting, [], 'the imported pictures have their copies');
+    return snap;
+  }, timeout, 200);
+}
+
 export async function eventually(check, timeout = 10000, interval = 150) {
   const end = Date.now() + timeout;
   for (;;) {

@@ -73,16 +73,23 @@ const run = await withTimeout(
     const t0 = performance.now();
     const result = await window.builder.project.importAssets(paths);
     const took = performance.now() - t0;
+    // The photos are in the library as soon as the import answers, before their copies are made (#979).
+    const records = () => window.builder.project.snapshot().then((s) => result.assetIds.map((id) => s.state.assets.assets[id]));
+    const landed = await records();
+    // And the window keeps getting answers until every copy is made.
+    while ((await records()).some((a) => a?.copiesPending)) await new Promise((r) => setTimeout(r, 100));
+    const copied = performance.now() - t0;
     done = true;
     await ask;
-    return { result, took: Math.round(took), worst: Math.round(worst), answers };
+    return { result, took: Math.round(took), copied: Math.round(copied), waiting: landed.filter((a) => a?.copiesPending).length, worst: Math.round(worst), answers };
   }, photos),
   180000,
   'importing the photos'
 );
-console.log(`imported ${PHOTOS} photos in ${run.took} ms; longest wait for the main process ${run.worst} ms over ${run.answers} answers`);
+console.log(`imported ${PHOTOS} photos in ${run.took} ms, their copies made by ${run.copied} ms; longest wait for the main process ${run.worst} ms over ${run.answers} answers`);
 assert.equal(run.result.ok, true, `the photos import: ${run.result.message}`);
 assert.equal(run.result.assetIds.length, PHOTOS, 'every photo becomes an asset');
+assert.equal(run.waiting, PHOTOS, 'the photos are in the library when the import answers, before their copies are made');
 assert.ok(run.answers > 10, 'the window kept getting answers during the import');
 assert.ok(run.worst < MAX_STALL_MS, `the main process never stalls for ${MAX_STALL_MS} ms or more (longest: ${run.worst} ms)`);
 
@@ -261,7 +268,13 @@ assert.match(await rows.filter({ hasText: 'notes.unsupported' }).innerText(), /C
 assert.deepEqual(Object.keys((await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets).sort(), [...before].sort(), 'nothing is added before the author confirms');
 await win.locator('[data-testid="import-review-add"]').click();
 await win.locator('.asset-detail').waitFor({ timeout: 60000 });
-let now = await win.evaluate(() => window.builder.project.snapshot());
+// The pictures open in Assets as they land; their copies follow (#979).
+let now = await eventually(async () => {
+  const s = await win.evaluate(() => window.builder.project.snapshot());
+  const waiting = Object.values(s.state.assets.assets).filter((a) => !before.has(a.id) && a.copiesPending);
+  assert.equal(waiting.length, 0, 'every new picture has its copies');
+  return s;
+}, 60000);
 const arrived = Object.values(now.state.assets.assets).filter((a) => !before.has(a.id));
 const byName = Object.fromEntries(arrived.map((a) => [a.name, a]));
 assert.deepEqual(Object.keys(byName).sort(), [...(CONVERTS ? ['IMG 0042'] : []), 'field scan', 'plain'].sort(), 'the photos and the plain picture arrive; the text file does not');

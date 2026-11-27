@@ -1158,6 +1158,11 @@ export interface AssetRecord {
    * Originals are always kept.
    */
   variants?: Array<{ width: number; file: string }>;
+  /**
+   * The picture's copies are still being made (#979): it was added as soon as its own file was stored, and shows at its
+   * own size until they arrive. The project records it, so copies a quit or a crash left unmade are made when it opens.
+   */
+  copiesPending?: true;
   description?: string;
   altSuggestion?: string;
   /** For a font: the family it provides and the weight (or variable range, "100 900") and style of this file. */

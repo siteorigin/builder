@@ -130,6 +130,8 @@ export interface VariantClient {
    * long proves nothing either way, so the picture counts as readable. Never rejects.
    */
   inspect(buf: Buffer, mime: string, width: number, pixels?: number): Promise<Inspected>;
+  /** Decode the picture to prove it can be shown, making no copies (they are made later, #979). As inspect, never rejects. */
+  check(buf: Buffer, mime: string, pixels?: number): Promise<Inspected>;
   /**
    * A web-sized copy of a photo, from its bytes or from a file (a decoded HEIC). Unlike the responsive copies it is
    * the picture the author asked for, so a worker that fails says so rather than giving nothing. Never rejects.
@@ -319,6 +321,7 @@ export function createVariantClient(
   return {
     variants: (buf, mime, width, targets, pixels) => request({ data: bytes(buf), mime, width, ...(targets ? { targets } : {}) }, pixels).then((r) => inspected(r).variants),
     inspect: (buf, mime, width, pixels) => request({ data: bytes(buf), mime, width, check: true }, pixels).then(inspected),
+    check: (buf, mime, pixels) => request({ data: bytes(buf), mime, width: 0, check: true, targets: [] }, pixels).then(inspected),
     webCopy: (source, maxEdge, pixels) =>
       request({ kind: 'web', maxEdge, width: 0, ...('path' in source ? { path: source.path, data: new Uint8Array(0), mime: '' } : { data: bytes(source.data), mime: source.mime }) }, pixels).then((r): WebCopyResult =>
         r?.ok && r.web ? { ok: true, copy: { ...r.web, data: toBuffer(r.web.data) } } : { ok: false, unreadable: !!(r && !r.ok && r.unreadable) }

@@ -31,10 +31,19 @@ class FakeRuntime extends EventEmitter {
   }
 }
 
+/** While `held` is set, the copies an import makes once its pictures have landed (#979) wait for it to settle. */
+const later = vi.hoisted(() => ({ held: null as Promise<void> | null, asked: 0 }));
+
 /** The media worker, run in this process by the code the real worker runs. */
 class InlineMediaWorker extends EventEmitter {
   postMessage(m: VariantRequest) {
-    void import('../../src/main/project/image-variants').then(({ handleVariantRequest }) => handleVariantRequest(m)).then((r) => this.emit('message', r));
+    // A picture's whole set of copies, with no check first and no copies named: what makePendingCopies asks for.
+    const copies = (!m.kind || m.kind === 'variants') && !m.check && !m.targets;
+    if (copies) later.asked++;
+    void (copies && later.held ? later.held : Promise.resolve())
+      .then(() => import('../../src/main/project/image-variants'))
+      .then(({ handleVariantRequest }) => handleVariantRequest(m))
+      .then((r) => this.emit('message', r));
   }
   kill() {
     return true;
@@ -50,7 +59,8 @@ vi.mock('electron', () => ({
   utilityProcess: { fork: (path: string) => (path.endsWith('media-worker.js') ? new InlineMediaWorker() : new FakeRuntime()) }
 }));
 
-const { checkPixels, importAsset, importAssetBatch, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
+const { checkPixels, importAsset, importAssetBatch, makePendingCopies, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
+const { generateProject } = await import('../../src/generator/index');
 const { heicDecoder } = await import('../../src/main/project/photo-convert');
 const { WEB_EDGE: WORKER_WEB_EDGE } = await import('../../src/main/project/image-variants');
 const { cleanPhoto, photoMetadata } = await import('../../src/main/project/photo-metadata');
@@ -608,8 +618,168 @@ describe('making a web-sized copy of a large library image', () => {
     expect(await c.webCopyPlan(gif.assetIds[0])).toBeNull();
     const tight = await c.importAssets([sourceFile('tight.jpg', await sharp(await noisy(1000, 800, 'jpeg')).jpeg({ quality: 20 }).toBuffer())]);
     expect(await c.webCopyPlan(tight.assetIds[0])).toEqual({ lighter: false });
+    // The import's own copies land after it answers (#979): the copy refused below is what must change nothing.
+    await c.copiesMade();
     const before = c.session!.revision;
     expect(await c.makeWebCopy(tight.assetIds[0], { replace: false, opening: c.openingKey! })).toEqual({ ok: false, message: 'A web-sized copy of tight would be less than a third lighter, so it was left as it is.' });
     expect(c.session!.revision).toBe(before);
   }, 60_000);
 });
+
+describe('photos usable before their copies are made (#979)', () => {
+  /** Hold the copies imports make after their pictures land, until the returned function is called. */
+  const hold = () => {
+    let release!: () => void;
+    later.held = new Promise<void>((r) => (release = r));
+    return () => {
+      later.held = null;
+      release();
+    };
+  };
+  afterEach(() => {
+    later.held = null;
+  });
+  /** The copies a library file has in the project folder, by their names. */
+  const copiesOnDisk = (dir: string, file: string) => readdirSync(join(dir, 'static/assets')).filter((f) => f.startsWith(`${file.split('/').pop()!.replace(/\.[a-z]+$/, '')}-`)).sort();
+
+  it('answers once the photos have landed, shown from their own files, and gives them the copies an import always made with no step of their own', async () => {
+    const { c, dir } = await openProject();
+    const bytes = await noisy(2000, 1500, 'jpeg');
+    const photo = sourceFile('harbour.jpg', bytes);
+    const steps = c.session!.historyInfo().entries.length;
+    const release = hold();
+    let r: Awaited<ReturnType<typeof c.importAssets>>;
+    try {
+      r = await c.importAssets([photo]);
+      expect(r.ok).toBe(true);
+      const rec = c.session!.state.assets.assets[r.assetIds[0]];
+      // In the project with its own file, and no copy yet.
+      expect(rec).toMatchObject({ kind: 'image', name: 'harbour', width: 2000, height: 1500, copiesPending: true });
+      expect(rec.variants).toBeUndefined();
+      expect(readFileSync(join(dir, rec.file)).equals(bytes)).toBe(true);
+      expect(copiesOnDisk(dir, rec.file)).toEqual([]);
+      // Placed at once, a page shows it from its own file.
+      expect((await c.session!.apply({ operations: [{ type: 'asset.replace', assetId: STARTER_ASSETS[0].id, withAssetId: rec.id }] }, { label: 'Use it', source: 'user' })).ok).toBe(true);
+      const site = [...generateProject(c.session!.state, { instrument: false }).values()].join('\n');
+      expect(site).toContain(rec.file.replace(/^static\//, ''));
+      expect(site).not.toContain(`${rec.file.replace(/^static\/|\.jpg$/g, '')}-160w`);
+    } finally {
+      release();
+    }
+    await c.copiesMade();
+    const rec = c.session!.state.assets.assets[r!.assetIds[0]];
+    expect(rec.copiesPending).toBeUndefined();
+    expectCopies(rec, 'jpg', [160, 480, 960, 1440], 2000);
+    expect(copiesOnDisk(dir, rec.file)).toEqual(rec.variants!.map((v) => v.file.split('/').pop()).sort());
+    // The very copies an import made before they came later: the same set, sizes and bytes.
+    const eager = temp('eager');
+    const { record: before } = await importAsset(eager, photo, []);
+    expect(before.variants).toEqual(rec.variants);
+    for (const v of rec.variants!) expect(readFileSync(join(dir, v.file)).equals(readFileSync(join(eager, v.file)))).toBe(true);
+    // Two steps: the import and the placement. Undo takes both back, the image with its copies, and Redo brings them back.
+    expect(c.session!.historyInfo().entries.length).toBe(steps + 2);
+    expect(c.session!.historyInfo().entries.at(-2)?.label).toBe('Import image');
+    expect((await c.session!.undo()).ok).toBe(true);
+    expect((await c.session!.undo()).ok).toBe(true);
+    expect(rec.id in c.session!.state.assets.assets).toBe(false);
+    expect((await c.session!.redo()).ok).toBe(true);
+    expect(c.session!.state.assets.assets[rec.id]).toEqual(rec);
+  }, 60_000);
+
+  it('makes the copies of a batch a few at a time, and gives them together', async () => {
+    const { c } = await openProject();
+    const photos = await Promise.all(Array.from({ length: 6 }, async (_, i) => sourceFile(`photo-${i}.jpg`, await noisy(1000 + i * 10, 750, 'jpeg'))));
+    const release = hold();
+    const asked = later.asked;
+    const r = await c.importAssets(photos);
+    const revision = c.session!.revision;
+    expect(r.assetIds.every((id) => c.session!.state.assets.assets[id].copiesPending)).toBe(true);
+    // Every photo waits its turn in the worker, a few at a time, with nothing else asked of it.
+    await vi.waitFor(() => expect(later.asked - asked).toBe(Math.min(MEDIA_PARALLEL, photos.length)));
+    release();
+    await c.copiesMade();
+    expect(later.asked - asked).toBe(photos.length);
+    for (const id of r.assetIds) expect(c.session!.state.assets.assets[id].variants?.length).toBeGreaterThan(0);
+    // Given together once the last is made (and every few seconds before, which these are quicker than).
+    expect(c.session!.revision - revision).toBeLessThanOrEqual(2);
+    expect(c.session!.historyInfo().entries.at(-1)?.label).toBe('Import 6 images');
+  }, 60_000);
+
+  it('makes the copies a close left unmade when the project opens again, in the same window while the old ones finish', async () => {
+    const { c, dir } = await openProject();
+    const release = hold();
+    const r = await c.importAssets([sourceFile('pier.jpg', await noisy(1200, 900, 'jpeg'))]);
+    const id = r.assetIds[0];
+    // The copies come back from the worker as the project closes: closing still ends, and leaves the image waiting.
+    const closed = c.close();
+    release();
+    await closed;
+    expect(JSON.parse(readFileSync(join(dir, 'siteorigin/assets.json'), 'utf8')).assets[id]).toMatchObject({ copiesPending: true });
+    // Opened again while the closed opening's copies may still be in the worker: they are this opening's to make.
+    expect((await c.trustAndOpen(dir)).ok).toBe(true);
+    await vi.waitFor(() => expect(c.session!.state.assets.assets[id].copiesPending).toBeUndefined(), { timeout: 30_000 });
+    expectCopies(c.session!.state.assets.assets[id], 'jpg', [160, 480, 960], 1200);
+    // Folded into the import's step, which Undo takes back whole.
+    expect(c.session!.historyInfo().entries.at(-1)?.label).toBe('Import image');
+  }, 60_000);
+
+  it('keeps the copies written before the app stopped, and gives them to the image when the project opens again', async () => {
+    const { c, dir } = await openProject();
+    const bytes = await noisy(1200, 900, 'jpeg');
+    // The app stops after the copies are written, before the image is given them.
+    const stop = vi.spyOn(ProjectSession.prototype, 'fillCopies').mockRejectedValue(new Error('the app stopped'));
+    const r = await c.importAssets([sourceFile('quay.jpg', bytes)]);
+    await c.copiesMade();
+    const id = r.assetIds[0];
+    const rec = c.session!.state.assets.assets[id];
+    expect(rec.copiesPending).toBe(true);
+    const written = copiesOnDisk(dir, rec.file);
+    expect(written.length).toBeGreaterThan(0);
+    const before = new Map(written.map((f) => [f, statSync(join(dir, 'static/assets', f)).mtimeMs]));
+    await c.close();
+    stop.mockRestore();
+    const again = new Controller(() => null);
+    again.send = () => undefined;
+    controllers.push(again);
+    expect((await again.trustAndOpen(dir)).ok).toBe(true);
+    await vi.waitFor(() => expect(again.session!.state.assets.assets[id].copiesPending).toBeUndefined(), { timeout: 30_000 });
+    const filled = again.session!.state.assets.assets[id];
+    expectCopies(filled, 'jpg', [160, 480, 960], 1200);
+    // The very files written before, left as they were.
+    expect(filled.variants!.map((v) => v.file.split('/').pop()).sort()).toEqual(written);
+    for (const [f, at] of before) expect(statSync(join(dir, 'static/assets', f)).mtimeMs).toBe(at);
+    expect((await again.session!.undo()).ok).toBe(true);
+    expect(id in again.session!.state.assets.assets).toBe(false);
+  }, 60_000);
+
+  it('makes no copies of a file that is no longer the picture recorded, and lands no picture that cannot be decoded', async () => {
+    const dir = temp('project');
+    const bytes = await noisy(800, 600, 'jpeg');
+    const { record } = await importAsset(dir, sourceFile('gone.jpg', bytes), [], undefined, { copiesLater: true });
+    expect(record).toMatchObject({ copiesPending: true });
+    expect(record.variants).toBeUndefined();
+    const fence = async (write: () => Promise<void>) => (await write(), true);
+    writeFileSync(join(dir, record.file), await noisy(800, 600, 'jpeg'));
+    expect(await makePendingCopies(dir, record, fence)).toBeNull();
+    unlinkSync(join(dir, record.file));
+    expect(await makePendingCopies(dir, record, fence)).toBeNull();
+    writeFileSync(join(dir, record.file), bytes);
+    expectCopies({ variants: (await makePendingCopies(dir, record, fence))! }, 'jpg', [160, 480], 800);
+    // A picture whose data cannot be decoded is refused before it lands, as when its copies were made first.
+    const png = Buffer.from(await sharp({ create: { width: 1, height: 1, channels: 3, background: '#808080' } }).png().toBuffer());
+    for (let i = 8; i < png.length; ) {
+      const len = png.readUInt32BE(i);
+      if (png.toString('latin1', i + 4, i + 8) === 'IDAT') {
+        png[i + 8] = 0x00;
+        png[i + 9] = 0x00;
+        png.writeUInt32BE(crc32(png.subarray(i + 4, i + 8 + len)), i + 8 + len);
+        break;
+      }
+      i += 12 + len;
+    }
+    const project = temp('project');
+    await expect(importAsset(project, sourceFile('broken.png', png), [], undefined, { copiesLater: true })).rejects.toThrow(/^broken\.png was not imported because it is damaged/);
+    expect(existsSync(join(project, 'static'))).toBe(false);
+  }, 60_000);
+});
+

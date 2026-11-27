@@ -8,7 +8,7 @@ import type { AssetRecord } from '@shared/types';
 import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
-import { COPY_EXTENSIONS, copyMime, type CopyMime } from '@shared/picture-formats';
+import { COPY_EXTENSIONS, copyMime, isCopyMime, type CopyMime } from '@shared/picture-formats';
 import { atomicWrite, safeJoin, sha } from './fsutil';
 import { perf } from '../perf';
 import { readRegularFile } from '../packs/files';
@@ -176,6 +176,8 @@ interface PreparedFile {
   buf: Buffer;
   hash: string;
   font?: AssetRecord['font'];
+  /** The bytes are a picture this app just made (a web-sized copy, a converted photo), so they need no check that they decode. */
+  made?: true;
 }
 
 /** "{file} was not imported because …", or "{file} can't be used because …" when locating a library file. */
@@ -242,6 +244,11 @@ export interface ImportOptions {
   createdAt?: string;
   /** Hand back the files the import wrote, the picture's copies included (a new project's sample photos keep them). */
   keepFiles?: boolean;
+  /**
+   * Store a picture's own file and record it as waiting for its copies (copiesPending), which makePendingCopies makes
+   * once it has landed (#979), instead of making them first.
+   */
+  copiesLater?: boolean;
 }
 
 /** A web-sized copy as a file for the library, carrying the source's credits (author, copyright) and nothing else. */
@@ -250,7 +257,7 @@ function preparedCopy(sourcePath: string, source: Buffer, copy: { data: Buffer; 
   // A PNG's author and copyright text has no place in a JPEG but its EXIF, merged field by field with what is there.
   if (credits?.text?.length && copy.mime === 'image/jpeg') credits = { ...credits, tiff: textCreditsAsTiff(credits.text, credits.tiff) ?? credits.tiff };
   const buf = credits && hasCredits(credits) ? addCredits(copy.data, credits) : copy.data;
-  return { source: sourcePath, stem: basename(sourcePath, extname(sourcePath)), ext: copy.mime === 'image/png' ? '.png' : '.jpg', mime: copy.mime, buf, hash: sha(buf) };
+  return { source: sourcePath, stem: basename(sourcePath, extname(sourcePath)), ext: copy.mime === 'image/png' ? '.png' : '.jpg', mime: copy.mime, buf, hash: sha(buf), made: true };
 }
 
 /** What a file chosen for import is, read once: what the review shows and the import does both come from here. */
@@ -492,7 +499,7 @@ async function writePlanned(projectDir: string, stored: StoredFile, files: Pendi
  * A checked file as the importer stores it in static/assets/: its record details, and the files to write, a
  * picture's responsive copies included. A picture the decoder cannot read is refused here.
  */
-async function planStore(p: PreparedFile, refuse: Refusal): Promise<{ stored: StoredFile; files: PendingFile[] }> {
+async function planStore(p: PreparedFile, refuse: Refusal, later = false): Promise<{ stored: StoredFile; files: PendingFile[]; copiesPending?: true }> {
   const kind = kindOfMime(p.mime);
   if (kind === 'document') {
     const file = `static/assets/${slugify(p.stem) || 'document'}-${p.hash.slice(0, 8)}${p.ext}`;
@@ -503,7 +510,10 @@ async function planStore(p: PreparedFile, refuse: Refusal): Promise<{ stored: St
   // Decoding allocates by pixel count, which a small file can inflate: very large pictures are not decoded at all
   // and keep only the original.
   const decodable = !!info && p.mime !== 'image/svg+xml' && info.width * info.height <= MAX_VARIANT_PIXELS;
-  const { unreadable, variants } = decodable ? await mediaWorker.inspect(p.buf, p.mime, info.width, checkPixels(p.buf, p.mime, info)) : { unreadable: false, variants: [] };
+  // Copies made later are made of a picture that is first proved to decode, unless this app just made it.
+  const pending = later && decodable && isCopyMime(p.mime);
+  const pixels = info ? checkPixels(p.buf, p.mime, info) : 0;
+  const { unreadable, variants } = !decodable ? { unreadable: false, variants: [] } : pending ? (p.made ? { unreadable: false, variants: [] } : await mediaWorker.check(p.buf, p.mime, pixels)) : await mediaWorker.inspect(p.buf, p.mime, info.width, pixels);
   if (unreadable) throw refuse(unusableReason('damaged', p.mime));
   const base = slugify(p.stem) || (isFont ? 'font' : 'image');
   const stem = `static/assets/${base}-${p.hash.slice(0, 8)}`;
@@ -515,7 +525,32 @@ async function planStore(p: PreparedFile, refuse: Refusal): Promise<{ stored: St
     files.push({ rel: copy, data: v.data });
     copies.push({ width: v.width, file: copy });
   }
-  return { stored: { file, mime: p.mime, bytes: p.buf.length, hash: p.hash, ...(info ? { width: info.width, height: info.height } : {}), ...(copies.length ? { variants: copies } : {}) }, files };
+  return { stored: { file, mime: p.mime, bytes: p.buf.length, hash: p.hash, ...(info ? { width: info.width, height: info.height } : {}), ...(copies.length ? { variants: copies } : {}) }, files, ...(pending ? { copiesPending: true as const } : {}) };
+}
+
+/** A library file's responsive copy at `width` in `mime`, as the importer names it: beside the file, by its width. */
+const copyFile = (file: string, width: number, mime: CopyMime) => `${file.replace(/\.[a-z0-9]+$/, '')}-${width}w.${COPY_EXTENSIONS[mime]}`;
+
+/**
+ * Make the responsive copies of a library image that was added before them (copiesPending, #979), from its file in the
+ * project: read, held to the content the record names, its copies made as an import makes them (the same set, sizes and
+ * bytes) and written while `fence` allows, leaving any already there alone. Returns the copies, for the session to give
+ * the record (ProjectSession.fillCopies); none when the worker could make none, as an import stores a picture then;
+ * null when they can't be made from what is in the project (its file is missing or is not the picture recorded, or the
+ * project was closed). Rejects when a copy cannot be written.
+ */
+export async function makePendingCopies(projectDir: string, record: AssetRecord, fence: WriteFence): Promise<Array<{ width: number; file: string }> | null> {
+  if (record.kind !== 'image' || !LIBRARY_FILE.test(record.file)) return null;
+  const at = safeJoin(projectDir, record.file);
+  const buf = (await isFile(at)) ? await readRegularFile(at, CONVERT_MAX_BYTES).catch(() => null) : null;
+  if (!buf || sha(buf) !== record.hash) return null;
+  const info = imageInfo(buf, record.mime);
+  if (!info || !isCopyMime(record.mime) || info.width * info.height > MAX_VARIANT_PIXELS) return [];
+  const made = await mediaWorker.variants(buf, record.mime, info.width, undefined, checkPixels(buf, record.mime, info));
+  const files: PendingFile[] = made.map((v) => ({ rel: copyFile(record.file, v.width, v.mime), data: v.data }));
+  // A copy already there (written before the app stopped, or put back) is left as it is, as restoring copies leaves it.
+  if (files.length && !(await fence(async () => void (await writeFiles(projectDir, files, true))))) return null;
+  return made.map((v, i) => ({ width: v.width, file: files[i].rel }));
 }
 
 /** The name a file had where it was read from, extension included, as its asset record keeps it. */
@@ -548,7 +583,7 @@ const sameFile = (library: AssetRecord[], p: PreparedFile) => library.find((a) =
 /** Store a prepared file the library does not have yet: its copies made, its files written while `fence` allows. */
 async function storePrepared(projectDir: string, sourcePath: string, p: PreparedFile, existing: AssetRecord[], fence: WriteFence, opts: ImportOptions, refuse: Refusal): Promise<{ record: AssetRecord; existing: false; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
   const kind = kindOfMime(p.mime);
-  const { stored, files } = await planStore(p, refuse);
+  const { stored, files, copiesPending } = await planStore(p, refuse, !!opts.copiesLater);
   if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
   const record: AssetRecord = {
     id: newId('a'),
@@ -562,6 +597,7 @@ async function storePrepared(projectDir: string, sourcePath: string, p: Prepared
     createdAt: opts.createdAt ?? new Date().toISOString(),
     ...(stored.width !== undefined ? { width: stored.width, height: stored.height } : {}),
     ...(stored.variants ? { variants: stored.variants } : {}),
+    ...(copiesPending ? { copiesPending } : {}),
     ...(p.font ? { font: p.font } : {})
   };
   // The files as written, the picture's copies included, for a caller that keeps them (starter-samples.ts).

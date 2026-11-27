@@ -201,6 +201,37 @@ function backupName(name: string): string {
 /** Every stored version a history entry restores or expects. */
 const entryBlobs = (e: HistoryEntry) => Object.values(e.docs).flatMap((d) => [d.before, d.after]).filter((x): x is string => !!x);
 
+/**
+ * History with a change folded into it rather than recorded as a step (a library image's copies arriving after the
+ * import that added it, #979): for each document the change rewrote, the nearest applied step that left it and the
+ * nearest undone step that expects it name the new version instead of the one replaced, when they named that one. Those
+ * are the versions Undo and Redo check the document against first, so both still find it as they left it, and each
+ * then restores what it always did (an Undo of the import, the images without their copies). Steps further away, and
+ * the order and number of steps, are as they were.
+ */
+function amendedHistory(h: HistoryFile, changed: Record<string, { before: string | null; after: string | null }>): HistoryFile {
+  const entries = h.entries.map((e) => ({ ...e, docs: { ...e.docs } }));
+  for (const [path, { before, after }] of Object.entries(changed)) {
+    if (!before || !after) continue;
+    for (let i = h.cursor - 1; i >= 0; i--) {
+      const d = entries[i].docs[path];
+      if (!d) continue;
+      if (d.after === before) entries[i].docs[path] = { ...d, after };
+      break;
+    }
+    for (let i = h.cursor; i < entries.length; i++) {
+      const d = entries[i].docs[path];
+      if (!d) continue;
+      if (d.before === before) entries[i].docs[path] = { ...d, before: after };
+      break;
+    }
+  }
+  return { ...h, entries };
+}
+
+/** Whether `copy` is a file of the responsive copies of the library file `file`, as the importer names them. */
+const copyOf = (file: string, copy: string) => copy.startsWith(`${file.replace(/\.[a-z0-9]+$/, '')}-`) && /^static\/assets\/[a-z0-9][a-z0-9-]*-\d+w\.(jpg|png|webp|avif)$/.test(copy);
+
 /** The project files (static/assets/…) an assets document lists, with their responsive copies. */
 function libraryFiles(text: string | null | undefined): string[] {
   if (!text) return [];
@@ -2051,7 +2082,7 @@ export class ProjectSession extends EventEmitter {
    * instead of recording a new step (undo and redo). A save that fails is kept for the editor to show until a later one
    * succeeds; one stopped cleanly by a file saved outside the app is a conflict instead, which Project health lists.
    */
-  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
+  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; amendHistory?: boolean }): Promise<SessionEvent> {
     try {
       return await this.writeState(next, opts);
     } catch (e) {
@@ -2064,7 +2095,7 @@ export class ProjectSession extends EventEmitter {
     }
   }
 
-  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
+  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; amendHistory?: boolean }): Promise<SessionEvent> {
     // Frozen now, as it will be once it is the project: generated and serialized as it will stay.
     frozen(next);
     // A state whose theme is not available here would be generated from the wrong pack.
@@ -2141,13 +2172,16 @@ export class ProjectSession extends EventEmitter {
       blobs.clear();
       await this.writeRunMarker(nextDocs);
     }
-    // The undo position is part of the change: planned now, journaled with the documents, installed with them.
+    // The undo position is part of the change: planned now, journaled with the documents, installed with them. A change
+    // folded into History (amendHistory) is journaled with the History it leaves too.
     const planned =
       opts.history !== false && Object.keys(changed).length
         ? this.planHistory(changed, opts, this.revision + 1)
         : opts.cursor !== undefined
           ? { history: { ...this.history, cursor: opts.cursor }, pruned: false, entryId: undefined }
-          : null;
+          : opts.amendHistory && Object.keys(changed).length
+            ? { history: amendedHistory(this.history, changed), pruned: false, entryId: undefined }
+            : null;
     const journaled = !!(writes.length || deletes.length || planned);
     // A guard (CommitOptions.guard) is asked now, and again as the journal is about to take its place: the last moment
     // the change can be turned away whole, with nothing of it on disk but its blobs.
@@ -3431,6 +3465,42 @@ export class ProjectSession extends EventEmitter {
       this.assetGate = null;
       open();
     }
+  }
+
+  /**
+   * Give library images the copies made for them after they were added (#979). Each fill names the image, the file and
+   * content (`hash`) its copies were made from, and the copies, already written: a record still waiting for them
+   * (copiesPending) with that file and content gets them and stops waiting, and everything else about it (a name or alt
+   * text changed meanwhile) stays as it is. Any other fill is left out: the image has gone, been given another file, or
+   * already has its copies. The change is no step of its own: it is folded into History (amendHistory), so Undo takes
+   * back the import that added the images, copies and all. Waits while an AI request is changing the project, and is
+   * never made in a project this app may not write. Returns the images that got their copies.
+   */
+  fillCopies(fills: ReadonlyArray<{ assetId: string; file: string; hash: string; variants: ReadonlyArray<{ width: number; file: string }> }>): Promise<{ ok: boolean; filled: string[]; busy?: boolean }> {
+    return this.serialize(timed('session.fillCopies', async (): Promise<{ ok: boolean; filled: string[]; busy?: boolean }> => {
+      if (this.activeRun) return { ok: false, filled: [], busy: true };
+      if (await this.writeBlocked()) return { ok: false, filled: [] };
+      const assets = this.state.assets.assets;
+      const taken = fills.filter((f) => {
+        const a = Object.hasOwn(assets, f.assetId) ? assets[f.assetId] : undefined;
+        return !!a && a.kind === 'image' && a.copiesPending === true && a.file === f.file && a.hash === f.hash && f.variants.every((v) => copyOf(a.file, v.file));
+      });
+      if (!taken.length) return { ok: true, filled: [] };
+      const nextAssets = { ...assets };
+      for (const f of taken) {
+        const { copiesPending: _done, ...rest } = assets[f.assetId];
+        nextAssets[f.assetId] = f.variants.length ? { ...rest, variants: f.variants.map((v) => ({ width: v.width, file: v.file })) } : rest;
+      }
+      const next: ProjectState = { ...this.state, assets: { ...this.state.assets, assets: nextAssets } };
+      try {
+        await this.persist(next, { label: taken.length === 1 ? 'Add image copies' : `Add copies of ${taken.length} images`, source: 'system', history: false, amendHistory: true });
+      } catch (e) {
+        // The assets file changed outside the app: the images keep waiting, and are filled once it has been read.
+        if (e instanceof DiskConflictError) return { ok: false, filled: [] };
+        throw e;
+      }
+      return { ok: true, filled: taken.map((f) => f.assetId) };
+    }, (r) => ({ filled: r?.filled.length ?? 0 })));
   }
 
   /**

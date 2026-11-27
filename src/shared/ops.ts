@@ -1060,7 +1060,7 @@ export const OPERATION_SCHEMAS = {
     asset: z.object({
       id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,60}$/), name: z.string().max(200),
       file: ASSET_FILE, mime: z.string(), bytes: z.number(), width: z.number().optional(), height: z.number().optional(),
-      hash: z.string(), kind: z.enum(['image', 'font', 'document']), createdAt: z.string(), variants: ASSET_VARIANTS.optional(), description: z.string().optional(), altSuggestion: z.string().optional(),
+      hash: z.string(), kind: z.enum(['image', 'font', 'document']), createdAt: z.string(), variants: ASSET_VARIANTS.optional(), copiesPending: z.literal(true).optional(), description: z.string().optional(), altSuggestion: z.string().optional(),
       font: FONT_FACE.optional(), originalName: z.string().max(255).optional()
     })
   }),

@@ -69,6 +69,9 @@ const ENCODE: Record<CopyMime, (img: Sharp) => Sharp> = {
   'image/avif': (img) => img.avif({ quality: 50, effort: 2 })
 };
 
+/** The largest picture whose copies are made from pixels decoded once per width: a slot of the media worker's budget. */
+const SHARED_PIXELS = 16_000_000;
+
 /** Formats in the order a record lists copies of one width: the picture's own first, then the modern ones. */
 const rank = (mime: CopyMime, own: CopyMime) => (mime === own ? 0 : mime === 'image/webp' ? 1 : 2);
 
@@ -104,9 +107,26 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, t
   if ((meta.pages ?? 1) > 1) return [];
   const displayed = Math.min(width, meta.autoOrient?.width ?? meta.width ?? width);
   let credits: CreditText | undefined;
-  const encode = async (t: VariantTarget): Promise<Variant> => {
+  // Each width is decoded, turned and resized once, and the copies at that width are encoded from those pixels (#979):
+  // the same bytes as a pipeline of its own for each copy. Only for an 8-bit RGB picture (its colour profile, if any, is
+  // applied by the decode) of at most a slot of the worker's pixel budget (the pixels of each width are held until its
+  // last copy), whose copies carry no credits (the encoder writes credits onto pixels with no metadata of their own with
+  // more EXIF fields than onto the picture's own); and never a PNG copy, which keeps the picture's resolution only when
+  // made from the picture.
+  credits = creditText(cleanPhoto(buf)?.credits ?? {});
+  const shared = meta.depth === 'uchar' && meta.space === 'srgb' && (meta.channels === 3 || meta.channels === 4) && (meta.width ?? Infinity) * (meta.height ?? Infinity) <= SHARED_PIXELS && !targets && !credits.artist && !credits.copyright && !credits.xmp;
+  const sized = new Map<number, Promise<{ data: Buffer; info: { width: number; height: number; channels: 1 | 2 | 3 | 4 } }>>();
+  const pixelsAt = (w: number) => {
+    let p = sized.get(w);
     // Never enlarged: a picture smaller than its header claimed keeps the size it has.
-    let img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS }).autoOrient().resize({ width: t.width, withoutEnlargement: true });
+    if (!p) sized.set(w, (p = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS }).autoOrient().resize({ width: w, withoutEnlargement: true }).raw().toBuffer({ resolveWithObject: true })));
+    return p;
+  };
+  const encode = async (t: VariantTarget): Promise<Variant> => {
+    let img = shared && t.mime !== 'image/png'
+      ? await pixelsAt(t.width).then(({ data, info }) => sharp(data, { raw: { width: info.width, height: info.height, channels: info.channels } }))
+      : // Never enlarged: a picture smaller than its header claimed keeps the size it has.
+        sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS }).autoOrient().resize({ width: t.width, withoutEnlargement: true });
     if (t.mime === 'image/webp' || t.mime === 'image/avif') {
       credits ??= creditText(cleanPhoto(buf)?.credits ?? {});
       // libvips reads a trailing " (…)" in EXIF text as its own type note and drops it: one is added for it to drop, so a

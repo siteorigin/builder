@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -1439,7 +1439,7 @@ describe('import metrics', () => {
     ...Array.from({ length: PHOTO_COUNT }, (_, n) => photo(n + 1, at0 + 600 + n * 500)).flat(),
     span('session.apply', at0 + 10_900, 200),
     span('main.stall', at0 + 10_700, 80),
-    span('controller.importAssets', at0 + 11_000, 10_400, { dc: { 'fs.writes': 220, 'fs.durableWrites': 220, 'fs.fsyncs': 440 } }),
+    span('controller.importAssets', at0 + 11_000, 10_400, { dc: { 'fs.writes': 220, 'fs.durableWrites': 220, 'fs.fsyncs': 440, 'ipc.projectChanged.sends': 1, 'ipc.projectChanged.bytes': 52_000 } }),
     r('renderer.commit', at0 + 11_050, { attrs: { revision: 5 } }),
     r('import.done', at0 + 11_200, { attrs: { scenario: 'import', revision: 5, images: 20, variants: 280 } }),
     m('import.done', at0 + 11_200, { attrs: { scenario: 'import', revision: 5, images: 20, variants: 280 } }),
@@ -1460,6 +1460,7 @@ describe('import metrics', () => {
       'import.firstShown': '10550 ms',
       'import.main': '10400 ms',
       'import.apply': '200 ms',
+      'import.applies': '1 count',
       'import.image.ms': '440 ms',
       'import.image.webMs': '100 ms',
       'import.image.webDecodeMs': '40.5 ms',
@@ -1478,6 +1479,8 @@ describe('import metrics', () => {
       'import.fileWrites': '220 count',
       'import.durableWrites': '220 count',
       'import.fsyncs': '440 count',
+      'import.snapshotsSent': '1 count',
+      'import.snapshotBytes': '52000 bytes',
       'import.images': '20 count',
       'import.variants': '280 count',
       'import.mainStallMax': '80 ms'
@@ -1498,6 +1501,53 @@ describe('import metrics', () => {
     // Each worker's CPU from its first request's start to its last answer: 0 to 17,000 and 150 to 16,150.
     expect(got.metrics['import.workerCpuMs'].value).toBe(17_000 + 16_000);
     expect(got.metrics['import.workerPeakRss'].value).toBe(300_000_020 + 300_000_019);
+  });
+
+  it('time the change that adds the photos, the first of the import, and count the ones after it', () => {
+    // The photos land first, with their copies following in two more changes.
+    const later = new Trace([...records(), span('session.apply', at0 + 2_300, 120), span('session.apply', at0 + 6_100, 90)].sort((a, b) => a.t - b.t));
+    const got = importPhotos.measure(later, facts);
+    expect(got.missing).toEqual([]);
+    expect(got.metrics['import.apply'].value).toBe(120);
+    expect(got.metrics['import.applies'].value).toBe(3);
+    // A change outside the import's own span is none of its.
+    expect(importPhotos.measure(new Trace([...records(), span('session.apply', at0 + 12_500, 70)].sort((a, b) => a.t - b.t)), facts).metrics['import.applies'].value).toBe(1);
+  });
+
+  /** The same import under another of the scenario's modes: its own name on the marks, and `drop` left out. */
+  const asMode = (scenario: string, drop: (x: PerfRecord) => boolean = () => false) =>
+    new Trace(records().filter((x) => !drop(x)).map((x) => (x.attrs?.scenario === 'import' ? { ...x, attrs: { ...x.attrs, scenario } } : x)));
+
+  it('measure kept originals without web-sized copies, and HEIC photos with them, each under its own name', () => {
+    const originals = importOriginals.measure(asMode('importOriginals', (x) => x.name === 'media.request' && x.attrs?.kind === 'web'), facts);
+    expect(originals.missing).toEqual([]);
+    expect(Object.keys(originals.metrics).every((k) => k.startsWith('importOriginals.'))).toBe(true);
+    expect(originals.metrics['importOriginals.image.webMs']).toBeUndefined();
+    expect([originals.metrics['importOriginals.total'].value, originals.metrics['importOriginals.workerRequests'].value, originals.metrics['importOriginals.image.copiesMs'].value]).toEqual([10_550, 20, 300]);
+    // A kept original is never given a web-sized copy by the import: one the editor asks for meanwhile is not the import's.
+    const weighed = importOriginals.measure(asMode('importOriginals', (x) => x.name === 'media.request' && x.attrs?.kind === 'web' && x.t > at0 + 1000), facts);
+    expect(weighed.missing).toEqual([]);
+    expect(weighed.metrics['importOriginals.image.webMs']).toBeUndefined();
+    expect(weighed.metrics['importOriginals.workerRequests'].value).toBe(PHOTO_COUNT + 1);
+    // A picture only checked, encoding nothing, is no photo's copies: the copies of each photo are still needed.
+    const checked = (x: PerfRecord) => (x.name === 'media.request' && x.attrs?.kind === 'variants' && x.t < at0 + 2000 ? { ...x, attrs: { ...x.attrs, encodes: 0 } } : x);
+    expect(importPhotos.measure(new Trace(records().map(checked)), facts).missing).toEqual([`media.request marks (${PHOTO_COUNT} web-sized and ${PHOTO_COUNT - 2} copies of ${PHOTO_COUNT} photos)`]);
+    const alsoChecked = new Trace([...records(), m('media.request', at0 + 700, { attrs: { kind: 'variants', ms: 5, workMs: 5, cpuMs: 5, cpuStart: 1, cpuEnd: 6, peakRss: 1, worker: 7, decodes: 1, encodes: 0, decodeMs: 4, webCopyMs: 0, jpegMs: 0, pngMs: 0, webpMs: 0, avifMs: 0 } })].sort((a, b) => a.t - b.t));
+    const withCheck = importPhotos.measure(alsoChecked, facts);
+    expect(withCheck.missing).toEqual([]);
+    expect([withCheck.metrics['import.workerRequests'].value, withCheck.metrics['import.decodes'].value, withCheck.metrics['import.image.copiesDecodeMs'].value]).toEqual([41, 341, 5]);
+    const heic = importHeic.measure(asMode('importHeic'), facts);
+    expect(heic.missing).toEqual([]);
+    expect([heic.metrics['importHeic.image.webMs'].value, heic.metrics['importHeic.workerRequests'].value]).toEqual([100, 40]);
+    // Each mode reads only its own marks: the web-sized import's are not the HEIC one's.
+    expect(importHeic.measure(trace(), facts).missing).toEqual(expect.arrayContaining(['scenario.start (renderer)', 'import.done']));
+  });
+
+  it('expect each photo at the size it is stored at, upright', () => {
+    expect(storedPhotoSize('web', false)).toEqual([2560, 1920]);
+    expect(storedPhotoSize('heic', true)).toEqual([1920, 2560]);
+    expect(storedPhotoSize('originals', false)).toEqual([4032, 3024]);
+    expect(storedPhotoSize('originals', true)).toEqual([3024, 4032]);
   });
 
   it('name what is missing instead of reporting an import with less in it', () => {
