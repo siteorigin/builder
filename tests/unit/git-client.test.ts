@@ -295,6 +295,9 @@ describe('the worker the app starts', () => {
     // electron.vite.config.ts names the entry; process.ts forks the file it becomes.
     expect(readFileSync('electron.vite.config.ts', 'utf8')).toMatch(/'git-worker': resolve\('src\/main\/git\/worker\.ts'\)/);
     expect(readFileSync('src/main/git/process.ts', 'utf8')).toMatch(/'git-worker\.js'/);
+    // With the app's own id for this computer, which the worker's lock names carry (fs.ts HOST).
+    expect(readFileSync('src/main/git/process.ts', 'utf8')).toMatch(/SITEORIGIN_GIT_HOST: hostId\(\)/);
+    expect(readFileSync('src/main/git/fs.ts', 'utf8')).toMatch(/process\.env\.SITEORIGIN_GIT_HOST/);
     expect(readFileSync('src/main/index.ts', 'utf8')).toMatch(/stopGitWorker\(\);/);
   });
 });

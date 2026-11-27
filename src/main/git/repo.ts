@@ -273,6 +273,8 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     return st;
   };
 
+  /** A loose object a write relies on without writing it: made durable by the write's flush (fs.ts reuse). */
+  const relyOn = (oid: Oid) => looseExists(oid).then((st) => st && gfs.reuse(objectPath(oid), st.mtimeMs));
   /**
    * A project file to read, and its stat: a plain file reached with no link on the way, so nothing outside the project,
    * and nothing of its own `.git` through a folder linked to it, can be taken into a version.
@@ -377,7 +379,8 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       const m = LOCK_FILE.exec(name);
       if (!m || name === own || m[1] !== HOST || m[3] !== branch || alive(Number(m[2]))) continue;
       const file = join(gitdir, name);
-      const [mine, held] = await Promise.all([fs.lstat(file).catch(() => null), fs.lstat(lock).catch(() => null)]);
+      const look = (f: string) => fs.lstat(f, { bigint: true }).catch((e) => (isMissing(e) ? null : Promise.reject(e)));
+      const [mine, held] = await Promise.all([look(file), look(lock)]);
       // The lock first, while the file still says whose it is.
       if (mine && held && mine.dev === held.dev && mine.ino === held.ino) await fs.unlink(lock).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
       await fs.unlink(file).catch((e) => (isMissing(e) ? undefined : Promise.reject(e)));
@@ -576,6 +579,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         // A commit names only what is there: its tree, and earlier commits.
         if ((await typeOf(c.tree)) !== 'tree') throw new GitError('not-found', 'The tree of the commit is not in the versions repository.');
         for (const p of c.parents) if ((await typeOf(p)) !== 'commit') throw new GitError('not-found', 'An earlier commit is not in the versions repository.');
+        for (const oid of [c.tree, ...c.parents]) await relyOn(oid);
         check(token);
         const person = (i: Identity) => ({ name: i.name, email: i.email, timestamp: i.timestamp, timezoneOffset: i.timezoneOffset });
         return git.writeCommit({ fs: gfs, gitdir, commit: { message: c.message, tree: c.tree, parent: [...c.parents], author: person(c.author), committer: person(c.committer) } });
@@ -625,6 +629,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         return serial(async () => {
           await sweep();
           if ((await typeOf(next)) !== 'commit') throw new GitError('not-found', 'The commit to publish is not in the versions repository.');
+          await relyOn(next).then(() => gfs.flush());
           check(token);
           const path = join(gitdir, ...ref.split('/'));
           const dir = dirname(path);

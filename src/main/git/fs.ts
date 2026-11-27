@@ -33,8 +33,8 @@ export type Fault = (point: FaultPoint, path: string) => void | Promise<void>;
 const FLUSHES_AT_ONCE = 4;
 /** An object used again is given the time now once it is older than this: well inside the two weeks `git gc` keeps one. */
 const FRESHEN_AFTER_MS = 86_400_000;
-/** This computer, as the names of temporary objects and locks carry it: a shared folder can be written from several. */
-export const HOST = createHash('sha1').update(hostname()).digest('hex').slice(0, 8);
+/** This computer, as lock and temporary names carry it: the app's own id for it (process.ts), else its hostname's. */
+export const HOST = /^[0-9a-f]{8}$/.test(process.env.SITEORIGIN_GIT_HOST ?? '') ? process.env.SITEORIGIN_GIT_HOST! : createHash('sha1').update(hostname()).digest('hex').slice(0, 8);
 /**
  * The start of a temporary object's name: Git's own (`tmp_obj_`, which `git fsck` passes over and `git gc` clears), then
  * the computer and process writing it, so those of a process that has exited can be cleared (repo.ts).
@@ -95,7 +95,7 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
     const before = (await fs.lstat(dir, { bigint: true })).mtimeNs;
     if (!always && flushed.get(dir) === before) return false;
     await syncDir(dir);
-    flushed.set(dir, before);
+    if (BigInt(Date.now()) * 1_000_000n - before > 2_000_000_000n) flushed.set(dir, before); // a coarse clock's same tick
     return true;
   };
   /**
@@ -179,7 +179,7 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
       // Each is still there (a `git gc` meanwhile may have taken it for unused, and then this write cannot rely on it),
       // and one a day old is given the time now.
       await eachAtMost(FLUSHES_AT_ONCE * 4, relied, ([path, mtimeMs]) =>
-        (now.getTime() - mtimeMs < FRESHEN_AFTER_MS ? fs.lstat(path) : fs.utimes(path, now, now)).catch((e) => {
+        (now.getTime() - mtimeMs < FRESHEN_AFTER_MS ? fs.lstat(path) : fs.utimes(path, now, now).catch((e) => (isMissing(e) ? Promise.reject(e) : fs.lstat(path)))).catch((e) => {
           if (isMissing(e)) throw new GitError('changed', 'An object of the versions repository was removed while the version was being saved; save it again.');
           throw e;
         })
