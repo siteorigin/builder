@@ -352,7 +352,7 @@ function usageOf(st: ProjectState, definitionId: string): Usage {
  * buttons, side by side where its rows and grids put them. A code component is read from its markup. Bars are those
  * of the section sketches, so a component and a section read alike.
  */
-function DesignSketch({ def, st }: { def: ComponentDefinition; st: ProjectState }) {
+export function DesignSketch({ def, st }: { def: ComponentDefinition; st: ProjectState }) {
   const marks = def.tree ? treeMarks(def.tree.rootIds, def.tree.nodes, st) : codeMarks(def.source ?? '');
   // A copy of a theme section whose design says too little to draw keeps that section's shape.
   const from = def.provenance?.componentId;

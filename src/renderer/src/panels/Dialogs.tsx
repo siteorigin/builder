@@ -1,8 +1,8 @@
 import './Dialogs.css';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRightLeft, Bookmark, Box, CircleAlert, CircleMinus, Component, Copy, CornerDownRight, FileText, FolderSync, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User, Users } from 'lucide-react';
-import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import { ArrowRightLeft, Bookmark, Box, Check, CircleAlert, CircleMinus, Component, Copy, CornerDownRight, FileText, FolderSync, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User, Users } from 'lucide-react';
+import type { ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { AiTurnReview, ProjectSnapshot } from '@shared/api';
 import type { ApplyResult } from '@shared/ops';
 import { newId } from '@shared/ids';
@@ -30,6 +30,8 @@ import { clock, dayAndTime, dayKey, dayName, fullWhen, lowerDay } from '../lib/w
 import { appliedCount, historyStep } from '../lib/history-steps';
 import { reviewPlan, stepChangeText, turnName } from '../lib/turn-review';
 import { swapChoices, type SwapChoice } from '../lib/swap-choices';
+import { ComponentThumb } from '../components/ComponentThumb';
+import { DesignSketch, LucideIcon, SectionSketch } from './InsertPanel';
 
 /** The longest name a component can have. */
 const NAME_MAX = 60;
@@ -635,11 +637,98 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
 
 /** One piece of carried content as the preview says it: "Supporting text → Text", "Cards → Plans (6 items)". */
 const carryText = (k: SwapCarry) => `${k.from === k.to ? k.from : `${k.from} → ${k.to}`}${k.items ? ` (${plural(k.items, 'item')})` : ''}`;
+/** A style choice left behind, as a phrase: "Layout: Image last" reads "Layout (Image last)". */
+const restyleText = (r: string) => r.replace(/^([^:]+): (.+)$/, '$1 ($2)');
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The order the designs are listed in: those of the same kind first, then the project's own, then the rest. */
+const SWAP_GROUPS = ['Similar sections', 'Similar blocks', 'Your components', 'Other sections', 'Other blocks'];
+/** Designs that can't stand in its place are listed last, under this heading, each with its reason. */
+const UNFIT = 'Can’t be used here';
+/** Past this many, what carries over is listed one per line, as the losses are, rather than as one long sentence. */
+const CARRY_LIST = 3;
+/** A placement with no content of its own: said the same on its row, in the plan and aloud. */
+const NOTHING_TO_CARRY = 'No content of its own to carry over';
+
+/** A design's picture, as Insert and the quick insert list draw it: a section's sketch, a block's icon, the project's own thumbnail. */
+function SwapThumb({ choice, st, large }: { choice: SwapChoice; st: ProjectState; large?: boolean }) {
+  const cls = `swap-thumb${large ? ' large' : ''}`;
+  // A layout of the project's own is empty until something is put in it, so its photograph is a blank: its
+  // structure says more.
+  const from = choice.def.provenance?.componentId;
+  if (choice.kind === 'component' && (choice.def.category === 'layout' || from?.startsWith('layout.'))) {
+    return (
+      <span className={`insert-thumb ${cls}`} aria-hidden="true">
+        {from ? <SectionSketch id={from} /> : <DesignSketch def={choice.def} st={st} />}
+      </span>
+    );
+  }
+  if (choice.kind === 'component') {
+    return (
+      <span className={cls}>
+        <ComponentThumb definitionId={choice.def.id} active fallback={<DesignSketch def={choice.def} st={st} />} />
+      </span>
+    );
+  }
+  if (choice.kind === 'section' && 'componentId' in choice.spec) {
+    return (
+      <span className={`insert-thumb ${cls}`} aria-hidden="true">
+        <SectionSketch id={choice.spec.componentId} />
+      </span>
+    );
+  }
+  return (
+    <span className={cls} data-icon aria-hidden="true">
+      <LucideIcon name={choice.icon ?? 'layout-template'} size={large ? 22 : 16} />
+    </span>
+  );
+}
+
+/** The design being changed, pictured as the candidates are, so "from" and "to" read alike. */
+function CurrentThumb({ def, st, section }: { def: ComponentDefinition; st: ProjectState; section: boolean }) {
+  if (def.componentId && section) {
+    return (
+      <span className="insert-thumb swap-thumb" aria-hidden="true">
+        <SectionSketch id={def.componentId} />
+      </span>
+    );
+  }
+  if (def.componentId) {
+    return (
+      <span className="swap-thumb" data-icon aria-hidden="true">
+        <Component size={16} />
+      </span>
+    );
+  }
+  return (
+    <span className="swap-thumb">
+      <ComponentThumb definitionId={def.id} active fallback={<DesignSketch def={def} st={st} />} />
+    </span>
+  );
+}
+
+/** Why a design can't be used, without its own name, which its row already shows: "Has no “Content” slot for …". */
+const reasonOf = (plan: SwapPlan, name: string) => plan.problems.map((p) => sentence(p.startsWith(`“${name}” `) ? p.slice(name.length + 3) : p)).join(' ');
+/** Whether the placement keeps what is inside it: elements in its slots carry over as content does. */
+const holdsOf = (plan: SwapPlan) => Object.values(plan.slots ?? {}).some((ids) => ids.length);
+/** What the change takes away, as a key: a pick holds only while what it would drop stays the same. */
+const lossKey = (plan: SwapPlan) => JSON.stringify([plan.dropped, plan.restyled, plan.problems]);
+
+/** What a design would do to the placement, in a few words: on its row, before it is picked. */
+function fitOf(plan: SwapPlan | undefined, name: string): { kind: 'keep' | 'lose' | 'unfit'; text: string } {
+  if (!plan || plan.problems.length) return { kind: 'unfit', text: plan ? reasonOf(plan, name) : UNFIT };
+  if (plan.dropped.length) return { kind: 'lose', text: plan.kept.length || holdsOf(plan) ? `Drops ${plural(plan.dropped.length, 'field')}` : 'Drops all its content' };
+  return { kind: 'keep', text: plan.kept.length || holdsOf(plan) ? 'Keeps all its content' : NOTHING_TO_CARRY };
+}
+
+/** The confirm's words: they name what it drops, so the author reads the cost on the button they press. */
+const confirmText = (plan: SwapPlan | undefined) => (plan?.dropped.length ? `Change and drop ${plural(plan.dropped.length, 'field')}` : 'Change design');
 
 /**
- * Show one placement as another design where it is (#374). The author picks the design and sees, before confirming,
- * which of its content carries over and which would be dropped: the same plan the change itself follows. One change,
- * so one Undo brings the old design back.
+ * Show one placement as another design where it is (#374). Every design it could change to is listed with its
+ * picture and what it would cost (keeps everything, drops some fields, or can't be used here, and why), so the
+ * author compares before picking. Nothing is picked for them: the picked design's plan (what is dropped, what is
+ * left behind, what carries over) is the same plan the change follows. One change, so one Undo brings the old design back.
  */
 export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: OwnerRef; nodeId: string; definitionId: string }) {
   const st = useStore((s) => s.snapshot?.state);
@@ -653,28 +742,107 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
   const def = st && current ? st.components[definitionId] : undefined;
   const [opened] = useState(() => (def && current ? { name: current.name ?? def.name, top: !!tree?.rootIds.includes(nodeId) && placementRole(st!, owner, nodeId) === 'section' } : null));
   const choices = useMemo(() => (st && current ? swapChoices(st, current, dev) : []), [st, current, dev]);
-  const [key, setKey] = useState(() => choices[0]?.key ?? '');
-  // Only the design picked: one that has gone since (an Undo, the AI) is never swapped for another without a word.
-  const choice = choices.find((c) => c.key === key);
-  const plan = useMemo(() => (st && tree && current && choice ? planSwap(st, owner, tree, current, choice.def) : null), [st, tree, current, choice, owner]);
+  // Each design's plan, so every row says what it would keep or drop before it is picked.
+  const plans = useMemo(() => new Map(st && tree && current ? choices.map((c) => [c.key, planSwap(st, owner, tree, current, c.def)] as const) : []), [st, tree, current, choices, owner]);
+  // Nothing is picked until the author picks. A pick stands for the losses it showed: one that has gone since (an
+  // Undo, the AI) is never swapped for another, and one whose losses have changed is shown again before it can be confirmed.
+  const [picked, setPicked] = useState<{ key: string; name: string; losses: string; void?: boolean } | null>(null);
+  const choice = picked ? choices.find((c) => c.key === picked.key) : undefined;
+  const plan = choice ? (plans.get(choice.key) ?? null) : null;
+  // A pick that can no longer be used says why; one whose losses changed asks to be looked at again.
+  const refused = !!plan && plan.problems.length > 0;
+  const changed = !!plan && !!picked && !refused && lossKey(plan) !== picked.losses;
+  // Once a pick has gone, been refused or changed, it stays set aside until it is picked again, even if an Undo puts it back.
+  const lapsed = !!picked && !picked.void && (!choice || refused || changed);
+  useEffect(() => {
+    if (lapsed) setPicked((p) => (p ? { ...p, void: true } : p));
+  }, [lapsed]);
+  const stale = !!picked?.void && !!plan && !refused && !changed;
   // What the dialog showed when the change was sent: the placement shows the new design as it lands, before the reply.
-  const [sent, setSent] = useState<{ plan: SwapPlan; choice: SwapChoice; choices: SwapChoice[]; name: string } | null>(null);
+  const [sent, setSent] = useState<{ plan: SwapPlan; choice: SwapChoice; choices: SwapChoice[]; plans: Map<string, SwapPlan>; name: string } | null>(null);
   const busy = !!sent;
   const offered = sent?.choices ?? choices;
+  const offeredPlans = sent?.plans ?? plans;
   const designName = sent?.name ?? def?.name;
+  const gone = !sent && !!picked && !choice;
   const id = useId();
   const close = useCloseOwn();
+  const list = useRef<HTMLDivElement>(null);
+  const pane = useRef<HTMLDivElement>(null);
+  useHeldFocus(list);
   const title = opened?.top === false ? 'Change design' : 'Change section design';
   // Read-only or the AI at work holds the change: the form stays, with why under it.
   const hold = useProjectBlock('change its design');
   // Read-only lasts while the dialog is open: said in place of the form, with Close, as the other authoring dialogs do.
   const locked = hold?.kind === 'read-only' ? hold : null;
-  const ready = !!plan && !plan.problems.length && !busy && !readOnly && !hold;
+  const noun = opened?.top === false ? 'block' : 'section';
+  const ready = !!plan && !refused && !changed && !stale && !lapsed && !busy && !readOnly && !hold;
   // A collection's layout is shared by every entry shown with it.
   const where = st ? (owner.kind === 'template' ? `In the layout of ${st.collections?.[owner.id]?.settings.name ?? 'a collection'}, shown for every entry` : placeOf(st, owner)) : undefined;
+
+  // The rows in the order they are listed and reached by the arrow keys: usable designs by group, then the rest.
+  const usable = offered.filter((c) => !offeredPlans.get(c.key)?.problems.length);
+  const unfit = offered.filter((c) => !usable.includes(c));
+  const groups = [...SWAP_GROUPS.map((name) => ({ name, rows: usable.filter((c) => c.group === name) })), { name: UNFIT, rows: unfit }].filter((g) => g.rows.length);
+  const rows = groups.flatMap((g) => g.rows);
+  // When every design is refused for the same reason, it is said once over them rather than on every row.
+  const reasons = new Set(unfit.map((c) => { const p = offeredPlans.get(c.key); return p && p.problems.every((x) => x.startsWith(`“${c.def.name}” `)) ? reasonOf(p, c.def.name) : c.key; }));
+  const sharedReason = unfit.length > 1 && reasons.size === 1 ? [...reasons][0] : null;
+  // What the placement holds, named, for the way on when nothing can take it.
+  const inside = current && tree ? Object.values(current.slots ?? {}).flat().filter((i) => Object.hasOwn(tree.nodes, i)) : [];
+  const insideName = inside.length === 1 && st && tree ? `“${displayName(st, tree.nodes[inside[0]])}”` : `the ${plural(inside.length, 'element')}`;
+  // A design refused for what the placement holds is said in the author's words, naming it.
+  const occupied = Object.values(current?.slots ?? {}).filter((ids) => ids.length).length;
+  const noPlace = inside.length > 0 && unfit.length > 0 && unfit.every((c) => { const p = offeredPlans.get(c.key)?.problems ?? []; return p.length === occupied && p.every((x) => x.startsWith(`“${c.def.name}” has no “`)); });
+  const unfitNote = sharedReason ? (noPlace ? `None of these has a place for ${insideName} inside this ${noun}.` : `Each of these ${sharedReason.charAt(0).toLowerCase()}${sharedReason.slice(1)}`) : null;
+  // The confirm keeps the width of its longest words, so neither button moves as the pick changes.
+  const confirmChars = Math.max(...[undefined, ...usable.map((c) => offeredPlans.get(c.key))].map((p) => confirmText(p).length));
+  const [active, setActive] = useState<string | null>(null);
+  // Rows reached by the keyboard scroll clear of the sticky heading over them, however many lines its reason takes.
+  const [stickTop, setStickTop] = useState(30);
+  useLayoutEffect(() => {
+    const tops = [...(list.current?.querySelectorAll<HTMLElement>('.swap-group-top') ?? [])];
+    const h = Math.max(0, ...tops.map((t) => t.offsetHeight)) + 4;
+    if (h > 4 && h !== stickTop) setStickTop(h);
+  });
+  const activeIndex = rows.findIndex((c) => c.key === active);
+  const optionId = (i: number) => `${id}-o${i}`;
+  useEffect(() => {
+    if (activeIndex >= 0) document.getElementById(optionId(activeIndex))?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+  const pick = (c: SwapChoice) => {
+    const p = offeredPlans.get(c.key);
+    if (busy || !p || p.problems.length) return;
+    setActive(c.key);
+    setPicked({ key: c.key, name: c.name, losses: lossKey(p) });
+    // A new plan is read from its top: what it changes to, then what it drops.
+    pane.current?.scrollTo({ top: 0 });
+  };
+  const onListKey = (e: React.KeyboardEvent) => {
+    if (busy || !rows.length) return;
+    const at = activeIndex >= 0 ? activeIndex : rows.findIndex((c) => c.key === picked?.key);
+    const move = (to: number) => {
+      e.preventDefault();
+      setActive(rows[Math.max(0, Math.min(rows.length - 1, to))].key);
+    };
+    if (e.key === 'ArrowDown') move(at + 1);
+    else if (e.key === 'ArrowUp') move(at < 0 ? 0 : at - 1);
+    else if (e.key === 'Home') move(0);
+    else if (e.key === 'End') move(rows.length - 1);
+    else if ((e.key === 'Enter' || e.key === ' ') && at >= 0) {
+      e.preventDefault();
+      pick(rows[at]);
+    } else if (e.key.length === 1 && /\S/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // The next design whose name starts with the letter typed, as a list of thirty wants.
+      const letter = e.key.toLowerCase();
+      const next = [...rows.slice(at + 1), ...rows.slice(0, at + 1)].find((c) => c.name.toLowerCase().startsWith(letter));
+      if (next) move(rows.indexOf(next));
+    }
+  };
+
   const change = async () => {
     if (!ready || !plan || !choice || !def) return;
-    setSent({ plan, choice, choices, name: def.name });
+    setSent({ plan, choice, choices, plans, name: def.name });
     // Checked against the revision previewed, so a change on its way (an Undo, the AI) can't alter what was shown.
     let r: Awaited<ReturnType<typeof applyOps>> = null;
     try {
@@ -686,33 +854,102 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
   };
   const shown = sent ?? (plan && choice ? { plan, choice } : null);
   const dropped = shown?.plan.dropped ?? [];
+  const kept = shown?.plan.kept ?? [];
+  const restyled = shown?.plan.restyled ?? [];
+  const holds = !!shown && holdsOf(shown.plan);
+  const carried = kept.map(carryText);
+  const keepsAll = !dropped.length;
+  // Losses first, each with its reason, then the settings left behind, what carries over, and the way back.
   const details: Detail[] = shown
     ? [
-        {
-          kind: 'keep',
-          icon: <ShieldCheck />,
-          text: shown.plan.kept.length ? `Carries over ${listAll(shown.plan.kept.map(carryText))}.` : `None of its content has a place in ${shown.choice.def.name}.`
-        },
-        ...dropped.map((d): Detail => ({ kind: 'lose', icon: <CircleMinus />, text: `Drops ${d.label}${d.reason ? `: ${d.reason}` : ''}.` })),
-        ...(shown.plan.restyled.length ? [{ kind: 'note' as const, icon: <Info />, text: `Not in the new design: ${listAll(shown.plan.restyled)}.` }] : []),
-        { kind: 'keep', icon: <ShieldCheck />, text: 'It stays where it is. One Undo brings the old design back.' }
+        ...(dropped.length
+          ? [
+              {
+                kind: 'lose' as const,
+                icon: <CircleMinus />,
+                text: (
+                  <>
+                    <strong>{carried.length || holds ? `Drops ${plural(dropped.length, 'field')}` : `Drops all its content: ${plural(dropped.length, 'field')}`}</strong>
+                    <ul className="swap-fields">
+                      {dropped.map((d, i) => (
+                        <li key={i}>
+                          <span className="swap-field">{d.label}</span>
+                          {d.reason && <span className="swap-field-why">{sentence(d.reason)}.</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )
+              }
+            ]
+          : []),
+        ...(restyled.length ? [{ kind: 'note' as const, icon: <Info />, text: `Leaves behind what ${shown.choice.def.name} has no place for: ${listAll(restyled.map(restyleText))}.` }] : []),
+        ...(carried.length
+          ? [
+              {
+                kind: 'keep' as const,
+                icon: <ShieldCheck />,
+                text:
+                  carried.length > CARRY_LIST ? (
+                    <>
+                      {keepsAll ? `Carries over all its content: ${plural(carried.length, 'field')}` : `Carries over ${plural(carried.length, 'field')}`}
+                      <ul className="swap-fields" data-kind="keep">
+                        {carried.map((k, i) => (
+                          <li key={i}>
+                            <span className="swap-field">{k}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : keepsAll && !holds ? (
+                    `Carries over all its content: ${listAll(carried)}.`
+                  ) : (
+                    `Carries over ${listAll(carried)}.`
+                  )
+              }
+            ]
+          : []),
+        ...(holds ? [{ kind: 'keep' as const, icon: <ShieldCheck />, text: 'Carries over the elements inside it.' }] : []),
+        ...(!carried.length && !holds && !dropped.length ? [{ kind: 'note' as const, icon: <Info />, text: `${NOTHING_TO_CARRY}.` }] : []),
+        { kind: 'note', icon: <Undo2 />, text: `It stays where it is. One Undo brings ${designName ?? 'the old design'} back.` }
       ]
     : [];
+  const said = busy && shown
+    ? `Changing to ${shown.choice.def.name}`
+    : gone
+      ? `${picked!.name} is no longer offered here. Pick another design.`
+      : refused && plan && picked
+        ? `${picked.name} can no longer be used here. ${plan.problems.join(' ')} Pick another design.`
+        : (changed || stale) && picked
+          ? changed
+            ? `What ${picked.name} would drop has changed. Pick it again to see it.`
+            : `${picked.name} changed while this was open. Pick it again to see its plan and confirm it.`
+          : shown
+            ? `${shown.choice.def.name}: ${[
+                dropped.length ? `drops ${carried.length || holds ? plural(dropped.length, 'field') : 'all its content'}` : carried.length || holds ? 'carries over all its content' : NOTHING_TO_CARRY.toLowerCase(),
+                restyled.length ? `leaves behind ${plural(restyled.length, 'setting')}` : '',
+                dropped.length && carried.length ? `carries over ${plural(carried.length, 'field')}` : '',
+                dropped.length && holds ? 'carries over the elements inside it' : ''
+              ]
+                .filter(Boolean)
+                .join(', ')}.`
+            : undefined;
   return (
     <Modal
       title={title}
-      icon={<Badge icon={<ArrowRightLeft />} tone={def ? 'neutral' : 'caution'} />}
+      wide
+      icon={<Badge icon={<ArrowRightLeft />} tone={!def || (dropped.length && !changed && !refused && !stale) ? 'caution' : 'neutral'} />}
       onClose={close}
       busy={busy}
-      describedBy={(def || busy) && offered.length && !locked ? `${id}-lead${shown ? ` ${id}-details` : ''}${hold ? ` ${id}-held` : ''}` : GONE_ID}
+      describedBy={(def || busy) && offered.length && !locked ? `${id}-lead${hold ? ` ${id}-held` : ''}` : GONE_ID}
       footer={
         (def || busy) && offered.length && !locked ? (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
             </button>
-            <button className={dropped.length ? 'btn btn-danger-fill' : 'btn btn-primary'} disabled={!ready} aria-describedby={hold ? `${id}-held` : undefined} onClick={() => void change()}>
-              {busy ? 'Changing…' : dropped.length ? `Change and drop ${plural(dropped.length, 'field')}` : 'Change design'}
+            <button className={`btn ${dropped.length && !changed && !refused && !stale ? 'btn-danger' : 'btn-primary'}`} style={{ width: `calc(${confirmChars} * 0.56em + 30px)` }} disabled={!ready} aria-describedby={hold ? `${id}-held` : undefined} onClick={() => void change()}>
+              {busy ? 'Changing…' : confirmText(changed || refused || stale ? undefined : shown?.plan)}
             </button>
           </>
         ) : (
@@ -723,40 +960,151 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
       <BlockedStatus block={hold} lifted="You can change its design now." />
       {(def || busy) && offered.length && !locked ? (
         <div className="authoring-form" data-testid="swap-component-dialog">
-          <FormStatus text={busy && shown ? `Changing to ${shown.choice.def.name}` : undefined} />
+          <FormStatus text={said} />
           <p id={`${id}-lead`} className="confirm-lead">
-            Show {opened?.name ?? 'it'} as another design, in the same place. Its content moves to the fields of the same name or meaning.
+            {usable.length || busy
+              ? `Pick another design for this ${noun}. It stays where it is, and its content carries over wherever the new design has a matching field.`
+              : `No other design can take this ${noun} as it is now.`}
           </p>
-          {designName && <Subject icon={<Component />} name={designName} note={where} />}
-          <Field label="New design" hint={shown ? undefined : 'The design picked is no longer available. Pick another.'}>
-            <select className="select" value={shown?.choice.key ?? ''} disabled={busy} onChange={(e) => setKey(e.target.value)}>
-              {!shown && (
-                <option value="" disabled>
-                  Pick a design
-                </option>
-              )}
-              {['Similar sections', 'Similar blocks', 'Your components', 'Other sections', 'Other blocks'].map((group) => {
-                const list = offered.filter((c) => c.group === group);
-                return list.length ? (
-                  <optgroup key={group} label={group}>
-                    {list.map((c) => (
-                      <option key={c.key} value={c.key}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                ) : null;
-              })}
-            </select>
-          </Field>
-          {shown?.plan.problems.length ? (
-            <div id={`${id}-details`} className="scope-note danger" role="alert">
-              <CircleAlert />
-              <span>{shown.plan.problems[0]}</span>
+          {designName && <Subject icon={def && st ? <CurrentThumb def={def} st={st} section={opened?.top !== false} /> : <Component />} name={designName} note={where} />}
+          <div className="swap-pick">
+            <div className="swap-choose">
+              <span id={`${id}-label`} className="swap-label">
+                New design
+              </span>
+              <div className="swap-frame">
+                <div
+                  ref={list}
+                  className="swap-list"
+                  role="listbox"
+                  tabIndex={0}
+                  data-autofocus
+                  aria-labelledby={`${id}-label`}
+                  aria-activedescendant={activeIndex >= 0 ? optionId(activeIndex) : undefined}
+                  aria-disabled={busy || undefined}
+                  style={{ scrollPaddingBlockStart: stickTop }}
+                  onKeyDown={onListKey}
+                  onFocus={() => active === null && rows.length > 0 && setActive(picked?.key ?? rows[0].key)}
+                >
+                  {groups.map((g, gi) => (
+                    <div key={g.name} role="group" aria-labelledby={`${id}-g${gi}`} className="swap-group" data-unfit={g.name === UNFIT || undefined}>
+                      <div className="swap-group-top" role="presentation">
+                        <div id={`${id}-g${gi}`} className="swap-group-head" role="presentation">
+                          {g.name}
+                        </div>
+                        {g.name === UNFIT && unfitNote && (
+                          <div id={`${id}-why`} className="swap-group-note" role="presentation">
+                            {unfitNote}
+                          </div>
+                        )}
+                      </div>
+                      {g.rows.map((c) => {
+                        const i = rows.indexOf(c);
+                        const fit = fitOf(offeredPlans.get(c.key), c.def.name);
+                        // A pick set aside (gone, refused or changed) is no longer shown as picked: it is picked again.
+                        const selected = shown && !changed && !stale && !refused ? shown.choice.key === c.key : false;
+                        const quiet = fit.kind === 'unfit' && !!sharedReason;
+                        return (
+                          <div
+                            key={c.key}
+                            id={optionId(i)}
+                            role="option"
+                            aria-selected={selected}
+                            aria-disabled={fit.kind === 'unfit' || busy || undefined}
+                            aria-labelledby={`${optionId(i)}-name`}
+                            aria-describedby={quiet ? `${id}-why` : `${optionId(i)}-fit`}
+                            className="swap-option"
+                            data-active={i === activeIndex || undefined}
+                            data-fit={fit.kind}
+                            onClick={() => pick(c)}
+                          >
+                            <SwapThumb choice={c} st={st!} />
+                            <span className="swap-option-text">
+                              <span id={`${optionId(i)}-name`} className="swap-option-name">
+                                {c.name}
+                              </span>
+                              {!quiet && (
+                                <span id={`${optionId(i)}-fit`} className="swap-option-fit">
+                                  {fit.kind === 'lose' && <CircleMinus aria-hidden="true" />}
+                                  {fit.text}
+                                </span>
+                              )}
+                            </span>
+                            {selected && <Check className="swap-option-check" aria-hidden="true" />}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
-          ) : shown ? (
-            <Details id={`${id}-details`} items={details} />
-          ) : null}
+            <div ref={pane} className="swap-plan" id={`${id}-details`}>
+              {gone ? (
+                <div className="scope-note swap-note">
+                  <CircleAlert />
+                  <span>
+                    <strong>{picked!.name}</strong> is no longer offered here. Pick another design.
+                  </span>
+                </div>
+              ) : shown ? (
+                <>
+                  <div className="swap-plan-head">
+                    <SwapThumb choice={shown.choice} st={st!} large />
+                    <span className="swap-plan-name">
+                      <span className="swap-plan-to">Changes to</span>
+                      <strong>{shown.choice.def.name}</strong>
+                    </span>
+                  </div>
+                  {refused ? (
+                    <div className="scope-note danger">
+                      <CircleAlert />
+                      <span>
+                        <strong>{shown.choice.def.name}</strong> can no longer be used here. {shown.plan.problems.join(' ')} Pick another design.
+                      </span>
+                    </div>
+                  ) : changed || stale ? (
+                    <div className="scope-note swap-note">
+                      <CircleAlert />
+                      <span>
+                        {changed ? (
+                          <>
+                            What <strong>{shown.choice.def.name}</strong> would drop has changed since you picked it. Pick it again to see what it drops now.
+                          </>
+                        ) : (
+                          <>
+                            <strong>{shown.choice.def.name}</strong> changed while this was open. Pick it again to see its plan and confirm it.
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  ) : (
+                    <Details items={details} />
+                  )}
+                </>
+              ) : (
+                <div className="swap-empty">
+                  <ArrowRightLeft aria-hidden="true" />
+                  {usable.length ? (
+                    <span>
+                      Pick a design to see what carries over and what it would drop.
+                      {unfit.length > 0 && <span className="swap-empty-note">{unfit.length === 1 ? 'One design can’t be used here. It is listed last, with the reason.' : `${unfit.length} designs can’t be used here. They are listed last, with the reason.`}</span>}
+                    </span>
+                  ) : noPlace ? (
+                    <span>
+                      <strong className="swap-empty-title">None of these designs has a place for {insideName} inside this {noun}.</strong>
+                      <span className="swap-empty-note">Move {inside.length === 1 ? 'it' : 'them'} out of the {noun} first, then change its design.</span>
+                    </span>
+                  ) : (
+                    <span>
+                      <strong className="swap-empty-title">None of these designs can be used here.</strong>
+                      <span className="swap-empty-note">Each one says why in the list.</span>
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
           {hold && !locked && <BlockedNote block={hold} id={`${id}-held`} live={false} />}
         </div>
       ) : locked ? (

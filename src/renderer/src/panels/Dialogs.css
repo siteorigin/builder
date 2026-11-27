@@ -41,6 +41,82 @@
   }
 
 
+  /* Change design (SwapComponentModal): the designs listed on the left with their pictures and what each would cost,
+     the picked one's plan on the right. Both columns keep one height whatever is picked, so the footer never moves.
+     Losses lead the plan, each field on its own line with its reason; the way back closes it in its own glyph. */
+  .swap-pick { --swap-h: clamp(340px, 48vh, 480px); display: grid; grid-template-columns: minmax(0, 21rem) minmax(0, 1fr); gap: 16px; margin-top: 4px; }
+  .swap-choose { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .swap-label { font-weight: 600; color: var(--text); }
+  /* The frame draws the border and the focus ring, so rows scrolled under the sticky heads never show past them. */
+  .swap-frame { overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); }
+  /* One ring at a time: the frame's while the list has focus and no row yet, the row's once one is active. */
+  .swap-frame:has(.swap-list:focus-visible) { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .swap-frame:has(.swap-list:focus .swap-option[data-active]) { outline: 0; border-color: var(--focus); }
+  .swap-list { height: var(--swap-h); overflow-y: auto; outline: none; scroll-padding-block-end: 4px; }
+  .swap-group + .swap-group .swap-group-head { border-top: 1px solid var(--border); }
+  /* A group's head, and the reason shared by every design under it, stay in view while its rows scroll. */
+  .swap-group-top { position: sticky; top: 0; z-index: 1; background: var(--raised); box-shadow: 0 -2px 0 var(--panel-2); }
+  .swap-group-head { padding: 5px 10px; font-size: 12px; font-weight: 600; color: var(--text-2); background: var(--panel-2); border-bottom: 1px solid var(--border); }
+  .swap-group-note { padding: 7px 10px; font-size: 12px; line-height: 1.45; color: var(--text); border-bottom: 1px solid var(--border); text-wrap: pretty; }
+  .swap-option { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 10px; cursor: pointer; }
+  .swap-option:hover { background: var(--hover); }
+  .swap-option[aria-selected='true'] { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  /* The list takes focus as the dialog opens, on its first row, so the row the arrows start from is always marked. */
+  .swap-list:focus .swap-option[data-active] { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .swap-option[data-fit='unfit'] { cursor: default; align-items: flex-start; }
+  .swap-option[data-fit='unfit']:hover { background: transparent; }
+  .swap-option[data-fit='unfit'] .swap-thumb { opacity: 0.55; }
+  /* While the change is sent the list stays in view, quieter, and takes nothing. */
+  .swap-list[aria-disabled='true'] { opacity: 0.6; }
+  .swap-list[aria-disabled='true'] .swap-option { cursor: default; }
+  .swap-list[aria-disabled='true'] .swap-option:hover { background: transparent; }
+  .swap-option-text { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+  .swap-option[data-fit='unfit'] .swap-option-text { align-self: center; }
+  .swap-option-name { font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+  .swap-option-fit { display: flex; align-items: flex-start; gap: 4px; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  .swap-option-fit svg { width: 12px; height: 12px; flex: none; margin-top: 2px; color: var(--red); }
+  .swap-option[data-fit='lose'] .swap-option-fit { color: var(--text); }
+  .swap-option[data-fit='unfit'] .swap-option-name { color: var(--text-2); }
+  .swap-option-check { width: 16px; height: 16px; flex: none; color: var(--accent-text); }
+  /* Pictures as Insert draws them: a section's sketch, a block's icon on the same tile, the project's own thumbnail. */
+  .swap-thumb { position: relative; display: block; flex: none; width: 56px; height: 36px; overflow: hidden; border-radius: var(--r-xs); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border-strong); color: var(--text-2); }
+  .swap-thumb[data-icon] { display: grid; place-items: center; }
+  .swap-thumb .insert-lib-thumb { box-shadow: none; }
+  .swap-thumb.large { width: 96px; height: 60px; }
+  .swap-thumb.large .sketch { padding: 7px 9px; gap: 4px; }
+  .swap-plan { display: flex; flex-direction: column; gap: 12px; min-width: 0; height: calc(var(--swap-h) + 26px); overflow-y: auto; padding: 1px 2px 0 1px; }
+  .swap-plan-head { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .swap-plan-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+  .swap-plan-to { font-size: 12px; color: var(--text-2); }
+  .swap-plan-name strong { font-size: 15px; font-weight: 600; color: var(--text); }
+  /* The fields a plan drops (or, past three, carries over), one per line, each with its reason under it. */
+  .swap-fields { list-style: none; margin: 6px 0 2px; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); font-weight: 400; }
+  .swap-fields li { display: flex; flex-direction: column; gap: 1px; padding: 5px 10px; }
+  .swap-fields li + li { border-top: 1px solid var(--border); }
+  .swap-field { color: var(--text); }
+  .swap-fields[data-kind='keep'] .swap-field { color: var(--text-2); }
+  .swap-field-why { font-size: 12px; color: var(--text-2); }
+  .authoring-details li:is([data-kind='lose'], [data-kind='keep']) > span { flex: 1; min-width: 0; }
+  .authoring-details li[data-kind='lose'] strong { font-weight: 600; }
+  .swap-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; flex: 1; padding: 24px; text-align: center; color: var(--text-2); border: 1px dashed var(--border-control); border-radius: var(--r-sm); text-wrap: pretty; }
+  .swap-empty > svg { width: 20px; height: 20px; color: var(--text-3); }
+  .swap-empty > span { display: flex; flex-direction: column; gap: 6px; max-width: 34ch; }
+  .swap-empty-title { font-weight: 600; color: var(--text); }
+  .swap-empty-note { font-size: 12px; color: var(--text-2); }
+  .swap-note { background: var(--panel-2); border: 1px solid var(--border-strong); }
+  .swap-note > svg { color: var(--red); }
+  @media (forced-colors: active) {
+    /* The sketches keep their own ink, as a picture would, so a design can still be recognised. */
+    .swap-thumb { forced-color-adjust: none; border: 1px solid CanvasText; box-shadow: none; }
+    .swap-option[data-fit='unfit'] :is(.swap-option-name, .swap-option-fit) { color: GrayText; }
+    .swap-option[aria-selected='true'] { forced-color-adjust: none; background: Highlight; color: HighlightText; box-shadow: none; }
+    .swap-option[aria-selected='true'] :is(.swap-option-name, .swap-option-fit, .swap-option-check, .swap-option-fit svg) { color: HighlightText; }
+    .swap-list:focus .swap-option[data-active] { outline-color: CanvasText; }
+    .swap-list:focus .swap-option[data-active][aria-selected='true'] { outline-color: HighlightText; }
+    .swap-option-fit svg { color: CanvasText; }
+    .swap-frame:has(.swap-list:focus-visible) { outline-color: Highlight; }
+  }
+
   /* History (HistoryModal): one dialog with the shared tabs flush under its head, as Settings has them. It keeps one
      height whichever tab is shown and however long the list, so switching never moves its edges. Each panel pins
      what it needs (why History is held, the intro, the save form) and scrolls only its list, in a reserved gutter. */
