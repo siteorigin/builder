@@ -278,12 +278,35 @@ export function blockAtCaret(root: HTMLElement): HTMLElement | null {
 }
 
 /**
- * Put a picture in the text where the caret is: after the block it is in, or in place of an empty paragraph, with a
- * paragraph after it to go on typing in when it ends the text. Returns the figure.
+ * The block of the writer's root a drop at `x`, `y` on screen lands in (a direct child of `root`): the one holding the
+ * place in the text nearest the point, as a click there would put the caret, without moving the caret. Between two
+ * blocks it is the one before; above the first, null. `undefined` when the point is not over the text at all.
  */
-export function insertFigure(root: HTMLElement, at: HTMLElement | null, fig: HTMLElement): HTMLElement {
+export function blockAtPoint(root: HTMLElement, x: number, y: number): HTMLElement | null | undefined {
+  const doc = root.ownerDocument;
+  const pos = doc.caretPositionFromPoint?.(x, y);
+  const r = pos ? null : doc.caretRangeFromPoint?.(x, y);
+  const node = pos ? pos.offsetNode : r?.startContainer;
+  const offset = pos ? pos.offset : (r?.startOffset ?? 0);
+  if (!node || !root.contains(node)) return undefined;
+  if (node === root) {
+    const before = root.childNodes[Math.min(offset, root.childNodes.length) - 1];
+    return before instanceof HTMLElement ? before : null;
+  }
+  let top: Node = node;
+  while (top.parentNode && top.parentNode !== root) top = top.parentNode;
+  return top instanceof HTMLElement ? top : null;
+}
+
+/**
+ * Put a picture in the text where the caret is: after the block it is in (`before` it, for a picture dropped above the
+ * first), or in place of an empty paragraph, with a paragraph after it to go on typing in when it ends the text.
+ * Returns the figure.
+ */
+export function insertFigure(root: HTMLElement, at: HTMLElement | null, fig: HTMLElement, before = false): HTMLElement {
   const empty = at && at.tagName === 'P' && !at.textContent?.trim() && !at.querySelector('img');
   if (at && empty) at.replaceWith(fig);
+  else if (at && before) at.before(fig);
   else if (at) at.after(fig);
   else root.appendChild(fig);
   if (!fig.nextSibling) {

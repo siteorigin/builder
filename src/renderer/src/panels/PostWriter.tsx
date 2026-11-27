@@ -13,7 +13,7 @@ import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
 import { assetLabels, sortAssets } from '@shared/asset-order';
-import { applyOps, applyWith, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PendingEdit, type PostRef } from '../store';
+import { api, applyOps, applyWith, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PendingEdit, type PostRef } from '../store';
 import { ChoiceField, DraftInput, Field, Modal, Section, SwitchRow } from '../components/ui';
 import { RevisionDateField } from '../components/SeoFields';
 import { LinkRelControls } from '../components/LinkRelControls';
@@ -24,9 +24,10 @@ import { missingKey } from './ImagesPicker';
 import { SiteImageField } from './PropEditors';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isImeComposing } from '../lib/ime';
+import { assetArrived, reviewImport } from '../lib/import-review';
 import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
-import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
+import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
@@ -177,6 +178,8 @@ type Dialog =
       value: ImageValue;
       caption: string;
       at: HTMLElement | null;
+      /** A new picture goes in before `at` rather than after it: dropped above the first block. */
+      before?: boolean;
       /** The selection as it was, put back on Cancel. */
       caret: SavedSelection | null;
       /** Add or Update was pressed with no description and not decorative. */
@@ -245,6 +248,18 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const caretAfterHistory = useRef<ArticleCaret | null>(null);
   const [status, setStatus] = useState<{ dirty: boolean; saving: boolean; problem: DraftProblem | null }>({ dirty: false, saving: false, problem: null });
   const [dialog, setDialog] = useState<Dialog>(null);
+  /** The latest drop of image files, and whether this writer is still mounted: a late import is checked against both. */
+  const dropRun = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  /** Whether the writer is put away, and the dialog open in it, as they are now (for an import finishing later). */
+  const shownRef = useRef({ hidden, dialog });
+  shownRef.current = { hidden, dialog };
   /** The text saved elsewhere, shown to read before the author chooses it over theirs. */
   const [reviewing, setReviewing] = useState(false);
   /**
@@ -644,9 +659,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     });
   };
 
+  /** Whether a picture can be put in the text now: it is shown, editable, and the entry is still in the project. */
+  const picturesOn = () => !unreadable && draft.problem?.kind !== 'gone' && !isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection);
   const openImage = (clicked: HTMLElement | null) => {
     const el = root.current;
-    if (!el || draft.problem?.kind === 'gone' || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
+    if (!el || !picturesOn()) return;
     const sel = document.getSelection();
     const range = sel?.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
     // From the toolbar, a picture chosen in the text (selected whole, or holding the selection) is the one edited.
@@ -674,12 +691,46 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
         else delete d.fig.dataset.decorative;
         fillFigure(d.fig, getState().snapshot?.state ?? state, devUrl);
       } else {
-        const fig = insertFigure(el, d.at && el.contains(d.at) ? d.at : null, figureElement(data, getState().snapshot?.state ?? state, devUrl));
+        const at = d.at && el.contains(d.at) ? d.at : null;
+        const fig = insertFigure(el, at, figureElement(data, getState().snapshot?.state ?? state, devUrl), !!at && !!d.before);
         // On to the line after it.
         const next = fig.nextElementSibling as HTMLElement | null;
         if (next) placeCaret(el, { block: Array.prototype.indexOf.call(el.childNodes, next), offset: 0 });
       }
     });
+  };
+  /**
+   * Image files dropped on the text from the desktop (#1117): imported into Assets (through the import review, for a
+   * HEIC or large photo), then the first picture that arrived is offered in the picture dialog, to describe and
+   * caption, going in at the block it was dropped on (`before` it: above the first block). Nothing reaches the text
+   * until Add. A drop that finishes after the author has moved on (another post, a later drop, another dialog, the
+   * writer put away, the entry gone or synced) leaves its picture in Assets, and says so.
+   */
+  const dropImages = async (paths: string[], at: HTMLElement | null, before: boolean) => {
+    const el = root.current;
+    const opening = getState().snapshot?.workspaceKey;
+    if (!el || !opening) return;
+    const run = ++dropRun.current;
+    const plan = await reviewImport(paths, 'image').catch((e: Error) => (toast(`The image couldn’t be added: ${e.message}`, 'error'), null));
+    if (!plan) return;
+    const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, 'image', plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
+    if (r.note) toast(r.note, 'info');
+    if (r.message) toast(r.message, 'error');
+    if (!r.assetIds.length) return;
+    // The new records reach this window with the next snapshot: the dialog lists the picture once they have.
+    const arrived = await assetArrived(r.assetIds[r.assetIds.length - 1], opening);
+    const snap = getState().snapshot;
+    if (!arrived || snap?.workspaceKey !== opening) return;
+    const assets = snap.state.assets.assets;
+    const asset = r.assetIds.map((id) => (Object.hasOwn(assets, id) ? assets[id] : undefined)).find((a) => a?.kind === 'image');
+    if (!asset) return;
+    if (run !== dropRun.current || !mounted.current || shownRef.current.hidden || shownRef.current.dialog || getState().modal || root.current !== el || !picturesOn()) {
+      toast(`“${asset.name}” was added to Assets.`, 'info');
+      return;
+    }
+    // The block dropped on was replaced meanwhile (Undo, or a change made somewhere else): where the caret is now.
+    const still = at && el.contains(at) ? at : null;
+    setDialog({ kind: 'image', fig: null, at: still ?? blockAtCaret(el), before: !!still && before, caret: savedSelection(el), value: { assetId: asset.id, alt: asset.altSuggestion ?? '' }, caption: '' });
   };
   const removeImage = (d: Extract<Dialog, { kind: 'image' }>) => afterDialog(null, () => void (d.fig && root.current?.contains(d.fig) && d.fig.remove()));
 
@@ -1172,8 +1223,17 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               const text = e.clipboardData.getData('text/plain');
               if (text) document.execCommand('insertText', false, text);
             }}
+            // Image files from the desktop are imported and offered in the picture dialog, to go in where they were dropped.
             onDrop={(e) => {
-              if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+              if (!e.dataTransfer.types.includes('Files')) return;
+              e.preventDefault();
+              const el = root.current;
+              const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
+              if (!el || !paths.length || dialog || !picturesOn()) return;
+              // Off the words (the text's margin): where the caret is, as the Picture button would.
+              const hit = blockAtPoint(el, e.clientX, e.clientY);
+              const at = hit === undefined ? blockAtCaret(el) : (hit ?? (el.firstElementChild as HTMLElement | null));
+              void dropImages(paths, at, hit === null);
             }}
             onClick={(e) => {
               const fig = (e.target as HTMLElement).closest<HTMLElement>('figure.post-figure');
