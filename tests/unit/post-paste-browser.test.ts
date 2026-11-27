@@ -18,7 +18,12 @@ let script = '';
 
 const state = {
   pages: { about: { id: 'about', route: '/about/' } },
-  collections: {},
+  collections: {
+    posts: {
+      settings: { id: 'posts', name: 'Posts', route: '/posts/' },
+      entries: { e1: { id: 'e1', slug: 'spring', title: 'Spring', body: [] } }
+    }
+  },
   assets: { assets: {} }
 };
 
@@ -26,34 +31,31 @@ const state = {
  * The writer showing `html`, with the selection from the `from` character of the text to the `to` (a caret when it is
  * left out; counted over the text nodes in order), and `clip` pasted there. Returns the text read back and its markup.
  */
-async function paste(html: string, clip: string, from: number, to?: number): Promise<{ body: RichText; html: string; ok: boolean }> {
+async function paste(html: string, clip: string, from: number, to?: number, plain = ''): Promise<{ body: RichText; html: string; ok: boolean }> {
   await page.setContent(`<!doctype html><div id="body" contenteditable="true">${html}</div><script>${script}</script>`);
-  return page.evaluate(
-    ({ clip, from, to, state }) => {
-      const el = document.getElementById('body')!;
-      document.execCommand('defaultParagraphSeparator', false, 'p');
-      el.focus();
-      const point = (n: number): [Node, number] => {
-        const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-        let last: Text | null = null;
-        for (let t = w.nextNode() as Text | null; t; t = w.nextNode() as Text | null) {
-          if (n <= t.data.length) return [t, n];
-          n -= t.data.length;
-          last = t;
-        }
-        return last ? [last, last.data.length] : [el.firstElementChild!, 0];
-      };
-      const sel = getSelection()!;
-      const [a, ao] = point(from);
-      const [b, bo] = point(to ?? from);
-      // A selection made backwards, from its end to its start, as dragging leftwards makes it.
-      sel.setBaseAndExtent(b, bo, a, ao);
-      const w = window as unknown as { postDom: { pastedArticle: (h: string, s: unknown, preview: string) => RichText; pasteArticle: (r: HTMLElement, b: RichText, s: unknown, d: null) => boolean; readArticle: (r: HTMLElement, s: unknown) => RichText } };
-      const ok = w.postDom.pasteArticle(el, w.postDom.pastedArticle(clip, state, 'http://127.0.0.1:5199/'), state, null);
-      return { ok, body: w.postDom.readArticle(el, state), html: el.innerHTML };
-    },
-    { clip, from, to, state }
-  );
+  // In the page's own words (this file is typed without the DOM).
+  return page.evaluate<{ body: RichText; html: string; ok: boolean }>(`(() => {
+    const { clip, from, to, state, plain } = ${JSON.stringify({ clip, from, to: to ?? from, state, plain })};
+    const el = document.getElementById('body');
+    document.execCommand('defaultParagraphSeparator', false, 'p');
+    el.focus();
+    const point = (n) => {
+      const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let last = null;
+      for (let t = w.nextNode(); t; t = w.nextNode()) {
+        if (n <= t.data.length) return [t, n];
+        n -= t.data.length;
+        last = t;
+      }
+      return last ? [last, last.data.length] : [el.firstElementChild, 0];
+    };
+    const [a, ao] = point(from);
+    const [b, bo] = point(to);
+    // A selection made backwards, from its end to its start, as dragging leftwards makes it.
+    getSelection().setBaseAndExtent(b, bo, a, ao);
+    const ok = postDom.pasteArticle(el, postDom.pastedArticle(clip, state, 'http://127.0.0.1:5199/'), state, null, plain);
+    return { ok, body: postDom.readArticle(el, state), html: el.innerHTML };
+  })()`);
 }
 
 const p = (text: string) => ({ type: 'p', spans: [{ text }] });
@@ -120,7 +122,7 @@ describe.skipIf(!browserInstalled)('pasting formatted text into the post writer'
   });
 
   it('puts one pasted paragraph among the words of the block the caret is in, a heading or a list item included', async () => {
-    expect((await paste('<h3>Opening hours</h3>', '<p>new <i>late</i> </p>', 8)).body).toEqual([{ type: 'h3', spans: [{ text: 'Opening new ' }, { text: 'late', em: true }, { text: 'hours' }] }]);
+    expect((await paste('<h3>Opening hours</h3>', '<p>new <i>late</i> </p>', 8, undefined, 'new late ')).body).toEqual([{ type: 'h3', spans: [{ text: 'Opening new ' }, { text: 'late', em: true }, { text: ' hours' }] }]);
     expect((await paste('<ul><li>One</li><li>Two</li></ul>', '<p>and a half</p>', 3)).body).toEqual([{ type: 'ul', items: [[{ text: 'Oneand a half' }], [{ text: 'Two' }]] }]);
   });
 
@@ -155,9 +157,44 @@ line two</pre><iframe src="https://example.com"></iframe><a href="so-link:{&quot
     expect(html).not.toMatch(/<img|<script|<iframe|style=|href/);
   });
 
+  it('leaves the rest of a list as it is when words are pasted into one item', async () => {
+    const { ok, html } = await paste('<ol><li>One</li><li><br></li><li>Three</li></ol>', '<p><b>more</b></p>', 3);
+    expect(ok).toBe(true);
+    expect(html).toBe('<ol><li>One<strong>more</strong></li><li><br></li><li>Three</li></ol>');
+  });
+
+  it('finds where the paste goes when the text already holds the character it marks that with', async () => {
+    const { body } = await paste('<p><strong>A\uE000</strong>BC</p>', '<h2>X</h2><p>y</p>', 3);
+    expect(body).toEqual([{ type: 'p', spans: [{ text: 'A\uE000', strong: true }, { text: 'B' }] }, { type: 'h2', spans: [{ text: 'X' }] }, p('yC')]);
+  });
+
+  it('links to a post or a page copied from the preview, keeping its words when the address is no longer there', async () => {
+    const clip = '<p><a href="http://127.0.0.1:5199/posts/spring/">post</a> <a href="/posts/gone/">gone</a> <a href="http://127.0.0.1:8080/about/">other port</a></p><p>x</p>';
+    const { body } = await paste('<p><br></p>', clip, 0);
+    expect(body[0]).toEqual({ type: 'p', spans: [{ text: 'post', link: { type: 'entry', target: 'e1' } }, { text: ' gone ' }, { text: 'other port', link: { type: 'url', target: 'http://127.0.0.1:8080/about/' } }] });
+  });
+
+  it('pastes nothing as blocks when the copy is more than a post can hold', async () => {
+    const page = await paste('<p>keep</p>', '<p>x</p>'.repeat(2001), 4);
+    expect(page.ok).toBe(false);
+    expect(page.html).toBe('<p>keep</p>');
+  });
+
+  it('leaves words outside any block to the browser', async () => {
+    const { ok, html } = await paste('abCD', '<h2>X</h2><p>y</p>', 2);
+    expect(ok).toBe(false);
+    expect(html).toBe('abCD');
+  });
+
+  it('carries on typing on the line after a pasted break', async () => {
+    await paste('<p>abcd</p>', '<h2>X</h2><p>y<br><br></p>', 4);
+    await page.keyboard.type('!');
+    expect(await page.evaluate<string>(`document.getElementById('body').innerHTML`)).toBe('<p>abcd</p><h2>X</h2><p>y<br>!</p>');
+  });
+
   it('carries on typing where the paste ended', async () => {
     await paste('<p>Hello world</p>', '<h2>Head</h2><p>tail</p>', 6);
     await page.keyboard.type('!');
-    expect(await page.evaluate(() => document.getElementById('body')!.innerHTML)).toBe('<p>Hello </p><h2>Head</h2><p>tail!world</p>');
+    expect(await page.evaluate<string>(`document.getElementById('body').innerHTML`)).toBe('<p>Hello </p><h2>Head</h2><p>tail!world</p>');
   });
 });

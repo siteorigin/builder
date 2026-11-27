@@ -7,7 +7,10 @@
 import type { LinkValue, ProjectState, RichBlock, RichImageBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
 import { isImageBlock, isListBlock, isRichBlock, linkToTarget } from '@shared/richtext';
 import { linkRels, relsFromAttribute } from '@shared/link-rel';
-import { blocksFromDom, type RichDomNode } from './richtext';
+import { blocksFromDom, type ArticleRead, type RichDomNode } from './richtext';
+import { collectionIndexRoutes } from '@shared/archives';
+import { entryRoute } from '@shared/collections';
+import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS } from '@engine/values';
 import { articleLinks, KEPT_LINK } from './article-links';
 import { assetUrl } from './model';
 
@@ -229,7 +232,7 @@ function pastedNodes(n: Node, pre: boolean, preview: string | null): RichDomNode
     const out: RichDomNode[] = [];
     text.split(/\r?\n/).forEach((line, i) => {
       if (i) out.push({ tag: 'br', children: [] });
-      if (line) out.push(line.replace(/ /g, ' '));
+      if (line) out.push(line);
     });
     return out;
   }
@@ -239,9 +242,9 @@ function pastedNodes(n: Node, pre: boolean, preview: string | null): RichDomNode
   if (PASTE_DROP.has(tag)) return [];
   const inPre = pre || tag === 'pre';
   const children = [...el.childNodes].flatMap((c) => pastedNodes(c, inPre, preview));
-  // A table cell's words stay apart from the next cell's.
-  if (tag === 'td' || tag === 'th') return [' ', ...children];
   const out: Exclude<RichDomNode, string> = { tag: PASTE_KEEP.has(tag) ? tag : PASTE_AS_BLOCK.has(tag) ? 'div' : tag === 'a' ? 'a' : 'span', children };
+  // A table cell's words stay apart from the next cell's.
+  if (tag === 'td' || tag === 'th') children.unshift(' ');
   // Bold and italic as marks the element's own style can take back: Google Docs wraps a whole copy in
   // <b style="font-weight:normal"> and marks its bold words with a style instead.
   const style = (el as HTMLElement).style;
@@ -268,17 +271,55 @@ function previewPath(href: string, preview: string | null): string {
   if (!preview || !/^https?:\/\//i.test(href.trim())) return href;
   try {
     const url = new URL(href.trim());
-    return url.origin === new URL(preview).origin ? url.pathname + url.hash : href;
+    return url.origin === new URL(preview).origin ? url.pathname + url.search + url.hash : href;
   } catch {
     return href;
   }
 }
 
 /**
+ * How a pasted link is read: as the writer reads its own (a page by its address, a web address), and an address of
+ * one of this site's posts or a collection's index as that post or index, as a copy from the preview holds them.
+ */
+function pastedLinks(state: ProjectState): ArticleRead {
+  const links = articleLinks(state);
+  let routes: Map<string, LinkValue> | null = null;
+  const siteRoutes = () => {
+    if (routes) return routes;
+    routes = new Map();
+    for (const c of Object.values(state.collections ?? {})) {
+      for (const e of Object.values(c.entries)) {
+        const route = entryRoute(c, e);
+        if (route && !routes.has(route)) routes.set(route, { type: 'entry', target: e.id });
+      }
+    }
+    for (const [id, route] of Object.entries(collectionIndexRoutes(state))) if (!routes.has(route)) routes.set(route, { type: 'collection', target: id });
+    return routes;
+  };
+  return {
+    link: (href, newTab, rel) => {
+      const kept = links.link(href, newTab, rel);
+      if (kept) return kept;
+      const t = href.trim();
+      if (!t.startsWith('/') || t.startsWith('//') || /[?#]/.test(t)) return null;
+      let path = t;
+      try {
+        path = decodeURI(t);
+      } catch {
+        // Kept as written.
+      }
+      const found = siteRoutes().get(path.endsWith('/') ? path : `${path}/`);
+      return found ? { ...found, ...(newTab ? { newTab: true } : {}) } : null;
+    }
+  };
+}
+
+/**
  * Copied HTML as the blocks of an article's text: paragraphs, section headings (h2 to h4), quotes, lists, bold, italic,
  * line breaks and links to anywhere the writer can link to, read with the rules the writer reads its own text with.
  * Everything else keeps only its words: styles, classes, pictures, tables and the like. A link copied from the site's
- * preview (at `preview`) goes to its page. Empty when it holds no words.
+ * preview (at `preview`) goes to its page or post. Empty when it holds no words, and when it is more than a post can
+ * hold (its words are then pasted as plain text, as before).
  */
 export function pastedArticle(html: string, state: ProjectState, preview: string | null = null): RichText {
   if (!html || html.length > 2_000_000) return [];
@@ -286,11 +327,10 @@ export function pastedArticle(html: string, state: ProjectState, preview: string
   // conditional blocks) lands there too.
   const body = new DOMParser().parseFromString(`<body>${html}`, 'text/html').body;
   const nodes = [...body.childNodes].flatMap((c) => pastedNodes(c, false, preview));
-  return blocksFromDom(nodes, state.pages, articleLinks(state)).blocks.filter((b) => !isImageBlock(b));
+  const blocks = blocksFromDom(nodes, state.pages, pastedLinks(state)).blocks.filter((b) => !isImageBlock(b));
+  const chars = blocks.reduce((n, b) => n + (isListBlock(b) ? b.items.flat() : (b as RichTextBlock).spans).reduce((m, sp) => m + sp.text.length, 0), 0);
+  return blocks.length > MAX_ENTRY_BLOCKS || chars > MAX_ENTRY_CHARS ? [] : blocks;
 }
-
-/** Where a paste goes while the writer finds it in its text: a character no copy or typing holds. */
-const PASTE_AT = '';
 
 /** A block of text, or one item of a list, as a paste splits and joins them; a picture is carried as it is. */
 type PasteLine = { kind: RichTextBlock['type'] | 'li'; list?: RichListBlock['type']; spans: RichSpan[] } | { kind: 'image'; block: RichImageBlock };
@@ -298,70 +338,105 @@ type PasteLine = { kind: RichTextBlock['type'] | 'li'; list?: RichListBlock['typ
 const linesOf = (blocks: RichText): PasteLine[] =>
   blocks.flatMap((b): PasteLine[] => (isImageBlock(b) ? [{ kind: 'image', block: b }] : isListBlock(b) ? b.items.map((spans) => ({ kind: 'li', list: b.type, spans })) : [{ kind: b.type, spans: b.spans }]));
 const spansWords = (spans: RichSpan[]) => /\S/.test(spans.map((s) => s.text).join(''));
-const spansLength = (spans: RichSpan[]) => spans.reduce((n, s) => n + s.text.replace(/\n/g, '').length, 0);
+/** Characters, a line break counting as one, as caretAtChar counts them in the drawn block. */
+const spansLength = (spans: RichSpan[]) => spans.reduce((n, s) => n + s.text.length, 0);
 
-/** `spans` split where the paste goes, without its mark; null when it is not in them. */
-function splitAtPaste(spans: RichSpan[]): [RichSpan[], RichSpan[]] | null {
+/** `spans` split at `mark`, without it; null when it is not in them. */
+function splitAt(spans: RichSpan[], mark: string): [RichSpan[], RichSpan[]] | null {
   for (let i = 0; i < spans.length; i++) {
-    const at = spans[i].text.indexOf(PASTE_AT);
+    const at = spans[i].text.indexOf(mark);
     if (at < 0) continue;
     const s = spans[i];
     const before = { ...s, text: s.text.slice(0, at) };
-    const after = { ...s, text: s.text.slice(at + 1).replaceAll(PASTE_AT, '') };
+    const after = { ...s, text: s.text.slice(at + 1) };
     return [[...spans.slice(0, i), ...(before.text ? [before] : [])], [...(after.text ? [after] : []), ...spans.slice(i + 1)]];
   }
   return null;
 }
 
+/** The blocks of the writer's root a paste can split: a picture never, and words outside any block are left to the browser. */
+const SPLITS = new Set(['P', 'DIV', 'H2', 'H3', 'H4', 'BLOCKQUOTE', 'UL', 'OL']);
+
+/** A caret `n` characters into `el`, a line break counting as one: just after a break it is on the line after it. */
+function caretAtChar(el: HTMLElement, n: number): void {
+  const doc = el.ownerDocument;
+  const range = doc.createRange();
+  const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, { acceptNode: (x) => (x.nodeType === Node.TEXT_NODE || x.nodeName === 'BR' ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
+  let placed = false;
+  for (let t = walker.nextNode(); t && !placed; t = walker.nextNode()) {
+    if (t.nodeName === 'BR') {
+      if (n === 0) (range.setStartBefore(t), (placed = true));
+      else n--;
+    } else if (n <= (t as Text).length) (range.setStart(t, n), (placed = true));
+    else n -= (t as Text).length;
+  }
+  if (!placed) {
+    // The end of the block, before the break that only holds its last line open.
+    if (el.lastChild?.nodeName === 'BR') range.setStartBefore(el.lastChild);
+    else range.setStart(el, el.childNodes.length);
+  }
+  range.collapse(true);
+  const sel = doc.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
 /**
  * Put pasted blocks (see pastedArticle) in the writer's text at the selection, in place of what is selected, as one
- * formatting command (PostWriter runs it as one undo step). The block the caret is in splits around the paste and keeps
- * its kind: a paragraph's words that start the paste join the words before the caret, and a paragraph's words that end it
- * join the words after the caret, so one paragraph pasted is only its words. Every other block pasted keeps its own kind,
- * a list included, and ends the caret's block or list item there. Only the caret's block is drawn again; the caret ends
- * after the pasted words. False, with nothing changed, when the caret is not in the text.
+ * formatting command (PostWriter runs it as one undo step). One paragraph pasted is only its words, put among the words
+ * at the caret. Otherwise the block the caret is in splits around the paste and keeps its kind: a paragraph's words that
+ * start the paste join the words before the caret, and a paragraph's words that end it join the words after the caret.
+ * Every other block pasted keeps its own kind, a list included, and ends the caret's block or list item there; that
+ * block alone is drawn again, and the caret ends after the pasted words. False, with nothing changed, when the paste
+ * cannot go where the caret is (it is not in the text, or in words outside any block). `plain` is the copy's plain
+ * text, which says whether words pasted alone start or end with a space.
  */
-export function pasteArticle(root: HTMLElement, pasted: RichText, state: ProjectState, devUrl: string | null): boolean {
+export function pasteArticle(root: HTMLElement, pasted: RichText, state: ProjectState, devUrl: string | null, plain = ''): boolean {
   const doc = root.ownerDocument;
   const sel = doc.getSelection();
   if (!pasted.length || !sel?.rangeCount || !root.contains(sel.getRangeAt(0).commonAncestorContainer)) return false;
+  const only = pasted.length === 1 ? pasted[0] : null;
+  if (only && !isImageBlock(only) && !isListBlock(only) && only.type === 'p') {
+    // Words alone: the browser puts them in place of the selection, and nothing else in the text is drawn again.
+    const words = doc.createElement('div');
+    // A space the copy starts or ends with stays, as the plain text of it shows: it parts the words from those at the caret.
+    const spans = only.spans.map((sp) => ({ ...sp }));
+    if (/^[ \t]/.test(plain) && !spans[0].text.startsWith(' ')) spans.unshift({ text: ' ' });
+    if (/[ \t]$/.test(plain) && !spans[spans.length - 1].text.endsWith(' ')) spans.push({ text: ' ' });
+    appendSpans(words, spans, state);
+    // The break that holds a block's last line open is the block's, not the words'.
+    if (spans.at(-1)?.text.endsWith('\n')) words.lastChild?.remove();
+    return doc.execCommand('insertHTML', false, words.innerHTML);
+  }
   // What is selected goes first, as typing over it would take it: the blocks it ran across join, as the browser joins them.
   if (!sel.isCollapsed) doc.execCommand('delete');
   if (!sel.rangeCount || !root.contains(sel.anchorNode)) return false;
-  const range = sel.getRangeAt(0);
-  // A caret beside a picture or in the root itself is put in a paragraph of its own there.
-  const mark = doc.createTextNode(PASTE_AT);
-  range.insertNode(mark);
+  // Where the paste goes, marked with a character the text does not hold, so it is found again once the block is read.
+  const words = root.textContent ?? '';
+  let code = 0xe000;
+  while (code < 0xf8ff && words.includes(String.fromCharCode(code))) code++;
+  const markText = String.fromCharCode(code);
+  const mark = doc.createTextNode(markText);
+  sel.getRangeAt(0).insertNode(mark);
   let host: Node = mark;
   while (host.parentNode && host.parentNode !== root) host = host.parentNode;
-  if (host.parentNode !== root || (host instanceof HTMLElement && host.tagName === 'FIGURE')) {
-    mark.remove();
-    return false;
-  }
-  const lines = linesOf(readArticleNodes(host, state));
-  const at = lines.findIndex((l) => l.kind !== 'image' && splitAtPaste(l.spans));
+  const lines = host instanceof HTMLElement && host.parentNode === root && SPLITS.has(host.tagName) ? linesOf(readArticleNodes(host, state)) : [];
+  const at = lines.findIndex((l) => l.kind !== 'image' && splitAt(l.spans, markText));
   if (at < 0) {
+    const parent = mark.parentNode;
     mark.remove();
+    parent?.normalize();
     return false;
   }
   const line = lines[at] as Exclude<PasteLine, { kind: 'image' }>;
-  const [before, after] = splitAtPaste(line.spans)!;
+  const [before, after] = splitAt(line.spans, markText)!;
   const head = { ...line, spans: before };
   const tail = { ...line, spans: after };
   const middle = linesOf(pasted);
   let caret: { line: PasteLine; offset: number };
-  const first = middle[0];
-  if (first.kind === 'p' && (spansWords(before) || middle.length === 1)) {
-    head.spans = [...head.spans, ...first.spans];
-    middle.shift();
-  }
+  if (middle[0].kind === 'p' && spansWords(before)) head.spans = [...head.spans, ...(middle.shift() as { spans: RichSpan[] }).spans];
   const last = middle[middle.length - 1];
-  if (!last) {
-    // All the paste joined the caret's block: the words after the caret follow it in the same block.
-    caret = { line: head, offset: spansLength(head.spans) };
-    head.spans = [...head.spans, ...tail.spans];
-    tail.spans = [];
-  } else if (last.kind === 'p' && spansWords(after)) {
+  if (last.kind === 'p' && spansWords(after)) {
     middle.pop();
     tail.spans = [...last.spans, ...tail.spans];
     caret = { line: tail, offset: spansLength(last.spans) };
@@ -369,38 +444,37 @@ export function pasteArticle(root: HTMLElement, pasted: RichText, state: Project
   const out: PasteLine[] = [...lines.slice(0, at), ...(spansWords(head.spans) ? [head] : []), ...middle, ...(spansWords(tail.spans) ? [tail] : []), ...lines.slice(at + 1)];
 
   // Drawn as the writer draws its text, items of the same kind side by side in one list.
-  const els: HTMLElement[] = [];
+  const drawn = doc.createDocumentFragment();
   let list: HTMLElement | null = null;
   let caretEl: HTMLElement | null = null;
   for (const l of out) {
     let el: HTMLElement;
     if (l.kind === 'image') {
       list = null;
-      el = figureElement(l.block, state, devUrl);
-      els.push(el);
+      el = drawn.appendChild(figureElement(l.block, state, devUrl));
     } else if (l.kind === 'li') {
-      if (!list || listKind(list) !== l.list) els.push((list = newList(doc, l.list!)));
-      el = doc.createElement('li');
+      if (!list || listKind(list) !== l.list) list = drawn.appendChild(newList(doc, l.list!));
+      el = list.appendChild(doc.createElement('li'));
       appendSpans(el, l.spans, state);
-      list.appendChild(el);
     } else {
       list = null;
-      el = doc.createElement(l.kind);
+      el = drawn.appendChild(doc.createElement(l.kind));
       appendSpans(el, l.spans, state);
-      els.push(el);
     }
     if (l === caret.line) caretEl = el;
   }
-  (host as ChildNode).replaceWith(...els);
-  // A list drawn beside a list of the same kind is one list with it, as the text stores them.
-  const join = (a: Element | null | undefined, b: Element | null | undefined) => {
-    if (!a || !b || !listKind(a) || listKind(a) !== listKind(b)) return;
+  const firstEl = drawn.firstChild;
+  const lastEl = drawn.lastChild;
+  host.parentNode!.replaceChild(drawn, host);
+  // A list drawn right beside a list of the same kind is one list with it, as the text stores them.
+  const join = (a: Node | null | undefined, b: Node | null | undefined) => {
+    if (!(a instanceof Element) || !(b instanceof Element) || !listKind(a) || listKind(a) !== listKind(b)) return;
     a.append(...b.childNodes);
     b.remove();
   };
-  join(els[els.length - 1], els[els.length - 1]?.nextElementSibling);
-  join(els[0]?.previousElementSibling, els[0]);
-  if (caretEl?.isConnected) caretTo(caretEl, caret.offset);
+  join(lastEl, lastEl?.nextSibling);
+  join(firstEl?.previousSibling, firstEl);
+  if (caretEl?.isConnected) caretAtChar(caretEl, caret.offset);
   return true;
 }
 

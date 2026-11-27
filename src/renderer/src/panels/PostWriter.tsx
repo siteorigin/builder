@@ -1271,7 +1271,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               const text = e.clipboardData.getData('text/plain');
               if (!pasted.length && !text) return;
               command(() => {
-                if (pasted.length && root.current && pasteArticle(root.current, pasted, now, devUrl)) return;
+                if (pasted.length && root.current && pasteArticle(root.current, pasted, now, devUrl, text)) return;
                 if (text) document.execCommand('insertText', false, text);
               });
             }}
