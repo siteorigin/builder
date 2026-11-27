@@ -173,6 +173,7 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
           pending.set(id, String((p.request as { url?: string })?.url ?? ''));
           break;
         }
+        if (streams.has(id)) return void streams.set(id, String((p.request as { url?: string })?.url ?? ''));
         if (capturing) ignored.add(id);
         if (!needed || capturing) return;
         if (!AWAITED.has(String(p.type))) {

@@ -51,8 +51,10 @@ export function createReviewShooter(): ReviewShooter {
     // Each picture starts as a first visit: nothing a page stored, and no worker it registered, at another width.
     // One clear at a time, each after the last (chained before anything is awaited): an earlier one still running,
     // its picture called off, would wipe this one's page.
-    const clear = within(lastClear.then(() => true), false).then((free) => (free ? ses.clearStorageData().then(() => true, () => false) : false));
-    lastClear = clear;
+    const prior = lastClear;
+    const clear = within(prior.then(() => true), false).then((free) => (free ? ses.clearStorageData().then(() => true, () => false) : false));
+    // The next waits for this clear and for every earlier one still running, even one this picture gave up waiting for.
+    lastClear = Promise.all([prior, clear]);
     const cleared = await within(clear, false);
     // Called off, or the windows disposed of, meanwhile: no window is made for it.
     if (signal?.aborted || generation !== disposals) return { ok: false, reason: 'failed', detail: 'The capture was stopped.' };
