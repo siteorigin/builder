@@ -17,7 +17,7 @@ import { api, applyOps, claimRefusals, commitOps, dismissToast, getState, setSta
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
-import { nextMark, startMark, type JumpEvent, type JumpMark } from '../lib/jump-mark';
+import { useJumpMark } from '../lib/jump-mark';
 import { ChoiceField, Disclosure, DisclosureMark, DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
@@ -90,6 +90,16 @@ const COLOR_GROUPS: Array<{ label: string; ids: string[] }> = [
   { label: 'Text', ids: ['color.text', 'color.muted'] },
   { label: 'Dark areas', ids: ['color.inverse', 'color.on-inverse'] },
   { label: 'Lines and focus', ids: ['color.border', 'color.focus'] }
+];
+
+/** The jump links under the panel's header, one for each section in order. */
+const JUMPS = [
+  { id: 'tok-basics', label: 'Basics' },
+  { id: 'tok-color', label: 'Colors' },
+  { id: 'tok-text', label: 'Text' },
+  { id: 'tok-layout', label: 'Layout' },
+  { id: 'tok-custom', label: 'Yours' },
+  { id: 'site-settings', label: 'Site' }
 ];
 
 /**
@@ -1125,19 +1135,8 @@ export function SiteStyles() {
   // What a reset just did, for the status region; a repeat of the same words still changes the text, so it is read again.
   const [said, setSaid] = useState('');
   // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings; a jump link's
-  // own section stays marked through the scroll it starts, until the author scrolls on their own.
-  const [mark, setMark] = useState<JumpMark>(startMark);
-  const here = mark.here;
-  const moveMark = useCallback((e: JumpEvent) => setMark((m) => nextMark(m, e)), []);
-  // A section revealed from anywhere else (a token link, Project Health) hands the mark back to the scroll it starts.
-  useEffect(() => {
-    const onOpen = (e: Event) => {
-      const detail = (e as CustomEvent<string | { scroll?: boolean }>).detail;
-      if (typeof detail === 'string' || detail?.scroll !== false) moveMark({ type: 'input' });
-    };
-    window.addEventListener('inspector-open-section', onOpen);
-    return () => window.removeEventListener('inspector-open-section', onOpen);
-  }, [moveMark]);
+  // own section stays marked through the scroll it starts (lib/jump-mark).
+  const { here, jump, panel } = useJumpMark(JUMPS.length, '.ss-head');
   // Layout groups whose sizes are shown as CSS, switched from the group's heading.
   const [cssGroups, setCssGroups] = useState<Set<string>>(() => new Set());
   const say = useCallback((text: string) => setSaid((prev) => (prev === text ? `${text} ` : text)), []);
@@ -1812,14 +1811,6 @@ export function SiteStyles() {
     })
   );
 
-  const jumps = [
-    { id: 'tok-basics', label: 'Basics' },
-    { id: 'tok-color', label: 'Colors' },
-    { id: 'tok-text', label: 'Text' },
-    { id: 'tok-layout', label: 'Layout' },
-    { id: 'tok-custom', label: 'Yours' },
-    { id: 'site-settings', label: 'Site' }
-  ];
   const redirectCount = redirectRecords(st).length;
   const reviewId = `${uid}-review`;
 
@@ -1827,20 +1818,7 @@ export function SiteStyles() {
     <SayContext.Provider value={say}>
     <div
       className="panel-body ss"
-      onScroll={(e) => {
-        const box = e.currentTarget;
-        // The section that owns the upper third of what is in view below the header is the one being read.
-        const head = box.querySelector<HTMLElement>('.ss-head')?.offsetHeight ?? 0;
-        const line = box.getBoundingClientRect().top + head + (box.clientHeight - head) / 3;
-        const tops = [...box.querySelectorAll<HTMLElement>(':scope > .section')].map((sec) => sec.getBoundingClientRect().top);
-        const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
-        moveMark({ type: 'scroll', tops, line, atEnd, count: jumps.length });
-      }}
-      // The author scrolling on their own hands the mark back to the scroll; a press in the jump links is a jump.
-      onWheel={() => moveMark({ type: 'input' })}
-      onTouchMove={() => moveMark({ type: 'input' })}
-      onKeyDown={() => moveMark({ type: 'input' })}
-      onPointerDown={(e) => !(e.target as Element).closest?.('.insp-jump') && moveMark({ type: 'input' })}
+      {...panel}
     >
       <div className="sr-only" role="status" aria-live="polite">
         {contrastStatus}
@@ -1855,8 +1833,8 @@ export function SiteStyles() {
           <h3>Site styles</h3>
         </div>
         <nav className="insp-jump" aria-label="Jump to section">
-          {jumps.map((j) => (
-            <button key={j.id} aria-current={jumps[here]?.id === j.id ? 'location' : undefined} onClick={() => (openSection(j.id), moveMark({ type: 'jump', index: jumps.indexOf(j) }))}>
+          {JUMPS.map((j, i) => (
+            <button key={j.id} aria-current={here === i ? 'location' : undefined} onClick={() => (openSection(j.id), jump(i))}>
               {j.label}
             </button>
           ))}
