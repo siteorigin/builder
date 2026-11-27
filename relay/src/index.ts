@@ -4,7 +4,9 @@ import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewTarget } from '../.
 import { formatInviteLink, HOST_SOCKET_PATH, PREVIEW_ADMISSION_PATH, relaySocketUrl, roomPreviewOrigin, roomSocketPath } from '../../src/shared/live/relay-url';
 import { MAX_ADMISSION_BODY_BYTES, previewCookieName, previewCookieValues } from './admission';
 import { hasSigningKey, relayOrigin, type Env } from './config';
-import { INTERNAL_HEADERS, readBoundedText, roomRequest, textResponse } from './http';
+import { escapeHtml } from '../../src/shared/status-page';
+import { INTERNAL_HEADERS, isRefusal, readBoundedText, roomRequest, textResponse } from './http';
+import { framedRefusalPage, refusalPage, varyByNegotiation, wantsFramedPage, wantsPage, type RefusalKind } from './pages';
 
 export { SessionRoom } from './session-room';
 
@@ -12,6 +14,9 @@ export { SessionRoom } from './session-room';
  * The relay's front door. It allocates rooms, sends each room's traffic to that room's SessionRoom object, and turns
  * away anything malformed before an object is woken. It holds no state of its own: rooms live in their objects, and
  * nothing about a project, a person or an account is stored anywhere.
+ *
+ * Its refusals are a line of text for the app and the viewer's script, and a page (pages.ts) for a browser opening the
+ * address in a tab: a guest following a mistyped or ended link, or opening the preview on its own.
  *
  * Two kinds of host, and each serves only its own routes (src/shared/live/relay-url.ts names them):
  * - The relay's own host, where the viewer lives:
@@ -32,21 +37,54 @@ export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     const origin = relayOrigin(env);
-    if (origin === false) return textResponse(503, 'This relay’s RELAY_ORIGIN is not an origin.');
-    const preview = previewHost(url, origin);
-    if (preview) return previewRoute(request, env, url, preview);
-    if (origin && url.origin !== origin) return textResponse(404, 'Not found.');
-    if (url.pathname === HOST_SOCKET_PATH) return openRoom(request, env);
-    if (Object.hasOwn(VIEWER_FILES, url.pathname)) return viewerFile(request, env, VIEWER_FILES[url.pathname]);
-    const match = /^\/s\/([^/]+)(\/.*)?$/.exec(url.pathname);
-    if (!match || !ROOM_ID_RE.test(match[1])) return textResponse(404, 'Not found.');
-    const roomId = match[1];
-    const rest = match[2] ?? '';
-    if (rest === '' || rest === '/') return guestPage(request, origin ?? url.origin, roomId);
-    if (rest === '/ws') return connect(request, env, roomId);
-    return textResponse(404, 'Not found.');
+    const preview = origin === false ? null : previewHost(url, origin);
+    const response = await route(request, env, url, origin, preview);
+    if (!isRefusal(response) || !negotiable(request)) return response;
+    varyByNegotiation(response.headers);
+    // A host the relay does not answer for has no invite links, whatever its path looks like.
+    const kind = refusalKind(url, preview, response.status, !origin || url.origin === origin);
+    if (wantsFramedPage(request)) return framedRefusalPage(request, response, kind, null);
+    if (!wantsPage(request)) return response;
+    const room = !preview && kind === 'room-address' ? `/s/${url.pathname.split('/')[2]}` : null;
+    return refusalPage(request, response, kind, markFor(url, origin, preview), room ? { label: 'Open the invite link', href: room } : undefined);
   }
 } satisfies ExportedHandler<Env>;
+
+async function route(request: Request, env: Env, url: URL, origin: string | null | false, preview: PreviewHost | null): Promise<Response> {
+  if (origin === false) return textResponse(503, 'This relay’s RELAY_ORIGIN is not an origin.');
+  if (preview) return previewRoute(request, env, url, preview);
+  if (origin && url.origin !== origin) return textResponse(404, 'Not found.');
+  if (url.pathname === HOST_SOCKET_PATH) return openRoom(request, env);
+  if (Object.hasOwn(VIEWER_FILES, url.pathname)) return viewerFile(request, env, VIEWER_FILES[url.pathname]);
+  const match = /^\/s\/([^/]+)(\/.*)?$/.exec(url.pathname);
+  if (!match || !ROOM_ID_RE.test(match[1])) return textResponse(404, 'Not found.');
+  const roomId = match[1];
+  const rest = match[2] ?? '';
+  if (rest === '' || rest === '/') return guestPage(request, origin ?? url.origin, roomId);
+  if (rest === '/ws') return connect(request, env, roomId);
+  return textResponse(404, 'Not found.');
+}
+
+/** A request a page could answer: one a browser can open, as against a socket, a form or the viewer's ticket. */
+function negotiable(request: Request): boolean {
+  return (request.method === 'GET' || request.method === 'HEAD') && !request.headers.has('upgrade');
+}
+
+/** The page for one of the Worker's own refusals, by where it turned the request away. */
+function refusalKind(url: URL, preview: PreviewHost | null, status: number, onRelay: boolean): RefusalKind {
+  if (status >= 500) return 'unavailable';
+  if (preview && status === 401) return 'preview-private';
+  if (!preview && url.pathname.startsWith('/s/')) return status === 404 && !onRelay ? 'not-found' : ROOM_ID_RE.test(url.pathname.split('/')[2]) ? 'room-address' : 'invite-not-found';
+  return 'not-found';
+}
+
+/**
+ * The relay's mark, by an address the page's origin can load it from: a room's preview names the relay's own host.
+ * None when the relay is misconfigured, which answers every address with the same refusal, the mark's included.
+ */
+function markFor(url: URL, origin: string | null | false, preview: PreviewHost | null): string | null {
+  return origin === false ? null : `${preview?.viewerOrigin ?? (origin || url.origin)}${VIEWER_MARK_PATH}`;
+}
 
 interface PreviewHost {
   /** The host's first label, which names the room's object. */
@@ -186,7 +224,7 @@ async function preview(request: Request, env: Env, url: URL, host: PreviewHost):
   // A page for the viewer's frame is always asked for whole, so what comes back is a page the bridge can be added to:
   // never a 304 that would bring back a copy the browser kept without it, nor part of one.
   const framed = request.headers.get('sec-fetch-dest') === 'iframe';
-  if (values.length === 0) return framed ? refusedInFrame(url, 401, 'Join this live session to see its preview.') : textResponse(401, 'Join this live session to see its preview.');
+  if (values.length === 0) return framed ? framedRefusalPage(request, { status: 401, headers: new Headers() }, 'preview-private', bridgeUrl(url)) : textResponse(401, 'Join this live session to see its preview.');
   const name = previewCookieName(secure);
   const headers: Record<string, string> = { cookie: values.map((value) => `${name}=${value}`).join('; '), [INTERNAL_HEADERS.method]: request.method, [INTERNAL_HEADERS.target]: target, [INTERNAL_HEADERS.secure]: secure ? '1' : '0' };
   let passed = 0;
@@ -198,25 +236,29 @@ async function preview(request: Request, env: Env, url: URL, host: PreviewHost):
     }
   }
   const response = await env.ROOMS.get(env.ROOMS.idFromName(host.label)).fetch(roomRequest('/preview', null, { headers, signal: request.signal }));
-  // The room marks the refusals it makes itself (a cookie it no longer honours, access that ended), so a host's own
-  // 401 or 403 page is never taken for one. The mark is the relay's own and never leaves it.
-  if (response.headers.get(INTERNAL_HEADERS.refused) === '1') {
-    if (framed) return refusedInFrame(url, response.status, (await response.text()).trim());
-    const headers = new Headers(response.headers);
-    headers.delete(INTERNAL_HEADERS.refused);
-    return new Response(response.body, { status: response.status, headers });
+  // The room names the page each of its own answers is shown as, so a host's own 401 or 404 page is never taken for
+  // one, and marks the refusals among them (a cookie it no longer honours, access that ended), which the viewer's frame
+  // reports as such. The marks are the relay's own and never leave it.
+  const kind = response.headers.get(INTERNAL_HEADERS.page) as RefusalKind | null;
+  if (kind !== null) {
+    const refused = response.headers.get(INTERNAL_HEADERS.refused) === '1';
+    const answer = new Response(response.body, { status: response.status, headers: response.headers });
+    answer.headers.delete(INTERNAL_HEADERS.refused);
+    answer.headers.delete(INTERNAL_HEADERS.page);
+    varyByNegotiation(answer.headers);
+    if (framed) return framedRefusalPage(request, answer, kind, refused ? bridgeUrl(url) : null);
+    return wantsPage(request) ? refusalPage(request, answer, kind, `${host.viewerOrigin}${VIEWER_MARK_PATH}`) : answer;
   }
   return framed ? withReloadBridge(request, url, response) : response;
 }
 
 /**
- * The relay refusing a page the viewer's frame asked for, as a page the viewer can tell apart from any of the host's:
- * the same status and words, with the reload bridge marked so it tells the viewer the preview was refused rather than
- * that a page is ready. The viewer then says so, with its way to try again, instead of showing this page as live.
+ * The reload bridge's address on this preview origin. On the relay's refusal of a page the viewer's frame asked for
+ * (pages.ts, framedRefusalPage) it is marked data-refused, so it tells the viewer the preview was refused rather than
+ * that a page is ready, and the viewer says so with its way to try again instead of showing that page as live.
  */
-function refusedInFrame(url: URL, status: number, message: string): Response {
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Preview unavailable</title><script src="${url.origin}${PREVIEW_BRIDGE_PATH}" data-refused></script></head><body><p>${escapeHtml(message)}</p></body></html>\n`;
-  return new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+function bridgeUrl(url: URL): string {
+  return `${url.origin}${PREVIEW_BRIDGE_PATH}`;
 }
 
 /** The request headers a page for the viewer's frame goes without (see preview()). */
@@ -264,6 +306,9 @@ function withReloadBridge(request: Request, url: URL, response: Response): Respo
     .transform(new Response(response.body, { status: response.status, headers }));
 }
 
+/** The app's mark, which the relay's own pages show beside its name (VIEWER_FILES). */
+const VIEWER_MARK_PATH = '/_viewer/mark.svg';
+
 /**
  * The viewer's own files, by the path the guest's page loads them from on the relay's host. Each is served only at
  * its path here, from the Worker's assets (relay/viewer/), so the asset directory's layout is never itself a route.
@@ -284,11 +329,6 @@ async function viewerFile(request: Request, env: Env, file: string): Promise<Res
   headers.set('cache-control', 'no-cache');
   headers.set('x-content-type-options', 'nosniff');
   return new Response(request.method === 'HEAD' ? null : asset.body, { status: 200, headers });
-}
-
-/** HTML text with its markup characters escaped, for an attribute value or an element's content. */
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
 /**

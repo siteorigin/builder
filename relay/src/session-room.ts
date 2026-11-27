@@ -9,6 +9,7 @@ import { canCall } from '../../src/shared/live/roles';
 import { MAX_ADMISSION_BODY_BYTES, PREVIEW_TICKET_TTL_MS, TICKET_RE, previewCookieHeader, previewCookieValues, signPreviewCookie, verifyPreviewCookie, type PreviewGrant } from './admission';
 import { relayConfig, signingKey, type Env, type RelayConfig } from './config';
 import { INTERNAL_HEADERS, textResponse } from './http';
+import type { RefusalKind } from './pages';
 import { PreviewTunnel } from './preview-tunnel';
 import { randomToken, sameSecret } from './tokens';
 import {
@@ -108,7 +109,7 @@ export class SessionRoom extends DurableObject<Env> {
     // Preview requests arrive by the preview host, which named this object (index.ts); they are for the room it holds.
     if (path === '/admission' || path === '/preview') {
       const roomId = this.room?.roomId;
-      if (!roomId) return textResponse(404, 'There is no live session here. It may have ended.');
+      if (!roomId) return textResponse(404, 'There is no live session here. It may have ended.', path === '/preview' ? pageHeaders('session-ended') : {});
       return path === '/admission' ? this.redeemTicket(roomId, request) : this.preview(roomId, request);
     }
     const roomId = request.headers.get(INTERNAL_HEADERS.room) ?? '';
@@ -570,10 +571,10 @@ export class SessionRoom extends DurableObject<Env> {
 
   private async preview(roomId: string, request: Request): Promise<Response> {
     const keyReady = signingKey(this.env);
-    if (!keyReady) return textResponse(503, 'This relay is not configured to serve previews.');
+    if (!keyReady) return textResponse(503, 'This relay is not configured to serve previews.', pageHeaders('unavailable'));
     const method = request.headers.get(INTERNAL_HEADERS.method);
     const target = request.headers.get(INTERNAL_HEADERS.target) ?? '';
-    if ((method !== 'GET' && method !== 'HEAD') || !isPreviewTarget(target)) return textResponse(400, 'Bad request.');
+    if ((method !== 'GET' && method !== 'HEAD') || !isPreviewTarget(target)) return textResponse(400, 'Bad request.', pageHeaders('not-found'));
     const key = await keyReady;
     let grant: PreviewGrant | null = null;
     for (const value of previewCookieValues(request.headers.get('cookie'), request.headers.get(INTERNAL_HEADERS.secure) === '1')) {
@@ -586,15 +587,14 @@ export class SessionRoom extends DurableObject<Env> {
 
     // Checked against the room as it is now, with nothing waiting between the check and the request reaching the host.
     const now = Date.now();
-    const refused = { [INTERNAL_HEADERS.refused]: '1' };
-    if (!grant || isExpired(grant.expiresAt, now)) return textResponse(401, 'Join this live session to see its preview.', refused);
+    if (!grant || isExpired(grant.expiresAt, now)) return textResponse(401, 'Join this live session to see its preview.', pageHeaders('preview-private', true));
     this.expireDue(now);
     const room = this.room;
-    if (!room || room.roomId !== roomId) return textResponse(404, 'There is no live session here. It may have ended.');
+    if (!room || room.roomId !== roomId) return textResponse(404, 'There is no live session here. It may have ended.', pageHeaders('session-ended'));
     const guest = room.guests.find((g) => g.guestId === grant.guestId);
-    if (!guest || guest.status !== 'admitted' || guest.grantVersion !== grant.grantVersion || guest.role !== grant.role || accessEndsAt(guest, room) !== grant.expiresAt) return textResponse(403, 'You no longer have access to this preview.', refused);
-    if (!room.hostConnectionId || !this.socket(room.hostConnectionId)) return textResponse(503, 'The host is not connected right now.', { 'retry-after': '5' });
-    if (this.tunnel.inFlight(guest.guestId) >= MAX_PREVIEW_REQUESTS_IN_FLIGHT) return textResponse(429, 'Too many preview requests at once.', { 'retry-after': '1' });
+    if (!guest || guest.status !== 'admitted' || guest.grantVersion !== grant.grantVersion || guest.role !== grant.role || accessEndsAt(guest, room) !== grant.expiresAt) return textResponse(403, 'You no longer have access to this preview.', pageHeaders('access-ended', true));
+    if (!room.hostConnectionId || !this.socket(room.hostConnectionId)) return textResponse(503, 'The host is not connected right now.', { 'retry-after': '5', ...pageHeaders('host-away') });
+    if (this.tunnel.inFlight(guest.guestId) >= MAX_PREVIEW_REQUESTS_IN_FLIGHT) return textResponse(429, 'Too many preview requests at once.', { 'retry-after': '1', ...pageHeaders('busy') });
     const headers: Array<[string, string]> = [];
     for (const [name, value] of request.headers) {
       if (headers.length < MAX_PREVIEW_HEADERS && isPreviewHeaderName(name, 'request') && isPreviewHeaderValue(value)) headers.push([name, value]);
@@ -937,3 +937,10 @@ export class SessionRoom extends DurableObject<Env> {
   }
 }
 
+/**
+ * The marks on the room's own answer to a preview request: the page a browser opening it is shown (relay/src/pages.ts),
+ * and, for access it no longer honours, that it is a refusal the viewer's frame reports as one. The Worker strips both.
+ */
+function pageHeaders(kind: RefusalKind, refused = false): Record<string, string> {
+  return { [INTERNAL_HEADERS.page]: kind, ...(refused ? { [INTERNAL_HEADERS.refused]: '1' } : {}) };
+}
