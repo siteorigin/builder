@@ -9,7 +9,7 @@ import { Toolbar } from './panels/Toolbar';
 import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
 import { entryRoute } from '@shared/collections';
 import { saveOpenPost } from './lib/post-draft';
-import { activeWorkspace, canvasCovered } from './lib/workspace';
+import { activeWorkspace, canvasCovered, stylesShortcutCloses } from './lib/workspace';
 import { waitingPreview } from './lib/posts';
 import { withoutSlot } from './lib/model';
 import { HealthModal, StatusBar } from './panels/StatusBar';
@@ -670,9 +670,9 @@ export function Editor() {
     []
   );
 
-  // The Site styles shortcut gives back what it borrowed, so pressing it twice leaves the shell as it was: the
-  // dock it opened is put away again, or the view it covered comes back. Any other change to the dock (its
-  // toggle, another tab) makes the dock the user's again.
+  // The Site styles shortcut gives back what it borrowed of the dock: the dock it opened is put away again, or the
+  // view it covered comes back. Any other change to the dock (its toggle, another tab) makes the dock the user's
+  // again. A workspace it took off the canvas (#1108) stays off: the page is where the change is seen.
   const stylesBorrowed = useRef<{ opened: boolean; tab: RightTab } | null>(null);
   // The sidebar view a seam brings back after Enter hid the sidebar.
   const lastLeftTab = useRef<LeftTab>(leftTab ?? 'pages');
@@ -826,8 +826,9 @@ export function Editor() {
             onFocus={() => setRailStop('styles')}
             onClick={() => {
               const lent = stylesBorrowed.current;
-              if (dockOpen && rightTab === 'styles') return setState(lent?.opened ? { dockOpen: false, rightTab: lent.tab } : { rightTab: lent?.tab ?? 'inspect' });
-              const before = { opened: !dockOpen, tab: rightTab };
+              if (stylesShortcutCloses(getState())) return setState(lent?.opened ? { dockOpen: false, rightTab: lent.tab } : { rightTab: lent?.tab ?? 'inspect' });
+              // Already showing, beside a workspace: nothing more is borrowed.
+              const before = dockOpen && rightTab === 'styles' ? lent : { opened: !dockOpen, tab: rightTab };
               openSiteStyles();
               stylesBorrowed.current = before;
             }}
