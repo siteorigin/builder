@@ -5,6 +5,7 @@
  * copyright, and texture enough to weigh what a photo weighs (about 3 to 5 MB). Made once per machine, keyed by this
  * file's recipe and the encoder's version, under `.tmp/perf/photos/`.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -103,6 +104,37 @@ export async function scenarioPhotos(): Promise<{ dir: string; files: string[]; 
   }
   const listed = readdirSync(dir).filter((f) => names.includes(f));
   if (listed.length !== PHOTO_COUNT) throw new Error(`The scenario's photos in ${dir} are incomplete: remove the folder to draw them again.`);
+  const hash = createHash('sha256');
+  for (const name of names) hash.update(name).update('\0').update(readFileSync(join(dir, name))).update('\0');
+  return { dir, files: names.map((n) => join(dir, n)), hash: hash.digest('hex').slice(0, 16) };
+}
+
+/** The system's image converter on macOS, which the app decodes HEIC photos with too (src/main/project/photo-convert.ts). */
+const SIPS = '/usr/bin/sips';
+
+/**
+ * The `importHeic` scenario's photos: the same 20 pictures as HEIC files, as an iPhone saves them, converted from the
+ * JPEGs by macOS's own encoder (which turns the pixels upright and keeps the credits). Made once per machine, keyed by
+ * the JPEGs and the encoder's version, under `.tmp/perf/photos/`; only on macOS, which has the encoder and the decoder
+ * the app converts HEIC with.
+ */
+export async function scenarioHeicPhotos(): Promise<{ dir: string; files: string[]; hash: string }> {
+  if (process.platform !== 'darwin' || !existsSync(SIPS)) throw new Error('The HEIC photos are made with macOS’s sips, and only macOS can import them: run importHeic on a Mac.');
+  const jpegs = await scenarioPhotos();
+  const version = execFileSync(SIPS, ['--version'], { encoding: 'utf8' }).trim();
+  const key = createHash('sha256').update(`heic:${jpegs.hash}:${version}`).digest('hex').slice(0, 12);
+  const dir = join(ROOT, '.tmp', 'perf', 'photos', `${key}-heic`);
+  const names = Array.from({ length: PHOTO_COUNT }, (_, n) => photoSpec(n + 1).name.replace(/\.jpg$/, '.heic'));
+  if (!existsSync(dir)) {
+    const part = `${dir}.part-${process.pid}`;
+    rmSync(part, { recursive: true, force: true });
+    mkdirSync(part, { recursive: true });
+    for (const [n, jpeg] of jpegs.files.entries()) execFileSync(SIPS, ['-s', 'format', 'heic', jpeg, '--out', join(part, names[n])], { stdio: 'ignore' });
+    rmSync(dir, { recursive: true, force: true });
+    renameSync(part, dir);
+  }
+  const listed = readdirSync(dir).filter((f) => names.includes(f));
+  if (listed.length !== PHOTO_COUNT) throw new Error(`The scenario's HEIC photos in ${dir} are incomplete: remove the folder to make them again.`);
   const hash = createHash('sha256');
   for (const name of names) hash.update(name).update('\0').update(readFileSync(join(dir, name))).update('\0');
   return { dir, files: names.map((n) => join(dir, n)), hash: hash.digest('hex').slice(0, 16) };

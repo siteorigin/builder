@@ -307,9 +307,11 @@ the import review confirmed as it opens, which adds each as a web-sized copy; un
 all its copies. Checks: the review offers all 20 a web-sized copy, 20 images arrive, each a 2560-pixel JPEG turned
 upright, with JPEG copies at each smaller width, WebP at those and its full width and AVIF the same or none, every file
 on disk the size and format its record says, the credited photos' WebP and AVIF copies carrying their credits, each
-original and its smallest copy loading from the preview, and Assets saying it added 20 images. Times from
-`import.requested` (the editor sending the confirmed import): `total` (to the commit showing every photo), `firstShown`
-(to the first commit showing any), `main` (`controller.importAssets`), `apply` (the one change that adds them), `review`
+original and its smallest copy loading from the preview, and Assets saying it added 20 images (watched for from the
+confirmation on, as it says so for a few seconds, which can be before the copies are made). Times from
+`import.requested` (the editor sending the confirmed import): `total` (to the commit showing every photo with all its
+copies), `firstShown` (to the first commit showing any), `main` (`controller.importAssets`), `apply` (the import's first
+change, the one that adds them) and `applies` (every change in `controller.importAssets`), `review`
 (`controller.reviewImport`, before the request); per photo (medians): `image.ms` (its time in the main process),
 `image.webMs`, `image.webDecodeMs`, `image.webCopyMs` (its web-sized copy in the media worker: the whole request, its
 decodes, its resize and encode) and `image.copiesMs`, `image.copiesDecodeMs`, `image.jpegMs`, `image.webpMs`,
@@ -318,8 +320,18 @@ reports each request it answers (`media.request`, with `stats` asked for only wh
 `decodes` (pixel decodes of an encoded picture), `encodes`, `workerCpuMs` (CPU each worker used, every thread, from the first
 request it was given to the last it answered, added up over the workers: divided by
 `total`, the cores the import kept busy), `workers` and `workerPeakRss` (each worker's peak resident memory, added up).
-Counts: file writes, durable writes and fsyncs in the import, `images` and `variants` added; the longest main-process
-stall.
+Counts: file writes, durable writes and fsyncs in the import, the snapshots sent to the editor and their bytes
+(`snapshotsSent`, `snapshotBytes`), `images` and `variants` added; the longest main-process stall.
+
+**`importOriginals`** and **`importHeic`** (after `open`) add the same 20 photos another way, each with the same
+checks and metrics named after it (`importOriginals.total`, …). `importOriginals` unticks every web-sized copy in the
+review, one by one, before confirming it, so each 12-megapixel original is kept as it is and its copies are made from
+it: each image is the very file chosen, 4032 × 3024 (3024 × 4032 turned upright), with JPEG copies at each smaller
+width and WebP and AVIF at those and its full width; the worker makes no web-sized copies, so there are no `image.web…`
+metrics. `importHeic` imports the photos as HEIC files, converted from the JPEGs once per machine by macOS's own
+encoder (`sips`, which turns their pixels upright and keeps their credits; `photos.ts` `scenarioHeicPhotos`): the review
+lists all 20 to be converted, and each arrives as a 2560-pixel JPEG web-sized copy, as `import`'s do, by way of the
+system's decoder (`sips`, into a TIFF the worker reads). It runs only on macOS.
 
 **`cmdk`** (after `open`): with nothing else open, press the command menu's shortcut and type "contact" one key every
 100 ms, until the menu lists the results for the whole search. Checks: the search has the focus and holds what was
