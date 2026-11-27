@@ -377,6 +377,7 @@
   .menu .menu-item:not([data-highlighted], :hover, [data-disabled], [aria-disabled='true']) .kbd { color: var(--text-3); }
   .menu .menu-item .kbd { flex: none; margin-left: 12px; padding: 0; border: 0; font-size: 12px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
   .menu-item.danger { color: var(--red-ink); }
+  .menu-item.muted > .grow { color: var(--text-3); }
   .menu-item.danger svg { color: var(--red-ink); }
   .menu-item.danger:is([data-highlighted], :hover, .focused):not(:disabled, [data-disabled], [aria-disabled='true']) { background: var(--red-soft); color: var(--red-ink); }
   .menu-item.danger:is([data-highlighted], :hover, .focused):not(:disabled, [data-disabled], [aria-disabled='true']) svg, .menu .menu-item.danger:is([data-highlighted], :hover):not([aria-disabled='true']) .kbd { color: var(--red-ink); }

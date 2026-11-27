@@ -214,6 +214,8 @@ export interface MenuItem {
   onSelect?: () => void;
   disabled?: boolean;
   danger?: boolean;
+  /** Drawn quieter, for an item that is offered but not ready (a provider still to be set up); it can still be chosen. */
+  muted?: boolean;
   separator?: boolean;
   heading?: string;
 }
@@ -382,7 +384,7 @@ export function Menu({ x, y, items: source, onClose, label, alignEnd, returnTo, 
         );
         // An unavailable item stays in the arrow-key order (APG menu: disabled items are focusable, so the
         // author can find what exists), but choosing it does nothing and leaves the menu open.
-        const props = { className: `menu-item${it.danger ? ' danger' : ''}${it.description ? ' described' : ''}`, 'aria-disabled': it.disabled || undefined, 'aria-label': it.ariaLabel, 'aria-describedby': it.ariaLabel && it.description ? `${idBase}-d${i}` : undefined, textValue: it.label, onSelect: (e: Event) => (it.disabled ? e.preventDefault() : choose(it)) };
+        const props = { className: `menu-item${it.danger ? ' danger' : ''}${it.muted ? ' muted' : ''}${it.description ? ' described' : ''}`, 'aria-disabled': it.disabled || undefined, 'aria-label': it.ariaLabel, 'aria-describedby': it.ariaLabel && it.description ? `${idBase}-d${i}` : undefined, textValue: it.label, onSelect: (e: Event) => (it.disabled ? e.preventDefault() : choose(it)) };
         const key = keyOf(it, i);
         const inner = (
           <>

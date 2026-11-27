@@ -456,7 +456,7 @@ export function LocalModelSettings({
             <div className="scope-note danger settings-remote-warning" role={justAllowed ? 'alert' : undefined}>
               <TriangleAlert />
               <span>
-                {active ? 'When you use the assistant, project content' : 'With Local model in use, project content'} leaves this computer for <strong className="settings-host">{savedRemoteHost}</strong>. Only use a server you trust.
+                When you use Local model, project content leaves this computer for <strong className="settings-host">{savedRemoteHost}</strong>. Only use a server you trust.
               </span>
             </div>
           )}
