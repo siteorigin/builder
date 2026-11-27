@@ -504,30 +504,42 @@ export function insertsInline(state: ProjectState, owner: OwnerRef, parentId: st
   return around.some((a) => some(reader.around(a).tags, ['p', 'span']));
 }
 
-/** A checker for one node's candidate tags, sharing what doesn't depend on the tag. */
-function candidates(state: ProjectState, owner: OwnerRef, nodeId: string): (tag: unknown) => string | null {
+/**
+ * A checker for one node's candidate tags, sharing what doesn't depend on the tag. Each refusal says whether it is about
+ * the node itself, in its own document, or about something the new tag would strand (a child, a placement elsewhere).
+ */
+function candidates(state: ProjectState, owner: OwnerRef, nodeId: string): (tag: unknown) => { message: string; self: boolean } | null {
   const node = getNode(getTree(state, owner), nodeId);
   const structure = new Structure(state);
   const docs = reach(state, [owner]);
   let before: Map<string, Set<string>> | undefined;
   return (tag) => {
     const kind = tagKindProblem(node, tag);
-    if (kind) return kind;
+    if (kind) return { message: kind, self: true };
     before ??= errorSites(new Reader(structure), docs);
-    return cardProblem(structure, owner, nodeId, tag as string) ?? firstIntroduced(before, new Reader(structure, { owner, nodeId, tag: tag as string }), docs, [owner])?.message ?? null;
+    const card = cardProblem(structure, owner, nodeId, tag as string);
+    if (card) return { message: card, self: true };
+    const found = firstIntroduced(before, new Reader(structure, { owner, nodeId, tag: tag as string }), docs, [owner]);
+    return found && { message: found.message, self: found.nodeId === nodeId && sameOwner(found.owner, owner) };
   };
 }
 
 /** Why `node` can't take `tag` where it sits, as one edit on its own, or null when it can. */
 export function tagProblem(state: ProjectState, owner: OwnerRef, nodeId: string, tag: unknown): string | null {
-  return candidates(state, owner, nodeId)(tag);
+  return candidates(state, owner, nodeId)(tag)?.message ?? null;
 }
 
-/** Each tag of a node's kind, with why it can't take it where it sits (null when it can, and for the tag it has). */
-export function tagOptions(state: ProjectState, owner: OwnerRef, nodeId: string): Array<{ tag: string; problem: string | null }> {
+/**
+ * Each tag of a node's kind, with why it can't take it where it sits (null when it can, and for the tag it has), and
+ * whether that problem is the node's own placement rather than something the tag would strand around it.
+ */
+export function tagOptions(state: ProjectState, owner: OwnerRef, nodeId: string): Array<{ tag: string; problem: string | null; self: boolean }> {
   const node = getNode(getTree(state, owner), nodeId);
   if (node.kind !== 'element' && node.kind !== 'text') return [];
   const tags: readonly string[] = node.kind === 'text' ? TEXT_TAGS : ELEMENT_TAGS;
   const check = candidates(state, owner, nodeId);
-  return tags.map((tag) => ({ tag, problem: tag === node.tag ? null : check(tag) }));
+  return tags.map((tag) => {
+    const found = tag === node.tag ? null : check(tag);
+    return { tag, problem: found?.message ?? null, self: found?.self ?? false };
+  });
 }

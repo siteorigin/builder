@@ -16,7 +16,7 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { nestingProblems, tagOptions, tagProblem } from '@engine/semantic-tags';
 import { defFile, generateProject } from '@generator/index';
-import { ELEMENT_TAG_GROUPS, TEXT_TAG_GROUPS, tagSelectOptions, unavailableReasons } from '../../src/renderer/src/lib/tag-options';
+import { ELEMENT_TAG_GROUPS, TEXT_TAG_GROUPS, standingReason, tagSelectOptions, unavailableReasons } from '../../src/renderer/src/lib/tag-options';
 
 const { managed } = FOUNDATION;
 const blank = () => createStarterState('blank', 'Blank', false);
@@ -511,6 +511,8 @@ describe('across documents (#189)', () => {
     expect(tagProblem(placed, defOwner(def), 'root', 'section')).toMatch(/Home: A container is a list item/);
     expect(tagProblem(placed, defOwner(def), 'root', 'ol')).toBeNull();
     expect(tagOptions(placed, defOwner(def), 'root').filter((x) => x.problem).map((x) => x.tag)).toContain('div');
+    // The item it strands is in another document: not the root's own placement, so the Inspector keeps the words.
+    expect(tagOptions(placed, defOwner(def), 'root').find((x) => x.tag === 'section')?.self).toBe(false);
   });
 
   it('leaves older problems alone in a document a batch first places an edited design in', () => {
@@ -632,7 +634,7 @@ describe('the Inspector’s choices (#189)', () => {
     const row = tagOptions(s, o, 'n_row0001');
     expect(row.map((x) => x.tag)).toEqual([...ELEMENT_TAGS]);
     expect(row.find((x) => x.tag === 'section')?.problem).toBeNull();
-    expect(row.find((x) => x.tag === 'li')?.problem).toMatch(/is a list item/);
+    expect(row.find((x) => x.tag === 'li')).toMatchObject({ problem: expect.stringMatching(/is a list item/), self: true });
     expect(row.find((x) => x.tag === 'main')?.problem).toMatch(/every page already has one/);
     const text = tagOptions(s, o, 'n_text0001');
     expect(text.map((x) => x.tag)).toEqual([...TEXT_TAGS]);
@@ -654,13 +656,37 @@ describe('the tag select (#189)', () => {
     const options = groups.flatMap((g) => g.options);
     expect(options.find((o) => o.tag === 'li')).toEqual({ tag: 'li', name: 'List item', problem: expect.stringMatching(/list item/) });
     expect(options.find((o) => o.tag === 'section')?.problem).toBeNull();
-    // Spelled out beside the select, one line per reason.
-    const why = 'A container is a list item, so it goes directly inside a list (ul or ol).';
-    const twoWays = tagSelectOptions('element', 'div', new Map([['li', why], ['main', 'Every page has one.'], ['summary', why]]));
-    expect(unavailableReasons(twoWays.groups)).toEqual([
-      { reason: 'Every page has one.', names: ['Main area (main)'] },
-      { reason: why, names: ['List item (li)', 'Disclosure summary (summary)'] }
+    // Spelled out beside the select, one line per reason with the tags it rules out.
+    const dl = 'Only goes inside a description list.';
+    const several = tagSelectOptions('element', 'div', new Map([['main', 'Every page already has one.'], ['dt', dl], ['dd', dl]]));
+    expect(unavailableReasons(several.groups)).toEqual([
+      { reason: 'Every page already has one.', names: ['Main area (main)'] },
+      { reason: dl, names: ['Term (dt)', 'Description (dd)'] }
     ]);
+    // A group one reason rules out entirely is named as the group.
+    const inline = 'Text inside a paragraph container has to be inline text.';
+    const headings = tagSelectOptions('text', 'span', new Map([1, 2, 3, 4, 5, 6].map((n) => [`h${n}`, inline])));
+    expect(unavailableReasons(headings.groups)).toEqual([{ reason: inline, names: ['Headings (h1–h6)'] }]);
+  });
+
+  it('says a tag’s own placement rule as where the tag goes, and keeps what it would strand as the check words it', () => {
+    const li = 'A container is a list item, so it goes directly inside a list (ul or ol).';
+    expect(standingReason('li', li, true)).toBe('Only goes directly inside a bulleted or numbered list.');
+    expect(standingReason('dd', 'A heading is a term or description, so it goes inside a description list (dl).', true)).toBe('Only goes inside a description list.');
+    expect(standingReason('figcaption', 'A heading is a caption, so it goes directly inside a figure.', true)).toBe('Only goes directly inside a figure.');
+    expect(standingReason('summary', 'A container is a summary, so it goes directly inside a details element.', true)).toBe('Only goes directly inside an expandable section.');
+    expect(standingReason('main', 'A container can’t be a main area: every page already has one, around its sections.', true)).toBe('Every page already has one, around its sections.');
+    expect(standingReason('h2', 'A heading can’t go inside a paragraph container, which holds only inline text, buttons, links and icons.', true)).toBe('Text inside a paragraph container has to be inline text.');
+    const inP = 'A container can’t go inside a paragraph container, which holds only inline text, buttons, links and icons.';
+    expect(standingReason('section', inP, true, 'element')).toBe('Can’t go inside a paragraph container, which holds only inline text, buttons, links and icons.');
+    // Out of the paragraph, a caption still needs its figure: its own rule says what would make it available.
+    expect(standingReason('figcaption', 'Text can’t go inside a paragraph container, which holds only inline text, buttons, links and icons.', true)).toBe('Only goes directly inside a figure.');
+    expect(standingReason('details', 'A disclosure can’t go inside a linked card, which can hold nothing interactive.', true, 'element')).toBe('Can’t go inside a linked card, which can hold nothing interactive.');
+    // Another tag's rule (a list item the change strands) is not this tag's placement, nor is a problem elsewhere.
+    expect(standingReason('figcaption', li, true)).toBe(li);
+    expect(standingReason('li', li, false)).toBe(li);
+    const card = 'A container is one link, which renders in place of its tag, so it can’t be a list.';
+    expect(standingReason('ul', card, true)).toBe(card);
   });
 });
 
