@@ -1,6 +1,6 @@
 import { variantOptions } from '@shared/variants';
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, Globe, Link2, RotateCcw } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Globe, Link2, RotateCcw, TriangleAlert } from 'lucide-react';
 import type { EntityKind, ProjectState, SiteIdentity, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
@@ -13,11 +13,11 @@ import { installedFonts } from '@catalogue/fonts';
 import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRoles, sizeAtWidth, typeScale, typeScaleOps, TYPE_SCALE_CHOICES, type TypeScaleChoice } from '@shared/type-scale';
 import { allTrees, instancesOf } from '@engine/tree';
 import { forEachTokenPropRef } from '@engine/tokens';
-import { api, applyOps, setState, useStore } from '../store';
+import { api, applyOps, commitOps, dismissToast, getState, setState, shownAt, toast, undoAction, useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
-import { DraftInput, Field, Section, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
+import { DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
 import { SiteImageField } from './PropEditors';
@@ -178,8 +178,8 @@ const SPECIMEN_WIDTHS = [
   { label: 'Phone', width: 375 },
   { label: 'Desktop', width: 1280 }
 ] as const;
-/** A size drawn small enough for the dock and in the same order as the real ones: body text reads at 13px. */
-const specimenPx = (px: number) => Math.round(13 * Math.pow(Math.max(px, 1) / 16, 0.45) * 2) / 2;
+/** A size drawn small enough for the dock and in the same order as the real ones: body text reads at 13px, the biggest display near 36px. */
+const specimenPx = (px: number) => Math.round(13 * Math.pow(Math.max(px, 1) / 16, 0.55) * 2) / 2;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const refOf = (v: unknown) => (v && typeof v === 'object' && 'token' in (v as object) ? String((v as { token: string }).token) : null);
@@ -212,6 +212,10 @@ const friendlySize = (v: string) => {
   return p !== null ? `${p}px` : v;
 };
 const weightName = (w: number) => WEIGHTS.find(([n]) => n === w)?.[1] ?? String(w);
+/** A weight as said beside a size: a named one by its name, any other as "Weight 480", never a bare number. */
+const weightWords = (w: number) => WEIGHTS.find(([n]) => n === w)?.[1] ?? `Weight ${w}`;
+/** A size in pixels as the size fields show it: to one decimal, without a trailing zero. */
+const pxText = (px: number) => `${Math.round(px * 10) / 10}px`;
 /** Equal as data, whatever order the keys were written in. */
 const sameValue = (a: unknown, b: unknown): boolean => {
   if (a && b && typeof a === 'object' && typeof b === 'object') {
@@ -619,6 +623,13 @@ export function SiteStyles() {
   const uses = useMemo(() => (snap ? tokenUses(snap.state) : new Map<string, TokenUse>()), [snap?.state]); // eslint-disable-line react-hooks/exhaustive-deps
   const [openDetail, setOpenDetail] = useState<string | null>(null);
   const [openText, setOpenText] = useState<string | null>(null);
+  // Type scale choices, one at a time: the arrow keys choose as they move, faster than a choice saves. Each is planned
+  // against the project as the one before it left it; a choice overtaken while it waits is skipped for the newest.
+  // The toast the last choice raised gives way to the next one's rather than stacking under it.
+  const scaleRun = useRef<{ busy: Promise<void>; seq: number; toast: number | null; after: { opening: string; revision: number } | null }>({ busy: Promise.resolve(), seq: 0, toast: null, after: null });
+  // The choice being saved: the radios follow it at once, so focus and the checked option never part while it saves. Once
+  // saved it carries its revision, and counts only until the panel shows that revision.
+  const [pendingScale, setPendingScale] = useState<{ choice: string; opening: string; revision?: number } | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const uid = useId();
   // On a site with a dark palette, Colors shows and edits one palette at a time; the canvas previews the same one.
@@ -971,7 +982,8 @@ export function SiteStyles() {
   const textRow = (t: TokenDef) => {
     const v = textMetrics(tokens, t.id, themeValue(t.id));
     if (!v) return null;
-    const base = (themeValue(t.id) ?? v) as TextStyleValue;
+    // The theme's own metrics, worked out through its links, so a field is marked changed only when it differs from them.
+    const base = (textMetrics(theme.tokens, t.id) ?? themeValue(t.id) ?? v) as TextStyleValue;
     const famRef = refOf(v.family);
     const stack = famRef ? fontStack(famRef) : String(v.family);
     const famLabel = famRef ? (byId(famRef)?.label ?? 'a font that is no longer available') : familyName(stack);
@@ -1008,30 +1020,29 @@ export function SiteStyles() {
     };
     return (
       <div className={`ss-text${open ? ' open' : ''}${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row data-token-id={t.id}>
+        {/* The whole head opens the row (the toggle's hit area covers it); the reset sits beside the name, as on every Site styles row. */}
         <div className="ss-text-head">
-          <button className="ss-text-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpenText(open ? null : t.id)}>
+          <button className="ss-text-toggle" aria-expanded={open} aria-controls={bodyId} aria-describedby={`${bodyId}-meta`} onClick={() => setOpenText(open ? null : t.id)}>
             <ChevronRight className="chev" aria-hidden="true" />
-            <span className="ss-text-spec">
-              <span
-                id={nameId}
-                className="ss-specimen"
-                style={{
-                  fontFamily: shownStack(stack),
-                  fontWeight: v.weight,
-                  // A compressed scale: big styles stay bigger than small ones without filling the dock.
-                  fontSize: Math.round(Math.min(30, 12 + (max - 12) * 0.28)),
-                  letterSpacing: v.tracking,
-                  textTransform: (v.transform as React.CSSProperties['textTransform']) ?? 'none'
-                }}
-              >
-                {t.label}
-              </span>
-              <span className="ss-text-meta">
-                {friendlySize(v.size)} · {weightName(v.weight)} · {famLabel}
-              </span>
+            <span
+              id={nameId}
+              className="ss-specimen"
+              style={{
+                fontFamily: shownStack(stack),
+                fontWeight: v.weight,
+                // A compressed scale: big styles stay bigger than small ones without filling the dock.
+                fontSize: Math.round(Math.min(30, 12 + (max - 12) * 0.28)),
+                letterSpacing: v.tracking,
+                textTransform: (v.transform as React.CSSProperties['textTransform']) ?? 'none'
+              }}
+            >
+              {t.label}
             </span>
           </button>
           {changed(t.id) && <ResetDot label={t.label} theme="text style" onReset={() => set(t.id, null)} />}
+          <span className="ss-text-meta" id={`${bodyId}-meta`}>
+            {friendlySize(v.size)} · {weightWords(v.weight)} · {famLabel}
+          </span>
         </div>
         <div className="ss-text-body" id={bodyId} role="group" aria-labelledby={nameId} hidden={!open}>
           {open && (
@@ -1052,24 +1063,26 @@ export function SiteStyles() {
                 </select>
               ))}
               {metric('size', (id) => <SizeControl id={id} value={v.size} name={`${t.label} size`} onCommit={(size) => set(t.id, { size })} />)}
-              {metric('weight', (id) => (
-                <select id={id} className="select sm" value={v.weight} onChange={(e) => set(t.id, { weight: Number(e.target.value) })}>
-                  {weights.map(([n, name]) => (
-                    <option key={n} value={n}>
-                      {name === String(n) ? n : `${n} · ${name}`}
-                    </option>
-                  ))}
-                </select>
-              ))}
-              {metric('transform', (id) => (
-                <select id={id} className="select sm" value={String(metricOf(v, 'transform'))} onChange={(e) => set(t.id, { transform: e.target.value })}>
-                  {CASES.map(([c, label]) => (
-                    <option key={c} value={c}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              ))}
+              <div className="grid-2">
+                {metric('weight', (id) => (
+                  <select id={id} className="select sm" value={v.weight} onChange={(e) => set(t.id, { weight: Number(e.target.value) })}>
+                    {weights.map(([n, name]) => (
+                      <option key={n} value={n}>
+                        {name === String(n) ? n : `${n} · ${name}`}
+                      </option>
+                    ))}
+                  </select>
+                ))}
+                {metric('transform', (id) => (
+                  <select id={id} className="select sm" value={String(metricOf(v, 'transform'))} onChange={(e) => set(t.id, { transform: e.target.value })}>
+                    {CASES.map(([c, label]) => (
+                      <option key={c} value={c}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                ))}
+              </div>
               <div className="grid-2">
                 {metric('lineHeight', (id) => <DraftInput id={id} className="input sm" value={v.lineHeight} onCommit={(lineHeight) => (lineHeight.trim() ? set(t.id, { lineHeight: lineHeight.trim() }) : false)} />)}
                 {metric('tracking', (id) => <DraftInput id={id} className="input sm" value={v.tracking} onCommit={(tracking) => (tracking.trim() ? set(t.id, { tracking: tracking.trim() }) : false)} />)}
@@ -1195,11 +1208,70 @@ export function SiteStyles() {
   // Type scale: every heading and text size at once, keeping each style's font; one step to undo.
   const roles = scaleRoles(theme.tokens, tokens);
   const scale = activeTypeScale(tokens, theme.tokens);
+  const pendingChoice = pendingScale && pendingScale.opening === snap.workspaceKey && (pendingScale.revision === undefined || snap.revision < pendingScale.revision) ? pendingScale.choice : null;
   const scaleName = (c: TypeScaleChoice) => (c === 'theme' ? 'Theme' : typeScale(c).label);
-  const scaleDescription = (c: TypeScaleChoice) => (c === 'theme' ? `${theme.name}'s own sizes, line heights and letter spacing.` : typeScale(c).description);
+  const scaleDescription = (c: TypeScaleChoice) => (c === 'theme' ? `${theme.name}'s own sizes and spacing.` : typeScale(c).description);
+  // Said in a toast with its Undo, as the palette's choices are: one step puts back every size it replaced, own sizes included.
   const chooseScale = (c: TypeScaleChoice) => {
-    const { ops } = typeScaleOps(tokens, theme.tokens, overrides, c);
-    if (ops.length) void applyOps(ops, c === 'theme' ? "Use the theme's type scale" : `Use the ${typeScale(c).label} type scale`, undefined, snap.revision);
+    const run = scaleRun.current;
+    // Made in this opening of this project, and applied and answered only there.
+    const opening = snap.workspaceKey;
+    const seq = ++run.seq;
+    const newest = () => run.seq === seq;
+    const here = () => getState().snapshot?.workspaceKey === opening;
+    setPendingScale({ choice: c, opening });
+    let saved = false;
+    const say = (text: string, kind: 'info' | 'error' = 'info', undo?: Parameters<typeof toast>[2]) => {
+      if (!here()) return;
+      if (run.toast !== null) dismissToast(run.toast);
+      toast(text, kind, undo);
+      run.toast = getState().toasts.at(-1)?.id ?? null;
+    };
+    run.busy = run.busy
+      .then(async () => {
+        if (!newest()) return;
+        // Planned against the project as the last choice made in this opening left it, never an older copy.
+        if (run.after?.opening === opening && !(await shownAt(run.after.revision, opening))) {
+          say('The type scale could not be changed just now. Choose it again.', 'error');
+          return;
+        }
+        const now = getState().snapshot;
+        if (!now || now.workspaceKey !== opening || !newest()) return;
+        const themeNow = getTheme(now.state.site.themeId);
+        const tokensNow = effectiveTokens(now.state);
+        const { ops, unscalable } = typeScaleOps(tokensNow, themeNow.tokens, now.state.tokens.overrides, c);
+        const kept = unscalable.map((id) => tokensNow.find((t) => t.id === id)?.label ?? id);
+        const keptText = kept.length ? `${kept.join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} own size.` : '';
+        if (!ops.length) {
+          if (keptText) say(keptText);
+          return;
+        }
+        const r = await commitOps(ops, c === 'theme' ? "Use the theme's type scale" : `Use the ${typeScale(c).label} type scale`, undefined, now.revision);
+        if (!r?.ok || r.workspaceKey !== opening) return;
+        run.after = { opening, revision: r.revision };
+        saved = true;
+        if (newest()) setPendingScale({ choice: c, opening, revision: r.revision });
+        say(`${c === 'theme' ? `Headings and text are back to ${themeNow.name}'s sizes.` : `Headings and text now use the ${typeScale(c).label} scale.`}${keptText ? ` ${keptText}` : ''}`, 'info', undoAction(r));
+        // The next choice waits until the panel shows this one.
+        await shownAt(r.revision, opening);
+      })
+      // One choice that fails never stops the next.
+      .catch(() => say('The type scale could not be changed. Choose it again.', 'error'))
+      .finally(() => {
+        // A saved choice stays pending until the panel shows its revision; anything else lets go at once.
+        if (newest() && !saved) setPendingScale(null);
+      });
+  };
+  // How big the largest style a scale sets runs, phone to desktop: said on each choice, so its words are never the only clue.
+  const lead = roles[0];
+  const scaleRange = (c: TypeScaleChoice) => {
+    if (!lead) return '';
+    if (c !== 'theme') {
+      const [lo, hi] = typeScale(c).roles[lead];
+      return `${byId(lead)?.label ?? ''} ${lo === hi ? `${lo}px` : `${lo}–${hi}px`}`;
+    }
+    const v = textMetrics(theme.tokens, lead);
+    return v ? `${byId(lead)?.label ?? ''} ${friendlySize(v.size)}` : '';
   };
   const specimen = roles.flatMap((id) => {
     const t = byId(id);
@@ -1213,14 +1285,24 @@ export function SiteStyles() {
         label: t.label,
         v,
         stack: famRef ? fontStack(famRef) : String(v.family),
-        // Worked out where the size allows; a size written some other way is shown as written, never guessed.
+        // Worked out where the size allows; a size written some other way is shown as written, never guessed. A size that
+        // grows with the window is said in whole pixels, as its row's range is; a fixed one as its size field shows it.
         sizes: SPECIMEN_WIDTHS.map((w, i) => {
           const px = sizeAtWidth(v.size, w.width);
-          return { px, drawn: specimenPx(px ?? ends?.[i] ?? toPx(v.size) ?? 16), text: px === null ? friendlySize(v.size) : `${Math.round(px)}px` };
+          return { px, drawn: specimenPx(px ?? ends?.[i] ?? toPx(v.size) ?? 16), text: px === null ? 'Custom CSS' : ends ? `${Math.round(px)}px` : pxText(px) };
         })
       }
     ];
   });
+
+  // Every style drawn bigger than the one above it, among the headings or among the text styles, at either width: said in
+  // words. The two runs are judged apart: Lead may outsize Heading 3, which themes keep for card titles and questions.
+  const inverted = SPECIMEN_WIDTHS.flatMap((w, i) =>
+    [['text.display', 'text.h1', 'text.h2', 'text.h3'], ['text.lead', 'text.body', 'text.small']].flatMap((chain) => {
+      const rows = chain.map((id) => specimen.find((r) => r.id === id)).filter((r): r is (typeof specimen)[number] => !!r && r.sizes[i].px !== null);
+      return rows.flatMap((r, k) => (k > 0 && r.sizes[i].px! > rows[k - 1].sizes[i].px! + 0.5 ? [`On a ${w.label.toLowerCase()}, ${r.label} is bigger than ${rows[k - 1].label}.`] : []));
+    })
+  );
 
   const jumps = [
     { id: 'tok-basics', label: 'Basics' },
@@ -1464,43 +1546,98 @@ export function SiteStyles() {
 
       <Section title="Text styles" id="tok-text" scope={changedNote(textIds)}>
         {roles.length > 0 && (
-          <div className="ss-scale" role="group" aria-labelledby={`${uid}-scale`}>
-            <div className="ss-group-label" id={`${uid}-scale`}>
-              Type scale
+          <div className="ss-scale">
+            {/* What the sizes are now: the scale they match, or sizes of the owner's own (a state of its own, never an empty choice). */}
+            <div className="ss-group-label ss-scale-head">
+              <span id={`${uid}-scale`}>Type scale</span>
+              <span className="ss-scale-now" id={`${uid}-scale-now`}>
+                {scale === 'theme' ? `${theme.name}'s sizes` : scale ? scaleName(scale) : 'Your own sizes'}
+              </span>
             </div>
-            <div className="segmented full ss-scale-choices">
-              {TYPE_SCALE_CHOICES.map((c) => (
-                <button key={c} aria-pressed={scale === c} title={scaleDescription(c)} onClick={() => chooseScale(c)}>
-                  {scaleName(c)}
-                </button>
-              ))}
-            </div>
-            <p className="ss-scale-note">
-              {scale ? scaleDescription(scale) : 'Sizes of your own. A scale sets every heading and text size at once, keeping your fonts.'} Each style below stays editable.
-            </p>
-            <div
-              className="ss-type-specimen"
-              role="img"
-              aria-label={SPECIMEN_WIDTHS.map((w, i) => `${w.label}, ${w.width} pixels wide: ${specimen.map((r) => `${r.label} ${r.sizes[i].text}`).join(', ')}`).join('. ')}
-            >
-              {SPECIMEN_WIDTHS.map((w, i) => (
-                <div className="ss-type-col" key={w.label} aria-hidden="true">
-                  <div className="ss-type-head">
-                    {w.label} <span className="faint">{w.width}px</span>
-                  </div>
-                  {specimen.map((r) => (
-                    <div className="ss-type-row" key={r.id}>
-                      <span
-                        className="ss-type-sample"
-                        style={{ fontFamily: r.stack, fontWeight: r.v.weight, fontSize: r.sizes[i].drawn, letterSpacing: r.v.tracking, textTransform: (r.v.transform as React.CSSProperties['textTransform']) ?? 'none' }}
-                      >
-                        {r.label}
-                      </span>
-                      <span className="ss-type-px">{r.sizes[i].text}</span>
-                    </div>
+            {/* Each scaled style at a phone's and a desktop's width, row by row, so one style compares across. */}
+            <table className="ss-type-specimen">
+              <caption className="sr-only">Text sizes on a phone and on a desktop</caption>
+              <thead>
+                <tr>
+                  <th scope="col">
+                    <span className="sr-only">Style</span>
+                  </th>
+                  {SPECIMEN_WIDTHS.map((w) => (
+                    <th scope="col" key={w.label}>
+                      {w.label} <span className="ss-type-width">{w.width}px</span>
+                    </th>
                   ))}
-                </div>
-              ))}
+                </tr>
+              </thead>
+              <tbody>
+                {specimen.map((r) => (
+                  <tr key={r.id}>
+                    <th scope="row">{r.label}</th>
+                    {SPECIMEN_WIDTHS.map((w, i) => (
+                      <td key={w.label}>
+                        <span className="ss-type-cell">
+                          {/* Drawn smaller than life, in order; a size only CSS can work out has no sample to draw. */}
+                          {r.sizes[i].px !== null ? (
+                            <span
+                              className="ss-type-sample"
+                              aria-hidden="true"
+                              style={{ fontFamily: shownStack(r.stack), fontWeight: r.v.weight, fontSize: r.sizes[i].drawn, letterSpacing: r.v.tracking, textTransform: (r.v.transform as React.CSSProperties['textTransform']) ?? 'none' }}
+                            >
+                              Aa
+                            </span>
+                          ) : (
+                            <span />
+                          )}
+                          <span className="ss-type-px">{r.sizes[i].text}</span>
+                        </span>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="ss-type-foot">The samples are drawn smaller; the numbers are the sizes on the site.</p>
+            {inverted.length > 0 && (
+              <ul className="ss-scale-warn">
+                {inverted.map((line) => (
+                  <li key={line}>
+                    <TriangleAlert aria-hidden="true" />
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="ss-scale-note" id={`${uid}-scale-hint`}>
+              A scale sets the size, line height and letter spacing of every style in the table at once, keeping their fonts.
+            </p>
+            {/* A radio group (one tab stop, the arrows choose), each scale saying what it does before it is chosen. */}
+            <div className="ss-scale-choices">
+              <Segmented
+                radio
+                labelledBy={`${uid}-scale`}
+                describedBy={`${uid}-scale-now ${uid}-scale-hint`}
+                value={(pendingChoice ?? scale ?? '') as TypeScaleChoice}
+                options={TYPE_SCALE_CHOICES.map((c) => ({
+                  value: c,
+                  label: (
+                    <>
+                      <span className="ss-scale-name">
+                        {scaleName(c)}
+                        {scaleRange(c) && (
+                          <span className="ss-scale-range">
+                            <span className="sr-only">, </span>
+                            {scaleRange(c)}
+                          </span>
+                        )}
+                      </span>
+                      <span className="sr-only">, </span>
+                      <span className="ss-scale-desc">{scaleDescription(c)}</span>
+                      <Check className="ss-scale-check" aria-hidden="true" />
+                    </>
+                  )
+                }))}
+                onChange={chooseScale}
+              />
             </div>
           </div>
         )}
