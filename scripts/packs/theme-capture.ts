@@ -2,7 +2,7 @@
  * Theme capture harness: draws the built-in themes as a visitor sees them, so a theme's design can be reviewed in real
  * pixels. Opt-in only, never part of a build or a test run:
  *
- *   DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] [THEMES=editorial,signal] npx tsx --tsconfig tsconfig.node.json scripts/packs/theme-capture.ts
+ *   DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] [THEMES=foundation,foundation-alt] npx tsx --tsconfig tsconfig.node.json scripts/packs/theme-capture.ts
  *
  * For each theme it writes:
  *   - `{theme}--page-{home|about|contact}--{width}.png`: the Business starter's pages with its sample pictures, header
@@ -37,7 +37,7 @@ if (process.env.DESIGN_CAPTURE !== '1') {
 const root = process.cwd();
 const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'themes');
 mkdirSync(OUT, { recursive: true });
-const THEMES = (process.env.THEMES ?? 'foundation,editorial,signal').split(',');
+const THEMES = (process.env.THEMES ?? 'foundation').split(',');
 const ORIGIN = 'http://theme.capture';
 const ASSETS = join(root, 'resources', 'starter-assets');
 
