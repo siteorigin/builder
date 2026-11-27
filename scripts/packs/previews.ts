@@ -205,6 +205,32 @@ export async function bundlePages(files: Map<string, string>, pages: string[]): 
   return { module: (await import(pathToFileURL(join(dir, 'pages.mjs')).href)) as Rendered, dir };
 }
 
+/** The pack's stylesheets, joined: what every rendered page carries in its head. */
+export function packCss(generated: Map<string, string>): string {
+  return ['tokens.css', 'theme.css', 'components.css', 'site.css'].map((f) => generated.get(`${STYLES_DIR}/${f}`) ?? '').join('\n');
+}
+
+/**
+ * Render pages of a generated project to html, as a thumbnail is drawn: bundled and server-rendered with Svelte the way
+ * the exported site prerenders, with the pack's CSS in the head. `generated` is generateProject's output and `pages`
+ * the project files of the pages to render (pageFile(page)); the result is in the same order. A page listed in
+ * `blocks` is laid out as a block in a column (see previewHtml). Review captures use this too, so they never
+ * resolve generated files or `$app/*` differently from the thumbnails.
+ */
+export async function renderPages(generated: Map<string, string>, pages: string[], opts: { blocks?: ReadonlySet<string> } = {}): Promise<string[]> {
+  if (!pages.length) return [];
+  const css = packCss(generated);
+  const { module, dir } = await bundlePages(generated, pages);
+  try {
+    return pages.map((page, i) => {
+      const { body, head } = module.render(module.pages[i], { props: {} });
+      return previewHtml(css, head, body, opts.blocks?.has(page) ?? false);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /**
  * Leaves the background, border and shadow of every box about as wide as the window out of what is measured, and
  * returns what puts them back: a section's own band of colour is in the photograph, but what is framed is what it
@@ -251,8 +277,8 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   registerPacks([pack]);
   const { state, cases } = withFixedIds(() => previewProject(pack));
   const generated = generateProject(state);
-  const css = ['tokens.css', 'theme.css', 'components.css', 'site.css'].map((f) => generated.get(`${STYLES_DIR}/${f}`) ?? '').join('\n');
-  const { module, dir } = await bundlePages(generated, cases.map((c) => pageFile(state.pages[c.pageId])));
+  const pageFiles = cases.map((c) => pageFile(state.pages[c.pageId]));
+  const rendered = await renderPages(generated, pageFiles, { blocks: new Set(pageFiles.filter((_, i) => cases[i].block)) });
   const fontBytes = new Map([...files].filter(([rel]) => rel.startsWith('fonts/')).map(([rel, abs]) => [rel.slice('fonts/'.length), readFileSync(abs)]));
   const fontKey = createHash('sha256').update([...fontBytes].map(([k, v]) => `${k}:${createHash('sha256').update(v).digest('hex')}`).join('\n')).digest('hex');
   mkdirSync(cacheDir, { recursive: true });
@@ -263,12 +289,10 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   const framing = createHash('sha256').update(JSON.stringify([VIEW, BLOCK_VIEW, THUMB_SIZE, ink, UNPAINT_BANDS, crop, String(frameOf)])).digest('hex');
 
   const docs = cases.map((c, i) => {
-    const { body, head } = module.render(module.pages[i], { props: {} });
-    const html = previewHtml(css, head, body, c.block);
+    const html = rendered[i];
     const key = createHash('sha256').update(`${RENDERER}\n${framing}\n${fontKey}\n${html}`).digest('hex');
     return { c, html, cached: join(cacheDir, `${key}.webp`) };
   });
-  rmSync(dir, { recursive: true, force: true });
 
   const missing = docs.filter((d) => !existsSync(d.cached));
   // The browser is only started when something needs drawing, and whether it can start is what counts.
