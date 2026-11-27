@@ -268,6 +268,21 @@ describe('held visitor text (issue #71)', () => {
 });
 
 describe('held edit row', () => {
+  it('offers Save now while the AI waits for an answer it can be saved beside, and only then (#1281)', () => {
+    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true, 'asking', true)).toEqual({ message: 'Not saved yet: the AI is waiting for your answer.', actions: ['save-now', 'stop-apply', 'discard'] });
+    // The app's own question about where forms send, or the AI at work: today's choices.
+    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true, 'asking', false).actions).toEqual(['stop-apply', 'discard']);
+    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true, 'working', true).actions).toEqual(['stop-apply', 'discard']);
+    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true, 'checking', true).actions).toEqual(['stop-apply', 'discard']);
+    // Refused because the request changed what it writes: it says why and waits for the request to end.
+    expect(heldPrompt({ phase: 'waiting', text: 'x', waitsForEnd: true, note: 'Your edit can be saved once the AI request ends.' }, true, 'asking', true)).toEqual({
+      message: 'Not saved yet: the AI is waiting for your answer. Your edit can be saved once the AI request ends.',
+      actions: ['stop-apply', 'discard']
+    });
+    // Once the AI has finished, it is applied as before.
+    expect(heldPrompt({ phase: 'waiting', text: 'x', waitsForEnd: true }, false, null, false).actions).toEqual(['apply', 'discard']);
+  });
+
   it('offers to stop the AI while it works, and to apply once it has finished', () => {
     expect(heldPrompt({ phase: 'waiting', text: 'x' }, true).actions).toEqual(['stop-apply', 'discard']);
     expect(heldPrompt({ phase: 'waiting', text: 'x' }, false).actions).toEqual(['apply', 'discard']);
