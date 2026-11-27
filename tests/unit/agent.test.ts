@@ -845,8 +845,9 @@ describe('page scope (#513)', () => {
   it.each([
     ['a large model', undefined],
     ['a small model', { toolCalling: 'constrained-json' as const }],
-    ['a native model with a small window', { contextWindowTokens: 24_000 }]
-  ])('lets %s write the code component a page run asked to widen for (#1143)', async (_, capabilities) => {
+    ['a native model with a small window', { contextWindowTokens: 24_000 }],
+    ['a small model asked for Svelte by name', { toolCalling: 'constrained-json' as const }, 'Write a custom Svelte countdown']
+  ])('lets %s write the code component a page run asked to widen for (#1143)', async (_, capabilities, asks = 'Create a countdown as a custom code component') => {
     const asked = (env: Awaited<ReturnType<typeof setup>>) => env.events.find((e) => e.message?.questions)?.message?.questions?.[0];
     const createsCode = (req: CanonicalModelRequest) => JSON.stringify(req.tools.find((t) => t.name === 'apply_operations')?.parameters ?? {}).includes('"component.createCode"');
     const create = { type: 'component.createCode', name: 'Countdown', source: '<p>Soon</p>\n' };
@@ -856,7 +857,7 @@ describe('page scope (#513)', () => {
       const env = await setup(
         [
           (req) => {
-            expect(req.system).toMatch(/make a new component[^\n]*widenScope: true/i);
+            expect(req.system).toMatch(/^(?=[^\n]*request_clarification)(?=[^\n]*widenScope: true)[^\n]*make a new component/im);
             note(req);
             return [call('w1', 'request_clarification', { question: 'A new component reaches beyond this page. Allow it?', widenScope: true })];
           },
@@ -869,7 +870,7 @@ describe('page scope (#513)', () => {
         { codeEnabled: true, capabilities }
       );
       const home = env.session.state.site.homePageId;
-      const r = await env.orch.send('Create a countdown as a custom code component', pageCtx(home, 'Home'));
+      const r = await env.orch.send(asks, pageCtx(home, 'Home'));
       for (let i = 0; i < 300 && !asked(env); i++) await new Promise((res) => setTimeout(res, 10));
       expect(asked(env)!.widen).toBe(true);
       env.orch.answer(r.runId!, asked(env)!.id!, asked(env)!.choices[answer === 'yes' ? 0 : 1]);

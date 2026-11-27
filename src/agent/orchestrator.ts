@@ -347,9 +347,12 @@ Answer in a few plain sentences, without headings. The site is ${JSON.stringify(
 const newComponentAsk = (code: boolean): string =>
   `To make a new component for the site (${code ? 'managed, or custom Svelte code' : 'managed only: custom Svelte code needs Developer mode, which is off, so say that when code is what they require'}), which this run's tools cannot do yet, ask with request_clarification (widenScope: true): the tools for it come once the user allows it. Never just answer that you cannot create it. Placing an existing component on this page needs no asking.`;
 
-/** The same in the fewest words, for a grammar-constrained local model, which reads every one in its small window. */
-const newComponentAskShort = (code: boolean): string =>
-  `To make a new component, ask first with request_clarification (widenScope: true); its tools come once allowed, so never just refuse. Placing an existing one needs no asking.${code ? '' : ' Svelte code needs Developer mode (off).'}`;
+/**
+ * The same in the fewest words, within what a small model's page prompt already says to ask for. A constrained edit's
+ * context says nothing of custom code with Developer mode off, so its prompt does; a native one's context already has.
+ */
+const NEW_COMPONENT_CLAUSE = ', or to make a new component (never just refuse)';
+const noCodeNote = (code: boolean): string => (code ? '' : ' Svelte code needs Developer mode (off).');
 
 /** `component`: the run has upsert_managed_component, which a small site run is given for a component request. */
 /**
@@ -379,8 +382,7 @@ ${rules} Mention anything a tool found that the user needs to act on.`;
 - This request may change only the page in <editor_context> currentPage, which lists its sections. Build or rewrite it with upsert_page_with_sections and its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there. Internal links use routes such as /contact/.
 - apply_operations removes (node.remove) or moves (node.move) one section by its ID, removes one but keeps what it holds (node.removeKeepContent), and changes the page's own settings (page.update). update_page_seo sets its search settings.
 - ${SEO_GUIDANCE_SHORT}
-- Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or search settings, or the shared header and footer beyond this page's own menu links.
-- ${newComponentAskShort(code)}
+- Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or search settings, or the shared header and footer beyond this page's own menu links${NEW_COMPONENT_CLAUSE}.${noCodeNote(code)}
 - When the user wants advice or ideas in chat only, give them and change nothing.
 - When the user asks for checks at screen sizes, run inspect_layout on this page at each of those sizes, after its last change.
 ${rules} The result card lists each layout and image check with its latest result, so do not restate those; do mention anything else a tool found that the user needs to act on.
@@ -430,8 +432,7 @@ ${shared}`;
 - read_project with sections ["catalogue"] lists every component with its properties.
 - Internal links use routes such as /contact/.
 - ${SEO_GUIDANCE_SHORT}
-- request_clarification asks the user one question and waits for the answer. ${ASKING} Ask with widenScope: true before changing other pages, the site's brand or search settings, or the shared header and footer: the app rejects those until the user allows it.
-- ${newComponentAsk(code)}
+- request_clarification asks the user one question and waits for the answer. ${ASKING} Ask with widenScope: true before changing other pages, the site's brand or search settings, or the shared header and footer${NEW_COMPONENT_CLAUSE}.
 - One request can take many steps. A step is one response of yours with its tool calls, not a turn of the conversation: the user does not reply between steps. Keep going until the page is finished.
 - When the user asks for checks at screen sizes, run inspect_layout on this page at each of those sizes, after its last change.
 ${shared}
@@ -1373,6 +1374,7 @@ export class Orchestrator {
     const componentTask = !ask && authority.kind === 'site' && (userMsg.context?.task === 'component' || (CONTINUE.test(userMsg.text) && requestTask === 'component'));
     /** A request typed into the chat that asks for a component (or a "continue" of one): a small site run is given the tool that builds one whole. */
     const componentAsked = !ask && (asksForComponent(userMsg.text) || (CONTINUE.test(userMsg.text) && !!request && asksForComponent(request)));
+    const svelteAsked = /\bsvelte\b/i.test(userMsg.text);
     // So does a request for a collection: a small site run is then offered the tools that make and show one.
     const collectionAsked = !ask && (asksForCollection(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForCollection(request, session.state)));
     const sourceAsked = asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state));
@@ -1438,6 +1440,7 @@ export class Orchestrator {
         definitionTarget: definitionTarget(authority),
         ...(componentTask ? { task: 'component' as const } : {}),
         ...(componentAsked ? { componentRequest: true } : {}),
+        ...(svelteAsked ? { svelteRequest: true } : {}),
         ...(collectionAsked ? { collectionRequest: true } : {}),
         ...(sourceAsked ? { sourceRequest: true } : {}),
         attachedImages: !!userMsg.images?.length,

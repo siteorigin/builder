@@ -798,9 +798,9 @@ describe('what a constrained local run sends first (#364)', () => {
   const EASING_BYTES = 40;
   /**
    * A new component asked for in page scope (#1143) is another: a page run is told to ask to widen for one, and with
-   * Developer mode off what code needs, 217 bytes measured on the page run. Made room for the same way.
+   * Developer mode off what code needs, 88 bytes measured on the page run. Made room for the same way.
    */
-  const WIDEN_BYTES = 220;
+  const WIDEN_BYTES = 90;
   const BUDGETS = {
     // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
     // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.

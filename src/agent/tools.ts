@@ -575,6 +575,8 @@ function runTools(opts: {
   /** The request typed into the chat asks for a component (see asksForComponent): a small site run is offered the tool
    *  that builds one whole, which it otherwise leaves out to keep its window for pages. */
   componentRequest?: boolean;
+  /** The request names Svelte, so it asks for code even when it never says "component". */
+  svelteRequest?: boolean;
   /** The post a run is limited to (sent from the Posts workspace): it reads and writes only that entry. */
   entry?: { collectionId: string; entryId: string } | null;
   /** The collection layout a run is limited to (sent while it was open on the canvas): it reads and writes only that layout. */
@@ -684,7 +686,7 @@ function runTools(opts: {
   // A small model's page tool changes top-level sections alone: it may update only what it can then change.
   // A page run asks to widen before it makes a component, so once allowed a small model asked for one can also write it
   // in code: that one operation, and the page tool places what it made.
-  const code = focused && codeEnabled && opts.widenedFromPage && opts.componentRequest ? toolDefinitions({ codeEnabled, definitionOps: false, operations: new Set<OperationType>(['component.createCode']) }).filter((t) => t.name === 'apply_operations') : [];
+  const code = focused && codeEnabled && opts.widenedFromPage && (opts.componentRequest || opts.svelteRequest) ? toolDefinitions({ codeEnabled, definitionOps: false, operations: new Set<OperationType>(['component.createCode']) }).filter((t) => t.name === 'apply_operations') : [];
   return { tools: [...macros, ...kept, ...code, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
 }
 
