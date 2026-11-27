@@ -151,14 +151,13 @@ await win.keyboard.press('ArrowRight');
 await pause(150);
 await shot('new-blank', '.starter-card[aria-checked="true"]:focus-visible', { themes: LIGHT, text: 'Blank' });
 
-// Each theme the dialog offers, so switching one for another can be judged from the previews and the line about it.
+// The theme the dialog offers (Foundation is the only one that ships), judged from the previews and the line about it.
 await fresh({ recents: RECENTS });
 await openNew();
 await nameIt();
-for (const id of ['foundation', 'signal', 'editorial']) {
-  await win.selectOption('#new-project-theme', id);
+for (const id of ['foundation']) {
   await pause(200);
-  await shot(`new-theme-${id}`, `.starter-art[data-theme="${id}"]`, { themes: id === 'signal' ? BOTH : LIGHT, ready: ART });
+  await shot(`new-theme-${id}`, `.starter-art[data-theme="${id}"]`, { themes: BOTH, ready: ART });
 }
 
 // Shorter windows, where the previews have the least room, down to the window's minimum size.
@@ -166,9 +165,8 @@ for (const [label, width, height] of [['short', 1280, 800], ['shorter', 1280, 73
   await fresh({ recents: RECENTS }, { width, height });
   await openNew();
   await nameIt();
-  await win.selectOption('#new-project-theme', 'signal');
   await pause(200);
-  await shot(`new-${label}`, '.starter-art[data-theme="signal"]', { themes: LIGHT, full: true, ready: ART });
+  await shot(`new-${label}`, '.starter-art[data-theme="foundation"]', { themes: LIGHT, full: true, ready: ART });
   // The previews take the room the window can spare, never more: the ordinary form fits without scrolling.
   const over = await win.locator('.modal-body').evaluate((b) => b.scrollHeight - b.clientHeight);
   if (over > 1) throw new Error(`the form scrolls in a ${width}x${height} window (${over}px over)`);

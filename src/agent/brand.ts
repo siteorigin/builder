@@ -176,7 +176,7 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   // colors, its text styles), so the batch reads as one change.
   if (args.theme !== undefined && args.theme !== state.site.themeId) {
     const choices = brandThemes(state);
-    if (!choices.some((t) => t.id === args.theme)) issues.push({ field: 'theme', message: `"${args.theme}" is not an installed theme. Use one of: ${choices.map((t) => t.id).join(', ')}` });
+    if (!choices.some((t) => t.id === args.theme)) issues.push({ field: 'theme', message: choices.length ? `"${args.theme}" is not an installed theme. Use one of: ${choices.map((t) => t.id).join(', ')}` : `"${args.theme}" is not an installed theme, and there is no other theme to switch to.` });
     else {
       const op: EditOperation = { type: 'theme.apply', themeId: args.theme };
       try {

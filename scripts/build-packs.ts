@@ -6,7 +6,7 @@
  *   npm run build:packs                       build every pack, drawing any thumbnail whose source changed
  *   npm run build:packs -- --require-previews  fail rather than build without thumbnails (for packaging)
  */
-import { renameSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { BUILTIN_PACKS } from '@catalogue/builtin';
 import { buildPack, writeRelease } from '../src/main/packs/build';
@@ -36,5 +36,13 @@ for (const authored of BUILTIN_PACKS) {
   renameSync(stage, join(dir, pack.id));
   rmSync(join(dir, '.staging'), { recursive: true, force: true });
   console.log(`${pack.id} ${pack.version}: ${files.size} font files, ${bytes.size} previews (${drawn} drawn), digest ${digest.slice(0, 12)}`);
+}
+// A release of a pack this repository no longer authors (a removed theme) must not ship with the app: both folders
+// are packaged whole, and the app loads whatever valid pack it finds in them.
+const authoredIds = new Set(BUILTIN_PACKS.map((a) => a.id));
+for (const folder of ['packs', 'packs-dev']) {
+  const dir = join(root, 'resources', folder);
+  if (!existsSync(dir)) continue;
+  for (const name of readdirSync(dir)) if (!name.startsWith('.') && !authoredIds.has(name)) rmSync(join(dir, name), { recursive: true, force: true });
 }
 console.log(`Theme packs built in ${((Date.now() - started) / 1000).toFixed(1)}s.`);

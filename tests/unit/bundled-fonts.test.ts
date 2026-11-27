@@ -27,18 +27,10 @@ const legacy = () => {
 };
 const BUNDLED_FONTS = () => getTheme('foundation').fonts;
 const font = (name: string) => BUNDLED_FONTS().find((f) => f.name === name)!;
-const PACKAGES = ['inter', 'fraunces', 'plus-jakarta-sans', 'dm-sans', 'space-grotesk', 'playfair-display', 'lora', 'sora', 'jetbrains-mono'].map((n) => `@fontsource-variable/${n}`);
-
-describe('Signal fonts', () => {
-  it('ship the same scripts: JetBrains Mono is held to the Latin subsets of its Sora and DM Sans', () => {
-    const files = [...buildFont(builtinFont('JetBrains Mono'), process.cwd()).files.keys()];
-    expect(files.length).toBeGreaterThan(0);
-    for (const f of files) expect(f).toMatch(/-latin(-ext)?-wght/);
-  });
-});
+const PACKAGES = ['inter', 'fraunces', 'plus-jakarta-sans', 'dm-sans', 'space-grotesk', 'playfair-display', 'lora'].map((n) => `@fontsource-variable/${n}`);
 
 describe('italic faces', () => {
-  const WITH_ITALIC = ['Inter', 'Fraunces', 'Plus Jakarta Sans', 'DM Sans', 'Playfair Display', 'Lora', 'JetBrains Mono'];
+  const WITH_ITALIC = ['Inter', 'Fraunces', 'Plus Jakarta Sans', 'DM Sans', 'Playfair Display', 'Lora'];
 
   it('ship beside the upright faces of every built-in font whose family has an italic, subset the same way', () => {
     for (const source of BUILTIN_FONTS) {
@@ -54,9 +46,6 @@ describe('italic faces', () => {
       expect(italic.map((f) => [f.file.replace('-italic.', '-normal.'), f.weight, f.unicodeRange, f.format]), source.name).toEqual(upright.map((f) => [f.file, f.weight, f.unicodeRange, f.format]));
     }
     expect(BUILTIN_FONTS.filter((f) => f.italicCss).map((f) => f.name)).toEqual(WITH_ITALIC);
-    // JetBrains Mono's italic keeps to its Latin subsets, as its upright faces do.
-    const mono = buildFont(builtinFont('JetBrains Mono'), process.cwd()).font.faces;
-    for (const style of ['normal', 'italic']) expect(mono.filter((f) => f.style === style).map((f) => f.file.match(/jetbrains-mono-(.+)-wght-/)![1])).toEqual(['latin-ext', 'latin']);
   });
 
   it('are declared with font-style: italic in the site stylesheet, from files copied into the project', () => {

@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { editorView } from './editor-feed';
+import { SECOND_THEME_ID, registerSecondTheme } from './second-theme';
+import { registerBuiltinPacks } from '../../src/main/packs/build';
 
 vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => process.cwd(), getPath: () => tmpdir(), getVersion: () => '0.0.0' },
@@ -748,10 +750,16 @@ describe('protecting what was already there', () => {
 describe('the theme a new project starts with (#390)', () => {
   it('records the theme chosen, and refuses one it cannot start from before writing anything', async () => {
     const { c, parent } = setup();
-    expect(await c.create({ ...opts(parent), themeId: 'editorial' })).toEqual({ ok: true });
-    const site = JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'site.json'), 'utf8'));
-    expect(site.themeId).toBe('editorial');
-    expect(JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'theme-lock.json'), 'utf8')).theme).toEqual({ id: 'editorial', version: '0.1.0' });
+    // Only Foundation ships, so the choice that is not the default is another offered theme.
+    registerSecondTheme();
+    try {
+      expect(await c.create({ ...opts(parent), themeId: SECOND_THEME_ID })).toEqual({ ok: true });
+      const site = JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'site.json'), 'utf8'));
+      expect(site.themeId).toBe(SECOND_THEME_ID);
+      expect(JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'theme-lock.json'), 'utf8')).theme).toEqual({ id: SECOND_THEME_ID, version: '0.1.0' });
+    } finally {
+      registerBuiltinPacks();
+    }
 
     const other = realpathSync(mkdtempSync(join(tmpdir(), 'so-create-theme-')));
     dirs.push(other);

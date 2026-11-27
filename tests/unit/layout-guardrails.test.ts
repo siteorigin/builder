@@ -317,23 +317,25 @@ describe('a grid child spanning more columns than its grid has', () => {
   });
 
   it('says nothing where the theme’s own rules may place a detached copy of its design', () => {
-    // Editorial gives a text section's heading the whole row when it is alone, detached copies included.
+    // A theme that gives a text section's heading the whole row when it is alone, detached copies included.
+    const themeCss = ':is(.so-demo-content-text__heading, .so--d-demo-content-text__heading):only-child { grid-column: 1 / -1; }';
+    const themed = (s: ProjectState) => layoutGuardrailDiagnostics(s, themeCss);
     const loneHeading = (detachedFrom?: unknown) => {
-      const s = createStarterState('blank', 'Blank', false, 'editorial');
+      const s = createStarterState('blank', 'Blank', false);
       return page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_heading']), el('n_heading', 'Heading', { base: { columnSpan: '3' } }, [], detachedFrom ? ({ detachedFrom } as Partial<ElementNode>) : {})], s);
     };
-    expect(guardrails(loneHeading()).map((d) => d.code)).toEqual([SPAN]);
-    expect(guardrails(loneHeading({ component: 'editorial-content-text', node: 'heading' }))).toEqual([]);
+    expect(themed(loneHeading()).map((d) => d.code)).toEqual([SPAN]);
+    expect(themed(loneHeading({ component: 'demo-content-text', node: 'heading' }))).toEqual([]);
     // A copy of a node no theme rule hooks is read as usual.
-    expect(guardrails(loneHeading({ component: 'editorial-content-text', node: 'nothing-hooks-this' })).map((d) => d.code)).toEqual([SPAN]);
+    expect(themed(loneHeading({ component: 'demo-content-text', node: 'nothing-hooks-this' })).map((d) => d.code)).toEqual([SPAN]);
     // A placement carries its detached classes on its design's root.
     const placed = (detachedFrom?: unknown) => {
-      const s = createStarterState('blank', 'Blank', false, 'editorial');
+      const s = createStarterState('blank', 'Blank', false);
       addDesign(s, 'c_tile', [el('n_root', 'Tile')], { slots: {} });
       return page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_place']), placement('n_place', 'c_tile', { overrides: { root: { base: { columnSpan: '3' } } }, ...(detachedFrom ? { detachedFrom } : {}) } as Partial<InstanceNode>)], s);
     };
-    expect(guardrails(placed()).map((d) => d.code)).toEqual([SPAN]);
-    expect(guardrails(placed({ component: 'editorial-content-text', node: 'heading' }))).toEqual([]);
+    expect(themed(placed()).map((d) => d.code)).toEqual([SPAN]);
+    expect(themed(placed({ component: 'demo-content-text', node: 'heading' }))).toEqual([]);
   });
 
   it('reads a repeat’s items as the grid’s own children, in a project component’s design', () => {
