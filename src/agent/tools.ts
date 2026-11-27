@@ -436,6 +436,8 @@ export interface RunTools {
   focused: boolean;
   /** The run builds a new component, asked for from the Create component dialog. */
   task?: 'component';
+  /** A page run only: Developer mode is on, so a new component it asks to widen for may be written in code. */
+  code?: boolean;
 }
 
 const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameters).includes('"assetId"');
@@ -561,6 +563,8 @@ function runTools(opts: {
   focused?: boolean;
   /** The selection a run started from, once the user has let it change more. */
   widened?: SelectionTarget | null;
+  /** The run started limited to one page and the user has since let it change the whole site. */
+  widenedFromPage?: boolean;
   /** The selection is a part of a placement, as the run's authority reads it (see scope.ts authorityFor). Unset, it is
    *  worked out from the selection, which cannot tell a bound element inside a placement from the whole of it. */
   selectionPart?: boolean;
@@ -656,7 +660,7 @@ function runTools(opts: {
     const updates = pageId ? update({ kind: 'page', pageId, sectionsOnly: focused }) : [];
     // A list on the page shows a collection's entries through connect_collection_list, for this page's own sections.
     const lists = pageId && (!focused || opts.collectionRequest) ? connectListTools(state, { kind: 'page', id: pageId }) : [];
-    return { tools: [upsert, ...seo, ...own, ...updates, ...lists, ...entryReads(state)], mode: 'page', focused };
+    return { tools: [upsert, ...seo, ...own, ...updates, ...lists, ...entryReads(state)], mode: 'page', focused, code: codeEnabled };
   }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, undefined, focused) },
@@ -678,7 +682,10 @@ function runTools(opts: {
   // A small run asked for a component reads a design whole, which a rebuild has to describe again in full.
   const reads = (t: ToolDefinition) => (opts.componentRequest && t.name === 'read_component' ? t : contractRead(t));
   // A small model's page tool changes top-level sections alone: it may update only what it can then change.
-  return { tools: [...macros, ...kept, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
+  // A page run asks to widen before it makes a component, so once allowed a small model asked for one can also write it
+  // in code: that one operation, and the page tool places what it made.
+  const code = focused && codeEnabled && opts.widenedFromPage && opts.componentRequest ? toolDefinitions({ codeEnabled, definitionOps: false, operations: new Set<OperationType>(['component.createCode']) }).filter((t) => t.name === 'apply_operations') : [];
+  return { tools: [...macros, ...kept, ...code, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
 }
 
 /**

@@ -842,6 +842,43 @@ describe('page scope (#513)', () => {
     }
   });
 
+  it.each([
+    ['a large model', undefined],
+    ['a small model', { toolCalling: 'constrained-json' as const }],
+    ['a native model with a small window', { contextWindowTokens: 24_000 }]
+  ])('lets %s write the code component a page run asked to widen for (#1143)', async (_, capabilities) => {
+    const asked = (env: Awaited<ReturnType<typeof setup>>) => env.events.find((e) => e.message?.questions)?.message?.questions?.[0];
+    const createsCode = (req: CanonicalModelRequest) => JSON.stringify(req.tools.find((t) => t.name === 'apply_operations')?.parameters ?? {}).includes('"component.createCode"');
+    const create = { type: 'component.createCode', name: 'Countdown', source: '<p>Soon</p>\n' };
+    for (const answer of ['yes', 'no'] as const) {
+      const seen: Array<{ offered: boolean; runes: boolean }> = [];
+      const note = (req: CanonicalModelRequest) => seen.push({ offered: createsCode(req), runes: req.system.includes('Svelte 5 runes mode') });
+      const env = await setup(
+        [
+          (req) => {
+            expect(req.system).toMatch(/make a new component[^\n]*widenScope: true/i);
+            note(req);
+            return [call('w1', 'request_clarification', { question: 'A new component reaches beyond this page. Allow it?', widenScope: true })];
+          },
+          (req) => {
+            note(req);
+            return [call('c1', 'apply_operations', { expectedRevision: 0, operations: [create] })];
+          },
+          () => finish('Done.')
+        ],
+        { codeEnabled: true, capabilities }
+      );
+      const home = env.session.state.site.homePageId;
+      const r = await env.orch.send('Create a countdown as a custom code component', pageCtx(home, 'Home'));
+      for (let i = 0; i < 300 && !asked(env); i++) await new Promise((res) => setTimeout(res, 10));
+      expect(asked(env)!.widen).toBe(true);
+      env.orch.answer(r.runId!, asked(env)!.id!, asked(env)!.choices[answer === 'yes' ? 0 : 1]);
+      while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+      expect(seen).toEqual([{ offered: false, runes: false }, { offered: answer === 'yes', runes: answer === 'yes' }]);
+      expect(Object.values(env.session.state.components).some((d) => d.name === 'Countdown' && d.kind === 'code')).toBe(answer === 'yes');
+    }
+  });
+
   it('refuses a request whose scope does not match what it carries', async () => {
     const env = await setup([]);
     const home = env.session.state.site.homePageId;

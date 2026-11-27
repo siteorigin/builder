@@ -187,3 +187,23 @@ describe('agent instructions match the tool definitions (#815)', () => {
     });
   });
 });
+
+describe('a new component asked for in page scope (#1143)', () => {
+  const onePage = () => ({ scope: 'page' as const });
+  const ask = /make a new component[^\n]*widenScope: true/i;
+
+  it.each([
+    ['a native model', undefined],
+    ['a grammar-constrained model', 'constrained-json' as const]
+  ])('tells %s to ask to widen rather than refuse', async (_, toolCalling) => {
+    const req = await firstRequest('Create a countdown as a custom code component', onePage, true, toolCalling);
+    expect(req.tools.map((t) => t.name)).toContain('request_clarification');
+    expect(req.system).toMatch(ask);
+  });
+
+  it('does not offer code with Developer mode off', async () => {
+    const req = await firstRequest('Create a countdown component', onePage, false);
+    expect(req.system).toMatch(ask);
+    expect(req.system).not.toContain('component.createCode');
+  });
+});
