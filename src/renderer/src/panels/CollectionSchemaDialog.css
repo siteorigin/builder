@@ -26,9 +26,8 @@
   /* A hint that does not fit beside the label takes the whole row: it is a sentence. */
   .cs-field-grid > .cs-hint:not(:nth-child(2)) { grid-column: 1 / -1; }
   .cs-fact { margin: 0; font-size: 12px; color: var(--text-2); }
-  .cs-check { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; min-height: 22px; font-size: 12px; color: var(--text); }
-  .cs-check input { margin: 0; accent-color: var(--accent); }
-  .cs-check:has(input:disabled) { color: var(--text-2); }
+  .cs-check { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; min-height: 24px; font-size: 12px; color: var(--text); }
+  .cs-check:has(input:disabled) { color: var(--disabled-ink); }
 
   /* A choice's options: one row each, the option, whether it is the default, and its remove button. */
   .cs-options { display: flex; flex-direction: column; gap: 6px; max-width: 460px; }
@@ -36,7 +35,6 @@
   .cs-option-cols { font-size: 12px; font-weight: 500; color: var(--text-2); }
   .cs-option-cols > :nth-child(2) { text-align: center; font-size: 11px; color: var(--text-3); }
   .cs-option-default { display: flex; justify-content: center; }
-  .cs-option-default input { margin: 0; accent-color: var(--accent); }
   .cs-add-inline { align-self: flex-start; margin-left: -9px; }
 
   .cs-group { display: flex; align-items: flex-end; gap: 8px; max-width: 460px; }

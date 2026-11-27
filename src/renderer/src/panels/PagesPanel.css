@@ -116,8 +116,7 @@
   .pages-add-field.stack { grid-template-columns: minmax(0, 1fr); gap: 3px; }
   .pages-add-field .note { grid-column: 1 / -1; font-size: 12px; line-height: 16px; color: var(--text-3); }
   .pages-add-field .note.error { color: var(--red); }
-  .pages-add-check { display: flex; align-items: flex-start; gap: 6px; min-height: 24px; padding: 4px 2px 0; font-size: 12px; line-height: 16px; color: var(--text-2); }
-  .pages-add-check input { flex: none; margin: 1px 0 0; accent-color: var(--accent); }
+  .pages-add-check { display: flex; align-items: flex-start; gap: 8px; min-height: 24px; padding: 4px 2px 0; font-size: 12px; line-height: 16px; color: var(--text-2); }
   .pages-add-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .pages-order-note { display: flex; flex-direction: column; gap: 6px; margin: 0 6px 12px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 16px; color: var(--text-2); }
   .pages-order-note p { margin: 0; overflow-wrap: anywhere; }

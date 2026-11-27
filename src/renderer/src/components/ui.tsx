@@ -885,7 +885,7 @@ export const missingNote = (schema: PropSchema, value: unknown): string | undefi
 
 export function Switch({ checked, onChange, label, id, labelledBy, describedBy, disabled: own }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string; disabled?: boolean }) {
   const disabled = useContext(LockedFieldsContext) || own;
-  return <button id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange(!checked)} />;
+  return <button type="button" id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange(!checked)} />;
 }
 
 /**

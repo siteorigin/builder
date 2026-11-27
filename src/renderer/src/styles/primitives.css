@@ -173,6 +173,64 @@
     .switch:disabled::after, .switch[aria-checked='true']:disabled::after { background: GrayText; }
   }
 
+  /* ---------- Checkbox and radio ---------- */
+  /* The one checkbox and radio: every native <input type="checkbox"> and <input type="radio"> in the app draws this,
+     with no class (zero specificity, so a consumer's own rule still wins, as a visually hidden input's does). The
+     input stays native, inside or tied to its label, and mixed is its `indeterminate` property.
+     16px, a --r-xs square or a circle, the 3:1 --border-control edge on --raised. On, mixed and chosen take the solid
+     --accent-fill face with an --on-accent tick, dash or dot, as the on switch and a primary button do, so the state
+     is a shape as well as a colour. Unavailable is drawn, never faded: --disabled-fill, a --border-strong edge, and
+     when on it keeps its mark in --disabled-ink inside a --disabled-ink ring, as a chosen but unavailable segment does.
+     Invalid is a red edge and ring; the consumer adds the error line. Focus is the house outline (reset.css). The
+     margin makes the box exactly one line tall, so it sits on the first line of a label that wraps and centres on
+     one that does not, whatever the row's alignment. A surface remaps the colours with the --check-* properties (the
+     notices do, below). The hit area reaches 24px where no label surrounds it. */
+  :where(input[type='checkbox'], input[type='radio']) {
+    --check-mark-now: var(--check-mark, var(--on-accent));
+    position: relative; flex: none; box-sizing: border-box; width: 16px; height: 16px; padding: 0;
+    margin: max(0px, calc((1lh - 16px) / 2)) 0; vertical-align: top;
+    appearance: none; border: 1px solid var(--check-edge, var(--border-control)); border-radius: var(--r-xs);
+    background: var(--check-face, var(--raised)); transition: background-color 120ms, border-color 120ms;
+  }
+  :where(input[type='radio']) { border-radius: 50%; }
+  :where(input[type='checkbox'], input[type='radio'])::before { content: ''; position: absolute; inset: -5px; }
+  :where(input[type='checkbox'], input[type='radio']):where(:hover, label:hover *):where(:not(:disabled, :checked, [type='checkbox']:indeterminate)) { border-color: var(--check-edge-hover, var(--text-2)); }
+  :where(input[type='checkbox']:is(:checked, :indeterminate), input[type='radio']:checked) { background: var(--check-on, var(--accent-fill)); border-color: var(--check-on, var(--accent-fill)); }
+  :where(input[type='checkbox']:is(:checked, :indeterminate), input[type='radio']:checked):where(:hover, label:hover *):where(:not(:disabled)) { background: var(--check-on-hover, var(--accent-fill-hover)); border-color: var(--check-on-hover, var(--accent-fill-hover)); }
+  :where(input[type='checkbox']:checked)::after {
+    content: ''; position: absolute; inset: 1px; background: var(--check-mark-now);
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.2 5 8.7l4.5-5.2'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  /* Mixed wins over checked: an 8px dash. */
+  :where(input[type='checkbox']:indeterminate)::after { content: ''; position: absolute; inset: 6px 3px; border-radius: 1px; background: var(--check-mark-now); mask: none; }
+  :where(input[type='radio']:checked)::after { content: ''; position: absolute; inset: 4px; border-radius: 50%; background: var(--check-mark-now); }
+  :where(input[type='checkbox'], input[type='radio']):where(:disabled) {
+    --check-mark-now: var(--check-off-mark, var(--disabled-ink));
+    background: var(--check-off-face, var(--disabled-fill)); border-color: var(--check-off-edge, var(--border-strong)); cursor: not-allowed;
+  }
+  :where(input[type='checkbox']:is(:checked, :indeterminate), input[type='radio']:checked):where(:disabled) { background: var(--check-off-face, var(--disabled-fill)); border-color: var(--check-off-mark, var(--disabled-ink)); }
+  :where(input[type='checkbox'], input[type='radio']):where([aria-invalid='true']:not(:disabled)) { border-color: var(--red); box-shadow: 0 0 0 1px var(--red); }
+  /* On a notice (a dark layer in both themes): the notice's own ink and line, never blue on a status surface. */
+  .toast {
+    --check-face: var(--notice-fill);
+    --check-edge: var(--notice-line);
+    --check-edge-hover: var(--notice-ink);
+    --check-on: var(--notice-ink);
+    --check-on-hover: color-mix(in srgb, var(--notice-ink) 86%, var(--notice-fill));
+    --check-mark: var(--notice-fill);
+    --check-off-face: color-mix(in srgb, var(--notice-ink) 8%, var(--notice-fill));
+    --check-off-edge: color-mix(in srgb, var(--notice-ink) 30%, var(--notice-fill));
+    --check-off-mark: color-mix(in srgb, var(--notice-ink) 62%, var(--notice-fill));
+  }
+  /* Forced colours drop fills: the box, its mark and its states are drawn in system colours instead. */
+  @media (forced-colors: active) {
+    :where(input[type='checkbox'], input[type='radio']) { forced-color-adjust: none; --check-mark-now: HighlightText; background: Canvas; border-color: CanvasText; }
+    :where(input[type='checkbox']:is(:checked, :indeterminate), input[type='radio']:checked) { background: Highlight; border-color: Highlight; }
+    :where(input[type='checkbox'], input[type='radio']):where(:disabled) { --check-mark-now: GrayText; background: Canvas; border-color: GrayText; }
+    :where(input[type='checkbox'], input[type='radio']):where([aria-invalid='true']:not(:disabled)) { border-color: CanvasText; box-shadow: 0 0 0 1px CanvasText; }
+    :where(input[type='checkbox'], input[type='radio']):where(:focus-visible) { outline-color: CanvasText; }
+  }
+
   /* 11px is the badge size: a short semibold word or number in a filled chip. It is the one exception to the 12px
      floor; any other text, a sentence in a chip included, is 12px or larger. */
   .badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--active); color: var(--text-2); white-space: nowrap; }

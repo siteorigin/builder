@@ -175,7 +175,7 @@
   .font-remove-option-notes .page-dialog-option-note { margin-left: 0; }
   /* What keeping the family changes for its text: a site-wide change in how it looks, so amber, not the danger red. */
   .font-remove-option .page-dialog-option-note[data-warn] svg { color: var(--amber); }
-  .font-remove-replacement { display: flex; align-items: flex-end; gap: 10px; margin: 6px 0 0 21px; }
+  .font-remove-replacement { display: flex; align-items: flex-end; gap: 10px; margin: 6px 0 0 24px; }
   .font-remove-replacement .field { flex: 1; min-width: 0; }
   /* The specimen's slot is kept from the start, so choosing a font never narrows the select under the pointer. */
   .font-remove-replacement:not(:has(.font-remove-sample)) { padding-right: 54px; }
@@ -371,7 +371,7 @@
      places on the same page differ only in the block's name. */
   .asset-choose li { display: flex; align-items: center; gap: 2px; min-width: 0; border-radius: var(--r-sm); }
   .asset-choose li:hover { background: var(--hover); }
-  .asset-choose label.asset-use { flex: 1; align-items: flex-start; min-width: 0; padding-block: 5px; cursor: pointer; }
+  .asset-choose label.asset-use { flex: 1; align-items: flex-start; gap: 8px; min-width: 0; padding-block: 5px; cursor: pointer; }
   .asset-choose label.asset-use:hover { background: none; color: var(--text); }
   /* The page and the block side by side, or one over the other when the list is narrow. */
   .asset-choose ul { container-type: inline-size; }
@@ -385,7 +385,6 @@
   .asset-choose .asset-use :is(.where, .what) { min-width: 0; overflow: visible; line-height: 16px; white-space: normal; overflow-wrap: anywhere; }
   .asset-choose .asset-use .where { flex: 0 1 auto; max-width: 45%; }
   .asset-choose .asset-use svg { margin-top: 1.5px; }
-  .asset-choose input[type='checkbox'] { flex: none; width: 14px; height: 14px; margin: 1px 0 0; accent-color: var(--accent); }
   .asset-choose input:disabled + svg, .asset-choose input:disabled ~ .asset-choose-place :is(.where, .what) { color: var(--disabled-ink); }
   .asset-choose-show { flex: none; width: 26px; padding: 0; justify-content: center; }
   /* In a narrow sidebar the import offer follows the candidates (AssetsPanel.tsx renders it there). */
