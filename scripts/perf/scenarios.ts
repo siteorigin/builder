@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import type { CDPSession, ElectronApplication, FrameLocator, Page } from 'playwright';
+import type { CDPSession, ElectronApplication, FrameLocator, Locator, Page } from 'playwright';
 import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
 import { editorWindow } from '../../tests/driver/session';
 import { HISTORY_LIMIT, type BuilderApi, type ProjectSnapshot } from '../../src/shared/api';
@@ -2908,6 +2908,130 @@ export const memoryPanels: Scenario = {
       }
     }
     growthMetrics(m, 'panelEdits', reading('edit0'), reading(`edit${PANEL_EDITS}`));
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// memoryBrowse
+// ---------------------------------------------------------------------------
+
+/** How many of the fixture's own pages `memoryBrowse` shows on the canvas, one after another, from the Pages panel. */
+export const BROWSE_PAGES = 20;
+/** How many saved components it then shows the live preview of, by resting the pointer on their tiles in Insert. */
+export const BROWSE_PREVIEWS = 6;
+/** The readings `memoryBrowse` takes, in order: on the canvas, after the pages, after the component previews. */
+export const BROWSE_READINGS = ['canvas', `pages${BROWSE_PAGES}`, 'previews'] as const;
+/** Its growths: what the pages left behind, what the previews did, and the two together. */
+export const BROWSE_GROWTHS = [
+  ['visits', 'canvas', `pages${BROWSE_PAGES}`],
+  ['peeks', `pages${BROWSE_PAGES}`, 'previews'],
+  ['browse', 'canvas', 'previews']
+] as const;
+
+/** Wait for `what` to be on the page (or gone): a check of the scenario's, failing with `message` when it is not. */
+async function shows(what: Locator, message: string, timeout = 15_000, state: 'visible' | 'attached' | 'detached' = 'visible'): Promise<void> {
+  const ok = await what
+    .first()
+    .waitFor({ state, timeout })
+    .then(() => true)
+    .catch(() => false);
+  expect(ok, message);
+}
+
+/** The fixture's own pages (`/fixture-NNN/`) in their order, each with its address and the card it places (if any). */
+export function fixturePages(state: ProjectState): Array<{ id: string; route: string; title: string; card: string | null }> {
+  const cardOf = (n: number) => (Object.values(state.components).some((d) => d.owner === 'project' && d.name === `Fixture card ${String(n).padStart(2, '0')}`) ? `Card ${String(n).padStart(2, '0')}` : null);
+  return state.site.pageOrder
+    .map((id) => state.pages[id])
+    .filter((p) => p && /^\/fixture-\d{3}\/$/.test(p.route))
+    .map((p) => ({ id: p.id, route: p.route, title: p.title, n: Number(p.route.slice(9, 12)) }))
+    .sort((a, b) => a.n - b.n)
+    .map(({ n, ...p }) => ({ ...p, card: cardOf(n) }));
+}
+
+export const memoryBrowse: Scenario = {
+  name: 'memoryBrowse',
+  after: 'launch',
+  memory: true,
+  deadlineMs: 10 * 60_000,
+  description: `The memory of every process of the app with the fixture open on the canvas, after showing ${BROWSE_PAGES} of its pages there one after another, and after resting on ${BROWSE_PREVIEWS} saved components in Insert until each one's live preview shows it: what a session of looking around leaves the preview's server holding.`,
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('the memoryBrowse scenario was run without a memory probe');
+    // Opened as `open` opens it, after the files have settled, to the canvas reporting the home page ready to edit.
+    const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    await openFromWelcome(ctx);
+    const ready = (t: Trace) => {
+      const asked = t.first('open.requested', inProc('renderer'));
+      return asked ? t.first('canvas.ready', homeReady(fixture), asked.t) : undefined;
+    };
+    expect(ready(await ctx.waitTrace((t) => !!ready(t), 15_000)), 'the canvas never reported the home page ready to edit');
+    await checkOpened(ctx);
+    await probe.rest('canvas');
+
+    // The pages, from the Pages panel: each shown on the canvas, ready to edit, with the card the fixture placed on it.
+    const snap = await snapshotOf(win);
+    expect(snap, 'no project is open');
+    const pages = fixturePages(snap.state).slice(0, BROWSE_PAGES);
+    expect(pages.length === BROWSE_PAGES && pages.every((p) => p.card), `the ${fixture.spec.name} fixture has ${pages.length} pages of its own with a card, not ${BROWSE_PAGES}: memoryBrowse needs the large fixture`);
+    const pagesRail = win.locator('.rail button[data-rail="pages"]');
+    if ((await pagesRail.getAttribute('aria-pressed')) !== 'true') await pagesRail.click();
+    const frame = preview(win);
+    const shownPath = () => frame.locator('html').evaluate(() => (globalThis as unknown as { location: { pathname: string } }).location.pathname);
+    for (const page of pages) {
+      await win.locator(`[data-page="${page.id}"]`).first().click();
+      // The canvas goes to another page inside its frame, as a visitor's link does: no new page load to report ready.
+      for (const until = Date.now() + 60_000; (await shownPath().catch(() => '')) !== page.route; await sleep(50)) expect(Date.now() < until, `the canvas never showed ${page.title} (${page.route})`);
+      await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 30_000 });
+      await frame.getByRole('heading', { name: page.card!, exact: true, level: 3 }).first().waitFor({ timeout: 30_000 });
+    }
+    await probe.rest(`pages${BROWSE_PAGES}`);
+
+    // The live previews: Insert's saved components, all shown, and the pointer rested on one tile after another until
+    // the preview beside the panel shows that component. Insert photographs the tiles in view meanwhile.
+    const insert = win.locator('.rail button[data-rail="insert"]');
+    if ((await insert.getAttribute('aria-pressed')) !== 'true') await insert.click();
+    await win.locator('#editor-sidebar button.insert-more', { hasText: `Show all ${fixture.projectComponents} components` }).click({ timeout: 15_000 });
+    // The tiles in view photographed first, each from a component preview of its own.
+    await thumbsShown(win, fixture.projectComponents, 'opening Insert');
+    await thumbsQuiet(ctx, 'opening Insert');
+    const cards = Object.values(snap.state.components)
+      .filter((d) => d.owner === 'project' && /^Fixture card \d{2}$/.test(d.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, BROWSE_PREVIEWS);
+    expect(cards.length === BROWSE_PREVIEWS, `the fixture has ${cards.length} cards to preview, not ${BROWSE_PREVIEWS}`);
+    const peek = win.locator('.insert-peek.lib');
+    for (const card of cards) {
+      const tile = win.locator('#editor-sidebar button.insert-tile.project[data-kind="component"]').filter({ has: win.locator(`[data-definition-id="${card.id}"]`) }).first();
+      await tile.scrollIntoViewIfNeeded();
+      await tile.hover();
+      await shows(peek.locator('.insert-peek-name strong', { hasText: card.name }), `resting on ${card.name} in Insert opened no preview of it`);
+      // The preview's own page, served by the dev server, with the component mounted on it and showing its heading. The
+      // editor's sizing of it afterwards (data-preview-state) is not waited for: it can miss the frame's answers and
+      // give up, which says nothing of what the server did.
+      const shot = win.frameLocator('.insert-peek.lib iframe');
+      const mounted = () => shot.locator('html').evaluate(() => (globalThis as unknown as { __siteoriginPreview?: { mounted?: boolean } }).__siteoriginPreview?.mounted === true, undefined, { timeout: 1000 }).catch(() => false);
+      for (const until = Date.now() + 30_000; !(await mounted()); await sleep(100)) expect(Date.now() < until, `the live preview of ${card.name} never mounted it`);
+      await shows(shot.locator('h3', { hasText: `Card ${card.name.slice(-2)}` }), `the live preview of ${card.name} does not show its heading`, 15_000, 'attached');
+    }
+    // Pointer away, the last preview closes (and is released); Insert closed once its thumbnails are drawn.
+    await win.mouse.move(2, 2);
+    await shows(peek, 'the last live preview did not close once the pointer left it', 15_000, 'detached');
+    await thumbsQuiet(ctx, 'the component previews');
+    await insert.click();
+    await thumbsQuiet(ctx, 'after the component previews');
+    const after = await snapshotOf(win);
+    expect(after && after.revision === snap.revision, `looking around changed the project: revision ${after?.revision}, not ${snap.revision}`);
+    await probe.rest('previews');
+  },
+  measure(_trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string) => readings.find((r) => r.label === label && r.kind === 'rest');
+    for (const label of BROWSE_READINGS) readingMetrics(m, label, reading(label));
+    for (const [name, from, to] of BROWSE_GROWTHS) growthMetrics(m, name, reading(from), reading(to));
     return m;
   }
 };
@@ -6118,7 +6242,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow, reopen];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow, reopen, memoryBrowse];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
