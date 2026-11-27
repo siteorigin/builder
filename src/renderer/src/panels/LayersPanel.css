@@ -86,7 +86,7 @@
   .layers-tree .layer-slot-empty { flex: none; padding-right: 6px; font-size: 12px; font-style: italic; color: var(--text-3); }
   .layers-tree .layer-slot.selected :is(.layer-name, .layer-kind, .layer-slot-empty) { color: inherit; }
   /* A truncated row reached by keys shows its full name and place just below it. */
-  .layers-peek { position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-md), inset 0 0 0 1px var(--border-strong); font-size: 12px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; pointer-events: none; }
+  .layers-peek { position: fixed; z-index: var(--z-peek); display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-md), inset 0 0 0 1px var(--border-strong); font-size: 12px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; pointer-events: none; }
   .layers-peek-path { font-size: 12px; line-height: 16px; font-weight: 400; color: var(--text-2); }
   .layers-peek.above { transform: translateY(-100%); }
   /* The rows being dragged keep readable text; a quiet dashed ring marks them as the ones moving, and their own

@@ -47,9 +47,7 @@ export function FormPractice({
   onLiveTest,
   folded,
   onFold,
-  bottom,
-  maxHeight,
-  onHeight
+  maxHeight
 }: {
   forms: PreviewForm[];
   practice: PracticeResult;
@@ -62,11 +60,8 @@ export function FormPractice({
   /** Folded to its title line and the last result's lead. Kept by the canvas, so it survives a change of page. */
   folded: boolean;
   onFold: (folded: boolean) => void;
-  bottom: number;
   /** The most height the panel can take and leave the page clear; past it the panel scrolls. */
   maxHeight: number;
-  /** The panel's height, so the preview can keep the page clear of it. */
-  onHeight: (height: number) => void;
 }) {
   const live = forms.filter((f) => f.live);
   /** The form a real test is being confirmed for; '' while the author has yet to choose one of several. */
@@ -94,13 +89,6 @@ export function FormPractice({
     else if (!open && wasConfirming.current && here) (liveButton.current ?? foldButton.current)?.focus();
     wasConfirming.current = open;
   }, [open]);
-  useEffect(() => {
-    const el = panel.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => onHeight(el.offsetHeight));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // A new report lights the result up for a moment (the folded line's lead, when folded), so a second send that reads
   // like the first still shows it landed. A real test's box rings in its own tone; a practice send is washed in.
   const outcomeBox = useRef<HTMLDivElement>(null);
@@ -138,7 +126,7 @@ export function FormPractice({
       ref={panel}
       className="form-practice"
       data-folded={folded || undefined}
-      style={{ bottom, maxHeight }}
+      style={{ maxHeight }}
       aria-labelledby={titleId}
       onKeyDown={(e) => {
         if (e.key !== 'Escape' || !open) return;

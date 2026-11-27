@@ -36,6 +36,7 @@ import ${src('src/renderer/src/styles/index.css')};
 import ${src('src/renderer/src/panels/Canvas.css')};
 import { getState, setState, toast } from ${src('src/renderer/src/store')};
 import { Toasts, Modal } from ${src('src/renderer/src/components/ui')};
+import { canvasFoot } from ${src('src/renderer/src/lib/canvas-foot')};
 
 // The renderer's bridge, answered by nothing: no notice here calls the main process.
 const quiet = new Proxy(function () {}, { get: (_t, k) => (k === 'then' ? undefined : quiet), apply: () => quiet });
@@ -75,7 +76,7 @@ function Backdrop({ preview, dialog, darkSite }) {
         h('div', { className: 'site-hero' }, h('h1', null, 'Spaces made for the way you live'), h('p', null, 'Kitchens, bathrooms and whole-home renovations across the harbour suburbs, designed and built by one team.'), h('span', { className: 'site-btn' }, 'Book a consultation')),
         h('div', { className: 'site-cards' }, [1, 2, 3].map((i) => h('div', { key: i, className: 'site-card' })))
       ),
-      preview && h('div', { className: 'preview-pill', role: 'group', 'aria-label': 'Preview' }, h('span', { className: 'pill-note' }, 'Previewing'), h('span', { className: 'pill-address' }, '/'), h('button', null, 'Back to editing'))
+      preview && h('div', { className: 'canvas-foot', ref: canvasFoot }, h('div', { className: 'preview-pill', role: 'group', 'aria-label': 'Preview' }, h('span', { className: 'pill-note' }, 'Previewing'), h('span', { className: 'pill-address' }, '/'), h('button', null, 'Back to editing')))
     ),
     h('div', { className: 'stage-insp' }, h('div', { className: 'stage-row' }, 'Inspector')),
     dialog && h(Modal, { title: 'Delete page', onClose: () => {}, footer: h('button', { className: 'btn btn-danger' }, 'Delete page') }, h('p', null, 'Delete “About” and its 6 sections? Links to it from the menus are removed too.'))

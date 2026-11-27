@@ -314,9 +314,9 @@
      keyboard focus adds the ring. A row is an action, a refused action (drawn unavailable, with its reason), or an
      information row: a fact in quiet ink that takes no highlight, because there is nothing to choose.
      The row's inset, leading slot and gap are named once, so group labels and facts line up with item labels.
-     Menus sit above dialogs (.overlay-backdrop, 900) and below notices (.toasts, 1100). */
+     Menus sit above dialogs and below notices (the layers in tokens.css). */
   .menu-anchor { position: fixed; pointer-events: none; visibility: hidden; }
-  .menu { --menu-inset: 8px; --menu-lead: 16px; --menu-gap: 9px; z-index: 1000; min-width: 208px; max-width: min(360px, var(--radix-dropdown-menu-content-available-width, 360px)); max-height: min(calc(100vh - 16px), var(--radix-dropdown-menu-content-available-height, 100vh)); overflow-y: auto; padding: 4px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); transform-origin: var(--radix-dropdown-menu-content-transform-origin); outline: none; }
+  .menu { --menu-inset: 8px; --menu-lead: 16px; --menu-gap: 9px; z-index: var(--z-popover); min-width: 208px; max-width: min(360px, var(--radix-dropdown-menu-content-available-width, 360px)); max-height: min(calc(100vh - 16px), var(--radix-dropdown-menu-content-available-height, 100vh)); overflow-y: auto; padding: 4px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); transform-origin: var(--radix-dropdown-menu-content-transform-origin); outline: none; }
   .menu[data-state='open'] { animation: menu-in 120ms ease-out; }
   .menu[data-side='top'][data-state='open'] { animation-name: menu-in-up; }
   @keyframes menu-in { from { opacity: 0; transform: translateY(-3px) scale(0.98); } }
@@ -371,7 +371,7 @@
   :is(.btn, .icon-btn)[aria-haspopup='menu'][aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
   :where(:root[data-appearance='dark']) :is(.btn, .icon-btn)[aria-haspopup='menu'][aria-expanded='true'] { background: var(--bg); }
 
-  .overlay-backdrop { position: fixed; inset: 0; z-index: 900; background: var(--scrim); display: grid; place-items: start center; padding-top: 11vh; animation: fade-in 140ms; }
+  .overlay-backdrop { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); display: grid; place-items: start center; padding-top: 11vh; animation: fade-in 140ms; }
   /* A visible notice keeps its own band at the bottom (--toast-band, measured by Toasts in ui.tsx: the stack's
      height plus clearance; at most three notices show): the dialog stops short of it, so no notice covers a dialog
      control (WCAG 2.4.11), while always keeping room for its title, some body and its footer. */
@@ -408,8 +408,9 @@
     --notice-shadow: var(--shadow-lg);
     /* One column: wide enough for a two-line message, narrow enough to stay inside the canvas of the smallest window. */
     --notice-width: min(460px, calc(100vw - 48px));
-    /* Clear of the window's bottom edge, or of the Preview pill when it shows (below). */
-    --notices-bottom: 40px;
+    /* Clear of the window's bottom edge, or above the canvas's foot (its Previewing bar and notices) while it holds
+       anything and is not inert: the canvas says how high that is on the body (lib/canvas-foot.ts), as a length. */
+    --notices-bottom: var(--notices-over-foot, 40px);
   }
   /* Dark: a lifted slate notice, a step above --raised, so it keeps its edge over the dark chrome (the hairline below)
      and reads as dark-on-light over a light website on the canvas. Never a pale slab, which glares on dark chrome. */
@@ -421,12 +422,8 @@
       --notice-error-ink: #ffe4e1;
     }
   }
-  /* Above dialogs (their backdrop is 900), so a notice stays readable, and dismissable, while one is open. */
-  .toasts { position: fixed; bottom: var(--notices-bottom); left: 50%; transform: translateX(-50%); z-index: 1100; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
-  /* The Previewing bar sits 18px above the canvas floor (about 42px above the window) and is 36px tall: keep the stack
-     above it while it shows and is not inert. The bar says so on the body (lib/previewing.ts): a `body:has(.preview-pill…)`
-     here made every change anywhere in the window restyle all of it. */
-  body.previewing .toasts { --notices-bottom: 90px; }
+  /* Above dialogs (the layers in tokens.css), so a notice stays readable, and dismissable, while one is open. */
+  .toasts { position: fixed; bottom: var(--notices-bottom); left: 50%; transform: translateX(-50%); z-index: var(--z-notices); display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
   /* Crowded (Toasts marks it when the notices are taller than the window below the toolbar allows): the stack stops
      short of the toolbar and scrolls, so every notice stays reachable; Tab brings each into view. The side room keeps
      the notices' edges and focus rings inside it. */

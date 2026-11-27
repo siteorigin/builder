@@ -2,7 +2,7 @@
  * The editor's stylesheets never use `:has()` on the document, the app's root or the editor to style something inside
  * them (#971). Chromium cannot tell which elements under such a `:has()` it affects, so it restyles all of them on every
  * change of the page that might bear on it: with a long page open, a click in Layers restyled some 19,000 elements and
- * spent most of its time doing it. Such state is said on the body instead (src/renderer/src/lib/previewing.ts, the
+ * spent most of its time doing it. Such state is said on the body instead (src/renderer/src/lib/canvas-foot.ts, the
  * seams in Editor.tsx). A `:has()` on a small part of the page (a toolbar group, a row), or one that styles the element
  * it is on (`#root:has(> .fatal)`), costs only that part.
  *

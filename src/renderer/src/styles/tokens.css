@@ -45,6 +45,8 @@
     --sky-1: #cdebff;
     --sky-2: #86c5ff;
     --ink: #23304f;
+    /* What stands on ink (the Previewing bar): its words, and the tints of its quiet controls, mixed from it. */
+    --on-ink: #ffffff;
 
     --bg: #ebeff4;
     --canvas: #e4e8ed;
@@ -109,6 +111,22 @@
     --r-md: 10px;
     --r-lg: 14px;
     --toolbar-h: 52px;
+
+    /* Layers: the one order that everything standing over another region of the window keeps, bottom to top. A
+       component's own stacking inside its box (1 to 4: a sticky head over its rows, a handle over its overlay) stays
+       a local number; anything that stands over a neighbour takes a layer. Menus and popovers stand above dialogs
+       because dialogs open them too; the notices stand above both, so a notice stays readable and dismissable while
+       a dialog is open; a dragged thing is above everything it is dragged over. */
+    --z-canvas-bar: 5; /* over the canvas and the panel edges: the canvas's foot stack, a layout's band, the seams */
+    --z-canvas-state: 6; /* the canvas's state card, over the foot stack it keeps clear of */
+    --z-chrome: 20; /* the toolbar */
+    --z-peek: 50; /* the hover previews beside a panel (Insert, Layers) */
+    --z-under-dialog: 850; /* something kept open under a dialog's scrim (Share, while it asks a question) */
+    --z-dialog: 900; /* a dialog's backdrop, and the dialog on it */
+    --z-popover: 1000; /* menus, popovers and Quick insert */
+    --z-command: 1050; /* the command menu */
+    --z-notices: 1100; /* the notices at the foot of the window */
+    --z-drag: 1200; /* what is being dragged */
   }
 
   :root:where([data-appearance='dark']) {

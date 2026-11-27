@@ -214,7 +214,7 @@
 
   /* The larger look beside the panel, over the canvas: the thumbnail at its own size, what the section is for, and where
      it lands among the sections around it. The pointer can rest on it to read it; it adds nothing when clicked. */
-  .insert-peek { position: fixed; z-index: 30; width: 336px; display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 10px; border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-lg); cursor: default; font-size: 12px; line-height: 18px; color: var(--text-2); animation: insert-peek 140ms ease-out; }
+  .insert-peek { position: fixed; z-index: var(--z-peek); width: 336px; display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 10px; border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-lg); cursor: default; font-size: 12px; line-height: 18px; color: var(--text-2); animation: insert-peek 140ms ease-out; }
   @keyframes insert-peek { from { opacity: 0; transform: translateX(-4px); } }
   @media (prefers-reduced-motion: reduce) { .insert-peek { animation: none; } }
   .insert-peek-shot { position: relative; display: block; }

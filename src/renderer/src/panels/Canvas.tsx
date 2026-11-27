@@ -1,6 +1,6 @@
 import './Canvas.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { previewPill } from '../lib/previewing';
+import { canvasFoot } from '../lib/canvas-foot';
 import { createPortal } from 'react-dom';
 import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, Ban, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, CircleHelp, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Plus, Rows3, Sparkles, Square, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
@@ -40,7 +40,7 @@ import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
-import { CHIP_H, chipLeft, chipRoom } from '../lib/chip-place';
+import { CHIP_H, chipLeft } from '../lib/chip-place';
 import { askAiAbout, leaveLayout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
@@ -177,7 +177,6 @@ export function Canvas() {
   };
   /** Changes with each page shown, so a live-test confirmation never outlives the page it was opened on. */
   const [formsView, setFormsView] = useState(0);
-  const [practiceH, setPracticeH] = useState(0);
   // The page's own error is shared through the store, so the status bar and Project health tell the same story.
   const frameError = useStore((s) => s.previewIssue);
   const setFrameError = (m: string | null) => setState({ previewIssue: m });
@@ -483,27 +482,38 @@ export function Canvas() {
   }, []);
 
   const zoom = zoomSetting === 'fit' ? Math.min(1, (size.w - 56) / viewport) : zoomSetting;
-  // Forms in Preview: the panel sits above the other bottom bars (the preview pill, the AI run and a page problem).
+  // Forms in Preview: the panel stands at the top of the canvas's foot.
   const formsShown = mode === 'preview' && forms.length > 0;
-  // A page problem can wrap, so the panel stands on its measured height rather than a fixed step.
   const issueShown = !!frameError && runtime.state === 'ready';
-  // The AI's notice stands on the canvas floor, or above the Previewing bar. It is one line (36px) where it fits, and its
-  // height is measured, so a notice that wraps on a narrow canvas lifts a page problem above it rather than meeting it.
-  const runBottom = 18 + (mode === 'preview' ? 46 : 0);
   const runRef = useRef<HTMLDivElement>(null);
-  const [runH, setRunH] = useState(0);
-  useLayoutEffect(() => {
-    const el = runRef.current;
-    if (!el) return;
-    setRunH(el.offsetHeight);
-    const ro = new ResizeObserver(() => setRunH(el.offsetHeight));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [!!runStatus]); // eslint-disable-line react-hooks/exhaustive-deps
-  const runStep = runStatus ? (runH || 36) + 10 : 0;
-  const issueBottom = runBottom + runStep;
   const issueRef = useRef<HTMLDivElement>(null);
   const exitRef = useRef<HTMLButtonElement>(null);
+  // The canvas's foot (Canvas.css): the Previewing bar, the AI's notice, a page problem and Form practice, stacked
+  // bottom-up in one column, each at its own height, so a bar that wraps lifts the ones above it. Measured in one place:
+  // how far above the canvas floor its top stands (0 while nothing is in it), where Form practice starts, and the
+  // canvas's height, which the page, the panel's height, the state card and the window's notices all keep clear of.
+  const footRef = useRef<HTMLDivElement>(null);
+  const [foot, setFoot] = useState({ top: 0, practice: 0, canvas: 0 });
+  useLayoutEffect(() => {
+    const el = footRef.current;
+    const canvas = canvasRef.current;
+    if (!el || !canvas) return;
+    const measure = () => {
+      const floor = canvas.getBoundingClientRect().bottom;
+      const panel = el.querySelector<HTMLElement>(':scope > .form-practice');
+      const top = el.offsetHeight ? Math.ceil(floor - el.getBoundingClientRect().top) : 0;
+      const practice = panel ? Math.floor(floor - panel.getBoundingClientRect().bottom) : 0;
+      const height = canvas.clientHeight;
+      setFoot((was) => (was.top === top && was.practice === practice && was.canvas === height ? was : { top, practice, canvas: height }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, []);
+  // The window's notices stand above the foot too (lib/canvas-foot.ts).
+  useLayoutEffect(() => canvasFoot(footRef.current), []);
   // Stop leaves the notice once the AI is stopping, and the notice leaves when the run ends: focus that was on it moves
   // to a control that stays. Read while rendering, because the button has gone by the time an effect runs.
   const focusInRun = useRef(false);
@@ -511,15 +521,6 @@ export function Canvas() {
   useLayoutEffect(() => {
     if (focusInRun.current && !runRef.current?.contains(document.activeElement)) (getState().mode === 'preview' ? exitRef.current : canvasRef.current)?.focus({ preventScroll: true });
   }, [runStatus]);
-  const [issueH, setIssueH] = useState(0);
-  useLayoutEffect(() => {
-    const el = issueRef.current;
-    if (!el) return;
-    setIssueH(el.offsetHeight);
-    const ro = new ResizeObserver(() => setIssueH(el.offsetHeight));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [issueShown]);
   // When the bar closes with focus in it, focus moves to a control that stays. Read while rendering, because the
   // bar has already left the page by the time an effect runs.
   const focusInIssue = useRef(false);
@@ -527,14 +528,16 @@ export function Canvas() {
   useLayoutEffect(() => {
     if (!issueShown && focusInIssue.current) (getState().mode === 'preview' ? exitRef.current : canvasRef.current)?.focus({ preventScroll: true });
   }, [issueShown]);
-  const practiceBottom = issueShown ? issueBottom + (issueH || 40) + 10 : 18 + 46 + runStep;
-  // The panel and the page share the height above the bars: past this the panel scrolls, so it never covers the page.
-  const practiceMax = Math.max(120, size.h - practiceBottom - 50 - 160 * zoom);
+  // The panel and the page share the canvas above the bars below it: past this the panel scrolls, so the page keeps its
+  // floor (PAGE_FLOOR at this zoom) with the pasteboard's padding and the frame's label above it and FOOT_CLEAR below.
+  const practiceMax = Math.max(120, foot.canvas - foot.practice - (PASTEBOARD_PAD + FRAME_LABEL + FOOT_CLEAR) - PAGE_FLOOR * zoom);
   // While a restarted page loads, the pill keeps naming the page it is on.
   const address = journey.at?.address ?? view?.route ?? '';
   // How many characters the address slot holds. An address that does not fit keeps both of its ends in view.
   const addressRef = useRef<HTMLOutputElement>(null);
   const [addressFit, setAddressFit] = useState(Infinity);
+  /** The whole address shows: keyboard focus is on an elided one, and Escape has not put it away. */
+  const [addressOpen, setAddressOpen] = useState(false);
   useLayoutEffect(() => {
     const el = addressRef.current;
     const ctx = document.createElement('canvas').getContext('2d');
@@ -551,16 +554,15 @@ export function Canvas() {
     return () => ro.disconnect();
   }, [mode]);
   const elided = elideAddress(address, addressFit);
-  // The page ends above the panel, so it never covers what it describes (a form's Send button at the foot of a page).
-  const practiceRoom = formsShown && practiceH ? Math.max(0, practiceBottom + practiceH + 8 - 28) : 0;
-  // While editing, a page problem sits below the page rather than over its foot (a card, a form's Send button).
-  const issueRoom = issueShown && mode === 'edit' && !formsShown ? Math.max(0, issueBottom + (issueH || 40) + 8 - 28) : 0;
-  // And the AI's notice, while editing, sits below the page too, so it never covers the page's foot as it works.
-  const runRoom = runStatus && mode === 'edit' && !issueShown ? runBottom + (runH || 36) + 8 - 28 : 0;
+  // While the foot holds anything, the pasteboard's scroll area ends FOOT_CLEAR above it, without its bottom padding, in
+  // Edit and in Preview: no bar ever stands on the page's own foot (a footer's links, a form's Send button), and a page
+  // held at its floor, or one scrolled at a fixed zoom, is clipped above the bars rather than passing under them.
+  const footRoom = foot.top ? foot.top + FOOT_CLEAR : 0;
   // A collection's layout being edited has its band (TemplateStrip) over the pasteboard, which starts below it.
   const layoutBand = !!templateMode && mode === 'edit';
-  // The frame's whole footprint (20px top padding + 14px label margin + 28px bottom padding) fits at Fit, so the pasteboard never needs its own scrollbar.
-  const frameH = Math.max(formsShown ? 160 : 300, (size.h - 70 - practiceRoom - issueRoom - runRoom) / zoom);
+  // The frame's whole footprint (the pasteboard's padding above and below and the label's room) fits at Fit, so the
+  // pasteboard needs no scrollbar of its own until the page is held at its floor.
+  const frameH = Math.max(foot.top ? PAGE_FLOOR : 300, (size.h - (footRoom ? 1 : 2) * PASTEBOARD_PAD - FRAME_LABEL) / zoom);
   // Said once on opening a collection's layout and once on leaving it, as editing a component everywhere is; stepping
   // through its entries says nothing.
   const layoutKey = layoutBand && state && templateMode && Object.hasOwn(state.collections, templateMode.collectionId) ? `${layoutTitle(state, templateMode)}\n${layoutScope(state, templateMode)}` : null;
@@ -3045,7 +3047,6 @@ export function Canvas() {
   // The selection's chip is parked in the strip above the page (see chipLeft). A collection layout's band is a row of
   // its own above that strip, so the chip always has the strip's whole width.
   const chipShown = !!firstSel && !!selection;
-  const chipTaken = 0;
   const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !insertDrop && !imageDrop && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   // The canvas's Add buttons (#387), on the box of the selection and of what is hovered, each only on a box the page
   // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
@@ -3128,7 +3129,7 @@ export function Canvas() {
   // then not at all, whichever fits beside the chip. While the frame is being resized it always shows in full.
   // The same goes for what the strip says on its left (a page opening, a section moving), which never takes more
   // room than leaves the width itself.
-  const chipEnd = chipShown && !reorder && !resizing && !insertDrop && !imageDrop && firstSel ? chipLeft(firstSel.left, chipW, frameW, chipTaken) + chipW + 12 : 0;
+  const chipEnd = chipShown && !reorder && !resizing && !insertDrop && !imageDrop && firstSel ? chipLeft(firstSel.left, chipW, frameW) + chipW + 12 : 0;
   const leftEnd = chipEnd || (stripLeftW ? stripLeftW + 12 : 0);
   const labelMode = resizing || leftEnd + labelW.full <= frameW ? 'full' : scalePct !== 100 && leftEnd + labelW.mid <= frameW ? 'mid' : leftEnd + labelW.short <= frameW ? 'short' : 'gone';
   const stripRoom = Math.max(80, frameW - labelW.short - 12);
@@ -3187,6 +3188,8 @@ export function Canvas() {
       tabIndex={-1}
       className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selShared ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop || imageDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`}
       aria-label="Website preview"
+      // How high the foot stands, for the state card to keep clear of (PreviewStatus.css).
+      style={{ '--foot-top': `${foot.top}px` } as React.CSSProperties}
       // Read by the test driver's UI snapshots (tests/driver): which opening of a project this is, whether the frame's
       // page is ready, the selection as the editor holds it, and where it shows on the page as the page's own element
       // ids (absent: nothing selected; empty: a selection with no place on this page).
@@ -3207,158 +3210,177 @@ export function Canvas() {
       <p className="sr-only" role="status">
         {announcement}
       </p>
-      {mode === 'preview' && (
-        <div ref={previewPill} className="preview-pill" role="group" aria-label="Preview">
-          <span className="pill-note" title="Links and menus work as they will for visitors">
-            <Eye aria-hidden="true" /> Previewing
-          </span>
-          {/* Not natively disabled: a step that reaches the end of the journey keeps keyboard focus. */}
-          <button className="pill-step" aria-label="Back" title={isMac ? 'Back (⌘[)' : 'Back (Alt+Left)'} aria-keyshortcuts={isMac ? 'Meta+[' : 'Alt+ArrowLeft'} aria-disabled={!stepTarget(journey, 'back') || undefined} onClick={() => step('back')}>
-            <ArrowLeft />
-          </button>
-          <button className="pill-step" aria-label="Forward" title={isMac ? 'Forward (⌘])' : 'Forward (Alt+Right)'} aria-keyshortcuts={isMac ? 'Meta+]' : 'Alt+ArrowRight'} aria-disabled={!stepTarget(journey, 'forward') || undefined} onClick={() => step('forward')}>
-            <ArrowRight />
-          </button>
-          {/* The address the visitor is at, #section included. Stays mounted, so it is announced as it changes. One
-              that does not fit takes focus, which shows it in full for anyone not using a pointer. */}
-          <output ref={addressRef} className="pill-address" aria-label="Page address" title={address || undefined} tabIndex={elided ? 0 : undefined}>
-            {elided ? (
-              <>
-                <span className="sr-only">{address}</span>
-                <span aria-hidden="true">{elided}</span>
-              </>
-            ) : (
-              address
-            )}
-          </output>
-          {elided && (
-            <span className="pill-address-full" aria-hidden="true">
-              {address}
+      {/* The canvas's foot: one column of bars, bottom-up from its floor (Canvas.css). In tab order the Previewing bar
+          comes first, then a page problem (recovery close at hand), Form practice and the AI's notice. */}
+      <div ref={footRef} className="canvas-foot">
+        {mode === 'preview' && (
+          <div className="preview-pill" role="group" aria-label="Preview">
+            <span className="pill-note" title="Links and menus work as they will for visitors">
+              <Eye aria-hidden="true" /> <span className="pill-word">Previewing</span>
             </span>
-          )}
-          <button ref={exitRef} onClick={() => setMode('edit')}>
-            <Pencil size={13} /> Back to editing
-          </button>
-        </div>
-      )}
-      {/* Mounted before they have anything to say, so both are announced. The problem clears during a restart, so a
-          restart that fails is announced again. */}
-      <p className="sr-only" role="alert">
-        {issueShown && !retrying ? `${issueText} Your work is safe.` : stoppedAnnouncement(runtime)}
-      </p>
-      <p className="sr-only" role="status">
-        {issueShown && retrying ? 'Reloading the page…' : ''}
-      </p>
-      {issueShown && (
-        // Bottom bars stack: preview pill, then the AI run, then a page problem, each one step up. It comes right after
-        // the pill in the tab order, ahead of the form panel and the page, so recovery is close at hand.
-        <div ref={issueRef} className={`canvas-notice issue${retrying ? ' retrying' : ''}`} style={{ bottom: issueBottom }} role="group" aria-label="Page problem">
-          <span className="canvas-notice-icon">{retrying ? <Spinner decorative /> : <TriangleAlert aria-hidden="true" />}</span>
-          <span className="canvas-notice-text issue-text">
-            <strong>{retrying ? 'Reloading the page…' : issueText}</strong> <span className="issue-safe">Your work is safe.</span>
-          </span>
-          {/* Help first, then the way back, with the one filled button last. Try again is the primary because it keeps
-              the work as it is; Revert, when there is a change to put down to, undoes it. The group wraps below the
-              words as one row when the canvas is narrow. Not natively disabled, so focus stays here while the page
-              reloads. */}
-          <div className="canvas-notice-actions">
-            <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'health' } })}>
-              Project health
+            {/* Not natively disabled: a step that reaches the end of the journey keeps keyboard focus. */}
+            <button className="pill-step" aria-label="Back" title={isMac ? 'Back (⌘[)' : 'Back (Alt+Left)'} aria-keyshortcuts={isMac ? 'Meta+[' : 'Alt+ArrowLeft'} aria-disabled={!stepTarget(journey, 'back') || undefined} onClick={() => step('back')}>
+              <ArrowLeft />
             </button>
-            {sourceOffered && (
-              <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'source', definitionId: sourceOffered } })}>
-                Open source
-              </button>
-            )}
-            {revertOffered && (
-              <button className="btn btn-sm" aria-disabled={retrying || reverting || undefined} aria-label={`Revert “${revertOffered.label}”`} title={`Undo “${revertOffered.label}”, the change made before this problem started`} onClick={revertIssue}>
-                Revert
-              </button>
-            )}
-            <button
-              className="btn btn-sm btn-primary"
-              aria-disabled={retrying || reverting || undefined}
-              onClick={() => {
-                if (retrying) return;
-                restartPreview();
+            <button className="pill-step" aria-label="Forward" title={isMac ? 'Forward (⌘])' : 'Forward (Alt+Right)'} aria-keyshortcuts={isMac ? 'Meta+]' : 'Alt+ArrowRight'} aria-disabled={!stepTarget(journey, 'forward') || undefined} onClick={() => step('forward')}>
+              <ArrowRight />
+            </button>
+            {/* The address the visitor is at, #section included. Stays mounted, so it is announced as it changes. One
+                that does not fit takes focus, which shows it in full for anyone not using a pointer. */}
+            <output
+              ref={addressRef}
+              className="pill-address"
+              aria-label="Page address"
+              title={address || undefined}
+              tabIndex={elided ? 0 : undefined}
+              onFocus={(e) => setAddressOpen(e.currentTarget.matches(':focus-visible'))}
+              onKeyDown={(e) => {
+                if (e.key !== 'Escape' || !elided || !addressOpen) return;
+                // Escape puts the full address away with focus left where it is (WCAG 1.4.13); the next focus shows it again.
+                e.stopPropagation();
+                setAddressOpen(false);
               }}
+              onBlur={() => setAddressOpen(false)}
             >
-              Try again
+              {elided ? (
+                <>
+                  <span className="sr-only">{address}</span>
+                  <span aria-hidden="true">{elided}</span>
+                </>
+              ) : (
+                address
+              )}
+            </output>
+            <button ref={exitRef} onClick={() => setMode('edit')}>
+              <Pencil size={13} /> Back to editing
             </button>
           </div>
-        </div>
-      )}
-      <p className="sr-only" role="status">
-        {layoutSaid}
-      </p>
-      {/* Said once when a page with forms opens, for an author whose focus stays in the page and never meets the panel. */}
-      <p className="sr-only" role="status">
-        {formsShown ? `Form sends are practice in Preview. ${forms.some((f) => f.live) ? 'Only a real test is sent.' : 'Nothing is sent.'}` : ''}
-      </p>
-      {formsShown && (
-        <FormPractice
-          key={formsView}
-          forms={forms}
-          practice={practice}
-          onPractice={setPractice}
-          last={lastSend}
-          liveBusy={!!liveRequest}
-          onLiveTest={liveTest}
-          folded={practiceFolded}
-          onFold={setPracticeFolded}
-          bottom={practiceBottom}
-          maxHeight={practiceMax}
-          onHeight={setPracticeH}
-        />
-      )}
-      {runStatus && (
-        // What the AI is doing, as a status card of the canvas notices: the spinner while it works, its phase first, and
-        // what that leaves you free to do after it. No live region of its own: the chat (from outside the dock) and the
-        // toolbar's save state already say each phase, wherever focus is. It never takes focus; Stop (which undoes an
-        // edit's changes, so it says so) and Answer are in the tab order, and Stop leaves once the AI is stopping, since
-        // there is nothing left to press.
-        <div ref={runRef} className={`canvas-notice ai-run${runStatus === 'awaiting-input' ? ' attention' : runStatus === 'stopping' ? ' stopping' : ''}`} style={{ bottom: runBottom }} role="group" aria-label="AI at work">
-          <span className="canvas-notice-icon">{runStatus === 'awaiting-input' ? <CircleHelp aria-hidden="true" /> : <Spinner key={runStatus === 'stopping' ? 'stopping' : 'working'} decorative />}</span>
-          <span className="canvas-notice-text">
-            {runStatus === 'awaiting-input' ? (
-              <strong>The AI has a question for you.</strong>
-            ) : reading ? (
-              runStatus === 'stopping' ? (
-                <strong>Stopping the question.</strong>
-              ) : (
-                <>
-                  <strong>The AI is reading the site to answer your question.</strong> <span className="canvas-notice-more">You can keep editing.</span>
-                </>
-              )
-            ) : runPhase(runStatus) === 'stopping' ? (
-              <strong>Stopping the AI and undoing its changes.</strong>
-            ) : (
-              <>
-                <strong>{runPhase(runStatus) === 'checking' ? 'The AI is checking its changes.' : 'The AI is editing this site.'}</strong> <span className="canvas-notice-more">You can look around.</span>
-              </>
-            )}
-          </span>
-          {runStatus !== 'stopping' && (
-            <span className="canvas-notice-actions">
-              <button className="btn btn-sm btn-ghost" title={reading ? 'Stop this question' : 'Stop this request and undo its changes'} onClick={() => void api.ai.stop()}>
-                <Square fill="currentColor" aria-hidden="true" /> {reading ? 'Stop' : 'Stop and undo'}
+        )}
+        {/* The whole of an address too long for its slot, while a keyboard user is on it: a row of the foot just above
+            the bar, so it lifts the bars over it rather than covering them, and the page and the notices keep clear of
+            it as of any bar. Escape puts it away with focus left on the address. */}
+        {mode === 'preview' && elided && addressOpen && (
+          <div className="pill-address-full" aria-hidden="true">
+            {address}
+          </div>
+        )}
+        {/* Mounted before they have anything to say, so both are announced. The problem clears during a restart, so a
+            restart that fails is announced again. */}
+        <p className="sr-only" role="alert">
+          {issueShown && !retrying ? `${issueText} Your work is safe.` : stoppedAnnouncement(runtime)}
+        </p>
+        <p className="sr-only" role="status">
+          {issueShown && retrying ? 'Reloading the page…' : ''}
+        </p>
+        {issueShown && (
+          // Above the AI's notice in the foot, and right after the Previewing bar in the tab order, ahead of the form
+          // panel and the page, so recovery is close at hand.
+          <div ref={issueRef} className={`canvas-notice issue${retrying ? ' retrying' : ''}`} role="group" aria-label="Page problem">
+            <span className="canvas-notice-icon">{retrying ? <Spinner decorative /> : <TriangleAlert aria-hidden="true" />}</span>
+            <span className="canvas-notice-text issue-text">
+              <strong>{retrying ? 'Reloading the page…' : issueText}</strong> <span className="issue-safe">Your work is safe.</span>
+            </span>
+            {/* Help first, then the way back, with the one filled button last. Try again is the primary because it keeps
+                the work as it is; Revert, when there is a change to put down to, undoes it. The group wraps below the
+                words as one row when the canvas is narrow. Not natively disabled, so focus stays here while the page
+                reloads. */}
+            <div className="canvas-notice-actions">
+              <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'health' } })}>
+                Project health
               </button>
-              {runStatus === 'awaiting-input' && (
-                <button
-                  className="btn btn-sm btn-primary"
-                  onClick={() => {
-                    // To the answer box itself, as Write with AI does: the chat takes the request once it shows.
-                    const { snapshot: snap, pageId: page } = getState();
-                    setState({ dockOpen: true, rightTab: 'chat', ...(snap && page ? { chatFocus: { workspaceKey: snap.workspaceKey, pageId: page, at: Date.now() } } : {}) });
-                  }}
-                >
-                  Answer in chat
+              {sourceOffered && (
+                <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'source', definitionId: sourceOffered } })}>
+                  Open source
                 </button>
               )}
+              {revertOffered && (
+                <button className="btn btn-sm" aria-disabled={retrying || reverting || undefined} aria-label={`Revert “${revertOffered.label}”`} title={`Undo “${revertOffered.label}”, the change made before this problem started`} onClick={revertIssue}>
+                  Revert
+                </button>
+              )}
+              <button
+                className="btn btn-sm btn-primary"
+                aria-disabled={retrying || reverting || undefined}
+                onClick={() => {
+                  if (retrying) return;
+                  restartPreview();
+                }}
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        )}
+        <p className="sr-only" role="status">
+          {layoutSaid}
+        </p>
+        {/* Said once when a page with forms opens, for an author whose focus stays in the page and never meets the panel. */}
+        <p className="sr-only" role="status">
+          {formsShown ? `Form sends are practice in Preview. ${forms.some((f) => f.live) ? 'Only a real test is sent.' : 'Nothing is sent.'}` : ''}
+        </p>
+        {formsShown && (
+          <FormPractice
+            key={formsView}
+            forms={forms}
+            practice={practice}
+            onPractice={setPractice}
+            last={lastSend}
+            liveBusy={!!liveRequest}
+            onLiveTest={liveTest}
+            folded={practiceFolded}
+            onFold={setPracticeFolded}
+            maxHeight={practiceMax}
+          />
+        )}
+        {runStatus && (
+          // What the AI is doing, as a status card of the canvas notices: the spinner while it works, its phase first, and
+          // what that leaves you free to do after it. No live region of its own: the chat (from outside the dock) and the
+          // toolbar's save state already say each phase, wherever focus is. It never takes focus; Stop (which undoes an
+          // edit's changes, so it says so) and Answer are in the tab order, and Stop leaves once the AI is stopping, since
+          // there is nothing left to press.
+          <div ref={runRef} className={`canvas-notice ai-run${runStatus === 'awaiting-input' ? ' attention' : runStatus === 'stopping' ? ' stopping' : ''}`} role="group" aria-label="AI at work">
+            <span className="canvas-notice-icon">{runStatus === 'awaiting-input' ? <CircleHelp aria-hidden="true" /> : <Spinner key={runStatus === 'stopping' ? 'stopping' : 'working'} decorative />}</span>
+            <span className="canvas-notice-text">
+              {runStatus === 'awaiting-input' ? (
+                <strong>The AI has a question for you.</strong>
+              ) : reading ? (
+                runStatus === 'stopping' ? (
+                  <strong>Stopping the question.</strong>
+                ) : (
+                  <>
+                    <strong>The AI is reading the site to answer your question.</strong> <span className="canvas-notice-more">You can keep editing.</span>
+                  </>
+                )
+              ) : runPhase(runStatus) === 'stopping' ? (
+                <strong>Stopping the AI and undoing its changes.</strong>
+              ) : (
+                <>
+                  <strong>{runPhase(runStatus) === 'checking' ? 'The AI is checking its changes.' : 'The AI is editing this site.'}</strong> <span className="canvas-notice-more">You can look around.</span>
+                </>
+              )}
             </span>
-          )}
-        </div>
-      )}
+            {runStatus !== 'stopping' && (
+              <span className="canvas-notice-actions">
+                <button className="btn btn-sm btn-ghost" title={reading ? 'Stop this question' : 'Stop this request and undo its changes'} onClick={() => void api.ai.stop()}>
+                  <Square fill="currentColor" aria-hidden="true" /> {reading ? 'Stop' : 'Stop and undo'}
+                </button>
+                {runStatus === 'awaiting-input' && (
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => {
+                      // To the answer box itself, as Write with AI does: the chat takes the request once it shows.
+                      const { snapshot: snap, pageId: page } = getState();
+                      setState({ dockOpen: true, rightTab: 'chat', ...(snap && page ? { chatFocus: { workspaceKey: snap.workspaceKey, pageId: page, at: Date.now() } } : {}) });
+                    }}
+                  >
+                    Answer in chat
+                  </button>
+                )}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
       {/* Over the pasteboard, never scrolled away, at every zoom and through every drag, and while the preview is not
           running. Stays while another entry opens, so the entry picker keeps focus as the author steps through
           entries. As wide as the frame within the canvas's margins, and at least wide enough for its words, so it is
@@ -3368,12 +3390,12 @@ export function Canvas() {
       )}
       <div
         className="canvas-scroll"
-        style={layoutBand ? { top: TEMPLATE_BAND_ROOM } : undefined}
+        style={layoutBand || footRoom ? { top: layoutBand ? TEMPLATE_BAND_ROOM : undefined, bottom: footRoom || undefined, paddingBottom: footRoom ? 0 : undefined } : undefined}
         ref={scrollRef}
         onMouseDown={(e) => e.target === e.currentTarget && setState({ selection: null })}
       >
         {url && initialSrc && (
-          <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: 14, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
+          <div className={`frame-wrap${staleFrame ? ' stale' : ''}${opening || retrying ? ' waiting' : ''}`} ref={wrapRef} style={{ width: frameW, height: frameH * z, marginTop: FRAME_LABEL, transform: nudge.x || nudge.y ? `translate(${-nudge.x}px, ${-nudge.y}px)` : undefined }}>
             {/* The strip above the page: what the page is doing on the left, its screen size on the right. */}
             {opening && !resizing && !templateMode && (
               <div className="frame-status" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
@@ -3648,7 +3670,6 @@ export function Canvas() {
                 <SelectionChip
                   box={firstSel}
                   frameWidth={viewport * z}
-                  taken={chipTaken}
                   name={defRoot ? state.components[definitionMode!.definitionId].name : selLabel}
                   icon={kindIcon(state, selection)}
                   parent={isPart && !definitionMode ? chromeLabel(state, { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] }) : null}
@@ -3849,7 +3870,7 @@ function stepKey(s: ReturnType<typeof getState>): string {
  * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
-function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, more, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; taken: number; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; more: MenuTriggerProps; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
+function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, more, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; more: MenuTriggerProps; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
   const askKeys = useAskAiKeys();
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
@@ -3874,7 +3895,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
    *  First Ask AI and Edit text, which More actions also offers, step out and the labelled buttons keep only their
    *  icon; if the name is still cut, the parent link goes too (Escape still selects the parent). */
   const [compact, setCompact] = useState(0);
-  useLayoutEffect(() => setCompact(0), [key, frameWidth, taken, editing, !!onReveal, inspectorHidden, !!onEditText, name, parent, layerSet]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => setCompact(0), [key, frameWidth, editing, !!onReveal, inspectorHidden, !!onEditText, name, parent, layerSet]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     const width = ref.current?.offsetWidth ?? 0;
     if (width && width !== w) (setW(width), onWidth(width));
@@ -3902,7 +3923,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
   );
   const t = structuralTarget(selection);
   const top = -CHIP_H - 6;
-  const left = chipLeft(box.left, w, frameWidth, taken);
+  const left = chipLeft(box.left, w, frameWidth);
   const parentRef = selection?.instancePath.length ? { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] } : null;
   const structural = !!t && !selection?.instancePath.length;
   const canEdit = structural && t!.owner.kind !== 'shell';
@@ -3956,7 +3977,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
   if (editing) {
     const what = /^[A-Z][a-z]/.test(name) ? name[0].toLowerCase() + name.slice(1) : name;
     return (
-      <div ref={ref} className="ov-chip strip editing" style={{ left, top, maxWidth: chipRoom(taken, frameWidth) }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
+      <div ref={ref} className="ov-chip strip editing" style={{ left, top, maxWidth: frameWidth }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
         <span className="name">
           <Pencil />
           <span className="label">Editing {what}</span>
@@ -3975,7 +3996,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
     <div
       ref={ref}
       className="ov-chip strip"
-      style={{ left, top, maxWidth: chipRoom(taken, frameWidth) }}
+      style={{ left, top, maxWidth: frameWidth }}
       role="toolbar"
       // Which of a repeated part it acts on (one card, or every card) is part of what the toolbar is for.
       aria-label={`${name}${others > 0 ? ` and ${others} more` : item ? `, ${item.n} of ${item.count}` : repeats > 1 ? `, all ${repeats} ${repeatsLabel}` : ''} actions`}
@@ -4095,6 +4116,15 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
     </div>
   );
 }
+
+/** The least height the page keeps, in its own pixels, while the foot stands below it. */
+const PAGE_FLOOR = 160;
+/** How far above the canvas's foot the page ends, in screen pixels. */
+const FOOT_CLEAR = 8;
+/** The pasteboard's padding round the page (Canvas.css, .canvas-scroll), in screen pixels. */
+const PASTEBOARD_PAD = 28;
+/** The frame's top margin, which holds the strip above the page (its label, the selection's chip), in screen pixels. */
+const FRAME_LABEL = 14;
 
 /** How far down the pasteboard starts under a collection layout's band (8px above it, 42px high), in screen pixels. */
 const TEMPLATE_BAND_ROOM = 50;

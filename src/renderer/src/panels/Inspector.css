@@ -307,7 +307,7 @@
   .insp-image-drop svg { flex: none; width: 18px; height: 18px; color: var(--accent-text); }
   .insp-image-drop b { font-weight: 600; }
   /* The library, in a popover under the card so the fields below stay put (as the icon picker's). */
-  .insp-image-pop { position: fixed; z-index: 1000; display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 16px); padding: 8px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out; outline: none; overflow: hidden; }
+  .insp-image-pop { position: fixed; z-index: var(--z-popover); display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 16px); padding: 8px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out; outline: none; overflow: hidden; }
   .insp-image-pop .insp-pick-grid { position: relative; flex: 0 1 auto; min-height: 96px; max-height: 312px; margin: 0 -4px; padding: 2px 4px; scroll-padding: 4px 0; }
   /* The controls over the grid: a hairline and a soft lift while pictures are scrolled up under them. */
   .insp-image-pop-head { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 8px; margin: -8px -8px -8px; padding: 8px; transition: box-shadow 120ms; }
@@ -399,7 +399,7 @@
   .insp-icon-btn > svg:last-child { flex: none; width: 14px; height: 14px; transition: transform 120ms; }
   .insp-icon-btn[aria-expanded='true'] { border-color: var(--text-3); }
   .insp-icon-btn[aria-expanded='true'] > svg:last-child { transform: rotate(180deg); }
-  .insp-icon-pop { position: fixed; z-index: 1000; display: flex; flex-direction: column; overflow: hidden; max-width: calc(100vw - 16px); border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out; outline: none; }
+  .insp-icon-pop { position: fixed; z-index: var(--z-popover); display: flex; flex-direction: column; overflow: hidden; max-width: calc(100vw - 16px); border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out; outline: none; }
   /* Every line of content starts on one edge, 17px in: search text, group names, glyphs and the footer's name. */
   .insp-icon-head { flex: none; position: relative; z-index: 1; padding: 8px 8px 4px; transition: box-shadow 120ms; }
   /* More icons past an edge: the fixed part beside it takes a hairline and a soft lift (as in the Share popover), so the
