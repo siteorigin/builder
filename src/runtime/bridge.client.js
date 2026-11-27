@@ -904,9 +904,9 @@ function settleShown() {
 }
 /** Until when (performance.now()) a smooth scroll the bridge started may still be on its way. */
 let smoothUntil = 0;
-/** Scrolls `target` into view, noting a smooth one, which endScrolling can then end. */
+/** Scrolls `target` into view, noting a scroll that may animate (`auto` follows the site's CSS), which endScrolling can then end. */
 function scrollShown(target, block, behavior) {
-  if (behavior === 'smooth') smoothUntil = performance.now() + SHOWN_SETTLE_MS;
+  if (behavior !== 'instant') smoothUntil = performance.now() + SHOWN_SETTLE_MS;
   target.scrollIntoView({ block, behavior });
 }
 /**
@@ -2039,7 +2039,7 @@ function coveredTop() {
 function heldInFrame(el) {
   for (let p = el; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
     const position = getComputedStyle(p).position;
-    if (position === 'fixed' || (position === 'sticky' && p.tagName === 'HEADER')) return true;
+    if (position === 'fixed' || (position === 'sticky' && p.matches('header, [role="banner"]'))) return true;
   }
   return false;
 }

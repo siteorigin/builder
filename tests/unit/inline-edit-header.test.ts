@@ -192,6 +192,20 @@ describe.skipIf(!browserInstalled)('editing a heading on the canvas under a stic
     expect(await frame.evaluate<number>(`scrollY`)).toBe(600);
   });
 
+  it('leaves the page where it is for text edited in a banner of the site’s own that stays at the top', async () => {
+    await frame.evaluate(`(() => {
+      document.documentElement.removeAttribute('style');
+      const banner = document.createElement('div');
+      banner.setAttribute('role', 'banner');
+      banner.style.cssText = 'position:sticky;top:0;height:72px';
+      banner.innerHTML = '<span data-so-ctx="page:p" data-so-node="brand">Studio</span>';
+      document.getElementById('bar').replaceWith(banner);
+      window.scrollTo({ top: 600, behavior: 'instant' });
+    })()`);
+    await editFromEditor('brand');
+    expect(await frame.evaluate<number>(`scrollY`)).toBe(600);
+  });
+
   it('does not scroll to the list item holding the text being edited', async () => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await frame.evaluate(`(() => {
@@ -230,23 +244,27 @@ describe.skipIf(!browserInstalled)('editing a heading on the canvas under a stic
     expect(at.bottom).toBeLessThanOrEqual(at.height);
   });
 
-  it('stops a scroll the editor asked for where a press finds it, so a double-click stays on its word', async () => {
-    await page.evaluate(`window.post('track', { selected: { ctx: 'page:p', node: 'hero', items: '' }, hovered: null })`);
-    await page.evaluate(`window.post('scrollTo', { desc: { ctx: 'page:p', node: 'hero', items: '' }, show: true })`);
-    await frame.evaluate(`window.scrollTo({ top: 1500, behavior: 'instant' })`);
-    await page.evaluate(`window.post('scrollTo', { desc: { ctx: 'page:p', node: 'hero', items: '' }, show: true })`);
-    await expect.poll(() => frame.evaluate<number>(`scrollY`)).toBeLessThan(1500);
-    await page.mouse.move(600, 300);
-    await page.mouse.down();
-    await page.mouse.up();
-    // The frame the press lands in can still move.
-    await page.waitForTimeout(100);
-    const at = await frame.evaluate<number>(`scrollY`);
-    await page.waitForTimeout(SCROLLED_MS);
-    expect(await frame.evaluate<number>(`scrollY`)).toBe(at);
-    // Stopped on its way, long before the hero it was headed for.
-    expect(at).toBeGreaterThan(1000);
-  });
+  for (const [name, motion] of [['', 'no-preference'], [', one the site’s own CSS animates under reduced motion', 'reduce']] as const) {
+    it(`stops a scroll the editor asked for where a press finds it${name}`, async () => {
+      await page.emulateMedia({ reducedMotion: motion });
+      await frame.evaluate(`document.documentElement.style.scrollBehavior = 'smooth'`);
+      await page.evaluate(`window.post('track', { selected: { ctx: 'page:p', node: 'hero', items: '' }, hovered: null })`);
+      await page.evaluate(`window.post('scrollTo', { desc: { ctx: 'page:p', node: 'hero', items: '' }, show: true })`);
+      await frame.evaluate(`window.scrollTo({ top: 1500, behavior: 'instant' })`);
+      await page.evaluate(`window.post('scrollTo', { desc: { ctx: 'page:p', node: 'hero', items: '' }, show: true })`);
+      await expect.poll(() => frame.evaluate<number>(`scrollY`)).toBeLessThan(1500);
+      await page.mouse.move(600, 300);
+      await page.mouse.down();
+      await page.mouse.up();
+      // The frame the press lands in can still move.
+      await page.waitForTimeout(100);
+      const at = await frame.evaluate<number>(`scrollY`);
+      await page.waitForTimeout(SCROLLED_MS);
+      expect(await frame.evaluate<number>(`scrollY`)).toBe(at);
+      // Stopped on its way, long before the hero it was headed for.
+      expect(at).toBeGreaterThan(1000);
+    });
+  }
 
   /** Scrolls so the caret's line is `y` pixels down the frame. */
   const putCaretAt = (y: number) => frame.evaluate(`window.scrollBy({ top: getSelection().getRangeAt(0).getBoundingClientRect().top - ${y}, behavior: 'instant' })`);
