@@ -3,6 +3,8 @@
  * components, says how they connect to a service and name their answers, and holds the snippets of their Svelte
  * source that say a definition (or a project's copy of one) still does it that way. A theme's own definitions are
  * built from these, so the two cannot drift apart.
+ *
+ * Those snippets are theme code, copied into exported websites with the form: like the themes, they are MIT-0.
  */
 import type { ComponentDefinition } from '@shared/types';
 import { isBinding } from '@shared/types';
