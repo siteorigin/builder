@@ -10,6 +10,7 @@ import { checkGuestExpiry, checkSessionExpiry, guestAccessEndsAt, isExpired, isS
 import { GUEST_ID_RE, GUEST_ROLES, leastRole, LIVE_PROTOCOL_VERSION, MAX_ID_LENGTH, MAX_MESSAGE_LENGTH, narrower, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type ElementTarget, type Frame, type HostToRelay, type Participant, type Presence, type RpcError } from '@shared/live/messages';
 import { HOST_PATH_PLACEHOLDER, hostPathTail, scrubHostPaths, type LiveApplyResult, type LiveProjectChanged, type LiveProjectSnapshot } from '@shared/live/snapshot';
+import { GUEST_NOTE_BURST, GUEST_NOTE_LIMIT, GUEST_NOTE_REFILL_MS, NOTES_CHANGED, type LiveNotes, type NoteDraft } from '@shared/live/notes';
 import { formatInviteLink, HOST_SOCKET_PATH, RELAY_URL_ENV, relaySocketUrl, roomSocketPath, type ResolvedRelayUrl } from '@shared/live/relay-url';
 import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
 
@@ -76,7 +77,23 @@ export interface LiveHostContext {
   applyGuest?(opening: string, guest: LiveGuestEdit, batch: LiveEditBatch): Promise<LiveApplyResult>;
   /** This computer's paths (the project folder, the home folder), taken out of what a guest is sent of the host's AI. */
   hostPaths?(): readonly string[];
+  /**
+   * The pinned notes of the project open in the opening named (#770), as guests reach them. Each change takes a check
+   * the keeper asks as its turn comes and again just before it is written (null while the guest may still make it), and
+   * tells this manager (notesChanged) once it is kept. Absent: guests' note calls are unavailable.
+   */
+  notes?: LiveHostNotes;
   emit(channel: 'live:state' | 'live:request' | 'live:presence', payload: LiveHostState | LiveJoinRequest | LivePresence): void;
+}
+
+/** A guest's note call, answered: the notes as they are now, or why not. */
+export type LiveNotesAnswer = { ok: true; notes: LiveNotes } | { ok: false; error: RpcError };
+
+export interface LiveHostNotes {
+  list(opening: string): Promise<LiveNotesAnswer>;
+  add(opening: string, author: { name: string; role: GuestRole }, draft: NoteDraft, check: () => RpcError | null): Promise<LiveNotesAnswer>;
+  resolve(opening: string, id: string, resolved: boolean, check: () => RpcError | null): Promise<LiveNotesAnswer>;
+  delete(opening: string, id: string, check: () => RpcError | null): Promise<LiveNotesAnswer>;
 }
 
 /** Opens a WebSocket to the relay. Tests give their own; the app uses the platform's. */
@@ -127,6 +144,11 @@ export const MAX_GUEST_EDITS_IN_FLIGHT = 2;
  */
 export const GUEST_SNAPSHOT_BURST = 5;
 export const GUEST_SNAPSHOT_REFILL_MS = 1_000;
+/** Note calls one guest may have waiting their turn at once. */
+export const MAX_GUEST_NOTE_CALLS = 2;
+/** Note lists a guest may ask for in a burst, and how often one more after: asked on joining and after each change. */
+export const GUEST_NOTE_READ_BURST = 5;
+export const GUEST_NOTE_READ_REFILL_MS = 1_000;
 /** Answers wait while this much is still going out on the host's socket, rather than piling up behind it. */
 const RPC_BACKLOG_BYTES = 8 * 1024 * 1024;
 /**
@@ -325,6 +347,15 @@ interface Run {
   lastTurns: Map<string, LiveAiTurn>;
   /** Each guest's snapshot budget (GUEST_SNAPSHOT_BURST), and when it was last counted (monotonic). */
   reads: Map<string, { tokens: number; at: number }>;
+  /** Allow guest notes (#770): whether guests may leave notes now. On for every session until the host turns it off. */
+  guestNotes: boolean;
+  /** Each guest's note calls waiting their turn (MAX_GUEST_NOTE_CALLS). */
+  noteCalls: Map<string, number>;
+  /** Each guest's note-list budget (GUEST_NOTE_READ_BURST) and note budget (GUEST_NOTE_BURST). */
+  noteReads: Map<string, { tokens: number; at: number }>;
+  noteWrites: Map<string, { tokens: number; at: number }>;
+  /** The notes each guest has left this session, and those being kept now (GUEST_NOTE_LIMIT). */
+  notesLeft: Map<string, number>;
   /** Where each collaborator is, as each last said. */
   presence: Map<string, Presence>;
   /** Each guest's latest spotlight and each collaborator's latest edit (#768), until it is no longer shown. */
@@ -415,6 +446,7 @@ export class LiveHostManager {
       expiresAt: room.expiresAt,
       relayClockOffsetMs: relayNow(room) - Date.now(),
       locked: room.locked,
+      guestNotes: run.guestNotes,
       participants: room.participants.map((p) => ({ ...p })),
       previewReady: this.servingPreview(run) !== null,
       lastError: run.lastError,
@@ -467,6 +499,11 @@ export class LiveHostManager {
       delegated: null,
       lastTurns: new Map(),
       reads: new Map(),
+      guestNotes: true,
+      noteCalls: new Map(),
+      noteReads: new Map(),
+      noteWrites: new Map(),
+      notesLeft: new Map(),
       presence: new Map(),
       spotlights: new Map(),
       activity: new Map(),
@@ -1144,12 +1181,14 @@ export class LiveHostManager {
     const run = conn.run;
     const answer = (result: { ok: true; result: unknown } | { ok: false; error: RpcError }) => this.answer(conn, frame, result);
     const refuse = (code: RpcError['code'], message: string, recoverable: boolean) => answer({ ok: false, error: { code, message, recoverable } });
-    if (conn.stage !== 'host' || run.phase !== 'active' || !this.current(run) || !this.ctx.guestSnapshot || !this.ctx.applyGuest) return refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
+    if (conn.stage !== 'host' || run.phase !== 'active' || !this.current(run)) return refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
     const grant = this.grantOf(run, frame.guestId);
     if ('code' in grant) return answer({ ok: false, error: grant });
     const call = checkRpcRequest(grant.role, frame.method, frame.args);
     if (!call.ok) return answer(call);
     if (conn.socket.bufferedAmount > RPC_BACKLOG_BYTES) return refuse('BUSY', 'The host is busy sending. Try again shortly.', true);
+    if (call.value.method.startsWith('notes.')) return this.onNoteCall(conn, frame, grant, call.value);
+    if (!this.ctx.guestSnapshot || !this.ctx.applyGuest) return refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
     if (call.value.method === 'ai.send' || call.value.method === 'ai.stop' || call.value.method === 'ai.answer') return this.onAiCall(conn, frame.guestId, grant, call.value, answer);
     if (call.value.method === 'project.snapshot') {
       if (!this.spendRead(run, frame.guestId)) return refuse('BUSY', 'Too many requests for the project. Try again shortly.', true);
@@ -1179,7 +1218,7 @@ export class LiveHostManager {
       return null;
     };
     void this.ctx
-      .applyGuest(run.workspaceKey, { guestId, displayName: grant.displayName, role, check }, call.value.args[0])
+      .applyGuest(run.workspaceKey, { guestId, displayName: grant.displayName, role, check }, (call.value as Extract<LiveCall, { method: 'project.apply' }>).args[0])
       // A failure the editor did not turn into a refusal may have come after the edit was saved: the guest is told it
       // cannot know, rather than that nothing changed, so it reads the project before trying again.
       .catch((): LiveApplyResult => ({ ok: false, error: { code: 'INTERNAL', message: 'The host could not confirm whether your edit was saved. Fetch the project before trying again.', recoverable: false } }))
@@ -1195,14 +1234,96 @@ export class LiveHostManager {
 
   /** Take one of a guest's snapshot budget, refilled over time; false when it has none left. */
   private spendRead(run: Run, guestId: string): boolean {
-    const now = performance.now();
-    const budget = run.reads.get(guestId) ?? { tokens: GUEST_SNAPSHOT_BURST, at: now };
-    budget.tokens = Math.min(GUEST_SNAPSHOT_BURST, budget.tokens + (now - budget.at) / GUEST_SNAPSHOT_REFILL_MS);
-    budget.at = now;
-    run.reads.set(guestId, budget);
-    if (budget.tokens < 1) return false;
-    budget.tokens--;
-    return true;
+    return spend(run.reads, guestId, GUEST_SNAPSHOT_BURST, GUEST_SNAPSHOT_REFILL_MS);
+  }
+
+  /**
+   * A guest's note call (#770): reading the notes, leaving one, or (a collaborator) resolving or deleting one. Leaving
+   * one is held to Allow guest notes, a burst and a count for the session; every change is asked again as its turn comes
+   * and just before it is written, so a guest removed, out of time or made a viewer since it asked changes nothing.
+   */
+  private onNoteCall(conn: Connection, frame: Frame<'relay-to-host', 'rpc:request'>, grant: { role: GuestRole; displayName: string; generation: number }, call: LiveCall): void {
+    const run = conn.run;
+    const { guestId } = frame;
+    const answer = (result: { ok: true; result: unknown } | { ok: false; error: RpcError }) => this.answer(conn, frame, result);
+    const refuse = (code: RpcError['code'], message: string, recoverable: boolean) => answer({ ok: false, error: { code, message, recoverable } });
+    const notes = this.ctx.notes;
+    if (!notes) return refuse('UNAVAILABLE', 'The host’s notes are not available right now.', true);
+    if (call.method === 'notes.list' && !spend(run.noteReads, guestId, GUEST_NOTE_READ_BURST, GUEST_NOTE_READ_REFILL_MS)) return refuse('BUSY', 'Too many requests for the notes. Try again shortly.', true);
+    const waiting = run.noteCalls.get(guestId) ?? 0;
+    if (waiting >= MAX_GUEST_NOTE_CALLS) return refuse('BUSY', 'Your earlier notes are still being saved. Try again shortly.', true);
+    const adding = call.method === 'notes.add';
+    if (adding) {
+      if (!run.guestNotes) return refuse('PERMISSION_DENIED', 'The host has turned off notes from guests.', false);
+      if ((run.notesLeft.get(guestId) ?? 0) >= GUEST_NOTE_LIMIT) return refuse('PERMISSION_DENIED', `You have left ${GUEST_NOTE_LIMIT} notes, as many as one person can in a live session.`, false);
+      if (!spend(run.noteWrites, guestId, GUEST_NOTE_BURST, GUEST_NOTE_REFILL_MS)) return refuse('BUSY', 'You are leaving notes very quickly. Wait a few seconds, then try again.', true);
+      // Counted now, so notes sent together cannot pass the count between them; given back if it is not kept.
+      run.notesLeft.set(guestId, (run.notesLeft.get(guestId) ?? 0) + 1);
+    }
+    run.noteCalls.set(guestId, waiting + 1);
+    const { generation } = grant;
+    const check = (): RpcError | null => {
+      if (this.run !== run || run.phase !== 'active' || run.conn !== conn || conn.closed) return { code: 'UNAVAILABLE', message: 'The live session’s connection dropped before your note was saved.', recoverable: true };
+      const now = this.grantOf(run, guestId);
+      if ('code' in now) return now;
+      if (adding && !run.guestNotes) return { code: 'PERMISSION_DENIED', message: 'The host has turned off notes from guests.', recoverable: false };
+      if (!adding && call.method !== 'notes.list' && (now.role !== 'collaborator' || now.generation !== generation)) return { code: 'PERMISSION_DENIED', message: 'The host changed your access before your change to the notes was saved.', recoverable: false };
+      return null;
+    };
+    const opening = run.workspaceKey;
+    const asked =
+      call.method === 'notes.list'
+        ? notes.list(opening)
+        : call.method === 'notes.add'
+          ? notes.add(opening, { name: grant.displayName, role: grant.role }, call.args[0], check)
+          : call.method === 'notes.resolve'
+            ? notes.resolve(opening, call.args[0], call.args[1], check)
+            : notes.delete(opening, (call as Extract<LiveCall, { method: 'notes.delete' }>).args[0], check);
+    void asked
+      .catch((): LiveNotesAnswer => ({ ok: false, error: { code: 'INTERNAL', message: 'The host could not confirm whether the notes changed. Look at them again before trying again.', recoverable: false } }))
+      .then((result) => {
+        const left = (run.noteCalls.get(guestId) ?? 1) - 1;
+        if (left > 0) run.noteCalls.set(guestId, left);
+        else run.noteCalls.delete(guestId);
+        if (adding && !result.ok) {
+          const n = (run.notesLeft.get(guestId) ?? 1) - 1;
+          if (n > 0) run.notesLeft.set(guestId, n);
+          else run.notesLeft.delete(guestId);
+        }
+        answer(result.ok ? { ok: true, result: { ...result.notes, guestNotes: run.guestNotes } } : { ok: false, error: result.error });
+      });
+  }
+
+  /** Whether guests may leave notes now: Allow guest notes in the session running, or on while none runs. */
+  get guestNotes(): boolean {
+    return this.run?.guestNotes ?? true;
+  }
+
+  /**
+   * The project's notes changed, or whether guests may leave them (#770): every guest the host still lets in is told
+   * only that, and asks for the list when it wants it.
+   */
+  notesChanged(): void {
+    const run = this.run;
+    const conn = run?.conn;
+    if (!run || run.phase !== 'active' || conn?.stage !== 'host' || !this.current(run)) return;
+    const listed = run.room!.participants.filter((p) => p.status === 'admitted');
+    const granted = listed.filter((p) => !('code' in this.grantOf(run, p.guestId)));
+    if (!granted.length) return;
+    const to: Array<string | undefined> = granted.length === listed.length ? [undefined] : granted.map((p) => p.guestId);
+    for (const guestId of to) this.sendOn(conn, { type: 'rpc:event', event: 'notes:changed', payload: NOTES_CHANGED, ...(guestId ? { guestId } : {}) });
+  }
+
+  /** Allow guest notes, or stop guests leaving any more (#770). A setting of the host's alone: the relay is not told. */
+  setGuestNotes(value: unknown, allowed: unknown): LiveCommandResult {
+    const run = this.matching(value);
+    if (!run || run.phase === 'stopping') return { ok: false, message: 'That live session has ended.' };
+    if (typeof allowed !== 'boolean') return { ok: false, message: 'Say whether guests may leave notes.' };
+    if (run.guestNotes === allowed) return { ok: true };
+    run.guestNotes = allowed;
+    this.publish();
+    this.notesChanged();
+    return { ok: true };
   }
 
   /**
@@ -1709,4 +1830,16 @@ export class LiveHostManager {
     if (run.phase === 'active' && conn?.stage === 'host') this.sendOn(conn, { type: 'presence:update', presence: next });
     return { ok: true };
   }
+}
+
+/** Take one token of a budget that refills over time (monotonic clock); false when it has none left. */
+function spend(budgets: Map<string, { tokens: number; at: number }>, key: string, burst: number, refillMs: number): boolean {
+  const now = performance.now();
+  const budget = budgets.get(key) ?? { tokens: burst, at: now };
+  budget.tokens = Math.min(burst, budget.tokens + (now - budget.at) / refillMs);
+  budget.at = now;
+  budgets.set(key, budget);
+  if (budget.tokens < 1) return false;
+  budget.tokens--;
+  return true;
 }

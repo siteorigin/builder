@@ -79,7 +79,9 @@ import { guestEditProblem } from '@engine/guest-edits';
 import { copyEditorBatchProblem } from '@engine/copy-editor';
 import { formDestinationProblems } from '@engine/collection-sources';
 import { displayName } from '@engine/tree';
-import { LiveHostManager, type LiveGuestEdit } from './live/host';
+import { LiveHostManager, type LiveGuestEdit, type LiveNotesAnswer } from './live/host';
+import { makeNote, notePlace, NotesStore, type NotesChange } from './project/notes';
+import { NOTE_DRAFT_SCHEMA, NOTE_ID_RE, type LiveNote, type LiveNoteResult, type LiveNotes, type NoteAuthorRole, type NoteDraft } from '@shared/live/notes';
 import { LiveGuestManager } from './live/guest';
 import { loopbackPreview } from './live/preview-proxy';
 import { newId } from '@shared/ids';
@@ -471,6 +473,15 @@ export class Controller {
     guestSnapshot: (opening) => this.guestSnapshot(opening),
     applyGuest: (opening, guest, batch) => this.applyGuest(opening, guest, batch),
     hostPaths: () => (this.session ? [this.session.dir, homedir()] : [homedir()]),
+    notes: {
+      list: async (opening) => {
+        const notes = await this.listNotes(opening);
+        return notes ? { ok: true, notes } : { ok: false, error: { code: 'UNAVAILABLE', message: 'The host’s project is not open.', recoverable: true } };
+      },
+      add: (opening, author, draft, check) => this.guestNoteChange(opening, check, (s, store, authorize) => this.addNoteTo(s, store, draft, author, authorize)),
+      resolve: (opening, id, resolved, check) => this.guestNoteChange(opening, check, (_s, store, authorize) => store.resolve(id, resolved, authorize)),
+      delete: (opening, id, check) => this.guestNoteChange(opening, check, (_s, store, authorize) => store.delete(id, authorize))
+    },
     emit: (channel, payload) => this.send(channel, payload)
   });
   /**
@@ -496,6 +507,8 @@ export class Controller {
    */
   private noticeTicket = 0;
   private publishedTicket = 0;
+  /** The open project's pinned notes (#770), for the session they were read in. */
+  private notesStore: { session: ProjectSession; store: NotesStore } | null = null;
   /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
   private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
   /**
@@ -699,6 +712,88 @@ export class Controller {
     const code = (RPC_ERROR_CODES as readonly string[]).includes(error.code) ? (error.code as RpcError['code']) : 'INTERNAL';
     // The engine's words, never its details.
     return shared({ code, message: error.message, recoverable: error.recoverable });
+  }
+
+  // -------------------------------------------------------------------------
+  // Pinned notes (#770)
+
+  /** The notes of the project open in the opening `key`, while it is not closing. */
+  private notesIn(key: unknown): { session: ProjectSession; store: NotesStore } | null {
+    const s = typeof key === 'string' ? this.openedAs(key) : null;
+    if (!s) return null;
+    if (this.notesStore?.session !== s) this.notesStore = { session: s, store: new NotesStore(s.local('notes.json'), (fn) => s.whileOwner(fn)) };
+    return this.notesStore;
+  }
+
+  /** The project's notes, newest first, in the opening `key`; null when that is not the project open. */
+  async listNotes(key: unknown): Promise<LiveNotes | null> {
+    const held = this.notesIn(key);
+    if (!held) return null;
+    const notes = await held.store.list().catch(() => null);
+    return notes && this.notesStore === held ? { notes: [...notes], guestNotes: this.live.guestNotes } : null;
+  }
+
+  /** Leave a note of the host's own, in the opening `key`. */
+  addNote(key: unknown, draft: unknown): Promise<LiveNoteResult> {
+    const parsed = NOTE_DRAFT_SCHEMA.safeParse(draft);
+    if (!parsed.success) return Promise.resolve({ ok: false, message: 'That note cannot be left.' });
+    return this.hostNoteChange(key, (s, store) => this.addNoteTo(s, store, parsed.data, { name: 'Host', role: 'host' }));
+  }
+
+  resolveNote(key: unknown, id: unknown, resolved: unknown): Promise<LiveNoteResult> {
+    if (typeof id !== 'string' || !NOTE_ID_RE.test(id) || typeof resolved !== 'boolean') return Promise.resolve({ ok: false, message: 'That note cannot be found.' });
+    return this.hostNoteChange(key, (_s, store) => store.resolve(id, resolved));
+  }
+
+  deleteNote(key: unknown, id: unknown): Promise<LiveNoteResult> {
+    if (typeof id !== 'string' || !NOTE_ID_RE.test(id)) return Promise.resolve({ ok: false, message: 'That note cannot be found.' });
+    return this.hostNoteChange(key, (_s, store) => store.delete(id));
+  }
+
+  /** A note on its page, checked against the project as it is now, then kept. */
+  private addNoteTo(s: ProjectSession, store: NotesStore, draft: NoteDraft, author: { name: string; role: NoteAuthorRole }, authorize?: () => string | null): Promise<NotesChange> {
+    const place = notePlace(s.state, draft);
+    if (typeof place === 'string') return Promise.resolve({ ok: false, message: place });
+    const note = makeNote(draft, place, author);
+    if (typeof note === 'string') return Promise.resolve({ ok: false, message: note });
+    return store.add(note, authorize);
+  }
+
+  /** Make a change to the notes of the opening `key`; once it is kept, the editor and the session's guests are told. */
+  private async noteChange(key: string, change: (s: ProjectSession, store: NotesStore, authorize?: () => string | null) => Promise<NotesChange>, authorize?: () => string | null): Promise<NotesChange> {
+    const held = this.notesIn(key);
+    if (!held) return { ok: false, message: 'The project is not open.' };
+    if (held.session.readOnly) return { ok: false, message: 'This project is open read-only, so its notes can’t be changed.' };
+    const result = await change(held.session, held.store, authorize);
+    if (result.ok && this.notesStore === held) this.notesChanged(result.notes);
+    return result;
+  }
+
+  private async hostNoteChange(key: unknown, change: (s: ProjectSession, store: NotesStore) => Promise<NotesChange>): Promise<LiveNoteResult> {
+    if (typeof key !== 'string') return { ok: false, message: 'The project is not open.' };
+    const result = await this.noteChange(key, change);
+    return result.ok ? { ok: true, notes: { notes: [...result.notes], guestNotes: this.live.guestNotes } } : result;
+  }
+
+  /** A guest's change, as the live session checked it; asked again (`check`) as its turn comes and before it is written. */
+  private async guestNoteChange(key: string, check: () => RpcError | null, change: (s: ProjectSession, store: NotesStore, authorize: () => string | null) => Promise<NotesChange>): Promise<LiveNotesAnswer> {
+    let refusal: RpcError | null = null;
+    const authorize = () => {
+      refusal = check();
+      return refusal?.message ?? null;
+    };
+    const dir = this.session?.dir;
+    const result = await this.noteChange(key, (s, store, a) => change(s, store, a!), authorize);
+    if (result.ok) return { ok: true, notes: { notes: [...result.notes], guestNotes: this.live.guestNotes } };
+    const failed: RpcError = refusal ?? { code: 'INVALID_ARGUMENT', message: result.message, recoverable: false };
+    // Whatever a guest is told names nothing of this computer.
+    return { ok: false, error: { ...failed, message: scrubHostPaths(failed.message, dir ? [dir, homedir()] : [homedir()]).slice(0, MAX_MESSAGE_LENGTH) } };
+  }
+
+  /** The notes changed: the editor is sent them, and the live session's guests are told. */
+  private notesChanged(notes: readonly LiveNote[]): void {
+    this.send('notes:changed', { notes: [...notes], guestNotes: this.live.guestNotes } satisfies LiveNotes);
+    this.live.notesChanged();
   }
 
   /** What the preview is doing; a project only a newer version can generate never has one. */

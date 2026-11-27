@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type { LiveActivity, RemoteAi, RemoteAiSendResult, RemoteEnding, RemoteJoinResult, RemoteParticipant, RemotePresence, RemoteState, RuntimeState } from '@shared/api';
 import { NO_AI_ACCESS, readAiAccess, readAiTurnEvent, type LiveAiAccess, type LiveAiTurn } from '@shared/live/ai';
-import type { LiveMethod } from '@shared/live/roles';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { LIVE_PROTOCOL_VERSION, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type FrameOf, type GuestToRelay, type Presence, type RpcError } from '@shared/live/messages';
 import type { LiveApplyResult, LiveProjectChanged, LiveProjectSnapshot } from '@shared/live/snapshot';
+import { isLiveNotes, type LiveNoteResult, type LiveNotes } from '@shared/live/notes';
 import { parseInviteLink, relaySocketUrl, roomPreviewOrigin, roomSocketPath } from '@shared/live/relay-url';
-import { canCall } from '@shared/live/roles';
+import { canCall, type LiveMethod } from '@shared/live/roles';
 import { GuestPreviewServer, redeemPreviewTicket, REMOTE_PREVIEW_HEADER, type RedeemResult } from './guest-preview';
 import type { LiveSocketFactory } from './host';
 
@@ -28,7 +28,7 @@ import type { LiveSocketFactory } from './host';
  * presence never reach the next.
  */
 
-export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence' | 'remote:ai';
+export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence' | 'remote:ai' | 'remote:notes';
 
 export interface LiveGuestContext {
   emit(channel: 'remote:state', payload: RemoteState): void;
@@ -36,6 +36,7 @@ export interface LiveGuestContext {
   emit(channel: 'remote:reload', payload: { joinId: string; revision: number | null }): void;
   emit(channel: 'remote:presence', payload: RemotePresence): void;
   emit(channel: 'remote:ai', payload: RemoteAi): void;
+  emit(channel: 'remote:notes', payload: { joinId: string; notes: LiveNotes }): void;
 }
 
 /** How many of its own AI requests a join keeps, newest last. */
@@ -175,6 +176,13 @@ interface Join {
   fetching: Promise<LiveProjectSnapshot | null> | null;
   refetch: boolean;
   busyTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The host's pinned notes (#770) as last received, once the editor has asked for them (null before), and the request
+   * for them under way: asked again whenever the host says they changed, and on coming back.
+   */
+  notes: LiveNotes | null;
+  notesFetch: Promise<LiveNotes | null> | null;
+  notesRefetch: boolean;
   tooLarge: boolean;
   hostRuntime: RuntimeState['state'] | null;
   /** The latest project revision the host said its preview serves (preview:reload), or null before it said one. */
@@ -339,6 +347,9 @@ export class LiveGuestManager {
       fetching: null,
       refetch: false,
       busyTimer: null,
+      notes: null,
+      notesFetch: null,
+      notesRefetch: false,
       tooLarge: false,
       hostRuntime: null,
       previewRevision: null,
@@ -471,6 +482,7 @@ export class LiveGuestManager {
         // Whatever the host changed while it was away reaches the editor now.
         if (back && join.phase === 'admitted') {
           void this.fetchSnapshot(join);
+          if (join.notes) void this.fetchNotes(join);
           this.reload(join);
         }
         // A host back, or on a connection that replaced one still open, may not have heard where this app is: told
@@ -576,6 +588,8 @@ export class LiveGuestManager {
         // On first admission, and on taking the place back after a drop (changes may have been missed), the host's
         // project is asked for; a role or deadline changing on a live connection needs no new copy.
         if (!returning || back || !join.latest) void this.fetchSnapshot(join);
+        // Notes the editor already holds may have changed while the connection was down.
+        if (join.notes && back) void this.fetchNotes(join);
         this.answerJoin(join);
         return this.publish();
       }
@@ -626,6 +640,11 @@ export class LiveGuestManager {
       return;
     }
     if (frame.event === 'ai:turn') return this.onAiTurn(join, frame.payload);
+    // The notes changed: asked for again, once the editor has wanted them.
+    if (frame.event === 'notes:changed') {
+      if (join.notes || join.notesFetch) void this.fetchNotes(join);
+      return;
+    }
     if (frame.event === 'runtime:status') {
       const state = (frame.payload as { state?: unknown } | null)?.state;
       if (typeof state === 'string') {
@@ -852,6 +871,68 @@ export class LiveGuestManager {
   private setAi(join: Join, ai: Join['ai']): void {
     join.ai = ai;
     if (this.current === join && !join.ended) this.ctx.emit('remote:ai', this.aiState(join));
+  }
+
+  // -------------------------------------------------------------------------
+  // Pinned notes (#770)
+
+  /** Ask the host for its notes now, one request at a time; asked for again meanwhile, once more after. */
+  private fetchNotes(join: Join): Promise<LiveNotes | null> {
+    if (join.notesFetch) {
+      join.notesRefetch = true;
+      return join.notesFetch;
+    }
+    const run = (async (): Promise<LiveNotes | null> => {
+      for (;;) {
+        join.notesRefetch = false;
+        const answer = await this.call(join, 'notes.list', []);
+        if (join.ended || this.current !== join) return null;
+        if (answer.ok && isLiveNotes(answer.result)) this.takeNotes(join, answer.result);
+        if (!join.notesRefetch) return answer.ok ? join.notes : null;
+      }
+    })();
+    join.notesFetch = run;
+    void run.finally(() => {
+      if (join.notesFetch === run) join.notesFetch = null;
+    });
+    return run;
+  }
+
+  private takeNotes(join: Join, notes: LiveNotes): void {
+    join.notes = notes;
+    this.ctx.emit('remote:notes', { joinId: join.joinId, notes });
+  }
+
+  /** The host's notes: the copy last received, else asked for now. Null when not in a session, or they could not be read. */
+  async notes(joinId: unknown): Promise<LiveNotes | null> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
+    return join.notes ?? (await this.fetchNotes(join));
+  }
+
+  addNote(joinId: unknown, draft: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.add', [draft], false);
+  }
+
+  resolveNote(joinId: unknown, id: unknown, resolved: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.resolve', [id, resolved], true);
+  }
+
+  deleteNote(joinId: unknown, id: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.delete', [id], true);
+  }
+
+  /** A change to the host's notes; the host checks it again, and keeps it. */
+  private async noteCall(joinId: unknown, method: LiveMethod, args: unknown[], collaborator: boolean): Promise<LiveNoteResult> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, message: 'You are no longer in that live session.' };
+    if (collaborator && join.role !== 'collaborator') return { ok: false, message: 'Only the host and collaborators can resolve or delete notes.' };
+    if (!join.hostConnected) return { ok: false, message: 'The host is reconnecting. Try again in a moment.' };
+    const answer = await this.call(join, method, args);
+    if (!answer.ok) return { ok: false, message: answer.error.message };
+    if (!isLiveNotes(answer.result)) return { ok: false, message: 'The host’s answer could not be read. Look at the notes again before trying again.' };
+    if (this.current === join) this.takeNotes(join, answer.result);
+    return { ok: true, notes: answer.result };
   }
 
   // -------------------------------------------------------------------------
