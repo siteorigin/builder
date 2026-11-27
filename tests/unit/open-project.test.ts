@@ -287,23 +287,31 @@ describe('opening a project ZIP file (#263)', () => {
   });
 
   it('cancels only the ZIP file being unpacked, not one waiting its turn', async () => {
-    const zip = await editableZip();
+    // Two projects, so each result can be told apart. Which one takes its turn first is not the order they were asked
+    // for: each waits on its own check that the file is there, and either check can finish first.
+    const zips = { Cafe: await editableZip('Cafe'), Bistro: await editableZip('Bistro') };
     const parent = tmp('so-recipient-');
-    const c = new Controller(() => null);
+    let unpacking: string | undefined;
+    const win = { isDestroyed: () => false, webContents: { send: (channel: string, payload: { name: string } | null) => channel === 'projects:unpacking' && payload && (unpacking = payload.name) } };
+    const c = new Controller(() => win as never);
     const mkdir = fsp.mkdir.bind(fsp);
-    let cancelled = false;
+    let cancelled: string | undefined;
     vi.spyOn(fsp, 'mkdir').mockImplementation(async (p, o) => {
       if (!cancelled && String(p).includes('.siteorigin-open-')) {
-        cancelled = true;
+        cancelled = unpacking;
         c.cancelUnpacking();
       }
       return mkdir(p, o as never);
     });
     chooseFolder(parent);
     chooseFolder(parent);
-    const [first, second] = await Promise.all([c.open(zip), c.open(zip)]);
-    expect(first).toEqual({ ok: false });
-    expect(second.needsTrust?.dir).toBe(join(parent, 'cafe'));
+    const [cafe, bistro] = await Promise.all([c.open(zips.Cafe), c.open(zips.Bistro)]);
+    const results = { Cafe: cafe, Bistro: bistro };
+    expect(cancelled === 'Cafe' || cancelled === 'Bistro').toBe(true);
+    const waiting = cancelled === 'Cafe' ? 'Bistro' : 'Cafe';
+    expect(results[cancelled as 'Cafe' | 'Bistro']).toEqual({ ok: false });
+    expect(results[waiting].needsTrust?.dir).toBe(join(parent, waiting.toLowerCase()));
+    expect(readdirSync(parent)).toEqual([waiting.toLowerCase()]);
   });
 
   it('saves a forgotten trust once a save that failed can be made, so it never comes back', async () => {
