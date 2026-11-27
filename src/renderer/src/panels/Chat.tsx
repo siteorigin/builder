@@ -13,6 +13,7 @@ import { PROVIDER_LABELS, turnModelText, type TurnModel } from '@shared/turn-mod
 import { chatContextFor, composerScope, editScope, layoutName, requestTarget, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
 import { CHAT_FOCUS_WAIT_MS, chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
+import { AI_IMAGE_PRIVACY } from '../lib/ai-privacy';
 import { auditOnce } from '../lib/seo-health';
 import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHeadroom';
 import { openPost, selectPage } from '../lib/actions';
@@ -1137,7 +1138,6 @@ export function Chat() {
 
   // What leaves this computer with a message. A server that is not this computer already says where content goes,
   // in its own warning above the box, so the note does not say it twice.
-  const attachedImages = 'Attached images go by name and ID only.';
   // A thread usually stays with one model and one target, so each is said where it starts or changes, not on every
   // turn: the model under the first turn it handled and any turn that went elsewhere (every turn keeps it in its
   // details), and a request's target on the first request that names it.
@@ -1156,9 +1156,9 @@ export function Chat() {
   const privacy =
     provider?.id === 'local' && configured
       ? provider.warning
-        ? attachedImages
-        : `Page text and structure go to your local model, on this computer. ${attachedImages}`
-      : `Page text and structure go to ${configured && provider ? provider.label : 'the provider you choose'}. ${attachedImages}`;
+        ? AI_IMAGE_PRIVACY
+        : `Page text and structure go to your local model, on this computer. ${AI_IMAGE_PRIVACY}`
+      : `Page text and structure go to ${configured && provider ? provider.label : 'the provider you choose'}. ${AI_IMAGE_PRIVACY}`;
 
   return (
     // Marked while a question waits (its card below), so the stylesheet need not ask with `:has()` at every change.
