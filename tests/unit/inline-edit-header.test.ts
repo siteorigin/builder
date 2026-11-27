@@ -75,6 +75,20 @@ const doubleClickLine = async (line: number) => {
   }
 };
 
+describe('a pick on the page', () => {
+  // The browser tests' host stands in for Canvas, so this holds Canvas to what the host does.
+  it('is selected without being scrolled to, wherever Canvas takes one from the page', () => {
+    const canvas = readFileSync(resolve('src/renderer/src/panels/Canvas.tsx'), 'utf8');
+    const block = (from: string, to: string) => canvas.slice(canvas.indexOf(from), canvas.indexOf(to, canvas.indexOf(from)));
+    for (const [from, to] of [["case 'select': {", "case 'dblclick': {"], ["case 'dblclick': {", "case 'textCommit': {"], ["case 'contextmenu': {", "case 'download': {"], ['className="ov-box ov-hover"', 'onPointerEnter']]) {
+      const code = block(from, to);
+      expect(code, from).toContain('selectOnPage(');
+      // Only clearing the selection is set directly.
+      expect(code, from).not.toMatch(/setState\(\{ selection: (?!null)/);
+    }
+  });
+});
+
 describe.skipIf(!browserInstalled)('editing a heading on the canvas under a sticky header', () => {
   beforeAll(async () => {
     browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
@@ -93,6 +107,7 @@ describe.skipIf(!browserInstalled)('editing a heading on the canvas under a stic
   });
 
   beforeEach(async () => {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
     await page.goto('http://header.test/');
     await page.waitForFunction(`window.replies.some((m) => m.type === 'ready')`);
     frame = page.frames()[1];
@@ -123,11 +138,83 @@ describe.skipIf(!browserInstalled)('editing a heading on the canvas under a stic
       await started();
       await page.waitForTimeout(SCROLLED_MS);
       const at = await shown();
-      expect(at.top).toBeGreaterThanOrEqual(at.header);
+      // Clear of the header, and scrolled no further than that takes.
+      expect(Math.abs(at.top - at.header - 8)).toBeLessThan(2);
       expect(at.caretTop).toBeGreaterThanOrEqual(at.header);
       expect(at.bottom).toBeLessThanOrEqual(at.height);
     });
   }
+
+  /** Starts an edit of `node` as the editor's own Edit text does: with no click, so the caret is at the end. */
+  const editFromEditor = async (node = 'title') => {
+    await page.evaluate(`document.querySelector('iframe').focus()`);
+    await page.evaluate(`window.post('beginTextEdit', { desc: { ctx: 'page:p', node: '${node}', items: '' }, editId: 'e-chrome' })`);
+    await started();
+  };
+  /** Thirty lines in the heading: taller than the frame. */
+  const makeTall = () => frame.evaluate(`document.getElementById('title').innerHTML = Array.from({ length: 30 }, (_, i) => 'Line ' + i).join('<br>')`);
+  const caretClear = async () => {
+    const at = await shown();
+    return at.caretTop >= at.header && at.caretBottom <= at.height;
+  };
+
+  it('shows the caret as an edit of text taller than the frame begins', async () => {
+    await makeTall();
+    await editFromEditor();
+    // The caret is at the end of the last line, far below the frame when the edit was asked for.
+    // (A caret at the very end has no box of its own to measure: the heading's bottom edge is its line's.)
+    const at = await shown();
+    expect(at.bottom).toBeLessThanOrEqual(at.height);
+    expect(at.bottom).toBeGreaterThan(at.height - 100);
+  });
+
+  it('clears a header of the site’s own that publishes no offset', async () => {
+    await frame.evaluate(`(() => {
+      document.documentElement.removeAttribute('style');
+      document.getElementById('bar').style.height = '120px';
+      window.scrollTo({ top: 100, behavior: 'instant' });
+    })()`);
+    await editFromEditor();
+    const at = await shown();
+    expect(at.header).toBe(120);
+    expect(at.top).toBeGreaterThanOrEqual(at.header);
+  });
+
+  it('leaves the page where it is for text edited in the header that stays at the top', async () => {
+    await frame.evaluate(`(() => {
+      document.getElementById('bar').innerHTML = '<span data-so-ctx="page:p" data-so-node="brand">Studio</span>';
+      window.scrollTo({ top: 600, behavior: 'instant' });
+    })()`);
+    await editFromEditor('brand');
+    await page.keyboard.type('x');
+    await page.keyboard.press('ArrowLeft');
+    await page.waitForTimeout(100);
+    expect(await frame.evaluate<number>(`scrollY`)).toBe(600);
+  });
+
+  it('does not scroll to the list item holding the text being edited', async () => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await frame.evaluate(`(() => {
+      document.getElementById('hero').setAttribute('data-so-items', 'first');
+      window.scrollTo({ top: 90, behavior: 'instant' });
+    })()`);
+    await editFromEditor();
+    // The hero, taller than the frame and with its top above it, is the item.
+    await frame.evaluate(`document.getElementById('hero').setAttribute('data-so-ctx', 'page:p|hero')`);
+    const at = await frame.evaluate<number>(`scrollY`);
+    expect(at).toBeGreaterThan(0);
+    // The inspector opens the item the text is in just after: centring or topping it would bury the heading.
+    await page.evaluate(`window.post('reveal', { target: { ctx: 'page:p|hero', list: 'cards', items: 'first', nodes: ['hero'], within: { hero: 0 } } })`);
+    await page.waitForTimeout(300);
+    expect(await frame.evaluate<number>(`scrollY`)).toBe(at);
+  });
+
+  it('starts an edit with nothing scrolling without the site hearing of a scroll', async () => {
+    await frame.evaluate(`window.scrolls = 0; addEventListener('scroll', () => window.scrolls++)`);
+    await editFromEditor();
+    await page.waitForTimeout(100);
+    expect(await frame.evaluate<number>(`window.scrolls`)).toBe(0);
+  });
 
   it('starts an edit asked for from the editor clear of the header, ending a scroll still on its way', async () => {
     await frame.evaluate(`window.scrollTo({ top: 1500, behavior: 'instant' })`);
@@ -161,26 +248,34 @@ describe.skipIf(!browserInstalled)('editing a heading on the canvas under a stic
     expect(at).toBeGreaterThan(1000);
   });
 
-  it('keeps the caret below the header as it moves up through text taller than the frame', async () => {
-    await frame.evaluate(`(() => {
-      const t = document.getElementById('title');
-      t.innerHTML = Array.from({ length: 30 }, (_, i) => 'Line ' + i).join('<br>');
-      window.scrollTo({ top: 700, behavior: 'instant' });
-    })()`);
-    await page.evaluate(`document.querySelector('iframe').focus()`);
-    await page.evaluate(`window.post('beginTextEdit', { desc: { ctx: 'page:p', node: 'title', items: '' }, editId: 'e3' })`);
-    await started();
-    // The caret starts at the end; twenty lines up takes it past the top of the frame.
-    for (let i = 0; i < 20; i++) await page.keyboard.press('ArrowUp');
-    await page.waitForTimeout(100);
-    let at = await shown();
-    expect(at.caretTop).toBeGreaterThanOrEqual(at.header);
-    expect(at.caretBottom).toBeLessThanOrEqual(at.height);
-    // Typing with the caret left under the header brings it out.
-    await frame.evaluate(`window.scrollBy({ top: getSelection().getRangeAt(0).getBoundingClientRect().top - 30, behavior: 'instant' })`);
-    await page.keyboard.type('x');
-    await page.waitForTimeout(100);
-    at = await shown();
-    expect(at.caretTop).toBeGreaterThanOrEqual(at.header);
+  /** Scrolls so the caret's line is `y` pixels down the frame. */
+  const putCaretAt = (y: number) => frame.evaluate(`window.scrollBy({ top: getSelection().getRangeAt(0).getBoundingClientRect().top - ${y}, behavior: 'instant' })`);
+  /** Starts editing tall text with the caret inside a line in its middle. */
+  const editMidTall = async () => {
+    await makeTall();
+    await editFromEditor();
+    await frame.evaluate(`getSelection().collapse(document.getElementById('title').childNodes[30], 4)`);
+  };
+
+  it('keeps the caret below the header as a key moves it up, each repeat of a held key too', async () => {
+    await editMidTall();
+    // The line above the caret's is in the frame, under the header.
+    await putCaretAt(80);
+    await page.keyboard.down('ArrowUp');
+    await expect.poll(caretClear).toBe(true);
+    await putCaretAt(80);
+    // Still held: a repeat, with no key let go.
+    await page.keyboard.down('ArrowUp');
+    await expect.poll(caretClear).toBe(true);
+    await page.keyboard.up('ArrowUp');
+  });
+
+  it('brings a caret left under the header clear as the author types', async () => {
+    await editMidTall();
+    await putCaretAt(20);
+    expect(await caretClear()).toBe(false);
+    // Text with no key pressed, as dictation or the emoji picker enters it.
+    await page.keyboard.insertText('x');
+    await expect.poll(caretClear).toBe(true);
   });
 });

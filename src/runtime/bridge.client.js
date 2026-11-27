@@ -902,8 +902,20 @@ function settleShown() {
   h.lastY = scrollY;
   h.still = 0;
 }
-/** Ends a smooth scroll of the page still on its way, where it is. Chromium ignores a scroll to where the page already is, so it steps off and back. */
+/** Until when (performance.now()) a smooth scroll the bridge started may still be on its way. */
+let smoothUntil = 0;
+/** Scrolls `target` into view, noting a smooth one, which endScrolling can then end. */
+function scrollShown(target, block, behavior) {
+  if (behavior === 'smooth') smoothUntil = performance.now() + SHOWN_SETTLE_MS;
+  target.scrollIntoView({ block, behavior });
+}
+/**
+ * Ends a smooth scroll of the bridge's still on its way, where it is. Chromium ignores a scroll to where the page
+ * already is, so it steps off and back. With none on its way the page is left alone, and the site hears of no scroll.
+ */
 function endScrolling() {
+  if (performance.now() > smoothUntil) return;
+  smoothUntil = 0;
   const top = scrollY;
   window.scrollTo({ top: top >= 1 ? top - 1 : top + 1, behavior: 'instant' });
   window.scrollTo({ top, behavior: 'instant' });
@@ -951,7 +963,7 @@ function scrollToDesc(desc, show, waiting = false, moved = false) {
     scheduleRects();
   }
   if (fits) return true;
-  target.scrollIntoView({ block, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  scrollShown(target, block, matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
   return true;
 }
 /** Tried again each time the page changes or is measured, until the element shows or the wait is over. */
@@ -973,12 +985,9 @@ function retryScroll() {
  * shortcut begins) moves nothing, and with Ctrl, Alt or Command held they are the editor's shortcuts.
  */
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab']);
-// A press on a page still scrolling to an element asked for stops it where it is (issue #1109): what is under the
-// pointer stays there, so a double-click's second press lands on the word its first did. Registered ahead of the
-// listener below, which forgets the scroll.
-window.addEventListener('pointerdown', () => {
-  if (shownHold) endScrolling();
-}, { capture: true, passive: true });
+// A press on a page still scrolling to what the editor asked to show stops it where it is (issue #1109): what is
+// under the pointer stays there, so a double-click's second press lands on the word its first did.
+window.addEventListener('pointerdown', endScrolling, { capture: true, passive: true });
 // The author's own scrolling, or a click in the page: the page stays where the author has it.
 for (const type of ['wheel', 'touchstart', 'pointerdown']) window.addEventListener(type, stopShowing, { capture: true, passive: true });
 window.addEventListener('keydown', (e) => {
@@ -1204,7 +1213,7 @@ function placeReveal(roots = revealRoots()) {
       revealSide = side ? { list: side, at: offsetAlong(side, el) } : null;
       const target = side || el;
       const r = target.getBoundingClientRect();
-      if (!edited && (r.top < 60 || r.bottom > innerHeight - 20)) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
+      if (!edited && (r.top < 60 || r.bottom > innerHeight - 20)) scrollShown(target, r.height > innerHeight - 80 ? 'start' : 'center', instant ? 'instant' : 'smooth');
     }
   } else if (reveal) {
     const el = roots.find((r) => !isSeparator(r) && rectOf(r));
@@ -1998,7 +2007,6 @@ function beginTextEdit(desc, editId, hitId) {
   s.addRange(range);
   showEdited(el);
   el.addEventListener('keydown', onEditKey);
-  el.addEventListener('keyup', onEditKeyUp);
   el.addEventListener('input', onEditInput);
   el.addEventListener('blur', onEditBlur);
   el.addEventListener('input', scheduleRects);
@@ -2009,9 +2017,23 @@ function beginTextEdit(desc, editId, hitId) {
 }
 /** Space left between the text being edited and what covers the top of the frame, or the frame's edge. */
 const EDIT_CLEAR = 8;
-/** How far down the frame the site's header reaches while it stays at the top, as it publishes it (0 when it does not). */
+/**
+ * How far down the frame the site's header reaches while it stays at the top (0 when it does not): as the header
+ * publishes it, or, for a header of the site's own that publishes nothing, as it is styled and measured.
+ */
 function coveredTop() {
-  return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--so-header-offset')) || 0;
+  const published = getComputedStyle(document.documentElement).getPropertyValue('--so-header-offset');
+  if (published) return parseFloat(published) || 0;
+  let reach = 0;
+  for (const header of document.querySelectorAll('header, [role="banner"]')) {
+    if (header.closest('main, article, section, aside, dialog')) continue;
+    const s = getComputedStyle(header);
+    const box = header.getBoundingClientRect();
+    const top = s.position === 'sticky' ? parseFloat(s.top) : s.position === 'fixed' ? box.top : NaN;
+    // One nearer the bottom edge than the top covers nothing up here.
+    if (box.height > 0 && top < innerHeight - top - box.height) reach = Math.max(reach, top + box.height);
+  }
+  return reach;
 }
 /** Whether scrolling the page cannot bring `el` clear: it is in the header that stays at the top, or fixed in the frame. */
 function heldInFrame(el) {
@@ -2030,9 +2052,19 @@ function caretBox() {
   at.setStart(node, s.focusOffset);
   const box = at.getClientRects()[0];
   if (box) return box;
-  // An empty line has no box of its own: what is at that place does.
-  const near = node.childNodes[s.focusOffset] || node.childNodes[s.focusOffset - 1] || node;
-  return (near.nodeType === 1 ? near : near.parentElement).getBoundingClientRect();
+  // A place between elements (the end of the whole text) or an empty line has no box of its own: the nearest
+  // character or line break beside it does. The page's own markers (comments, empty text) are passed over.
+  const shows = (n) => n.nodeType === 1 || (n.nodeType === 3 && n.length > 0);
+  const after = [...node.childNodes].slice(s.focusOffset).find(shows);
+  const forward = !!after;
+  let near = after || [...node.childNodes].slice(0, s.focusOffset).reverse().find(shows) || node;
+  for (let kids = [...near.childNodes].filter(shows); kids.length; kids = [...near.childNodes].filter(shows)) near = kids[forward ? 0 : kids.length - 1];
+  if (near.nodeType === 1) return near.getBoundingClientRect();
+  const from = forward ? 0 : near.length - 1;
+  at.setStart(near, from);
+  at.setEnd(near, from + 1);
+  const boxes = at.getClientRects();
+  return boxes[forward ? 0 : boxes.length - 1] || near.parentElement.getBoundingClientRect();
 }
 /**
  * As an edit begins, all of its text shows below the site's sticky header and inside the frame (issue #1109), scrolled
@@ -2062,15 +2094,14 @@ function keepCaretClear() {
 function onEditInput() {
   requestAnimationFrame(keepCaretClear);
 }
-/** Only keys that move the caret: a modifier let go leaves the page where the author has scrolled it. */
+/** Only keys that move the caret: another leaves the page where the author has scrolled it. */
 const CARET_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End']);
-function onEditKeyUp(e) {
-  if (CARET_KEYS.has(e.key)) requestAnimationFrame(keepCaretClear);
-}
 function onEditKey(e) {
   e.stopPropagation();
   // Keys that compose a character (an IME, a dead key for an accent) belong to the composition.
   if (e.isComposing || e.keyCode === 229) return;
+  // Each repeat of a held key too, once the browser has moved the caret.
+  if (CARET_KEYS.has(e.key)) requestAnimationFrame(keepCaretClear);
   const mod = e.metaKey || e.ctrlKey;
   const k = e.key.toLowerCase();
   if (mod && !e.altKey && !e.shiftKey && (k === 'b' || k === 'i' || k === 'u')) {
@@ -2894,7 +2925,6 @@ function endEdit() {
   // Listeners go first: the element stops taking typing below, which blurs it, and that blur must not commit the
   // edit a second time.
   el.removeEventListener('keydown', onEditKey);
-  el.removeEventListener('keyup', onEditKeyUp);
   el.removeEventListener('input', onEditInput);
   el.removeEventListener('blur', onEditBlur);
   el.removeEventListener('input', scheduleRects);

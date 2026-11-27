@@ -315,6 +315,12 @@ describe('the editor resumes where the author was', () => {
     // The same element picked again changes nothing the canvas asks about, so nothing is left over for later.
     actions.selectOnPage({ ...cta });
     expect(actions.takeUnscrolled(store.getState().selection)).toBe(false);
+    // Another element picked while one is selected, with what else the pick changes.
+    const intro = ref(page(home), s.pages[home].rootIds[0]);
+    store.setState({ rightTab: 'styles' } as Partial<EditorState>);
+    actions.selectOnPage(intro, { rightTab: 'inspect' } as Partial<EditorState>);
+    expect((store.getState() as unknown as { rightTab: string }).rightTab).toBe('inspect');
+    expect(actions.takeUnscrolled(intro)).toBe(true);
     actions.selectOnPage(null);
     expect(store.getState().selection).toBeNull();
     expect(actions.takeUnscrolled(null)).toBe(false);
