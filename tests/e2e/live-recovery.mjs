@@ -161,9 +161,11 @@ try {
     await popover().waitFor();
     return popover();
   };
+  // Put away with its own Close button: Escape closes it only while focus is in it, which a confirmation it asked
+  // (Remove, End session) may not hand back.
   const closeShare = async () => {
     if ((await share().getAttribute('aria-expanded')) !== 'true') return;
-    await hw.keyboard.press('Escape');
+    await popover().locator('.share-head').getByRole('button', { name: 'Close' }).click();
     await popover().waitFor({ state: 'detached' });
   };
   /** The next guest:status of `status` a guest hears, past any other status it was sent meanwhile. */
@@ -344,10 +346,12 @@ try {
   const thirdAsk = `Make the hero heading quieter ${Date.now().toString(36)}`;
   const encoded = encodeFrame('guest-to-relay', { type: 'rpc:request', requestId: probe, method: 'ai.send', args: [thirdAsk, { scope: 'page', pageId: homeId, selection: null, viewport: 1280 }] });
   assert.ok(encoded.ok, encoded.error?.message);
-  await guest.app.evaluate((text) => globalThis.__e2eSockets.filter(({ entry }) => !entry.closed).at(-1).socket.send(text), encoded.frame);
+  await guest.app.evaluate((_electron, text) => globalThis.__e2eSockets.filter(({ entry }) => !entry.closed).at(-1).socket.send(text), encoded.frame);
   const refusal = await eventually(async () => {
-    const answer = (await openSocket(guest.app, 'the second app')).frames.find((f) => f.dir === 'in' && f.frame.type === 'rpc:response' && f.frame.requestId === probe);
-    assert.ok(answer, 'the second app hears the answer');
+    const frames = (await openSocket(guest.app, 'the second app')).frames;
+    const answer = frames.find((f) => f.dir === 'in' && f.frame.type === 'rpc:response' && f.frame.requestId === probe);
+    const sent = (await socketsOf(host.app)).flatMap((s) => s.frames).filter((f) => f.frame.requestId === probe);
+    assert.ok(answer, `the second app hears the answer: ${JSON.stringify({ guest: frames.slice(-6), host: sent })}`);
     return answer.frame;
   }, 10000);
   assert.deepEqual({ ok: refusal.ok, error: refusal.error }, { ok: false, error: { code: 'PERMISSION_DENIED', message: 'The host has not allowed you to use its AI.', recoverable: false } });
@@ -512,6 +516,12 @@ try {
     );
     return kept;
   };
+  // The scan finds what it looks for: the working project's own preview, which the editor instruments, has it.
+  const devCache = join(dir, '.siteorigin', 'cache', 'dev');
+  assert.ok(
+    files(devCache).some((f) => TEXT.test(f) && LIVE_CODE.test(readFileSync(join(devCache, f), 'utf8'))),
+    'the working project’s editor preview has the code the scan looks for'
+  );
   const sourceFiles = scan(source.path, 'source');
   assert.ok(sourceFiles.includes(`siteorigin/pages/${homeId}.json`), 'the source export keeps the documents');
   assert.equal(JSON.parse(readFileSync(join(source.path, 'siteorigin', 'pages', `${homeId}.json`), 'utf8')).nodes[heroId].props.heading, recovered, 'with the edits made during the session');
