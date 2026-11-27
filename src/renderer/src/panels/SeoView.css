@@ -68,7 +68,7 @@
   .seo-ov { padding: 16px 20px 48px; font-size: 12px; color: var(--text-2); }
   .seo-ov-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 10px; }
   .seo-ov-summary { margin: 0; color: var(--text-3); }
-  .seo-ov-filter { display: inline-flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
+  .seo-ov-filter { display: inline-flex; align-items: center; gap: 8px; color: var(--text); cursor: pointer; }
   .seo-ov-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   .seo-ov-table thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); text-align: left; font-size: 11px; font-weight: 600; color: var(--text-3); padding: 6px 8px; border-bottom: 1px solid var(--border); }
   .seo-ov-table thead th:nth-child(1) { width: 22%; }

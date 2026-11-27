@@ -7,8 +7,8 @@
   .find-fields { display: grid; grid-template-columns: minmax(84px, max-content) minmax(0, 1fr) max-content; align-items: center; gap: 8px 12px; flex: none; }
   .find-label { grid-column: 1; font-weight: 500; }
   .find-input { grid-column: 2; width: 100%; }
-  .find-case { grid-column: 3; display: inline-flex; align-items: center; gap: 6px; min-height: 24px; white-space: nowrap; color: var(--text-2); }
-  .find-case:has(input:disabled) { color: var(--text-3); }
+  .find-case { grid-column: 3; display: inline-flex; align-items: center; gap: 8px; min-height: 24px; white-space: nowrap; color: var(--text-2); }
+  .find-case:has(input:disabled) { color: var(--disabled-ink); }
   .find-hint { grid-column: 2 / -1; margin: -2px 0 0; font-size: 12px; color: var(--text-2); }
   .find-hint .link-btn { min-height: 24px; }
   .find-fields .input[aria-invalid='true'] { border-color: var(--red); }
@@ -79,18 +79,12 @@
   .find-match.recent { background: var(--accent-soft); }
   .find-match:is(:hover, .recent, .refused) :is(.find-where, .find-nth) { color: var(--text-2); }
   .find-match:is(:hover, .recent, .refused) .find-kind:not(.find-recent) { background: var(--raised); }
-  .find-match:is(:hover, .recent, .refused) .find-check input:not(:checked, :indeterminate) { border-color: var(--text-2); }
+  @media (forced-colors: none) { .find-match:is(:hover, .recent, .refused) .find-check input:not(:checked, :indeterminate, :disabled) { border-color: var(--text-2); } }
   .find-match > .btn { flex: none; color: var(--text-2); }
   .find-match > .btn:hover:not(:disabled) { color: var(--text); }
   .find-check { display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none; margin-left: -4px; }
   .find-lock { color: var(--text-2); }
   .find-lock svg { width: 15px; height: 15px; }
-  .find-check input, .find-case input { position: relative; appearance: none; width: 16px; height: 16px; margin: 0; flex: none; border: 1px solid var(--border-control); border-radius: var(--r-xs); background: var(--raised); }
-  .find-check input:hover:not(:checked, :indeterminate), .find-case input:hover:not(:checked, :disabled) { border-color: var(--text-2); }
-  .find-case input:disabled { border-color: var(--border-strong); background: var(--panel-2); }
-  .find-check input:checked, .find-check input:indeterminate, .find-case input:checked { border-color: var(--accent-fill); background: var(--accent-fill); }
-  .find-check input:checked::after, .find-case input:checked::after { content: ''; position: absolute; inset: 1px; background: var(--on-accent); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.2 5 8.7l4.5-5.2'/%3E%3C/svg%3E") center / contain no-repeat; }
-  .find-check input:indeterminate::after { content: ''; position: absolute; left: 3px; right: 3px; top: 6px; height: 2px; border-radius: 1px; background: var(--on-accent); }
   .find-match-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding-top: 2px; }
   .find-where { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; min-height: 20px; font-size: 12px; color: var(--text-3); overflow-wrap: anywhere; }
   .find-field { color: var(--text-2); font-weight: 600; }

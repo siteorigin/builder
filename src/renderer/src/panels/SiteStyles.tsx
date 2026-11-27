@@ -1009,7 +1009,6 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
                 {themes.map((t) => (
                   <label key={t.id} className="ss-theme-option" data-theme-option={t.id} onPointerDown={() => (pointer.current = true)}>
                     <input type="radio" name={`${uid}-theme`} value={t.id} checked={picked === t.id} onChange={() => pick(t.id)} />
-                    <span className="ss-theme-radio" aria-hidden="true" />
                     <ThemeShot theme={t} />
                     <span className="ss-theme-option-text">
                       <span className="ss-theme-option-name">
