@@ -14,7 +14,7 @@ import { OVERLAY_MODES } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { declaredState } from '@engine/schema';
 import { applyOps, getState } from '../store';
-import { DraftInput, Field, Section, SwitchRow } from '../components/ui';
+import { Disclosure, DraftInput, Field, Section, SwitchRow } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import {
   MAX_STATE_OPTIONS,
@@ -120,17 +120,14 @@ function StateGroup({ def, name }: { def: ComponentDefinition; name: string }) {
               }}
             />
             {uses.length > 2 ? (
-              <details className="contract-uses">
-                {/* Led by what it discloses, so it is not read as opening the options below. */}
-                <summary className="contract-meta" id={`${id}-uses`}>
-                  Used by {uses.length} elements · {KIND_WORDS[s.type]}
-                </summary>
+              // Led by what it discloses, so it is not read as opening the options below.
+              <Disclosure className="contract-uses" summaryId={`${id}-uses`} summary={`Used by ${uses.length} elements · ${KIND_WORDS[s.type]}`}>
                 <ul className="contract-meta">
                   {uses.map((u) => (
                     <li key={u}>{u}</li>
                   ))}
                 </ul>
-              </details>
+              </Disclosure>
             ) : (
               <span className="contract-meta" id={`${id}-uses`}>
                 {KIND_WORDS[s.type]} · {uses.length ? `used by ${uses.join(', ')}` : 'not used yet'}

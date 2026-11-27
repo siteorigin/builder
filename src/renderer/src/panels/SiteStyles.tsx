@@ -1,6 +1,6 @@
 import { variantOptions } from '@shared/variants';
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, ChevronRight, CircleAlert, Globe, Link2, RotateCcw, TriangleAlert } from 'lucide-react';
+import { Check, CircleAlert, Globe, Link2, RotateCcw, TriangleAlert } from 'lucide-react';
 import type { EntityKind, ProjectState, SiteIdentity, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
@@ -17,7 +17,7 @@ import { api, applyOps, claimRefusals, commitOps, dismissToast, getState, setSta
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
-import { ChoiceField, DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
+import { ChoiceField, Disclosure, DisclosureMark, DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
 import { SiteImageField } from './PropEditors';
@@ -322,11 +322,13 @@ function ShadowControl({ value, name, onCommit }: { value: string; name: string;
   const [open, setOpen] = useState(false);
   return (
     <div className="ss-size">
-      {open && <DraftInput multiline rows={2} className="textarea mono ss-css-area" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => (v.trim() ? onCommit(v.replace(/\s+/g, ' ').trim()) : false)} />}
-      <button className="link-btn ss-css-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {open ? 'Hide CSS' : 'Edit as CSS'}
+      {/* A fold: the CSS opens below its trigger, so the next Tab goes into it. */}
+      <button className="disclosure-trigger ss-shadow-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <DisclosureMark />
+        Edit as CSS
         <span className="sr-only"> for {name}</span>
       </button>
+      {open && <DraftInput multiline rows={2} className="textarea mono ss-css-area" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => (v.trim() ? onCommit(v.replace(/\s+/g, ' ').trim()) : false)} />}
     </div>
   );
 }
@@ -815,8 +817,6 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
   const [picked, setPicked] = useState(theme.id);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [why, setWhy] = useState(false);
-  const [packsWhy, setPacksWhy] = useState(false);
   // The switch this card just made, for its receipt and Undo, shown while that history entry can still be undone.
   const [done, setDone] = useState<{ from: ThemePack; to: string; kept: number; undo: ReturnType<typeof undoAction> } | null>(null);
   const missing = theme.id !== st.site.themeId;
@@ -935,14 +935,9 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
                 </span>
               )}
               {(ownRefusal || !missing) && (
-                <span>
-                  <button type="button" className="link" aria-expanded={why} aria-controls={`${uid}-blocked-why`} onClick={() => setWhy(!why)}>
-                    {why ? 'Hide why' : 'Show why'}
-                  </button>
-                  <span id={`${uid}-blocked-why`} className="ss-theme-reason ss-packs-detail" hidden={!why}>
-                    {ownRefusal ? ownRefusal.reason : pin}
-                  </span>
-                </span>
+                <Disclosure className="ss-packs-fold" summary={ownRefusal ? 'Why it couldn’t be loaded' : 'Why it can’t be used'}>
+                  <span className="ss-theme-reason ss-packs-detail">{ownRefusal ? ownRefusal.reason : pin}</span>
+                </Disclosure>
               )}
             </div>
           </div>
@@ -984,8 +979,8 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
       {canSwitch && (
         <div className="ss-theme-actions">
           <button type="button" id={changeId} className="btn btn-sm ss-theme-change" data-theme-chooser="" aria-expanded={choosing} aria-controls={chooserId} disabled={busy} onClick={() => (choosing ? close() : open())}>
+            <DisclosureMark />
             Change theme
-            <ChevronDown className={choosing ? 'ss-flip' : undefined} />
           </button>
           <span className="ss-theme-count">{themes.length - 1 === 1 ? '1 other installed' : `${themes.length - 1} others installed`}</span>
         </div>
@@ -1069,27 +1064,26 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
           <CircleAlert />
           <div>
             <span>
-              {otherRefused.length === 1 ? '1 installed theme' : `${otherRefused.length} installed themes`} couldn’t be loaded{missing ? '' : otherRefused.length === 1 ? ', so it isn’t offered here' : ', so they aren’t offered here'}.{' '}
-              <button type="button" className="link" aria-expanded={packsWhy} aria-controls={`${uid}-why`} onClick={() => setPacksWhy(!packsWhy)}>
-                {packsWhy ? 'Hide why' : 'Show why'}
-              </button>
+              {otherRefused.length === 1 ? '1 installed theme' : `${otherRefused.length} installed themes`} couldn’t be loaded{missing ? '' : otherRefused.length === 1 ? ', so it isn’t offered here' : ', so they aren’t offered here'}.
             </span>
-            <div id={`${uid}-why`} className="ss-packs-why" hidden={!packsWhy}>
-              <p className="ss-packs-fix">Reinstall a fresh copy of {otherRefused.length === 1 ? 'the theme' : 'each theme'} from wherever it came from, then restart SiteOrigin Builder.</p>
-              <ul>
-                {otherRefused.map((r) => (
-                  <li key={r.dir}>
-                    <strong>{r.packId ?? r.dir.split(/[\\/]/).pop()}</strong>
-                    <span className="ss-packs-detail">{r.reason}</span>
-                  </li>
-                ))}
-              </ul>
-              {packsDir && !missing && (
-                <p className="ss-theme-folder">
-                  Installed themes go in <FolderPath path={packsDir} />
-                </p>
-              )}
-            </div>
+            <Disclosure className="ss-packs-fold" summary={otherRefused.length === 1 ? 'Why it couldn’t be loaded' : 'Why they couldn’t be loaded'}>
+              <div className="ss-packs-why">
+                <p className="ss-packs-fix">Reinstall a fresh copy of {otherRefused.length === 1 ? 'the theme' : 'each theme'} from wherever it came from, then restart SiteOrigin Builder.</p>
+                <ul>
+                  {otherRefused.map((r) => (
+                    <li key={r.dir}>
+                      <strong>{r.packId ?? r.dir.split(/[\\/]/).pop()}</strong>
+                      <span className="ss-packs-detail">{r.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+                {packsDir && !missing && (
+                  <p className="ss-theme-folder">
+                    Installed themes go in <FolderPath path={packsDir} />
+                  </p>
+                )}
+              </div>
+            </Disclosure>
           </div>
         </div>
       )}
@@ -1328,7 +1322,7 @@ export function SiteStyles() {
       <div className={`ss-color${shownChanged(t.id) ? ' set' : ''}${open ? ' open' : ''}${compact ? ' compact' : ''}${follows ? ' linked' : ''}`} key={t.id} data-ss-row data-token-id={compact ? undefined : t.id}>
         {!compact && (
           <button className="ss-disclose" title="Linking, contrast and where it is used" aria-expanded={open} aria-controls={detailId} aria-label={`${t.label}: linking, contrast and where it is used`} onClick={() => setOpenDetail(open ? null : t.id)}>
-            <ChevronRight />
+            <DisclosureMark />
           </button>
         )}
         {/* Each palette has its own picker and field: a pick or a draft under way never carries over to the other. */}
@@ -1342,7 +1336,8 @@ export function SiteStyles() {
           presets={colorPresets(t.id)}
           label={`${t.label}${darkShown ? ' dark' : ''} color`}
         />
-        <div className="ss-color-text">
+        {/* The name opens the row's details too, as its fold's chevron does; the chevron stays the one Tab stop. */}
+        <div className="ss-color-text" onClick={compact ? undefined : (e) => !(e.target as HTMLElement).closest('button, a, input') && setOpenDetail(open ? null : t.id)}>
           <div className="ss-name">
             <NameWithReset
               label={compact ? `${t.label}${darkShown ? ' (dark colors)' : ''} color` : t.label}
@@ -1524,7 +1519,7 @@ export function SiteStyles() {
         {/* The whole head opens the row (the toggle's hit area covers it); the reset sits beside the name, as on every Site styles row. */}
         <div className="ss-text-head">
           <button className="ss-text-toggle" aria-expanded={open} aria-controls={bodyId} aria-describedby={`${bodyId}-meta`} onClick={() => setOpenText(open ? null : t.id)}>
-            <ChevronRight className="chev" aria-hidden="true" />
+            <DisclosureMark />
             <span
               id={nameId}
               className="ss-specimen"
@@ -1878,8 +1873,8 @@ export function SiteStyles() {
                 <span className="sr-only"> from {theme.name}</span>
               </span>
               <button className="btn btn-sm" aria-expanded={reviewing} aria-controls={reviewId} onClick={() => setReviewing(!reviewing)}>
+                <DisclosureMark />
                 Review
-                <ChevronDown className={reviewing ? 'ss-flip' : undefined} />
               </button>
             </div>
             <ul className="ss-review" id={reviewId} hidden={!reviewing}>

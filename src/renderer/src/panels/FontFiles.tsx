@@ -1,12 +1,12 @@
 import { useEffect, useId, useState, type ReactNode } from 'react';
-import { ChevronRight, Trash2, TriangleAlert } from 'lucide-react';
+import { Trash2, TriangleAlert } from 'lucide-react';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { familyUses, importedFontStack, sameFontFamily, type FontUse } from '@shared/fonts';
 import { scriptLabels } from '@shared/font-scripts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme } from '@catalogue/index';
 import { applyOps, commitOps, toast, undoAction, useStore } from '../store';
-import { DraftInput, Modal } from '../components/ui';
+import { DisclosureMark, DraftInput, Modal } from '../components/ui';
 import { openSiteStyles } from '../lib/actions';
 import { formatBytes, plural } from '../lib/storage';
 import { usePreviewStack, useEditorFontFile, useEditorFontFiles, type EditorFontFile } from '../lib/editor-fonts';
@@ -207,7 +207,7 @@ function FontFamily({
         <div className="font-family-title">
           <h4>
             <button type="button" className="font-family-toggle" aria-expanded={open} aria-controls={`${uid}-body`} onClick={onToggle}>
-              <ChevronRight aria-hidden="true" />
+              <DisclosureMark />
               <span id={`${uid}-name`} style={{ fontFamily: shownStack(importedFontStack(family)) }}>
                 {family}
               </span>

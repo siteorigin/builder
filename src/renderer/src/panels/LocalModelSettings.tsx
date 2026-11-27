@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronRight, RefreshCw, TriangleAlert } from 'lucide-react';
+import { RefreshCw, TriangleAlert } from 'lucide-react';
 import type { AppSettings, SettingsPatch } from '@shared/api';
 import { checkLocalBaseURL, LOCAL_CONTEXT_MAX, LOCAL_CONTEXT_MIN, LOCAL_PRESETS, localServerKey, parseContextSize, type LocalToolMode } from '@shared/local';
 import { api, refreshProviders } from '../store';
-import { SwitchRow } from '../components/ui';
+import { Disclosure, SwitchRow } from '../components/ui';
 
 /**
  * The server in use, for the connection status. `url` is the saved address (empty when it cannot be used),
@@ -507,11 +507,18 @@ export function LocalModelSettings({
           )}
         </div>
       </StackedRow>
-      <details className="settings-advanced" open={advanced} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
-        <summary>
-          <ChevronRight aria-hidden="true" /> Advanced server options
-          {!advanced && customized && <span className="settings-advanced-flag">{customizedParts.join(' · ')}</span>}
-        </summary>
+      <Disclosure
+        row
+        className="settings-advanced"
+        open={advanced}
+        onToggle={(e) => setAdvanced(e.currentTarget.open)}
+        summary={
+          <>
+            Advanced server options
+            {!advanced && customized && <span className="settings-advanced-flag">{customizedParts.join(' · ')}</span>}
+          </>
+        }
+      >
         <div className="settings-advanced-body">
           <InlineRow id="settings-local-tools" controlId="settings-local-tools-select" label="Tool calling" hint="How the assistant asks your model to make edits. Automatic suits most models.">
             <select id="settings-local-tools-select" className="select settings-inline-control" aria-describedby="settings-local-tools-note" value={local.toolMode} onChange={(e) => void update({ ai: { local: { toolMode: e.target.value as LocalToolMode } } })}>
@@ -540,7 +547,7 @@ export function LocalModelSettings({
           </InlineRow>
           {keyField}
         </div>
-      </details>
+      </Disclosure>
     </section>
   );
 }

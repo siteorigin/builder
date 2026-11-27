@@ -180,12 +180,7 @@
   /* Saved copies: under the day each was saved. */
   .saved-day > h4 { color: var(--text); }
   .health-details { font-size: 12px; color: var(--text-2); }
-  .health-details > summary { display: inline-flex; align-items: center; gap: 4px; margin-left: -6px; padding: 2px 8px 2px 4px; border-radius: var(--r-sm); font-weight: 600; line-height: 20px; list-style: none; color: var(--text-2); transition: background 120ms, color 120ms; }
-  .health-details > summary::-webkit-details-marker { display: none; }
-  .health-details > summary:hover { background: var(--hover); color: var(--text); }
-  .health-details > summary svg { width: 14px; height: 14px; flex: none; transition: transform 120ms; }
-  .health-details[open] > summary svg { transform: rotate(90deg); }
-  .health-details-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 6px; }
+  .health-details-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding-left: 20px; }
   .health-details pre { display: flex; flex-direction: column; align-self: stretch; max-height: 200px; overflow: auto; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--text-2); }
   /* One block per log line: a long line wraps under its own start, never as if it were a new line. */
   .health-log-line { display: block; padding-left: 2ch; text-indent: -2ch; }
@@ -205,9 +200,9 @@
   .seo-readiness .health-row .health-hint { color: var(--text-2); }
   .health-copy { display: flex; align-items: center; gap: 8px; }
   .health-inline-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 1px; }
-  .health-inline-actions .btn svg { width: 13px; height: 13px; }
+  .health-inline-actions .btn svg:not(.disclosure-mark) { width: 13px; height: 13px; }
   /* Held while an action runs: it keeps focus, takes the shared unavailable face, and does nothing. */
   .health-body .btn[aria-disabled='true'] { cursor: not-allowed; }
-  @media (prefers-reduced-motion: reduce) { .health-details > summary svg, .health-jump { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .health-jump { transition: none; } }
   @media (forced-colors: active) { .health-badge, .health-count { box-shadow: none; border: 1px solid CanvasText; } }
 }

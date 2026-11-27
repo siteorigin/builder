@@ -114,8 +114,6 @@
   .seo-entity-list ol { list-style: decimal; }
   .seo-entity-list ul { list-style: disc; }
   .seo-entity-detail { display: block; white-space: pre-line; color: var(--text-2); }
-  .seo-json summary { cursor: pointer; font-size: 12px; font-weight: 500; }
-  .seo-json[open] summary { margin-bottom: 6px; }
   .code-view.seo-graph { height: auto; max-height: 340px; padding: 10px 12px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
   /* Link cards (#705): each as its platform lays one out. They are samples of other people's apps, so their colours are
      their own and don't follow the editor's appearance. A card is drawn at its platform's width (--w, in pixels) and

@@ -1,10 +1,10 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, Grid3x3, ImageDown, ImageIcon, ImageOff, ImagePlus, Info, MapPin, Newspaper, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Type, Upload } from 'lucide-react';
+import { ArrowLeft, Check, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, Grid3x3, ImageDown, ImageIcon, ImageOff, ImagePlus, Info, MapPin, Newspaper, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Type, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
 import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, attachToChat, commitOps, getState, inspectorFocusRequest, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
-import { Field, DraftInput, Segmented, Spinner, Tabs, openSection } from '../components/ui';
+import { Disclosure, DisclosureMark, Field, DraftInput, Segmented, Spinner, Tabs, openSection } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isValidFontAsset } from '@shared/fonts';
 import { FontList } from './FontFiles';
@@ -234,7 +234,7 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
                   aria-expanded={expanded}
                   onClick={() => setOpen(expanded ? null : a.id)}
                 >
-                  {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                  <DisclosureMark />
                   <FileDown aria-hidden="true" />
                   <span className="doc-title">
                     <b>{labels.get(a.id)}</b>
@@ -1381,7 +1381,35 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const used = usage[sel.id] ?? 0;
     // Two imports can share a name ("hero"): what an author can see of them tells them apart.
     const apart = sameNames.get(sel.id);
-    const shownPlaces = allPlaces ? places : places.slice(0, 4);
+    // One place the image is used: a way to it, or how it is changed where it can't be opened.
+    const placeRow = (p: (typeof places)[number]) => {
+      const Icon = PLACE_ICON[p.icon];
+      const go = showUse(snap.state, p);
+      const hint = go ? undefined : changeHint(snap.state, p);
+      const inner = (
+        <>
+          <Icon aria-hidden="true" />
+          <span className="where">{p.where}</span>
+          <span className="what">{p.what}</span>
+          {go && <ChevronRight className="go" aria-hidden="true" />}
+        </>
+      );
+      return (
+        <li key={p.key}>
+          {go ? (
+            <button className="asset-use" onClick={go} title={showLabel(snap.state, p)}>
+              {inner}
+            </button>
+          ) : (
+            // A theme component's design or starting image can't be opened: say how it is changed.
+            <span className="asset-use static" title={`${p.what} · ${p.where}`}>
+              {inner}
+              {hint && <span className="asset-use-hint">{hint}</span>}
+            </span>
+          )}
+        </li>
+      );
+    };
     const gone = missingOf.get(sel.id);
     const hurt = damage(sel, gone);
     const copies = gone?.variants.length ?? 0;
@@ -1655,43 +1683,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         </section>
         <section className="asset-uses" aria-labelledby="asset-uses-title">
           <h5 id="asset-uses-title">{used ? `Used in ${plural(places.length || used, 'place', 'places')}` : 'Not used anywhere yet'}</h5>
-          {places.length > 0 && (
-            <ul>
-              {shownPlaces.map((p) => {
-                const Icon = PLACE_ICON[p.icon];
-                const go = showUse(snap.state, p);
-                const hint = go ? undefined : changeHint(snap.state, p);
-                const inner = (
-                  <>
-                    <Icon aria-hidden="true" />
-                    <span className="where">{p.where}</span>
-                    <span className="what">{p.what}</span>
-                    {go && <ChevronRight className="go" aria-hidden="true" />}
-                  </>
-                );
-                return (
-                  <li key={p.key}>
-                    {go ? (
-                      <button className="asset-use" onClick={go} title={showLabel(snap.state, p)}>
-                        {inner}
-                      </button>
-                    ) : (
-                      // A theme component's design or starting image can't be opened: say how it is changed.
-                      <span className="asset-use static" title={`${p.what} · ${p.where}`}>
-                        {inner}
-                        {hint && <span className="asset-use-hint">{hint}</span>}
-                      </span>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+          {places.length > 0 && <ul>{places.slice(0, 4).map(placeRow)}</ul>}
+          {/* The rest under a fold that stays put: it opens below itself, so the pointer and the next Tab land on them. */}
           {places.length > 4 && (
-            <button className="uses-toggle asset-more" aria-expanded={allPlaces} onClick={() => setAllPlaces(!allPlaces)}>
-              {allPlaces ? 'Show fewer' : `Show all ${places.length} places`}
-              <ChevronDown size={11} />
-            </button>
+            <Disclosure className="asset-more" open={allPlaces} onToggle={(e) => setAllPlaces(e.currentTarget.open)} summary={`${places.length - 4} more ${places.length - 4 === 1 ? 'place' : 'places'}`}>
+              <ul>{places.slice(4).map(placeRow)}</ul>
+            </Disclosure>
           )}
           <div className="asset-actions">
             {used ? (

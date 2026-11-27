@@ -1,11 +1,11 @@
 import './PreviewStatus.css';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronRight, Copy, Layers, Play, RefreshCcw } from 'lucide-react';
+import { Check, Copy, Layers, Play, RefreshCcw } from 'lucide-react';
 import { REPORT_URL } from '@shared/links';
 import type { RuntimeState } from '@shared/api';
 import { api, setState, useStore } from '../store';
 import { AppMark } from '../components/AppMark';
-import { Spinner } from '../components/ui';
+import { Disclosure, Spinner } from '../components/ui';
 import { reportText } from '../components/FailureScreen';
 
 /** The one reassurance every card that stops the page gives, worded the same each time. */
@@ -159,13 +159,9 @@ function Stopped({ message, detail }: { message: string; detail?: string }) {
       detail={
         <>
           {/* Closed while the report to copy by hand is showing, so the trace is shown once. */}
-          <details className="status-card-details" open={fallback?.kind === 'copy' ? false : undefined}>
-            <summary>
-              <ChevronRight aria-hidden="true" />
-              Technical details
-            </summary>
+          <Disclosure className="status-card-details" summary="Technical details" open={fallback?.kind === 'copy' ? false : undefined}>
             <pre>{text}</pre>
-          </details>
+          </Disclosure>
           {/* Always there, so a screen reader hears it when it fills; said where the person is looking. The report
               itself sits after it, outside, so only the sentence is read out. */}
           <div className="status-card-note" role="status">

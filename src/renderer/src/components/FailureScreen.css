@@ -18,11 +18,7 @@
   /* Technical details: folded away, selectable, and kept to a scrolling box so a long stack never pushes the way
      back off the window. */
   .failure-details { margin-top: 16px; }
-  .failure-details summary { display: inline-flex; align-items: center; gap: 4px; cursor: default; list-style: none; color: var(--text-2); font-size: 13px; font-weight: 500; border-radius: var(--r-xs); }
-  .failure-details summary::-webkit-details-marker { display: none; }
-  .failure-details summary:hover { color: var(--text); }
-  .failure-details summary svg { width: 14px; height: 14px; transition: transform 120ms; }
-  .failure-details[open] summary svg { transform: rotate(90deg); }
+  .failure-details .failure-detail { margin-top: 2px; }
   .failure-detail { margin: 8px 0 0; padding: 10px 12px; max-height: min(30vh, 220px); overflow: auto; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2); font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 
   .failure-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px 12px 18px; border-top: 1px solid var(--border); background: var(--panel-2); }

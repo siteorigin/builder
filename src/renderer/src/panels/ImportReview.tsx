@@ -1,8 +1,8 @@
 import { useId, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { ArrowRight, ChevronRight, ImagePlus, TriangleAlert } from 'lucide-react';
+import { ArrowRight, ImagePlus, TriangleAlert } from 'lucide-react';
 import type { ImportReviewRow } from '@shared/api';
 import { getState, setState } from '../store';
-import { Modal } from '../components/ui';
+import { Disclosure, Modal } from '../components/ui';
 import { settleImportReview } from '../lib/import-review';
 import './ImportReview.css';
 
@@ -55,14 +55,18 @@ export function ReviewSummary({ rows, children, focusFirst }: { rows: Array<[str
 /** A list too long to show at once, behind a counted summary that says what it holds. */
 export function ReviewDisclosure({ summary, icon, className, children, testId }: { summary: ReactNode; icon?: ReactNode; className?: string; children: ReactNode; testId?: string }) {
   return (
-    <details className={`import-disclosure${className ? ` ${className}` : ''}`} data-testid={testId}>
-      <summary>
-        <ChevronRight className="chev" aria-hidden="true" />
-        {icon}
-        <span>{summary}</span>
-      </summary>
+    <Disclosure
+      className={`import-disclosure${className ? ` ${className}` : ''}`}
+      testId={testId}
+      summary={
+        <>
+          {icon}
+          <span>{summary}</span>
+        </>
+      }
+    >
       {children}
-    </details>
+    </Disclosure>
   );
 }
 

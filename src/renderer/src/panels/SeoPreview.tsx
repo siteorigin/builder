@@ -10,7 +10,7 @@ import { setSerpView, useStore } from '../store';
 import { FILLER_RESULTS, PHONE_BEZEL, SAMPLE_QUERY, SERP_MARGIN, serpPageWidth, serpScale, type FillerResult } from '../lib/serp-page';
 import { openSeoViewFrom, postPreviewHandoff } from '../lib/actions';
 import { AssetImage } from '../components/AssetImage';
-import { Segmented, Switch, Tabs } from '../components/ui';
+import { Disclosure, Segmented, Switch, Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
 import { openSiteSharing, SharingPreview } from './SharingPreview';
 import { previewHandoff } from '../lib/seoHandoff';
@@ -358,12 +358,11 @@ function StructuredData({ structured, noAddress }: { structured: StructuredPrevi
         <>
           <p className="field-hint">What the exported page tells search engines and AI answer engines, as Schema.org structured data.</p>
           <GraphSummary sections={graph.sections} />
-          <details className="seo-json">
-            <summary>Exact JSON-LD</summary>
+          <Disclosure className="seo-json" summary="Exact JSON-LD">
             <pre className="code-view seo-graph" tabIndex={0} aria-label="Structured data as the exported page writes it" data-testid="seo-graph">
               {graph.json}
             </pre>
-          </details>
+          </Disclosure>
         </>
       ) : graph.kind === 'none' ? (
         <p className="field-hint seo-graph-none">

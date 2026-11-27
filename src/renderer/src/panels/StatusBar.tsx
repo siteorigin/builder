@@ -1,6 +1,6 @@
 import './StatusBar.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type ReactNode } from 'react';
-import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, GitCompareArrows, Info, Link2, Lock, Network, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
+import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, Info, Link2, Lock, Network, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
 import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
 import type { SeoFinding, SeoPillar } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
@@ -18,7 +18,7 @@ import { findingHandoff } from '../lib/seoHandoff';
 import { conflictPanes, diffCaption, lineDiff, sameVersions, savedCopyDay, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
 import { AiHandoffButton } from '../components/AiHandoff';
 import { HeldStyle } from './StylePaste';
-import { Modal, Spinner, useMenu, type MenuItem } from '../components/ui';
+import { Disclosure as Fold, DisclosureMark, Modal, Spinner, useMenu, type MenuItem } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { GENERATED_DIR, defFile } from '@generator/index';
 import { auditForHealth, needsFixing, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES, type SeoAuditResult, type SeoPillarFilter, type SeoSeverityFilter } from '../lib/seo-health';
@@ -432,13 +432,9 @@ function HealthRow({ tone, icon, actions, details, children }: { tone: Tone; ico
 /** A disclosure in a row: a chevron that turns, then whatever it holds. */
 function Disclosure({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <details className="health-details">
-      <summary>
-        <ChevronRight aria-hidden="true" />
-        {label}
-      </summary>
+    <Fold className="health-details" summary={label}>
       <div className="health-details-body">{children}</div>
-    </details>
+    </Fold>
   );
 }
 
@@ -1069,7 +1065,7 @@ export function HealthModal() {
                 )
               }
               details={
-                <Disclosure label={kept.length ? `See which ones (${kept.length} more can’t be updated)` : 'See which ones'}>
+                <Disclosure label={kept.length ? `See which components (${kept.length} more can’t be updated)` : 'See which components'}>
                   <dl className="health-terms">
                     <dt>Will update</dt>
                     <dd>{updates.map((u) => u.name).join(', ')}</dd>
@@ -1348,7 +1344,7 @@ function ConflictRow({
       actions={
         <>
           <button ref={compareRef} className="btn btn-sm btn-ghost" aria-expanded={!!shown} aria-disabled={settling || versions === 'loading' || undefined} onClick={() => void compare()}>
-            {versions === 'loading' ? <Spinner decorative /> : <GitCompareArrows aria-hidden="true" />}
+            {versions === 'loading' ? <Spinner decorative /> : <DisclosureMark />}
             {versions === 'loading' ? 'Reading versions…' : shown ? 'Hide versions' : 'Compare versions'}
           </button>
           <button className="btn btn-sm btn-ghost" onClick={() => void api.projects.reveal(`${dir}/${c.path}`)}>
@@ -1623,7 +1619,7 @@ function SavedCopyRow({ copy: c, state, dir, readOnly, autoFocus, onTaken }: { c
           <div ref={actionsRef} className="health-inline-actions" role="group" aria-label={`${subject}, ${which}, saved ${full}`}>
             {!c.removed && (
               <button className="btn btn-sm" aria-expanded={!!shown} aria-disabled={content === 'loading' || undefined} onClick={() => void view()}>
-                {content === 'loading' && <Spinner decorative />}
+                {content === 'loading' ? <Spinner decorative /> : <DisclosureMark />}
                 {content === 'loading' ? 'Opening…' : shown ? 'Hide copy' : 'View copy'}
               </button>
             )}

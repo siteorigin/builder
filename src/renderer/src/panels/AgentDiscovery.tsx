@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronRight, Copy } from 'lucide-react';
+import { Check, Copy } from 'lucide-react';
 import type { ProjectState, SiteDoc } from '@shared/types';
 import { agentDiscovery, LLMS_FULL_FILE, LLMS_TXT_FILE, MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { publicUrl } from '@shared/public-url';
 import { webMcpOn } from '@shared/webmcp';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { generateLlmsTxt } from '@generator/llms';
-import { DraftInput, Field, SwitchRow } from '../components/ui';
+import { DisclosureMark, DraftInput, Field, SwitchRow } from '../components/ui';
 
 /** How many of the section's four features are on, for its closed heading ("2 on", "All off"). */
 export function agentsScope(site: SiteDoc): string {
@@ -101,9 +101,9 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
             </Field>
             <div className="agents-file">
               <div className="agents-file-head">
-                <button type="button" className="link-btn agents-file-toggle" aria-expanded={showFile} aria-controls="site-llms-preview" onClick={() => setShowFile(!showFile)}>
-                  <ChevronRight aria-hidden="true" />
-                  {showFile ? 'Hide the file' : 'Show the file'}
+                <button type="button" className="disclosure-trigger agents-file-toggle" aria-expanded={showFile} aria-controls="site-llms-preview" onClick={() => setShowFile(!showFile)}>
+                  <DisclosureMark />
+                  The file as written
                 </button>
                 <CopyText text={preview} what={LLMS_TXT_FILE} />
               </div>

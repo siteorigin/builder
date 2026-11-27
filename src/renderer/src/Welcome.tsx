@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, Users, X } from 'lucide-react';
 import type { RecentProject, TrustRequest } from '@shared/api';
 import { api, errorText, setState, toast, useStore, whenThemesReady } from './store';
-import { openDialogs, Spinner } from './components/ui';
+import { Disclosure, openDialogs, Spinner } from './components/ui';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { recentGroups, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
@@ -517,8 +517,15 @@ export function Welcome() {
         </div>
         <div className="spacer" />
         {refusedPacks.length > 0 && (
-          <details className="welcome-packs no-drag">
-            <summary>{refusedPacks.length === 1 ? '1 theme pack' : `${refusedPacks.length} theme packs`} could not be loaded</summary>
+          <Disclosure
+            className="welcome-packs no-drag"
+            summary={
+              <>
+                <CircleAlert className="welcome-packs-icon" aria-hidden="true" />
+                {refusedPacks.length === 1 ? '1 theme pack' : `${refusedPacks.length} theme packs`} could not be loaded
+              </>
+            }
+          >
             <ul>
               {refusedPacks.map((r) => (
                 <li key={r.dir}>
@@ -526,7 +533,7 @@ export function Welcome() {
                 </li>
               ))}
             </ul>
-          </details>
+          </Disclosure>
         )}
         <footer className="welcome-foot no-drag">
           <button className="btn btn-ghost" disabled={!!opening} onClick={() => setState({ modal: { kind: 'settings' } })}>

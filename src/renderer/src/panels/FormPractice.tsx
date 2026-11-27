@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Mail, Reply, Send, TriangleAlert } from 'lucide-react';
-import { Segmented, Spinner } from '../components/ui';
+import { Check, Mail, Reply, Send, TriangleAlert } from 'lucide-react';
+import { Disclosure, DisclosureMark, Segmented, Spinner } from '../components/ui';
 import { formDestinationNote, formName, formSendNote, shortDestination, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 
 /**
@@ -173,7 +173,7 @@ export function FormPractice({
             onFold(!folded);
           }}
         >
-          <ChevronDown aria-hidden="true" />
+          <DisclosureMark />
         </button>
       </div>
       {/* Stays mounted so sends are announced, folded or not. While a confirmation is open the last result steps out
@@ -203,11 +203,7 @@ export function FormPractice({
               )}
             </p>
           ) : (
-            <details className="form-practice-forms" open={listOpen} onToggle={(e) => setListOpen(e.currentTarget.open)}>
-              <summary>
-                <ChevronRight aria-hidden="true" />
-                Where the {forms.length} forms on this page send
-              </summary>
+            <Disclosure className="form-practice-forms" open={listOpen} onToggle={(e) => setListOpen(e.currentTarget.open)} summary={`Where the ${forms.length} forms on this page send`}>
               <ul>
                 {forms.map((f) => (
                   <li key={f.id}>
@@ -216,7 +212,7 @@ export function FormPractice({
                   </li>
                 ))}
               </ul>
-            </details>
+            </Disclosure>
           ))}
         {!open ? (
           <div className="form-practice-row">
