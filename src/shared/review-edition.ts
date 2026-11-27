@@ -6,6 +6,9 @@
  * faithfully (a font that never settled, an image or stylesheet that failed to load) is recorded as unavailable at
  * that width, never kept as a blank or half-drawn picture.
  */
+import type { ProjectState } from './types';
+import { archivePages, archiveWords } from './archives';
+import { siteEntries } from './collections';
 
 /** Where a project keeps its review editions, relative to its folder: private, never exported or built. */
 export const REVIEWS_DIR = '.siteorigin/reviews';
@@ -24,6 +27,19 @@ export interface ReviewWidth {
   width: number;
 }
 
+/**
+ * Every page the published site `live` has, with the title the edition names it by: its pages in the site's order,
+ * then each collection's entries, then the archive pages listing them. Drafts, old addresses kept working and the
+ * not-found page are not pages of the site, and are not offered.
+ */
+export function reviewPages(live: ProjectState): ReviewPage[] {
+  return [
+    ...live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id)).map((id) => ({ route: live.pages[id].route, title: live.pages[id].title })),
+    ...siteEntries(live).map((e) => ({ route: e.route, title: e.entry.title })),
+    ...archivePages(live).map((a) => ({ route: a.route, title: archiveWords(live, a).name }))
+  ];
+}
+
 /** Why one page could not be captured at one width. */
 export type ReviewCaptureReason = 'navigation' | 'fonts' | 'assets' | 'too-tall' | 'timeout' | 'failed';
 
@@ -37,6 +53,8 @@ export interface ReviewEditionManifest {
   editionId: string;
   /** When the edition was made (ISO 8601, UTC). */
   createdAt: string;
+  /** The site's name when the edition was made: what its offline sheet is titled, whatever the site is called since. */
+  siteName: string;
   /** The project revision the review build was made from. */
   revision: number;
   /** The site's base path the build was served under ('' at the root). */
@@ -55,6 +73,9 @@ export interface ReviewEditionManifest {
 
 /** What capturing an edition came to: the edition kept and where, or why there is none. */
 export type ReviewEditionResult = { ok: true; edition: ReviewEditionManifest; path: string; message: string } | { ok: false; message: string; details?: string };
+
+/** What saving an edition's offline sheet (#1134) came to: the file written, or why there is none (no message: the chooser was closed). */
+export type ReviewSheetResult = { ok: true; path: string; message: string } | { ok: false; message?: string };
 
 /** The widths captured when none are asked for: a desktop browser and a phone. */
 export const DEFAULT_REVIEW_WIDTHS: readonly ReviewWidth[] = [

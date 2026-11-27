@@ -1,4 +1,4 @@
-import type { ReviewPage } from './review-edition';
+import type { ReviewEditionManifest, ReviewEditionResult, ReviewPage, ReviewSheetResult } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
@@ -1428,6 +1428,15 @@ export interface BuilderApi {
      * snapshot would publish other pages stops instead, so a page shown as a draft is never published unseen.
      */
     exportStatic(format?: ExportFormat, published?: string[]): Promise<ExportResult>;
+    /** The project's review editions (#1133), newest first. */
+    reviewEditions(): Promise<ReviewEditionManifest[]>;
+    /**
+     * Build the site for review and picture each page at `routes` at each of `widths` (a desktop and a phone width when
+     * none are given), keeping the pictures as a new review edition in the project.
+     */
+    captureReviewEdition(request: { routes: string[]; widths?: Array<{ label: string; width: number }> }): Promise<ReviewEditionResult>;
+    /** Save review edition `editionId` as one HTML file that opens from disk with no Builder, server or network (#1134); the chooser says where. */
+    exportReviewSheet(editionId: string): Promise<ReviewSheetResult>;
     retryPreview(): Promise<void>;
     /**
      * Prepare an isolated preview of one component (a definition of the project, or a component of the theme's
