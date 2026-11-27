@@ -1,6 +1,6 @@
 import './SeoView.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { ArrowLeft, Check, EyeOff, FileText, Info, LayoutList, Lock, X, House, Newspaper, Search, TriangleAlert } from 'lucide-react';
+import { ArrowLeft, Check, EyeOff, FileText, Info, LayoutList, Lock, X, House, Newspaper, SearchCheck, TriangleAlert } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { leaveSeoView, setState, useStore } from '../store';
@@ -604,7 +604,7 @@ export function SeoView({ shown }: { shown: boolean }) {
           </>
         ) : (
           <>
-            <Search aria-hidden="true" />
+            <SearchCheck aria-hidden="true" />
             <h2 className="seo-title">SEO</h2>
           </>
         )}

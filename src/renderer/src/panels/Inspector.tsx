@@ -40,7 +40,7 @@ import {
   BookmarkPlus,
   Download,
   Repeat,
-  Search
+  SearchCheck
 } from 'lucide-react';
 import type { ComponentDefinition, DividerNode, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
 import { DIVIDER_ICON, DIVIDER_SHAPES, isBinding, isCollectionLoop, parseStyleScopeKey, styleScopeKey } from '@shared/types';
@@ -3480,9 +3480,9 @@ function SeoOverview({ state }: { state: ProjectState }) {
   const kind = !doc ? 'Nothing chosen' : doc.subject.kind === 'page' ? (doc.draft ? 'Draft page' : 'Page') : doc.draft ? 'Draft post' : 'Published post';
   return (
     <div className="panel-body insp" key={`seo:${doc?.key ?? ''}`}>
-      <Header title={doc?.title ?? 'SEO'} kind={kind} icon={<Search />} />
+      <Header title={doc?.title ?? 'SEO'} kind={kind} icon={<SearchCheck />} />
       <div className="insp-empty">
-        <Search aria-hidden="true" />
+        <SearchCheck aria-hidden="true" />
         <p>{doc ? `The SEO view shows ${doc.subject.kind === 'page' ? 'this page' : 'this post'} in the canvas’s place. Nothing here changes the page under it.` : 'Choose a page or post in the SEO list. The SEO view covers the canvas, and nothing here changes the page under it.'}</p>
       </div>
     </div>
