@@ -19,7 +19,7 @@ import { sameNameLabels } from '../lib/same-name';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
 import { assetArrived, reviewImport } from '../lib/import-review';
 import { perfMark } from '../lib/perf';
-import { documentDetails, documentLabels, documentName, libraryDocuments } from '../lib/documents';
+import { documentFacts, documentFileName, documentLabels, documentName, libraryDocuments } from '../lib/documents';
 import { altChecks } from '../lib/alt-review';
 import { imageUseRows, type ImageUseRow, type PlaceLabel, type UseField } from '../lib/asset-uses';
 import { defaultEditorNode } from '../lib/design-content';
@@ -164,7 +164,7 @@ const fontLabel = (a: AssetRecord) => `${a.font?.family ?? a.name} ${a.font?.wei
  * done with it. A new version of the file goes in with Replace file, and every link follows; links can also move to
  * another document. A document stays while anything links to it, so no link is ever left going nowhere.
  */
-function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { state: ProjectState; docs: AssetRecord[]; usage: Record<string, number>; missingOf: Map<string, MissingAssetFiles>; reveal: string | null; onRevealed: () => void }) {
+function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed, onAdd, adding }: { state: ProjectState; docs: AssetRecord[]; usage: Record<string, number>; missingOf: Map<string, MissingAssetFiles>; reveal: string | null; onRevealed: () => void; onAdd: () => void; adding: boolean }) {
   const labels = documentLabels(docs);
   const [open, setOpen] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -182,14 +182,39 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
     cancelAnimationFrame(focusFrame.current);
     focusFrame.current = requestAnimationFrame(() => toggles.current.get(reveal)?.focus());
   }, [reveal, onRevealed]);
+  // Two successes take away the focused control: a located file takes its note (and Locate file) away, and the first
+  // documents take the empty tab's Add away. Focus then goes to the document's row, so its new state is read.
+  const repaired = useRef<string | null>(null);
+  const known = useRef<Set<string> | null>(null);
+  const lost = () => !document.activeElement || document.activeElement === document.body;
+  useEffect(() => {
+    const id = repaired.current;
+    if (id && !missingOf.get(id)?.original) {
+      repaired.current = null;
+      if (lost()) toggles.current.get(id)?.focus();
+    }
+  }, [missingOf]);
+  useEffect(() => {
+    const before = known.current;
+    known.current = new Set(docs.map((d) => d.id));
+    if (before?.size === 0 && docs.length && lost()) toggles.current.get((docs.find((d) => !before.has(d.id)) ?? docs[0]).id)?.focus();
+  }, [docs]);
   const replaceFile = async (a: AssetRecord) => {
     if (busy) return;
     setBusy(true);
+    // Noted before the chooser opens: the file can come back before its reply does.
+    if (missingOf.get(a.id)?.original) repaired.current = a.id;
+    // The button is disabled while the chooser is open, which drops its focus: it gets it back once enabled, if it is still there.
+    const from = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     try {
       const r = await api.project.locateAsset(a.id).catch((e: Error) => ({ ok: false, message: e.message }));
+      if (!r.ok && repaired.current === a.id) repaired.current = null;
       if (r.message) toast(r.message, r.ok ? 'info' : 'error');
     } finally {
       setBusy(false);
+      requestAnimationFrame(() => {
+        if (from?.isConnected && lost()) from.focus();
+      });
     }
   };
   const moveLinks = async (a: AssetRecord, to: string) => {
@@ -200,6 +225,8 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
     if (r) {
       setMoveTo(({ [a.id]: _, ...rest }) => rest);
       toast(`${n === 1 ? 'The link' : `All ${n} links`} to ${documentName(a)} now go${n === 1 ? 'es' : ''} to ${target ? documentName(target) : 'the other document'}.`, 'info', undoAction(r));
+      // The move group goes with the links: focus returns to the document's row, which now reads Not linked.
+      requestAnimationFrame(() => toggles.current.get(a.id)?.focus());
     }
   };
   const remove = async (a: AssetRecord) => {
@@ -207,14 +234,25 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
     const r = await commitOps([{ type: 'asset.remove', assetId: a.id }], `Remove ${documentName(a)}`);
     if (r) {
       toast(`Removed ${documentName(a)}.`, 'info', undoAction(r));
-      // Focus moves to the next document, else to Add documents, never to the page.
-      requestAnimationFrame(() => ((next && toggles.current.get(next.id)) || document.querySelector<HTMLElement>('.asset-add'))?.focus());
+      // Focus moves to the next document (the one before, for the last), else to the empty tab's Add documents.
+      requestAnimationFrame(() => ((next && toggles.current.get(next.id)) || document.querySelector<HTMLElement>('.doc-empty .asset-drop, .asset-add'))?.focus());
     }
   };
   return (
     <section className="doc-list" aria-label="Documents">
       {docs.length === 0 ? (
-        <p className="doc-list-note">Files visitors download from your site: a PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP file. Add one, then link a button to it by choosing Document as the link’s destination. It needs no other hosting.</p>
+        // As the empty Images tab: the way in is the tab's own, and the panel header has no Add until there is a list.
+        <div className="asset-empty doc-empty">
+          <button className="asset-drop" onClick={onAdd} disabled={adding}>
+            <span className="asset-drop-icon">
+              <FilePlus aria-hidden="true" />
+            </span>
+            <b>Add documents</b>
+            <span>Drop files here, or click to choose</span>
+            <small>PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP</small>
+          </button>
+          <p>Files visitors download from your site, such as a price list or a menu. To offer one, choose Document as a button’s link.</p>
+        </div>
       ) : (
         <ul>
           {docs.map((a) => {
@@ -223,6 +261,8 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
             const expanded = open === a.id;
             // Links never move to a document whose own file is missing: they would go nowhere too.
             const others = docs.filter((d) => d.id !== a.id && !missingOf.get(d.id)?.original);
+            // Whether every link can be changed from here: a theme component's own link is shown but not opened.
+            const editable = expanded && used > 0 && placesOf(state, a.id).every((p) => p.go);
             return (
               <li key={a.id} className={`doc-item${expanded ? ' open' : ''}`} data-document={a.id}>
                 <button
@@ -238,17 +278,41 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
                   <FileDown aria-hidden="true" />
                   <span className="doc-title">
                     <b>{labels.get(a.id)}</b>
-                    <span className="doc-meta">
-                      {documentDetails(a).split(' · ').map((part, i) => <span key={i}>{part}</span>)}
+                    <span className="doc-meta">{documentFacts(a)}</span>
+                    {/* Every row ends on whether the site links to it; a missing file leads that line, in words and the alert glyph. */}
+                    <span className={`doc-state${gone ? ' gone' : used ? '' : ' unlinked'}`}>
+                      {gone ? (
+                        <>
+                          <TriangleAlert aria-hidden="true" />
+                          {/* A comma, not a dot: a narrow row breaks after it, and no line starts or ends on a separator. */}
+                          <span className="doc-state-alert">File missing</span>, {used ? `linked ${plural(used, 'time', 'times')}` : 'not linked'}
+                        </>
+                      ) : used ? (
+                        `Linked ${plural(used, 'time', 'times')}`
+                      ) : (
+                        'Not linked'
+                      )}
                     </span>
-                    <span className={`doc-state${gone ? ' gone' : ''}`}>{gone ? 'File missing' : used ? `Linked ${plural(used, 'time', 'times')}` : 'Not linked'}</span>
                   </span>
-                  {gone && <TriangleAlert className="doc-warn" aria-label="File missing" />}
                 </button>
                 {expanded && (
                   <div className="doc-body">
-                    {gone && <p className="doc-missing">Its file is not in the project folder, so visitors can’t download it. Locate the file, or choose a new one.</p>}
-                    <Field label="Name">
+                    {gone && (
+                      <div className="asset-note asset-missing" role="note">
+                        <TriangleAlert aria-hidden="true" />
+                        <div>
+                          <span>
+                            <b>File missing.</b> Choose the original file or a replacement to {used ? (used === 1 ? 'restore its link' : 'restore its links') : 'make it available again'}.
+                          </span>
+                          <div className="asset-missing-actions">
+                            <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => void replaceFile(a)}>
+                              <FileSearch /> Locate file…
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <Field label="Name" hint={<>Downloads as <span className="doc-file">{documentFileName(a)}</span></>}>
                       <DraftInput
                         className="input sm"
                         value={typeof a.name === 'string' ? a.name : ''}
@@ -260,33 +324,61 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
                         }}
                       />
                     </Field>
-                    <DocumentPlaces state={state} assetId={a.id} />
+                    <DocumentPlaces state={state} assetId={a.id} headingId={`doc-places-${a.id}`} />
                     <div className="doc-actions">
-                      <button className="btn btn-sm" disabled={busy} onClick={() => void replaceFile(a)} title={used ? 'Choose a new version: every link to this document downloads it instead' : 'Choose another file for this document'}>
-                        <FileUp /> {gone ? 'Locate file…' : 'Replace file…'}
-                      </button>
-                      {used > 0 && others.length > 0 && (
-                        <span className="doc-move">
-                          <select className="select sm" value={others.some((d) => d.id === moveTo[a.id]) ? moveTo[a.id] : ''} aria-label={`Document to move the links to ${documentName(a)} to`} onChange={(e) => setMoveTo((m) => ({ ...m, [a.id]: e.target.value }))}>
-                            <option value="" disabled>
-                              Move its links to…
-                            </option>
-                            {others.map((d) => (
-                              <option key={d.id} value={d.id}>
-                                {labels.get(d.id)}
-                              </option>
-                            ))}
-                          </select>
-                          <button className="btn btn-sm" disabled={!others.some((d) => d.id === moveTo[a.id])} onClick={() => void moveLinks(a, moveTo[a.id])}>
-                            Move links
+                      {/* A missing file is located from its note; a present one gets a new version here, and every link follows. */}
+                      {!gone && (
+                        <div className="doc-action">
+                          <button className="btn btn-sm" disabled={busy} onClick={() => void replaceFile(a)} aria-describedby={used ? `doc-replace-${a.id}` : undefined}>
+                            <FileUp /> Replace file…
                           </button>
-                        </span>
+                          {used > 0 && (
+                            <p className="asset-why" id={`doc-replace-${a.id}`}>
+                              {used === 1 ? 'Its link downloads the new file.' : `All ${used} links download the new file.`}
+                            </p>
+                          )}
+                        </div>
                       )}
-                      <button className="btn btn-sm btn-danger" disabled={used > 0} onClick={() => void remove(a)} title={used ? `Linked ${plural(used, 'time', 'times')}. Replace its file, move its links to another document, or change those links first.` : `Remove ${documentName(a)}`}>
-                        <Trash2 /> Remove
-                      </button>
+                      {used > 0 && others.length > 0 && (
+                        <div className="doc-move" role="group" aria-labelledby={`doc-move-label-${a.id}`}>
+                          <label className="field-label" id={`doc-move-label-${a.id}`} htmlFor={`doc-move-${a.id}`}>
+                            {used === 1 ? 'Move its link to' : `Move all ${used} links to`}
+                          </label>
+                          <div className="doc-move-row">
+                            <select id={`doc-move-${a.id}`} className="select sm" value={others.some((d) => d.id === moveTo[a.id]) ? moveTo[a.id] : ''} onChange={(e) => setMoveTo((m) => ({ ...m, [a.id]: e.target.value }))}>
+                              <option value="" disabled id={`doc-move-choose-${a.id}`}>
+                                Choose a document…
+                              </option>
+                              {others.map((d) => (
+                                <option key={d.id} value={d.id}>
+                                  {labels.get(d.id)}
+                                </option>
+                              ))}
+                            </select>
+                            <button className="btn btn-sm" disabled={!others.some((d) => d.id === moveTo[a.id])} aria-describedby={others.some((d) => d.id === moveTo[a.id]) ? undefined : `doc-move-choose-${a.id}`} onClick={() => void moveLinks(a, moveTo[a.id])}>
+                              Move
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {/* A linked document is never removed, so no link is left going nowhere: no dead button, just the way to free it. */}
+                      {used ? (
+                        <p className="asset-why">
+                          {(() => {
+                            const them = used === 1 ? 'its link' : 'its links';
+                            if (others.length) return `To remove this document, move ${them} to another one${editable ? `, or change ${used === 1 ? 'it' : 'them'} above` : ' first'}.`;
+                            return editable ? `To remove this document, change ${used === 1 ? 'the link' : 'the links'} above first.` : `To remove this document, add another and move ${them} to it first.`;
+                          })()}
+                        </p>
+                      ) : (
+                        // Apart from the rest, past its own divider: the one action that takes the document away.
+                        <div className="doc-remove">
+                          <button className="btn btn-sm btn-danger" onClick={() => void remove(a)}>
+                            <Trash2 /> Remove document
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    {used > 0 && <p className="doc-list-note">It can’t be removed while the site links to it: visitors would find those links going nowhere.</p>}
                   </div>
                 )}
               </li>
@@ -298,30 +390,35 @@ function DocumentList({ state, docs, usage, missingOf, reveal, onRevealed }: { s
   );
 }
 
-/** Where the site links to a document, each place a button that goes there. */
-function DocumentPlaces({ state, assetId }: { state: ProjectState; assetId: string }) {
+/** Where the site links to a document, under a heading: each place a row that goes there, as the image details list theirs. */
+function DocumentPlaces({ state, assetId, headingId }: { state: ProjectState; assetId: string; headingId: string }) {
   const places = placesOf(state, assetId);
-  if (!places.length) return <p className="doc-list-note">No page links to it yet.</p>;
   return (
-    <ul className="doc-places" aria-label="Linked from">
-      {places.map((p) => {
-        const Icon = PLACE_ICON[p.icon];
-        const text = `${p.where}${p.what ? ` · ${p.what}` : ''}${p.count > 1 ? ` (${p.count})` : ''}`;
-        return (
-          <li key={p.key}>
-            {p.go ? (
-              <button className="link-btn" onClick={p.go}>
-                <Icon aria-hidden="true" /> {text}
-              </button>
-            ) : (
-              <span>
-                <Icon aria-hidden="true" /> {text}
-              </span>
-            )}
-          </li>
-        );
-      })}
-    </ul>
+    <section className="doc-places" aria-labelledby={headingId}>
+      <h5 id={headingId}>Linked from</h5>
+      {places.length ? (
+        <ul>
+          {places.map((p) => {
+            const Icon = PLACE_ICON[p.icon];
+            const inner = (
+              <>
+                <Icon aria-hidden="true" />
+                {/* One run of text, so a narrow sidebar wraps it between words, never inside one. */}
+                <span className="doc-place">
+                  <span className="where">{p.where}</span>
+                  {p.what && <> <span className="what">{p.what}</span></>}
+                </span>
+                {p.count > 1 && <span className="times">{p.count} links</span>}
+                {p.go && <ChevronRight className="go" aria-hidden="true" />}
+              </>
+            );
+            return <li key={p.key}>{p.go ? <button className="asset-use" onClick={p.go}>{inner}</button> : <span className="asset-use static">{inner}</span>}</li>;
+          })}
+        </ul>
+      ) : (
+        <p className="asset-why">Nothing on the site links to it yet.</p>
+      )}
+    </section>
   );
 }
 
@@ -346,7 +443,7 @@ const revealUse = (owner: OwnerRef, nodeId: string, field?: UseField, label = 'T
   if (owner.kind === 'page') selectPage(owner.id);
   else if (owner.kind === 'template') openLayout(owner.id);
   else if (owner.kind === 'component' && !openComponentStudio(owner.id)) return toast(GONE, 'info');
-  else if (owner.kind === 'shell' && !goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id}, so this image is not on any page.`, 'info');
+  else if (owner.kind === 'shell' && !goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id}.`, 'info');
   const opening = getState().snapshot?.workspaceKey;
   setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true, ...(field && opening ? { inspectorFocus: inspectorFocusRequest({ opening, owner, nodeId, ...field, label }) } : {}) });
 };
@@ -810,7 +907,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       setSection('images');
       setSelected(image);
       requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
-    } else if (added.length && wasEmpty && still) requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-add')?.focus());
+    } else if (added.length && wasEmpty && still && section === 'images') requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-add')?.focus());
   };
 
   /**
@@ -1752,7 +1849,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     <>
       <div className="panel-head">
         <h3>Assets</h3>
-        {browsing && (section !== 'images' || assets.length > 0) && (
+        {browsing && (section === 'fonts' || (section === 'images' ? assets.length : documents.length) > 0) && (
           <button className="btn btn-sm asset-add" onClick={add.run} disabled={importing} title={add.title}>
             {add.icon} {add.label}
           </button>
@@ -1806,7 +1903,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 icon: missingDocs ? <TriangleAlert className="asset-tab-warn" role="img" aria-label={`${plural(missingDocs, 'document has', 'documents have')} a missing file:`} /> : undefined,
                 panel: () => (
                   <div className="panel-body">
-                    <DocumentList state={snap.state} docs={documents} usage={usage} missingOf={missingOf} reveal={shownDocument} onRevealed={revealed} />
+                    <DocumentList state={snap.state} docs={documents} usage={usage} missingOf={missingOf} reveal={shownDocument} onRevealed={revealed} onAdd={() => void addDocuments()} adding={importing} />
                   </div>
                 )
               }
