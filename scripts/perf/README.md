@@ -498,7 +498,10 @@ size depends on the machine's display as well as the build, the same 30 pictures
 another, so compare bytes only between runs taken together and read `pictures` across launches), `pictures` (answers
 carrying a picture), `captures` (photographs taken, `thumbs.captures`) and `captureMs` (their time in the hidden
 window), `keys` (thumbnail keys worked out), `brands` (brand fingerprints worked out) and `keyMs` (their time in the main
-process), `busyMs` (from the window's start to the last thumbnail request, answer or photograph in it) and the longest
+process), `prepareMs` (making and writing each photograph's preview, `thumbs.prepare`), `generateMs` (making every
+component preview of the window, synchronously on main, `componentPreview.generate`: the photographs' and the one Insert
+shows of its own), `previewFiles` and `previewBytes` (the files those previews were made of, and their size, as made;
+a window that took photographs without these marks fails), `busyMs` (from the window's start to the last thumbnail request, answer or photograph in it) and the longest
 main-process stall; for `fill` and `scroll`, `ms` (to every tile in view showing its picture) and `inView` (the tiles in
 view then).
 
@@ -695,7 +698,9 @@ found nothing changed), `tools.npmRuns` (npm runs that set up a project's websit
 dependency trees worked out to check what they need, `src/main/runtime/manager.ts`), `thumbs.requests` and
 `thumbs.bytes` (Insert's thumbnail requests and their answers as IPC serializes them, `src/main/controller.ts`),
 `thumbs.captures` (thumbnails photographed), `thumbs.keys`, `thumbs.brands` and `thumbs.keyMs` (thumbnail keys and brand
-fingerprints worked out, and the time the keys took: `src/main/runtime/component-thumbs.ts`), `main.stalls` (main), and
+fingerprints worked out, and the time the keys took: `src/main/runtime/component-thumbs.ts`), `componentPreview.files`
+and `componentPreview.bytes` (the files an isolated component preview was made of and their size, counted as it is
+made, for every caller, `src/main/controller.ts`), `main.stalls` (main), and
 `react.commits`, `react.renders`
 (components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes

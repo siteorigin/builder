@@ -5221,65 +5221,83 @@ export function generatePathsJson(state: ProjectState): string {
 // ---------------------------------------------------------------------------
 
 /** Makes a state-dependent file under a cache key, or gives back the copy an earlier run made from the same inputs. */
-type FileMaker = (key: string, make: (state: ProjectState) => string) => string;
+export type FileMaker = (key: string, make: (state: ProjectState) => string) => string;
+
+/** One file of the library, made only when asked for; null when the site has no such file. */
+export type LibraryFile = () => string | null;
 
 /**
  * The library every page reads, under src/lib/siteorigin: the runtime helpers, the styles and a file for every
- * component definition, whether a page places it or not.
+ * component definition, whether a page places it or not. Each file is made only when its maker is called, so a caller
+ * that needs a few of them (a component's isolated preview) makes those alone; addLibrary makes them all, in order.
  */
-function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, file: FileMaker): void {
+export function libraryFiles(state: ProjectState, opts: GenerateOptions, file: FileMaker): Map<string, LibraryFile> {
+  const files = new Map<string, LibraryFile>();
   const theme = getTheme(state.site.themeId);
   const mode = opts.instrument ? '#dev' : '#clean';
+  // Two definitions whose files share a path (IDs a hand edit made alike) are both made, the later one kept, as ever.
+  const put = (path: string, make: LibraryFile) => {
+    const before = files.get(path);
+    files.set(path, before ? () => (before(), make()) : make);
+  };
   // What the site says on its own, ahead of every helper and component that imports it.
-  files.set(`${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`, file('visitor-text.js', generateVisitorTextJs));
-  files.set(`${RUNTIME_DIR}/Link.svelte`, linkSvelte(!!opts.instrument));
-  files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
-  files.set(`${RUNTIME_DIR}/Action.svelte`, ACTION_SVELTE);
-  files.set(`${RUNTIME_DIR}/Carousel.svelte`, CAROUSEL_SVELTE);
-  files.set(`${RUNTIME_DIR}/carousel.js`, CAROUSEL_JS);
-  files.set(`${RUNTIME_DIR}/RichText.svelte`, RICHTEXT_SVELTE);
-  files.set(`${RUNTIME_DIR}/Icon.svelte`, iconSvelte());
-  files.set(`${RUNTIME_DIR}/icons.js`, file('icons.js', iconsJs));
-  files.set(`${RUNTIME_DIR}/util.js`, UTIL_JS);
-  files.set(`${RUNTIME_DIR}/drafts.js`, DRAFTS_JS);
+  put(`${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`, () => file('visitor-text.js', generateVisitorTextJs));
+  put(`${RUNTIME_DIR}/Link.svelte`, () => linkSvelte(!!opts.instrument));
+  put(`${RUNTIME_DIR}/Image.svelte`, () => IMAGE_SVELTE);
+  put(`${RUNTIME_DIR}/Action.svelte`, () => ACTION_SVELTE);
+  put(`${RUNTIME_DIR}/Carousel.svelte`, () => CAROUSEL_SVELTE);
+  put(`${RUNTIME_DIR}/carousel.js`, () => CAROUSEL_JS);
+  put(`${RUNTIME_DIR}/RichText.svelte`, () => RICHTEXT_SVELTE);
+  put(`${RUNTIME_DIR}/Icon.svelte`, () => iconSvelte());
+  put(`${RUNTIME_DIR}/icons.js`, () => file('icons.js', iconsJs));
+  put(`${RUNTIME_DIR}/util.js`, () => UTIL_JS);
+  put(`${RUNTIME_DIR}/drafts.js`, () => DRAFTS_JS);
   // Site search and the pages it finds, while a component of the site searches. Written before the components and
   // pages that import them, so a preview never loads a component whose search code is not there yet. Whether the
   // site searches decides only which files exist, so it is asked of the plain state, as for redirects and the favicon.
   if (usesSiteSearch(state)) {
-    files.set(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, SEARCH_JS);
-    files.set(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, file('search-index.js', generateSearchIndex));
+    put(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, () => SEARCH_JS);
+    put(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, () => file('search-index.js', generateSearchIndex));
   }
   // The video player, while a component of the site shows a video; also written ahead of what imports it. Like
   // search, whether the site shows one decides only which files exist, and the files themselves read nothing else.
   if (usesVideo(state)) {
-    files.set(`${RUNTIME_DIR}/${VIDEO_HELPER_FILE}`, VIDEO_JS);
-    files.set(`${RUNTIME_DIR}/${VIDEO_PLAYER_FILE}`, videoPlayerSvelte(!!opts.instrument));
+    put(`${RUNTIME_DIR}/${VIDEO_HELPER_FILE}`, () => VIDEO_JS);
+    put(`${RUNTIME_DIR}/${VIDEO_PLAYER_FILE}`, () => videoPlayerSvelte(!!opts.instrument));
   }
   // The entrance observer, while a page of the site can show an entrance (see generator/appear.ts); the layout that
   // starts it is written after it. Like search, asked of the plain state: it decides only whether the file exists.
-  if (usesAppear(state)) files.set(`${RUNTIME_DIR}/${APPEAR_FILE}`, appearJs(!!opts.instrument));
+  if (usesAppear(state)) put(`${RUNTIME_DIR}/${APPEAR_FILE}`, () => appearJs(!!opts.instrument));
   // The visitor's Light/Dark switch, while the site's palettes have one; the layout that starts it is written after it.
-  if (usesThemeToggle(state)) files.set(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`, themeToggleJs(themeStorageKey(state), !!opts.instrument));
-  files.set(`${RUNTIME_DIR}/not-found.js`, NOT_FOUND_JS);
-  files.set(`${STYLES_DIR}/tokens.css`, file('tokens.css', generateTokensCss));
-  const fontNotice = file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '');
-  if (fontNotice) files.set(`${FONTS_DIR}/NOTICE.txt`, fontNotice);
-  files.set(`${STYLES_DIR}/theme.css`, theme.baseCss);
-  files.set(`${STYLES_DIR}/components.css`, file('components.css', generateComponentsCss));
-  files.set(`${STYLES_DIR}/site.css`, file('site.css', generateSiteCss));
+  if (usesThemeToggle(state)) put(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`, () => themeToggleJs(themeStorageKey(state), !!opts.instrument));
+  put(`${RUNTIME_DIR}/not-found.js`, () => NOT_FOUND_JS);
+  put(`${STYLES_DIR}/tokens.css`, () => file('tokens.css', generateTokensCss));
+  put(`${FONTS_DIR}/NOTICE.txt`, () => file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '') || null);
+  put(`${STYLES_DIR}/theme.css`, () => theme.baseCss);
+  put(`${STYLES_DIR}/components.css`, () => file('components.css', generateComponentsCss));
+  put(`${STYLES_DIR}/site.css`, () => file('site.css', generateSiteCss));
   for (const def of sortedDefs(state)) {
-    if (def.kind === 'managed' && def.tree) files.set(defFile(def), file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
+    if (def.kind === 'managed' && def.tree) put(defFile(def), () => file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
     // A theme component installed before links had relationships renders them too (see withAuthoredRel).
-    else if (def.kind === 'code' && def.source) files.set(defFile(def), def.owner === 'theme' ? withAuthoredRel(def.source) : def.source);
+    else if (def.kind === 'code' && def.source) put(defFile(def), () => (def.owner === 'theme' ? withAuthoredRel(def.source!) : def.source!));
   }
   // While the site declares WebMCP tools, each contact form's code that can declare one has a copy that does, which the
   // visitor's website places (see generator/webmcp.ts). Never in the editor's preview, and never with WebMCP off.
   if (!opts.instrument && webMcpOn(state.site)) {
-    for (const def of sortedDefs(state)) if (declaresFormTool(def)) files.set(webMcpFormFile(def), adaptedForm(def.source!)!);
+    for (const def of sortedDefs(state)) if (declaresFormTool(def)) put(webMcpFormFile(def), () => adaptedForm(def.source!)!);
     // The search tool, beside the search code. Whether the layout starts it depends on what published pages show, which
     // leaving drafts out of an export can change; whether the file is there depends only on the components, as the
     // search code's own does, so the layout never names a file a draft-free copy of the site lacks.
-    if (usesSiteSearch(state)) files.set(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`, webMcpSearchJs());
+    if (usesSiteSearch(state)) put(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`, () => webMcpSearchJs());
+  }
+  return files;
+}
+
+/** Every file of the library (see libraryFiles), made in order. */
+function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, file: FileMaker): void {
+  for (const [path, make] of libraryFiles(state, opts, file)) {
+    const content = make();
+    if (content !== null) files.set(path, content);
   }
 }
 

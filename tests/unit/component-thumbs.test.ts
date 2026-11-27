@@ -14,7 +14,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { installComponent } from '@engine/install';
 import { getTheme, listThemes, registerPacks } from '@catalogue/index';
-import { ComponentThumbs, readThumb, thumbCrop, thumbKey, writeThumb, type CaptureResult, type ThumbHost } from '../../src/main/runtime/component-thumbs';
+import { brandFingerprint, brandParts, colourProjection, ComponentThumbs, readThumb, thumbCrop, thumbKey, writeThumb, writeThumbReads, type CaptureResult, type ThumbHost } from '../../src/main/runtime/component-thumbs';
 
 const apply = (state: ProjectState, operations: unknown[]) => applyOperations(state, operations as Parameters<typeof applyOperations>[1]);
 
@@ -210,6 +210,10 @@ function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<Capt
     prepared: [] as string[],
     released: [] as string[],
     persisted: [] as string[],
+    hinted: [] as string[],
+    ownStyles: true,
+    showsStyles: true,
+    scheme: 'light' as 'light' | 'dark',
     captured: 0,
     shots: opts.shots ?? [],
     onCapture: null as (() => void) | null
@@ -234,7 +238,14 @@ function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<Capt
     persist: async (root, key, png) => {
       host.persisted.push(key);
       await writeThumb(root, key, png);
-    }
+    },
+    persistReads: async (root, base, reads) => {
+      host.hinted.push(base);
+      await writeThumbReads(root, base, reads);
+    },
+    ownStyles: () => host.ownStyles,
+    showsStyles: async () => host.showsStyles,
+    scheme: () => host.scheme
   };
   return { host, thumbs: new ComponentThumbs(api) };
 }
@@ -425,5 +436,204 @@ describe('the thumbnail queue', () => {
     const { host, thumbs } = fakeHost(state);
     expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready' });
     expect(host.persisted).toEqual([]);
+  });
+});
+
+describe('pictures kept by the colours their page reads', () => {
+  /** What the card's page is found to read: its page's ground and text, never the brand. */
+  const READS = ['--so-color-background', '--so-color-text'];
+  const shot = (n: number, reads: string[] | null = READS): CaptureResult => ({ ok: true, png: PNG(n), reads });
+  const recolour = (state: ProjectState, tokenId: string, value: string) => apply(state, [{ type: 'token.set', tokenId, value }]).state;
+
+  it('finds the picture again after a change of a colour its page does not read, and draws it again for one it reads', async () => {
+    const root = tempDir();
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state, { root, shots: [shot(1), shot(2)] });
+    const first = (await thumbs.get(card, 'open#1')) as { key: string; url: string };
+    expect(first.url).toBe(`data:image/png;base64,${PNG(1).toString('base64')}`);
+    // Kept under a key of its own: not the version's, which holds every colour.
+    expect(first.key).not.toBe(thumbKey(state, card));
+    expect(existsSync(join(root, '.siteorigin/cache/thumbs', `${first.key}.png`))).toBe(true);
+    expect(host.hinted).toHaveLength(1);
+    // The brand changes: the page never read it, so the same picture, without a photograph or its bytes again.
+    host.state = recolour(state, 'color.brand', '#123456');
+    expect(thumbKey(host.state, card)).not.toBe(thumbKey(state, card));
+    expect(await thumbs.get(card, 'open#1', first.key)).toEqual({ state: 'ready', key: first.key });
+    expect(await thumbs.get(card, 'open#1')).toEqual(first);
+    expect(host.captured).toBe(1);
+    // The text colour, which it reads: drawn again.
+    host.state = recolour(host.state, 'color.text', '#202020');
+    const second = (await thumbs.get(card, 'open#1')) as { key: string; url: string };
+    expect(host.captured).toBe(2);
+    expect(second.key).not.toBe(first.key);
+    expect(second.url).toBe(`data:image/png;base64,${PNG(2).toString('base64')}`);
+  });
+
+  it('finds it in a later opening from what the page read, kept beside the pictures', async () => {
+    const root = tempDir();
+    const { state, card } = withCard();
+    const before = fakeHost(state, { root, shots: [shot(1)] });
+    const first = (await before.thumbs.get(card, 'open#1')) as { key: string };
+    // Another launch, after a brand change: nothing in memory.
+    const { host, thumbs } = fakeHost(recolour(state, 'color.brand', '#123456'), { root });
+    host.opening = 'open#2';
+    expect(await thumbs.get(card, 'open#2')).toMatchObject({ state: 'ready', key: first.key, url: `data:image/png;base64,${PNG(1).toString('base64')}` });
+    expect(host.captured).toBe(0);
+  });
+
+  it('finds nothing with what pages read that is out of date or made up', async () => {
+    const root = tempDir();
+    const { state, card } = withCard();
+    const before = fakeHost(state, { root, shots: [shot(1)] });
+    await before.thumbs.get(card, 'open#1');
+    // What the page read, rewritten to claim it reads nothing at all (or every file's hint swapped for nonsense).
+    const dir = join(root, '.siteorigin/cache/thumbs');
+    const hint = readdirSync(dir).find((n) => n.endsWith('.json'))!;
+    for (const lie of [JSON.stringify({ reads: [] }), JSON.stringify({ reads: ['--so-color-text'] }), 'not json', JSON.stringify({ reads: ['b', 'a'] })]) {
+      writeFileSync(join(dir, hint), lie);
+      const { host, thumbs } = fakeHost(recolour(state, 'color.brand', '#123456'), { root, shots: [shot(9)] });
+      host.opening = 'open#2';
+      expect(await thumbs.get(card, 'open#2')).toMatchObject({ state: 'ready', url: `data:image/png;base64,${PNG(9).toString('base64')}` });
+      expect(host.captured).toBe(1);
+    }
+  });
+
+  it('keeps by its version a picture whose page could not tell, a code component’s, or one shown with styles edited outside the app', async () => {
+    const { state, card } = withCard();
+    const unknown = fakeHost(state, { shots: [shot(1, null)] });
+    expect(await unknown.thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(state, card) });
+    const edited = fakeHost(state, { shots: [shot(1)] });
+    edited.host.ownStyles = false;
+    expect(await edited.thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(state, card) });
+    // While they are edited, any colour change draws it again.
+    edited.host.shots.push(shot(2));
+    edited.host.state = recolour(state, 'color.brand', '#123456');
+    expect(await edited.thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(edited.host.state, card) });
+    expect(edited.host.captured).toBe(2);
+    // Restored: kept by what it reads again, and the brand no longer draws it again.
+    edited.host.ownStyles = true;
+    edited.host.shots.push(shot(3));
+    edited.host.state = recolour(state, 'color.brand', '#234567');
+    const kept = (await edited.thumbs.get(card, 'open#1')) as { key: string };
+    expect(kept.key).not.toBe(thumbKey(edited.host.state, card));
+    expect(edited.host.captured).toBe(3);
+    edited.host.state = recolour(state, 'color.brand', '#345678');
+    expect(await edited.thumbs.get(card, 'open#1')).toMatchObject({ key: kept.key });
+    expect(edited.host.captured).toBe(3);
+    // A code component's script can read any colour.
+    const made = apply(state, [{ type: 'component.createCode', name: 'Note', source: '<p>Note</p>\n' }]);
+    const code = made.results[0].definitionId as string;
+    const scripted = fakeHost(made.state, { shots: [shot(1)] });
+    expect(await scripted.thumbs.get(code, 'open#1')).toMatchObject({ key: thumbKey(made.state, code) });
+    scripted.host.state = recolour(made.state, 'color.brand', '#123456');
+    expect(await scripted.thumbs.get(code, 'open#1')).toMatchObject({ key: thumbKey(scripted.host.state, code) });
+    expect(scripted.host.captured).toBe(2);
+  });
+
+  it('keeps by its version a picture shown with stylesheets on disk that are not the generated ones', async () => {
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state, { shots: [shot(1), shot(2)] });
+    host.showsStyles = false;
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(state, card) });
+    host.state = recolour(state, 'color.brand', '#123456');
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(host.state, card) });
+    expect(host.captured).toBe(2);
+    expect(host.hinted).toEqual([]);
+  });
+
+  it('keeps a picture by the palette the window drew it in', async () => {
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state, { shots: [shot(1), shot(2)] });
+    const light = (await thumbs.get(card, 'open#1')) as { key: string };
+    host.scheme = 'dark';
+    const dark = (await thumbs.get(card, 'open#1')) as { key: string; url: string };
+    expect(host.captured).toBe(2);
+    expect(dark.key).not.toBe(light.key);
+    expect(dark.url).toBe(`data:image/png;base64,${PNG(2).toString('base64')}`);
+    host.scheme = 'light';
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ key: light.key, url: `data:image/png;base64,${PNG(1).toString('base64')}` });
+    // The palette changing while it is photographed: kept by its version alone, never by the colours it reads.
+    host.state = recolour(state, 'color.text', '#202020');
+    host.shots.push(shot(3));
+    host.onCapture = () => (host.scheme = 'dark');
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(host.state, card) });
+  });
+
+  it('finds a picture kept by its version when what its page read before is out of date', async () => {
+    const root = tempDir();
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state, { root, shots: [shot(1), shot(2, null)] });
+    await thumbs.get(card, 'open#1');
+    // A colour it reads changes, and this time its page cannot tell what it reads: kept by its version.
+    host.state = recolour(state, 'color.text', '#202020');
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(host.state, card), url: `data:image/png;base64,${PNG(2).toString('base64')}` });
+    // Asked again, and in a later opening: found by its version, never photographed again.
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(host.state, card) });
+    const later = fakeHost(host.state, { root });
+    later.host.opening = 'open#2';
+    expect(await later.thumbs.get(card, 'open#2')).toMatchObject({ key: thumbKey(host.state, card), url: `data:image/png;base64,${PNG(2).toString('base64')}` });
+    expect(host.captured + later.host.captured).toBe(2);
+  });
+
+  it('keeps nothing of a hint it was still reading when the project closed', async () => {
+    const root = tempDir();
+    const { state, card } = withCard();
+    await fakeHost(state, { root, shots: [shot(1)] }).thumbs.get(card, 'open#1');
+    const { thumbs } = fakeHost(recolour(state, 'color.brand', '#123456'), { root });
+    const asked = thumbs.get(card, 'open#1');
+    thumbs.forget();
+    expect(await asked).toEqual({ state: 'unavailable' });
+    const held = thumbs as unknown as { hints: Map<string, unknown>; keys: unknown };
+    expect([held.hints.size, held.keys]).toEqual([0, null]);
+  });
+
+  it('keeps by its version a design that places a code component', async () => {
+    const { state, card } = withCard();
+    const made = apply(state, [{ type: 'component.createCode', name: 'Note', source: '<p>Note</p>\n' }]);
+    const code = made.results[0].definitionId as string;
+    const root = made.state.components[card].tree!.rootIds[0];
+    const placed = apply(made.state, [{ type: 'node.insert', owner: { kind: 'component', id: card }, parentId: root, definitionId: code }]).state;
+    const { thumbs } = fakeHost(placed, { shots: [shot(1)] });
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ key: thumbKey(placed, card) });
+  });
+
+  it('answers every request that shared a photograph with the key the picture is kept under', async () => {
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state, { shots: [shot(1)] });
+    const [a, b] = (await Promise.all([thumbs.get(card, 'open#1'), thumbs.get(card, 'open#1', thumbKey(state, card))])) as Array<{ key: string; url?: string }>;
+    expect(host.captured).toBe(1);
+    expect(a.key).toBe(b.key);
+    expect(a.key).not.toBe(thumbKey(state, card));
+    // The second asked with the version's key, not the picture's: it gets the picture.
+    expect(b.url).toBe(a.url);
+  });
+
+  it('keeps nothing of a photograph taken while a colour changed, even one its page does not read', async () => {
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state, { shots: [shot(1), shot(2)] });
+    host.onCapture = () => (host.state = recolour(host.state, 'color.brand', '#123456'));
+    expect(await thumbs.get(card, 'open#1')).toEqual({ state: 'unavailable' });
+    host.onCapture = null;
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready', url: `data:image/png;base64,${PNG(2).toString('base64')}` });
+    // Forgotten with the project.
+    thumbs.forget();
+    expect((thumbs as unknown as { hints: Map<string, unknown> }).hints.size).toBe(0);
+  });
+
+  it('is told apart only by the colours a page reads, and the rest of the brand stays whole', () => {
+    const { state, card } = withCard();
+    const parts = brandParts(state);
+    expect(parts.colours.has('--so-color-brand')).toBe(true);
+    const projected = colourProjection(parts.tokens, parts.colours, new Set(READS));
+    const changed = brandParts(recolour(state, 'color.brand', '#123456'));
+    expect(colourProjection(changed.tokens, changed.colours, new Set(READS))).toBe(projected);
+    expect(changed.tokens).not.toBe(parts.tokens);
+    // A spacing token is not a colour: it stays in, whatever the page reads.
+    const spaced = brandParts(apply(state, [{ type: 'token.set', tokenId: 'space.lg', value: '3.25rem' }]).state);
+    expect(colourProjection(spaced.tokens, spaced.colours, new Set(READS))).not.toBe(projected);
+    expect(brandFingerprint(parts, READS)).toBe(brandFingerprint(changed, READS));
+    expect(brandFingerprint(parts, READS)).not.toBe(brandFingerprint(parts, [...READS, '--so-color-brand'].sort()));
+    expect(brandFingerprint(parts)).not.toBe(brandFingerprint(changed));
+    expect(thumbKey(state, card, brandFingerprint(parts, READS))).toBe(thumbKey(state, card, brandFingerprint(changed, READS)));
   });
 });

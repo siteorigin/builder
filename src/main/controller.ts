@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, shell, type OpenDialogOptions, type WebContents } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, shell, type OpenDialogOptions, type WebContents } from 'electron';
 import { markdownMirrorRoute } from '@shared/llms';
+import { PREVIEW_PROJECT_STYLES } from '@shared/component-preview';
 import { firstStepsStart } from '@shared/first-steps';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -46,7 +47,7 @@ import { isImageBlock } from '@shared/richtext';
 import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
-import { atomicWrite, readIfExists, sha, toJson } from './project/fsutil';
+import { atomicWrite, readIfExists, safeJoin, sha, toJson } from './project/fsutil';
 import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/published';
 import { collectionRouteOwner } from '@shared/collections';
 import { fontCoverage } from './project/media';
@@ -58,7 +59,7 @@ import { DevServer, buildProject, dependenciesReady, prepareDependencies, stageD
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { type BuildTools, createPreviewStage, KeptTools, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
-import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/component-thumbs';
+import { ComponentThumbs, writeThumb, writeThumbReads, type CaptureResult } from './runtime/component-thumbs';
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
@@ -420,7 +421,31 @@ export class Controller {
       const s = this.session;
       if (!s || s.readOnly || s.dir !== root) return;
       await s.whileOwner(() => writeThumb(root, key, png));
-    }
+    },
+    persistReads: async (root, base, reads) => {
+      const s = this.session;
+      if (!s || s.readOnly || s.dir !== root) return;
+      await s.whileOwner(() => writeThumbReads(root, base, reads));
+    },
+    // A token or base stylesheet edited outside the app is what the preview shows, and no key says what is in it; nor
+    // does one for the private copy a project this app may not write to is previewed from.
+    ownStyles: () => {
+      const s = this.session;
+      return !!s && !s.readOnly && !this.stage && !s.conflicts.some((c) => (PREVIEW_PROJECT_STYLES as readonly string[]).includes(c.path));
+    },
+    showsStyles: async (tokens, baseCss) => {
+      const s = this.session;
+      if (!s || s.readOnly || this.stage) return false;
+      // The preview server shows the project's file, or the editor's copy of it in the dev cache: both must be these.
+      for (const [rel, want] of [[PREVIEW_PROJECT_STYLES[0], tokens], [PREVIEW_PROJECT_STYLES[1], baseCss]] as const) {
+        for (const root of [s.dir, join(s.dir, '.siteorigin', 'cache', 'dev')]) {
+          const got = await fs.readFile(safeJoin(root, rel), 'utf8').catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' && root !== s.dir ? undefined : null));
+          if (got !== undefined && got !== want) return false;
+        }
+      }
+      return true;
+    },
+    scheme: () => (nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
   });
   /**
    * The live session the open project is hosting, if any (#762). It belongs to the opening it was started in and ends
@@ -1861,7 +1886,16 @@ export class Controller {
     if (!this.stage && session.readOnly) return { ok: false, message: 'The preview is not running.' };
     const spec = previewSpec(request);
     if (!spec) return { ok: false, message: 'That is not a component preview request.' };
+    // What one preview costs the main process to make, and what it is made of (scripts/perf: the thumbs scenario).
+    const endGenerate = perf.span('componentPreview.generate');
     const made = generateComponentPreview(session.state, spec);
+    endGenerate({ files: 'error' in made ? 0 : made.files.size });
+    if (perf.on && !('error' in made)) {
+      let bytes = 0;
+      for (const content of made.files.values()) bytes += Buffer.byteLength(content);
+      perf.count('componentPreview.files', made.files.size);
+      perf.count('componentPreview.bytes', bytes);
+    }
     if ('error' in made) return { ok: false, message: made.error };
     const root = this.stage ?? session.dir;
     // The lock is read again before writing into the project: a takeover the heartbeat has not seen yet gets nothing.
