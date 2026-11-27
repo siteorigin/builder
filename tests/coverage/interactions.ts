@@ -1534,7 +1534,7 @@ export const INTERACTIONS: Interaction[] = [
     proof: [
       { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'a Stack and a Button inserted on the canvas go into the code component’s slot' },
       { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'a background set in the Inspector reaches the marked element' },
-      { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'the website’s build carries no marker' },
+      { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'neither export carries a marker; the editable project keeps them' },
       { test: 'tests/unit/code-parts.test.ts', kind: 'unit' }
     ]
   },
