@@ -17,6 +17,7 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import { DRAWN_ICON_FILES } from '@shared/site-icons';
 import { siteIconSet } from '@generator/site-icons';
 import type { IconSpec, IconsResult } from './media-client';
+import { perf } from '../perf';
 
 /**
  * Draws square PNG icons of a picture, one for each spec, in order. `untrusted` says the picture is a file of the
@@ -126,6 +127,8 @@ async function readFavicon(dir: string, a: AssetRecord): Promise<{ data: Buffer;
       const there = await fs.lstat(path);
       if (!(await ownFolder()) || there.dev !== st.dev || there.ino !== st.ino) return null;
       bytes = await handle.readFile();
+      perf.count('favicon.read');
+      perf.count('favicon.readBytes', bytes.length);
     } finally {
       await handle.close();
     }
@@ -199,6 +202,7 @@ export class SiteIconMaker {
     const picture = favicon ? await readFavicon(dir, favicon) : null;
     const data = picture?.data ?? monogram;
     const mime = picture?.mime ?? 'image/svg+xml';
+    if (picture) perf.count('favicon.hashedBytes', data.length);
     const key = sha(JSON.stringify({ mime, data: sha(data), monogram: sha(monogram), icons: set.icons }));
     return { key, data, mime, untrusted: !!picture, monogram: picture ? monogram : null, icons: set.icons };
   }

@@ -131,6 +131,18 @@ scenario starts (untimed), 100 edits of the hero's Heading are made through the 
 Checks: History held 100 applied steps before the edit, and after it still holds 100, the edit's step is the last
 applied one and the oldest is gone; then the same as `edit`. The same metrics as `edit`, named `editFullHistory.*`.
 
+**`editBranded`** (after `open`, and after every other scenario that edits the fixture's own copy): as `edit`, on a site
+with a favicon of its own, in the save right after one that copied a theme font into the project. Before the scenario
+starts (untimed), a 256-pixel PNG is written into `static/assets/`, added to the library and chosen as the favicon in one
+change, until the home-screen icon drawn from it is on disk; then, once the picture's file is 3.5 s old (as a person's
+favicon is, `ProjectSession.settleMs`), the heading font (`font.display`) is set to the theme's Lora, which the Business
+starter does not use, so that save copies Lora's files in. Checks: all four icons (the three PNGs and `favicon.ico`)
+were drawn from the favicon, the canvas showed the font change, and every Lora face the website's styles name was copied
+in as the theme pack's own file; after the edit the site still has its favicon and none of those faces or icons
+changed; then the same as `edit`. The same metrics as `edit`, named `editBranded.*`, and the favicon's reads and the
+bytes of it hashed by the edit's publication (`publishFaviconReads`, `publishFaviconBytesHashed`), only from a build
+that counted the favicon's reads before the edit (one that never counts them fails rather than reporting none).
+
 **`batch`** (after `open`): in the AI panel, in Edit mode limited to the home page (This page), ask for a change that the
 scripted model (no live provider) makes as one `apply_operations` call of 30 operations, the most one call may carry:
 `instance.setProp` on the home page's text properties in turn (each placement's string properties; one set twice keeps
@@ -663,7 +675,9 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 - `c` on a mark: every counter of its process, cumulative. `dc` on a span: what each counter gained while it ran.
 
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
-(project, generated and theme pack files) and `files.hashedBytes` (the bytes those hashes ran over), `files.stats` (a
+(project, generated and theme pack files) and `files.hashedBytes` (the bytes those hashes ran over), `favicon.read`,
+`favicon.readBytes` and `favicon.hashedBytes` (the site's favicon picture read and hashed to make its icons,
+`src/main/project/site-icons.ts`; not in `files.read`), `files.stats` (a
 project file looked at by its path without being read: a stat, an lstat, or a handle opened for its stat alone;
 `src/main/project/stable-read.ts` and the session's publication), `fs.syncCalls` (synchronous filesystem calls on the
 main process's event loop by path containment, `safeJoin`, the server-hook check and the publication), `docs.read` (canonical document files read from the project folder, also
