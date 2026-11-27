@@ -3,10 +3,14 @@
  * renders type="button" (a button without a type is a submit button).
  */
 import { beforeAll, describe, expect, it } from 'vitest';
-import { createElement } from 'react';
+import { createElement, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-type Ui = typeof import('../../src/renderer/src/components/ui');
+// The module is .tsx, which the tests' tsconfig (no --jsx) can't type check, so it is imported by a specifier tsc doesn't
+// resolve and typed with just the props these tests pass.
+const UI_MODULE = '../../src/renderer/src/components/ui';
+type SwitchProps = { checked: boolean; onChange: (checked: boolean) => void; label: string; hint?: string };
+type Ui = { Switch: ComponentType<SwitchProps>; SwitchRow: ComponentType<SwitchProps> };
 let ui: Ui;
 
 beforeAll(async () => {
@@ -17,7 +21,7 @@ beforeAll(async () => {
     matchMedia: () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }),
     builder: { platform: 'test' }
   };
-  ui = await import('../../src/renderer/src/components/ui');
+  ui = (await import(/* @vite-ignore */ UI_MODULE)) as Ui;
 });
 
 describe('Switch', () => {
