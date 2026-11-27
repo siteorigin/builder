@@ -1273,6 +1273,8 @@ function closeOptions() {
  */
 function callHost(method, args) {
   if (phase !== 'admitted' || reconnecting || socket?.readyState !== WebSocket.OPEN) return Promise.resolve({ ok: false, message: 'The connection to the live session is down. Try again once it is back.' });
+  // Nothing is sent while the host is away: the relay would only refuse it, and nobody need wonder whether it landed.
+  if (!hostConnected) return Promise.resolve({ ok: false, message: 'The host is reconnecting. Try again in a moment.' });
   const requestId = `v${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}-${++callSeq}`;
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
