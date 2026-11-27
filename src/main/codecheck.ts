@@ -561,8 +561,9 @@ function markerName(attr: Node): string | null {
 /**
  * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
  * written-out data-so-part or gives its class through so_o, and each slot_<name> its script takes from $props().
- * `shown` is those slots the markup renders or hands on, so content placed there can reach the page: a slot only
- * taken, or only tested ({#if slot_content}), shows nothing. Comments, strings and a script's own logic declare
+ * `shown` is the slot props (slot_content, as the generator names each slot's snippet) it takes and its markup renders
+ * or hands on, so content placed there can reach the page: a slot only taken, or only tested ({#if slot_content}),
+ * shows nothing. Comments, strings and a script's own logic declare
  * nothing. Null when the code cannot be parsed.
  */
 export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[] } | null> {
@@ -586,10 +587,8 @@ export async function codeContractNames(source: string): Promise<{ parts: string
   const slots = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
   const rendered = new Set(snippetRenders(ast).map((r) => r.name));
   const handed = handedNames(ast);
-  const shown = slots.filter((slot) => {
-    const local = locals.get(`slot_${slot}`)!.local;
-    return rendered.has(local) || handed.has(local);
-  });
+  // Any slot prop counts here, not only the camelCase names saving declares: a theme's slot may be named related_links.
+  const shown = [...locals].flatMap(([prop, { local }]) => (prop.startsWith('slot_') && (rendered.has(local) || handed.has(local)) ? [prop] : []));
   return { parts: [...parts], slots, shown };
 }
 

@@ -63,20 +63,17 @@ function filledSplit(): { s: ProjectState; id: string } {
 }
 
 /** The code check's reading of each source, as the session gives it to the switch. */
-async function readings(...sources: string[]) {
-  const names = new Map<string, Awaited<ReturnType<typeof codeContractNames>>>();
-  for (const src of sources) names.set(src, await codeContractNames(src));
-  return { codeNames: (src: string) => names.get(src) };
-}
-
 describe('codeContractNames', () => {
   it('counts a slot as shown only where the code renders it or hands it on', async () => {
-    expect((await codeContractNames(ALL))?.shown.sort()).toEqual(['primary', 'secondary']);
-    expect((await codeContractNames(SOME))?.shown).toEqual(['primary']);
+    expect((await codeContractNames(ALL))?.shown.sort()).toEqual(['slot_primary', 'slot_secondary']);
+    expect((await codeContractNames(SOME))?.shown).toEqual(['slot_primary']);
     expect((await codeContractNames(NONE))?.shown).toEqual([]);
     // Taken under another name and handed to a snippet the code renders, it still shows.
     const handed = `<script>\n  let { slot_primary: body = undefined } = $props();\n</script>\n\n{#snippet frame(inner)}<div>{@render inner?.()}</div>{/snippet}\n{@render frame(body)}\n`;
-    expect((await codeContractNames(handed))?.shown).toEqual(['primary']);
+    expect((await codeContractNames(handed))?.shown).toEqual(['slot_primary']);
+    // A theme's slot may be named outside the camelCase that saving declares: its snippet prop still counts.
+    const snake = `<script>\n  let { slot_related_links = undefined } = $props();\n</script>\n\n<aside>{@render slot_related_links?.()}</aside>\n`;
+    expect((await codeContractNames(snake))?.shown).toEqual(['slot_related_links']);
   });
 });
 
@@ -129,9 +126,12 @@ describe('a theme switch to a code implementation with filled slots (#1077)', ()
 
   it('holds back content when the new code cannot be read', async () => {
     const { s } = filledSplit();
-    const broken = '<div>{#if}</div>';
-    alt.components[at] = codeSplit(shipped, broken);
-    expect(() => applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }], { codeNames: () => null })).toThrow(/code could not be read, so it may not show the content in its "primary" slot/);
+    alt.components[at] = codeSplit(shipped, '<div>{#if}</div>');
+    const ps = await session(s);
+    const r = await ps.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation-alt' }] }, { label: 'switch' });
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/code could not be read, so it may not show the content in its "primary" slot/);
+    expect(ps.state.site.themeId).toBe('foundation');
   });
 
   it('leaves code unjudged without the code check’s reading (an edit worked out before the session checks it)', () => {
@@ -140,23 +140,29 @@ describe('a theme switch to a code implementation with filled slots (#1077)', ()
     expect(applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state.site.themeId).toBe('foundation-alt');
   });
 
-  it('does not count content the installed code already leaves out', async () => {
+  /** The project with its installed Split layout as code that shows only Primary. */
+  const installedSome = () => {
     const { s, id } = filledSplit();
     const installed = s.components[(s.pages[s.site.homePageId].nodes[id] as InstanceNode).definitionId];
     s.components[installed.id] = codeSplit(installed, SOME);
-    alt.components[at] = codeSplit(shipped, SOME);
-    const ctx = await readings(SOME);
-    expect(applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }], ctx).state.site.themeId).toBe('foundation-alt');
-    // Primary, which the installed code shows, still counts.
+    return s;
+  };
+
+  it('does not count content the installed code already leaves out', async () => {
+    // The new code differs from the installed one but shows Primary too: Secondary was hidden already.
+    alt.components[at] = codeSplit(shipped, SOME.replace('<hr />', '<hr class="rule" />'));
+    const ps = await session(installedSome());
+    const r = await ps.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation-alt' }] }, { label: 'switch' });
+    expect(r.error?.message).toBeUndefined();
+    expect(ps.state.site.themeId).toBe('foundation-alt');
+  });
+
+  it('still counts the content the installed code shows', async () => {
     alt.components[at] = codeSplit(shipped, NONE);
-    const both = await readings(SOME, NONE);
-    let message = '';
-    try {
-      applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }], both);
-    } catch (e) {
-      message = (e as Error).message;
-    }
-    expect(message).toMatch(/would no longer show the content in its "primary" slot/);
-    expect(message).not.toMatch(/"secondary" slot/);
+    const ps = await session(installedSome());
+    const r = await ps.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation-alt' }] }, { label: 'switch' });
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/would no longer show the content in its "primary" slot/);
+    expect(r.error?.message).not.toMatch(/"secondary" slot/);
   });
 });

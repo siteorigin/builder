@@ -3051,9 +3051,10 @@ export class ProjectSession extends EventEmitter {
       const names = new Map<string, { parts: string[]; slots: string[]; shown: string[] } | null>();
       for (const op of ops) if ((op.type === 'component.createCode' || op.type === 'component.updateSource') && typeof op.source === 'string' && !names.has(op.source)) names.set(op.source, await codeContractNames(op.source));
       // A theme switch asks which slots each code component of both themes shows, so content a placement holds in a
-      // slot the new code never renders is reported before it is lost.
+      // slot the new code never renders is reported before it is lost. The current theme's own versions are read too:
+      // an earlier operation of the batch may install or refresh one.
       if (ops.some((o) => o.type === 'theme.apply')) {
-        const targets = new Set(ops.flatMap((o) => (o.type === 'theme.apply' ? [o.themeId] : [])));
+        const targets = new Set([this.state.site.themeId, ...ops.flatMap((o) => (o.type === 'theme.apply' ? [o.themeId] : []))]);
         const switching = [...Object.values(this.state.components).filter((d) => d.owner === 'theme'), ...listThemes().filter((t) => targets.has(t.id)).flatMap((t) => t.components)];
         for (const d of switching) if (d.kind === 'code' && Object.keys(d.slots ?? {}).length && typeof d.source === 'string' && !names.has(d.source)) names.set(d.source, await codeContractNames(d.source));
       }

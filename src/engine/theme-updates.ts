@@ -23,6 +23,7 @@ import { slotFill } from './slots';
 import { codeNeeds, directDependencies } from './definitions';
 import { normalizeProp } from './values';
 import { cardKey, cardLinkProblems, type CardProblem } from '@generator/card-links';
+import { slotIdent } from '@generator/index';
 import { liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 
 function own<T>(rec: Record<string, T>, key: string): T | undefined {
@@ -197,7 +198,7 @@ function slotsShownBy(def: ComponentDefinition, node: InstanceNode, codeNames: A
   const names = typeof def.source === 'string' ? codeNames(def.source) : null;
   if (!names) return null;
   const shown = new Set(names.shown);
-  return new Set(declared.filter((slot) => shown.has(slot)));
+  return new Set(declared.filter((slot) => shown.has(slotIdent(slot))));
 }
 
 /**

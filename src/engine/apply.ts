@@ -168,8 +168,8 @@ export interface ApplyContext {
    * The parts and slots each code source of the batch shows, as the code check reads them from its syntax tree (the
    * session reads them before it applies the batch): createCode and updateSource declare them at once, so later
    * operations of the same batch can fill a slot or style a part the code just gained. Without it, none are declared.
-   * A theme switch reads it for the code components of both themes too (`shown`: the slots the code renders or hands
-   * on), to report content a placement holds in a slot the new code would not show; without it, code is not judged.
+   * A theme switch reads it for the code components of both themes too (`shown`: the slot props the code renders or
+   * hands on), to report content a placement holds in a slot the new code would not show; without it, code is not judged.
    */
   codeNames?: (source: string) => { parts: readonly string[]; slots: readonly string[]; shown: readonly string[] } | null | undefined;
   /**
