@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Check, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, Grid3x3, ImageDown, ImageIcon, ImageOff, ImagePlus, Info, MapPin, Newspaper, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Type, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
@@ -56,6 +56,105 @@ function damage(a: AssetRecord, gone: MissingAssetFiles | undefined): 'all' | 'o
   if (!gone.original) return 'copies';
   return (a.variants?.length ?? 0) <= gone.variants.length ? 'all' : 'original';
 }
+
+/** What a tile shows of its image: every field of the record but those only search reads, by value. */
+function sameTileRecord(a: AssetRecord, b: AssetRecord): boolean {
+  if (a === b) return true;
+  if (a.id !== b.id || a.name !== b.name || a.file !== b.file || a.mime !== b.mime || a.bytes !== b.bytes || a.width !== b.width || a.height !== b.height) return false;
+  const x = a.variants ?? [];
+  const y = b.variants ?? [];
+  return x.length === y.length && x.every((v, i) => v.file === y[i].file && v.width === y[i].width);
+}
+
+interface TileProps {
+  a: AssetRecord;
+  /** Why it can't be picked here, or null. */
+  reason: string | null;
+  hurt: ReturnType<typeof damage>;
+  /** Smaller copies missing, and the picture's key, which starts it again when its files come back or go. */
+  copies: number;
+  thumbKey: string;
+  gone: boolean;
+  /** What tells it apart from images of the same name. */
+  apart: string | undefined;
+  /** Chosen so far (true or false) where picking is not yet acting on it; undefined elsewhere. */
+  picked: boolean | undefined;
+  tabbable: boolean;
+  compact: boolean;
+  devUrl: string | null;
+  /** In the library, where a damaged tile says where its repair is. */
+  drag: boolean;
+}
+
+/**
+ * One image of the grid. It draws only from its props: values, and a record the grid hands on as the same object while
+ * what a tile shows of it is unchanged (every snapshot brings new objects), so a snapshot that leaves the image as it
+ * was leaves its tile alone. Clicks, focus and drags are handled by the grid around it, from the render that is current.
+ */
+const AssetTile = memo(function AssetTile({ a, reason, hurt, copies, thumbKey, gone, apart, picked, tabbable, compact, devUrl, drag }: TileProps) {
+  const big = a.bytes > LARGE && !gone;
+  // Two imports can share a name ("hero"): their size, the day they were added or their uses tell them apart.
+  const name = apart ? `${nameOf(a)} (${apart})` : nameOf(a);
+  // The chip's words, and the shorter ones a narrow tile (compact, or the sidebar at its narrowest) shows instead: the
+  // alert glyph already says something is wrong, so the short form only names what. Never cut to an ellipsis.
+  const chip = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'No original' : copies === 1 ? 'Copy missing' : 'Copies missing';
+  const chipShort = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'Original' : copies === 1 ? 'Copy' : 'Copies';
+  const missingLabel = hurt === 'all' ? 'file missing' : hurt === 'original' ? 'original file missing, smaller copies still show' : copies === 1 ? 'a smaller copy missing' : 'smaller copies missing';
+  // In the library, a damaged tile says where its repair is: opening it shows the details, which hold it.
+  const repair = gone && !reason && drag ? (hurt === 'copies' ? 'Open it to make the copies again.' : 'Open it to locate the file.') : '';
+  return (
+    <button
+      data-asset={a.id}
+      className={`asset-tile${reason ? ' blocked' : ''}${picked ? ' picked' : ''}`}
+      tabIndex={tabbable ? 0 : -1}
+      aria-pressed={picked}
+      aria-disabled={reason ? true : undefined}
+      aria-label={`${gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}${reason ? `. ${reason}` : repair ? `. ${repair}` : ''}`}
+      title={`${gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}${reason ? `\n${reason}` : repair ? `\n${repair}` : ''}`}
+    >
+      {hurt === 'all' ? (
+        // Nothing is left to show: a picture still on screen would only be the browser's memory of it.
+        <span className="asset-thumb asset-thumb-gone">
+          <ImageOff aria-hidden="true" />
+          {repair && !compact && (
+            <span className="asset-thumb-repair" aria-hidden="true">
+              Open to repair
+            </span>
+          )}
+        </span>
+      ) : (
+        <Thumb key={thumbKey} a={a} devUrl={devUrl} />
+      )}
+      {picked && (
+        <span className="asset-picked" aria-hidden="true">
+          <Check />
+        </span>
+      )}
+      {gone && (
+        <span className={`asset-size asset-gone${hurt === 'copies' ? (copies === 1 ? ' copy' : ' copies') : ''}`} aria-hidden="true">
+          <TriangleAlert />
+          {chipShort === chip ? (
+            <span>{chip}</span>
+          ) : (
+            <>
+              <span className="asset-chip-long">{chip}</span>
+              <span className="asset-chip-short">{chipShort}</span>
+            </>
+          )}
+        </span>
+      )}
+      {big && (
+        <span className="asset-size" aria-hidden="true">
+          <Info />
+          <span>{formatBytes(a.bytes)}</span>
+        </span>
+      )}
+      {/* Smaller thumbnails are for scanning by eye: the name is in the tile's tooltip and its spoken name. */}
+      {!compact && <span className="asset-name">{shortName(nameOf(a))}</span>}
+      {apart && !compact && <span className="asset-tile-id">{apart}</span>}
+    </button>
+  );
+});
 
 /** Fonts sort by family, weight and style, and then file: two files of one face (say, two alphabets) sit together. */
 const fontLabel = (a: AssetRecord) => `${a.font?.family ?? a.name} ${a.font?.weight ?? ''} ${a.font?.style ?? ''} ${a.file}`;
@@ -459,6 +558,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   };
   // The grid's one Tab stop: the tile focused last, while it is still shown.
   const [activeTile, setActiveTile] = useState<string | null>(null);
+  // Each image's record as its tile last drew it, handed on again while what the tile shows of it is unchanged.
+  const tileRecords = useRef(new Map<string, AssetRecord>());
   // Where the grid was scrolled when an image's details opened, so Back returns to the same view.
   const browseScroll = useRef(0);
   // The images view's scroll container, in browsing and in Replace everywhere alike.
@@ -907,86 +1008,72 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
    * `blocked` gives the reason a tile can't be picked here, or null. `picked`: the tile chosen so far, when picking
    * one is not yet acting on it (replacing in some places). `drag`: a tile can be dragged onto the canvas.
    */
-  const grid = (onPick: (a: AssetRecord) => void, label: string, { blocked, picked, drag }: { blocked?: (a: AssetRecord) => string | null; picked?: string | null; drag?: boolean } = {}) => (
-    <div className={`asset-grid${compact ? ' compact' : ''}`} role="group" aria-label={label} aria-describedby="asset-grid-keys" onKeyDown={gridKeys}>
-      <span className="sr-only" id="asset-grid-keys">
-        Arrow keys move between images.
-      </span>
-      {shown.map((a) => {
-        const reason = blocked?.(a) ?? null;
-        const gone = missingOf.get(a.id);
-        const hurt = damage(a, gone);
-        const big = a.bytes > LARGE && !gone;
-        // Two imports can share a name ("hero"): their size, the day they were added or their uses tell them apart.
-        const apart = sameNames.get(a.id);
-        const name = apart ? `${nameOf(a)} (${apart})` : nameOf(a);
-        const copies = gone?.variants.length ?? 0;
-        // The chip's words, and the shorter ones a narrow tile (compact, or the sidebar at its narrowest) shows instead: the
-        // alert glyph already says something is wrong, so the short form only names what. Never cut to an ellipsis.
-        const chip = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'No original' : copies === 1 ? 'Copy missing' : 'Copies missing';
-        const chipShort = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'Original' : copies === 1 ? 'Copy' : 'Copies';
-        const missingLabel = hurt === 'all' ? 'file missing' : hurt === 'original' ? 'original file missing, smaller copies still show' : copies === 1 ? 'a smaller copy missing' : 'smaller copies missing';
-        // In the library, a damaged tile says where its repair is: opening it shows the details, which hold it.
-        const repair = gone && !reason && drag ? (hurt === 'copies' ? 'Open it to make the copies again.' : 'Open it to locate the file.') : '';
-        return (
-          <button
-            key={a.id}
-            data-asset={a.id}
-            className={`asset-tile${reason ? ' blocked' : ''}${picked === a.id ? ' picked' : ''}`}
-            tabIndex={a.id === roving ? 0 : -1}
-            onFocus={() => setActiveTile(a.id)}
-            onClick={(e) => !(drag && endsDrag(e)) && !reason && onPick(a)}
-            {...(drag ? dragFrom(a) : {})}
-            aria-pressed={picked === undefined ? undefined : picked === a.id}
-            aria-disabled={reason ? true : undefined}
-            aria-label={`${gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}${reason ? `. ${reason}` : repair ? `. ${repair}` : ''}`}
-            title={`${gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}${reason ? `\n${reason}` : repair ? `\n${repair}` : ''}`}
-          >
-            {hurt === 'all' ? (
-              // Nothing is left to show: a picture still on screen would only be the browser's memory of it.
-              <span className="asset-thumb asset-thumb-gone">
-                <ImageOff aria-hidden="true" />
-                {repair && !compact && (
-                  <span className="asset-thumb-repair" aria-hidden="true">
-                    Open to repair
-                  </span>
-                )}
-              </span>
-            ) : (
-              <Thumb key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={a} devUrl={devUrl} />
-            )}
-            {picked === a.id && (
-              <span className="asset-picked" aria-hidden="true">
-                <Check />
-              </span>
-            )}
-            {gone && (
-              <span className={`asset-size asset-gone${hurt === 'copies' ? (copies === 1 ? ' copy' : ' copies') : ''}`} aria-hidden="true">
-                <TriangleAlert />
-                {chipShort === chip ? (
-                  <span>{chip}</span>
-                ) : (
-                  <>
-                    <span className="asset-chip-long">{chip}</span>
-                    <span className="asset-chip-short">{chipShort}</span>
-                  </>
-                )}
-              </span>
-            )}
-            {big && (
-              <span className="asset-size" aria-hidden="true">
-                <Info />
-                <span>{formatBytes(a.bytes)}</span>
-              </span>
-            )}
-            {/* Smaller thumbnails are for scanning by eye: the name is in the tile's tooltip and its spoken name. */}
-            {!compact && <span className="asset-name">{shortName(nameOf(a))}</span>}
-            {apart && !compact && <span className="asset-tile-id">{apart}</span>}
-          </button>
-        );
-      })}
-    </div>
-  );
+  const grid = (onPick: (a: AssetRecord) => void, label: string, { blocked, picked, drag }: { blocked?: (a: AssetRecord) => string | null; picked?: string | null; drag?: boolean } = {}) => {
+    // The records the tiles drew last, kept for the images shown now only, so a removed image's goes with it.
+    const drawn = tileRecords.current;
+    const kept = new Map<string, AssetRecord>();
+    tileRecords.current = kept;
+    // The tile an event happened in, from the images this render shows: the tiles themselves hold no handlers.
+    const tileOf = (e: React.SyntheticEvent) => {
+      const id = (e.target as Element).closest?.('[data-asset]')?.getAttribute('data-asset');
+      return id ? shown.find((x) => x.id === id) : undefined;
+    };
+    return (
+      <div
+        className={`asset-grid${compact ? ' compact' : ''}`}
+        role="group"
+        aria-label={label}
+        aria-describedby="asset-grid-keys"
+        onKeyDown={gridKeys}
+        onFocus={(e) => {
+          const a = tileOf(e);
+          if (a) setActiveTile(a.id);
+        }}
+        onClick={(e) => {
+          const a = tileOf(e);
+          if (a && !(drag && endsDrag(e)) && !(blocked?.(a) ?? null)) onPick(a);
+        }}
+        {...(drag
+          ? {
+              onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+                const a = tileOf(e);
+                if (a) dragFrom(a).onPointerDown(e);
+              },
+              onDragStart: (e: React.DragEvent<HTMLElement>) => {
+                if (tileOf(e)) e.preventDefault();
+              }
+            }
+          : {})}
+      >
+        <span className="sr-only" id="asset-grid-keys">
+          Arrow keys move between images.
+        </span>
+        {shown.map((fresh) => {
+          const was = drawn.get(fresh.id);
+          const a = was && sameTileRecord(was, fresh) ? was : fresh;
+          kept.set(a.id, a);
+          const gone = missingOf.get(a.id);
+          return (
+            <AssetTile
+              key={a.id}
+              a={a}
+              reason={blocked?.(a) ?? null}
+              hurt={damage(a, gone)}
+              copies={gone?.variants.length ?? 0}
+              thumbKey={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'}
+              gone={!!gone}
+              apart={sameNames.get(a.id)}
+              picked={picked === undefined ? undefined : picked === a.id}
+              tabbable={a.id === roving}
+              compact={compact}
+              devUrl={devUrl}
+              drag={!!drag}
+            />
+          );
+        })}
+      </div>
+    );
+  };
   const noMatches = (
     <div className="asset-nomatch">
       <p>

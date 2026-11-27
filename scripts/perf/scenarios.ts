@@ -9,6 +9,7 @@
  * gets faster by doing less. `memory` (after `launch`) reads the memory of every process of the app at named points
  * (memory.ts), and is never reported beside a timing scenario.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ElectronApplication, FrameLocator, Page } from 'playwright';
@@ -21,7 +22,8 @@ import type { ChatMessage, Conversation } from '../../src/shared/api';
 import { DONE, envelopeReply, MockOpenAIServer, sseChunk, textReply, toolCallReply, type MockReply } from '../../tests/unit/mock-openai-server';
 import { createStarterState, STARTER_ASSETS } from '../../src/catalogue/starters';
 import { projectFolderName } from '../../src/shared/project-name';
-import type { FixtureSpec } from './fixtures';
+import { fixturePng, type FixtureSpec } from './fixtures';
+import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
 import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
 import { PHOTO_COUNT, photoSpec, scenarioPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
@@ -2737,6 +2739,419 @@ export const importPhotos: Scenario = {
 };
 
 // ---------------------------------------------------------------------------
+// cmdk
+// ---------------------------------------------------------------------------
+
+/** What the command menu scenario types: a page's title, a dozen sections' names and words on many pages (#973). */
+export const CMDK_QUERY = 'contact';
+/** The time between two keys, as a quick typist leaves them. */
+export const CMDK_KEY_GAP_MS = 100;
+
+/** The command menu's rows, in order, as the listbox shows them: each option's id (which names its result) and text. */
+async function menuRows(win: Page): Promise<string[]> {
+  return win.locator('.cmdk-list [role="option"]').evaluateAll((els) => els.map((el) => `${(el as unknown as { id: string }).id.replace(/^.*?-(?=[a-z])/, '')} ${(el as unknown as { textContent: string | null }).textContent ?? ''}`));
+}
+
+/** The results mark for a search of `chars` characters, from `from` on. */
+const resultsFor = (chars: number) => (r: PerfRecord) => r.proc === 'renderer' && r.attrs?.chars === chars;
+
+export const cmdk: Scenario = {
+  name: 'cmdk',
+  after: 'open',
+  description: `Open the command menu with its shortcut, type “${CMDK_QUERY}” a key at a time, and wait for the site’s words that match to be listed.`,
+  async run(ctx) {
+    const { win } = ctx;
+    // Nothing else open, and the editor's own page taking keys (not the preview's frame).
+    for (let i = 0; i < 3 && (await win.locator('.overlay-backdrop').count()); i++) await win.keyboard.press('Escape');
+    await win.evaluate(() => (globalThis as unknown as { document: { activeElement: { blur?(): void } | null } }).document.activeElement?.blur?.());
+    const periodMs = await framePeriod(win);
+    expect(Number.isFinite(periodMs) && periodMs > 0, 'the editor drew no frames at rest');
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await ctx.mark('scenario.start', { scenario: 'cmdk' });
+    await win.keyboard.press('ControlOrMeta+K');
+    const input = win.getByRole('combobox', { name: 'Search pages, sections, content and commands' });
+    await input.waitFor({ timeout: 15_000 });
+    await ctx.waitTrace((t) => !!t.first('cmdk.painted', inProc('renderer'), forScenarioStart(t, 'cmdk')), 15_000);
+    expect(await input.evaluate((el) => el === (globalThis as unknown as { document: { activeElement: unknown } }).document.activeElement), 'the command menu’s search does not have the focus');
+    await sleep(500);
+    await watchFrames(win);
+    await ctx.mark('cmdk.typeStart', { scenario: 'cmdk' });
+    for (const ch of CMDK_QUERY) {
+      await win.keyboard.press(ch);
+      await sleep(CMDK_KEY_GAP_MS);
+    }
+    // Until the results for the whole search are listed, then the frames' watch stops.
+    await ctx.waitTrace((t) => !!t.first('cmdk.results', resultsFor(CMDK_QUERY.length), t.first('cmdk.typeStart', inProc('renderer'))?.t ?? Infinity), 15_000);
+    await sleep(500);
+    await ctx.mark('cmdk.typeEnd', { scenario: 'cmdk', ...(await framesSeen(win, periodMs)) });
+    expect((await input.inputValue()) === CMDK_QUERY, `the search holds “${await input.inputValue()}”, not what was typed`);
+    const typed = await menuRows(win);
+    // The search finds a page, sections placed on the site and the site's words, each listed.
+    expect(typed.some((r) => r.startsWith('page_3a')), `typing “${CMDK_QUERY}” lists no page`);
+    // As many sections as the menu lists before Show more, and as many of the site's words as it previews: the search
+    // matches more of both on the large fixture.
+    const sections = typed.filter((r) => /^sec_3a\d/.test(r)).length;
+    const words = typed.filter((r) => r.startsWith('find_3a') && !r.startsWith('find_3aall')).length;
+    expect(sections >= 6, `typing “${CMDK_QUERY}” lists ${sections} sections on the site, not the 6 it lists before Show more`);
+    expect(words >= 5, `typing “${CMDK_QUERY}” lists ${words} of the site’s words, not the 5 it previews`);
+    await ctx.mark('scenario.end', { scenario: 'cmdk' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('cmdk', 'renderer')) && !!t.first('scenario.end', forScenario('cmdk', 'main')));
+    // Not timed: the same search entered at once lists the same rows in the same order, so what was typed a key at a
+    // time was not left behind on an earlier search.
+    await input.fill('');
+    await input.fill(CMDK_QUERY);
+    await sleep(1000);
+    const pasted = await menuRows(win);
+    expect(JSON.stringify(pasted) === JSON.stringify(typed), `the search typed a key at a time lists ${typed.length} rows that differ from the ${pasted.length} the same search entered at once lists`);
+    await win.keyboard.press('Escape');
+    await win.locator('.cmdk').waitFor({ state: 'detached', timeout: 15_000 });
+  },
+  measure(trace) {
+    const m = new Collector();
+    const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('cmdk', 'renderer')));
+    const end = m.need('scenario.end (renderer)', trace.first('scenario.end', forScenario('cmdk', 'renderer')));
+    const from = begin?.t ?? Infinity;
+    const req = m.need('cmdk.requested', trace.first('cmdk.requested', inProc('renderer'), from));
+    m.since('cmdk.openMs', req, m.need('cmdk.shown', trace.first('cmdk.shown', inProc('renderer'), from)));
+    m.since('cmdk.openPaintMs', req, m.need('cmdk.painted', trace.first('cmdk.painted', inProc('renderer'), from)));
+    const typeStart = m.need('cmdk.typeStart', trace.first('cmdk.typeStart', inProc('renderer'), from));
+    const typeEnd = m.need('cmdk.typeEnd', trace.first('cmdk.typeEnd', inProc('renderer'), from));
+    if (!typeStart || !typeEnd || !end) return m;
+    // One span per key, each the update it made with the React render and commit it set off.
+    const keys = trace.all('cmdk.keystroke', inProc('renderer'), typeStart.t, typeEnd.t);
+    if (keys.length !== CMDK_QUERY.length) m.need(`cmdk.keystroke (${keys.length} of the ${CMDK_QUERY.length} keys typed)`, undefined);
+    else {
+      m.count('cmdk.keystrokes', keys.length);
+      m.ms('cmdk.keyMs', median(keys.map((k) => k.ms ?? NaN)));
+      m.ms('cmdk.keyMsTotal', keys.reduce((n, k) => n + (k.ms ?? NaN), 0));
+      // From each key to the commit that lists its search's results, which can come after the key's own.
+      const waits = keys.map((k) => {
+        const chars = k.attrs?.chars as number;
+        const started = k.t - (k.ms ?? NaN);
+        const shown = trace.first('cmdk.results', resultsFor(chars), started, typeEnd.t);
+        return shown ? shown.t - started : NaN;
+      });
+      if (waits.some((w) => !Number.isFinite(w))) m.need('cmdk.results (a key whose search was never listed)', undefined);
+      else {
+        m.ms('cmdk.resultsMs', median(waits));
+        m.ms('cmdk.lastResultsMs', waits[waits.length - 1]);
+      }
+    }
+    const last = m.need('cmdk.results (the whole search)', trace.all('cmdk.results', resultsFor(CMDK_QUERY.length), typeStart.t, typeEnd.t).at(-1));
+    if (last) {
+      m.count('cmdk.rows', Number(last.attrs?.rows));
+      m.count('cmdk.contentRows', Number(last.attrs?.content));
+    }
+    commits(m, trace, 'cmdk.typeCommits', typeStart, typeEnd);
+    if (trackless(typeStart) || trackless(typeEnd)) m.need('cmdk.typeRenders (the editor did not count component renders)', undefined);
+    else m.count('cmdk.typeRenders', counter(typeEnd, 'react.renders') - counter(typeStart, 'react.renders'));
+    for (const k of ['frames', 'droppedFrames', 'longTasks'] as const) {
+      const v = typeEnd.attrs?.[k];
+      if (typeof v === 'number') m.count(`cmdk.type.${k}`, v);
+      else m.need(`cmdk.type.${k} (the frame watch)`, undefined);
+    }
+    for (const k of ['longTaskMs', 'longestFrameMs'] as const) {
+      const v = typeEnd.attrs?.[k];
+      if (typeof v === 'number') m.ms(`cmdk.type.${k}`, v);
+      else m.need(`cmdk.type.${k} (the frame watch)`, undefined);
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// assets
+// ---------------------------------------------------------------------------
+
+/** The libraries `assets` measures: the large fixture's own 300 images, then grown (untimed) to 1,000. */
+export const ASSET_LIBRARIES = [
+  { key: 'at300', images: 300 },
+  { key: 'at1000', images: 1000 }
+] as const;
+export const ASSET_WINDOWS = ['show', 'edit', 'scroll'] as const;
+/** A wheel notch over the grid, and the most the scroll may take to reach the grid's end. */
+export const ASSET_NOTCH = 400;
+const ASSET_NOTCHES_MAX = 400;
+const ASSET_GROWN_AT = '2026-01-02T00:00:00.000Z';
+
+/** The images the scenario adds to reach `to`, after the fixture's own (named and drawn as fixtures.ts draws them). */
+export function grownImages(from: number, to: number): Array<{ record: Record<string, unknown>; file: string; bytes: Buffer }> {
+  const out: Array<{ record: Record<string, unknown>; file: string; bytes: Buffer }> = [];
+  for (let i = from + 1; i <= to; i++) {
+    const bytes = fixturePng(i);
+    const n = String(i).padStart(3, '0');
+    const file = `static/assets/fixture-${n}.png`;
+    out.push({ file, bytes, record: { id: `img-${n}`, name: `Fixture image ${n}`, file, mime: 'image/png', bytes: bytes.length, width: 96, height: 72, hash: createHash('sha256').update(bytes).digest('hex'), kind: 'image', createdAt: ASSET_GROWN_AT } });
+  }
+  return out;
+}
+
+/** The Assets view's grid and its scrolling body, in the sidebar. */
+const ASSET_BODY = '#editor-sidebar .asset-host .panel-body';
+const ASSET_TILES = `${ASSET_BODY} .asset-grid [data-asset]`;
+
+/**
+ * The show watch, run in the editor's page: the time of the click on the Assets rail button, the first frame after it
+ * with the grid's tiles in view, and the first with every tile in view showing its picture. It reads the tiles from the
+ * top of the grid until the first below the view, so it costs the same however many the grid holds. Source text, as
+ * the frame watch is.
+ */
+const WATCH_SHOW = `(() => {
+  const w = { clickAt: null, laidOutAt: null, picturedAt: null, inView: 0 };
+  const onClick = (e) => { if (e.target && e.target.closest && e.target.closest('[data-rail="assets"]')) w.clickAt = e.timeStamp; };
+  document.addEventListener('click', onClick, true);
+  const tick = (t) => {
+    if (w.clickAt !== null) {
+      const body = document.querySelector(${JSON.stringify(ASSET_BODY)});
+      const box = body && body.offsetParent ? body.getBoundingClientRect() : null;
+      if (box && box.height > 0) {
+        let seen = 0, pictured = 0;
+        for (const tile of body.querySelectorAll('.asset-grid [data-asset]')) {
+          const r = tile.getBoundingClientRect();
+          if (r.top >= box.bottom) break;
+          if (r.bottom <= box.top || r.height === 0) continue;
+          seen++;
+          const img = tile.querySelector('img');
+          if (img && img.complete && img.naturalWidth > 0) pictured++;
+        }
+        if (seen && w.laidOutAt === null) w.laidOutAt = t;
+        if (seen && pictured === seen && w.picturedAt === null) { w.picturedAt = t; w.inView = seen; }
+      }
+    }
+    if (w.picturedAt === null) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  w.stop = () => { document.removeEventListener('click', onClick, true); return { clickAt: w.clickAt, laidOutAt: w.laidOutAt, picturedAt: w.picturedAt, inView: w.inView }; };
+  globalThis.__perfShow = w;
+})()`;
+
+/** The pictures the grid holds loaded, and their decoded size (width × height × 4 bytes each). */
+async function picturesHeld(win: Page): Promise<{ pictures: number; pictureBytes: number }> {
+  return win.evaluate((sel) => {
+    let pictures = 0;
+    let pictureBytes = 0;
+    type Img = { complete: boolean; naturalWidth: number; naturalHeight: number };
+    for (const img of (globalThis as unknown as { document: { querySelectorAll(s: string): Iterable<Img> } }).document.querySelectorAll(`${sel} .asset-grid img`)) {
+      if (!img.complete || !img.naturalWidth) continue;
+      pictures++;
+      pictureBytes += img.naturalWidth * img.naturalHeight * 4;
+    }
+    return { pictures, pictureBytes };
+  }, ASSET_BODY);
+}
+
+/** The grid's scroll position and how far it can go. */
+const gridScroll = (win: Page) =>
+  win.locator(ASSET_BODY).first().evaluate((el) => {
+    const b = el as unknown as { scrollTop: number; scrollHeight: number; clientHeight: number };
+    return { top: b.scrollTop, max: b.scrollHeight - b.clientHeight };
+  });
+
+/** The Assets view hidden behind Pages, so showing it again is what is measured. */
+async function hideAssets(win: Page) {
+  const pages = win.locator('.rail [data-rail="pages"]');
+  if ((await pages.getAttribute('aria-pressed')) !== 'true') await pages.click();
+  await win.locator(ASSET_BODY).first().waitFor({ state: 'hidden', timeout: 15_000 });
+}
+
+/** Which tile has the focus. */
+const focusedTile = (win: Page) => win.evaluate(() => (globalThis as unknown as { document: { activeElement: { getAttribute(n: string): string | null } | null } }).document.activeElement?.getAttribute('data-asset') ?? null);
+
+const atAssets =
+  (at: string, window: string, edge: 'start' | 'end') =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.scenario === 'assets' && r.attrs?.at === at && r.attrs?.window === window && r.attrs?.edge === edge;
+
+export const assets: Scenario = {
+  name: 'assets',
+  after: 'open',
+  description: 'In Assets, show the grid of the fixture’s 300 images, take an edit with it shown, scroll it to its end, and walk it with the keyboard; then grow the library to 1,000 images (untimed) and do the same. Run it on large.',
+  async run(ctx) {
+    const { win } = ctx;
+    const snap = () => win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    const first = await snap();
+    expect(first, 'no project is open');
+    const own = Object.values(first.state.assets.assets).filter((a) => a.kind === 'image').length;
+    expect(own === ASSET_LIBRARIES[0].images, `the fixture has ${own} images, not the ${ASSET_LIBRARIES[0].images} this scenario measures first: run it on large`);
+    const sort = await win.evaluate(() => (globalThis as unknown as { localStorage: { getItem(k: string): string | null } }).localStorage.getItem('siteorigin.assetSort'));
+    await settledAgain(ctx);
+    const periodMs = await framePeriod(win);
+    expect(Number.isFinite(periodMs) && periodMs > 0, 'the editor drew no frames at rest');
+    await ctx.mark('scenario.start', { scenario: 'assets' });
+    for (const lib of ASSET_LIBRARIES) {
+      const at = lib.key;
+      if (lib.images > own) {
+        // Not timed: the library grown to this size, its files written where an import puts them and their records
+        // added as one change, then left until the project and the preview are quiet again.
+        await hideAssets(win);
+        const now = (await snap())!;
+        const have = Object.values(now.state.assets.assets).filter((a) => a.kind === 'image').length;
+        const grown = grownImages(have, lib.images);
+        for (const g of grown) {
+          mkdirSync(dirname(join(ctx.projectDir, g.file)), { recursive: true });
+          writeFileSync(join(ctx.projectDir, g.file), g.bytes);
+        }
+        const refused = await win.evaluate(async (records) => {
+          const r = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: records.map((asset) => ({ type: 'asset.add', asset })) } as never, { label: 'Benchmark images' });
+          return r.ok ? null : (r.error?.message ?? 'no reason given');
+        }, grown.map((g) => g.record));
+        expect(refused === null, `adding the benchmark's images was refused: ${refused}`);
+        await settledAgain(ctx);
+      }
+      const now = (await snap())!;
+      const images = Object.values(now.state.assets.assets).filter((a) => a.kind === 'image');
+      expect(images.length === lib.images, `the library holds ${images.length} images, not ${lib.images}`);
+      expect(!now.missingAssets.length, `${now.missingAssets.length} of the library's images have missing files`);
+      const order = sortAssets(images, isAssetSort(sort) ? sort : 'newest').map((a) => a.id);
+
+      // Shown: from the rail button's click to the grid's tiles in view, then to each of them showing its picture.
+      await hideAssets(win);
+      await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+      await win.evaluate(WATCH_SHOW);
+      await watchFrames(win);
+      await ctx.mark('assets.window', { scenario: 'assets', at, window: 'show', edge: 'start' });
+      await win.locator('.rail [data-rail="assets"]').click();
+      await win.waitForFunction(() => (globalThis as unknown as { __perfShow: { picturedAt: number | null } }).__perfShow.picturedAt !== null, undefined, { timeout: 30_000, polling: 100 });
+      const shown = (await win.evaluate('globalThis.__perfShow.stop()')) as { clickAt: number | null; laidOutAt: number | null; picturedAt: number | null; inView: number };
+      await ctx.mark('assets.window', { scenario: 'assets', at, window: 'show', edge: 'end', ...(await framesSeen(win, periodMs)), showMs: shown.clickAt !== null && shown.laidOutAt !== null ? shown.laidOutAt - shown.clickAt : -1, picturesMs: shown.clickAt !== null && shown.picturedAt !== null ? shown.picturedAt - shown.clickAt : -1, inView: shown.inView, tiles: await win.locator(ASSET_TILES).count() });
+      expect(shown.inView > 0, 'the grid showed no tiles in view');
+      const tiles = await win.locator(ASSET_TILES).count();
+      expect(tiles === lib.images, `the grid shows ${tiles} tiles for the library's ${lib.images} images`);
+      expect((await win.locator(ASSET_TILES).first().getAttribute('data-asset')) === order[0], 'the grid does not start with the first image in its order');
+
+      // An edit elsewhere with the grid shown: the project the editor receives is drawn again.
+      await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+      const before = (await snap())!;
+      await ctx.mark('assets.window', { scenario: 'assets', at, window: 'edit', edge: 'start' });
+      const heading = `Assets heading ${ctx.iteration} ${at}`;
+      const refused = await win.evaluate(
+        async ([pageId, nodeId, text]) => {
+          const r = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId, prop: 'heading', value: text }] }, { label: 'Benchmark edit' });
+          return r.ok ? null : (r.error?.message ?? 'no reason given');
+        },
+        [ctx.fixture.homePageId, ctx.fixture.heroId, heading] as const
+      );
+      expect(refused === null, `the edit was refused: ${refused}`);
+      const target = before.revision + 1;
+      await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
+      await sleep(ctx.settleMs);
+      await ctx.mark('assets.window', { scenario: 'assets', at, window: 'edit', edge: 'end', revision: target });
+      expect(findHeading((await snap())!.state.pages[ctx.fixture.homePageId], ctx.fixture.heroId)?.heading === heading, 'the project does not hold the edit made with the grid shown');
+
+      // Scrolled with the wheel from the grid's top to its end.
+      const body = await win.locator(ASSET_BODY).first().boundingBox();
+      expect(body, 'the grid has no box');
+      await win.mouse.move(body.x + body.width / 2, body.y + body.height / 2);
+      expect((await gridScroll(win)).top === 0, 'the grid is not at its top before the scroll');
+      await sleep(500);
+      await watchFrames(win);
+      await ctx.mark('assets.window', { scenario: 'assets', at, window: 'scroll', edge: 'start' });
+      let notches = 0;
+      let pos = await gridScroll(win);
+      while (pos.top < pos.max - 1 && notches < ASSET_NOTCHES_MAX) {
+        await input(win.mouse.wheel(0, ASSET_NOTCH), 'a wheel notch');
+        notches++;
+        await sleep(STEP_MS);
+        pos = await gridScroll(win);
+      }
+      await ctx.mark('assets.window', { scenario: 'assets', at, window: 'scroll', edge: 'end', notches, ...(await framesSeen(win, periodMs)) });
+      expect(pos.top >= pos.max - 1, `the wheel took the grid ${Math.round(pos.top)} of its ${Math.round(pos.max)}px in ${notches} notches`);
+      // At its end, the last image is there, showing its picture once it has loaded.
+      await sleep(1000);
+      const lastTile = win.locator(`${ASSET_BODY} .asset-grid [data-asset="${order[order.length - 1]}"]`);
+      expect(await lastTile.count(), 'the grid’s end does not show the last image');
+      const lastShown = await lastTile.locator('img').evaluate((img) => (img as unknown as { complete: boolean; naturalWidth: number }).complete && (img as unknown as { naturalWidth: number }).naturalWidth > 0).catch(() => false);
+      expect(lastShown, 'the grid’s last image does not show its picture');
+      const held = await picturesHeld(win);
+      await ctx.mark('assets.held', { scenario: 'assets', at, ...held });
+      expect(held.pictures > 0, 'the grid holds no pictures at its end');
+
+      // Not timed: the keyboard walks the whole grid (End, Home, arrows) and Enter opens the image focused.
+      await win.locator(ASSET_BODY).first().evaluate((el) => ((el as unknown as { scrollTop: number }).scrollTop = 0));
+      await sleep(300);
+      await win.locator(ASSET_TILES).first().focus();
+      expect((await focusedTile(win)) === order[0], 'the first tile would not take the focus');
+      await win.keyboard.press('End');
+      expect((await focusedTile(win)) === order[order.length - 1], `End moved the focus to ${await focusedTile(win)}, not the last image`);
+      await win.keyboard.press('Home');
+      expect((await focusedTile(win)) === order[0], `Home moved the focus to ${await focusedTile(win)}, not the first image`);
+      await win.keyboard.press('ArrowRight');
+      expect((await focusedTile(win)) === order[1], 'ArrowRight did not move the focus to the second image');
+      const cols = await win.locator(ASSET_TILES).evaluateAll((els) => els.filter((e) => (e as unknown as { offsetTop: number }).offsetTop === (els[0] as unknown as { offsetTop: number }).offsetTop).length);
+      await win.keyboard.press('ArrowDown');
+      expect((await focusedTile(win)) === order[1 + cols], `ArrowDown did not move the focus one row (${cols} images) down`);
+      await win.keyboard.press('Enter');
+      const name = (now.state.assets.assets[order[1 + cols]] as { name: string }).name;
+      const opened = win.locator('#editor-sidebar .asset-detail .asset-ident h4');
+      await opened.waitFor({ timeout: 15_000 });
+      expect(((await opened.textContent()) ?? '').trim() === name, `Enter opened “${await opened.textContent()}”, not ${name}`);
+      await win.locator('#editor-sidebar .asset-detail .asset-back').click();
+      await win.locator(ASSET_TILES).first().waitFor({ timeout: 15_000 });
+      expect((await focusedTile(win)) === order[1 + cols], 'Back did not return the focus to the image it opened');
+    }
+    await ctx.mark('scenario.end', { scenario: 'assets' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('assets', 'renderer')) && !!t.first('scenario.end', forScenario('assets', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('assets', 'renderer')));
+    for (const { key: at } of ASSET_LIBRARIES) {
+      const p = `assets.${at}`;
+      const edge = (w: string, e: 'start' | 'end') => m.need(`assets.window ${at} ${w} ${e}`, trace.first('assets.window', atAssets(at, w, e)));
+      const gained = (from: PerfRecord, to: PerfRecord, name: string) => counter(to, name) - counter(from, name);
+      for (const w of ASSET_WINDOWS) {
+        const start = edge(w, 'start');
+        const end = edge(w, 'end');
+        if (!start || !end) continue;
+        const q = `${p}.${w}`;
+        if (trackless(start) || trackless(end)) m.need(`${q}.renders (the editor did not count component renders)`, undefined);
+        else m.count(`${q}.renders`, gained(start, end, 'react.renders'));
+        if (end.c?.['panel.assets.renders'] === undefined) m.need(`${q} (the assets panel was not mounted)`, undefined);
+        else {
+          m.count(`${q}.assetsRenders`, gained(start, end, 'panel.assets.renders'));
+          m.ms(`${q}.assetsRenderMs`, gained(start, end, 'panel.assets.renderMs'));
+        }
+        commits(m, trace, `${q}.rendererCommits`, start, end);
+        if (w === 'edit') {
+          const revision = end.attrs?.revision as number;
+          const received = m.need(`renderer.snapshotReceived (${at})`, trace.first('renderer.snapshotReceived', atRevision(revision), start.t, end.t));
+          m.since(`${q}.commitMs`, received, m.need(`renderer.commit (${at})`, trace.first('renderer.commit', (r) => r.proc === 'renderer' && r.attrs?.revision === revision, received?.t ?? Infinity, end.t)));
+          continue;
+        }
+        for (const k of ['frames', 'droppedFrames', 'longTasks'] as const) {
+          const v = end.attrs?.[k];
+          if (typeof v === 'number') m.count(`${q}.${k}`, v);
+          else m.need(`${q}.${k} (the frame watch)`, undefined);
+        }
+        for (const k of ['longTaskMs', 'longestFrameMs'] as const) {
+          const v = end.attrs?.[k];
+          if (typeof v === 'number') m.ms(`${q}.${k}`, v);
+          else m.need(`${q}.${k} (the frame watch)`, undefined);
+        }
+        if (w === 'show') {
+          for (const k of ['showMs', 'picturesMs'] as const) {
+            const v = end.attrs?.[k];
+            if (typeof v === 'number' && v >= 0) m.ms(`${p}.${k}`, v);
+            else m.need(`${p}.${k} (the show watch)`, undefined);
+          }
+          m.count(`${p}.tiles`, Number(end.attrs?.tiles));
+          m.count(`${p}.tilesInView`, Number(end.attrs?.inView));
+        } else {
+          m.since(`${q}.ms`, start, end);
+          m.count(`${q}.notches`, Number(end.attrs?.notches));
+        }
+      }
+      const held = m.need(`assets.held ${at}`, trace.first('assets.held', (r) => r.proc === 'renderer' && r.attrs?.scenario === 'assets' && r.attrs?.at === at));
+      if (held) {
+        m.count(`${p}.picturesHeld`, Number(held.attrs?.pictures));
+        m.count(`${p}.pictureBytes`, Number(held.attrs?.pictureBytes), 'bytes');
+      }
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // create, createAgain
 // ---------------------------------------------------------------------------
 
@@ -4019,7 +4434,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
