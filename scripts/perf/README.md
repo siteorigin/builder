@@ -187,6 +187,19 @@ shown in that window (all but Project for the click, all but the Inspector for t
 rendered) and React commits. The panels are the sidebar's six views, the post writer and SEO view over the canvas, and
 the dock's four. Showing the Inspector between the two windows is in neither.
 
+**`panelsInUse`** (after `open`): as `panels`, with the panels it leaves out of use each holding work. Before the timed
+part: the scripted model connected as a local provider (no live provider; nothing is sent to it) and the window reloaded
+to take it, the AI panel in Edit mode offering its starters, a post (the fixture's first, or one made for it when the
+fixture has none) opened in the writer from Posts and chosen in the SEO view, then every sidebar view hidden (the SEO
+view's rail button pressed again), so the writer and the SEO view are put away holding the post, and the dock on its
+Project view, so the AI panel is hidden too. Then the same click and edit as `panels`. Checks: as `panels` (Layers
+aside), and the writer's title field and the SEO view's document stay the same elements; afterwards the AI panel, shown
+again, offers starters about the hero the click selected, and with the post renamed while both are hidden, the SEO view
+and then the writer, each shown again, have the new title at once. The same metrics as `panels`, named
+`panelsInUse.*`, and per window the work over the whole site that panels did as they rendered: `seoOverviews` (the
+SEO overview worked out, `seo.overviews`), `seoRoutes` (the website read for an entry's address, `seo.routes`) and
+`chatStarters` (the AI panel's starters worked out, `chat.starters`).
+
 **`layers`** (after `open`): two pages made for it in one change each before the timed part, of 300 and 1,000 layers:
 sections of 25 (a container holding a container with a heading, a paragraph and a row of four cards, each card a heading,
 a paragraph and a button in a stack of its own, six deep), the second section's inner container hidden at every size and
@@ -647,7 +660,9 @@ React renders before and after the panel), `chat.messageRenders` (a Chat message
 text read into blocks), `canvas.renders`, `canvas.rectReports`, `canvas.rectReportsSame` and `canvas.hoverReports` (the
 `canvas` scenario's), `canvas.dropShows`, `canvas.dropMeasures`, `canvas.dropMeasured` and `canvas.dropScrolls` (a drag
 onto the page, `drag`'s), `layers.rows` (a Layers row rendered), `tree.findParent` and `tree.subtreeIds` (the editor's
-calls of the two scans of a tree in `src/engine/tree.ts`, counted from zero) (renderer). The main process also
+calls of the two scans of a tree in `src/engine/tree.ts`, counted from zero), `seo.overviews` (the SEO overview worked
+out for a project state), `seo.routes` (the website read for an entry's address in its search previews) and
+`chat.starters` (the AI panel's starters worked out), each counted from zero (renderer). The main process also
 watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
 lateness (a block shorter than about 70 ms can go unseen).
 

@@ -9,7 +9,7 @@ import { applyOperations } from '@engine/apply';
 import { installComponent, makeInstance } from '@engine/install';
 import { headerMenu } from '@engine/tree';
 import { assetUsages } from '@engine/apply';
-import { chatSuggestions, type ChatSuggestion, type SuggestionInput } from '../../src/renderer/src/lib/chatSuggestions';
+import { chatSuggestions, countChatStarters, type ChatSuggestion, type SuggestionInput } from '../../src/renderer/src/lib/chatSuggestions';
 import type { SeoFinding } from '@shared/seo';
 import { runSeoAudit } from '@engine/seo-audit';
 
@@ -704,5 +704,20 @@ describe('a starter about search and AI readiness, from the SEO audit (#599)', (
     expect(picked.length).toBeGreaterThan(0);
     expect(picked).toEqual(starters(state, home, { selection: ref }));
     expect(picked.every((s) => s.kind === 'selection')).toBe(true);
+  });
+});
+
+describe('the timing marks', () => {
+  it('are told of every time the starters are worked out', () => {
+    const { state, home } = lighthouse();
+    let worked = 0;
+    countChatStarters(() => worked++);
+    try {
+      starters(state, home);
+      starters(state, home);
+      expect(worked).toBe(2);
+    } finally {
+      countChatStarters(null);
+    }
   });
 });

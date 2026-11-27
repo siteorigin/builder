@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { runSeoAudit } from '@engine/seo-audit';
 import { SEO_DESCRIPTION_RANGE, SEO_TITLE_RANGE } from '@engine/seo-rules';
-import { seoOverview, seoOverviewOnce, seoOverviewProblems, seoTextStatus, type SeoOverviewRow } from '../../src/renderer/src/lib/seo-overview';
+import { countSeoOverviews, seoOverview, seoOverviewOnce, seoOverviewProblems, seoTextStatus, type SeoOverviewRow } from '../../src/renderer/src/lib/seo-overview';
 import { copy, run, seoSite } from './fixtures/seo-site';
 
 const x = (n: number) => 'x'.repeat(n);
@@ -221,6 +221,22 @@ describe('seoOverview', () => {
     const first = seoOverviewOnce(state);
     expect(row(seoOverviewOnce(next), SERVICES).problems).toEqual(['title-length']);
     expect(seoOverviewOnce(state)).toBe(first);
+  });
+
+  it('tells the timing marks of each overview it works out, and of none it already has', () => {
+    const { state, services } = seoSite();
+    let worked = 0;
+    countSeoOverviews(() => worked++);
+    try {
+      seoOverviewOnce(state);
+      seoOverviewOnce(state);
+      const next = run(state, { type: 'page.update', pageId: services, seoTitle: x(10) });
+      seoOverviewOnce(next);
+      seoOverviewOnce(next);
+      expect(worked).toBe(2);
+    } finally {
+      countSeoOverviews(null);
+    }
   });
 
   it('stays quick on a site with a few hundred documents', () => {
