@@ -3,8 +3,8 @@
   .rich-field { display: flex; flex-direction: column; gap: 4px; }
   .rich-tools { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
   .rich-tools .icon-btn[aria-disabled='true'] { cursor: default; }
-  .rich-tools .icon-btn[aria-disabled='true']:not(:focus-visible) { opacity: 0.4; }
-  .rich-tools .icon-btn[aria-disabled='true']:hover { background: transparent; color: var(--text-2); }
+  .rich-tools .icon-btn[aria-disabled='true'] { color: var(--disabled-ink); }
+  .rich-tools .icon-btn[aria-disabled='true']:hover { background: transparent; color: var(--disabled-ink); }
   .rich-tools-gap { width: 1px; height: 16px; margin: 0 4px; background: var(--border); }
   .rich-link { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
   .rich-link .input { flex: 1 1 140px; min-width: 0; }

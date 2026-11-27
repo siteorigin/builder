@@ -20,6 +20,10 @@
  * --disabled-ink is the one text token under 4.5:1, by design: inactive controls are exempt (WCAG 1.4.3), so it
  * holds 3:1 on its surface and fill and stays visibly quieter than --text-3. Nested options (a segmented
  * control's) take --r-xs so their corners stay concentric with the --r-sm tray.
+ * A solid accent area (primary button, on switch, picked check, count badge) takes --accent-fill with --on-accent;
+ * --accent is for strokes, rings, icons and tints, and in dark it is too pale to fill an area without glaring.
+ * Anything drawn on the user's page (canvas overlays, their focus rings and refusals) takes fixed colours or
+ * --select, never a chrome token that changes with the theme.
  * Focus is one 2px --focus outline, 2px out, on every control, text fields included; rows inside a clipping
  * container (menus, lists) draw it 2px in. Inverse surfaces (toasts) redefine --focus to a blue that holds 3:1
  * on their fill, so the outline stays blue everywhere.
@@ -43,11 +47,11 @@
     --sky-2: #86c5ff;
     --ink: #23304f;
 
-    --bg: #f2f4f7;
+    --bg: #ebeff4;
     --canvas: #e4e8ed;
     --canvas-dots: rgb(28 39 66 / 0.07);
-    --panel: #f9fafb;
-    --panel-2: #eff2f6;
+    --panel: #f4f6f9;
+    --panel-2: #eceff4;
     --raised: #ffffff;
     --hover: rgb(28 39 66 / 0.05);
     --active: rgb(28 39 66 / 0.08);
@@ -55,7 +59,7 @@
     --border-strong: rgb(28 39 66 / 0.17);
     --border-control: #7a859a;
     --text: #1c2742;
-    --text-2: #4a5670;
+    --text-2: #3f4b66;
     --text-3: #5c677d;
     --accent: #1766c0;
     --accent-hover: #11559f;
@@ -65,7 +69,7 @@
     --accent-fill: #1766c0;
     --accent-fill-hover: #11559f;
     --focus: #1766c0;
-    /* A notice's one expected answer: the notice's ink inverted (the light theme's notice is ink, the dark one's pale). */
+    /* A notice's one expected answer: a pale button on the notice's dark fill (ink in light, lifted slate in dark). */
     --toast-action-fill: #ffffff;
     --toast-action-ink: var(--ink);
     /* The canvas selection colour is the same in both themes: it sits on the user's website, not the app. */
@@ -74,8 +78,8 @@
     --green-soft: rgb(11 107 69 / 0.1);
     --amber: #925600;
     --amber-soft: rgb(196 122 12 / 0.12);
-    --red: #c2352e;
-    --red-soft: rgb(194 53 46 / 0.09);
+    --red: #b02e28;
+    --red-soft: rgb(176 46 40 / 0.09);
     /* Red text on a --red-soft fill (badges), which needs a step darker than --red to hold 4.5:1. */
     --red-ink: #b02e28;
     /* Labels and icons of unavailable controls: quieter than --text-3, 3:1 or better on their surface and fill. */
@@ -116,19 +120,20 @@
     --border-strong: rgb(231 236 244 / 0.16);
     --border-control: #717d96;
     --text: #e7ecf4;
-    --text-2: #a8b2c3;
-    --text-3: #8b96a9;
+    --text-2: #aeb9ca;
+    --text-3: #94a0b3;
     --accent: #7cbeff;
     --accent-hover: #a2d1ff;
     --accent-soft: rgb(124 190 255 / 0.15);
     --accent-text: #9fd0ff;
-    /* The dark primary is the mark's own sky tile with ink lettering. */
+    /* The dark primary is the mark's sky a step deeper, with ink lettering: the tile's own pale sky glares as a whole
+       button on dark chrome, so the fill and its hover sit below it. */
     --on-accent: #10203f;
-    --accent-fill: #86c5ff;
-    --accent-fill-hover: #a2d3ff;
+    --accent-fill: #69a6e2;
+    --accent-fill-hover: #7ab5ed;
     --focus: #7cbeff;
-    --toast-action-fill: var(--ink);
-    --toast-action-ink: #ffffff;
+    --toast-action-fill: var(--text);
+    --toast-action-ink: var(--ink);
     --green: #5ccf9c;
     --green-soft: rgb(92 207 156 / 0.13);
     --amber: #f0b45e;
@@ -136,7 +141,7 @@
     --red: #ff8a82;
     --red-soft: rgb(255 138 130 / 0.13);
     --red-ink: #ff8a82;
-    --disabled-ink: #758096;
+    --disabled-ink: #6b768c;
     /* Sunken, like the track: an unavailable control sits back rather than lifting off the panel. */
     --disabled-fill: rgb(0 0 0 / 0.22);
     /* Darker than the panel, so the raised selected option stands up out of it rather than sinking in. */

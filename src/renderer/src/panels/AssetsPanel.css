@@ -291,12 +291,12 @@
   .asset-choose label.asset-use { flex: 1; min-width: 0; cursor: pointer; }
   .asset-choose label.asset-use:hover { background: var(--hover); color: var(--text); }
   .asset-choose input[type='checkbox'] { flex: none; margin: 0 2px 0 0; }
-  .asset-choose input:disabled + svg, .asset-choose input:disabled ~ span { opacity: 0.6; }
+  .asset-choose input:disabled + svg, .asset-choose input:disabled ~ span { color: var(--disabled-ink); }
   .asset-choose-show { flex: none; width: 26px; padding: 0; justify-content: center; }
   .asset-choose-sum { margin: 8px 4px 0; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
   .asset-choose-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 4px 0; }
   .asset-tile.picked .asset-thumb::after { box-shadow: inset 0 0 0 2px var(--accent); }
   .asset-tile.picked .asset-name { color: var(--text); font-weight: 600; }
-  .asset-picked { position: absolute; top: 5px; left: 5px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; pointer-events: none; }
+  .asset-picked { position: absolute; top: 5px; left: 5px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent-fill); color: var(--on-accent); pointer-events: none; }
   .asset-picked svg { width: 13px; height: 13px; }
 }

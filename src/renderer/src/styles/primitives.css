@@ -9,7 +9,7 @@
   .btn:hover:not(:disabled, [aria-disabled='true']) { background: var(--panel-2); }
   .btn svg { width: 15px; height: 15px; flex: none; }
   .btn .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .btn-primary { background: var(--accent-fill); border-color: transparent; color: var(--on-accent); font-weight: 600; box-shadow: 0 1px 2px rgb(17 85 159 / 0.25); }
+  .btn-primary { background: var(--accent-fill); border-color: transparent; color: var(--on-accent); font-weight: 600; box-shadow: var(--shadow-sm); }
   .btn-primary:hover:not(:disabled, [aria-disabled='true']) { background: var(--accent-fill-hover); border-color: transparent; }
   .btn-ghost { background: transparent; border-color: transparent; box-shadow: none; }
   .btn-ghost:hover:not(:disabled, [aria-disabled='true']) { background: var(--hover); border-color: transparent; }
@@ -45,12 +45,15 @@
     box-shadow: var(--card-ring); transition: box-shadow 140ms;
   }
   .action-card:hover:not(:disabled, [aria-disabled='true']) { box-shadow: var(--card-ring-hover); }
-  .action-card:disabled, .action-card[aria-disabled='true'] { opacity: 0.55; }
+  /* Unavailable is drawn, not faded: the neutral disabled face and edge, with every word and icon in --disabled-ink. */
+  .action-card:disabled, .action-card[aria-disabled='true'] { background: var(--disabled-fill); box-shadow: 0 0 0 1px var(--border-strong); }
+  :is(.action-card:disabled, .action-card[aria-disabled='true']) :is(strong, span, .ico, .chev) { color: var(--disabled-ink); }
+  :is(.action-card:disabled, .action-card[aria-disabled='true']) .ico { background: transparent; }
   .action-card[aria-disabled='true'] { cursor: default; }
   .action-card > .chev { width: 16px; height: 16px; flex: none; color: var(--text-3); }
   .action-card:hover:not(:disabled, [aria-disabled='true']) > .chev { color: var(--accent-text); }
   .action-card .ico { width: 34px; height: 34px; border-radius: var(--r-sm); display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); flex: none; }
-  .action-card.secondary .ico { background: var(--active); color: var(--text-2); }
+  .action-card.secondary:not(:disabled, [aria-disabled='true']) .ico { background: var(--active); color: var(--text-2); }
   .action-card strong { display: block; font-size: 13px; font-weight: 600; color: var(--text); }
   .action-card span { font-size: 12px; color: var(--text-2); }
 
@@ -64,12 +67,12 @@
   :is(.input, .select, .textarea)[aria-invalid='true'] { border-color: var(--red); }
   :is(.input, .select, .textarea):disabled { background-color: var(--disabled-fill); border-color: var(--border-strong); color: var(--disabled-ink); }
   :is(.input, .textarea):disabled::placeholder { color: var(--disabled-ink); }
-  .select { appearance: none; padding-right: 26px; text-overflow: ellipsis; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%234a5670' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
+  .select { appearance: none; padding-right: 26px; text-overflow: ellipsis; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%233f4b66' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
   /* A disabled select's chevron dims with its label. */
   .select:disabled { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%2376819a' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
   :where(:root[data-appearance='dark']) {
-    .select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
-    .select:disabled { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23758096' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
+    .select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23aeb9ca' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
+    .select:disabled { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%236b768c' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
   }
   .input::placeholder, .textarea::placeholder { color: var(--text-3); }
   .textarea { height: auto; min-height: 64px; max-height: 260px; padding: 7px 9px; resize: vertical; line-height: 1.5; field-sizing: content; }
@@ -121,7 +124,7 @@
 
   .switch { position: relative; width: 32px; height: 20px; border-radius: 99px; background: var(--border-control); border: 0; transition: background 150ms; flex: none; }
   .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 150ms; }
-  .switch[aria-checked='true'] { background: var(--accent); }
+  .switch[aria-checked='true'] { background: var(--accent-fill); }
   :where(:root[data-appearance='dark']) { .switch::after { background: #f4f7fb; } .switch[aria-checked='true']::after { background: var(--ink); } }
   .switch[aria-checked='true']::after { transform: translateX(12px); }
   /* Unavailable is drawn, not faded (tokens.css): the neutral fill and edge, a quiet thumb, which keeps its side so the
@@ -200,7 +203,7 @@
   /* The highlight is a quiet accent tint, so icons, shortcuts and group labels stay readable on it. */
   .menu-item[data-highlighted], .menu-item:hover:not(:disabled, [data-disabled], [aria-disabled='true']), .menu-item.focused { background: var(--accent-soft); color: var(--text); }
   /* An unavailable item can still take keyboard focus (so it can be read), with a neutral highlight. */
-  .menu .menu-item[aria-disabled='true'][data-highlighted] { background: var(--hover); }
+  .menu .menu-item[aria-disabled='true'][data-highlighted] { background: var(--disabled-fill); }
   .menu-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
   .menu-item:is([data-highlighted], :hover, .focused) :is(.hint, .menu-desc), .menu .menu-item:is([data-highlighted], :hover) .kbd { color: var(--text-2); }
   .menu-item:is([data-highlighted], .focused) svg, .menu-item:hover:not(:disabled, [data-disabled], [aria-disabled='true']) svg { color: var(--accent-text); }
@@ -255,13 +258,13 @@
   .toast .toast-text { min-width: 0; max-height: 7.5em; overflow-y: auto; overflow-wrap: anywhere; user-select: text; }
   .toast-dismiss { display: grid; place-items: center; width: 24px; height: 24px; margin: -3px -4px -3px 0; padding: 0; flex: none; border: 0; border-radius: var(--r-xs); background: transparent; }
   .toast-dismiss:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
-  .toast.error { background: #a32a24; color: white; }
-  /* Dark: the pale toast takes a hairline, so it keeps its edge over a light website on the canvas. */
-  :where(:root[data-appearance='dark']) { .toast { background: #e7ecf4; color: var(--ink); box-shadow: 0 0 0 1px rgb(16 24 40 / 0.22), var(--shadow-lg); } .toast.error { background: #ffb3ad; color: #3a0c09; } }
+  .toast.error { background: var(--red); color: #fff; }
+  /* Dark: a lifted slate notice, a step above --raised, with a pale hairline so it keeps its edge over the dark chrome;
+     over a light website on the canvas it reads as dark-on-light. Never a pale slab, which glares on dark chrome. */
+  :where(:root[data-appearance='dark']) { .toast { background: #343d4f; color: var(--text); box-shadow: 0 0 0 1px rgb(231 236 244 / 0.16), var(--shadow-lg); } .toast.error { background: #6b2522; color: #ffe4e1; } }
   /* Icons and actions take the toast's own ink (no meaning hue on a status notice), so one rule serves the info,
      success and error fills. Focus stays the blue house outline, in a blue that holds 3:1 on each fill. */
   .toast { --focus: var(--sky-2); }
-  :where(:root[data-appearance='dark']) { .toast { --focus: #1766c0; } }
   .toast button { color: inherit; }
   .toast .btn { border: 1px solid color-mix(in srgb, currentColor 65%, transparent); background: transparent; color: inherit; box-shadow: none; }
   .toast .btn:hover:not(:disabled) { background: color-mix(in srgb, currentColor 12%, transparent); }
