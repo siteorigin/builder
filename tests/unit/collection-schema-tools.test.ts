@@ -182,6 +182,24 @@ describe('upsert_collection_entry with custom fields and groupings', () => {
     expect(read.content).toMatchObject({ featuredImage: BO.id, terms: [{ taxonomyId: 'departments', names: ['Studio', 'Lab'] }], values: [{ field: 'role', value: 'Glaze chemist' }, { field: 'level', value: 'junior' }], fields: [{ name: 'role', type: 'string' }, { name: 'level', type: 'enum' }] });
   });
 
+  it('reads and writes the author and the revision date, setting or clearing each while the draft state and text stay', async () => {
+    const { h, now } = host(team());
+    const before = now().collections.team.entries.en_ana;
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', author: ' Ana Reyes ', updatedAt: '2026-03-04' })).ok).toBe(true);
+    expect(now().collections.team.entries.en_ana).toMatchObject({ author: 'Ana Reyes', updatedAt: '2026-03-04', draft: before.draft, body: before.body, title: before.title });
+    expect((await tool(h, 'read_collection_entry', { collectionId: 'team', entryId: 'en_ana' })).content).toMatchObject({ author: 'Ana Reyes', updatedAt: '2026-03-04' });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', author: '', updatedAt: '' })).ok).toBe(true);
+    const cleared = now().collections.team.entries.en_ana;
+    expect(cleared).not.toHaveProperty('author');
+    expect(cleared).not.toHaveProperty('updatedAt');
+    expect(cleared).toMatchObject({ draft: before.draft, body: before.body });
+    const read = (await tool(h, 'read_collection_entry', { collectionId: 'team', entryId: 'en_ana' })).content as Record<string, unknown>;
+    expect(read).not.toHaveProperty('author');
+    expect(read).not.toHaveProperty('updatedAt');
+    const bad = await tool(h, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', updatedAt: 'yesterday' });
+    expect(bad.content).toMatchObject({ ok: false, error: { message: expect.stringMatching(/YYYY-MM-DD/) } });
+  });
+
   it('refuses a value of the wrong kind, a field or grouping the collection lacks, and categories sent as terms, applying nothing', async () => {
     const { h, now } = host(team());
     const before = now();
