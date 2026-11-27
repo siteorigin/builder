@@ -11,6 +11,7 @@
  */
 import { posix } from 'node:path';
 import type { ComponentDefinition } from '@shared/types';
+import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { slotIdent } from '@generator/index';
 
 export interface CodeProblem {
@@ -561,9 +562,12 @@ function markerName(attr: Node): string | null {
 /**
  * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
  * written-out data-so-part or gives its class through so_o, and each slot_<name> its script takes from $props().
- * Comments, strings and a script's own logic declare nothing. Null when the code cannot be parsed.
+ * `shown` is the slot props (slot_content, as the generator names each slot's snippet) it takes and its markup renders
+ * or hands on, so content placed there can reach the page: a slot only taken, or only tested ({#if slot_content}),
+ * shows nothing. Comments, strings and a script's own logic declare
+ * nothing. Null when the code cannot be parsed.
  */
-export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[] } | null> {
+export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[] } | null> {
   const { parse } = await import('svelte/compiler');
   let ast: Node;
   try {
@@ -580,8 +584,50 @@ export async function codeContractNames(source: string): Promise<{ parts: string
     const id = hookedPart(n);
     if (id !== null) parts.add(id);
   });
-  const slots = [...propsLocals(ast).keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
-  return { parts: [...parts], slots };
+  const locals = propsLocals(ast);
+  const slots = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
+  const rendered = new Set(snippetRenders(ast).map((r) => r.name));
+  const handed = handedNames(ast);
+  // Any slot prop counts here, not only the camelCase names saving declares: a theme's slot may be named related_links.
+  const shown = [...locals].flatMap(([prop, { local }]) => (prop.startsWith('slot_') && (rendered.has(local) || handed.has(local)) ? [prop] : []));
+  return { parts: [...parts], slots, shown };
+}
+
+/**
+ * Each snippet the markup renders, by the name it calls, with whether a call there can find it missing: an optional
+ * call, or a plain one inside a block shown only while it is given ({#if slot_content}, not its {:else}).
+ */
+function snippetRenders(ast: Node): Array<{ name: string; node: Node; optional: boolean; guarded: boolean }> {
+  const renders: Array<{ name: string; node: Node; optional: boolean; guarded: boolean }> = [];
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'RenderTag') return;
+    let call = n.expression as Node;
+    let optional = !!call?.optional;
+    if (call?.type === 'ChainExpression') {
+      call = call.expression as Node;
+      optional = true;
+    }
+    const callee = call?.type === 'CallExpression' ? (call.callee as Node) : undefined;
+    if (callee?.type !== 'Identifier') return;
+    const name = String(callee.name);
+    const guarded = around.some((a, i) => a.type === 'IfBlock' && around[i + 1] === a.consequent && truthyTest(a.test as Node, name));
+    renders.push({ name, node: n, optional: optional || !!call.optional, guarded });
+  });
+  return renders;
+}
+
+/**
+ * The names the markup hands on, to a snippet it renders or a component it places: a slot handed on is shown by
+ * whatever it is handed to. Only testing it ({#if slot_content}) shows nothing.
+ */
+function handedNames(ast: Node): Set<string> {
+  const handed = new Set<string>();
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'Identifier') return;
+    const passed = around.some((a, i) => (a.type === 'RenderTag' && i < around.length - 1) || ((a.type === 'Attribute' || a.type === 'SpreadAttribute') && /^(Component|SvelteComponent|SvelteSelf)$/.test(String(around[i - 1]?.type))));
+    if (passed) handed.add(String(n.name));
+  });
+  return handed;
 }
 
 /**
@@ -617,33 +663,10 @@ function truthyTest(test: Node | undefined, name: string): boolean {
 function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> {
   const out: Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> = [];
   const locals = propsLocals(ast);
-  // Each snippet the markup renders, by the name it calls, with whether a call there can find it missing: an optional
-  // call, or a plain one inside a block shown only while it is given ({#if slot_content}, not its {:else}).
-  const renders: Array<{ name: string; node: Node; optional: boolean; guarded: boolean }> = [];
-  walkAst(ast.fragment, (n, around) => {
-    if (n.type !== 'RenderTag') return;
-    let call = n.expression as Node;
-    let optional = !!call?.optional;
-    if (call?.type === 'ChainExpression') {
-      call = call.expression as Node;
-      optional = true;
-    }
-    const callee = call?.type === 'CallExpression' ? (call.callee as Node) : undefined;
-    if (callee?.type !== 'Identifier') return;
-    const name = String(callee.name);
-    const guarded = around.some((a, i) => a.type === 'IfBlock' && around[i + 1] === a.consequent && truthyTest(a.test as Node, name));
-    renders.push({ name, node: n, optional: optional || !!call.optional, guarded });
-  });
+  const renders = snippetRenders(ast);
   const slots = contract.slots ?? {};
   const filled = new Set(contract.filled ?? []);
-  // The names the markup hands on, to a snippet it renders or a component it places: a slot handed on is shown by
-  // whatever it is handed to. Only testing it ({#if slot_content}) shows nothing.
-  const handed = new Set<string>();
-  walkAst(ast.fragment, (n, around) => {
-    if (n.type !== 'Identifier') return;
-    const passed = around.some((a, i) => (a.type === 'RenderTag' && i < around.length - 1) || ((a.type === 'Attribute' || a.type === 'SpreadAttribute') && /^(Component|SvelteComponent|SvelteSelf)$/.test(String(around[i - 1]?.type))));
-    if (passed) handed.add(String(n.name));
-  });
+  const handed = handedNames(ast);
   // Its declared slots, and every slot_<name> it takes from $props(), declared or not yet: each must render safely.
   const taken = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
   for (const slot of [...new Set([...Object.keys(slots), ...taken])]) {
@@ -676,7 +699,7 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
   walkAst(ast.fragment, (n) => {
     const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' ? (((n.expression as Node).properties as Node[]) ?? []) : [];
     const keyOf = (k: Node | undefined) => (k?.type === 'Identifier' ? k.name : k?.type === 'Literal' ? k.value : null);
-    if (spread.some((p) => p.type === 'Property' && keyOf(p.key as Node) === 'data-so-part')) out.push({ severity: 'error', message: 'Write data-so-part as an attribute of its own (data-so-part="total"), not in a spread: the published site must not carry it.', node: n });
+    if (spread.some((p) => p.type === 'Property' && isCodeMarker(String(keyOf(p.key as Node))))) out.push({ severity: 'error', message: 'Write data-so-part as an attribute of its own (data-so-part="total"), not in a spread: the published site must not carry it.', node: n });
   });
   for (const { attr, host } of partMarkers(ast.fragment)) {
     const id = markerName(attr);
@@ -704,12 +727,12 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
 }
 
 /**
- * A code component's source with every part marker (`data-so-part`) taken out, as the website's build ships it. The
- * markers are the editor's, written in the code so the preview can find each part; the published site carries none.
- * Source that cannot be parsed is returned as it is: it does not build either.
+ * A code component's source with every editor marker (see shared/code-markers.ts) taken out, as both exports ship it.
+ * The markers are the editor's, written in the code so the preview can find what it edits; the published site carries
+ * none. Source that cannot be parsed is returned as it is: it does not build either.
  */
-export async function withoutPartMarkers(source: string): Promise<string> {
-  if (!source.includes('data-so-part')) return source;
+export async function withoutCodeMarkers(source: string): Promise<string> {
+  if (!mentionsCodeMarker(source)) return source;
   const { parse } = await import('svelte/compiler');
   // The parser reads past a byte order mark, so its offsets count from after it.
   const bom = source.charCodeAt(0) === 0xfeff ? 1 : 0;
@@ -720,8 +743,13 @@ export async function withoutPartMarkers(source: string): Promise<string> {
   } catch {
     return source;
   }
-  const cuts = partMarkers(ast.fragment)
-    .map(({ attr }) => {
+  const markers: Node[] = [];
+  walkAst(ast.fragment, (n, around) => {
+    const host = around[around.length - 1];
+    if (n.type === 'Attribute' && isCodeMarker(String(n.name)) && host && Array.isArray(host.attributes)) markers.push(n);
+  });
+  const cuts = markers
+    .map((attr) => {
       let start = Number(attr.start);
       const end = Number(attr.end);
       // With the space before it when the tag goes on with a space or ends there, so the tag reads as if the

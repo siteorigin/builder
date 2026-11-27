@@ -8,6 +8,7 @@ import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } fro
 import { checkLocalBaseURL, keyDoubt, localKeyProblem } from '@shared/local';
 import { AskAiShortcut } from './ShortcutSettings';
 import { sendOnEnterHint } from '../lib/shortcut-keys';
+import { AI_IMAGE_PRIVACY } from '../lib/ai-privacy';
 
 /** A connection test's outcome, shown only while what it tested is still what is on screen. */
 type TestResult = { signature: string; provider: ProviderId; edits: number; ok: boolean; message: string; draft: boolean; stage?: 'server' | 'chat' };
@@ -590,14 +591,15 @@ export function SettingsModal() {
       <Shield aria-hidden="true" />
       <span>
         {!isLocal ? (
-          `${provider === activeProvider ? 'Your request' : `With ${label} in use, your request`} and the relevant page text go to ${label}, which bills your account for usage. Images and screenshots are never sent.`
+          `${provider === activeProvider ? 'Your request' : `With ${label} in use, your request`} and the relevant page text go to ${label}, which bills your account for usage.`
         ) : localRemoteHost ? (
           <>
             {provider === activeProvider ? 'When you use the assistant' : 'With Local model in use'}, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
           </>
         ) : (
           provider === activeProvider ? 'Your requests and page content stay on this computer.' : 'With Local model in use, your requests and page content stay on this computer.'
-        )}
+        )}{' '}
+        {AI_IMAGE_PRIVACY}
       </span>
     </div>
   );

@@ -3052,8 +3052,16 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'A component package is imported as a change of its own, with only its images.', recoverable: true } };
       // The parts and slots each code source in the batch shows, read from its syntax tree before the batch is applied,
       // so its own later operations can fill a slot or style a part the code just gained.
-      const names = new Map<string, { parts: string[]; slots: string[] } | null>();
+      const names = new Map<string, { parts: string[]; slots: string[]; shown: string[] } | null>();
       for (const op of ops) if ((op.type === 'component.createCode' || op.type === 'component.updateSource') && typeof op.source === 'string' && !names.has(op.source)) names.set(op.source, await codeContractNames(op.source));
+      // A theme switch asks which slots each code component of both themes shows, so content a placement holds in a
+      // slot the new code never renders is reported before it is lost. The current theme's own versions are read too:
+      // an earlier operation of the batch may install or refresh one.
+      if (ops.some((o) => o.type === 'theme.apply')) {
+        const targets = new Set([this.state.site.themeId, ...ops.flatMap((o) => (o.type === 'theme.apply' ? [o.themeId] : []))]);
+        const switching = [...Object.values(this.state.components).filter((d) => d.owner === 'theme'), ...listThemes().filter((t) => targets.has(t.id)).flatMap((t) => t.components)];
+        for (const d of switching) if (d.kind === 'code' && Object.keys(d.slots ?? {}).length && typeof d.source === 'string' && !names.has(d.source)) names.set(d.source, await codeContractNames(d.source));
+      }
       // A sync of an external source writes its collection's entries, and nothing else: only the main process's sync
       // gives the grant, never an AI run.
       if (opts.sourceSync && (opts.source === 'ai' || opts.runId))

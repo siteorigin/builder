@@ -31,6 +31,11 @@ function project(): string {
   write(dir, 'src/routes/+page.svelte', '<h1>Home</h1>');
   write(dir, 'siteorigin/site.json', '{}');
   write(dir, '.env', 'SECRET=1');
+  write(dir, '.dev.vars', 'SENTINEL_1126');
+  write(dir, '.dev.vars.production', 'SENTINEL_1126');
+  write(dir, '.wrangler/state/v3/kv.bin', 'SENTINEL_1126');
+  write(dir, 'functions/api/hello.ts', 'export const onRequest = () => new Response("hi");');
+  write(dir, 'wrangler.toml', 'name = "site"');
   write(dir, '.siteorigin/cache/dev/src/routes/+page.svelte', '<h1 data-so-node="n1">Home</h1>');
   write(dir, '.siteorigin/cache/dev/.clean-hashes.json', '{}');
   write(dir, '.siteorigin/lock.json', '{}');
@@ -51,7 +56,9 @@ describe('a preview copy', () => {
     expect(read(stage, 'src/routes/+page.svelte')).toBe('<h1>Home</h1>');
     expect(read(stage, '.siteorigin/cache/dev/src/routes/+page.svelte')).toContain('data-so-node');
     expect(read(stage, 'node_modules/.bin/vite')).toBe('vite');
-    for (const gone of ['.env', '.siteorigin/lock.json', '.svelte-kit', 'node_modules/.vite', 'node_modules/.vite-temp']) expect(existsSync(join(stage, gone)), gone).toBe(false);
+    expect(read(stage, 'functions/api/hello.ts')).toContain('onRequest');
+    expect(read(stage, 'wrangler.toml')).toContain('site');
+    for (const gone of ['.env', '.dev.vars', '.dev.vars.production', '.wrangler', '.siteorigin/lock.json', '.svelte-kit', 'node_modules/.vite', 'node_modules/.vite-temp']) expect(existsSync(join(stage, gone)), gone).toBe(false);
   });
 
   it('copies tools reached through a linked node_modules as a real folder of their own', async () => {
@@ -146,8 +153,14 @@ describe('keeping a preview copy up to date', () => {
     write(dir, 'siteorigin/site.json', '[]');
     write(dir, 'src/routes/contact/+page.svelte', '<h1>Contact</h1>');
     rmSync(join(dir, 'src/routes/about'), { recursive: true });
+    // Wrangler's local secrets and state, made once the preview is running, stay out of the copy too (#1126).
+    write(dir, 'worker/.dev.vars.staging', 'SENTINEL_1126');
+    write(dir, 'worker/.wrangler/state/v3/kv.bin', 'SENTINEL_1126');
+    write(dir, 'worker/wrangler.jsonc', '{}');
     await new Promise((r) => setTimeout(r, 20));
     await syncPreviewStage(dir, stage);
+    for (const gone of ['worker/.dev.vars.staging', 'worker/.wrangler']) expect(existsSync(join(stage, gone)), gone).toBe(false);
+    expect(read(stage, 'worker/wrangler.jsonc')).toBe('{}');
     expect(read(stage, 'src/routes/+page.svelte')).toBe('<h1>Home, edited</h1>');
     expect(read(stage, 'siteorigin/site.json')).toBe('[]');
     expect(read(stage, 'src/routes/contact/+page.svelte')).toBe('<h1>Contact</h1>');

@@ -187,3 +187,29 @@ describe('agent instructions match the tool definitions (#815)', () => {
     });
   });
 });
+
+describe('a new component asked for in page scope (#1143)', () => {
+  const onePage = () => ({ scope: 'page' as const });
+  /** One instruction line that has the model ask, with the widening question, for a new component. */
+  const ask = /^(?=[^\n]*request_clarification)(?=[^\n]*widenScope: true)[^\n]*make a new component/im;
+
+  it.each([
+    ['a native model', undefined],
+    ['a grammar-constrained model', 'constrained-json' as const]
+  ])('tells %s to ask to widen rather than refuse', async (_, toolCalling) => {
+    const req = await firstRequest('Create a countdown as a custom code component', onePage, true, toolCalling);
+    expect(req.tools.map((t) => t.name)).toContain('request_clarification');
+    expect(req.system).toMatch(ask);
+    expect(req.system).not.toMatch(/Developer mode(, which is off| \(off\))/);
+  });
+
+  it.each([
+    ['a native model', undefined],
+    ['a grammar-constrained model', 'constrained-json' as const]
+  ])('tells %s that code needs Developer mode when it is off', async (_, toolCalling) => {
+    const req = await firstRequest('Create a countdown component', onePage, false, toolCalling);
+    expect(req.system).toMatch(ask);
+    expect(req.system).toMatch(/Svelte code[^\n]*Developer mode(, which is off| \(off\))/);
+    expect(req.system).not.toContain('component.createCode');
+  });
+});
