@@ -3,7 +3,7 @@
  * shows the site's articles newest first, worked out from the pages each time the site is generated. Adding,
  * backdating, renaming, hiding or deleting an article changes every News list without touching the list itself.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ComponentDefinition, InstanceNode, ListProp, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent } from '@catalogue/index';
@@ -13,7 +13,8 @@ import { contractConflicts } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, pageFile, resolveInstanceProps } from '@generator/index';
 import { P, item as dslItem, prop } from '@catalogue/dsl';
-import { projectDesign } from './fixtures/packs';
+import { projectDesign, restorePacks } from './fixtures/packs';
+import { ARTICLES_THEME, registerArticlesTheme } from './fixtures/articles-designs';
 import { headingOutline, renderedContent } from '@generator/checks';
 import { UTIL_JS } from '@generator/runtime-files';
 import { headerMenu } from '@engine/tree';
@@ -30,9 +31,16 @@ import { computedAt, shownValue } from '../../src/renderer/src/lib/model';
 
 const page = (id: string) => ({ kind: 'page' as const, id });
 
+/**
+ * A theme whose Article header, News list and Text are designs built in the editor, on the release's properties:
+ * Foundation's are code, whose words the checks and search do not read (the Release gap tests).
+ */
+beforeAll(registerArticlesTheme);
+afterAll(() => restorePacks());
+
 /** The issue's market site: the later announcement added first, then the earlier one, and a News list on Home. */
-function market() {
-  let s = createStarterState('business', 'Riverside Market', false);
+function market(theme?: string) {
+  let s = createStarterState('business', 'Riverside Market', false, theme);
   s.site.language = 'en-GB';
   s = applyOperations(s, [
     { type: 'page.create', pageId: 'pg_spring', title: 'Spring makers announced', starter: 'article', articleDate: '2027-03-02', byline: 'Market team', excerpt: 'Twenty new stallholders join in March.' },
@@ -152,8 +160,7 @@ describe('dated articles', () => {
     expect(cards(later, home, nodeId).map((c) => c.id)).toEqual(['pg_aaaa', 'pg_spring', 'pg_winter']);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('creates an article with a header and an editable body, dated today unless told otherwise', () => {
+  it('creates an article with a header and an editable body, dated today unless told otherwise', () => {
     const s = applyOperations(createStarterState('business', 'Riverside Market', false), [{ type: 'page.create', pageId: 'pg_newone', title: 'Opening day', starter: 'article' }]).state;
     const p = s.pages.pg_newone;
     expect(p.article).toEqual({ date: todayArticleDate() });
@@ -161,13 +168,26 @@ describe('dated articles', () => {
     const header = p.nodes[p.rootIds[0]] as InstanceNode;
     expect(header.props).not.toHaveProperty('article');
     const row = resolveInstanceProps(defOf(s, header), header, { state: s, pageId: 'pg_newone' }).article as Array<Record<string, unknown>>;
-    // The page shows its date under its title.
-    expect(pageText(s, p).split('\n').slice(0, 2)).toEqual(['Opening day', formatArticleDate(todayArticleDate(), s.site.language)]);
     expect(row).toEqual([expect.objectContaining({ id: 'pg_newone', title: 'Opening day', date: todayArticleDate() })]);
     // The body is an ordinary text section, edited like any other.
     const body = p.nodes[p.rootIds[1]] as InstanceNode;
-    expect(pageText(s, p)).toContain('Write the article here.');
     expect(applyOperations(s, [{ type: 'instance.setProp', owner: page('pg_newone'), nodeId: body.id, prop: 'body', value: 'Doors open at nine.' }]).state.pages.pg_newone.nodes[body.id]).toMatchObject({ props: { body: [{ type: 'p', spans: [{ text: 'Doors open at nine.' }] }] } });
+  });
+
+  it('shows a new article’s date under its title, over its body', () => {
+    // An article header and text designed in the editor: the release's are not read (the Release gap test below).
+    const s = applyOperations(createStarterState('business', 'Riverside Market', false, ARTICLES_THEME), [{ type: 'page.create', pageId: 'pg_newone', title: 'Opening day', starter: 'article' }]).state;
+    const p = s.pages.pg_newone;
+    expect(pageText(s, p).split('\n').slice(0, 2)).toEqual(['Opening day', formatArticleDate(todayArticleDate(), s.site.language)]);
+    expect(pageText(s, p)).toContain('Write the article here.');
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
+  it.fails('shows a new article’s date under its title, over its body, with the release’s sections', () => {
+    const s = applyOperations(createStarterState('business', 'Riverside Market', false), [{ type: 'page.create', pageId: 'pg_newone', title: 'Opening day', starter: 'article' }]).state;
+    const p = s.pages.pg_newone;
+    expect(pageText(s, p).split('\n').slice(0, 2)).toEqual(['Opening day', formatArticleDate(todayArticleDate(), s.site.language)]);
+    expect(pageText(s, p)).toContain('Write the article here.');
   });
 
   it('makes an ordinary page an article, edits its details, and turns it back', () => {
@@ -246,9 +266,8 @@ describe('dated articles', () => {
     expect(homeSource(styled, home)).not.toContain('so_oi');
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('tells the checks and search what the visitor sees, without offering the computed words as fields to edit', () => {
-    const { s, home } = market();
+  it('tells the checks and search what the visitor sees, without offering the computed words as fields to edit', () => {
+    const { s, home } = market(ARTICLES_THEME);
     const content = renderedContent(s, s.pages[home]).filter((c) => c.kind === 'text' && (c.value === 'Winter opening hours' || c.value === '14 November 2026'));
     expect(content).toHaveLength(2);
     for (const c of content) {
@@ -263,6 +282,13 @@ describe('dated articles', () => {
     expect(pageText(s, s.pages[home])).toContain('Twenty new stallholders join in March.');
     // The article's own page shows its title as its one Heading 1.
     expect(headingOutline(s, 'pg_winter').filter((h) => h.level === 1).map((h) => h.text)).toEqual(['Winter opening hours']);
+    expect(pageText(s, s.pages.pg_winter).split('\n').slice(0, 3)).toEqual(['Winter opening hours', '14 November 2026', 'Shorter days from December.']);
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
+  it.fails('tells search what the release’s News list and article header show', () => {
+    const { s, home } = market();
+    expect(pageText(s, s.pages[home])).toContain('Spring makers announced');
     expect(pageText(s, s.pages.pg_winter).split('\n').slice(0, 3)).toEqual(['Winter opening hours', '14 November 2026', 'Shorter days from December.']);
   });
 
@@ -288,9 +314,8 @@ describe('dated articles', () => {
 });
 
 describe('computed lists inside a design', () => {
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('keeps an article’s header and its News list right after they are made into a component of their own', () => {
-    const { s } = market();
+  it('keeps an article’s header and its News list right after they are made into a component of their own', () => {
+    const { s } = market(ARTICLES_THEME);
     const winter = s.pages.pg_winter;
     const headerId = winter.rootIds[0];
     const withNews = applyOperations(s, [{ type: 'node.insert', owner: page('pg_winter'), componentId: 'content.news', props: { heading: 'More news' } }]);
@@ -348,9 +373,8 @@ describe('computed lists inside designs: further cases', () => {
   }
   const fileOf = (files: Map<string, string>, needle: string) => [...files.values()].find((f) => f.includes(needle))!;
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('hands the rows on through a design inside a design, and to code that reads them', () => {
-    const { s } = market();
+  it('hands the rows on through a design inside a design, and to code that reads them', () => {
+    const { s } = market(ARTICLES_THEME);
     const headerId = s.pages.pg_winter.rootIds[0];
     const once = applyOperations(s, [{ type: 'component.createFromNode', owner: page('pg_winter'), nodeId: headerId, name: 'Masthead' }]);
     const twice = applyOperations(once.state, [{ type: 'component.createFromNode', owner: page('pg_winter'), nodeId: once.state.pages.pg_winter.rootIds[0], name: 'Outer masthead' }]);

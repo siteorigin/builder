@@ -213,8 +213,8 @@ describe.skipIf(!engine)('what a thumbnail can show of the site’s colours', ()
     expect(fewer).toBeGreaterThan(0);
   }, 300_000);
 
-  // Release gap: thumb-reads.ts takes the release's quoted [aria-selected='true']::after selector as always applying.
-  it.fails('reads the brand colour for a card painted on it, and not for a card that never shows it', async () => {
+  /** Two cards of the project's own, one painted on the brand colour, shown as their previews are. */
+  async function cards(): Promise<[Shown, Shown]> {
     const card = (name: string) => ({ type: 'component.upsert', name, properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'article', children: ['title', 'body'] }, { kind: 'text', id: 'title', tag: 'h3', text: name }, { kind: 'text', id: 'body', tag: 'p', text: 'A plain card.' }] });
     const made = applyOperations(createStarterState('business', 'Thumb Studio', false), [card('Plain card'), card('Brand card')] as never);
     const [plain, brand] = made.results.map((r) => r.definitionId as string);
@@ -223,10 +223,19 @@ describe.skipIf(!engine)('what a thumbnail can show of the site’s colours', ()
       { name: 'plain', spec: { definitionId: plain } },
       { name: 'brand', spec: { definitionId: brand } }
     ]);
-    const plainReads = await holds(p, 'light');
-    const brandReads = await holds(b, 'light');
-    expect(plainReads).not.toContain('--so-color-brand');
-    expect(brandReads).toContain('--so-color-brand');
+    return [p, b];
+  }
+
+  it('reads the brand colour for a card painted on it, and what it reads of a plain card keeps its picture', async () => {
+    const [p, b] = await cards();
+    expect(await holds(p, 'light')).not.toBeNull();
+    expect(await holds(b, 'light')).toContain('--so-color-brand');
+  }, 120_000);
+
+  // Release gap: thumb-reads.ts (src/main/runtime) takes a selector holding both a quote and a pseudo-element as applying, and the release's base CSS draws a chosen tab's underline in the brand colour under one (.so-tablist > .so-plain-link[role='tab'][aria-selected='true']::after), so every preview reads the brand colour.
+  it.fails('does not read the brand colour for a card that never shows it', async () => {
+    const [p] = await cards();
+    expect(await holds(p, 'light')).not.toContain('--so-color-brand');
   }, 120_000);
 });
 

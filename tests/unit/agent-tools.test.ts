@@ -22,6 +22,8 @@ import { propSchemaSummary } from '@agent/context';
 import { P, item, prop } from '@catalogue/dsl';
 import { foundationDesign, projectDesign, type DesignSpec } from './fixtures/packs';
 import { registerSecondTheme } from './second-theme';
+import { managedContactDetails } from './fixtures/contact-links-designs';
+import { managedFoundation } from './fixtures/agent-designs';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { envelopeInstructions } from '@agent/constrained';
 import { selectionTools } from '@agent/selection';
@@ -317,21 +319,42 @@ describe('upsert_page_with_sections', () => {
     expect(propsOf('content.article')).toEqual(['eyebrow']);
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('moves a contact link with the address a rewrite changes, unless the rewrite sends the link', async () => {
+  /** A rewrite of the contact page's details: the email changes, the phone sends its own link. */
+  const rewriteContact = async (managed: boolean) => {
     const items = [
       { label: 'Email', value: 'bookings@kloof.example' },
       { label: 'Phone', value: '+1 202 555 0142', link: 'tel:+15550134' },
       { label: 'Studio', value: '12 Harbour Lane, Millbrook' },
       { label: 'Hours', value: 'Monday to Friday, 9am – 5pm' }
     ];
-    const { session, run } = await setup([() => [call('c1', 'upsert_page_with_sections', { slug: 'contact', sections: [{ componentId: 'contact.details', props: { items } }] })], () => finish()]);
+    // Drawn as a managed design whose links follow their text (fixtures/contact-links-designs.ts) when `managed`.
+    const prepare = (s: ProjectState) => {
+      const release = getTheme('foundation').components.find((c) => c.componentId === 'contact.details')!;
+      if (managed) s.components[release.id] = managedContactDetails(release);
+    };
+    const { session, run } = await setup([() => [call('c1', 'upsert_page_with_sections', { slug: 'contact', sections: [{ componentId: 'contact.details', props: { items } }] })], () => finish()], {}, 'business', prepare);
     await run('Our email is now bookings@kloof.example');
     const page = pageAt(session.state, '/contact/')!;
     const section = page.rootIds.map((id) => page.nodes[id] as InstanceNode).find((n) => Array.isArray(n.props.items) && (n.props.items as ListItem[]).some((i) => i.icon === 'mail'))!;
-    const stored = section.props.items as Array<ListItem & { link: LinkValue }>;
+    expect(session.state.components[section.definitionId].kind).toBe(managed ? 'managed' : 'code');
+    return section.props.items as Array<ListItem & { link: LinkValue }>;
+  };
+
+  it('moves a contact link with the address a rewrite changes, unless the rewrite sends the link', async () => {
+    const stored = await rewriteContact(true);
     expect(stored.find((i) => i.label === 'Email')).toMatchObject({ value: 'bookings@kloof.example', link: { type: 'email', target: 'bookings@kloof.example' } });
     expect(stored.find((i) => i.label === 'Phone')).toMatchObject({ value: '+1 202 555 0142', link: { type: 'tel', target: '+15550134' } });
+  });
+
+  it("keeps the link a rewrite sends with the release's contact details", async () => {
+    const stored = await rewriteContact(false);
+    expect(stored.find((i) => i.label === 'Phone')).toMatchObject({ value: '+1 202 555 0142', link: { type: 'tel', target: '+15550134' } });
+  });
+
+  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
+  it.fails("moves the release's contact link with the address a rewrite changes", async () => {
+    const stored = await rewriteContact(false);
+    expect(stored.find((i) => i.label === 'Email')).toMatchObject({ value: 'bookings@kloof.example', link: { type: 'email', target: 'bookings@kloof.example' } });
   });
 
   it('creates a whole page and wires navigation in one call, as one undo step', async () => {
@@ -1243,10 +1266,9 @@ describe('selection tools', () => {
     expect(params.required ?? []).not.toContain('assetIds');
   });
 
-  // Release gap: no release section takes a background image (partStyleControls in src/shared/styles.ts).
-  it.fails('edits list items one at a time', async () => {
+  it('edits list items one at a time', async () => {
     let added = '';
-    const { session, adapter, run } = await setup(
+    const { session, run } = await setup(
       [
         (req) => {
           void req;
@@ -1268,9 +1290,26 @@ describe('selection tools', () => {
     const items = nodeAt(session.state, 2).props.items as Array<ListItem & { title: string; description: string }>;
     expect(items.map((i) => i.id)).toEqual([original[1], added, original[2]]);
     expect(items[1]).toMatchObject({ title: 'Renamed', description: 'Added.' });
+  });
+
+  /** The instructions a focused run on the home page's card grid starts with: Foundation's managed design of it when `managed`. */
+  const gridRunSystem = async (managed: boolean) => {
+    const { session, adapter, run } = await setup([() => finish()], focused, 'business', managed ? (s) => void managedFoundation(s, ['features.grid']) : undefined);
+    const node = nodeAt(session.state, 2);
+    expect(session.state.components[node.definitionId]).toMatchObject({ componentId: 'features.grid', kind: managed ? 'managed' : 'code' });
+    await run('Update these cards', { ...heroRef(session.state), nodeId: pageAt(session.state, '/')!.rootIds[2] });
+    return adapter.requests[0].system;
+  };
+
+  it('tells a focused run how to choose a background image, by its library ID, for a box that takes one', async () => {
     // The grid has no picture among its properties, but its box can take a background image, which is chosen by its
     // library ID (#354): a focused run is told how (#12).
-    expect(adapter.requests[0].system).toContain('An image is set by its assetId');
+    expect(await gridRunSystem(true)).toContain('An image is set by its assetId');
+  });
+
+  // Release gap: partStyleControls (src/shared/styles.ts) offers backgroundImage on managed element nodes only, so no release section's box takes a background image.
+  it.fails("tells a focused run on the release's card grid how to choose its background image", async () => {
+    expect(await gridRunSystem(false)).toContain('An image is set by its assetId');
   });
 
   it('changes one table cell, row or column by ID, never rewriting the rest (issue #179)', async () => {
@@ -2273,19 +2312,28 @@ describe('the header notice (#269)', () => {
 });
 
 describe('ai-profile examples', () => {
-  // Release gap: the release's AI examples include two blocks, which checkExample refuses.
-  it.fails('are valid against every theme and cover every section family', () => {
+  /** The release's examples for two of its blocks, which go inside a section: not ready-to-send page sections. */
+  const BLOCK_EXAMPLES = ['block-download-menus', 'block-facts-hours'];
+
+  it('are valid against every theme and cover every section family', () => {
     const state = createStarterState('business', 'Test', false);
     for (const theme of listThemes()) {
       const scoped = { ...state, site: { ...state.site, themeId: theme.id } };
       const examples = theme.aiProfile.examples ?? [];
-      for (const ex of examples) expect(checkExample(scoped, ex), `${theme.id}/${ex.id}`).toEqual([]);
+      for (const ex of examples) if (!BLOCK_EXAMPLES.includes(ex.id)) expect(checkExample(scoped, ex), `${theme.id}/${ex.id}`).toEqual([]);
       const covered = new Set(examples.map((e) => e.componentId));
       // Examples are ready-to-send page sections: a block goes inside one, so it has none. Layout sections start
       // empty, and an example cannot fill their slots, so they have none either.
       for (const c of theme.components) if (c.category !== 'shell' && !['layout.section', 'layout.split'].includes(c.componentId!) && c.insertAs !== 'element') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
       expect(new Set(examples.map((e) => e.id)).size).toBe(examples.length);
     }
+  });
+
+  // Release gap: the release ships AI examples for two blocks (block.download, block.facts), which checkExample refuses as not page sections (#664).
+  it.fails.each(listThemes().flatMap((t) => (t.aiProfile.examples ?? []).filter((ex) => BLOCK_EXAMPLES.includes(ex.id)).map((ex) => [t.id, ex.id] as const)))('has a valid %s example %s', (themeId, id) => {
+    const state = createStarterState('business', 'Test', false);
+    const ex = getTheme(themeId).aiProfile.examples!.find((e) => e.id === id)!;
+    expect(checkExample({ ...state, site: { ...state.site, themeId } }, ex)).toEqual([]);
   });
 
   it('are page sections: a block, which goes inside one, is refused as an example (#664)', () => {

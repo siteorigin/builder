@@ -49,8 +49,10 @@ const lch = (hex: string) => {
 const ratio = (a: string, b: string) => contrastBetween(parseColor(a)!, parseColor(b)!);
 
 describe('every pair readable, for any brand and mood (#357)', () => {
-  // Release gap: the release's callout contrast pairs cannot be fixed for every brand.
-  it.fails(`passes every contrast pair of every built-in theme for ${BRANDS.length} brands in each mood`, () => {
+  /** The roles the release has no tokens for, so no palette makes them: its error colours (#1016). */
+  const RELEASE_LACKS = ['color.error', 'color.error-on-inverse'] as const;
+
+  it(`passes every contrast pair of every built-in theme for ${BRANDS.length} brands in each mood`, () => {
     expect(BRANDS.length).toBeGreaterThanOrEqual(20);
     const failures: string[] = [];
     let checked = 0;
@@ -60,7 +62,7 @@ describe('every pair readable, for any brand and mood (#357)', () => {
       for (const mood of PALETTE_MOODS)
         for (const brand of BRANDS) {
           const h = make(brand, mood, themeId);
-          for (const role of PALETTE_ROLES) expect(h.values[role], `${themeId} ${mood} ${brand} ${role}`).toMatch(/^#[0-9a-f]{6}$/);
+          for (const role of PALETTE_ROLES.filter((r) => !(RELEASE_LACKS as readonly string[]).includes(r))) expect(h.values[role], `${themeId} ${mood} ${brand} ${role}`).toMatch(/^#[0-9a-f]{6}$/);
           for (const r of evaluatePairs(tokens, pairs, parseColor, h.values as Record<string, string>)) {
             checked++;
             if (r.status !== 'pass') failures.push(`${themeId} ${mood} ${brand}: ${r.pair.id} ${r.status}${r.status === 'fail' ? ` ${r.ratio.toFixed(3)} < ${r.min}` : ''}`);
@@ -72,16 +74,38 @@ describe('every pair readable, for any brand and mood (#357)', () => {
     expect(checked).toBeGreaterThan(BRANDS.length * PALETTE_MOODS.length * THEMES.length * 20);
   });
 
-  // Release gap: the release's callout contrast pairs cannot be fixed for every brand, so some brands are shifted.
-  it.fails('keeps the brand exactly wherever a page can carry it as text, which on Foundation is every brand', () => {
-    for (const themeId of ['foundation', 'foundation-alt'])
+  // Release gap: the release has no error colour (color.error, color.error-on-inverse) or error contrast pairs (#1016).
+  it.fails('makes the error colours among the roles of every built-in theme, for every brand and mood', () => {
+    for (const themeId of THEMES)
       for (const mood of PALETTE_MOODS)
         for (const brand of BRANDS) {
+          const h = make(brand, mood, themeId);
+          for (const role of RELEASE_LACKS) expect(h.values[role], `${themeId} ${mood} ${brand} ${role}`).toMatch(/^#[0-9a-f]{6}$/);
+        }
+  });
+
+  /** Mid-tone brands the release's callout-brand pair (brand text on a 6% brand tint, not fixable) cannot carry as they are. */
+  const CALLOUT_SHIFTED = ['#777777', '#747474', '#e11d48', '#d14131'];
+
+  it('keeps the brand exactly wherever a page can carry it as text, which on Foundation is every brand', () => {
+    for (const themeId of ['foundation', 'foundation-alt'])
+      for (const mood of PALETTE_MOODS)
+        for (const brand of BRANDS.filter((b) => !CALLOUT_SHIFTED.includes(b))) {
           const h = make(brand, mood, themeId);
           expect(h.adjusted, `${themeId} ${mood} ${brand}`).toBe(false);
           expect(h.values['color.brand']).toBe(brand);
         }
     expect(make('#1f5a4c', 'tinted', 'eyebrow-pill')).toMatchObject({ adjusted: false, brand: '#1f5a4c' });
+  });
+
+  // Release gap: the release's callout-brand pair (color.brand on a 6% brand tint over the surface, fixable: false) reads for none of these mid-tone brands, so the palette moves them.
+  it.fails.each(CALLOUT_SHIFTED)('keeps the brand %s exactly on Foundation, callouts included', (brand) => {
+    for (const themeId of ['foundation', 'foundation-alt'])
+      for (const mood of PALETTE_MOODS) {
+        const h = make(brand, mood, themeId);
+        expect(h.adjusted, `${themeId} ${mood} ${brand}`).toBe(false);
+        expect(h.values['color.brand']).toBe(brand);
+      }
   });
 
   it("moves a mid-grey brand the least it must on a theme whose tinted eyebrow pill reads on neither a white nor a black page, and says so", () => {

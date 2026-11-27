@@ -15,51 +15,12 @@ import { applyOperations } from '@engine/apply';
 import { copyEditableLookup, copyEditorBatchProblem } from '@engine/copy-editor';
 import { makeInstance } from '@engine/install';
 import { normalizePropSchema } from '@engine/schema';
-import { FOUNDATION_AUTHOR, ROOT, projectDesign } from './fixtures/packs';
+import { FOUNDATION_AUTHOR, ROOT } from './fixtures/packs';
+import { HERO, SECTION, heroDesign, sectionDesign } from './fixtures/live-copy-editor-designs';
 
 const FORM = 'foundation.contact.form';
 const { managed } = FOUNDATION_AUTHOR;
 
-/**
- * A split hero as a managed design of the project's own, the slice of the old managed Foundation hero the copy editor
- * reads: its eyebrow, heading, lead and picture marked as copy, its heading level, button and tone left to the host.
- * Foundation's own heroes are code, whose markup the copy editor cannot read (the last test of the next block).
- */
-const heroDesign = (state: ProjectState) =>
-  projectDesign(state, {
-    componentId: 'test.split-hero',
-    name: 'Split hero',
-    properties: {
-      eyebrow: P.copy(P.str('Eyebrow', 'Independent studio')),
-      heading: P.copy(P.str('Heading', 'Thoughtful work')),
-      headingLevel: P.choice('Heading level', 'h1', [['h1', 'Heading 1'], ['h2', 'Heading 2']]),
-      lead: P.copy(P.text('Supporting text', 'We help small teams.')),
-      primaryLabel: P.str('Primary button label', 'Start a project'),
-      primaryLink: P.link('Primary button link'),
-      image: P.copy(P.image('Image', 'A calm studio'))
-    },
-    parts: {},
-    variantAxes: { tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background', styles: { root: { base: { background: '#f4f1ea' } } } } } } },
-    build: (b) =>
-      b.el('root', 'section', {}, [
-        b.el('content', 'div', {}, [
-          b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { when: { $prop: 'eyebrow' } }),
-          b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { when: { $prop: 'heading' } }),
-          b.text('lead', 'p', { $prop: 'lead' }, { when: { $prop: 'lead' } }),
-          b.link('primary', { $prop: 'primaryLink' }, { $prop: 'primaryLabel' }, 'primary', { when: { $prop: 'primaryLabel' } })
-        ]),
-        b.el('media-wrap', 'figure', {}, [b.image('media', { $prop: 'image' })])
-      ])
-  });
-const HERO = 'foundation.test.split-hero';
-
-/**
- * A section that shows what is put in it once, as a managed design of the project's own. Foundation's Section is
- * code, whose slots the copy editor cannot see are shown once (the test after the first below).
- */
-const sectionDesign = (state: ProjectState) =>
-  projectDesign(state, { componentId: 'test.section', name: 'Section', properties: {}, parts: {}, slots: { content: { label: 'Content' } }, build: (b) => b.el('root', 'section', {}, [b.slot('slot', 'content')]) });
-const SECTION = 'foundation.test.section';
 /** The theme releases the app ships, and the development fixture: one folder each under resources/. */
 const BUNDLED = ['packs', 'packs-dev'].flatMap((dir) => readdirSync(join(ROOT, 'resources', dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name));
 
@@ -145,7 +106,8 @@ describe('what a copy editor may change', () => {
     expect((node<InstanceNode>(after, owner, hero).props.image as ImageValue).assetId).toBe('pic2');
   });
 
-  // Release gap: the release marks no property copyEditable, and copyEditableLookup (src/engine/copy-editor.ts) takes managed designs only.
+  // Release gap: shownOnceSlots (src/engine/slots.ts) counts no slot of a code component as shown once, so shownOnceIn
+  // (src/engine/copy-editor.ts) refuses text placed in the release's Section as shown once for each item of a list.
   it.fails('rewords a page’s text inside the shipped theme’s Section', () => {
     let state = createStarterState('blank', 'Copy', false);
     const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
@@ -300,25 +262,34 @@ describe('what a copy editor may change', () => {
     expect(editable(def.id, 'caption')).toBe(false);
   });
 
-  // Release gap: the release marks no property copyEditable, and copyEditableLookup (src/engine/copy-editor.ts) takes managed designs only.
-  it.fails('marks the heroes’ copy and the split hero’s picture in every theme', () => {
-    const themes = listThemes();
-    // Every pack the app ships (and the development fixture) is registered, so the loop below covers them all.
-    expect(themes.map((t) => t.id)).toEqual(expect.arrayContaining(BUNDLED));
+  /** Each bundled theme's two heroes, with the copy each marks, and the lookup the copy editor reads for it. */
+  const HEROES = [
+    ['hero.split', ['eyebrow', 'heading', 'lead', 'image']],
+    ['hero.centered', ['eyebrow', 'heading', 'lead']]
+  ] as const;
+  const heroCases = BUNDLED.flatMap((theme) => HEROES.map(([componentId, marked]) => ({ theme, componentId, marked })));
+  const heroLookup = (theme: string, componentId: string) => {
+    const def = catalogueComponent(theme, componentId);
+    expect(def, `${theme} ${componentId}`).toBeDefined();
+    return { id: def!.id, editable: copyEditableLookup({ ...createStarterState('blank', 'x', false), components: { [def!.id]: def! } }) };
+  };
+
+  it('registers every theme the app ships, and the development fixture, each with both heroes', () => {
+    // Every pack the app ships (and the development fixture) is registered, so the cases below cover them all.
     expect(BUNDLED.length).toBeGreaterThan(0);
-    for (const theme of themes) {
-      for (const [componentId, marked] of [
-        ['hero.split', ['eyebrow', 'heading', 'lead', 'image']],
-        ['hero.centered', ['eyebrow', 'heading', 'lead']]
-      ] as const) {
-        const def = catalogueComponent(theme.id, componentId);
-        expect(def, `${theme.id} ${componentId}`).toBeDefined();
-        const state = { ...createStarterState('blank', 'x', false), components: { [def!.id]: def! } };
-        const editable = copyEditableLookup(state);
-        for (const prop of marked) expect(editable(def!.id, prop), `${theme.id} ${componentId} ${prop}`).toBe(true);
-        for (const prop of ['headingLevel', 'primaryLabel', 'primaryLink']) expect(editable(def!.id, prop), `${theme.id} ${componentId} ${prop}`).toBe(false);
-      }
-    }
+    expect(listThemes().map((t) => t.id)).toEqual(expect.arrayContaining(BUNDLED));
+    for (const { theme, componentId } of heroCases) expect(catalogueComponent(theme, componentId), `${theme} ${componentId}`).toBeDefined();
+  });
+
+  it.each(heroCases)('leaves the heading level and button of $theme’s $componentId to the host', ({ theme, componentId }) => {
+    const { id, editable } = heroLookup(theme, componentId);
+    for (const prop of ['headingLevel', 'primaryLabel', 'primaryLink']) expect(editable(id, prop), `${theme} ${componentId} ${prop}`).toBe(false);
+  });
+
+  // Release gap: the release marks no property copyEditable, and copyEditableLookup (src/engine/copy-editor.ts) takes managed designs only.
+  it.fails.each(heroCases)('marks the copy of $theme’s $componentId', ({ theme, componentId, marked }) => {
+    const { id, editable } = heroLookup(theme, componentId);
+    for (const prop of marked) expect(editable(id, prop), `${theme} ${componentId} ${prop}`).toBe(true);
   });
 });
 

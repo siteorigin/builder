@@ -8,6 +8,7 @@ import { findParent } from '@engine/tree';
 import { P, item, prop } from '@catalogue/dsl';
 import { projectDesign, type DesignSpec } from './fixtures/packs';
 import { GALLERY, SPLIT_HERO, TEAM } from './fixtures/image-drop-designs';
+import { SECTION } from './fixtures/insert-at-designs';
 import { showsWithSoImage } from '@generator/checks';
 import { aimKey, assetAim, imageDropOps, imageDropTargets, resolveImageDrop, showsFile, type ImageTarget, type PointedAt } from '../../src/renderer/src/lib/image-drop';
 import type { InsertAim } from '../../src/renderer/src/lib/insert-drop';
@@ -197,10 +198,10 @@ describe('the image a drop changes (#505)', () => {
     expect(pick(s.state, now, chain(s.state, s.owner, s.team, heading.id, [], 'h2'))).toMatchObject({ direct: false, target: { field: { itemId: b } } });
   });
 
-  // Release gap: an Image in a code component's slot takes no Assets drop (walkRendered in src/generator/checks.ts).
-  it.fails('fills the one empty Image placed in a Section from anywhere in the Section', () => {
+  it('fills the one empty Image placed in a Section from anywhere in the Section', () => {
     const s = site();
-    const [section] = s.step([{ type: 'node.insert', owner: s.owner, parentId: null, componentId: 'layout.section' }]);
+    // A Section designed in the editor: Foundation's is a code component (the Release gap test below).
+    const [section] = s.step([{ type: 'node.insert', owner: s.owner, parentId: null, definitionId: projectDesign(s.state, SECTION).id }]);
     const [text, image] = s.step([
       { type: 'node.insert', owner: s.owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Our rooms' },
       { type: 'node.insert', owner: s.owner, parentId: section, slot: 'content', primitive: 'image' }
@@ -214,6 +215,14 @@ describe('the image a drop changes (#505)', () => {
     expect(pick(s.state, targets, at)).toEqual({ target: placed, direct: false });
     s.step(imageDropOps(s.owner, placed.field!, studio.id));
     expect(s.state.pages[s.owner.id].nodes[image]).toMatchObject({ image: { assetId: studio.id, alt: studio.altSuggestion } });
+  });
+
+  // Release gap: an Image in a code component's slot takes no Assets drop (walkRendered in src/generator/checks.ts).
+  it.fails('offers the empty Image placed in the release’s Section as a drop target', () => {
+    const s = site();
+    const [section] = s.step([{ type: 'node.insert', owner: s.owner, parentId: null, componentId: 'layout.section' }]);
+    const [image] = s.step([{ type: 'node.insert', owner: s.owner, parentId: section, slot: 'content', primitive: 'image' }]);
+    expect(imageDropTargets(s.state, s.owner.id).find((t) => t.field?.nodeId === image)).toMatchObject({ desc: { ctx: `page:${s.owner.id}`, node: image }, unfilled: true });
   });
 
   it('takes nothing on a field every item of a list shows, which a drop on one item would change in all', () => {

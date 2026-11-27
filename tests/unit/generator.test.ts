@@ -17,7 +17,8 @@ import { withPublished } from '@shared/published';
 import { P, prop } from '@catalogue/dsl';
 import { FOUNDATION_AUTHOR, projectDesign, type DesignSpec } from './fixtures/packs';
 import { SECTION } from './fixtures/insert-at-designs';
-import { BANNER, DETAILS, FOOTER, HERO_SPLIT } from './fixtures/generator-designs';
+import { BANNER, DETAILS, FAQ, FOOTER, HERO_SPLIT, INTRO, LOGOS } from './fixtures/generator-designs';
+import { pricingDesign } from './fixtures/unlinked-buttons-designs';
 import { FEATURES } from './fixtures/wrap-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -57,6 +58,20 @@ function placeDesign(s: ProjectState, spec: DesignSpec, opts: { index?: number; 
   if (opts.index === undefined) page.rootIds.push(node.id);
   else page.rootIds.splice(opts.index, 0, node.id);
   return node;
+}
+
+/**
+ * The Contact page made of designs of the project's own, worded as the starter words it: its introduction, contact
+ * details and questions. Foundation's sections are code components, which take no anchor (see the Release gap tests).
+ */
+function managedContact(s: ProjectState) {
+  const contact = s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === '/contact/')!;
+  contact.nodes = {};
+  contact.rootIds = [];
+  const intro = placeDesign(s, INTRO, { pageId: contact.id, props: { eyebrow: 'Contact', heading: 'Let’s talk' } });
+  const details = placeDesign(s, DETAILS, { pageId: contact.id, props: { eyebrow: '', heading: 'Get in touch' } });
+  const faq = placeDesign(s, FAQ, { pageId: contact.id, props: { heading: 'Frequently asked questions' } });
+  return { contact, intro, details, faq };
 }
 
 function compileAll(files: Map<string, string>) {
@@ -431,17 +446,30 @@ describe('links and buttons', () => {
     expect(dev.match(/className/g)!.length).toBe(7);
   });
 
-  // Release gap: unlinkedButtons (src/generator/checks.ts) reads managed designs only, so a release button with no link goes unreported.
-  it.fails('reports a labelled button without a link', () => {
+  it('reports a labelled button without a link', () => {
     const s = fresh();
     expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toEqual([]);
-    instanceOf(s, 'hero.split').props.primaryLink = { type: 'none', target: '' };
+    const hero = placeDesign(s, HERO_SPLIT);
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toEqual([]);
+    hero.props.primaryLink = { type: 'none', target: '' };
     const found = validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED');
     expect(found).toHaveLength(1);
     expect(found[0].message).toContain('Start a project');
     expect(found[0].message).toContain('visitors won’t see it');
-    addToHome(s, 'pricing.plans');
+    // A pricing design whose three plans have nowhere to go.
+    const pricing = makeInstance(pricingDesign(s), {});
+    home(s).nodes[pricing.id] = pricing;
+    home(s).rootIds.push(pricing.id);
     expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toHaveLength(4);
+  });
+
+  // Release gap: unlinkedButtons (src/generator/checks.ts) reads managed designs only, so a release button with no link goes unreported.
+  it.fails('reports a labelled button of the release without a link', () => {
+    const s = fresh();
+    instanceOf(s, 'hero.split').props.primaryLink = { type: 'none', target: '' };
+    const found = validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain('Start a project');
   });
 
   it('survives a malformed component tree without crashing validation', () => {
@@ -461,6 +489,16 @@ describe('links and buttons', () => {
     s.assets.assets['a1'] = { id: 'a1', name: 'Hero', file: 'static/assets/hero.jpg', mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' };
     instanceOf(s, 'hero.split').props.image = { assetId: 'a1', alt: 'Hero' };
     expect(placeholderImageCount(s)).toBe(5);
+  });
+
+  it('counts a design’s image as a placeholder until it has a picture', () => {
+    const s = fresh();
+    const before = placeholderImageCount(s);
+    const hero = placeDesign(s, HERO_SPLIT);
+    expect(placeholderImageCount(s)).toBe(before + 1);
+    s.assets.assets['a1'] = { id: 'a1', name: 'Hero', file: 'static/assets/hero.jpg', mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' };
+    hero.props.image = { assetId: 'a1', alt: 'Hero' };
+    expect(placeholderImageCount(s)).toBe(before);
   });
 
   it('counts placeholder images inside components placed in a design and in its slots', () => {
@@ -560,20 +598,25 @@ describe('SEO and performance', () => {
     expect(JSON.parse(generateProject(s).get(`${GEN_ROOT}/paths.json`)!)).toEqual({ base: '/my-site' });
   });
 
-  // Release gap: the release's hero.split and testimonials portraits give their images no sizes.
-  it.fails('loads the first section eagerly and gives images realistic sizes', () => {
+  it('loads the first section eagerly and gives images realistic sizes', () => {
     const files = generateProject(fresh());
     const page = files.get('src/routes/+page.svelte')!;
     expect(page.match(/so_eager=\{true\}/g)).toHaveLength(1);
     const hero = [...files.entries()].find(([p]) => p.endsWith('hero-split.svelte'))![1];
     expect(hero).toContain('eager={so_eager}');
-    expect(hero).toContain('sizes="(min-width: 1024px) 600px, (min-width: 768px) 100vw, 100vw"');
     const gallery = [...files.entries()].find(([p]) => p.endsWith('media-gallery.svelte'))![1];
     expect(gallery).not.toContain('eager');
     expect(gallery).toContain('sizes="(min-width: 1024px) 400px, (min-width: 768px) 50vw, 100vw"');
-    const testimonials = [...files.entries()].find(([p]) => p.endsWith('testimonials-grid.svelte'))![1];
-    expect(testimonials).toContain('sizes="44px"');
     expect(files.get(`${RUNTIME_DIR}/Image.svelte`)).toContain("fetchpriority={eager ? 'high' : undefined}");
+  });
+
+  // Release gap: the release's hero.split and testimonials portraits give their images no sizes.
+  it.fails('gives the hero’s picture and the testimonial portraits realistic sizes', () => {
+    const files = generateProject(fresh());
+    const hero = [...files.entries()].find(([p]) => p.endsWith('hero-split.svelte'))![1];
+    expect(hero).toMatch(/\bsizes="[^"]+"/);
+    const testimonials = [...files.entries()].find(([p]) => p.endsWith('testimonials-grid.svelte'))![1];
+    expect(testimonials).toMatch(/\bsizes="[^"]+"/);
   });
 
   /**
@@ -1094,17 +1137,23 @@ describe('section links', () => {
     expect(missing(s)).toHaveLength(1);
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('accepts the section once it exists, and reports it again when the section is deleted', () => {
+  it('accepts the section once it exists, and reports it again when the section is deleted', () => {
     let s = fresh();
-    const contact = contactOf(s);
-    const details = instanceOf(s, 'contact.details', contact.id);
+    const { contact, details } = managedContact(s);
     headerOf(s).props.ctaLink = { type: 'page', target: contact.id, anchor: 'get-in-touch' };
     expect(missing(s)).toHaveLength(1);
     s = applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: details.id, field: 'anchor', value: 'get-in-touch' }]).state;
     expect(missing(s)).toEqual([]);
     s = applyOperations(s, [{ type: 'node.remove', owner: { kind: 'page', id: contact.id }, nodeId: details.id }]).state;
     expect(missing(s)).toHaveLength(1);
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('takes an ID on a section of the release', () => {
+    const s = fresh();
+    const contact = contactOf(s);
+    const details = instanceOf(s, 'contact.details', contact.id);
+    expect(() => applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: details.id, field: 'anchor', value: 'get-in-touch' }])).not.toThrow();
   });
 
   it('checks same-page links against the page they render on', () => {
@@ -1377,20 +1426,29 @@ describe('choosing a section to link to', () => {
   const headerOf = (s: ProjectState) => s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
   const file = (files: Map<string, string>, end: string) => [...files.entries()].find(([p]) => p.endsWith(end))?.[1] ?? '';
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails("lists a page's sections by their visible headings", () => {
+  it("lists a page's sections by their visible headings", () => {
     const s = fresh();
+    managedContact(s);
     expect(pageSections(s, contactOf(s).id).map((x) => x.label)).toEqual(['Let’s talk', 'Get in touch', 'Frequently asked questions']);
     expect(pageSections(s, contactOf(s).id).every((x) => !x.anchor && !x.nested)).toBe(true);
     const blank = createStarterState('blank', 'Blank', false);
     expect(pageSections(blank, blank.site.homePageId)).toEqual([]);
     // The logo strip shows its heading as a paragraph; its Heading property still names it.
-    expect(pageSections(s, s.site.homePageId)[1].label).toBe('Trusted by homeowners and local businesses');
+    const logos = placeDesign(s, LOGOS, { props: { heading: 'Trusted by homeowners and local businesses' } });
+    expect(pageSections(s, s.site.homePageId).find((x) => x.nodeId === logos.id)?.label).toBe('Trusted by homeowners and local businesses');
     // A heading placed straight on the page is a section of its own.
     const h: GraphNode = { id: 'n_h', kind: 'text', tag: 'h2', text: 'Opening hours' };
     contactOf(s).nodes[h.id] = h;
     contactOf(s).rootIds.push(h.id);
     expect(pageSections(s, contactOf(s).id).at(-1)).toMatchObject({ nodeId: 'n_h', label: 'Opening hours', nested: false });
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails("lists the release's sections on a page by their visible headings", () => {
+    const s = fresh();
+    const contact = contactOf(s);
+    (contact.nodes[contact.rootIds[2]] as InstanceNode).props.heading = 'Frequently asked questions';
+    expect(pageSections(s, contact.id).map((x) => x.label)).toEqual(['Let’s talk', 'Get in touch', 'Frequently asked questions']);
   });
 
   it('reuses the ID a section already renders with, so links to it keep working', () => {
@@ -1411,13 +1469,12 @@ describe('choosing a section to link to', () => {
     expect(planSectionPick(s, s.site.homePageId, second.id)).toMatchObject({ anchor: 'one-more-thing', operations: [expect.objectContaining({ nodeId: second.id })] });
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('offers sections placed inside another section, and not the wrapper they name', () => {
+  it('offers sections placed inside another section, and not the wrapper they name', () => {
     const s = fresh();
+    managedContact(s);
     const contact = contactOf(s);
     const [intro, details, faq] = contact.rootIds;
-    const id = installComponent(s, 'layout.section');
-    const wrapper = makeInstance(s.components[id], {});
+    const wrapper = makeInstance(projectDesign(s, own(SECTION)), {});
     wrapper.slots = { content: [details, faq] };
     contact.nodes[wrapper.id] = wrapper;
     contact.rootIds = [intro, wrapper.id];
@@ -1437,10 +1494,9 @@ describe('choosing a section to link to', () => {
     ]);
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('gives a chosen section a stable ID in the same batch as the link, and keeps it through renames and moves', () => {
+  it('gives a chosen section a stable ID in the same batch as the link, and keeps it through renames and moves', () => {
     let s = fresh();
-    const contact = contactOf(s);
+    const { contact } = managedContact(s);
     const details = contact.rootIds[1];
     const plan = planSectionPick(s, contact.id, details)!;
     expect(plan.anchor).toBe('get-in-touch');
@@ -1466,10 +1522,9 @@ describe('choosing a section to link to', () => {
     expect(file(files, 'routes/+layout.svelte')).toContain('ctaLink={{"href":"/contact/#get-in-touch"}}');
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('makes IDs that are valid and unused on the page', () => {
+  it('makes IDs that are valid and unused on the page', () => {
     const s = fresh();
-    const contact = contactOf(s);
+    const { contact } = managedContact(s);
     const [intro, details, faq] = contact.rootIds;
     (contact.nodes[faq] as InstanceNode).anchor = 'get-in-touch';
     expect(planSectionPick(s, contact.id, details)!.anchor).toBe('get-in-touch-2');
@@ -1482,7 +1537,7 @@ describe('choosing a section to link to', () => {
     expect(planSectionPick(s, contact.id, intro)!.anchor).toBe('main-2');
     // So does one that matches an ID inside a component on the page.
     (contact.nodes[faq] as InstanceNode).anchor = undefined;
-    const def = defOf(s, 'faq.list');
+    const def = defOf(s, 'project.faq');
     const inside = Object.values(def.tree!.nodes).find((n) => n.kind === 'text')!;
     inside.anchor = 'get-in-touch';
     expect(planSectionPick(s, contact.id, details)!.anchor).toBe('get-in-touch-2');

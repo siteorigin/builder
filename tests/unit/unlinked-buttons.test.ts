@@ -489,11 +489,22 @@ describe('fixing a button without a destination', () => {
 });
 
 describe('reporting buttons without a destination', () => {
+  const unlinked = (s: ProjectState) => validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED').map((d) => d.message);
+
+  it('says visitors will not see the button', () => {
+    // The Pricing built in the editor (fixtures/unlinked-buttons-designs.ts): the release's is code (the Release gap
+    // test below).
+    const { s } = withPricing(true);
+    expect(unlinked(s)).toEqual(expect.arrayContaining([expect.stringContaining('the “Book a session” button has no link, so visitors won’t see it')]));
+  });
+
+  it('says visitors will not see a button of the page’s own beside the shipped theme’s Pricing', () => {
+    expect(unlinked(withPricing().s)).toEqual(expect.arrayContaining([expect.stringContaining('the “Call us today” button has no link, so visitors won’t see it')]));
+  });
+
   // Release gap: unlinkedButtons (src/generator/checks.ts) reads managed designs only, so a release button with no link goes unreported.
-  it.fails('says visitors will not see the button', () => {
-    const { s } = withPricing();
-    const found = validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED');
-    expect(found.map((d) => d.message)).toEqual(expect.arrayContaining([expect.stringContaining('the “Book a visit” button has no link, so visitors won’t see it')]));
+  it.fails('says visitors will not see a button of the shipped theme’s Pricing', () => {
+    expect(unlinked(withPricing().s)).toEqual(expect.arrayContaining([expect.stringContaining('the “Book a visit” button has no link, so visitors won’t see it')]));
   });
 
   it('warns on export about each button left out, naming where it is', () => {

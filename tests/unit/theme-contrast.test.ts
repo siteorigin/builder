@@ -388,18 +388,25 @@ describe('what ships', () => {
     }
   });
 
-  // Release gap: the release has no error colour (color.error, color.error-on-inverse) or error contrast pairs (#1016).
-  it.fails('shows each pair as the site paints it: text on its ground, on each ground', () => {
+  /** Foundation's pairs that are not about an error colour. */
+  const OTHER_PAIRS = [
+    'brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'callout-brand', 'callout-focus', 'callout-muted', 'callout-text', 'dark-accent', 'dark-button', 'dark-button-hover', 'dark-text',
+    'focus-background', 'focus-surface', 'focus-surface-alt', 'light-button', 'light-button-hover', 'muted-background', 'muted-surface', 'muted-surface-alt',
+    'text-background', 'text-surface', 'text-surface-alt'
+  ];
+  const ERROR_PAIRS = ['dark-error', 'dark-error-edge', 'error-background', 'error-edge-background', 'error-edge-surface', 'error-edge-surface-alt', 'error-surface', 'error-surface-alt'];
+
+  it('shows each pair as the site paints it: text on its ground, on each ground', () => {
     const results = evaluatePairs(business({}), PAIRS);
     expect(byId(results, 'button')).toMatchObject({ fg: '#ffffff', bg: '#1f5a4c' });
     expect(byId(results, 'brand-text-surface')).toMatchObject({ fg: '#1f5a4c', bg: '#ffffff' });
     expect(byId(results, 'brand-text-surface-alt')).toMatchObject({ fg: '#1f5a4c', bg: '#f2efe8' });
-    expect(PAIRS.map((p) => p.id).sort()).toEqual([
-      'brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'callout-brand', 'callout-focus', 'callout-muted', 'callout-text', 'dark-accent', 'dark-button', 'dark-button-hover', 'dark-error', 'dark-error-edge', 'dark-text',
-      'error-background', 'error-edge-background', 'error-edge-surface', 'error-edge-surface-alt', 'error-surface', 'error-surface-alt',
-      'focus-background', 'focus-surface', 'focus-surface-alt', 'light-button', 'light-button-hover', 'muted-background', 'muted-surface', 'muted-surface-alt',
-      'text-background', 'text-surface', 'text-surface-alt'
-    ]);
+    expect(PAIRS.filter((p) => !p.fg.startsWith('color.error')).map((p) => p.id).sort()).toEqual(OTHER_PAIRS);
+  });
+
+  // Release gap: the release has no error colour (color.error, color.error-on-inverse) or error contrast pairs (#1016).
+  it.fails('declares the error pairs among the pairs', () => {
+    expect(PAIRS.map((p) => p.id).sort()).toEqual([...OTHER_PAIRS, ...ERROR_PAIRS].sort());
   });
 
   it('measures a button in a dark section on its hover mix, not its resting fill, and offers no change to the dark section color', () => {

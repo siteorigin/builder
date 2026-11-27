@@ -61,15 +61,28 @@ describe('Component showcase starter', () => {
       expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
     });
 
-  // Release gap: shownOnceSlots (src/engine/slots.ts) counts no slot of a code component as shown once.
-  it.fails('puts each block inside a layout', () => {
+  /** The Blocks page of Foundation's showcase, its top-level nodes, and Foundation's blocks by component ID. */
+  const blocksPage = () => {
     const s = createStarterState('showcase', 'Showcase', false, 'foundation');
     const blocks = Object.values(s.pages).find((p) => p.title === 'Blocks')!;
-    const roots = blocks.rootIds.map((id) => blocks.nodes[id]);
+    const blockIds = FOUNDATION.components.filter((c) => c.insertAs === 'element').map((c) => c.componentId);
+    return { s, blocks, roots: blocks.rootIds.map((id) => blocks.nodes[id]), blockIds };
+  };
+
+  it('places the layouts first on the Blocks page, and every block once on it', () => {
+    const { s, blocks, roots, blockIds } = blocksPage();
+    expect(roots.slice(0, 2).map((n) => n.kind === 'instance' && s.components[n.definitionId].componentId)).toEqual(['layout.section', 'layout.split']);
+    // Every block is on the page once: in a layout's slot, or in the section that holds what no layout takes.
+    const held = roots.flatMap((n) => (n.kind === 'instance' ? Object.values(n.slots ?? {}).flat() : n.kind === 'element' ? n.children : []));
+    expect(held.map((id) => s.components[(blocks.nodes[id] as InstanceNode).definitionId].componentId).sort()).toEqual([...blockIds].sort());
+  });
+
+  // Release gap: shownOnceSlots (src/engine/slots.ts) counts no slot of a code component as shown once.
+  it.fails('puts each block inside a layout', () => {
+    const { s, blocks, roots, blockIds } = blocksPage();
     // Only the layouts are sections; every block sits in one of their slots.
     expect(roots.map((n) => n.kind === 'instance' && s.components[n.definitionId].componentId)).toEqual(['layout.section', 'layout.split']);
     const inSlots = roots.flatMap((n) => (n.kind === 'instance' ? Object.values(n.slots ?? {}).flat() : []));
-    const blockIds = FOUNDATION.components.filter((c) => c.insertAs === 'element').map((c) => c.componentId);
     expect(inSlots.map((id) => s.components[(blocks.nodes[id] as InstanceNode).definitionId].componentId).sort()).toEqual([...blockIds].sort());
   });
 

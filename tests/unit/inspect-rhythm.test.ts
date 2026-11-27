@@ -437,39 +437,58 @@ async function renderPages(state: ProjectState): Promise<Array<{ page: PageDoc; 
   return out;
 }
 
+/**
+ * The note the release's call to action earns on every page it closes (the Release gap test below): its heading
+ * (cta.banner's) is as large as the page's Heading 1.
+ */
+const ctaScale = (state: ProjectState, page: PageDoc) => (n: InspectionRhythmNote) =>
+  n.kind === 'heading-scale' && page.rootIds.some((id) => id === n.desc?.node && state.components[(page.nodes[id] as InstanceNode).definitionId]?.componentId === 'cta.banner');
+
 describe.skipIf(!browserInstalled)('rhythm notes on generated pages', () => {
-  // Release gap: the release's CTA heading is as large as the hero's Heading 1, which the rhythm check notes.
-  it.fails('has nothing to say about the Business starter at any width', async () => {
-    const pages = await renderPages(createStarterState('business', 'Test Studio', false));
+  it('has nothing to say about the Business starter at any width, but the call to action’s heading size', async () => {
+    const state = createStarterState('business', 'Test Studio', false);
+    const pages = await renderPages(state);
     expect(pages.map((p) => p.page.route).sort()).toEqual(['/', '/about/', '/contact/']);
     for (const { page, html } of pages)
       for (const width of [390, 834, 1280]) {
         const r = await inspect(html, { pageId: page.id, rootIds: page.rootIds }, width);
         // An empty list, not a missing one: the rules ran and found the page well paced.
-        expect(r.rhythm, `${page.route} at ${width}px: ${JSON.stringify(r.rhythm)}`).toEqual([]);
+        expect(r.rhythm, `${page.route} at ${width}px: ${JSON.stringify(r.rhythm)}`).toBeInstanceOf(Array);
+        expect(r.rhythm!.filter((n) => !ctaScale(state, page)(n)), `${page.route} at ${width}px: ${JSON.stringify(r.rhythm)}`).toEqual([]);
       }
   }, 120000);
 
-  // Release gap: the release's CTA heading is as large as the hero's Heading 1, which the rhythm check notes.
-  it.fails('has nothing to say about the worked five-page site', async () => {
-    const pages = await renderPages(fivePageSite());
+  it('has nothing to say about the worked five-page site, but the call to action’s heading size', async () => {
+    const state = fivePageSite();
+    const pages = await renderPages(state);
     expect(pages).toHaveLength(5);
     for (const { page, html } of pages)
       for (const width of [390, 1280]) {
         const r = await inspect(html, { pageId: page.id, rootIds: page.rootIds }, width);
-        expect(r.rhythm, `${page.route} at ${width}px: ${JSON.stringify(r.rhythm)}`).toEqual([]);
+        expect(r.rhythm, `${page.route} at ${width}px: ${JSON.stringify(r.rhythm)}`).toBeInstanceOf(Array);
+        expect(r.rhythm!.filter((n) => !ctaScale(state, page)(n)), `${page.route} at ${width}px: ${JSON.stringify(r.rhythm)}`).toEqual([]);
       }
   }, 120000);
 
-  // Release gap: the release's CTA heading is as large as the hero's Heading 1, which the rhythm check notes.
-  it.fails('notes three placements of one card grid in a row on one background', async () => {
+  // Release gap: the release's call to action (cta.banner) gives its heading the size of the page's Heading 1 at every width, which the rhythm check notes.
+  it.fails('finds the call to action’s heading smaller than the page title, on the starter and the five-page site', async () => {
+    for (const state of [createStarterState('business', 'Test Studio', false), fivePageSite()])
+      for (const { page, html } of await renderPages(state))
+        for (const width of [390, 1280]) {
+          const r = await inspect(html, { pageId: page.id, rootIds: page.rootIds }, width);
+          expect(r.rhythm!.filter(ctaScale(state, page)), `${page.route} at ${width}px`).toEqual([]);
+        }
+  }, 120000);
+
+  it('notes three placements of one card grid in a row on one background', async () => {
     const s = createStarterState('blank', 'Repeat Studio', false);
     const grid = (heading: string) => place(s, 'features.grid', { heading });
     const sections = [place(s, 'hero.split', { heading: 'One studio, many rooms' }), grid('Planning'), grid('Materials'), grid('Delivery'), place(s, 'cta.banner', { heading: 'Ready?' })];
     const page = addPage(s, s.site.homePageId, 'Home', '/', sections);
     const [{ html }] = await renderPages(s);
     const r = await inspect(html, { pageId: page.id, rootIds: page.rootIds });
-    expect(kinds(r)).toEqual(['repeated-layout']);
+    // Beside the call to action's heading size (the Release gap test above), the grids are all it notes.
+    expect(kinds({ ...r, rhythm: r.rhythm!.filter((n) => !ctaScale(s, page)(n)) })).toEqual(['repeated-layout']);
     expect(note(r, 'repeated-layout')).toMatchObject({ sections: { first: 2, last: 4 }, layout: 'three card columns', desc: { ctx: `page:${page.id}`, node: sections[1].id }, with: { desc: { node: sections[3].id } } });
   }, 60000);
 });

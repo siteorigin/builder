@@ -141,14 +141,21 @@ function library(designed = false) {
 }
 
 describe('where Create component… is offered (#173)', () => {
-  // Release gap: createComponentTarget (src/renderer/src/lib/model.ts) counts slots on managed designs only, so Create component is never offered on the release's Section.
-  it.fails('offers every element and basic element, and a section holding content, on a page', () => {
-    const { s, page, section, kinds, at } = library();
+  it('offers every element and basic element, and a section holding content, on a page', () => {
+    const { s, page, kinds, at } = library();
     const snap = { state: s };
     for (const [kind, id] of Object.entries(kinds)) expect(createComponentTarget(snap, at(page, id)), kind).toEqual(at(page, id));
-    expect(createComponentTarget(snap, at(page, section))).toEqual(at(page, section));
     // What the menu acts on is the node alone, whichever repeated item it was picked in.
     expect(createComponentTarget(snap, { ...at(page, kinds.text), itemPath: ['i1'], partId: 'x' })).toEqual(at(page, kinds.text));
+    // A section designed in the editor, holding content.
+    const designed = library(true);
+    expect(createComponentTarget({ state: designed.s }, designed.at(designed.page, designed.section))).toEqual(designed.at(designed.page, designed.section));
+  });
+
+  // Release gap: createComponentTarget (src/renderer/src/lib/model.ts) counts slots on managed designs only, so Create component is never offered on the release's Section.
+  it.fails('offers the release’s Section holding content', () => {
+    const { s, page, section, at } = library();
+    expect(createComponentTarget({ state: s }, at(page, section))).toEqual(at(page, section));
   });
 
   it('leaves out a node that is not attached to the page', () => {
@@ -158,9 +165,9 @@ describe('where Create component… is offered (#173)', () => {
     expect(createComponentTarget({ state: stray }, at(page, 'n_stray0000'))).toBeNull();
   });
 
-  // Release gap: createComponentTarget (src/renderer/src/lib/model.ts) counts slots on managed designs only, so Create component is never offered on the release's Section.
-  it.fails('leaves out an empty section, a plain placement, a code component and a slot that is not declared', () => {
-    const { s, page, section, empty, hero, card, at } = library();
+  it('leaves out an empty section, a plain placement, a code component and a slot that is not declared', () => {
+    // Sections designed in the editor: Foundation's is never offered (the Release gap test above).
+    const { s, page, section, empty, hero, card, at } = library(true);
     expect(createComponentTarget({ state: s }, at(page, empty))).toBeNull();
     // A section whose content was all removed keeps an empty slot list: still nothing to package.
     const filled = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: empty, slot: 'content', primitive: 'paragraph', text: 'Brief' }]);
@@ -277,15 +284,13 @@ describe('a component made from a section (#173)', () => {
     expect(placementStyleControls(def, 'root', false)).toEqual(['hidden']);
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('keeps the section’s own styles, tone and anchor, and every anchor inside it', () => {
+  it('keeps the section’s own styles and tone, and every anchor inside it', () => {
     const { s: base, page, section, kinds } = library();
     let s = base;
     const tone = Object.keys(s.components['foundation.layout.section'].variantAxes!.tone.options).find((o) => o !== 'default')!;
     s = applyOperations(s, [
       { type: 'node.setStyle', owner: page, nodeId: section, partId: 'root', scope: 'base', property: 'paddingBlock', value: '5rem' },
       { type: 'instance.setVariant', owner: page, nodeId: section, axis: 'tone', variant: tone },
-      { type: 'node.setContent', owner: page, nodeId: section, field: 'anchor', value: 'intro' },
       { type: 'node.setContent', owner: page, nodeId: kinds.text, field: 'anchor', value: 'story' }
     ]).state;
     const r = applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }]);
@@ -293,12 +298,26 @@ describe('a component made from a section (#173)', () => {
     const root = def.tree!.nodes[def.tree!.rootIds[0]] as InstanceNode;
     expect(root.overrides?.root?.base?.paddingBlock).toBe('5rem');
     expect(root.variants?.tone).toBe(tone);
-    expect(root.anchor).toBeUndefined();
-    expect((r.state.pages[page.id].nodes[r.results[0].nodeId as string] as InstanceNode).anchor).toBe('intro');
     // A link to the paragraph keeps working: the one copy on the page still renders it, on the paragraph.
     const anchored = Object.values(def.tree!.nodes).filter((n) => n.anchor === 'story');
     expect(anchored).toHaveLength(1);
     expect(anchored[0]).toMatchObject({ kind: 'text', tag: 'p', text: { $prop: 'text' } });
+  });
+
+  it('keeps the section’s own anchor on the placement, not in the design', () => {
+    // A section designed in the editor: Foundation's takes no anchor (the Release gap test below).
+    const { s: base, page, section } = library(true);
+    const s = applyOperations(base, [{ type: 'node.setContent', owner: page, nodeId: section, field: 'anchor', value: 'intro' }]).state;
+    const r = applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: section, name: 'Intro band' }]);
+    const def = r.state.components[r.results[0].definitionId as string];
+    expect((def.tree!.nodes[def.tree!.rootIds[0]] as InstanceNode).anchor).toBeUndefined();
+    expect((r.state.pages[page.id].nodes[r.results[0].nodeId as string] as InstanceNode).anchor).toBe('intro');
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('takes an anchor on the release’s Section', () => {
+    const { s, page, section } = library();
+    expect(() => applyOperations(s, [{ type: 'node.setContent', owner: page, nodeId: section, field: 'anchor', value: 'intro' }])).not.toThrow();
   });
 
   it('carries a code component’s styles into the design, and refuses root styles its code would drop there', () => {

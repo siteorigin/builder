@@ -13,6 +13,7 @@ import { sha } from '../../src/main/project/fsutil';
 import { withPublished } from '@shared/published';
 import { P } from '@catalogue/dsl';
 import { projectDesign } from './fixtures/packs';
+import { withManagedLists } from './fixtures/empty-sections-designs';
 
 /** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
 const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
@@ -167,9 +168,11 @@ describe('what the website publishes', () => {
     expect(describeDraftLink(s, header)).toMatch(/^Header · .+: “About” goes to About \(\/about\/\)$/);
   });
 
-  // Release gap: publicationPlan reports every link of a release gallery as a draft link, though the gallery follows one only when its action is link.
-  it.fails('checks a gallery photo’s link only while the photo follows it (#75)', () => {
-    const { s, draft } = withDraft();
+  it('checks a gallery photo’s link only while the photo follows it (#75)', () => {
+    // The Gallery drawn as a managed design (fixtures/empty-sections-designs.ts), whose figure follows a photo's link
+    // only while its action is link: the release's is code (the Release gap test below).
+    const { s: release, draft } = withDraft();
+    const s = withManagedLists(release);
     const home = s.pages[s.site.homePageId];
     const gallery = Object.values(home.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'media.gallery') as InstanceNode;
     const images = gallery.props.images as Array<Record<string, unknown>>;
@@ -186,6 +189,17 @@ describe('what the website publishes', () => {
     expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined]]);
     images[2] = { ...images[2], action: 'link' };
     expect(fromGallery().map((l) => [l.pageId, l.anchor])).toEqual([[draft, undefined], [draft, 'top']]);
+  });
+
+  // Release gap: publicationPlan (src/generator/checks.ts, codeLinks) reports every link of the release's Gallery as a
+  // draft link, though a photo follows its link only while its action is link.
+  it.fails('checks the shipped theme’s gallery photo’s link only while the photo follows it (#75)', () => {
+    const { s, draft } = withDraft();
+    const home = s.pages[s.site.homePageId];
+    const gallery = Object.values(home.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'media.gallery') as InstanceNode;
+    const images = gallery.props.images as Array<Record<string, unknown>>;
+    images[0] = { ...images[0], action: 'image', link: { type: 'page', target: draft } };
+    expect(publicationPlan(s).draftLinks.filter((l) => l.nodeId === gallery.id)).toEqual([]);
   });
 
   it('does not check links on drafts, or the header and footer when no published page shows them', () => {

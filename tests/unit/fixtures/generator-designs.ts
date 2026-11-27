@@ -120,3 +120,42 @@ export const DETAILS: DesignSpec = {
       ])
     ])
 };
+
+/** root (section) > (eyebrow, heading): a page introduction, its heading a Heading 1. */
+export const INTRO: DesignSpec = {
+  componentId: 'project.intro',
+  name: 'Page introduction',
+  category: 'hero',
+  properties: { eyebrow: P.str('Eyebrow', 'About us'), heading: P.str('Heading', 'A small team with a long view') },
+  parts: { root: { nodeId: 'root', label: 'Section' } },
+  build: (b) =>
+    b.el('root', 'section', { name: 'Section' }, [
+      b.text('eyebrow', 'p', prop('eyebrow'), { name: 'Eyebrow', when: prop('eyebrow') }),
+      b.text('heading', 'h1', prop('heading'), { name: 'Heading', when: prop('heading') })
+    ])
+};
+
+/** root (section) > (heading, questions > item > (question, answer)): a list of questions. */
+export const FAQ: DesignSpec = {
+  componentId: 'project.faq',
+  name: 'FAQ',
+  properties: {
+    heading: P.str('Heading', 'Frequently asked questions'),
+    items: P.list('Questions', 'Question', { question: P.str('Question', 'Question?'), answer: P.text('Answer', 'Answer.') }, [{ question: 'How long does a project take?', answer: 'Most take six to ten weeks.' }], { titleField: 'question' })
+  },
+  parts: { root: { nodeId: 'root', label: 'Section' } },
+  build: (b) =>
+    b.el('root', 'section', { name: 'Section' }, [
+      b.text('heading', 'h2', prop('heading'), { name: 'Heading', when: prop('heading') }),
+      b.repeat('questions', 'items', [b.el('item', 'div', { name: 'Question' }, [b.text('question', 'h3', { $item: 'question' }, { name: 'Question text' }), b.text('answer', 'p', { $item: 'answer' }, { name: 'Answer' })])])
+    ])
+};
+
+/** root (section) > heading (a paragraph): a logo strip, whose Heading property names it though no heading shows. */
+export const LOGOS: DesignSpec = {
+  componentId: 'project.logos',
+  name: 'Logo strip',
+  properties: { heading: P.str('Heading', 'Trusted by') },
+  parts: { root: { nodeId: 'root', label: 'Section' } },
+  build: (b) => b.el('root', 'section', { name: 'Section' }, [b.text('heading', 'p', prop('heading'), { name: 'Heading', when: prop('heading') })])
+};

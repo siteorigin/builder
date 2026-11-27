@@ -11,6 +11,7 @@ import { applyOperations } from '@engine/apply';
 import { installComponent, makeInstance, placedDefaultItems } from '@engine/install';
 import { EngineError } from '@engine/tree';
 import { blocksSaving, validateState } from '@engine/validate';
+import { managedContactDetails } from './fixtures/contact-links-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -199,10 +200,12 @@ describe('a list property added to a placed component', () => {
     expect(placement(s2, node.id).itemOverrides).toBeUndefined();
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('keeps a link the batch sets itself, whichever ID it names the copied item by', () => {
+  it('keeps a link the batch sets itself, whichever ID it names the copied item by', () => {
     const s0 = fresh();
     const id = installComponent(s0, 'contact.details');
+    // Drawn as a managed design whose links follow their text (fixtures/contact-links-designs.ts): the release's
+    // Contact details is code, whose links the editor cannot pair with their text (contact-links.test.ts).
+    s0.components[id] = managedContactDetails(s0.components[id]);
     const node = makeInstance(s0.components[id], {});
     home(s0).nodes[node.id] = node;
     home(s0).rootIds.push(node.id);

@@ -1140,9 +1140,8 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(ofType(head, 'Organization')[0]).not.toHaveProperty('name');
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('describes the business and the questions as the page shows them', async () => {
-    const s = publishedRelease();
+  it('describes the business and the questions as the page shows them', async () => {
+    const s = published();
     s.site.baseUrl = 'https://studio.example';
     const contact = byTitle(s, 'Contact');
     const { head, body } = await renderPage(s, contact);
@@ -1181,6 +1180,36 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(ofType(about.head, 'WebPageElement')).toEqual([]);
     expect(ofType(about.head, 'FAQPage')).toEqual([]);
     expect(ofType(about.head, 'WebPage')).toHaveLength(1);
+  });
+
+  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
+  it.fails('describes the contact point and place the shipped theme’s Contact details show', async () => {
+    const s = publishedRelease();
+    s.site.baseUrl = 'https://studio.example';
+    const contact = byTitle(s, 'Contact');
+    const page = 'https://studio.example' + contact.route;
+    expect(ofType((await renderPage(s, contact)).head, 'WebPageElement')).toEqual([
+      {
+        '@type': 'WebPageElement',
+        '@id': `${page}#contact`,
+        isPartOf: { '@id': `${page}#webpage` },
+        about: [
+          { '@type': 'ContactPoint', email: 'hello@example.com', telephone: '+1 555 0134' },
+          { '@type': 'Place', address: '12 Harbor Lane, Millbrook' }
+        ]
+      }
+    ]);
+  });
+
+  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
+  it.fails('makes the page the shipped theme’s FAQ is on an FAQ page, with every question and its answer', async () => {
+    const s = publishedRelease();
+    s.site.baseUrl = 'https://studio.example';
+    const contact = byTitle(s, 'Contact');
+    const items = firstOf(s, contact, 'faq.list').props.items as Array<{ question: string; answer: string }>;
+    const [faqPage] = ofType((await renderPage(s, contact)).head, 'FAQPage');
+    expect(faqPage).toMatchObject({ '@type': ['WebPage', 'FAQPage'], '@id': `https://studio.example${contact.route}#webpage` });
+    expect(faqPage.mainEntity).toEqual(items.map((i) => ({ '@type': 'Question', name: i.question, acceptedAnswer: { '@type': 'Answer', text: i.answer } })));
   });
 
   it('reads an FAQ placed in a section, leaves out empty and hidden ones, and keeps hostile text inside its script', async () => {

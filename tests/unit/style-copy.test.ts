@@ -7,7 +7,7 @@ import { MEDIA_QUERIES, placementStyleControls } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { makeInstance } from '@engine/install';
-import { P, prop } from '@catalogue/dsl';
+import { P, item, prop } from '@catalogue/dsl';
 import { projectDesign } from './fixtures/packs';
 import { generateSiteCss, overrideClass } from '@generator/index';
 import { ProjectSession } from '../../src/main/project/session';
@@ -79,8 +79,7 @@ function heroPadded() {
 }
 
 describe('copy style', () => {
-  // Release gap: partTarget (src/renderer/src/lib/style-copy.ts) ignores a code part's list.
-  it.fails('lists what a section, a part and an element carry, with the controls the inspector offers', () => {
+  it('lists what a section, a part and an element carry, with the controls the inspector offers', () => {
     const s = fresh();
     const hero = styleSelection(s, section(s, 'hero.split'))!;
     expect(hero.kind).toBe('section');
@@ -101,7 +100,23 @@ describe('copy style', () => {
     expect(heading.targets).toHaveLength(1);
     // A part of a code section offers Hidden beside its own list.
     expect(heading.targets[0]).toMatchObject({ part: null, partId: 'heading', offered: ['textStyle', 'color', 'hidden'] });
-    // A card part is styled once for every card.
+    // A card part of a design built in the editor is styled once for every card.
+    const grid = placeOwn(
+      own,
+      projectDesign(own, {
+        componentId: 'test.cards',
+        name: 'Cards',
+        properties: { items: P.list('Cards', 'Card', { title: P.str('Title', 'Service') }, [{ title: 'Planning' }, { title: 'Delivery' }]) },
+        parts: { root: { nodeId: 'root', label: 'Section' }, card: { nodeId: 'card', label: 'Card' } },
+        build: (b) => b.el('root', 'section', { name: 'Section' }, [b.repeat('cards', 'items', [b.el('card', 'div', { name: 'Card' }, [b.text('card-title', 'h3', item('title'), { name: 'Title' })])])])
+      })
+    );
+    expect(styleSelection(own, { owner: owner(own), instancePath: [grid.id], nodeId: 'card', partId: 'card' })!.targets[0].reach).toBe('every card');
+  });
+
+  // Release gap: partTarget (src/renderer/src/lib/style-copy.ts) ignores a code part's list.
+  it.fails('styles a card part of the release once for every card', () => {
+    const s = fresh();
     expect(styleSelection(s, part(s, 'features.grid', 'card'))!.targets[0].reach).toBe('every card');
   });
 

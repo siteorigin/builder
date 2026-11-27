@@ -12,8 +12,15 @@ import { generateProject } from '@generator/index';
 import { describeOps } from '@agent/report';
 import { followStoredLinks, withStoredFields } from '@agent/macros';
 import { ProjectSession } from '../../src/main/project/session';
+import { withManagedContact } from './fixtures/contact-links-designs';
 
-const fresh = () => createStarterState('business', 'Kloof', false);
+/** The business starter as it ships, its Contact details and footer the release's code components. */
+const release = () => createStarterState('business', 'Kloof', false);
+/**
+ * The business starter with its Contact details and footer drawn as managed designs (fixtures/contact-links-designs.ts),
+ * whose links the editor pairs with their text; the release's cannot be (the Release gap tests at the end).
+ */
+const fresh = () => withManagedContact(release());
 const contactPage = (s: ProjectState) => s.site.pageOrder.find((id) => s.pages[id].route === '/contact/')!;
 const details = (s: ProjectState) => {
   const page = s.pages[contactPage(s)];
@@ -172,8 +179,7 @@ describe('contact text and links', () => {
 });
 
 describe('contact details keep their link with the visible address or number', () => {
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('moves an email link that matched the visible address to the edited address, in the export too', () => {
+  it('moves an email link that matched the visible address to the edited address, in the export too', () => {
     let s = fresh();
     const email = item(s, 'mail');
     s = apply(s, [setField(s, email.id, 'value', 'design@kloof.example'), setField(s, email.id, 'link', { type: 'email', target: 'design@kloof.example' })]);
@@ -184,8 +190,7 @@ describe('contact details keep their link with the visible address or number', (
     expect(exported(s)).not.toContain('mailto:design@kloof.example');
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('moves a phone link that matched the visible number to the edited number, in the export too', () => {
+  it('moves a phone link that matched the visible number to the edited number, in the export too', () => {
     let s = fresh();
     const phone = item(s, 'phone');
     expect(phone.link).toEqual({ type: 'tel', target: '+15550134' });
@@ -203,8 +208,7 @@ describe('contact details keep their link with the visible address or number', (
     expect(item(s, 'phone').link).toEqual({ type: 'tel', target: '+15550134' });
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('keeps the footer contact links with their visible text', () => {
+  it('keeps the footer contact links with their visible text', () => {
     let s = fresh();
     const f = footer(s);
     const mail = (f.props.contact as ListItem[]).find((i) => (i.link as LinkValue).type === 'email')!;
@@ -218,8 +222,7 @@ describe('contact details keep their link with the visible address or number', (
     expect(layout).toContain('"label":"+1 202 555 0142","link":{"href":"tel:+12025550142"}');
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('keeps an older link with a raw subject valid when it follows its address', () => {
+  it('keeps an older link with a raw subject valid when it follows its address', () => {
     const s = fresh();
     const mail = item(s, 'mail');
     // Written before links were validated: the engine would refuse this target today.
@@ -229,19 +232,17 @@ describe('contact details keep their link with the visible address or number', (
     expect(r.results).toEqual([{ followed: ['link'] }]);
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('pairs each repeated link with the item fields it shows and opens', () => {
+  it('pairs each repeated link with the item fields it shows and opens', () => {
     const s = fresh();
     expect(itemLinkPairs(s.components[details(s).definitionId], 'items')).toEqual([{ text: 'value', link: 'link' }]);
     expect(itemLinkPairs(s.components[footer(s).definitionId], 'contact')).toEqual([{ text: 'label', link: 'link' }]);
     // The Contact method caption ("Email") is not what the link shows, even when it reads like an address.
     expect(itemLinkPairs(s.components[details(s).definitionId], 'heading')).toEqual([]);
-    const code = Object.values(s.components).find((d) => d.kind === 'code')!;
+    const code = Object.values(release().components).find((d) => d.kind === 'code')!;
     expect(itemLinkPairs(code, Object.keys(code.properties).find((k) => code.properties[k].type === 'list') ?? 'links')).toEqual([]);
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('follows an item patch that names the text but not the link, and says which link moved', () => {
+  it('follows an item patch that names the text but not the link, and says which link moved', () => {
     const s = fresh();
     const phone = item(s, 'phone');
     const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: contactPage(s) }, nodeId: details(s).id, prop: 'items', itemId: phone.id, value: { value: '+1 202 555 0142' } }]);
@@ -275,8 +276,7 @@ describe('contact details keep their link with the visible address or number', (
     expect(contactMismatch(item(s, 'phone').value, item(s, 'phone').link)?.opens).toBe('tel:+15550134');
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('lets a link the same batch sets win over its text, in either order and either form', () => {
+  it('lets a link the same batch sets win over its text, in either order and either form', () => {
     const base = (() => {
       const s = fresh();
       const mail = item(s, 'mail');
@@ -303,8 +303,7 @@ describe('contact details keep their link with the visible address or number', (
         }
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('follows in a project copy of the section', () => {
+  it('follows in a project copy of the section', () => {
     let s = fresh();
     const nodeId = details(s).id;
     const mail = item(s, 'mail');
@@ -318,8 +317,7 @@ describe('contact details keep their link with the visible address or number', (
 });
 
 describe('contact links in AI edits', () => {
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('reports the link that moved with its text as part of the same change', () => {
+  it('reports the link that moved with its text as part of the same change', () => {
     const s = fresh();
     const ops: EditOperation[] = [setField(s, item(s, 'mail').id, 'value', 'bookings@kloof.example')];
     const r = applyOperations(s, ops);
@@ -330,8 +328,7 @@ describe('contact links in AI edits', () => {
     expect(describeOps(label, s, r2.state, r2.results).map((c) => c.label)).toEqual(['Changed the value in contact methods of Contact details on Contact']);
   });
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('carries the link of an item a page rewrite sends without it', () => {
+  it('carries the link of an item a page rewrite sends without it', () => {
     const s = fresh();
     const def = s.components[details(s).definitionId];
     const stored = items(s);
@@ -364,8 +361,7 @@ describe('contact link edits undo as one step', () => {
   const dirs: string[] = [];
   afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
-  it.fails('undoes the visible address and the link it carried together', async () => {
+  it('undoes the visible address and the link it carried together', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-contact-'));
     dirs.push(dir);
     const session = await ProjectSession.create(dir, fresh());
@@ -402,5 +398,26 @@ describe('contact link edits undo as one step', () => {
     await session.redo();
     expect(item(session.state, 'mail').link).toEqual(email('bookings@kloof.example'));
     await session.close();
+  });
+});
+
+describe('contact links in the shipped theme', () => {
+  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
+  it.fails('pairs the release’s Contact details links with the value each shows', () => {
+    const s = release();
+    expect(itemLinkPairs(s.components[details(s).definitionId], 'items')).toEqual([{ text: 'value', link: 'link' }]);
+  });
+
+  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
+  it.fails('pairs the release footer’s contact links with the label each shows', () => {
+    const s = release();
+    expect(itemLinkPairs(s.components[footer(s).definitionId], 'contact')).toEqual([{ text: 'label', link: 'link' }]);
+  });
+
+  // Release gap: itemLinkPairs (src/engine/tree.ts) reads managed trees only, so a contact link in the release no longer follows its text.
+  it.fails('moves the email link of the release’s Contact details to the edited address', () => {
+    let s = release();
+    s = apply(s, [setField(s, item(s, 'mail').id, 'value', 'bookings@kloof.example')]);
+    expect(item(s, 'mail').link).toEqual(email('bookings@kloof.example'));
   });
 });

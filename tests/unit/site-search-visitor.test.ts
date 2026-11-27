@@ -14,16 +14,29 @@ import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE } from '@generator/search';
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
+import { P, prop } from '@catalogue/dsl';
+import { projectDesign } from './fixtures/packs';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const ORIGIN = 'https://site.test';
 const BASE = '/my-site';
 const AT = `${BASE}/portfolio/find/`;
 
-/** The exported site of a portfolio of 150 project pages, with Site search on a page of its own. */
+/**
+ * The exported site of a portfolio of 150 project pages, with Site search on a page of its own. Each page's words are
+ * in a text section designed in the editor: the index reads none of Foundation's sections but its forms, tables and
+ * videos (see the Release gap test in site-search.test.ts).
+ */
 function exportedSite() {
   let s: ProjectState = createStarterState('business', 'Test Studio', false);
   const apply = (ops: EditOperation[]) => (s = applyOperations(s, ops).state);
+  const text = projectDesign(s, {
+    componentId: 'project.text',
+    name: 'Text',
+    properties: { heading: P.str('Heading', 'Heading'), body: P.text('Text', '') },
+    parts: { root: { nodeId: 'root', label: 'Text' } },
+    build: (b) => b.el('root', 'section', { name: 'Text' }, [b.text('heading', 'h2', prop('heading'), { name: 'Heading' }), b.text('body', 'p', prop('body'), { name: 'Text' })])
+  });
   apply([
     { type: 'page.create', pageId: 'pg_find', title: 'Find a project', route: '/portfolio/find/' },
     { type: 'node.insert', owner: { kind: 'page', id: 'pg_find' }, componentId: 'site.search', props: { heading: 'Find a project' } }
@@ -32,7 +45,7 @@ function exportedSite() {
     const id = `pg_p${n}`;
     apply([
       { type: 'page.create', pageId: id, title: `Workshop commission ${n}`, route: `/portfolio/workshop-commission-${n}/` },
-      { type: 'node.insert', owner: { kind: 'page', id }, componentId: 'content.text', props: { heading: `Commission ${n}`, body: `A piece in oak and linen, number ${n} of the series.` } }
+      { type: 'node.insert', owner: { kind: 'page', id }, definitionId: text.id, props: { heading: `Commission ${n}`, body: `A piece in oak and linen, number ${n} of the series.` } }
     ]);
   }
   const files = generateProject(s);
@@ -144,8 +157,7 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
     });
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('finds a project by name with the keyboard and goes to it from a nested address', async () => {
+  it('finds a project by name with the keyboard and goes to it from a nested address', async () => {
     await withSearch(async (page, visited) => {
       await expect(page.getByRole('search', { name: 'Find a project' }).count()).resolves.toBe(1);
       await box(page).focus();

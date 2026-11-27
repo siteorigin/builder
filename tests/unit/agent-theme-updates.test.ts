@@ -23,6 +23,7 @@ import { describeSelection, projectSummary } from '@agent/context';
 import { themeUpdateChanges } from '@agent/theme-update';
 import { describeOps } from '@agent/report';
 import { ProjectSession } from '../../src/main/project/session';
+import { managedDesign } from './fixtures/agent-designs';
 
 const HEADER = getTheme('foundation').components.find((c) => c.componentId === 'shell.header')!.id;
 const current = (id: string) => getTheme('foundation').components.find((c) => c.id === id)!;
@@ -250,8 +251,7 @@ describe('update_theme_component', () => {
     expect(applied).toEqual([]);
   });
 
-  // Release gap: wholeSelection (src/agent/theme-update.ts) takes every part of a code component for the whole placement, which selectedPart (src/agent/scope.ts) does not.
-  it.fails('is offered with the components each run may update and then change, to small models and large, in edit runs only', () => {
+  it('is offered with the components each run may update and then change, to small models and large, in edit runs only', () => {
     const s = beforeActionStyle({ hero: true });
     const big = { toolCalling: 'native' as const, contextWindowTokens: 200000 };
     const small = { toolCalling: 'constrained-json' as const, contextWindowTokens: 8000 };
@@ -269,17 +269,42 @@ describe('update_theme_component', () => {
     expect(offered(small, { page: { route: '/' } })).toEqual([HERO]);
     const about = s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.id !== s.site.homePageId)!;
     expect(offered(big, { page: { route: about.route } })).toBeNull();
-    // A part of the hero (its heading, say) never updates the hero; the whole hero does.
+    // The whole hero updates the hero (a part of it never does: below).
     const home = s.site.homePageId;
     const heroNode = s.pages[home].rootIds.find((id) => (s.pages[home].nodes[id] as InstanceNode).definitionId === HERO)!;
-    const [partId] = Object.entries(s.components[HERO].parts).find(([, p]) => p.nodeId !== s.components[HERO].parts.root.nodeId)!;
-    expect(offered(big, { selection: { owner: { kind: 'page', id: home }, nodeId: heroNode, partId } })).toBeNull();
     expect(offered(small, { selection: { owner: { kind: 'page', id: home }, nodeId: heroNode } })).toEqual([HERO]);
     // A component's own design changes no placement, until the user lets the run change more.
     const target = { definitionId: HERO };
     expect(offered(big, { definition: true, definitionTarget: target })).toBeNull();
     expect(offered(big, { definition: true, definitionTarget: null })).toEqual([HEADER, HERO].sort());
     expect(offered(big, { ask: true })).toBeNull();
+  });
+
+  /** The update tool's choices for a run with this selection of the home page's hero, a part of it when `partId`. */
+  const offeredForHero = (s: ProjectState, partId?: string) => {
+    const home = s.site.homePageId;
+    const heroNode = s.pages[home].rootIds.find((id) => (s.pages[home].nodes[id] as InstanceNode).definitionId === HERO)!;
+    const selection = { owner: { kind: 'page' as const, id: home }, nodeId: heroNode, ...(partId ? { partId } : {}) };
+    return enumOf(toolsForRun({ state: s, selection, capabilities: { toolCalling: 'native', contextWindowTokens: 200000 }, codeEnabled: false, definitionOps: false }).tools.find((x) => x.name === 'update_theme_component')) ?? null;
+  };
+  /** A part of the hero that is not its root. */
+  const innerPart = (s: ProjectState) => Object.entries(s.components[HERO].parts).find(([, p]) => p.nodeId !== s.components[HERO].parts.root.nodeId)![0];
+
+  it('never updates the hero from a part of it, which a managed design draws inside the placement', () => {
+    const s = beforeActionStyle();
+    // Foundation's managed design of the hero, installed as the theme's own, which the release's code is newer than.
+    const hero = managedDesign('hero.split');
+    s.components[HERO] = hero;
+    s.themeLock.components[HERO].hash = definitionHash(hero);
+    expect(offeredForHero(s)).toEqual([HERO]);
+    expect(offeredForHero(s, 'root')).toEqual([HERO]);
+    expect(offeredForHero(s, innerPart(s))).toBeNull();
+  });
+
+  // Release gap: wholeSelection (src/agent/theme-update.ts) takes every part of a code component for the whole placement, which selectedPart (src/agent/scope.ts) does not.
+  it.fails("never updates the release hero from a part of it other than its root", () => {
+    const s = beforeActionStyle({ hero: true });
+    expect(offeredForHero(s, innerPart(s))).toBeNull();
   });
 
   it('offers a small run a nested component only where its tools can change it', () => {

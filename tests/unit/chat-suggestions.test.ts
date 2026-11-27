@@ -13,6 +13,9 @@ import { chatSuggestions, countChatStarters, type ChatSuggestion, type Suggestio
 import type { SeoFinding } from '@shared/seo';
 import { runSeoAudit } from '@engine/seo-audit';
 import { sectionDesign } from './fixtures/unlinked-buttons-designs';
+import { managedFoundation } from './fixtures/agent-designs';
+import { withManaged } from './fixtures/component-contract-designs';
+import { useManaged } from './fixtures/engine-designs';
 
 const ALL = { page: true, selection: true };
 
@@ -391,32 +394,41 @@ describe('what the page holds, counted the way the page shows it', () => {
     expect(starters(state, second)[0].text).toMatch(/^Build out the mostly empty “お問い合わせ” page/);
   });
 
-  // Release gap: chat starters read parts and images from managed trees only (resolveRef, imageTraits).
-  it.fails('counts a list item as the list shows it: a field the item leaves out is the list default, and four short pieces are not a mostly empty page', () => {
-    const { state, second } = pageOf();
-    state.pages[second].rootIds = [];
-    state.pages[second].nodes = {};
-    const defId = installComponent(state, 'logos.strip');
-    const strip = makeInstance(state.components[defId], { heading: 'Trusted by', logos: [{ id: 'l1' }, { id: 'l2' }, { id: 'l3' }] });
-    state.pages[second].nodes[strip.id] = strip;
-    state.pages[second].rootIds.push(strip.id);
-    // Heading plus three names the list inherits: four pieces of copy, so the page is not mostly empty.
-    expect(starters(state, second)[0].text).toMatch(/^Make the opening/);
-    delete state.pages[second].nodes[strip.id];
-    state.pages[second].rootIds = [];
-    const feature = makeInstance(state.components[installComponent(state, 'features.grid')], { eyebrow: '', heading: 'Ways', lead: '', items: [] });
-    state.pages[second].nodes[feature.id] = feature;
-    state.pages[second].rootIds.push(feature.id);
-    expect(starters(state, second)[0].text).toMatch(/^Build out the/);
+  /** A page holding only the logo strip, with these props: on Foundation's managed design of it when `managed`. */
+  const logoStrip = (state: ProjectState, pageId: string, props: Record<string, unknown>, managed: boolean) => {
+    if (managed) useManaged(state, 'logos.strip');
+    state.pages[pageId].rootIds = [];
+    state.pages[pageId].nodes = {};
+    const strip = makeInstance(state.components[installComponent(state, 'logos.strip')], props);
+    expect(state.components[strip.definitionId].kind).toBe(managed ? 'managed' : 'code');
+    state.pages[pageId].nodes[strip.id] = strip;
+    state.pages[pageId].rootIds.push(strip.id);
+    return strip;
+  };
+  /** The one starter about the page's own copy: the opening to make better, or a mostly empty page to build out. */
+  const copyStarter = (state: ProjectState, pageId: string) => texts(starters(state, pageId)).find((t) => /^(Make the opening|Build out the)/.test(t));
+
+  it('counts a list item as the list shows it: a field the item leaves out is the list default, and four short pieces are not a mostly empty page', () => {
+    for (const managed of [true, false]) {
+      const { state, second } = pageOf();
+      const strip = logoStrip(state, second, { heading: 'Trusted by', logos: [{ id: 'l1' }, { id: 'l2' }, { id: 'l3' }] }, managed);
+      // Heading plus three names the list inherits: four pieces of copy, so the page is not mostly empty.
+      expect(copyStarter(state, second), String(managed)).toMatch(/^Make the opening/);
+      // On the managed design the logos it leaves out are optional, so nothing comes before it.
+      if (managed) expect(starters(state, second)[0].text).toMatch(/^Make the opening/);
+      delete state.pages[second].nodes[strip.id];
+      state.pages[second].rootIds = [];
+      const feature = makeInstance(state.components[installComponent(state, 'features.grid')], { eyebrow: '', heading: 'Ways', lead: '', items: [] });
+      state.pages[second].nodes[feature.id] = feature;
+      state.pages[second].rootIds.push(feature.id);
+      expect(copyStarter(state, second), String(managed)).toMatch(/^Build out the/);
+      if (managed) expect(starters(state, second)[0].text).toMatch(/^Build out the/);
+    }
   });
 
-  // Release gap: chat starters read parts and images from managed trees only (resolveRef, imageTraits).
-  it.fails('does not take an optional logo or portrait left empty for an image to fill, nor ask to describe a logo that is named by itself', () => {
+  it('does not take an optional logo or portrait left empty for an image to fill, nor ask to describe a logo that is named by itself', () => {
     const { state, second } = pageOf();
-    state.pages[second].rootIds = [];
-    const logos = makeInstance(state.components[installComponent(state, 'logos.strip')], { heading: 'Trusted by', logos: [{ id: 'l1', name: 'Fernhill', logo: { assetId: null, alt: '' } }] });
-    state.pages[second].nodes[logos.id] = logos;
-    state.pages[second].rootIds.push(logos.id);
+    const logos = logoStrip(state, second, { heading: 'Trusted by', logos: [{ id: 'l1', name: 'Fernhill', logo: { assetId: null, alt: '' } }] }, true);
     expect(texts(starters(state, second)).join('\n')).not.toMatch(/empty image/);
     // A placed logo has no alt text of its own, and needs none: the component says the company's name.
     state.assets.assets.a_logo = asset('a_logo', 'Fernhill logo');
@@ -426,6 +438,21 @@ describe('what the page holds, counted the way the page shows it', () => {
     state.assets.assets.a_photo = asset('a_photo', 'Quayside');
     addHero(state, second, { assetId: 'a_photo', alt: '' });
     expect(starters(state, second)[0].text).toBe('Write alt text for the “Quayside” image on the “お問い合わせ” page');
+  });
+
+  // Release gap: chat starters read images from managed trees only (imageTraits), so the release's logo, shown only when set, is taken for one to fill.
+  it.fails("does not take the release's optional logo left empty for an image to fill", () => {
+    const { state, second } = pageOf();
+    logoStrip(state, second, { heading: 'Trusted by', logos: [{ id: 'l1', name: 'Fernhill', logo: { assetId: null, alt: '' } }] }, false);
+    expect(texts(starters(state, second)).join('\n')).not.toMatch(/empty image/);
+  });
+
+  // Release gap: chat starters read images from managed trees only (imageTraits), so the release's logo, named by its company, is asked to be described.
+  it.fails("does not ask to describe the release's logo that is named by itself", () => {
+    const { state, second } = pageOf();
+    state.assets.assets.a_logo = asset('a_logo', 'Fernhill logo');
+    logoStrip(state, second, { heading: 'Trusted by', logos: [{ id: 'l1', name: 'Fernhill', logo: { assetId: 'a_logo', alt: '' } }] }, false);
+    expect(texts(starters(state, second)).join('\n')).not.toMatch(/Write alt text/);
   });
 
   it('survives a document with something unexpected in it, and offers none rather than failing', () => {
@@ -556,10 +583,12 @@ describe('selection starters follow the component the element belongs to', () =>
   }
   const ask = (state: ProjectState, pageId: string, ref: ElementRef) => texts(starters(state, pageId, { selection: ref }));
 
-  // Release gap: chat starters read parts and images from managed trees only (resolveRef, imageTraits).
-  it.fails('reads a bound text from the placement, else the component default, and a repeated item from its own field', () => {
+  it('reads a bound text from the placement, else the component default, and a repeated item from its own field', () => {
     const { state, second } = lighthouse();
+    // Foundation's managed designs of the hero and the feature grid, whose parts are elements to select.
+    managedFoundation(state, ['hero.split', 'features.grid']);
     const hero = part(state, second, 'hero.split', { heading: 'Hello' }, 'heading');
+    expect(hero.def.kind).toBe('managed');
     expect(ask(state, second, hero.ref)[0]).toBe('Make the Heading warmer and more confident');
     hero.inst.props.heading = '';
     expect(ask(state, second, hero.ref)).toEqual(['Write the text for the Heading', 'Suggest three ways to write the Heading']);
@@ -569,6 +598,7 @@ describe('selection starters follow the component the element belongs to', () =>
     // A repeated card: its own title decides, not the list's first item.
     const blank = { link: { type: 'none', target: '' }, linkLabel: '', description: '', icon: 'compass' };
     const grid = part(state, second, 'features.grid', { items: [{ ...blank, title: 'Planning' }, { ...blank, title: '' }] }, 'cardTitle');
+    expect(grid.def.kind).toBe('managed');
     const [a, b] = (grid.inst.props.items as Array<{ id: string }>).map((i) => i.id);
     expect(ask(state, second, { ...grid.ref, itemPath: [b] })[0]).toBe('Write the text for the Card title');
     expect(ask(state, second, { ...grid.ref, itemPath: [a] })[0]).toBe('Make the Card title warmer and more confident');
@@ -576,17 +606,35 @@ describe('selection starters follow the component the element belongs to', () =>
     expect(ask(state, second, { ...grid.ref, itemPath: ['i_gone'] })[0]).toBe('Make the Card title warmer and more confident');
   });
 
-  // Release gap: chat starters read parts and images from managed trees only (resolveRef, imageTraits).
-  it.fails('reads a repeated image from its own item: decorative or empty, with and without other images to offer', () => {
+  // Release gap: chat starters read parts from managed trees only (resolveRef), so a part of a release code component offers the page's starters instead.
+  it.fails("reads a bound text of the release hero's heading", () => {
     const { state, second } = lighthouse();
+    const hero = part(state, second, 'hero.split', { heading: 'Hello' }, 'heading');
+    expect(ask(state, second, hero.ref)[0]).toBe('Make the Heading warmer and more confident');
+  });
+
+  it('reads a repeated image from its own item: decorative or empty, with and without other images to offer', () => {
+    const { state, second } = lighthouse();
+    // Foundation's managed design of the gallery, whose image is an element to select.
+    withManaged(state, 'media.gallery');
     state.assets.assets.a_one = asset('a_one', 'One');
     const gallery = part(state, second, 'media.gallery', { images: [{ image: { assetId: 'a_one', alt: '', decorative: true }, caption: '' }, { image: { assetId: null, alt: '' }, caption: '' }] }, 'image');
+    expect(gallery.def.kind).toBe('managed');
     const [g1, g2] = (gallery.inst.props.images as Array<{ id: string }>).map((i) => i.id);
     // The only image in the library is the placed one, and it is decorative: nothing to describe, nothing to swap in.
     expect(ask(state, second, { ...gallery.ref, itemPath: [g1] })).toEqual(['Suggest a better layout for the Image']);
     expect(ask(state, second, { ...gallery.ref, itemPath: [g2] })).toEqual(['Choose an image for the Image from my images']);
     // An item that is not in the list is not known to be anything: both are offered.
     expect(ask(state, second, { ...gallery.ref, itemPath: ['i_gone'] })).toEqual(['Write better alt text for the Image', 'Find a better image for the Image from my images']);
+  });
+
+  // Release gap: chat starters read parts from managed trees only (resolveRef), so a part of a release code component offers the page's starters instead.
+  it.fails("reads a repeated image of the release gallery from its own item", () => {
+    const { state, second } = lighthouse();
+    state.assets.assets.a_one = asset('a_one', 'One');
+    const gallery = part(state, second, 'media.gallery', { images: [{ image: { assetId: 'a_one', alt: '', decorative: true }, caption: '' }] }, 'image');
+    const [g1] = (gallery.inst.props.images as Array<{ id: string }>).map((i) => i.id);
+    expect(ask(state, second, { ...gallery.ref, itemPath: [g1] })).toEqual(['Suggest a better layout for the Image']);
   });
 
   it('points a link at the page it really leads to, and not at a deleted page or an address outside the site', () => {

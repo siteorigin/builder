@@ -44,10 +44,17 @@ const rejects = (fn: () => unknown, msg: RegExp) => {
 };
 
 describe('section anchors', () => {
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('puts a section anchor on its component root as an id', () => {
-    let s = fresh();
-    const hero = firstInstance(s, 'hero.split');
+  /** The managed designs on Home, with an empty Section (test.section) placed in the shared footer. */
+  const withFooterSection = () => {
+    let s = managed();
+    s = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'shell', id: 'footer' }, parentId: null, definitionId: SECTION }]).state;
+    const footer = s.site.shell.footer;
+    return { s, footer: footer.rootIds.find((id) => (footer.nodes[id] as InstanceNode).definitionId === SECTION)! };
+  };
+
+  it('puts a section anchor on its component root as an id', () => {
+    let s = managed();
+    const hero = firstInstance(s, 'test.hero');
     s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: '#pricing' }]).state;
     expect(home(s).nodes[hero.id].anchor).toBe('pricing');
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
@@ -58,27 +65,41 @@ describe('section anchors', () => {
     expect(comp).toMatch(/id=\{so_id\}/);
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('keeps anchors unique and leaves them off duplicates', () => {
-    let s = fresh();
-    const hero = firstInstance(s, 'hero.split');
-    const grid = firstInstance(s, 'features.grid');
+  it('keeps anchors unique and leaves them off duplicates', () => {
+    let s = managed();
+    const hero = firstInstance(s, 'test.hero');
+    const grid = firstInstance(s, 'test.grid');
     s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'top' }]).state;
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: grid.id, field: 'anchor', value: 'top' }]), /already uses/);
     const r = applyOperations(s, [{ type: 'node.duplicate', owner: owner(s), nodeId: hero.id }]);
     expect(home(r.state).nodes[r.results[0].nodeId as string].anchor).toBeUndefined();
   });
 
-  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
-  it.fails('keeps anchors unique across a page, its shared header and footer, and the layout', () => {
-    let s = fresh();
-    const hero = firstInstance(s, 'hero.split');
-    const footer = s.site.shell.footer.rootIds[0];
+  it('keeps anchors unique across a page, its shared header and footer, and the layout', () => {
+    let { s, footer } = withFooterSection();
+    const hero = firstInstance(s, 'test.hero');
     s = applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }]).state;
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'contact' }]), /already uses/);
     rejects(() => applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: 'main' }]), /used by the site/);
     // Setting an element's own anchor again is not a clash with itself.
     expect(() => applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }])).not.toThrow();
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('puts a section anchor on a section of the shipped theme, which renders it as its id', () => {
+    let s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    expect(s.components[hero.definitionId].source).toMatch(/id=\{so_id\}/);
+    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: hero.id, field: 'anchor', value: '#pricing' }]).state;
+    expect(home(s).nodes[hero.id].anchor).toBe('pricing');
+    expect(generateProject(s).get('src/routes/+page.svelte')).toContain('so_id={"pricing"}');
+  });
+
+  // Release gap: the engine refuses anchors and entrances on code components (anchorCapable in src/engine/tree.ts), though every release section renders id={so_id}.
+  it.fails('puts a section anchor on the shipped theme’s footer', () => {
+    const s = fresh();
+    const footer = s.site.shell.footer.rootIds[0];
+    expect(applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'shell', id: 'footer' }, nodeId: footer, field: 'anchor', value: 'contact' }]).state.site.shell.footer.nodes[footer].anchor).toBe('contact');
   });
 
   it('refuses anchors on code components', () => {
@@ -588,17 +609,36 @@ describe('a Section’s columns, arranged from the placement (#514)', () => {
     return { s: r.state, def: r.state.components['foundation.layout.section'], id: r.results[0].nodeId as string };
   };
 
-  // Release gap: columnLayoutPart (src/shared/styles.ts) needs a tree, so the release's Section gets no column controls.
-  it.fails('offers Column sizes and separate row and column gaps on its Container, beside its layout and columns', () => {
-    const { def } = withSection();
+  /**
+   * A blank site with a Section built in the editor installed as Foundation's own (its Container holding its Content
+   * slot, with the controls the release's Section offers) and placed: the release's Section is code, with no tree for
+   * columnLayoutPart to read (the Release gap test below).
+   */
+  const withManagedSection = () => {
+    const s = createStarterState('blank', 'Blank', false);
+    const def = foundationDesign(contentSection('layout.section'));
+    s.components[def.id] = def;
+    const r = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, definitionId: def.id }]);
+    return { s: r.state, def: r.state.components[def.id], id: r.results[0].nodeId as string };
+  };
+  const COLUMNS = { partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] };
+
+  it('offers Column sizes and separate row and column gaps on its Container, beside its layout and columns', () => {
+    // The release's Section declares them on its Container.
+    expect(withSection().def.parts.container.styleControls).toEqual(expect.arrayContaining(['layout', 'columns', 'gridTemplate', 'rowGap', 'columnGap']));
+    const { def } = withManagedSection();
     expect(def.parts.container.styleControls).toEqual(expect.arrayContaining(['layout', 'columns', 'gridTemplate', 'rowGap', 'columnGap']));
     // The placement's inspector reaches them without Parts: the one part that holds the section's slot.
-    expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] });
+    expect(columnLayoutPart(def)).toEqual(COLUMNS);
   });
 
   // Release gap: columnLayoutPart (src/shared/styles.ts) needs a tree, so the release's Section gets no column controls.
-  it.fails('offers what an older installed Section has, and the same on a copy made unique', () => {
-    const { s, def: installed, id } = withSection();
+  it.fails('offers the shipped theme’s Section its column controls without Parts', () => {
+    expect(columnLayoutPart(withSection().def)).toEqual(COLUMNS);
+  });
+
+  it('offers what an older installed Section has, and the same on a copy made unique', () => {
+    const { s, def: installed, id } = withManagedSection();
     const def = structuredClone(installed);
     def.parts.container.styleControls = ['maxWidth', 'gap', 'layout', 'columns', 'align', 'justify', 'textAlign'];
     expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gap', 'align', 'justify'] });
@@ -610,6 +650,7 @@ describe('a Section’s columns, arranged from the placement (#514)', () => {
     const copy = r.state.components[r.results[0].definitionId as string];
     expect(copy.componentId).not.toBe('layout.section');
     expect(columnLayoutPart(copy)).toEqual(columnLayoutPart(installed));
+    expect(columnLayoutPart(copy)).toEqual(COLUMNS);
   });
 
   it('offers nothing for a design whose slot is not a Section’s content', () => {

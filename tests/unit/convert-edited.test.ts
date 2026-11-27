@@ -122,7 +122,7 @@ describe('placements of a converted design file (#737)', () => {
     const state = withConvertibleDesigns(createStarterState('business', 'Convert', false));
     const hero = HERO;
     const [{ node }] = instancesOf(state, hero) as Array<{ node: InstanceNode }>;
-    node.variants = { ...node.variants, tone: 'inverse' };
+    node.variants = { ...node.variants, tone: 'inverse', layout: 'media-start' };
     node.appear = 'lift';
     node.anchor = 'welcome';
     node.overrides = { heading: { base: { color: '#aa0000' } }, root: { base: { paddingTop: '48px' } } };
@@ -175,8 +175,17 @@ describe('placements of a converted design file (#737)', () => {
       if (!/^src\/routes\/|^src\/lib\/siteorigin\/styles\//.test(path)) continue;
       expect(asDesigns(now.get(path) ?? '', after, ids), path).toBe(asDesigns(text, after, ids));
     }
-    // The converted placement keeps its anchor and its entrance as the design's file took them.
+    // The converted placement keeps its anchor and its entrance as the design's file took them, and, the first
+    // section, has its image load first, as the design's placement did.
     const home = now.get('src/routes/+page.svelte')!;
+    const call = (page: string, name: RegExp) => page.match(new RegExp(`<${name.source}[^<>]*>`))![0];
+    const was = call(before.get('src/routes/+page.svelte')!, /C_foundation_test_hero_split_[a-z0-9]+/);
+    const is = call(home, /C_code_split_hero_[a-z0-9_]+/);
+    for (const c of [was, is]) {
+      expect(c).toContain('so_eager={true}');
+      expect(c).toMatch(/variant_layout=\{?"media-start"\}?/);
+    }
+    expect(now.get(after.components[ids[hero]].sourcePath!)).toMatch(/<SoImage image=\{[^}]*\} eager=\{so_eager\}/);
     expect(home).toContain('"welcome"');
     expect(home).toMatch(/so_appear=\{?"lift"\}?/);
     expect(home).not.toMatch(/\bvariant=/);

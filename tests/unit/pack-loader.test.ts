@@ -2,7 +2,7 @@
  * Loading theme packs from disk: valid releases load from the app's resources and the person's packs folder,
  * and a malformed or unsafe one is refused whole with a reason, while the others still load.
  */
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,14 +15,17 @@ import { buildPack, fileSource, writeRelease } from '../../src/main/packs/build'
 import { loadPackDir, loadPacks, type PackRoot } from '../../src/main/packs/loader';
 import { readPackFile, registerPackFiles } from '../../src/main/packs/files';
 import { loadInstalledPacks, packPreview } from '../../src/main/packs/installed';
-import { defaultTheme, findTheme, getTheme, registerPacks } from '@catalogue/index';
+import { defaultTheme, findTheme, registerPacks } from '@catalogue/index';
 import { sha } from '../../src/main/project/fsutil';
 import { ROOT, metaOf, restorePacks } from './fixtures/packs';
 
 const dirs: string[] = [];
-afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
-// Some tests load packs the way the app does, which replaces the registered packs.
-afterAll(() => restorePacks());
+// Some tests load packs the way the app does, which replaces the registered packs and their files: each test starts
+// from the committed releases again, whether the one before it passed or not, and its folders go only after that.
+afterEach(async () => {
+  await restorePacks();
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+});
 
 const tmp = () => {
   const d = mkdtempSync(join(tmpdir(), 'so-packs-'));
@@ -68,7 +71,9 @@ const asManaged = (c: ComponentDefinition): ComponentDefinition => {
  * keeps Foundation's own code components as they are; otherwise the pack brings data only.
  */
 function studio(id = 'studio', reuse = false): AuthoredPack {
-  const foundation = getTheme('foundation');
+  // Foundation itself, never the default theme standing in for it when another load has replaced the registry.
+  const foundation = findTheme('foundation');
+  if (!foundation) throw new Error('Foundation is not registered.');
   const author = createPack(metaOf(foundation, { id, name: 'Studio', version: '1.0.0', license: 'MIT', devOnly: undefined, fonts: [builtinFont('Lora')] }));
   return author.define(foundation.components.map((c) => author.adopt(c.kind === 'code' && !reuse ? asManaged(c) : c)));
 }

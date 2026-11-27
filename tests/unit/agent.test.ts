@@ -84,12 +84,16 @@ interface SetupOptions {
   capabilities?: Partial<ReturnType<AgentModelAdapter['capabilities']>>;
   /** Sections whose managed Foundation design the project holds in place of the release's code (fixtures/agent-designs). */
   managed?: string[];
+  /** A change to the project before the session opens it. */
+  prepare?: (s: ProjectState) => void;
 }
 
 async function setup(turns: Turn[], opts: SetupOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'so-agent-'));
   dirs.push(dir);
-  const session = await ProjectSession.create(dir, opts.managed ? managedStarter(opts.managed) : createStarterState('business', 'Test', false));
+  const initial = opts.managed ? managedStarter(opts.managed) : createStarterState('business', 'Test', false);
+  opts.prepare?.(initial);
+  const session = await ProjectSession.create(dir, initial);
   const adapter = new FakeAdapter(turns, opts.capabilities);
   const events: AiEvent[] = [];
   let busy = false;
@@ -6537,8 +6541,25 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
     expect(limited(4097)).toThrow(/maxLength must be a whole number from 0 to 4,096/);
   });
 
-  // Release gap: the strict code check (GLOBAL_OBJECTS in src/main/codecheck.ts) takes the release header's own locals top and frames for globals.
-  it.fails('forks the shared header in a run and patches the copy, which is still held to the strict code check', async () => {
+  /**
+   * The release's header with its two locals named `top` and `frames` renamed, which the strict code check takes for
+   * the globals of those names (the Release gap test below): otherwise the theme's own code, as the project holds it.
+   */
+  const headerWithOwnNames = (s: ProjectState) => {
+    const header = s.components['foundation.shell.header'];
+    const renamed = [
+      ['const top = parseFloat(style.top);', 'const offset = parseFloat(style.top);'],
+      ['Number.isFinite(top) ? top :', 'Number.isFinite(offset) ? offset :'],
+      ['let frames = 0;', 'let ticks = 0;'],
+      ['++frames >= 120', '++ticks >= 120']
+    ].reduce((src, [from, to]) => {
+      expect(src).toContain(from);
+      return src.replace(from, to);
+    }, header.source!);
+    s.components[header.id] = { ...header, source: renamed };
+  };
+
+  it('forks the shared header in a run and patches the copy, which is still held to the strict code check', async () => {
     let session: ProjectSession;
     let fork = '';
     const header = () => session.state.site.shell.header.rootIds[0];
@@ -6559,7 +6580,7 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
         return [call('p1', 'apply_source_patch', patch(fork, read, { source: `${sourceOf(session.state, fork)}\n<!-- tidied -->\n` }))];
       },
       () => finish('Done.')
-    ]);
+    ], { prepare: headerWithOwnNames });
     session = env.session;
     const { result } = await env.run('Tidy the header code');
     expect(resultOf(env.adapter.requests[1])).toMatchObject({ ok: true, results: [{ definitionId: fork, moved: 1, of: 1 }] });
@@ -6569,6 +6590,15 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
     expect(sourceOf(session.state, fork)).toMatch(/<!-- tidied -->\n$/);
     expect(sourceOf(session.state, fork)).not.toContain('const w = window');
     expect(result?.changes[0].label).toBe('Copied the “Header” component into the project as “Header”, for its one placement');
+  });
+
+  // Release gap: the strict code check (GLOBAL_OBJECTS in src/main/codecheck.ts) takes the release header's own locals top and frames for globals, so a copy of the release's header is refused.
+  it.fails("forks the release's shared header in a run", async () => {
+    let session: ProjectSession;
+    const env = await setup([() => [call('f1', 'apply_operations', { expectedRevision: session.revision, scope: site, operations: [{ type: 'component.fork', definitionId: 'foundation.shell.header' }] })], () => finish('Done.')]);
+    session = env.session;
+    await env.run('Copy the header');
+    expect(resultOf(env.adapter.requests[1])).toMatchObject({ ok: true, results: [{ moved: 1, of: 1 }] });
   });
 
   it('checks the code against the properties it lands with, keeps a rename’s values, and refuses properties the code no longer fits', async () => {

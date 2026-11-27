@@ -48,9 +48,11 @@ const COPYRIGHT = '© 2026 Test Studio. All rights reserved.';
 const PLAIN_HEADING = 'Getting to the studio';
 const PLAIN_TEXT = 'The studio is a short walk from Millbrook station, with parking on Harbour Lane.';
 const PLAIN_MORE = 'Visitors are welcome by appointment on weekdays.';
+/** The FAQ's heading, as the release writes it. */
+const FAQ_HEADING = 'What clients ask before we start';
 /** Each section heading, with the first thing it introduces. */
 const HEADINGS: Array<[string, string]> = [
-  ['What clients ask before we start', QUESTIONS[0][0]],
+  [FAQ_HEADING, QUESTIONS[0][0]],
   ['Clear packages, fixed fees', PLANS[0].description],
   [FORM_HEADING, FIELDS[0]],
   [PLAIN_HEADING, PLAIN_TEXT]
@@ -273,8 +275,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     }
   }, 60_000);
 
-  // Release gap: the release's FAQ icons (faq__icon) escape the base CSS print rule.
-  it.fails('hides the menu button and an open phone menu, the skip link, the FAQ toggle icons, the form actions, messages and trap, and unsticks the header in print', async () => {
+  it('hides the menu button and an open phone menu, the skip link, a copied FAQ’s toggle icons, the form actions, messages and trap, and unsticks the header in print', async () => {
     const page = await openSite(browser, [], 390);
     try {
       await page.click('.so-header__toggle');
@@ -318,11 +319,13 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(screen.formMessages).not.toBe('none');
       expect(screen.header).toBe('sticky');
       await page.emulateMedia({ media: 'print' });
-      expect(await styles()).toEqual({
+      // The release's own FAQ icons: see the Release gap below.
+      const { icons: _icons, ...printed } = await styles();
+      void _icons;
+      expect(printed).toEqual({
         menu: 'none',
         toggle: 'none',
         nav: 'none',
-        icons: 'none,none,none,none',
         copyIcon: 'none',
         status: screen.status,
         skip: 'none',
@@ -337,6 +340,19 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(text).toContain(squash(QUESTIONS[3][1]));
       expect(text).toContain(squash('By appointment.'));
       expect(text).toContain(squash('On Harbour Lane.'));
+    } finally {
+      await page.context().close();
+    }
+  }, 60_000);
+
+  // Release gap: the release's FAQ draws its open/close icon as faq__icon, inside faq__mark, which the base CSS print rule for a FAQ's toggle icon (details > summary [class$='__toggle-icon']) does not match, so the icons print.
+  it.fails('hides the FAQ’s toggle icons in print', async () => {
+    const page = await openSite(browser, []);
+    try {
+      const icons = () => page.evaluate<string[]>(`[...document.querySelectorAll('section.faq .faq__icon')].map((el) => getComputedStyle(el).display)`);
+      expect(await icons()).toHaveLength(QUESTIONS.length);
+      await page.emulateMedia({ media: 'print' });
+      expect(await icons()).toEqual(QUESTIONS.map(() => 'none'));
     } finally {
       await page.context().close();
     }
@@ -407,8 +423,11 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     }
   }, 60_000);
 
-  // Release gap, through the FAQ: the release's FAQ intro does not keep its heading with the first question when printed.
-  const keepsWhole = async (root: string) => {
+  /**
+   * Moves a page break through the section at `root`, checking at each step that plans, the form, questions and the
+   * `headings` given are each whole on a sheet (all of them but the headings, `rest`, unless left out).
+   */
+  const keepsWhole = async (root: string, { headings = HEADINGS, rest = true }: { headings?: Array<[string, string]>; rest?: boolean } = {}) => {
     // One question open and the rest closed, as a visitor might leave them.
     const page = await openSite(browser, [1]);
     try {
@@ -421,30 +440,36 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         })()`);
         const sheets = await print(page);
         const at = `${shift}px down`;
-        for (const plan of PLANS) {
+        for (const plan of rest ? PLANS : []) {
           const parts = [plan.name, plan.price, plan.description, ...plan.features, plan.action];
           const where = parts.map((part) => sheetsWith(sheets, part));
           expect(where[0], `${plan.name} ${at}`).toHaveLength(1);
           expect(where, `${plan.name} ${at}`).toEqual(parts.map(() => where[0]));
         }
-        const form = [FORM_HEADING, ...FIELDS].map((part) => sheetsWith(sheets, part));
-        expect(form[0], `the form ${at}`).toHaveLength(1);
-        expect(form, `the form ${at}`).toEqual(form.map(() => form[0]));
-        for (const [question, answer] of QUESTIONS) {
-          expect(sheetsWith(sheets, question), `${question} ${at}`).toHaveLength(1);
-          expect(sheetsWith(sheets, answer), `${question} ${at}`).toEqual(sheetsWith(sheets, question));
+        if (rest) {
+          const form = [FORM_HEADING, ...FIELDS].map((part) => sheetsWith(sheets, part));
+          expect(form[0], `the form ${at}`).toHaveLength(1);
+          expect(form, `the form ${at}`).toEqual(form.map(() => form[0]));
+          for (const [question, answer] of QUESTIONS) {
+            expect(sheetsWith(sheets, question), `${question} ${at}`).toHaveLength(1);
+            expect(sheetsWith(sheets, answer), `${question} ${at}`).toEqual(sheetsWith(sheets, question));
+          }
+          expect(sheetsWith(sheets, PLAIN_MORE), `${PLAIN_MORE} ${at}`).toHaveLength(1);
         }
-        for (const [heading, first] of HEADINGS) {
+        for (const [heading, first] of headings) {
           expect(sheetsWith(sheets, heading), `${heading} ${at}`).toHaveLength(1);
           expect(sheetsWith(sheets, first), `${heading} ${at}`).toEqual(sheetsWith(sheets, heading));
         }
-        expect(sheetsWith(sheets, PLAIN_MORE), `${PLAIN_MORE} ${at}`).toHaveLength(1);
       }
     } finally {
       await page.context().close();
     }
   };
-  for (const [name, root] of SECTIONS) (name === 'the FAQ' ? it.fails : it)(`keeps plans, the form, questions and headings whole on a sheet as a page break moves through ${name}`, () => keepsWhole(root), 120_000);
+  for (const [name, root] of SECTIONS)
+    it(`keeps plans, the form, questions and headings whole on a sheet as a page break moves through ${name}`, () => keepsWhole(root, name === 'the FAQ' ? { headings: HEADINGS.filter(([h]) => h !== FAQ_HEADING) } : {}), 120_000);
+
+  // Release gap: the release's FAQ does not keep its heading with its first question when printed: a page break moving through the FAQ falls between them.
+  it.fails('keeps the FAQ’s heading on a sheet with its first question as a page break moves through the FAQ', () => keepsWhole('section.faq', { headings: HEADINGS.filter(([h]) => h === FAQ_HEADING), rest: false }), 120_000);
 });
 
 describe.each(ENGINES.filter(([name]) => name === 'webkit'))('printing a Foundation page in %s', (_name, engine) => {

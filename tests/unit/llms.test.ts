@@ -218,17 +218,11 @@ describe('Markdown copies', () => {
     for (const words of footerWords) expect(md).not.toContain(words);
   });
 
-  // Release gap: the Markdown copies read only the release's table, form and video code sections (code() in src/generator/markdown.ts).
-  it.fails('keeps the headings, paragraphs, lists, links, tables and questions with their answers of Foundation’s sections, without the header and footer', () => {
+  it('keeps the table of Foundation’s sections, without the header and footer', () => {
     // What a Foundation site's own sections say, as the app ships them.
     const { s } = richHome({ release: true });
     const md = files(s).get('static/index.html.md')!;
     expect(md.startsWith('# Home\n\nURL: https://example.com/studio/\n\n> Pottery classes for beginners')).toBe(true);
-    // The page's own headings sit under its title.
-    expect(md).toContain('\n### How classes run\n');
-    expect(md).toContain('We throw, **trim** and glaze. See [our services](https://example.com/studio/services/).');
-    expect(md).toContain('#### What to bring\n\n- An apron\n- Old clothes');
-    expect(md).toContain('**Do I need experience?**\n\nNo. Beginners are welcome.');
     expect(md).toContain('### Timetable\n\n**Weekly classes**\n\n| Day | Class \\| level |\n| --- | --- |\n| Monday | Wheel \\| beginners |\n|   | Glazing |');
     // The shared header's menu and the footer are not the page's content.
     const header = s.site.shell.header.rootIds.map((id) => s.site.shell.header.nodes[id] as InstanceNode)[0];
@@ -239,6 +233,16 @@ describe('Markdown copies', () => {
     const footerWords = [...s.site.shell.footer.rootIds].flatMap((id) => Object.values((s.site.shell.footer.nodes[id] as InstanceNode).props ?? {})).filter((v): v is string => typeof v === 'string' && v.length > 6);
     expect(footer.length + footerWords.length).toBeGreaterThan(0);
     for (const words of footerWords) expect(md).not.toContain(words);
+  });
+
+  // Release gap: the Markdown copies read only the release's table, form and video code sections (code() in src/generator/markdown.ts).
+  it.fails('keeps the headings, paragraphs, lists, links and questions with their answers of Foundation’s text and FAQ sections', () => {
+    const { s } = richHome({ release: true });
+    const md = files(s).get('static/index.html.md')!;
+    expect(md).toContain('\n### How classes run\n');
+    expect(md).toContain('We throw, **trim** and glaze. See [our services](https://example.com/studio/services/).');
+    expect(md).toContain('#### What to bring\n\n- An apron\n- Old clothes');
+    expect(md).toContain('**Do I need experience?**\n\nNo. Beginners are welcome.');
   });
 
   it('keeps a quote apart from the words after it in a list item, and a working button’s words when its page is not listed', () => {

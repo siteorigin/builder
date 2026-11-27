@@ -176,27 +176,28 @@ describe('exporting a project with a draft', () => {
     expect(r.message).toMatch(/^Exported \d+ pages and 2 entries from Posts\.$/);
   });
 
-  // Release gap: emptySections (src/generator/checks.ts) finds lists in managed trees only, so an empty release Gallery, Carousel, News list or Page list goes unreported.
-  it.fails('#881: both exports name a section that has nothing to show, and a draft’s is left out', async () => {
+  // The section is the release's Video, which emptySections reads by its contract: an empty release Gallery goes
+  // unreported (the Release gap test in empty-sections.test.ts).
+  it('#881: both exports name a section that has nothing to show, and a draft’s is left out', async () => {
     const dir = temp('project');
     let state = createStarterState('blank', 'Bookshop', false);
     state.site.baseUrl = 'https://books.example';
     state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_winter01', title: 'Winter stock preview' }, { type: 'page.update', pageId: 'pg_winter01', draft: true }]).state;
     const { installComponent, makeInstance } = await import('@engine/install');
     for (const pageId of [state.site.homePageId, 'pg_winter01']) {
-      const gallery = makeInstance(state.components[installComponent(state, 'media.gallery')], {});
-      state.pages[pageId].nodes[gallery.id] = gallery;
-      state.pages[pageId].rootIds.push(gallery.id);
+      const video = makeInstance(state.components[installComponent(state, 'media.video')], {});
+      state.pages[pageId].nodes[video.id] = video;
+      state.pages[pageId].rootIds.push(video.id);
     }
     await (await ProjectSession.create(dir, state)).close();
     const c = await open(dir);
-    const lines = ['A section has nothing to show visitors. Give it content, or remove it (Project health leads to it):', 'Home · Gallery: “Recent projects” has no images'];
+    const lines = ['A section has nothing to show visitors. Give it content, or remove it (Project health leads to it):', 'Home · Video: “Take a look around” has no video'];
     const site = await c.buildStaticTo(join(temp('out'), 'site'));
     expect(site.ok).toBe(true);
-    expect(site.warnings.filter((w) => /section|Gallery/.test(w))).toEqual(lines);
+    expect(site.warnings.filter((w) => /section|Video/.test(w))).toEqual(lines);
     const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
     expect(source.ok).toBe(true);
-    expect(source.warnings.filter((w) => /section|Gallery/.test(w))).toEqual(lines);
+    expect(source.warnings.filter((w) => /section|Video/.test(w))).toEqual(lines);
   });
 
   it('publishes the hosts’ 301 rules for the published redirects only, with vercel.json at the website’s root (#581)', async () => {

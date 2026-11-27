@@ -31,17 +31,21 @@ describe('finding lists in Insert', () => {
 describe('column layouts in Insert (#514)', () => {
   const names = (q: string) => searchItems(offered(), q).map((it) => it.name);
 
-  // Release gap: searching "two columns" ranks the release's Feature bento and Testimonials, whose descriptions say two columns, ahead of the 2 columns layout.
-  it.fails('finds the two- and three-column layouts by number or by word, each once', () => {
+  it('finds the two- and three-column layouts by number or by word, each once', () => {
     expect(names('2 columns')[0]).toBe('2 columns');
-    expect(names('two columns')[0]).toBe('2 columns');
     expect(names('2-column')[0]).toBe('2 columns');
     expect(names('3 columns')[0]).toBe('3 columns');
     expect(names('three column')[0]).toBe('3 columns');
+    expect(names('two columns')).toContain('2 columns');
     expect(names('side by side')).toEqual(expect.arrayContaining(['2 columns', '3 columns', 'Row']));
     const columns = names('columns');
     expect(columns).toEqual(expect.arrayContaining(['2 columns', '3 columns', 'Grid']));
     expect(columns.filter((n) => n === '2 columns')).toHaveLength(1);
+  });
+
+  // Release gap: searching "two columns" ranks the release's Feature bento and Testimonials, whose descriptions say two columns, ahead of the 2 columns layout.
+  it.fails('finds the two-column layout first by word', () => {
+    expect(names('two columns')[0]).toBe('2 columns');
   });
 
   it('finds the uneven layout starters by their names and by what they are for (#665)', () => {

@@ -1,6 +1,6 @@
 /**
  * The editor-built designs whose generated files the convert-edited tests turn into code (#737): a split hero with
- * two variant axes, and a grid of cards whose card is a part repeated per item. Foundation's own sections are code
+ * two variant axes (its second puts its image first) and an image, and a grid of cards whose card is a part repeated per item. Foundation's own sections are code
  * components already, so these stand on the starter's Home as the project's own designs, the hero first.
  */
 import type { ProjectState } from '@shared/types';
@@ -16,20 +16,25 @@ export function withConvertibleDesigns(state: ProjectState): ProjectState {
     componentId: 'test.hero.split',
     name: 'Split hero',
     category: 'hero',
-    properties: { heading: P.str('Heading', 'Designed for living in'), lead: P.text('Supporting text', 'A small studio by the river.') },
+    properties: { heading: P.str('Heading', 'Designed for living in'), lead: P.text('Supporting text', 'A small studio by the river.'), image: P.image('Image', 'A calm, light-filled studio') },
     parts: {
       root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
-      heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] }
+      heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+      media: { nodeId: 'media', label: 'Image', styleControls: ['radius'] }
     },
     variantAxes: {
       tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, inverse: { label: 'Dark', styles: { root: { base: { background: tok('color.inverse'), color: tok('color.on-inverse') } } } } } },
-      layout: { label: 'Layout', default: 'default', options: { default: { label: 'Text first' }, reversed: { label: 'Text second', styles: { inner: { base: { gridTemplate: '1fr 1fr' } } } } } }
+      // The image beside the text, before it on a wide screen in the second layout.
+      layout: { label: 'Layout', default: 'default', options: { default: { label: 'Image last' }, 'media-start': { label: 'Image first', styles: { 'media-wrap': { desktop: { order: -1 } } } } } }
     },
     build: (b) =>
       b.el('root', 'section', { name: 'Section' }, [
-        b.el('inner', 'div', { name: 'Container' }, [
-          b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading' }),
-          b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' } })
+        b.el('inner', 'div', { name: 'Layout', styles: { base: { layout: 'grid', columns: 1 }, desktop: { columns: 2 } } }, [
+          b.el('content', 'div', { name: 'Content' }, [
+            b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading' }),
+            b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' } })
+          ]),
+          b.el('media-wrap', 'figure', { name: 'Media' }, [b.image('media', { $prop: 'image' }, { name: 'Image' })])
         ])
       ])
   });

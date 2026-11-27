@@ -5,6 +5,7 @@ import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
 import { emptySections } from '@generator/checks';
 import { emptySectionWarnings } from '../../src/main/export';
+import { withManagedLists } from './fixtures/empty-sections-designs';
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 
@@ -19,6 +20,17 @@ function blankWith(...componentIds: string[]) {
     placed.push(node);
   }
   return { s, placed };
+}
+
+/**
+ * blankWith, with the Gallery, Carousel, News list and Page list drawn as managed designs (fixtures/empty-sections-
+ * designs.ts), whose lists emptySections finds; the release's cannot be read (the Release gap test at the end). The
+ * Video stays the release's, which emptySections reads by its contract.
+ */
+function managedWith(...componentIds: string[]) {
+  const made = blankWith(...componentIds);
+  withManagedLists(made.s);
+  return made;
 }
 
 /** A published page added to the site after Home, with nothing on it. */
@@ -36,9 +48,8 @@ const health = (s: ProjectState) => validateState(s).filter((d) => d.code === 'S
 const FIVE = ['media.gallery', 'media.carousel', 'media.video', 'content.news', 'content.pages'];
 
 describe('sections with no content (#881)', () => {
-  // Release gap: emptySections (src/generator/checks.ts) finds lists in managed trees only, so an empty release Gallery, Carousel, News list or Page list goes unreported.
-  it.fails('reports every section inserted with its defaults in Project health, leading to it, and in the export notes', () => {
-    const { s, placed } = blankWith(...FIVE);
+  it('reports every section inserted with its defaults in Project health, leading to it, and in the export notes', () => {
+    const { s, placed } = managedWith(...FIVE);
     expect(emptySections(s, home(s)).map((e) => e.nodeId)).toEqual(placed.map((n) => n.id));
     const found = health(s);
     expect(found.map((d) => [d.severity, d.nodeId, d.owner])).toEqual(placed.map((n) => ['warning', n.id, { kind: 'page', id: s.site.homePageId }]));
@@ -59,9 +70,8 @@ describe('sections with no content (#881)', () => {
     ]);
   });
 
-  // Release gap: emptySections (src/generator/checks.ts) finds lists in managed trees only, so an empty release Gallery, Carousel, News list or Page list goes unreported.
-  it.fails('sums up the sections past the sixth', () => {
-    const { s } = blankWith(...FIVE, ...FIVE);
+  it('sums up the sections past the sixth', () => {
+    const { s } = managedWith(...FIVE, ...FIVE);
     const notes = emptySectionWarnings(s);
     expect(notes[0]).toMatch(/^10 sections have nothing to show visitors\./);
     expect(notes.slice(1)).toHaveLength(7);
@@ -69,7 +79,7 @@ describe('sections with no content (#881)', () => {
   });
 
   it('says nothing of a section once it has content', () => {
-    const { s, placed } = blankWith('media.gallery', 'media.video');
+    const { s, placed } = managedWith('media.gallery', 'media.video');
     const [gallery, video] = placed;
     gallery.props.images = [{ id: 'i1', image: { src: 'https://example.com/a.jpg', alt: 'A' }, caption: '', action: 'none', link: { type: 'none', target: '' } }];
     video.props.url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
@@ -79,14 +89,13 @@ describe('sections with no content (#881)', () => {
   });
 
   it('reports a Video whose address is not one its player can play', () => {
-    const { s, placed } = blankWith('media.video');
+    const { s, placed } = managedWith('media.video');
     placed[0].props.url = 'https://example.com/our-tour.mp4';
     expect(emptySections(s, home(s)).map((e) => [e.nodeId, e.what])).toEqual([[placed[0].id, 'video']]);
   });
 
-  // Release gap: emptySections (src/generator/checks.ts) finds lists in managed trees only, so an empty release Gallery, Carousel, News list or Page list goes unreported.
-  it.fails('reports a page list whose cards all lead nowhere, and not one with a card for a page of the site', () => {
-    const { s, placed } = blankWith('content.pages');
+  it('reports a page list whose cards all lead nowhere, and not one with a card for a page of the site', () => {
+    const { s, placed } = managedWith('content.pages');
     const [list] = placed;
     // Titled, so only its missing page hides the card.
     list.props.items = [{ id: 'c1', pageLink: { type: 'page', target: 'p_gone' }, title: 'Old project', description: '', group: '' }];
@@ -95,9 +104,8 @@ describe('sections with no content (#881)', () => {
     expect(emptySections(s, home(s))).toEqual([]);
   });
 
-  // Release gap: emptySections (src/generator/checks.ts) finds lists in managed trees only, so an empty release Gallery, Carousel, News list or Page list goes unreported.
-  it.fails('reports a news list while every article is a draft or hidden from news lists, and not once one shows', () => {
-    const { s } = blankWith('content.news');
+  it('reports a news list while every article is a draft or hidden from news lists, and not once one shows', () => {
+    const { s } = managedWith('content.news');
     const story = addPage(s, 'Our new studio');
     story.article = { date: '2026-11-01' };
     story.draft = true;
@@ -112,25 +120,35 @@ describe('sections with no content (#881)', () => {
     expect(emptySections(s, home(s))).toEqual([]);
   });
 
-  // Release gap: emptySections (src/generator/checks.ts) finds lists in managed trees only, so an empty release Gallery, Carousel, News list or Page list goes unreported.
-  it.fails('leaves out a section visitors never see, and still reports the one beside it', () => {
-    const { s, placed } = blankWith('media.gallery', 'media.carousel', 'media.video');
+  it('leaves out a section visitors never see, and still reports the one beside it', () => {
+    const { s, placed } = managedWith('media.gallery', 'media.carousel', 'media.video');
     placed[0].styles = { base: { hidden: true } };
     placed[2].styles = { base: { hidden: true } };
     expect(emptySections(s, home(s)).map((e) => e.nodeId)).toEqual([placed[1].id]);
   });
 
-  // Release gap: emptySections (src/generator/checks.ts) finds lists in managed trees only, so an empty release Gallery, Carousel, News list or Page list goes unreported.
-  it.fails('names an empty section with no heading by what it is', () => {
-    const { s, placed } = blankWith('media.carousel');
+  it('names an empty section with no heading by what it is', () => {
+    const { s, placed } = managedWith('media.carousel');
     placed[0].props.heading = '';
     expect(health(s).map((d) => d.message)).toEqual(['Home: the Carousel has no slides to show visitors. Choose its slides from Assets, or remove the section.']);
     expect(emptySectionWarnings(s)).toEqual(['A section has nothing to show visitors. Give it content, or remove it (Project health leads to it):', 'Home · Carousel: has no slides']);
   });
 
   it('finds nothing to report in the Business starter', () => {
-    const s = createStarterState('business', 'Test Studio', false);
-    expect(health(s)).toEqual([]);
-    expect(emptySectionWarnings(s)).toEqual([]);
+    for (const s of [createStarterState('business', 'Test Studio', false), withManagedLists(createStarterState('business', 'Test Studio', false))]) {
+      expect(health(s)).toEqual([]);
+      expect(emptySectionWarnings(s)).toEqual([]);
+    }
+  });
+
+  it('reports the shipped theme’s Video inserted with its defaults', () => {
+    const { s, placed } = blankWith('media.video');
+    expect(emptySections(s, home(s)).map((e) => [e.nodeId, e.what])).toEqual([[placed[0].id, 'video']]);
+  });
+
+  // Release gap: emptySections (src/generator/checks.ts) finds lists in managed trees only, so an empty release Gallery, Carousel, News list or Page list goes unreported.
+  it.fails.each(['media.gallery', 'media.carousel', 'content.news', 'content.pages'])('reports the shipped theme’s %s inserted with its defaults', (componentId) => {
+    const { s, placed } = blankWith(componentId);
+    expect(emptySections(s, home(s)).map((e) => e.nodeId)).toEqual([placed[0].id]);
   });
 });

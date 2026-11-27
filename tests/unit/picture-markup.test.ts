@@ -146,8 +146,14 @@ describe('a library image’s sets', () => {
 });
 
 describe('the image a page renders', () => {
-  // Release gap: the release's hero.split gives its image no sizes.
-  it.fails('is a <picture> with typed sources and the <img> it always was, sized by the same hint', async () => {
+  /** The hero's <picture> on the home page, its sources' attributes and its <img>'s. */
+  const heroPicture = (body: string) => {
+    const pic = body.match(/<picture\b[^>]*>[\s\S]*?<\/picture>/)?.[0];
+    expect(pic).toBeDefined();
+    return { pic: pic!, sources: [...pic!.matchAll(/<source\b[^>]*>/g)].map((m) => attrs(m[0])), img: attrs(pic!.match(/<img\b[^>]*>/)![0]) };
+  };
+
+  it('is a <picture> with typed sources and the <img> it always was, each source sized as the <img> is', async () => {
     const s = site(picture('hero'));
     const { body } = await renderHome(s);
     const pic = body.match(/<picture\b[^>]*>[\s\S]*?<\/picture>/)?.[0];
@@ -169,14 +175,20 @@ describe('the image a page renders', () => {
       fetchpriority: 'high'
     });
     expect(img.class).toMatch(/^so-img /);
-    // The split hero says how wide its picture shows; every source says the same.
-    expect(img.sizes).toMatch(/^\(min-width: 1024px\) /);
+    // Every source says the same width as the <img> (how wide the split hero shows it: see the Release gap below).
+    expect(img.sizes).toBeTruthy();
     for (const x of sources) expect(x.sizes).toBe(img.sizes);
     // An image further down the page loads lazily, its own <picture> too.
     s.assets.assets.a_studio = { ...picture('studio'), id: 'a_studio' };
     const lower = (await renderHome(s)).body.match(/<picture\b[^>]*>[\s\S]*?<\/picture>/g)!;
     expect(lower).toHaveLength(2);
     expect(attrs(lower[1].match(/<img\b[^>]*>/)![0])).toMatchObject({ loading: 'lazy', decoding: 'async' });
+  });
+
+  // Release gap: the release's hero.split hands its image no sizes, so its picture takes the runtime image's default (100vw), though it shows at half the page's width on a wide screen.
+  it.fails('sizes the split hero’s picture by how wide it shows', async () => {
+    const { img } = heroPicture((await renderHome(site(picture('hero')))).body);
+    expect(img.sizes).toMatch(/^\(min-width: 1024px\) /);
   });
 
   it('stays a bare <img> for an image with copies in its own format only', async () => {
@@ -191,13 +203,23 @@ describe('the hero’s preload', () => {
   /** The head's image preload links. */
   const preloads = (head: string) => [...head.matchAll(/<link\b[^>]*rel="preload"[^>]*>/g)].map((m) => attrs(m[0])).filter((l) => l.as === 'image');
 
-  // Release gap: the head's hero preload (heroImage in src/generator/index.ts) does not see a code component's images.
-  it.fails('asks for the set the hero’s <picture> takes first, at the widths and sizes it offers, under the base path', async () => {
-    const { head, body } = await renderHome(site(picture('hero')));
-    const first = attrs(body.match(/<picture\b[^>]*>\s*<source\b[^>]*>/)![0].replace(/^<picture\b[^>]*>\s*/, ''));
+  /** The first source of the page's first <picture>. */
+  const firstSource = (body: string) => attrs(body.match(/<picture\b[^>]*>\s*<source\b[^>]*>/)![0].replace(/^<picture\b[^>]*>\s*/, ''));
+
+  it('asks for the set the first section’s <picture> takes first, at the widths and sizes it offers, under the base path', async () => {
+    const { head, body } = await renderHome(ownPicture(site(picture('hero'))));
+    const first = firstSource(body);
+    expect(first.srcset).toContain('/studio/assets/hero-1a2b3c4d-160w.avif 160w');
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
     // Asked for once, before anything else the page's head says (the title, which Svelte writes on its own, aside).
     expect(head.indexOf('rel="preload"')).toBeLessThan(head.indexOf('name="description"'));
+  });
+
+  // Release gap: the head's hero preload (heroImage in src/generator/index.ts) does not see a code component's images.
+  it.fails('asks for the set the release hero’s <picture> takes first, at the widths and sizes it offers, under the base path', async () => {
+    const { head, body } = await renderHome(site(picture('hero')));
+    const first = firstSource(body);
+    expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
   });
 
   it('asks for the <img>’s own set, untyped, for an image with copies in its own format only, and its file for one with none', async () => {

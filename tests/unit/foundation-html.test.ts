@@ -1126,20 +1126,28 @@ describe('styles of one repeated item (#81)', () => {
     ['pricing.plans', 'plan', 'plans', 'plan', { name: 'Consultation' }, { name: 'Design' }],
     ['testimonials.grid', 'card', 'items', 'card', { quote: 'One' }, { quote: 'Two' }]
   ] as const;
-  const putsItemClass = (...[componentId, partId, list, nodeId, first, second]: (typeof cases)[number]) => {
-    const items = [{ id: 'i_reading', ...first }, { id: 'i_poetry', ...second }];
-    const so_oi = { i_poetry: { [partId]: 'so-oi-test' } };
-    const shown = opening(html(componentId, { [list]: items, so_oi }), componentId, nodeId);
-    expect(shown).toHaveLength(2);
-    expect(shown.map((t) => classed('so-oi-test').test(t))).toEqual([false, true]);
+  type Case = (typeof cases)[number];
+  const items = (c: Case) => [{ id: 'i_reading', ...c[4] }, { id: 'i_poetry', ...c[5] }];
+  /** The item's class for the second item's part, as a placement styling that one item hands it. */
+  const so_oi = (c: Case) => ({ i_poetry: { [c[1]]: 'so-oi-test' } });
+  /** The opening tags of the part's elements, the items in order or reordered, with that class handed over. */
+  const shownIn = (c: Case, reordered: boolean) => {
+    const [a, b] = items(c);
+    return opening(html(c[0], { [c[2]]: reordered ? [b, a] : [a, b], so_oi: so_oi(c) }), c[0], c[3]);
+  };
+  const putsItemClass = (c: Case) => {
+    expect(shownIn(c, false).map((t) => classed('so-oi-test').test(t))).toEqual([false, true]);
     // Reordered, the class stays with the item, not the position.
-    const moved = opening(html(componentId, { [list]: [items[1], items[0]], so_oi }), componentId, nodeId);
-    expect(moved.map((t) => classed('so-oi-test').test(t))).toEqual([true, false]);
+    expect(shownIn(c, true).map((t) => classed('so-oi-test').test(t))).toEqual([true, false]);
   };
   for (const c of cases) {
+    it(`${c[0]} renders each item’s ${c[1]} with the part’s class`, () => {
+      expect(shownIn(c, false)).toHaveLength(2);
+      expect(shownIn(c, true)).toHaveLength(2);
+    });
     const title = `${c[0]} puts the item class on that item’s ${c[1]} only, wherever it is in the list`;
     // Release gap: the release's testimonials card declares no list and places no so_oi class, so one card cannot be styled alone (#81).
-    if (c[0] === 'testimonials.grid') it.fails(title, () => putsItemClass(...c));
-    else it(title, () => putsItemClass(...c));
+    if (c[0] === 'testimonials.grid') it.fails(title, () => putsItemClass(c));
+    else it(title, () => putsItemClass(c));
   }
 });

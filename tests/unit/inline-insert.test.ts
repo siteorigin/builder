@@ -68,20 +68,30 @@ describe('Add buttons above and below a section of the page', () => {
     expect(points.map(pointLabel)).toEqual(['Add a section above Section', 'Add a section below Section', 'Add inside Section']);
   });
 
+  /** A blank site with a Foundation Section placed from the theme on Home, and the Add buttons it gets when selected. */
+  const shippedSection = () => {
+    const state0 = createStarterState('blank', 'Expo', false);
+    const owner: OwnerRef = { kind: 'page', id: state0.site.homePageId };
+    const out = applyOperations(state0, [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]);
+    const section = out.results[0].nodeId as string;
+    return { state: out.state, owner, section, points: addPoints(out.state, owner, ref(owner, section)) };
+  };
+
+  it('a Foundation Section placed from the theme gets one above and one below it', () => {
+    const { state, owner, points } = shippedSection();
+    expect(points.filter((x) => x.role === 'section').map((x) => x.side)).toEqual(['before', 'after']);
+    expect(points.filter((x) => x.role === 'section').map((x) => resolvePoint(state, x))).toEqual([
+      { owner, parentId: null, index: 0 },
+      { owner, parentId: null, index: 1 }
+    ]);
+  });
+
   // Release gap: shownOnceSlots (src/engine/slots.ts) counts no slot of a code component as shown once.
   it.fails('a Foundation Section placed from the theme gets one inside it too, for its Content', () => {
-    let state = createStarterState('blank', 'Expo', false);
-    const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
-    const out = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]);
-    state = out.state;
-    const section = out.results[0].nodeId as string;
-    const points = addPoints(state, owner, ref(owner, section));
-    expect(points.map((x) => [x.side, x.role])).toEqual([
-      ['before', 'section'],
-      ['after', 'section'],
-      ['inside', 'element']
-    ]);
-    expect(resolvePoint(state, points[2])).toEqual({ owner, parentId: section, slot: 'content' });
+    const { state, owner, section, points } = shippedSection();
+    const inside = points.find((x) => x.side === 'inside');
+    expect(inside?.role).toBe('element');
+    expect(resolvePoint(state, inside!)).toEqual({ owner, parentId: section, slot: 'content' });
   });
 
   it('below one section and above the next are the same place, by key', () => {

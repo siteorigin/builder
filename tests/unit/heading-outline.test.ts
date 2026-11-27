@@ -2,12 +2,13 @@
  * The page heading outline (#78): the headings a page renders, in order, with their levels and where each level is
  * chosen, and Project health's review of them (one page title, no missing title, no skipped level).
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState, TextNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme } from '@catalogue/index';
-import { P, type ComponentSpec, type TreeBuilder } from '@catalogue/dsl';
-import { FOUNDATION_AUTHOR, registerBeside, restorePacks, testPack } from './fixtures/packs';
+import { P } from '@catalogue/dsl';
+import { FOUNDATION_AUTHOR, projectDesign, registerBeside, restorePacks, testPack, type DesignSpec } from './fixtures/packs';
+import { FOOTER, INTRO, TEXT, centeredHero } from './fixtures/heading-outline-designs';
 import { applyOperations } from '@engine/apply';
 import { makeInstance } from '@engine/install';
 import { blocksSaving, validateState } from '@engine/validate';
@@ -16,24 +17,15 @@ import { definitionHash } from '@shared/migrations';
 import { headingOutline, pageHeadings } from '@generator/checks';
 import { generateProject } from '@generator/index';
 import { headingLevelOps, headingTarget, pageOutline } from '../../src/renderer/src/lib/outline';
+import { removeRendered, serverHtml } from './generated-site';
 
 const { managed } = FOUNDATION_AUTHOR;
+afterAll(removeRendered);
 
-/** A centered hero designed with the editor's tree: its heading's level is the placement's choice. */
-const heroSpec = (): ComponentSpec => ({
-  componentId: 'hero.centered',
-  name: 'Centered hero',
-  description: '',
-  category: 'hero',
-  tags: [],
-  icon: 'sparkles',
-  properties: {
-    heading: P.str('Heading', 'Thoughtful work for people who care about the details'),
-    headingLevel: P.choice('Heading level', 'h1', [['h1', 'Heading 1 (page title)'], ['h2', 'Heading 2'], ['h3', 'Heading 3'], ['h4', 'Heading 4'], ['h5', 'Heading 5'], ['h6', 'Heading 6']])
-  },
-  parts: { root: { nodeId: 'root', label: 'Section' }, heading: { nodeId: 'heading', label: 'Heading' } },
-  build: (b: TreeBuilder) => b.el('root', 'section', {}, [b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' } })])
-});
+/** A centered hero designed with the editor's tree, as Foundation's own: its heading's level is the placement's choice. */
+const heroSpec = () => centeredHero('hero.centered');
+/** The hero's heading, given by the placement rather than left to a design's default. */
+const HERO_HEADING = 'Thoughtful work for people who care about the details';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const pageAt = (s: ProjectState, route: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === route)!;
@@ -41,11 +33,38 @@ const headingWarnings = (s: ProjectState) => validateState(s).filter((d) => d.co
 const own = (s: ProjectState, pageId: string) => headingOutline(s, pageId).filter((h) => h.owner.kind === 'page');
 const rows = (s: ProjectState, pageId: string) => own(s, pageId).map((h) => [h.level, h.text]);
 
-/** The issue's page: the Contact page's introduction followed by a Centered hero. */
+/** The project's own design of a spec, added the first time. */
+const designOf = (s: ProjectState, spec: DesignSpec) => s.components[FOUNDATION_AUTHOR.definitionId(spec.componentId)] ?? projectDesign(s, spec);
+
+/**
+ * The issue's page: the Contact page's introduction followed by a Centered hero. Foundation's sections are code
+ * components whose headings Builder does not read (the Release gap tests below), so the page is made of designs built
+ * in the editor: an introduction saying “Let’s talk”, and the hero.
+ */
 function contactWithHero(s = fresh()) {
   const contact = pageAt(s, '/contact/');
-  const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: contact.id }, componentId: 'hero.centered', index: 1 }]);
+  const owner = { kind: 'page' as const, id: contact.id };
+  const intro = designOf(s, INTRO);
+  const hero = designOf(s, centeredHero());
+  withHeadings(s, contact.id, []);
+  const r = applyOperations(s, [
+    { type: 'node.insert', owner, definitionId: intro.id, props: { eyebrow: 'Contact', heading: 'Let’s talk' } },
+    { type: 'node.insert', owner, definitionId: hero.id, index: 1, props: { heading: HERO_HEADING } }
+  ]);
   return { s: r.state, pageId: contact.id, heroId: r.state.pages[contact.id].rootIds[1] };
+}
+
+/** The issue's page as the release makes it: the starter's Contact page with Foundation's Centered hero inserted second. */
+function releaseContactWithHero() {
+  const s = fresh();
+  const contact = pageAt(s, '/contact/');
+  const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: contact.id }, componentId: 'hero.centered', index: 1, props: { heading: HERO_HEADING } }]);
+  return { s: r.state, pageId: contact.id };
+}
+
+/** A placement of a design added to a page's own content, last. */
+function placeOn(s: ProjectState, pageId: string, spec: DesignSpec, props: Record<string, unknown>) {
+  return applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, definitionId: designOf(s, spec).id, props }]).state;
 }
 
 /** A project component with a hand-built tree, installed into the project. */
@@ -82,46 +101,60 @@ function withHeadings(s: ProjectState, pageId: string, nodes: Array<Partial<Text
 }
 
 describe('heading outline', () => {
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists a page introduction and a second hero as two page titles, each selectable', () => {
+  it('lists a page introduction and a second hero as two page titles, each selectable', () => {
     const { s, pageId, heroId } = contactWithHero();
     const main = own(s, pageId);
     expect(main.slice(0, 2).map((h) => [h.level, h.text])).toEqual([
       [1, 'Let’s talk'],
-      [1, 'Thoughtful work for people who care about the details']
+      [1, HERO_HEADING]
     ]);
     // The hero's heading is a part of a section placed on the page, and its level is that placement's choice.
     expect(main[1]).toMatchObject({ owner: { kind: 'page', id: pageId }, nodeId: heroId, defNodeId: 'heading', direct: true, levelSource: { kind: 'prop', prop: 'headingLevel' }, levels: [1, 2, 3, 4, 5, 6] });
   });
 
   // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('reads the shared header and footer around the page, unless the page leaves them out', () => {
+  it.fails('lists the release’s page introduction and centered hero by their headings', () => {
+    const { s, pageId } = releaseContactWithHero();
+    expect(rows(s, pageId).slice(0, 2)).toEqual([
+      [1, 'Let’s talk'],
+      [1, HERO_HEADING]
+    ]);
+  });
+
+  it('reads the shared header and footer around the page, unless the page leaves them out', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
-    const footer = headingOutline(s, about.id).filter((h) => h.owner.kind === 'shell');
-    expect(footer.length).toBeGreaterThan(0);
-    expect(footer.every((h) => h.owner.id === 'footer' && h.level === 2)).toBe(true);
+    withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
+    // A footer designed in the editor, whose column heading the outline reads.
+    const footer = makeInstance(designOf(s, FOOTER), {});
+    s.site.shell.footer = { rootIds: [footer.id], nodes: { [footer.id]: footer } };
+    expect(headingOutline(s, about.id).filter((h) => h.owner.kind === 'shell').map((h) => [h.owner.id, h.level, h.text])).toEqual([['footer', 2, 'Visit the studio']]);
     // The footer's headings come after the page's own.
-    expect(headingOutline(s, about.id).findIndex((h) => h.owner.kind === 'shell')).toBeGreaterThan(headingOutline(s, about.id).findLastIndex((h) => h.owner.kind === 'page'));
+    expect(headingOutline(s, about.id).map((h) => h.owner.kind)).toEqual(['page', 'shell']);
     s.pages[about.id].showFooter = false;
-    expect(headingOutline(s, about.id).every((h) => h.owner.kind === 'page')).toBe(true);
+    expect(headingOutline(s, about.id).map((h) => h.owner.kind)).toEqual(['page']);
   });
 
   // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('leaves out a heading whose words are cleared, as the site does', () => {
+  it.fails('reads the headings of the release’s footer', () => {
+    const s = fresh();
+    expect(headingOutline(s, pageAt(s, '/about/').id).filter((h) => h.owner.kind === 'shell' && h.owner.id === 'footer').length).toBeGreaterThan(0);
+  });
+
+  it('leaves out a heading whose words are cleared, as the site does', () => {
     const { s, pageId, heroId } = contactWithHero();
     const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId: heroId, prop: 'heading', value: '' }]).state;
     expect(rows(r, pageId).filter(([level]) => level === 1)).toEqual([[1, 'Let’s talk']]);
     expect(headingWarnings(r)).toEqual([]);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists subheadings written in rich text, and the contact form’s and data table’s headings', () => {
-    const s = fresh();
+  it('lists subheadings written in rich text, and the contact form’s and data table’s headings', () => {
+    let s = fresh();
     const about = pageAt(s, '/about/');
     const owner = { kind: 'page' as const, id: about.id };
-    let r = applyOperations(s, [{ type: 'node.insert', owner, componentId: 'content.text', props: { heading: 'How we work', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] } }]);
-    r = applyOperations(r.state, [{ type: 'node.insert', owner, componentId: 'contact.form', props: { heading: 'Write to us' } }]);
+    withHeadings(s, about.id, [{ id: 'n_title', tag: 'h1', text: 'About' }]);
+    s = placeOn(s, about.id, TEXT, { heading: 'How we work', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] });
+    let r = applyOperations(s, [{ type: 'node.insert', owner, componentId: 'contact.form', props: { heading: 'Write to us' } }]);
     r = applyOperations(r.state, [{ type: 'node.insert', owner, componentId: 'data.table', props: { heading: 'Opening hours' } }]);
     const tail = own(r.state, about.id).slice(-4);
     expect(tail.map((h) => [h.level, h.text, !!h.rich, !!h.levelSource])).toEqual([
@@ -132,6 +165,17 @@ describe('heading outline', () => {
     ]);
     // Shipped code whose markup is known leaves the review able to judge the page.
     expect(pageOutline(r.state, about.id).uninspected).toBe(false);
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
+  it.fails('lists subheadings written in the release’s text section', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: about.id }, componentId: 'content.text', props: { heading: 'How we work', body: [{ type: 'h3', spans: [{ text: 'Listening first' }] }, { type: 'p', spans: [{ text: 'Words.' }] }] } }]);
+    expect(rows(r.state, about.id).slice(-2)).toEqual([
+      [2, 'How we work'],
+      [3, 'Listening first']
+    ]);
   });
 
   it('marks a page’s own heading as changed by its tag, and an older design’s fixed heading as not changeable', () => {
@@ -282,13 +326,12 @@ describe('headings as the generated site renders them', () => {
 });
 
 describe('heading review in Project health', () => {
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('warns about a second page title without blocking saving or export, and keeps the unlinked button warnings', () => {
+  it('warns about a second page title without blocking saving or export, and keeps the unlinked button warnings', () => {
     const { s, pageId, heroId } = contactWithHero();
     const found = headingWarnings(s);
     expect(found).toEqual([expect.objectContaining({ severity: 'warning', code: 'HEADING_MULTIPLE_H1', owner: { kind: 'page', id: pageId }, nodeId: heroId })]);
     expect(found[0].message).toBe(
-      'Contact: 2 headings are Heading 1s (“Let’s talk” and “Thoughtful work for people who care about the details”), so screen readers announce more than one page title. Keep the page’s title as Heading 1 and make the others Heading 2, unless they are meant to be titles.'
+      `Contact: 2 headings are Heading 1s (“Let’s talk” and “${HERO_HEADING}”), so screen readers announce more than one page title. Keep the page’s title as Heading 1 and make the others Heading 2, unless they are meant to be titles.`
     );
     expect(found.some(blocksSaving)).toBe(false);
     expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toHaveLength(2);
@@ -296,26 +339,27 @@ describe('heading review in Project health', () => {
     expect(validateState(s, { sectionLinks: false }).filter((d) => d.code.startsWith('HEADING_'))).toEqual([]);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('clears the warning once the hero is a Heading 2, which keeps its look and renders an h2', () => {
+  it('clears the warning once the hero is a Heading 2, which keeps its look and renders an h2', async () => {
     const { s, pageId, heroId } = contactWithHero();
     const before = structuredClone(s.pages[pageId].nodes[heroId]);
     const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId: heroId, prop: 'headingLevel', value: 'h2' }]).state;
     expect(rows(r, pageId).slice(0, 2)).toEqual([
       [1, 'Let’s talk'],
-      [2, 'Thoughtful work for people who care about the details']
+      [2, HERO_HEADING]
     ]);
     expect(headingWarnings(r)).toEqual([]);
     // Only the level changed: no style override, variant or other content.
     expect(r.pages[pageId].nodes[heroId]).toEqual({ ...before, props: { ...(before as InstanceNode).props, headingLevel: 'h2' } });
-    const hero = [...generateProject(r).entries()].find(([path]) => path.endsWith('hero-centered.svelte'))?.[1] ?? '';
-    expect(hero).toMatch(/headingLevel === "h2"|headingLevel === 'h2'/);
+    // The exported Contact page renders the hero's heading as an h2, and only the introduction's as an h1.
+    const html = (await serverHtml(generateProject(r), 'heading-outline-', 'src/routes/contact/+page.svelte')).replace(/<!--[\s\S]*?-->/g, '');
+    expect(html).toMatch(new RegExp(`<h2[^>]*>${HERO_HEADING}</h2>`));
+    expect([...html.matchAll(/<h1[^>]*>([^<]*)<\/h1>/g)].map((m) => m[1])).toEqual(['Let’s talk']);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('warns when a page has no Heading 1, but not when the page is empty', () => {
-    const s = fresh();
-    const contact = pageAt(s, '/contact/');
+  it('warns when a page has no Heading 1, but not when the page is empty', () => {
+    const { s: withHero, pageId, heroId } = contactWithHero();
+    const contact = { id: pageId };
+    const s = applyOperations(withHero, [{ type: 'node.remove', owner: { kind: 'page', id: pageId }, nodeId: heroId }]).state;
     const intro = s.pages[contact.id].rootIds[0];
     const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: intro, prop: 'headingLevel', value: 'h2' }]).state;
     expect(headingWarnings(r)).toEqual([
@@ -357,26 +401,28 @@ describe('heading review in Project health', () => {
     const author = testPack('outline-theme');
     const others = getTheme('foundation').components.filter((c) => c.componentId !== 'hero.centered').map((c) => author.adopt(c));
     registerBeside(author.define([...others, author.managed(heroSpec())]));
-    const site = createStarterState('blank', 'Test Studio', false, 'outline-theme');
-    const pageId = site.site.homePageId;
-    withHeadings(site, pageId, [{ id: 'n_intro', tag: 'h1', text: 'Let’s talk' }]);
-    const s = applyOperations(site, [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, componentId: 'hero.centered', index: 1 }]).state;
-    const hero = s.components['outline-theme.hero.centered'];
-    // The hero as installed before its heading level could be chosen.
-    delete hero.properties.headingLevel;
-    (hero.tree!.nodes.heading as TextNode).tag = 'h1';
-    s.themeLock.components[hero.id].hash = definitionHash(hero);
-    expect(own(s, pageId)[1].levelSource).toBeUndefined();
-    expect(themeUpdates(s).available.map((u) => u.id)).toContain(hero.id);
-    const next = applyOperations(s, [{ type: 'theme.refresh' }]).state;
-    expect(own(next, pageId)[1]).toMatchObject({ level: 1, levelSource: { kind: 'prop', prop: 'headingLevel' } });
-    await restorePacks();
+    try {
+      const site = createStarterState('blank', 'Test Studio', false, 'outline-theme');
+      const pageId = site.site.homePageId;
+      withHeadings(site, pageId, [{ id: 'n_intro', tag: 'h1', text: 'Let’s talk' }]);
+      const s = applyOperations(site, [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, componentId: 'hero.centered', index: 1 }]).state;
+      const hero = s.components['outline-theme.hero.centered'];
+      // The hero as installed before its heading level could be chosen.
+      delete hero.properties.headingLevel;
+      (hero.tree!.nodes.heading as TextNode).tag = 'h1';
+      s.themeLock.components[hero.id].hash = definitionHash(hero);
+      expect(own(s, pageId)[1].levelSource).toBeUndefined();
+      expect(themeUpdates(s).available.map((u) => u.id)).toContain(hero.id);
+      const next = applyOperations(s, [{ type: 'theme.refresh' }]).state;
+      expect(own(next, pageId)[1]).toMatchObject({ level: 1, levelSource: { kind: 'prop', prop: 'headingLevel' } });
+    } finally {
+      await restorePacks();
+    }
   });
 });
 
 describe('page outline rows and fixes', () => {
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('names the page title, flags the second Heading 1, and fixes it in one edit that selects nothing new', () => {
+  it('names the page title, flags the second Heading 1, and fixes it in one edit that selects nothing new', () => {
     const { s, pageId, heroId } = contactWithHero();
     const { rows, review, titleFix } = pageOutline(s, pageId);
     expect(review.extraTitles).toBe(true);
@@ -485,13 +531,11 @@ describe('page outline rows and fixes', () => {
     expect(own[1].heading.instancePath).toBeUndefined();
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('offers no fix where the level is fixed: rich text, the contact form, an older design', () => {
+  it('offers no fix where the level is fixed: rich text, the contact form, an older design', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
-    const owner = { kind: 'page' as const, id: about.id };
     withHeadings(s, about.id, [{ id: 'n_a', tag: 'h1', text: 'About' }]);
-    const r = applyOperations(s, [{ type: 'node.insert', owner, componentId: 'content.text', props: { heading: '', body: [{ type: 'h4', spans: [{ text: 'Deep' }] }] } }]).state;
+    const r = placeOn(s, about.id, TEXT, { heading: '', body: [{ type: 'h4', spans: [{ text: 'Deep' }] }] });
     const deep = pageOutline(r, about.id).rows.find((x) => x.heading.text === 'Deep')!;
     expect(deep).toMatchObject({ skip: { after: 1, suggest: 2 } });
     expect(deep.fix).toBeUndefined();

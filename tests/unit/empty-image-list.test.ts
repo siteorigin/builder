@@ -4,7 +4,7 @@
  *
  * The generator writes the placeholder into a managed design's list, so most of these run on the managed designs of
  * the Gallery's and Carousel's contracts (fixtures/component-contract-designs), registered as Foundation's; the first
- * runs on the sections as Foundation ships them.
+ * run on the sections as Foundation ships them.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { compile } from 'svelte/compiler';
@@ -46,8 +46,21 @@ const LISTS = [
 ] as const;
 
 describe('an empty list of images in Foundation as it ships', () => {
-  // Release gap: the empty-list placeholder is made for managed designs only (emptyImageListMarker in src/generator/index.ts), so an empty release Gallery or Carousel shows nothing in Edit.
-  for (const [componentId, prop, label] of LISTS) it.fails(`shows where a ${componentId}'s ${prop} will go, only while editing`, () => showsPlaceholder(componentId, prop, label));
+  for (const [componentId, prop] of LISTS) {
+    it(`leaves a ${componentId} with no ${prop} a page that compiles while editing, and exports nothing of the editor’s`, () => {
+      const { s, file } = withSection(componentId, prop);
+      const src = generateProject(s, { instrument: true }).get(file)!;
+      expect(() => compile(src, { filename: file, generate: 'client', runes: true })).not.toThrow();
+      expect(() => compile(src, { filename: file, generate: 'server', runes: true })).not.toThrow();
+      for (const [p, out] of generateProject(s)) expect(out, p).not.toMatch(EDITOR_ONLY);
+    });
+
+    // Release gap: the empty-list placeholder is written into a managed design's list only (emptyImageListMarker in src/generator/index.ts), and a release code component has no tree, so an empty release Gallery or Carousel shows nothing in Edit.
+    it.fails(`marks where a ${componentId}'s ${prop} will go in the editor’s preview`, () => {
+      const { s, file } = withSection(componentId, prop);
+      expect(generateProject(s, { instrument: true }).get(file)).toMatch(new RegExp(`data-so-list-empty=\\{?"${prop}"`));
+    });
+  }
 });
 
 describe('an empty list of images in the editor preview', () => {

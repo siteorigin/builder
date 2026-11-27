@@ -259,44 +259,63 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
     }
   });
 
+  /** The showcase's tab row as laid out: how many lines its tabs take, whether it scrolls, and whether the page stays its width. */
+  type Row = { lines: number; scrolls: boolean; overflow: string; scrollLeft: number; page: boolean };
+  const row = (page: Page) =>
+    page.evaluate(`(() => {
+      const list = document.querySelector('#app [role="tablist"]');
+      const tops = new Set([...list.children].map((t) => Math.round(t.getBoundingClientRect().top)));
+      return { lines: tops.size, scrolls: list.scrollWidth > list.clientWidth, overflow: getComputedStyle(list).overflowX, scrollLeft: list.scrollLeft, page: document.documentElement.scrollWidth <= innerWidth };
+    })()`) as Promise<Row>;
+
   it('shows the whole tab row on one line from a tablet up, never widening the page', async () => {
     const { page, problems } = await open(834);
     try {
       await page.waitForFunction('document.querySelectorAll("#app [role=tab]").length === 4');
-      // Foundation's tab row scrolls rather than wraps at every size; on a tablet four tabs fit with nothing to scroll.
-      expect(
-        await page.evaluate(`(() => {
-          const list = document.querySelector('#app [role="tablist"]');
-          return { lines: new Set([...list.children].map((t) => Math.round(t.getBoundingClientRect().top))).size, scrolls: list.scrollWidth > list.clientWidth, page: document.documentElement.scrollWidth <= innerWidth };
-        })()`)
-      ).toEqual({ lines: 1, scrolls: false, page: true });
+      // On a tablet Foundation's four short tabs fit with nothing to scroll.
+      expect(await row(page)).toMatchObject({ lines: 1, scrolls: false, page: true });
       expect(problems).toEqual([]);
     } finally {
       await page.close();
     }
   });
 
-  // Release gap: tabKey (src/generator/runtime-files.ts) only focuses a tab, which leaves the last tab of the release's scrolling tab row half off a 320px screen.
-  it.fails('keeps the tab row on one line on a phone, scrolling it sideways, never widening the page', async () => {
+  it('scrolls a tab row too long for a tablet sideways rather than wrapping it, never widening the page', async () => {
+    const { page, problems } = await open(834);
+    try {
+      await page.waitForFunction('document.querySelectorAll("#app [role=tab]").length === 4');
+      // Labels long enough that the row must either wrap or scroll at this width: Foundation's row scrolls at every size.
+      await page.evaluate(`document.querySelectorAll('#app [role="tab"]').forEach((t) => t.append(' and a much longer label'))`);
+      expect(await row(page)).toMatchObject({ lines: 1, scrolls: true, overflow: 'auto', scrollLeft: 0, page: true });
+      expect(problems).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('keeps the tab row on one line on a phone, scrolling it sideways, never widening the page', async () => {
     // A small phone: Foundation's four short tabs fit on one line at 390px.
     const { page, problems } = await open(320);
     try {
       await page.waitForFunction('document.querySelectorAll("#app [role=tab]").length === 4');
-      const row = () =>
-        page.evaluate(`(() => {
-          const list = document.querySelector('#app [role="tablist"]');
-          const tops = new Set([...list.children].map((t) => Math.round(t.getBoundingClientRect().top)));
-          return { lines: tops.size, scrolls: list.scrollWidth > list.clientWidth, overflow: getComputedStyle(list).overflowX, scrollLeft: list.scrollLeft, page: document.documentElement.scrollWidth <= innerWidth };
-        })()`) as Promise<{ lines: number; scrolls: boolean; overflow: string; scrollLeft: number; page: boolean }>;
       // A row a finger can scroll, never one that clips.
-      expect(await row()).toMatchObject({ lines: 1, scrolls: true, overflow: 'auto', scrollLeft: 0, page: true });
-      // The last tab, reached from the keyboard, is scrolled into view.
+      expect(await row(page)).toMatchObject({ lines: 1, scrolls: true, overflow: 'auto', scrollLeft: 0, page: true });
+      expect(problems).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  // Release gap: tabKey (src/generator/runtime-files.ts) only focuses the tab it moves to, and the browser leaves a tab already half in view where it is, so End leaves the last tab of the release's scrolling tab row half off a 320px screen.
+  it.fails('scrolls the last tab of a phone’s tab row into view when the keyboard reaches it', async () => {
+    const { page } = await open(320);
+    try {
+      await page.waitForFunction('document.querySelectorAll("#app [role=tab]").length === 4');
       await page.locator('#app').getByRole('tab', { name: 'Design' }).focus();
       await page.keyboard.press('End');
-      await expect.poll(async () => (await row()).scrollLeft).toBeGreaterThan(0);
+      await expect.poll(async () => (await row(page)).scrollLeft).toBeGreaterThan(0);
       const last = await page.evaluate(`(() => { const t = document.activeElement.getBoundingClientRect(); const l = document.activeElement.parentElement.getBoundingClientRect(); return t.right <= l.right + 1 && t.left >= l.left - 1; })()`);
       expect(last).toBe(true);
-      expect(problems).toEqual([]);
     } finally {
       await page.close();
     }

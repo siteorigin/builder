@@ -311,23 +311,27 @@ describe('styling one repeated item', () => {
     expect(files.get(defFile(def))).toContain('so_oi?.[item.id]?.card');
   });
 
-  // Release gap: the release's testimonials card declares no list and places no so_oi class, so one card cannot be styled alone (#81).
-  it.fails('styles a featured plan and a highlighted testimonial the same way', () => {
+  it('styles a featured plan alone', () => {
     let s = fresh();
-    for (const componentId of ['pricing.plans', 'testimonials.grid'])
-      s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId }]).state;
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'pricing.plans' }]).state;
     const plan = placedOf(s, 'pricing.plans');
     const featured = (plan.props.plans as ListItem[])[1].id;
-    const quotes = placedOf(s, 'testimonials.grid');
-    const highlighted = (quotes.props.items as ListItem[])[0].id;
     s = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: plan.id, partId: 'plan', itemId: featured, scope: 'base', property: 'border', value: { token: 'border.strong' } }]);
-    let files = generateProject(s);
+    const files = generateProject(s);
     const planCls = itemOverrideClass(plan.id, 'plan', featured);
     expect(files.get('src/lib/siteorigin/styles/site.css')).toContain(`${`.${planCls}`.repeat(4)} {\n\tborder: var(--so-border-strong) !important;\n}`);
     expect(files.get('src/routes/+page.svelte')).toContain(`so_oi={${JSON.stringify({ [featured]: { plan: planCls } })}}`);
     expect(files.get(defFile(s.components[plan.definitionId]))).toContain('so_oi?.[plan.id]?.plan');
+  });
+
+  // Release gap: the release's testimonials card declares no list and places no so_oi class, so one card cannot be styled alone (#81).
+  it.fails('styles a highlighted testimonial alone, as a featured plan is', () => {
+    let s = fresh();
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'testimonials.grid' }]).state;
+    const quotes = placedOf(s, 'testimonials.grid');
+    const highlighted = (quotes.props.items as ListItem[])[0].id;
     s = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: quotes.id, partId: 'card', itemId: highlighted, scope: 'base', property: 'background', value: { token: 'color.surface-alt' } }]);
-    files = generateProject(s);
+    const files = generateProject(s);
     const quoteCls = itemOverrideClass(quotes.id, 'card', highlighted);
     expect(files.get('src/lib/siteorigin/styles/site.css')).toContain(`${`.${quoteCls}`.repeat(4)} {\n\tbackground: var(--so-color-surface-alt) !important;\n}`);
     expect(files.get('src/routes/+page.svelte')).toContain(`so_oi={${JSON.stringify({ [highlighted]: { card: quoteCls } })}}`);

@@ -369,8 +369,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
     });
   }, 30_000);
 
-  // Release gap: the release's form sets novalidate, so a live test with bad answers is sent rather than refused (liveTestForm in src/runtime/bridge.client.js).
-  it.fails('sends nothing for a live test the form cannot pass, or one confirmed for settings that have changed', async () => {
+  it('sends nothing for a live test the form cannot pass, or one confirmed for settings that have changed', async () => {
     await withPreview(async ({ frame, fill, field, service, results, toFrame, forms, formId, preview }) => {
       // Not in Preview.
       await fill();
@@ -381,7 +380,8 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       await field('Email').fill('not an email');
       await toFrame('formLiveTest', { id: await formId(), target: ENDPOINT, requestId: 'invalid' });
       await expect.poll(results).toHaveLength(2);
-      expect((await results())[1]).toEqual({ requestId: 'invalid', kind: 'live', result: 'invalid' });
+      // Refused, whether the browser or the form's own check stops it (what the bridge calls it: see the Release gap below).
+      expect((await results())[1]).toEqual({ requestId: 'invalid', kind: 'live', result: expect.stringMatching(/^(?:invalid|not-sent)$/) });
       await field('Email').fill('ada@example.com');
 
       // The author was shown another address than the one the form sends to.
@@ -406,6 +406,18 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       expect((await results())[4]).toEqual({ requestId: 'rekeyed', kind: 'live', result: 'unavailable' });
       await frame.waitForTimeout(200);
       expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  // Release gap: the release's form sets novalidate and checks its answers in its own submit handler, so the browser submits a live test with bad answers and liveTestForm (src/runtime/bridge.client.js) reports it as a send that did not happen ('not-sent') rather than one the form cannot pass ('invalid'). Nothing is sent.
+  it.fails('tells the editor a live test the form cannot pass is invalid', async () => {
+    await withPreview(async ({ fill, service, results, toFrame, formId, preview }) => {
+      await preview();
+      await fill('not an email');
+      await toFrame('formLiveTest', { id: await formId(), target: ENDPOINT, requestId: 'invalid' });
+      await expect.poll(results).toHaveLength(1);
+      expect(service.requests).toHaveLength(0);
+      expect((await results())[0]).toEqual({ requestId: 'invalid', kind: 'live', result: 'invalid' });
     });
   }, 30_000);
 

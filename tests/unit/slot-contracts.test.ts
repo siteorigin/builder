@@ -9,7 +9,7 @@ import { applyOperations } from '@engine/apply';
 import { slotAccepts, slotDeclProblem, slotFill, takesComponent } from '@engine/slots';
 import { packagedDefinitions } from '@engine/component-package';
 import { validateState } from '@engine/validate';
-import { generateProject } from '@generator/index';
+import { defFile, generateProject } from '@generator/index';
 import { generateComponentPreview } from '@generator/preview';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { addPoints, fitting, offeredAt, quickItems, resolvePoint } from '../../src/renderer/src/lib/inline-insert';
@@ -307,10 +307,12 @@ function badged() {
 const tree = (s: ProjectState, id: string) => s.components[id].tree!;
 const EDITOR = /so_editing|data-so-|so-slot-empty|data-so-editor-only/;
 /**
- * A file's code with the inline text marks a theme's code component writes for the editor's preview left out
+ * A theme code component's own code with the inline text marks it writes for the editor's preview left out
  * (`data-so-text={so_text?.('heading')}`, spec: Inline text): the site never passes the hook, so they render nothing.
+ * Every other file (routes, the designs Builder writes) is checked as it is.
  */
-const unmarked = (src: string) => src.replace(/ data-so-text=\{so_text\?\.\([^)]*\)\}/g, '');
+const unmarked = (s: ProjectState, path: string, src: string) =>
+  Object.values(s.components).some((d) => d.kind === 'code' && defFile(d) === path) ? src.replace(/ data-so-text=\{so_text\?\.\([^)]*\)\}/g, '') : src;
 
 describe('a slot’s fallback content', () => {
   afterAll(removeRendered);
@@ -381,8 +383,11 @@ describe('a slot’s fallback content', () => {
     const design = [...files.values()].find((src) => src.includes('Default badge') && src.includes('slot_aside = undefined'))!;
     expect(design).toMatch(/\{#if slot_aside\}\s*\{@render slot_aside\(\)\}\s*\{:else\}[\s\S]*Default badge[\s\S]*\{\/if\}/);
     expect(design).toContain('slot_aside = undefined');
-    for (const [path, src] of files) expect(unmarked(src), path).not.toMatch(EDITOR);
-    expect(await serverHtml(files, 'slot-fallback-')).toContain('Default badge');
+    for (const [path, src] of files) expect(unmarked(s, path, src), path).not.toMatch(EDITOR);
+    const shown = await serverHtml(files, 'slot-fallback-');
+    expect(shown).toContain('Default badge');
+    // Nor does the page the site renders carry anything of the editor's.
+    expect(shown).not.toMatch(EDITOR);
     const filled = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: grid, slot: 'aside', primitive: 'paragraph', text: 'Book now' }]).state;
     const html = await serverHtml(generateProject(filled), 'slot-fallback-');
     expect(html).toContain('Book now');

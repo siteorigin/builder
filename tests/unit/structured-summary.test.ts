@@ -14,6 +14,7 @@ import type { GraphNode, SeoGraph } from '@generator/seo-graph';
 import { structuredPreview } from '../../src/renderer/src/lib/seo-preview';
 import { summarizeGraph, writtenDate, type GraphSection } from '../../src/renderer/src/lib/structured-summary';
 import { copy, run, seoSite } from './fixtures/seo-site';
+import { withEditorStructure } from './fixtures/nested-output-designs';
 
 const ROOT = 'https://example.com/studio/';
 const SERVICES = `${ROOT}services/`;
@@ -143,10 +144,13 @@ describe('the sections of a graph', () => {
     expect(rows(guide).Publisher).toBe('Riverside Studio');
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('says an FAQ page’s questions with their answers, and where the website is searched', () => {
-    const { state } = seoSite();
-    const s = run(state, { type: 'page.create', pageId: 'pg_faq', title: 'Questions', route: '/faq/', starter: 'faq' });
+  /** A page made from the FAQ starter, its FAQ the release's code component. */
+  const faqPage = () => run(seoSite().state, { type: 'page.create', pageId: 'pg_faq', title: 'Questions', route: '/faq/', starter: 'faq' });
+
+  it('says an FAQ page’s questions with their answers, and where the website is searched', () => {
+    // The FAQ built in the editor (fixtures/nested-output-designs.ts), whose questions the generator reads from its
+    // tree: the release's is code (the Release gap test below).
+    const s = withEditorStructure(copy(faqPage()));
     const graph = documentGraph(publishedState(s), { kind: 'page', pageId: 'pg_faq' })!;
     const asked = graph['@graph'].find((n) => n['@id'] === `${ROOT}faq/#webpage`)!.mainEntity as Array<{ name: string; acceptedAnswer: { text: string } }>;
     expect(asked.length).toBeGreaterThan(1);
@@ -159,6 +163,12 @@ describe('the sections of a graph', () => {
       '@graph': graph['@graph'].map((n) => (n['@type'] === 'WebSite' ? { ...n, potentialAction: { '@type': 'SearchAction', target: { '@type': 'EntryPoint', urlTemplate: `${ROOT}search/?q={search_term_string}` }, 'query-input': 'required name=search_term_string' } } : n))
     };
     expect(rows(at(summarizeGraph(searched), 'Website'))).toMatchObject({ 'Search address': `${ROOT}search/?q={search_term_string}`, 'Search words': expect.stringMatching(/^Required/) });
+  });
+
+  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
+  it.fails('says the questions of the shipped theme’s FAQ on its page', () => {
+    const graph = documentGraph(publishedState(faqPage()), { kind: 'page', pageId: 'pg_faq' })!;
+    expect(at(summarizeGraph(graph), 'This page').statement).toBe('This is an FAQ page.');
   });
 
   it('says each contact section’s own details, in the order the page shows them, on a page of two kinds', () => {

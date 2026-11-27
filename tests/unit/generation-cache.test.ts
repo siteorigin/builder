@@ -161,9 +161,8 @@ describe('incremental generation (#183)', () => {
     check(s, cache);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('keeps the site search index in step with the pages it lists', () => {
-    const { s: site, home, about } = multiPageSite();
+  it('keeps the site search index in step with the pages it lists', () => {
+    const { s: site, home, about, noteId } = multiPageSite();
     const INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
     const cache = new GenerationCache();
     check(site, cache);
@@ -172,9 +171,11 @@ describe('incremental generation (#183)', () => {
     expect(check(s, cache).clean).toContain('search-index.js');
     expect(check(s, cache)).toEqual({ clean: [], dev: [] });
 
-    // Words on a listed page: that page and the index, made once for both kinds of run.
-    const inst = firstInstance(s, about);
-    s = apply(s, { type: 'instance.setProp', owner: page(about), nodeId: inst.id, prop: propOf(s, inst), value: 'Hand-built oak staircases' });
+    // Words on a listed page: that page and the index, made once for both kinds of run. They are the About page's
+    // design of its own: the index reads none of Foundation's sections but its forms, tables and videos (the Release
+    // gap test below).
+    const inst = Object.values(s.pages[about].nodes).find((n) => n.kind === 'instance' && n.definitionId === noteId) as InstanceNode;
+    s = apply(s, { type: 'instance.setProp', owner: page(about), nodeId: inst.id, prop: 'body', value: 'Hand-built oak staircases' });
     const made = check(s, cache);
     expect(made.clean).toEqual(expect.arrayContaining(['search-index.js', `page:${about}#clean`]));
     expect(made.dev).not.toContain('search-index.js');
@@ -199,6 +200,15 @@ describe('incremental generation (#183)', () => {
     expect(generateProject(without, {}, cache).has(INDEX)).toBe(false);
     expect(check(s, cache).clean).toContain('search-index.js');
     expect(generateProject(s, {}, cache).get(INDEX)).toContain('Hand-built oak staircases');
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
+  it.fails('writes the words of the release’s sections into the site search index', () => {
+    const { s: site, home, about } = multiPageSite();
+    let s = apply(site, { type: 'node.insert', owner: page(home), componentId: 'site.search' });
+    const inst = firstInstance(s, about);
+    s = apply(s, { type: 'instance.setProp', owner: page(about), nodeId: inst.id, prop: propOf(s, inst), value: 'Hand-built oak staircases' });
+    expect(generateProject(s).get(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`)).toContain('Hand-built oak staircases');
   });
 
   it('tells a field holding undefined from a missing one', () => {

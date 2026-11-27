@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,9 +9,18 @@ import { missingSectionLinks, renderedContent } from '@generator/checks';
 import { contentFields, contentTarget, entryTarget, findContent, placedSections, planReplace, sampleContactMatches, sectionMatches, type ContentMatch } from '../../src/renderer/src/lib/find-content';
 import { ProjectSession } from '../../src/main/project/session';
 import { P, item as dslItem, prop } from '@catalogue/dsl';
-import { projectDesign } from './fixtures/packs';
+import { projectDesign, restorePacks } from './fixtures/packs';
+import { FIND_THEME, registerFindTheme } from './fixtures/find-content-designs';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
+/**
+ * The business starter on a theme whose Contact details and Footer are designs built in the editor, on the release's
+ * properties: Find and Replace changes their words, where Foundation's code leaves them to the inspector (the Release
+ * gap tests).
+ */
+const designed = () => createStarterState('business', 'Test Studio', false, FIND_THEME);
+beforeAll(registerFindTheme);
+afterAll(() => restorePacks());
 const pageAt = (s: ProjectState, route: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === route)!;
 const footerOf = (s: ProjectState) => s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
 const instanceOf = (s: ProjectState, componentId: string, pageId: string) =>
@@ -66,9 +75,8 @@ describe('finding content', () => {
     expect(findContent(s, 'Test Studio').find((m) => m.field.where === 'Footer')?.field.sharedPages).toBe(2);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('finds the starter’s contact details shown from a component’s defaults, and keeps settings out', () => {
-    const s = fresh();
+  it('finds the starter’s contact details shown from a component’s defaults, and keeps settings out', () => {
+    const s = designed();
     // The footer shows its component's own contact links when the placement has none of its own.
     delete footerOf(s).props.contact;
     const def = s.components[footerOf(s).definitionId];
@@ -149,8 +157,17 @@ describe('finding content', () => {
     expect(placedSections(s).find((x) => sectionMatches(x, 'footer'))?.pageId).toBeNull();
   });
 
+  it('does not list a styled button the site leaves out for having no destination', () => {
+    const s = designed();
+    const contact = pageAt(s, '/contact/');
+    const details = instanceOf(s, 'contact.details', contact.id);
+    const next = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: details.id, prop: 'actionLink', value: { type: 'none', target: '' } }]).state;
+    const shown = renderedContent(next, next.pages[contact.id]).filter((c) => c.source?.kind === 'prop' && ['actionLabel', 'actionLink'].includes(c.source.prop));
+    expect(shown).toEqual([]);
+  });
+
   // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('does not list a styled button the site leaves out for having no destination', () => {
+  it.fails('does not list the release’s styled button the site leaves out for having no destination', () => {
     const s = fresh();
     const contact = pageAt(s, '/contact/');
     const details = instanceOf(s, 'contact.details', contact.id);
@@ -162,8 +179,15 @@ describe('finding content', () => {
 
 describe('replacing content', () => {
   // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('changes a contact method’s text without moving its link, unless the link’s own match is chosen', () => {
+  it.fails('replaces the words and destinations of the release’s Contact details and Footer', () => {
     const s = fresh();
+    const ms = findContent(s, 'hello@example.com');
+    expect(ms.map((m) => m.field.section)).toEqual(['Contact details', 'Contact details', 'Contact details', 'Footer', 'Footer']);
+    expect(ms.filter((m) => m.blocked)).toEqual([]);
+  });
+
+  it('changes a contact method’s text without moving its link, unless the link’s own match is chosen', () => {
+    const s = designed();
     const contact = pageAt(s, '/contact/');
     const ms = findContent(s, 'hello@example.com');
     const text = only(ms, 'Contact methods › Email › Value');
@@ -183,9 +207,8 @@ describe('replacing content', () => {
     ]);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('keeps a custom label when only the destination changes, and keeps the link’s other settings', () => {
-    const s = fresh();
+  it('keeps a custom label when only the destination changes, and keeps the link’s other settings', () => {
+    const s = designed();
     const contact = pageAt(s, '/contact/');
     const details = instanceOf(s, 'contact.details', contact.id);
     const start = applyOperations(s, [
@@ -244,17 +267,15 @@ describe('replacing content', () => {
     expect(planReplace(s, findContent(s, 'write to us'), '').error).toMatch(/would remove a link/);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('reports what the project would refuse before anything is changed', () => {
-    const s = fresh();
+  it('reports what the project would refuse before anything is changed', () => {
+    const s = designed();
     const plan = planReplace(s, only(findContent(s, 'hello@example.com'), 'Action link'), 'not an address');
     expect(plan.operations).toEqual([]);
     expect(plan.error).toMatch(/not a valid email address/);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists a change the edit makes along with the chosen matches', () => {
-    const s = fresh();
+  it('lists a change the edit makes along with the chosen matches', () => {
+    const s = designed();
     // Emptying the action's label leaves out its button, and the destination with it.
     const ms = findContent(s, 'Email us').filter((m) => m.field.label === 'Action label');
     const plan = planReplace(s, ms, '');
@@ -342,9 +363,8 @@ describe('what replacing keeps safe', () => {
     expect(anchor.changes.map((c) => [c.kind, c.before, c.after])).toEqual([['link', '#foo on the same page', '#bar on the same page']]);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('reviews a destination whose button the edit removes as no link at all', () => {
-    const s = fresh();
+  it('reviews a destination whose button the edit removes as no link at all', () => {
+    const s = designed();
     const contact = pageAt(s, '/contact/');
     const details = instanceOf(s, 'contact.details', contact.id);
     const start = applyOperations(s, [
@@ -675,9 +695,8 @@ describe('the starter’s sample contact details (#15)', () => {
     expect(words).toContain('Also +1 555 0134 (567), Call+1 555 0134, 12 Harbor Lane, Millbrook\u2013 East and "hello@example.com"@company.org.');
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('finds the sample among the recipients of an email link, and leaves that link to the inspector', () => {
-    const s = fresh();
+  it('finds the sample among the recipients of an email link, and leaves that link to the inspector', () => {
+    const s = designed();
     const details = instanceOf(s, 'contact.details', pageAt(s, '/contact/').id);
     // A list of recipients, as a pasted mailto: link can name them; an edit never stores one.
     details.props.actionLink = { type: 'email', target: 'owner@kloof.example,hello@example.com?subject=Hi' };
@@ -695,9 +714,8 @@ describe('the starter’s sample contact details (#15)', () => {
     expect(copied[0].blocked).toMatch(/copies the sample address in/);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('takes a telephone link that dials the sample as a whole, however it is written, and no other number', () => {
-    const s = fresh();
+  it('takes a telephone link that dials the sample as a whole, however it is written, and no other number', () => {
+    const s = designed();
     const footer = footerOf(s);
     const tel = (target: string, i: number) => ({ id: `i_tel${i}`, label: 'Call', link: { type: 'tel', target } });
     // A bracketed trunk zero after the country code is left out when the site dials it (#905), so it still dials the sample.
@@ -741,9 +759,8 @@ describe('the starter’s sample contact details (#15)', () => {
     expect(onHome()).toEqual([]);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('replaces each detail everywhere in one step, the number as written and as dialled, and finds none left', () => {
-    let s = fresh();
+  it('replaces each detail everywhere in one step, the number as written and as dialled, and finds none left', () => {
+    let s = designed();
     s = apply(s, group(s, 'email'), 'studio@kloof.example').after;
     s = apply(s, group(s, 'phone'), '+27 21 555 0199').after;
     expect(sampleContactMatches(s).map((g) => g.kind)).toEqual(['address']);
@@ -752,7 +769,9 @@ describe('the starter’s sample contact details (#15)', () => {
     expect(item(details, 'items', 'Phone')).toMatchObject({ value: '+27 21 555 0199', link: { type: 'tel', target: '+27 21 555 0199' } });
     expect((footerOf(s).props.contact as ListItem[]).map((i) => [i.label, (i.link as LinkValue).target])).toEqual([
       ['studio@kloof.example', 'studio@kloof.example'],
-      ['+27 21 555 0199', '+27 21 555 0199']
+      ['+27 21 555 0199', '+27 21 555 0199'],
+      // The street address, which goes nowhere, is left as it was.
+      ['12 Harbor Lane, Millbrook', '']
     ]);
   });
 });
@@ -920,11 +939,10 @@ describe('replacing in a session', () => {
   const dirs: string[] = [];
   afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('changes a page and the shared footer in one step that undoes and redoes as one', async () => {
+  it('changes a page and the shared footer in one step that undoes and redoes as one', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-find-'));
     dirs.push(dir);
-    const session = await ProjectSession.create(dir, fresh());
+    const session = await ProjectSession.create(dir, designed());
     const keep = (st: ProjectState) => JSON.parse(JSON.stringify({ site: st.site, pages: st.pages, components: st.components }));
     const before = keep(session.state);
     const plan = planReplace(session.state, findContent(session.state, 'hello@example.com'), 'books@example.org');

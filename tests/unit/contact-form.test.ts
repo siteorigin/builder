@@ -295,9 +295,26 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     });
   }, 20_000);
 
-  // Release gap: the release's form does not focus its sent message.
-  it.fails('heads the emptied form with the sent message, focused, and clears it as soon as the visitor starts the next enquiry', async () => {
-    await withForm({ provider: 'netlify', formName: 'contact', fields: FIELDS }, async ({ page, field, button, status, nextPost, typeInto }) => {
+  it('shows the sent message on the emptied form, and clears it as soon as the visitor starts the next enquiry', async () => {
+    await withForm({ provider: 'netlify', formName: 'contact', fields: FIELDS }, async ({ field, button, status, nextPost, values, typeInto }) => {
+      await field('Name').fill('Ada');
+      await field('Email').fill('ada@example.com');
+      await field('Message').fill('First request');
+      await button.click();
+      await (await nextPost()).respond(200);
+      await expect.poll(status).toBe(SENT);
+      expect(await values()).toEqual(['', '', '']);
+
+      // A text input this time; the failure case below edits the textarea.
+      await typeInto('Name', 'Grace');
+      expect(await status()).toBe('');
+      expect(await field('Name').inputValue()).toBe('Grace');
+    });
+  }, 20_000);
+
+  // Release gap: the release's form announces its sent message from a live region under the button, but its submit never moves the focus there, so the confirmation is not where a visitor far from the button is taken.
+  it.fails('takes the focus to the sent message', async () => {
+    await withForm({ provider: 'netlify', formName: 'contact', fields: FIELDS }, async ({ page, field, button, status, nextPost }) => {
       await field('Name').fill('Ada');
       await field('Email').fill('ada@example.com');
       await field('Message').fill('First request');
@@ -306,11 +323,6 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       await expect.poll(status).toBe(SENT);
       // Out of sight of the button at the form's end, the confirmation takes the focus.
       await expect.poll(() => page.evaluate<string | null>(`document.activeElement?.getAttribute('role') ?? null`)).toBe('status');
-
-      // A text input this time; the failure case below edits the textarea.
-      await typeInto('Name', 'Grace');
-      expect(await status()).toBe('');
-      expect(await field('Name').inputValue()).toBe('Grace');
     });
   }, 20_000);
 
@@ -347,38 +359,46 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     });
   }, 20_000);
 
-  // Release gap: the release has no error colour (color.error, color.error-on-inverse) or error contrast pairs (#1016).
-  it.fails('draws what is wrong in the error colour of the form’s ground: the light grounds’, or dark sections’ (#1016)', async () => {
-    // The site's colours as the theme's stylesheet sets them, each one distinct so the test can tell which is drawn.
-    const COLORS = `:root { --so-color-text: rgb(17, 17, 17); --so-color-on-inverse: rgb(240, 240, 240); --so-color-surface: rgb(255, 255, 255);
+  /** The computed values of `props` on the first element `selector` finds. */
+  const drawn = (page: Page, selector: string, props: string[]) =>
+    page.evaluate<string[]>(`(() => { const s = getComputedStyle(document.querySelector(${JSON.stringify(selector)})); return ${JSON.stringify(props)}.map((p) => s.getPropertyValue(p)); })()`);
+  /** The tone the form is drawn in, as its placement hands it the variant. */
+  const TONES = ['default', 'inverse'] as const;
+  /** The site's colours as the theme's stylesheet sets them, each one distinct so the test can tell which is drawn. */
+  const COLORS = `:root { --so-color-text: rgb(17, 17, 17); --so-color-on-inverse: rgb(240, 240, 240); --so-color-surface: rgb(255, 255, 255);
       --so-color-inverse: rgb(20, 33, 29); --so-color-error: rgb(179, 38, 30); --so-color-error-on-inverse: rgb(255, 138, 128); }`;
-    for (const [variant, ground] of [['default', 'rgb(179, 38, 30)'], ['inverse', 'rgb(255, 138, 128)']] as const)
-      await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [...FIELDS, CHOICE], variant }, async ({ page, field, button, nextPost, alert }) => {
+  /** Sent from a script, which has the browser refuse every unanswered field in one attempt; resolves once they show. */
+  const refuseAll = async (page: Page) => {
+    await page.evaluate(`document.querySelector('form').requestSubmit()`);
+    await expect.poll(() => page.locator('.so-form__control[aria-invalid="true"]').count()).toBe(3);
+  };
+
+  /** An unanswered question's rings. */
+  const RING = '.so-form__choices[aria-invalid="true"] .so-form__box';
+  /** Under the pointer, read once an edge has had time to ease to whatever it turns to (a poll would take the first). */
+  const settle = (page: Page) => page.waitForTimeout(400);
+
+  it('draws what is wrong in one colour on either ground, with a heavier edge kept under the pointer, and a failed send says so in it', async () => {
+    for (const tone of TONES)
+      await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [...FIELDS, CHOICE], variant_tone: tone }, async ({ page, field, button, nextPost, alert }) => {
         await page.addStyleTag({ content: COLORS });
-        // Sent from a script, which has the browser refuse every unanswered field in one attempt.
-        await page.evaluate(`document.querySelector('form').requestSubmit()`);
+        await refuseAll(page);
         const wrong = page.locator('.so-form__control[aria-invalid="true"]').first();
-        await expect.poll(() => wrong.count()).toBe(1);
-        const drawn = (selector: string, props: string[]) =>
-          page.evaluate(`(() => { const s = getComputedStyle(document.querySelector(${JSON.stringify(selector)})); return ${JSON.stringify(props)}.map((p) => s.getPropertyValue(p)); })()`);
-        // The message and its mark in the ground's error colour; the field's outer edge on the ground, its inner edge
-        // on the field's own card-coloured fill, so each reads where it is drawn. The heavier edge stays.
-        expect(await drawn('.so-form__error', ['color']), variant).toEqual([ground]);
-        // Polled: the edge eases in.
-        await expect.poll(() => drawn('.so-form__control[aria-invalid="true"]', ['border-top-color', 'box-shadow']), { message: variant }).toEqual([ground, 'rgb(179, 38, 30) 0px 0px 0px 1px inset']);
-        // The unanswered choices' rings too, at rest and under the pointer.
-        await expect.poll(() => drawn('.so-form__choices--invalid input', ['border-top-color', 'box-shadow']), { message: `${variant} choices` }).toEqual([ground, 'rgb(179, 38, 30) 0px 0px 0px 1px inset']);
-        // Under the pointer, read once the edge has had time to ease to whatever it turns to (a poll would take the first).
-        const settle = () => page.waitForTimeout(400);
-        await page.locator('.so-form__choices--invalid .so-form__choice').first().hover();
-        await settle();
-        expect(await drawn('.so-form__choices--invalid .so-form__choice:hover input', ['border-top-color']), `${variant} choice on hover`).toEqual([ground]);
+        const [colour] = await drawn(page, '.so-form__error', ['color']);
+        // On the light ground and on the dark one, what is wrong never reads in the ground's own colour.
+        expect(colour, tone).not.toBe((await drawn(page, '.so-form', ['background-color']))[0]);
+        // The field's edge in that colour, a second pixel inset so nothing moves. Polled: the edge eases in.
+        await expect.poll(() => drawn(page, '.so-form__control[aria-invalid="true"]', ['border-top-color']), { message: tone }).toEqual([colour]);
+        expect((await drawn(page, '.so-form__control[aria-invalid="true"]', ['box-shadow']))[0], tone).toMatch(/^rgb\(.+\) 0px 0px 0px 1px inset$/);
+        // The unanswered choices' rings too (under the pointer: see the Release gap below).
+        await expect.poll(() => drawn(page, RING, ['border-top-color']), { message: `${tone} choices` }).toEqual([colour]);
+        expect((await drawn(page, RING, ['box-shadow']))[0], `${tone} choices`).toMatch(/^rgb\(.+\) 0px 0px 0px 1px inset$/);
         // A field to put right keeps its edge under the pointer once it no longer has focus.
         await page.evaluate(`document.activeElement.blur()`);
         await wrong.hover();
         await expect.poll(() => page.evaluate(`document.querySelector('.so-form__control[aria-invalid="true"]').matches(':hover:not(:focus)')`)).toBe(true);
-        await settle();
-        expect(await drawn('.so-form__control[aria-invalid="true"]', ['border-top-color']), `${variant} on hover`).toEqual([ground]);
+        await settle(page);
+        expect(await drawn(page, '.so-form__control[aria-invalid="true"]', ['border-top-color']), `${tone} on hover`).toEqual([colour]);
         // A failed send says so in the same colour.
         await field('Name').fill('Ada');
         await field('Email').fill('ada@example.com');
@@ -387,7 +407,31 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await button.click();
         await (await nextPost()).respond(500);
         await expect.poll(alert).toBe(FAILED);
-        expect(await drawn('.so-form__status[role="alert"]', ['color']), variant).toEqual([ground]);
+        expect(await drawn(page, '.so-form__status[role="alert"]', ['color']), tone).toEqual([colour]);
+      });
+  }, 30_000);
+
+  // Release gap: the release's hover rule for an empty choice (.so-form__option:hover .so-form__toggle:not(…, [aria-invalid='true'])) spares only a radio marked wrong itself, and its radios are marked through their group (.so-form__choices[aria-invalid='true']), so an unanswered question's ring turns to the hover edge under the pointer.
+  it.fails('keeps an unanswered question’s rings in the colour of what is wrong under the pointer', async () => {
+    for (const tone of TONES)
+      await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [...FIELDS, CHOICE], variant_tone: tone }, async ({ page }) => {
+        await page.addStyleTag({ content: COLORS });
+        await refuseAll(page);
+        const [colour] = await drawn(page, '.so-form__error', ['color']);
+        await page.locator('.so-form__choices[aria-invalid="true"] .so-form__option').first().hover();
+        await settle(page);
+        expect(await drawn(page, RING, ['border-top-color']), `${tone} choice on hover`).toEqual([colour]);
+      });
+  }, 30_000);
+
+  // Release gap: the release's palette has no error colour (color.error, color.error-on-inverse) or error contrast pairs, and its form draws what is wrong in the form's ink, reading neither (#1016).
+  it.fails('draws what is wrong in the error colour of the form’s ground: the light grounds’, or dark sections’ (#1016)', async () => {
+    for (const [tone, ground] of [['default', 'rgb(179, 38, 30)'], ['inverse', 'rgb(255, 138, 128)']] as const)
+      await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: FIELDS, variant_tone: tone }, async ({ page }) => {
+        await page.addStyleTag({ content: COLORS });
+        await refuseAll(page);
+        expect(await drawn(page, '.so-form__error', ['color']), tone).toEqual([ground]);
+        await expect.poll(() => drawn(page, '.so-form__control[aria-invalid="true"]', ['border-top-color']), { message: tone }).toEqual([ground]);
       });
   }, 30_000);
 

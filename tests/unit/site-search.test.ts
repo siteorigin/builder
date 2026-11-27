@@ -155,10 +155,11 @@ describe('site search files', () => {
 });
 
 describe('site search index', () => {
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
-  it.fails('lists every page in page order with its address, title and the words its theme section shows', () => {
+  it('lists every page in page order with its address, title and the words its section shows', () => {
     let s = withSearch();
-    s = project(s, 1, 'Built for the Harbour Library reading room.', 'content.text');
+    // A section designed in the editor: the index reads none of Foundation's but its forms, tables and videos (the
+    // Release gap test below).
+    s = project(s, 1, 'Built for the Harbour Library reading room.');
     const index = buildSearchIndex(s);
     expect(index.map((e) => e.route)).toEqual(s.site.pageOrder.map((id) => s.pages[id].route));
     const entry = index.find((e) => e.route === '/portfolio/workshop-commission-1/')!;
@@ -167,6 +168,14 @@ describe('site search index', () => {
     expect(entry.text).toContain('Built for the Harbour Library reading room.');
     // One line per field, each on one line.
     expect(entry.text.split('\n')).toEqual(expect.arrayContaining(['Commission 1']));
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
+  it.fails('lists the words the release’s text section shows', () => {
+    const s = project(withSearch(), 1, 'Built for the Harbour Library reading room.', 'content.text');
+    const entry = buildSearchIndex(s).find((e) => e.route === '/portfolio/workshop-commission-1/')!;
+    expect(entry.text).toContain('Commission 1');
+    expect(entry.text).toContain('Built for the Harbour Library reading room.');
   });
 
   it('leaves out the shared header and footer, and settings of the search itself', () => {

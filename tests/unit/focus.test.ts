@@ -13,6 +13,7 @@ import { componentDetail } from '@agent/context';
 import { executeTool, type ToolHost } from '@agent/tools';
 import { selectionTarget, selectionTools } from '@agent/selection';
 import { ProjectSession } from '../../src/main/project/session';
+import { managedStarter } from './fixtures/agent-designs';
 
 const fresh = () => createStarterState('business', 'Focus Studio', false);
 const pageOf = (s: ProjectState, title: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.title === title)!;
@@ -241,12 +242,19 @@ describe('sending focal point changes one after another', () => {
 });
 
 describe('where Image focus is offered', () => {
+  it('adds it after the aspect ratio of an image part that can be cropped, in a managed design a project already has', () => {
+    const s = managedStarter();
+    const hero = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
+    expect(hero.kind).toBe('managed');
+    // The stored list is what the issue saw: no focus control.
+    expect(hero.parts.media.styleControls).toEqual(['aspectRatio', 'radius', 'shadow']);
+    expect(partStyleControls(hero, 'media')).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
+  });
+
   // Release gap: partStyleControls (src/shared/styles.ts) offers objectPosition on managed image nodes only, so no release image can be cropped.
-  it.fails('adds it after the aspect ratio of every image part that can be cropped, in components a project already has', () => {
+  it.fails('adds it after the aspect ratio of every image part the release lets authors crop', () => {
     const s = fresh();
     const def = (componentId: string) => Object.values(s.components).find((d) => d.componentId === componentId)!;
-    // The stored list is what the issue saw: no focus control.
-    expect(def('hero.split').parts.media.styleControls).toEqual(['aspectRatio', 'radius', 'shadow']);
     expect(partStyleControls(def('hero.split'), 'media')).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
     expect(partStyleControls(def('content.media'), 'media')).toContain('objectPosition');
     expect(partStyleControls(def('media.gallery'), 'image')).toEqual(['aspectRatio', 'objectPosition', 'radius']);
@@ -265,11 +273,10 @@ describe('where Image focus is offered', () => {
     expect(partStyleControls({ ...hero, parts: { ...hero.parts, media: offered } }, 'media')).toEqual(['objectPosition', 'aspectRatio']);
   });
 
-  // Release gap: partStyleControls (src/shared/styles.ts) offers objectPosition on managed image nodes only, so no release image can be cropped.
-  it.fails('tells the AI about the control and the grammar', async () => {
+  it('tells the AI about the control and the grammar', async () => {
     const s = fresh();
-    const hero = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
-    expect(componentDetail(hero).parts.media.styleControls).toContain('objectPosition');
+    const managed = Object.values(managedStarter().components).find((d) => d.componentId === 'hero.split')!;
+    expect(componentDetail(managed).parts.media.styleControls).toContain('objectPosition');
     const host = { state: () => s, revision: () => 1 } as unknown as ToolHost;
     const read = await executeTool('read_project', '{}', host, 'c1');
     const listed = (read.content as unknown as { styleProperties: string[] }).styleProperties;
@@ -288,6 +295,12 @@ describe('where Image focus is offered', () => {
     const style = tools?.find((t) => t.name === 'style_selected_element');
     expect(style?.description).toContain('"X% Y%"');
     expect(JSON.stringify(style?.parameters)).toContain('"objectPosition"');
+  });
+
+  // Release gap: partStyleControls (src/shared/styles.ts) offers objectPosition on managed image nodes only, so no release image can be cropped.
+  it.fails('lists the control among the image part\'s controls the AI reads for the release hero', () => {
+    const hero = Object.values(fresh().components).find((d) => d.componentId === 'hero.split')!;
+    expect(componentDetail(hero).parts.media.styleControls).toContain('objectPosition');
   });
 
   it('tells the AI about custom column sizes, card widths and row spans (#352)', async () => {

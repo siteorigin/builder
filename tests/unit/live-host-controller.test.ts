@@ -59,6 +59,7 @@ const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 const { sha } = await import('../../src/main/project/fsutil');
 const { copyProjectSource } = await import('../../src/main/export');
+const { HERO, SECTION, heroDesign, sectionDesign } = await import('./fixtures/live-copy-editor-designs');
 
 let relay: Relay;
 let vite: Server;
@@ -94,9 +95,11 @@ afterEach(async () => {
 });
 
 /** A project with its website tools in place, as the app leaves it once the preview has run. */
-async function makeProject(name: string): Promise<string> {
+async function makeProject(name: string, prepare?: (state: ReturnType<typeof createStarterState>) => void): Promise<string> {
   const dir = temp(name);
-  const created = await ProjectSession.create(dir, createStarterState('blank', name, false));
+  const state = createStarterState('blank', name, false);
+  prepare?.(state);
+  const created = await ProjectSession.create(dir, state);
   await created.close();
   const pkg = '{"name":"site","type":"module"}';
   writeFileSync(join(dir, 'package.json'), pkg);
@@ -343,9 +346,13 @@ describe('a live session hosted by the open project', () => {
     }
   });
 
-  // Release gap: the release marks no property copyEditable, and copyEditableLookup (src/engine/copy-editor.ts) takes managed designs only.
-  it.fails('lets a copy editor reword the pages over the live protocol, and refuses at commit what its grant does not reach', async () => {
-    const dir = await makeProject('acme');
+  it('lets a copy editor reword the pages over the live protocol, and refuses at commit what its grant does not reach', async () => {
+    // The project's own managed split hero and section (fixtures/live-copy-editor-designs.ts): the release's are code,
+    // which the copy editor cannot read (the Release gap test below).
+    const dir = await makeProject('acme', (state) => {
+      heroDesign(state);
+      sectionDesign(state);
+    });
     const { c, sent } = controller();
     const { guest } = await hosting(c, sent, dir, 'copy-editor');
     const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
@@ -355,8 +362,8 @@ describe('a live session hosted by the open project', () => {
       return r.results!;
     };
     // The host's page: a split hero, whose heading and eyebrow are marked as copy, and a section of text.
-    const hero = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }]))[0].nodeId as string;
-    const section = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]))[0].nodeId as string;
+    const hero = (await host([{ type: 'node.insert', owner, parentId: null, definitionId: HERO }]))[0].nodeId as string;
+    const section = (await host([{ type: 'node.insert', owner, parentId: null, definitionId: SECTION }]))[0].nodeId as string;
     const paragraph = (await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Opening hours vary.' }]))[0].nodeId as string;
     const rich = (await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'richtext' }]))[0].nodeId as string;
     await host([{ type: 'node.setContent', owner, nodeId: rich, field: 'text', value: 'Call us or [read the FAQ](https://example.com/faq).' }]);
@@ -401,6 +408,24 @@ describe('a live session hosted by the open project', () => {
     expect(readFileSync(file, 'utf8')).toBe(saved);
     expect(c.snapshot()!.history.entries.length).toBe(steps);
     expect(c.snapshot()!.saveFailure ?? null).toBeNull();
+  });
+
+  // Release gap: shownOnceSlots (src/engine/slots.ts) counts no slot of a code component as shown once, so shownOnceIn
+  // (src/engine/copy-editor.ts) refuses text placed in the release's Section as shown once for each item of a list.
+  it.fails('lets a copy editor reword text in the shipped theme’s Section over the live protocol', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { guest } = await hosting(c, sent, dir, 'copy-editor');
+    const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
+    const host = async (operations: unknown[]) => {
+      const r = await c.apply({ operations } as never);
+      if (!r.ok) throw new Error(r.error?.message);
+      return r.results!;
+    };
+    const section = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]))[0].nodeId as string;
+    const paragraph = (await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Opening hours vary.' }]))[0].nodeId as string;
+    const before = c.session!.revision;
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Open every day.' }], expectedRevision: before }])).toMatchObject({ ok: true, result: { revision: before + 1 } });
   });
 
   it('holds a copy editor made a collaborator to its new grant only once its edits are a collaborator’s', async () => {

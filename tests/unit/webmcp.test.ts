@@ -15,7 +15,7 @@ import { runSeoAudit } from '@engine/seo-audit';
 import { RUNTIME_DIR, defFile, generateProject, webMcpFormFile } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE } from '@generator/search';
-import { adaptFormSource, formToolDescription, WEBMCP_SEARCH_FILE } from '@generator/webmcp';
+import { adaptFormSource, formToolDescription, showsFormTool, WEBMCP_SEARCH_FILE } from '@generator/webmcp';
 import { uniqueToolNames, webMcpText, webMcpToolName, WEBMCP_NAME_MAX } from '@shared/webmcp';
 import { describeOps } from '@agent/report';
 import { compactNode, projectSummary } from '@agent/context';
@@ -25,9 +25,16 @@ import { compileProject } from '../../src/main/compile';
 import { bundle, removeRendered, serverHtml } from './generated-site';
 import { projectDesign } from './fixtures/packs';
 import { HERO } from './fixtures/appear-designs';
+import { SUPPORTED_FORM_SOURCE, withSupportedForm } from './fixtures/webmcp-designs';
 
-const fresh = () => createStarterState('business', 'Test Studio', false);
-/** The theme's contact form code, as a new project installs it. */
+/** A new project, as the release makes it. */
+const release = () => createStarterState('business', 'Test Studio', false);
+/**
+ * A new project whose contact form is written as the adapter reads it (fixtures/webmcp-designs.ts): what WebMCP does
+ * with a form that declares a tool is tested on it, while the release's own form declares none (see the Release gap).
+ */
+const fresh = () => withSupportedForm(release());
+/** The contact form code, as such a project installs it. */
 const FORM_SOURCE_FOR_TESTS = (() => {
   const s = fresh();
   return s.components[installComponent(s, 'contact.form')].source!;
@@ -89,8 +96,7 @@ describe('tool names and descriptions', () => {
 });
 
 describe('the contact form’s code', () => {
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('takes the tool attributes on the form and on every field, never autosubmitting', () => {
+  it('takes the tool attributes on the form and on every field, never autosubmitting', () => {
     const adapted = adaptFormSource(FORM_SOURCE_FOR_TESTS)!;
     expect(adapted).not.toBeNull();
     expect(adapted).toContain('toolname={so_webmcpName}');
@@ -116,13 +122,14 @@ describe('the contact form’s code', () => {
     expect(adapted.match(/HTMLFormElement\.prototype\.reset\.call\(form\)/g)).toHaveLength(1);
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('adapts the first forms too, whose fields are named by fieldName', () => {
+  it('adapts the first forms too, whose fields are named by fieldName', () => {
     const first = FORM_SOURCE_FOR_TESTS.replace(/name=\{names\[i\]\}/g, 'name={fieldName(field, i)}');
     expect(adaptFormSource(first)?.match(/name=\{fieldName\(field, i\)\}\n\t+toolparamdescription=/g)).toHaveLength(4);
   });
 
   it('leaves code that no longer reads as the theme’s form alone', () => {
+    // The form these changes start from is one it adapts.
+    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS)).not.toBeNull();
     const changed = (from: string | RegExp, to: string) => {
       const source = FORM_SOURCE_FOR_TESTS.replace(from, to);
       expect(source).not.toBe(FORM_SOURCE_FOR_TESTS);
@@ -154,13 +161,27 @@ describe('the contact form’s code', () => {
     expect(changed("readonly={status === 'sending'}", 'readonly={busy}')).toBeNull();
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('changes only the form’s markup and code, whatever else the code says, and either quote', () => {
+  it('changes only the form’s markup and code, whatever else the code says, and either quote', () => {
     const quoted = FORM_SOURCE_FOR_TESTS.replace("readonly={status === 'sending'}", 'readonly={status === "sending"}');
     expect(adaptFormSource(quoted)).toContain('readonly={status === "sending" && !so_answering}');
     const said = FORM_SOURCE_FOR_TESTS.replace('\tconst uid = $props.id();', "\tconst uid = $props.id();\n\tconst note = 'name={honeypot}';");
     const adapted = adaptFormSource(said)!;
     expect(adapted).toContain("\tconst note = 'name={honeypot}';");
+  });
+});
+
+describe('the release’s contact form', () => {
+  const s = release();
+  const def = s.components[installComponent(s, 'contact.form')];
+
+  it('is not the code the other tests adapt', () => {
+    expect(def.source).not.toBe(SUPPORTED_FORM_SOURCE);
+  });
+
+  // Release gap: adaptFormSource (src/generator/webmcp.ts) reads the form as Builder's own copy of Foundation wrote it; the release's contact form opens its <form> at another indentation, writes its text fields in a `control` snippet outside the field loop, and drops `so-form__field--wide` from its choices, so it declares no tool and gets no WebMCP copy.
+  it.fails('takes the tool attributes, and a site placing it declares a tool', () => {
+    expect(adaptFormSource(def.source!)).not.toBeNull();
+    expect(showsFormTool(on(withForms(release(), 1)))).toBe(true);
   });
 });
 
@@ -186,8 +207,7 @@ describe('the exported website with WebMCP off', () => {
 describe('the exported website with WebMCP on', () => {
   afterAll(removeRendered);
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('places the form’s declaring copy, gives each direct form on a page its own name, and keeps the form’s own code', async () => {
+  it('places the form’s declaring copy, gives each direct form on a page its own name, and keeps the form’s own code', async () => {
     const s = on(withForms(fresh(), 2));
     const def = formDef(s);
     const files = generateProject(s);
@@ -200,8 +220,7 @@ describe('the exported website with WebMCP on', () => {
     expect(await compileProject(s)).toEqual([]);
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('declares the tool in the prerendered HTML, with every value escaped', async () => {
+  it('declares the tool in the prerendered HTML, with every value escaped', async () => {
     let s = on(withForms(fresh(), 1));
     const node = forms(s, home(s))[0];
     s = setTool(s, home(s), node.id, 'webmcpToolDescription', 'Quotes " & <b>braces</b> {x} </script> 🙂');
@@ -219,8 +238,7 @@ describe('the exported website with WebMCP on', () => {
     expect(html).toMatch(/name="_gotcha" toolparamdescription="A spam trap: always leave it empty\./);
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('names the header’s forms first, and each page’s around them; a name given is kept, made a tool name', () => {
+  it('names the header’s forms first, and each page’s around them; a name given is kept, made a tool name', () => {
     let s = withForms(withForms(fresh(), 1, header), 3);
     const [a, b, c] = forms(s, home(s));
     s = setTool(s, home(s), a.id, 'webmcpToolName', 'Book a call!');
@@ -235,8 +253,7 @@ describe('the exported website with WebMCP on', () => {
     expect(toolsIn(plain.get('src/routes/+page.svelte')!).map((t) => t.name)).toEqual(['contact_2', 'search_site_2', 'contact_v2']);
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('names a header’s and a footer’s forms apart even when they share a node ID', () => {
+  it('names a header’s and a footer’s forms apart even when they share a node ID', () => {
     let s = withForms(withForms(fresh(), 1, header), 1, { kind: 'shell', id: 'footer' });
     const h = s.site.shell.header;
     const f = s.site.shell.footer;
@@ -249,8 +266,7 @@ describe('the exported website with WebMCP on', () => {
     expect(toolsIn(generateProject(s).get('src/routes/+layout.svelte')!).map((t) => t.name)).toEqual(['contact', 'contact_2']);
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('has a form inside a design name itself from its own ID, so two placements of the design never share a name', async () => {
+  it('has a form inside a design name itself from its own ID, so two placements of the design never share a name', async () => {
     let s = fresh();
     s = run(s, { type: 'component.create', definitionId: 'proj.enquiry-a1b2c', name: 'Enquiry' });
     const root = s.components['proj.enquiry-a1b2c'].tree!.rootIds[0];
@@ -267,8 +283,7 @@ describe('the exported website with WebMCP on', () => {
     expect(await compileProject(on(s))).toEqual([]);
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('makes again exactly the files a change of the switch, a name or the shell’s forms touches, in a cached run', () => {
+  it('makes again exactly the files a change of the switch, a name or the shell’s forms touches, in a cached run', () => {
     const cache = new GenerationCache();
     let s = withSearch(withForms(fresh(), 2));
     const same = (state: ProjectState) => {
@@ -498,8 +513,7 @@ describe('editing a form’s tool', () => {
 describe('the WebMCP readiness suggestion', () => {
   const finding = (s: ProjectState) => runSeoAudit(s).filter((f) => f.code === 'SEO_WEBMCP_OFF');
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('suggests WebMCP once for a site showing a contact form or site search, and points at the switch', () => {
+  it('suggests WebMCP once for a site showing a contact form or site search, and points at the switch', () => {
     expect(finding(fresh())).toEqual([]);
     const both = finding(withSearch(withForms(fresh(), 2)));
     expect(both).toEqual([
@@ -509,8 +523,7 @@ describe('the WebMCP readiness suggestion', () => {
     expect(finding(withSearch(fresh()))[0].message).toContain('has site search but');
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('counts what collection pages show: the shell they always show, and each entry’s page as its layout shows it', () => {
+  it('counts what collection pages show: the shell they always show, and each entry’s page as its layout shows it', () => {
     // The header is hidden on every page, but entries show it.
     let s = withForms(fresh(), 1, header);
     for (const id of s.site.pageOrder) s = run(s, { type: 'page.update', pageId: id, showHeader: false } as EditOperation);
@@ -519,8 +532,7 @@ describe('the WebMCP readiness suggestion', () => {
     expect(finding(s)[0]?.message).toContain('a contact form');
   });
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('counts a form in a collection’s layout only while an entry shows it', () => {
+  it('counts a form in a collection’s layout only while an entry shows it', () => {
     const posts = run(fresh(), { type: 'collection.create', collectionId: 'projects', name: 'Projects', route: '/projects/' } as EditOperation, { type: 'entry.create', collectionId: 'projects', entryId: 'en_first', title: 'First', publishedAt: '2026-01-01', draft: true, body: ['First.'] } as EditOperation);
     const layout: OwnerRef = { kind: 'template', id: 'projects' };
     const placed = withForms(posts, 1, layout);
@@ -601,8 +613,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
   })()`;
   const told = "window.told !== undefined";
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('tells the agent the message was sent, and empties the form only after that', async () => {
+  it('tells the agent the message was sent, and empties the form only after that', async () => {
     const { browser, page, posts } = await open();
     try {
       expect(await page.evaluate(agentSubmit(true))).toBe(true);
@@ -620,8 +631,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
     }
   }, 60_000);
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('tells the agent when the service refuses the message, and keeps what was typed', async () => {
+  it('tells the agent when the service refuses the message, and keeps what was typed', async () => {
     const { browser, page, posts } = await open();
     try {
       await page.evaluate(agentSubmit(true));
@@ -635,8 +645,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
     }
   }, 60_000);
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('keeps the fields as they are while the agent waits, and answers a second request without sending again', async () => {
+  it('keeps the fields as they are while the agent waits, and answers a second request without sending again', async () => {
     const { browser, page, posts } = await open();
     try {
       await page.evaluate(agentSubmit(true));
@@ -655,8 +664,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
     }
   }, 60_000);
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('keeps what the visitor typed while the agent waited', async () => {
+  it('keeps what the visitor typed while the agent waited', async () => {
     const { browser, page, posts } = await open();
     try {
       await page.evaluate("document.addEventListener('reset', () => (window.heardReset = true))");
@@ -677,8 +685,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
     }
   }, 60_000);
 
-  // Release gap: adaptFormSource (src/generator/webmcp.ts) finds the form at a fixed indentation the release's contact form does not use, so it gets no WebMCP copy.
-  it.fails('tells the agent a message caught by the spam trap was discarded, sending nothing', async () => {
+  it('tells the agent a message caught by the spam trap was discarded, sending nothing', async () => {
     const { browser, page, posts } = await open();
     try {
       await page.evaluate("document.querySelector('input[name=\"_gotcha\"]').value = 'spam'");

@@ -36,27 +36,37 @@ const a = (tokens: number) => 'a'.repeat(tokens * 4);
 const warn = (draft: string, o: Partial<Parameters<typeof headroomWarning>[0]> = {}) => headroomWarning({ draft, history: [], contextWindow: null, model: '', reportedWindow: null, toolMode: 'auto', pageTools: true, ...o });
 
 describe('composer headroom for a local model', () => {
-  // Release gap: the release's 46 sections make a local model's first request about 2,000 tokens larger than the budgets measured on the 39-section copy (LOCAL_OVERHEAD_TOKENS, the small-window runs).
-  it.fails('reserves at least what the instructions, tools and editor context take, and not much more', async () => {
-    const modes: Array<[keyof typeof LOCAL_OVERHEAD_TOKENS, Partial<ModelCapabilities>]> = [
-      ['constrained', { toolCalling: 'constrained-json', contextWindowTokens: 32_768 }],
-      ['focused', { toolCalling: 'native', contextWindowTokens: 32_768 }]
-    ];
-    // Home has the most sections of the starter's pages, so the most editor context.
-    for (const route of ['/', '/about/']) {
-      for (const [mode, caps] of modes) {
-        const used = await overhead(caps, route);
-        expect(used, `${mode} on ${route}`).toBeLessThanOrEqual(LOCAL_OVERHEAD_TOKENS[mode]);
-        expect(LOCAL_OVERHEAD_TOKENS[mode] - used, `${mode} on ${route}`).toBeLessThan(1536);
-      }
-      // The full native set, from the focused cutoff up, leaves the half of the window and a reply free.
+  const MODES: Array<[keyof typeof LOCAL_OVERHEAD_TOKENS, Partial<ModelCapabilities>]> = [
+    ['constrained', { toolCalling: 'constrained-json', contextWindowTokens: 32_768 }],
+    ['focused', { toolCalling: 'native', contextWindowTokens: 32_768 }]
+  ];
+  /** Home has the most sections of the starter's pages, so the most editor context. */
+  const ROUTES = ['/', '/about/'];
+  const reserves = async (mode: keyof typeof LOCAL_OVERHEAD_TOKENS) => {
+    const caps = MODES.find(([m]) => m === mode)![1];
+    for (const route of ROUTES) {
+      const used = await overhead(caps, route);
+      expect(used, `${mode} on ${route}`).toBeLessThanOrEqual(LOCAL_OVERHEAD_TOKENS[mode]);
+      expect(LOCAL_OVERHEAD_TOKENS[mode] - used, `${mode} on ${route}`).toBeLessThan(1536);
+    }
+  };
+
+  it('reserves at least what the instructions, tools and editor context take, and not much more', async () => {
+    await reserves('constrained');
+    // The full native set, from the focused cutoff up, leaves the half of the window and a reply free.
+    for (const route of ROUTES) {
       const full = await overhead({ toolCalling: 'native', contextWindowTokens: FOCUSED_WINDOW_TOKENS }, route);
       expect(full + 1024, route).toBeLessThanOrEqual(FOCUSED_WINDOW_TOKENS / 2);
     }
     // An edit of a selection carries the small tools: the reserve holds the larger of the two kinds of model.
-    const selection = Math.max(...(await Promise.all(modes.map(([, caps]) => overhead(caps, '/', true)))));
+    const selection = Math.max(...(await Promise.all(MODES.map(([, caps]) => overhead(caps, '/', true)))));
     expect(selection).toBeLessThanOrEqual(SMALL_OVERHEAD_TOKENS);
     expect(SMALL_OVERHEAD_TOKENS - selection).toBeLessThan(1536);
+  }, 60000);
+
+  // Release gap: with the release's sections, the small native tools' page request (upsert_page_with_sections) takes about 12,300 tokens on Home, some 1,100 over LOCAL_OVERHEAD_TOKENS.focused, measured on the 39-section copy.
+  it.fails('reserves at least what the small native tools of a page run take', async () => {
+    await reserves('focused');
   }, 60000);
 
   it('gives the messages half the window, or less where the instructions leave less', () => {
