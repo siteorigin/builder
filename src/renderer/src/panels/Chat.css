@@ -53,7 +53,8 @@
   /* The words and the line under them sit 2px in, like streamed text; the boxes keep the cards' full width. */
   .reply-text, .reply-foot, .reply .locations { padding: 0 2px; }
   .reply-text { font-size: 13px; line-height: 1.55; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .reply-foot { display: flex; }
+  .reply-foot { display: flex; align-items: center; gap: 8px; }
+  .reply-foot .result-usage { margin-left: auto; color: var(--text-3); }
   .reply-toggle, .reply-outcome { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; margin-left: -4px; padding: 0 6px 0 4px; border: 0; border-radius: var(--r-xs); background: none; font-size: 12px; line-height: 16px; color: var(--text-3); text-align: left; }
   .reply-toggle:hover { background: var(--hover); color: var(--text); }
   .reply-icon { display: grid; place-items: center; flex: none; color: var(--text-3); }

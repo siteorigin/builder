@@ -127,8 +127,10 @@ export class OpenAIAdapter implements AgentModelAdapter {
           text += ev.delta;
           yield { type: 'text', delta: ev.delta };
         } else if (ev.type === 'response.completed' || ev.type === 'response.incomplete') {
-          const resp = ev.response as { output: Array<Record<string, unknown>>; usage?: { input_tokens: number; output_tokens: number }; incomplete_details?: { reason?: string } };
-          const usage = resp.usage ? { inputTokens: resp.usage.input_tokens, outputTokens: resp.usage.output_tokens } : undefined;
+          const resp = ev.response as { output: Array<Record<string, unknown>>; usage?: { input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens?: number } }; incomplete_details?: { reason?: string } };
+          // OpenAI caches a repeated prompt prefix by itself; `input_tokens` counts what it read from the cache too.
+          const cached = resp.usage?.input_tokens_details?.cached_tokens;
+          const usage = resp.usage ? { inputTokens: resp.usage.input_tokens, outputTokens: resp.usage.output_tokens, ...(typeof cached === 'number' ? { cachedInputTokens: cached } : {}) } : undefined;
           let refusal = false;
           let finalText = '';
           for (const item of resp.output ?? [])
