@@ -17,7 +17,7 @@ import { api, applyOps, claimRefusals, commitOps, dismissToast, getState, setSta
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
-import { useJumpMark } from '../lib/jump-mark';
+import { useJumpMark } from '../lib/use-jump-mark';
 import { ChoiceField, Disclosure, DisclosureMark, DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
@@ -1135,7 +1135,7 @@ export function SiteStyles() {
   // What a reset just did, for the status region; a repeat of the same words still changes the text, so it is read again.
   const [said, setSaid] = useState('');
   // The section under the sticky header, marked in the jump links so a long scroll keeps its bearings; a jump link's
-  // own section stays marked through the scroll it starts (lib/jump-mark).
+  // own section stays marked through the scroll it starts (lib/use-jump-mark).
   const { here, jump, panel } = useJumpMark(JUMPS.length, '.ss-head');
   // Layout groups whose sizes are shown as CSS, switched from the group's heading.
   const [cssGroups, setCssGroups] = useState<Set<string>>(() => new Set());

@@ -71,7 +71,7 @@ const renderer = (path: string) => JSON.stringify(resolve('src/renderer/src', pa
 const ENTRY = [
   "import { createElement as h } from 'react';",
   "import { createRoot } from 'react-dom/client';",
-  `import { useJumpMark } from ${renderer('lib/jump-mark')};`,
+  `import { useJumpMark } from ${renderer('lib/use-jump-mark')};`,
   `import { Section, openSection } from ${renderer('components/ui')};`,
   `const JUMPS = ${JSON.stringify(labels.map((label, i) => ({ id: ids[i], label })))};`,
   'const HEIGHTS = [700, 700, 700, 60, 60, 60];',
@@ -146,32 +146,28 @@ describe.skipIf(!browserInstalled)('the jump links in a browser', { timeout: 30_
     expect(errors).toEqual([]);
   });
 
-  const marked = () => page.locator('[aria-current="location"]').evaluateAll((els) => els.map((e) => e.textContent));
+  const marked = () => page.locator('[aria-current="location"]').allTextContents();
   /** Wait for the panel to come to rest: its scroll position unchanged across a few frames. */
   const settled = () =>
-    page.evaluate(
-      () =>
-        new Promise<void>((done) => {
-          const box = document.getElementById('box')!;
-          let last = -1;
-          let still = 0;
-          const tick = () => {
-            still = box.scrollTop === last ? still + 1 : 0;
-            last = box.scrollTop;
-            if (still >= 10) done();
-            else requestAnimationFrame(tick);
-          };
-          requestAnimationFrame(tick);
-        })
-    );
-  const scrollTop = () => page.locator('#box').evaluate((b) => b.scrollTop);
+    page.evaluate(`new Promise((done) => {
+      const box = document.getElementById('box');
+      let last = -1, still = 0;
+      const tick = () => {
+        still = box.scrollTop === last ? still + 1 : 0;
+        last = box.scrollTop;
+        if (still >= 10) done();
+        else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    })`);
+  const scrollTop = () => page.evaluate<number>(`document.getElementById('box').scrollTop`);
 
   it('marks only the clicked section after its jump, though the scroll cannot bring it under the header', async () => {
     await page.click('#j4');
     await settled();
     expect(await marked()).toEqual(['Yours']);
     // The scroll is at its end, where position alone marks Site.
-    expect(await page.locator('#box').evaluate((b) => b.scrollTop + b.clientHeight >= b.scrollHeight - 2)).toBe(true);
+    expect(await page.evaluate(`(() => { const b = document.getElementById('box'); return b.scrollTop + b.clientHeight >= b.scrollHeight - 2; })()`)).toBe(true);
   });
 
   it('keeps the clicked section through a press in the header while the jump is still scrolling', async () => {
@@ -199,10 +195,7 @@ describe.skipIf(!browserInstalled)('the jump links in a browser', { timeout: 30_
     await page.click('#j0');
     await settled();
     expect(await marked()).toEqual(['Basics']);
-    await page.evaluate(() => {
-      (window as unknown as { openSection: (id: string, o: object) => void }).openSection('site', { scroll: false });
-      document.getElementById('f5')!.focus();
-    });
+    await page.evaluate(`openSection('site', { scroll: false }); document.getElementById('f5').focus()`);
     await settled();
     expect(await marked()).toEqual(['Site']);
   });
@@ -211,17 +204,16 @@ describe.skipIf(!browserInstalled)('the jump links in a browser', { timeout: 30_
     await page.click('#j4');
     await settled();
     const before = await scrollTop();
-    await page.evaluate(() => (window as unknown as { openSection: (id: string) => void }).openSection('site'));
+    await page.evaluate(`openSection('site')`);
     await settled();
     expect(await scrollTop()).toBe(before);
     expect(await marked()).toEqual(['Site']);
   });
 
   const look = (id: string) =>
-    page.locator(`#${id}`).evaluate((el) => {
-      const s = getComputedStyle(el);
-      return { background: s.backgroundColor, color: s.color, weight: s.fontWeight };
-    });
+    page.evaluate<{ background: string; color: string; weight: string }>(
+      `(() => { const s = getComputedStyle(document.getElementById(${JSON.stringify(id)})); return { background: s.backgroundColor, color: s.color, weight: s.fontWeight }; })()`
+    );
 
   it('gives a hovered link a look of its own, apart from the current one', async () => {
     const current = await look('j0');
