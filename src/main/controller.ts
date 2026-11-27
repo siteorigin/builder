@@ -4791,7 +4791,9 @@ export class Controller {
       } else await finishExportedSource(dest, s.state, starterNotice(), await syncCliText(s.state));
       if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs, roots: opts.roots }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
-      return { ok: true as const, revision: s.revision, state: structuredClone(s.state), ...(milestone ? { milestone } : {}), ...(unsaved ? { unsaved } : {}) };
+      // The session's state is frozen through and through, and a change makes a new one, so the state the files were
+      // copied from is kept as it is: no copy of the whole project for the length of the export (#1044).
+      return { ok: true as const, revision: s.revision, state: s.state, ...(milestone ? { milestone } : {}), ...(unsaved ? { unsaved } : {}) };
     }));
   }
 

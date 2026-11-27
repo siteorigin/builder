@@ -330,31 +330,33 @@ async function websiteFiles(project: string, state: ProjectState): Promise<{ fil
 const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
 
 /**
- * Everything the website build reads as text, apart from library files, to search for the file names it uses. A
- * draft-only component counts once anything else the website reads names its file (a code component importing it),
- * and so on through what that one names. The search index is left out: a page that mentions a file's name in its
- * text does not use that file.
+ * Which of `names` everything the website build reads as text names, apart from library files: `file` as namesFile
+ * finds a name, `whole` as namesWholeFile does. A draft-only component counts once anything else the website reads
+ * names its file (a code component importing it), and so on through what that one names. The search index is left
+ * out: a page that mentions a file's name in its text does not use that file. Each file is read and searched on its
+ * own, as it comes, so only one file's text is held at a time beside those of the draft-only components (#1044). A
+ * name is found within one file: one with a line break in it is no longer found from the end of one file and the
+ * start of the next, as a search of them all joined by line breaks would; any other is found exactly as that would.
  */
-async function websiteText(project: string, { files, candidate, draftOnly }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }): Promise<string> {
-  const texts: string[] = [];
+async function websiteNames(project: string, { files, candidate, draftOnly }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }, names: Iterable<string>): Promise<NameMatcher> {
+  const matcher = new NameMatcher([...names, ...[...draftOnly].map((rel) => basename(rel))]);
   const held = new Map<string, string>();
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
     const text = await readExportFile(join(project, rel), 'utf8');
     if (draftOnly.has(rel)) held.set(rel, text);
-    else texts.push(text);
+    else matcher.scan(text);
   }
   for (let found = true; found && held.size; ) {
     found = false;
-    const read = texts.join('\n');
     for (const [rel, text] of held)
-      if (namesFile(read, basename(rel))) {
-        texts.push(text);
+      if (matcher.file(basename(rel))) {
+        matcher.scan(text);
         held.delete(rel);
         found = true;
       }
   }
-  return texts.join('\n');
+  return matcher;
 }
 
 /** An import of a module, static or dynamic, and the path it names: `from './x.svelte'`, `import('./x.svelte')`, `import './x.css'`. */
@@ -422,8 +424,7 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   const site = await websiteFiles(project, state);
   const candidates = site.files.filter(site.candidate);
   if (!candidates.length) return [];
-  const text = await websiteText(project, site);
-  const named = namesIn(text, candidates.map((rel) => basename(rel)));
+  const named = await websiteNames(project, site, candidates.map((rel) => basename(rel)));
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
@@ -455,16 +456,20 @@ export interface MissingInExport {
 export async function missingWebsiteAssets(project: string, state: ProjectState): Promise<MissingInExport[]> {
   const missing = await findMissingAssetFiles(project, state.assets.assets);
   if (!missing.length) return [];
-  const text = await websiteText(project, await websiteFiles(project, state));
   // A missing file the site names would fail the build. A missing original matters too when the site names only a
   // JPEG or PNG copy of it, since that copy's credits come from the original (a WebP or AVIF copy carries its own); a
   // missing copy the site does not name does not.
-  return missing.map((m) => {
+  const credited = (f: unknown): f is string => typeof f === 'string' && /\.(jpg|png)$/.test(f);
+  const asked = (m: MissingAssetFiles) => {
     const asset = state.assets.assets[m.assetId];
-    const named = (f: string) => namesWholeFile(text, basename(f));
-    const credited = (f: string) => /\.(jpg|png)$/.test(f);
-    const used = [...(m.original ? [asset.file] : []), ...m.variants].some(named) || (m.original && (asset.variants ?? []).some((v) => credited(v.file) && named(v.file)));
-    return { asset, missing: m, used };
+    return { direct: [...(m.original ? [asset.file] : []), ...m.variants], copies: m.original ? (asset.variants ?? []).map((v) => v.file as unknown).filter(credited) : [] };
+  };
+  // Searched for exactly the names the answers below ask about, so a damaged record elsewhere in the library is no name.
+  const found = await websiteNames(project, await websiteFiles(project, state), missing.flatMap((m) => Object.values(asked(m)).flat().map((f) => basename(f))));
+  return missing.map((m) => {
+    const { direct, copies } = asked(m);
+    const named = (f: string) => found.whole(basename(f));
+    return { asset: state.assets.assets[m.assetId], missing: m, used: direct.some(named) || copies.some(named) };
   });
 }
 
@@ -476,8 +481,8 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
 export async function missingWebsiteFonts(project: string, state: ProjectState): Promise<AssetRecord[]> {
   const fonts = Object.values(state.assets.assets).filter((a) => a?.kind === 'font' && typeof a.file === 'string' && !isPlainFile(join(project, a.file)));
   if (!fonts.length) return [];
-  const text = await websiteText(project, await websiteFiles(project, state));
-  return fonts.filter((a) => namesWholeFile(text, basename(a.file)));
+  const found = await websiteNames(project, await websiteFiles(project, state), fonts.map((a) => basename(a.file)));
+  return fonts.filter((a) => found.whole(basename(a.file)));
 }
 
 /** Characters namesFile reads as part of a file name, around one. */
@@ -485,28 +490,56 @@ const NAME_RUN = /[\w.-]+/g;
 const NAME_CHARS = /^[\w.-]+$/;
 
 /**
- * namesFile and namesWholeFile for many names over one text, read once. A name made only of the characters that
- * namesFile reads as part of a name is named exactly when some run of those characters in the text starts with it (its
- * start then has none before it), and named whole when, within that run, nothing that namesWholeFile reads as going on
- * follows it. Any other name is searched for on its own.
+ * namesFile and namesWholeFile for many names over one text or several, each read once. A name made only of the
+ * characters that namesFile reads as part of a name is named exactly when some run of those characters in a text starts
+ * with it (its start then has none before it), and named whole when, within that run, nothing that namesWholeFile reads
+ * as going on follows it. Any other name is searched for on its own, in each text.
  */
+export class NameMatcher {
+  /** The names by length, each kept as it was given: a name found is recorded as that string, never as a piece cut
+   *  from a text, which V8 can keep as a view of the whole text. */
+  private readonly lengths = new Map<number, Map<string, string>>();
+  private readonly others = new Set<string>();
+  private readonly named = new Set<string>();
+  private readonly namedWhole = new Set<string>();
+
+  constructor(names: Iterable<string>) {
+    for (const name of names)
+      if (NAME_CHARS.test(name)) (this.lengths.get(name.length) ?? this.lengths.set(name.length, new Map()).get(name.length)!).set(name, name);
+      else this.others.add(name);
+  }
+
+  /** Search one more text. */
+  scan(text: string): void {
+    if (this.lengths.size)
+      for (const [run] of text.matchAll(NAME_RUN))
+        for (const [length, given] of this.lengths) {
+          if (length > run.length) continue;
+          const name = given.get(length === run.length ? run : run.slice(0, length));
+          if (name === undefined) continue;
+          this.named.add(name);
+          const next = run[length];
+          if (next === undefined || (next === '.' && !/\w/.test(run[length + 1] ?? ''))) this.namedWhole.add(name);
+        }
+    for (const name of this.others) {
+      if (!this.named.has(name) && namesFile(text, name)) this.named.add(name);
+      if (!this.namedWhole.has(name) && namesWholeFile(text, name)) this.namedWhole.add(name);
+    }
+  }
+
+  /** Whether a text searched so far names `name` (namesFile), of the names the matcher was made for. */
+  readonly file = (name: string): boolean => this.named.has(name);
+
+  /** Whether a text searched so far names `name` whole (namesWholeFile), of the names the matcher was made for. */
+  readonly whole = (name: string): boolean => this.namedWhole.has(name);
+}
+
+/** NameMatcher over one text; a name it was not made for is searched for in the text when asked. */
 export function namesIn(text: string, names: string[]): { file: (name: string) => boolean; whole: (name: string) => boolean } {
-  const lengths = new Map<number, Set<string>>();
-  for (const name of names) if (NAME_CHARS.test(name)) (lengths.get(name.length) ?? lengths.set(name.length, new Set()).get(name.length)!).add(name);
-  const file = new Set<string>();
-  const whole = new Set<string>();
-  if (lengths.size)
-    for (const [run] of text.matchAll(NAME_RUN))
-      for (const [length, set] of lengths) {
-        if (length > run.length) continue;
-        const name = length === run.length ? run : run.slice(0, length);
-        if (!set.has(name)) continue;
-        file.add(name);
-        const next = run[length];
-        if (next === undefined || (next === '.' && !/\w/.test(run[length + 1] ?? ''))) whole.add(name);
-      }
+  const matcher = new NameMatcher(names.filter((name) => NAME_CHARS.test(name)));
+  matcher.scan(text);
   const listed = (name: string) => NAME_CHARS.test(name);
-  return { file: (name) => (listed(name) ? file.has(name) : namesFile(text, name)), whole: (name) => (listed(name) ? whole.has(name) : namesWholeFile(text, name)) };
+  return { file: (name) => (listed(name) ? matcher.file(name) : namesFile(text, name)), whole: (name) => (listed(name) ? matcher.whole(name) : namesWholeFile(text, name)) };
 }
 
 /** Like namesFile, and the name also ends there: `a-1234abcd.jpg` is not found inside `a-1234abcd.jpg.webp`. */

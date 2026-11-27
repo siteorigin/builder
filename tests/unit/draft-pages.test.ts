@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
@@ -435,6 +435,41 @@ describe('a staged copy without its drafts', () => {
     await leaveOutDrafts(third, coded);
     expect(await pruneWebsiteAssets(third, coded)).toEqual([]);
     expect(existsSync(join(third, 'static/assets/winter-shelves-1a2b3c4d.jpg'))).toBe(true);
+  });
+
+  it('follows draft-only components through one another to a picture, whichever is listed first', async () => {
+    let { s, draft } = withDraft();
+    s = structuredClone(s);
+    const design = (componentId: string, name: string) => projectDesign(s, { componentId, name, properties: {}, parts: { root: { nodeId: 'root', label: name } }, build: (b) => b.el('root', 'section', { name }, []) }).id;
+    // Listed first and reached last: the alpha shelf is found only through the zeta shelf, which is found first.
+    const alpha = design('project.alpha-shelf', 'Alpha shelf');
+    const zeta = design('project.zeta-shelf', 'Zeta shelf');
+    for (const id of [alpha, zeta]) s = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: draft }, parentId: null, index: 0, definitionId: id }]).state;
+    s.assets.assets.a_chain01 = { id: 'a_chain01', name: 'Chained shelf', file: 'static/assets/chained-shelf-5e6f7a8b.jpg', mime: 'image/jpeg', bytes: 3, width: 10, height: 10, hash: 'h', kind: 'image', createdAt: '' };
+    const [alphaFile, zetaFile] = [defFile(s.components[alpha]), defFile(s.components[zeta])];
+    expect(alphaFile < zetaFile).toBe(true);
+    const staged = async (reached: boolean) => {
+      const dir = project(s);
+      mkdirSync(join(dir, 'static/assets'), { recursive: true });
+      writeFileSync(join(dir, 'static/assets/chained-shelf-5e6f7a8b.jpg'), 'jpg');
+      await leaveOutDrafts(dir, s);
+      // As code of the author's own would have them: the zeta shelf imports the alpha shelf, which shows the picture.
+      for (const [file, text] of [
+        [zetaFile, `<script>\n\timport Shelf from './${basename(alphaFile)}';\n</script>\n\n<Shelf />\n`],
+        [alphaFile, '<img src="/assets/chained-shelf-5e6f7a8b.jpg" alt="" />\n']
+      ]) {
+        mkdirSync(dirname(join(dir, file)), { recursive: true });
+        writeFileSync(join(dir, file), text);
+      }
+      if (reached) writeFileSync(join(dir, 'src/lib/shelves.js'), `export { default } from './siteorigin/generated/${basename(zetaFile)}';\n`);
+      return dir;
+    };
+    const kept = await staged(true);
+    expect(await pruneWebsiteAssets(kept, s)).toEqual([]);
+    expect(existsSync(join(kept, 'static/assets/chained-shelf-5e6f7a8b.jpg'))).toBe(true);
+    // With nothing the website reads naming the zeta shelf, neither shelf is the website's, and the picture stays out.
+    const left = await staged(false);
+    expect((await pruneWebsiteAssets(left, s)).map((a) => a.id)).toEqual(['a_chain01']);
   });
 
   it('changes nothing without drafts', async () => {

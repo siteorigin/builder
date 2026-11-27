@@ -890,12 +890,29 @@ export interface BuildOutcome {
 }
 
 /**
+ * The production build's own environment. Rolldown's native heap (mimalloc) keeps the pages each bundle frees for a
+ * second before handing them back, so the SSR bundle's are still held while the client bundle and then prerendering
+ * add theirs: on a site of 550 pages some 150 MB of the build's peak. With no delay they go back as they are freed.
+ * The dev server is not given it: its native heap is live data.
+ */
+export const BUILD_ENV = { NODE_ENV: 'production', MIMALLOC_PURGE_DELAY: '0' } as const;
+
+/**
+ * V8 settings of the production build, given as Chromium's switch as the dev server's are. Its heaps (the build's own
+ * and those of SvelteKit's analysis and prerendering workers) grow by a fifth at a time instead of the factor of up
+ * to four V8 picks for itself, with young generations of 4 MB semi-spaces: on a site of 550 pages some 190 MB less at
+ * the build's peak, for no measurable change in how long it takes. Neither lowers the old generation's limit, so a
+ * large site still has the room V8 gives it.
+ */
+export const BUILD_V8_FLAGS = ['--heap-growing-percent=20', '--max-semi-space-size=4'];
+
+/**
  * Run a production build of the project in a one-shot worker. It always settles: on the build's result, the
  * worker exiting, an error the worker reports without exiting, or a time limit. The worker never outlives it.
  */
 export function buildProject(dir: string): Promise<BuildOutcome> {
   return new Promise((resolve) => {
-    const proc = utilityProcess.fork(workerPath(), [], { cwd: dir, env: projectEnv({ NODE_ENV: 'production' }), serviceName: 'SiteOrigin project build', stdio: 'pipe' });
+    const proc = utilityProcess.fork(workerPath(), [], { cwd: dir, env: projectEnv(BUILD_ENV), execArgv: [`--js-flags=${BUILD_V8_FLAGS.join(' ')}`], serviceName: 'SiteOrigin project build', stdio: 'pipe' });
     let done = false;
     let exited = false;
     const onExit: Array<() => void> = [];

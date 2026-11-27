@@ -115,7 +115,9 @@ export async function hashFileAt(abs: string, counted: (bytes: number) => void):
     // Only a regular file is read: a pipe or device could block, or never end.
     if (!before.isFile()) return 'failed';
     const hash = createHash('sha256');
-    const chunk = Buffer.allocUnsafe(1 << 20);
+    // Read in pieces of up to 1 MiB, never larger than the file needs: most of a project's files are a few KiB, and a
+    // piece that small comes from Node's shared pool rather than a mapping of its own per file.
+    const chunk = Buffer.allocUnsafe(Math.min(1 << 20, Math.max(Number(before.size), 1024)));
     let total = 0;
     for (;;) {
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);

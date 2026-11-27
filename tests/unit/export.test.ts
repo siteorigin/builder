@@ -27,7 +27,7 @@ import {
   locationKeptNote,
   locationRemovedNote,
   namesFile,
-  namesIn,
+  NameMatcher, namesIn,
   namesWholeFile,
   omittedAssetsWarning,
   readLibraryImage,
@@ -1021,6 +1021,36 @@ describe('finding the library files a website names', () => {
       for (const name of names) {
         expect(found.file(name), `${JSON.stringify(name)} in ${JSON.stringify(text)}`).toBe(namesFile(text, name));
         expect(found.whole(name), `${JSON.stringify(name)} whole in ${JSON.stringify(text)}`).toBe(namesWholeFile(text, name));
+      }
+    }
+  });
+});
+
+describe('finding the library files a website names, a file at a time', () => {
+  it('finds over several texts searched in turn what one search of them joined finds', () => {
+    let x = 0x2545f491;
+    const rand = (n: number) => {
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+      return (x >>> 0) % n;
+    };
+    const pick = (chars: string, length: number) => Array.from({ length }, () => chars[rand(chars.length)]).join('');
+    const NAME = 'ab1-_.';
+    const AROUND = 'ab1-_./ "\'<>=(),é\n';
+    for (let round = 0; round < 3000; round++) {
+      const names = Array.from({ length: 1 + rand(5) }, () => (rand(8) === 0 ? `${pick(NAME, 1 + rand(3))} ${pick(NAME, 1 + rand(3))}` : rand(10) === 0 ? `caf\u00e9-${pick(NAME, 2)}` : pick(NAME, 1 + rand(6))));
+      const texts = Array.from({ length: 1 + rand(4) }, () => {
+        let text = pick(AROUND, rand(8));
+        for (let k = rand(4); k > 0; k--) text += pick(AROUND, rand(3)) + names[rand(names.length)] + pick(AROUND, rand(3));
+        return text;
+      });
+      const matcher = new NameMatcher(names);
+      for (const text of texts) matcher.scan(text);
+      const joined = texts.join('\n');
+      for (const name of names) {
+        expect(matcher.file(name), `${JSON.stringify(name)} in ${JSON.stringify(texts)}`).toBe(namesFile(joined, name));
+        expect(matcher.whole(name), `${JSON.stringify(name)} whole in ${JSON.stringify(texts)}`).toBe(namesWholeFile(joined, name));
       }
     }
   });
