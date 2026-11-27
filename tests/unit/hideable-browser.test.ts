@@ -19,8 +19,10 @@ const ENTRY = [
   "import { flushSync } from 'react-dom';",
   `import { Hideable, usePanelHidden } from ${renderer('lib/hideable')};`,
   `import { Modal } from ${renderer('components/ui')};`,
-  `import { getState, useStore } from ${renderer('store')};`,
-  'window.log = { panel: 0, row: 0, effects: [], heard: [] };',
+  `import { getState, selectedRatio, setOverlay, useOverlay, useStore } from ${renderer('store')};`,
+  'window.log = { panel: 0, row: 0, shape: 0, effects: [], heard: [] };',
+  // What the panel reads of the canvas's overlay (OverlayState): the selection's shape, as the Inspector reads it.
+  'function Shape() { const ratio = useOverlay(selectedRatio); window.log.shape++; return h("s", { id: "shape" }, String(ratio)); }',
   // A row of the panel's own: it follows the store too, and renders only when the panel does or the zoom changes.
   'function Row() { const zoom = useStore((s) => s.zoom); window.log.row++; return h("span", { id: "row" }, String(zoom)); }',
   // What a dialog opened from the panel shows: on screen whatever opened it, so it follows the store.
@@ -36,7 +38,7 @@ const ENTRY = [
   '  useLayoutEffect(() => { window.log.effects.push(String(zoom)); }, [zoom]);',
   // The panel's own listener hears its event while hidden, and reads the store as it is now.
   '  useEffect(() => { const on = () => window.log.heard.push(String(getState().zoom)); window.addEventListener("panel-ping", on); return () => window.removeEventListener("panel-ping", on); }, []);',
-  '  return h("div", { id: "panel" }, h("input", { id: "q", "aria-label": "Search", value: q, onChange: (e) => setQ(e.target.value) }), h("b", { id: "zoom" }, String(zoom)), h("i", { id: "page" }, String(page)), h(Row), dialog ? h(Modal, { title: "A dialog", onClose: () => setDialog(false) }, h(Zoom)) : null);',
+  '  return h("div", { id: "panel" }, h("input", { id: "q", "aria-label": "Search", value: q, onChange: (e) => setQ(e.target.value) }), h("b", { id: "zoom" }, String(zoom)), h("i", { id: "page" }, String(page)), h(Row), h(Shape), dialog ? h(Modal, { title: "A dialog", onClose: () => setDialog(false) }, h(Zoom)) : null);',
   '}',
   'function Editor() {',
   '  const leftTab = useStore((s) => s.leftTab);',
@@ -46,7 +48,7 @@ const ENTRY = [
   '}',
   "flushSync(() => useStore.setState({ leftTab: 'insert', zoom: 1, pageId: 'p1', snapshot: { workspaceKey: 'w1' } }));",
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Editor)));",
-  'window.so = { set: (patch) => flushSync(() => useStore.setState(patch)) };'
+  'window.so = { set: (patch) => flushSync(() => useStore.setState(patch)), box: (b) => flushSync(() => setOverlay({ rects: { selected: [b], hovered: [], revealed: [] } })) };'
 ].join('\n');
 
 /** The preload bridge: every call answers nothing. */
@@ -109,7 +111,7 @@ describe.skipIf(!browserInstalled)('a hidden panel (#968)', { timeout: 30_000 },
   });
 
   const set = (patch: Record<string, unknown>) => page.evaluate(`so.set(${JSON.stringify(patch)})`);
-  const log = () => page.evaluate<{ panel: number; row: number; effects: string[]; heard: string[]; hidden: boolean }>('window.log');
+  const log = () => page.evaluate<{ panel: number; row: number; shape: number; effects: string[]; heard: string[]; hidden: boolean }>('window.log');
   const text = (id: string) => page.locator(`#${id}`).textContent();
 
   it('does nothing for store changes or the editor drawing while hidden, and is up to date the moment it shows', async () => {
@@ -161,6 +163,23 @@ describe.skipIf(!browserInstalled)('a hidden panel (#968)', { timeout: 30_000 },
     await set({ zoom: 9 });
     expect(await text('zoom')).toBe('8');
     expect((await log()).hidden).toBe(true);
+  });
+
+  it('holds what it reads of the overlay still while hidden too, and renders nothing for a scroll that keeps its shape', async () => {
+    const box = (b: { x: number; y: number; width: number; height: number }) => page.evaluate(`so.box(${JSON.stringify(b)})`);
+    await box({ x: 0, y: 0, width: 200, height: 100 });
+    expect(await text('shape')).toBe('2');
+    const shown = (await log()).shape;
+    // The page scrolled: the box moved, its shape did not.
+    for (const y of [-40, -80, -120]) await box({ x: 0, y, width: 200, height: 100 });
+    expect((await log()).shape).toBe(shown);
+    // Hidden, a box of another shape changes nothing; shown again, the panel has it in that commit.
+    await set({ leftTab: 'pages' });
+    const hidden = await log();
+    await box({ x: 0, y: 0, width: 300, height: 100 });
+    expect([await text('shape'), (await log()).shape]).toEqual(['2', hidden.shape]);
+    await set({ leftTab: 'insert' });
+    expect(await text('shape')).toBe('3');
   });
 
   it('lets a dialog the hidden panel opens follow the store, and says whether the panel is hidden', async () => {

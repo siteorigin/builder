@@ -13,7 +13,7 @@ import { FocusEditor, type FocusImage } from './FocusEditor';
 import { BackgroundImageControl, describeBackgroundImage } from './BackgroundImageControl';
 import { DraftInput } from '../components/ui';
 import { ColorTextInput } from '../components/ColorTextInput';
-import { setState, setViewport, useStore } from '../store';
+import { selectedRatio, setState, setViewport, useOverlay, useStore } from '../store';
 import { allSizesReach, readStyleNumber, refinementShown, stateChangeCount, stateUnder, statesWithChanges, styleReached, styleUnder } from '../lib/style-source';
 import { STATE_LABEL, StatePicker } from './StatePicker';
 import { styleRowGroups, withGridChildProps } from '../lib/grid-child';
@@ -301,8 +301,8 @@ export function StyleControls({
   const chosenState = useStore((s) => s.styleState);
   const viewport = useStore((s) => s.viewport);
   const preview = sizeForWidth(viewport);
-  // The selected element's box on the canvas, for a crop no aspect ratio declares (a fixed height, say).
-  const selectedBox = useStore((s) => (image ? s.rects.selected[0] : undefined));
+  // The shape of the selected element's box on the canvas, for a crop no aspect ratio declares (a fixed height, say).
+  const boxRatio = useOverlay((s) => (image ? selectedRatio(s) : null));
   // The groups opened to show every option they hold.
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const moreId = useId();
@@ -542,7 +542,7 @@ export function StyleControls({
     // this size, which is the picture's own box only without borders or custom CSS. Otherwise it is unknown.
     const heightSet = has(size, ['height', 'maxHeight', 'minHeight', 'customCss']);
     const plainBox = !has(size, ['border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'customCss']);
-    const measured = heightSet && plainBox && size === preview && selectedBox && selectedBox.width > 0 && selectedBox.height > 0 ? selectedBox.width / selectedBox.height : null;
+    const measured = heightSet && plainBox && size === preview ? boxRatio : null;
     const ratio = declaredAt(size) ?? measured;
     const fit = fitAt(size);
     // Custom CSS is written after these properties, so it can set the crop itself.

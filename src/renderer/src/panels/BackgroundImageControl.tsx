@@ -5,7 +5,7 @@ import { isScrim } from '@shared/styles';
 import { ColorTextInput } from '../components/ColorTextInput';
 import { normalizeColorText } from '@shared/color-names';
 import { assetUrl } from '../lib/model';
-import { useStore } from '../store';
+import { selectedRatio, useOverlay, useStore } from '../store';
 import { FocusEditor } from './FocusEditor';
 import { ImageEditor } from './PropEditors';
 
@@ -69,7 +69,7 @@ export function BackgroundImageControl({
 }) {
   const state = useStore((s) => s.snapshot?.state);
   const runtime = useStore((s) => s.runtime);
-  const box = useStore((s) => s.rects.selected[0]);
+  const boxRatio = useOverlay(selectedRatio);
   const ids = { fit: useId(), scrim: useId(), scrimText: useId(), focus: useId() };
   // Custom just chosen: the field shows, seeded with the overlay there is, until a colour is saved or another is picked.
   const [drafting, setDrafting] = useState(false);
@@ -87,7 +87,7 @@ export function BackgroundImageControl({
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   const contain = shown?.size === 'contain';
   // The box the picture fills, measured on the canvas where it shows this size.
-  const ratio = previewed && box && box.width > 0 && box.height > 0 ? box.width / box.height : null;
+  const ratio = previewed ? boxRatio : null;
   const swatch = scrim && isScrim(scrim) ? ({ '--overlay': overlayLayer(scrim) } as CSSProperties) : undefined;
   // Removing this picture brings back the one under it, when there is one: the action says which.
   const backLabel = !isBackgroundImageValue(under) ? 'Remove' : underFrom === 'From All sizes' ? 'Use All sizes' : underFrom === 'From Default' ? 'Use Default' : 'Use the design';

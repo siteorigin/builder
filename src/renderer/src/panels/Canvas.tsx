@@ -14,7 +14,7 @@ import { openInsertSearch } from '../lib/insert-focus';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { aiActivity, api, commitDraft, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
+import { aiActivity, api, commitDraft, errorText, getOverlay, getState, markDraft, saveLocal, setOverlay, setState, setViewport, stepHistory, toast, useOverlay, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, sameRects, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
@@ -140,8 +140,8 @@ export function Canvas() {
   const zoomSetting = useStore((s) => s.zoom);
   const mode = useStore((s) => s.mode);
   const selection = useStore((s) => s.selection);
-  const hover = useStore((s) => s.hover);
-  const rects = useStore((s) => s.rects);
+  const hover = useOverlay((s) => s.hover);
+  const rects = useOverlay((s) => s.rects);
   const revealedItem = useStore((s) => s.revealedItem);
   const showSelection = useStore((s) => s.showSelection);
   const showMoved = useStore((s) => s.showMoved);
@@ -352,7 +352,7 @@ export function Canvas() {
   }, [hover && refKey(hover), tagHidden]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     // An open menu or Add list takes its own Escape.
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !openMenus.count && getState().hover && setTagHidden(true);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !openMenus.count && getOverlay().hover && setTagHidden(true);
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, []);
@@ -1031,14 +1031,14 @@ export function Canvas() {
           const held = heldHover.current;
           heldHover.current = false;
           hoverChain.current = chain;
-          const was = perfOn ? getState().hover : null;
+          const was = perfOn ? getOverlay().hover : null;
           resolveHover();
           if (held) syncTrack();
           // The pointer reached another element: its outline is timed from the move in the page to the frame that
           // paints it (the `canvas` scenario).
           if (perfOn) {
             perfCount('canvas.hoverReports');
-            const now = getState().hover;
+            const now = getOverlay().hover;
             if (now && !sameRef(now, was)) hoverTimed.current = { key: refKey(now), at: typeof p.at === 'number' ? p.at : NaN };
           }
           break;
@@ -1063,10 +1063,10 @@ export function Canvas() {
           // not drawn again for it (the page reports every frame while anything moves). One measured for something else
           // is drawn, even with the same boxes: two elements can share a box, and what is drawn on it (an Add button)
           // belongs to the one it was measured for.
-          const was = getState().rects;
+          const was = getOverlay().rects;
           const next = { selected: sameRects(selected, was.selected), hovered: kept ? was.hovered : sameRects(hovered, was.hovered), revealed: sameRects(rectList(p.revealed), was.revealed) };
           const remeasured = !sameMeasured(measuredBefore.selected, rectsFor.current.selected) || !sameMeasured(measuredBefore.hovered, rectsFor.current.hovered);
-          if (remeasured || next.selected !== was.selected || next.hovered !== was.hovered || next.revealed !== was.revealed) setState({ rects: next });
+          if (remeasured || next.selected !== was.selected || next.hovered !== was.hovered || next.revealed !== was.revealed) setOverlay({ rects: next });
           const slots = slotBoxes(p.slots);
           const slotsSeen = JSON.stringify(slots);
           if (slotsSeen !== slotRectsSeen.current) {
@@ -1211,7 +1211,7 @@ export function Canvas() {
         case 'key':
           // Shortcuts are taken from trusted keyboard input (see App), never from the page. Escape only hides the
           // hover name (WCAG 1.4.13), which changes nothing in the project, so the page's report of it counts.
-          if (p.key === 'Escape' && getState().hover) setTagHidden(true);
+          if (p.key === 'Escape' && getOverlay().hover) setTagHidden(true);
           break;
         case 'textFocus':
           frameTextFocus.active = p.on === true;
@@ -1383,7 +1383,7 @@ export function Canvas() {
     const st = s.snapshot?.state;
     const chain = hoverChain.current;
     const next = st && chain?.length && s.mode === 'edit' && !inlineEdit.active && !openMenus.count ? pick(chain, false, true) : null;
-    if (!sameRef(next, s.hover)) setState({ hover: next });
+    if (!sameRef(next, getOverlay().hover)) setOverlay({ hover: next });
     // The same node of a component, now under the pointer in another of its placements.
     else if (next && hoverPlacement.current !== shownHover.current) syncTrack();
     shownHover.current = hoverPlacement.current;
@@ -1399,8 +1399,8 @@ export function Canvas() {
       if (!hoverChain.current) return;
       heldHover.current = false;
       hoverChain.current = null;
-      const s = getState();
-      if (s.hover && sameRef(s.hover, canvasHover.current)) setState({ hover: null });
+      const was = getOverlay().hover;
+      if (was && sameRef(was, canvasHover.current)) setOverlay({ hover: null });
       canvasHover.current = null;
     };
     window.addEventListener('pointermove', leave, true);
@@ -1420,8 +1420,8 @@ export function Canvas() {
     if (!heldHover.current) return;
     heldHover.current = false;
     hoverChain.current = null;
-    const s = getState();
-    if (s.hover && sameRef(s.hover, canvasHover.current)) setState({ hover: null });
+    const was = getOverlay().hover;
+    if (was && sameRef(was, canvasHover.current)) setOverlay({ hover: null });
     canvasHover.current = null;
   }
 
@@ -1430,7 +1430,7 @@ export function Canvas() {
     const st = s.snapshot?.state;
     if (!st) return;
     // With timing marks on, the page times its measuring too (the `canvas` scenario).
-    post('track', { selected: descFor(s.selection), hovered: descFor(s.hover, hoverPlacement.current), slots: trackedSlots(), ...(perfOn ? { timed: true } : {}) });
+    post('track', { selected: descFor(s.selection), hovered: descFor(getOverlay().hover, hoverPlacement.current), slots: trackedSlots(), ...(perfOn ? { timed: true } : {}) });
   }
 
   /** The empty slots of the selected placement whose Add buttons are drawn on their own boxes (#657), for the page to
@@ -1469,9 +1469,9 @@ export function Canvas() {
   useLayoutEffect(() => {
     const timed = hoverTimed.current;
     if (!perfOn || !timed) return;
-    const s = getState();
-    if (!s.hover || refKey(s.hover) !== timed.key) return void (hoverTimed.current = null);
-    const want = descFor(s.hover, hoverPlacement.current);
+    const now = getOverlay().hover;
+    if (!now || refKey(now) !== timed.key) return void (hoverTimed.current = null);
+    const want = descFor(now, hoverPlacement.current);
     const got = rectsFor.current.hovered;
     if (!want || !got || got.ctx !== want.ctx || got.node !== want.node || (got.items || '') !== (want.items || '') || (got.part || '') !== (want.part || '') || got.slot !== want.slot) return;
     if (!wrapRef.current?.querySelector('.ov-hover')) return;

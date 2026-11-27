@@ -7,7 +7,7 @@ import { refKey, sameRef, slotChildren, slotFallback } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
-import { aiActivity, api, applyOps, commitDraft, getState, markDraft, selectSlot, setState, showLayer, toast, useStore } from '../store';
+import { aiActivity, api, applyOps, commitDraft, getState, markDraft, selectSlot, setOverlay, setState, showLayer, toast, useStore } from '../store';
 import { MenuTriggers, rovingKeys, Segmented, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { openInsertSearch } from '../lib/insert-focus';
@@ -1294,8 +1294,8 @@ function LayerRowBody({ state, owner, tree, id, depth, onMenu, path, parentId, i
           showLayer(freshRef());
         }}
         onDoubleClick={(e) => !e.shiftKey && !additive(e) && startRename()}
-        onMouseEnter={() => setState({ hover: ref })}
-        onMouseLeave={() => setState({ hover: null })}
+        onMouseEnter={() => setOverlay({ hover: ref })}
+        onMouseLeave={() => setOverlay({ hover: null })}
         onContextMenu={(e) => {
           e.preventDefault();
           onMenu({ x: e.clientX, y: e.clientY, returnTo: e.currentTarget }, ref, true, startRename);
@@ -1542,8 +1542,8 @@ function LayerRowBody({ state, owner, tree, id, depth, onMenu, path, parentId, i
                   e.preventDefault();
                   onMenu({ x: e.clientX, y: e.clientY, returnTo: e.currentTarget }, pref, false);
                 }}
-                onMouseEnter={() => setState({ hover: pref })}
-                onMouseLeave={() => setState({ hover: null })}
+                onMouseEnter={() => setOverlay({ hover: pref })}
+                onMouseLeave={() => setOverlay({ hover: null })}
               >
                 <span className="tree-spacer" />
                 <span className="layer-kind part">{partNode ? kindIcon(partNode) : GLYPH.other}</span>
