@@ -43,7 +43,7 @@ const ENTRY = [
   '  }));',
   "  flushSync(() => createRoot(document.getElementById('root')).render(h(Chat)));",
   '};',
-  'window.so = { modal: () => useStore.getState().modal, provider: () => useStore.getState().settings.ai.provider, toasts: () => useStore.getState().toasts.map((t) => t.text) };'
+  'window.so = { modal: () => useStore.getState().modal, provider: () => useStore.getState().settings.ai.provider, toasts: () => useStore.getState().toasts.map((t) => t.text), providers: (list) => { window.bridge.providers = list; useStore.setState({ providers: list }); } };'
 ].join('\n');
 
 /**
@@ -179,6 +179,14 @@ describe.skipIf(!browserInstalled)('the composer’s model menu (#954)', { timeo
     // The next message names what main would send it to, so it is not refused as moved.
     await modelButton('Claude A, Anthropic').waitFor();
     expect(await page.evaluate('so.provider()')).toBe('anthropic');
+  });
+
+  it('lists the local models once Local model becomes set up while the menu is open', async () => {
+    await mount([hosted('openai', true), local(false)], 'openai');
+    await modelButton('GPT A, OpenAI').click();
+    await page.getByRole('menuitem', { name: 'Set up for Local model', exact: true }).waitFor();
+    await page.evaluate((list) => (globalThis as unknown as { so: { providers(l: unknown): void } }).so.providers(list), [hosted('openai', true), local(true)]);
+    await page.getByRole('menuitemradio', { name: 'first-model, Local model', exact: true }).waitFor();
   });
 
   it('opens from the keyboard like the composer’s other menus', async () => {

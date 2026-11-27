@@ -1469,8 +1469,10 @@ export async function saveSettings(patch: SettingsPatch): Promise<AppSettings> {
     setState({ settings });
     return settings;
   } catch (e) {
+    // Only the provider and model are taken from it, which the composer names to main; the rest shows what is saved.
     const held = await api.app.getSettings().catch(() => null);
-    if (held) setState({ settings: held });
+    const shown = getState().settings;
+    if (held && shown) setState({ settings: { ...shown, ai: { ...shown.ai, provider: held.ai.provider, models: held.ai.models } } });
     throw e;
   } finally {
     setState({ settingsSaving: getState().settingsSaving - 1 });

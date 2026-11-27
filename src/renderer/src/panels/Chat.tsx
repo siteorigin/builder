@@ -897,7 +897,10 @@ export function Chat() {
     try {
       const saved = await saveSettings(row.patch);
       // The composer's own answer from the server may be older than the list just shown: the next message names this one.
-      if (first && row.provider === 'local' && row.id === null) setServerModel({ baseURL: saved.ai.local.baseURL, id: first });
+      if (first && row.provider === 'local' && row.id === null) {
+        probeSeq.current++;
+        setServerModel({ baseURL: saved.ai.local.baseURL, id: first });
+      }
     } catch (e) {
       toast(`The model could not be changed: ${e instanceof Error ? e.message : 'try again'}.`, 'error');
     }
@@ -1089,6 +1092,12 @@ export function Chat() {
       if (!saved) {
         setSending(false);
         return (toast('Part of the post is not saved yet, so the AI would not see it. See the note above its text.', 'error'), false);
+      }
+      // The provider or model may have been changed while the post was saved: this message names the one before.
+      const now = getState();
+      if (now.settingsSaving || now.settings?.ai.provider !== settings?.ai.provider || (next && now.settings?.ai.models[next.provider] !== settings?.ai.models[next.provider])) {
+        setSending(false);
+        return (toast('The AI model changed while your message waited. Check the model under the box and send again.', 'info'), false);
       }
     }
     // Sent for the model the composer names now: if Settings or the local server would send it elsewhere by the time it

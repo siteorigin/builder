@@ -72,8 +72,11 @@ describe('the composer’s model menu (#954)', () => {
   it('offers no model from a list another server gave, once the saved server has changed', () => {
     const rows = modelPickerRows([status('local', true)], { ...ai('openai'), local: { baseURL: 'http://127.0.0.1:5678/v1' } }, { state: 'listed', ok: true, models: ['first-model'], server: 'http://127.0.0.1:1234/v1' });
     expect(shape(rows)).toEqual(['# Local model', 'local (Asking your local server for its models…)']);
-    const same = modelPickerRows([status('local', true)], { ...ai('openai'), local: { baseURL: 'http://127.0.0.1:1234/v1/' } }, { state: 'listed', ok: true, models: ['first-model'], server: 'http://127.0.0.1:1234/v1' });
-    expect(shape(same)).toEqual(['# Local model', '  local:auto Automatic', '  local:first-model first-model']);
+    // The same server written another way is the same server.
+    for (const [saved, listed] of [['http://127.0.0.1:1234/v1/', 'http://127.0.0.1:1234/v1'], ['http://127.0.0.1:1234/v1', 'http://127.0.0.1:1234/v1/']]) {
+      const same = modelPickerRows([status('local', true)], { ...ai('openai'), local: { baseURL: saved } }, { state: 'listed', ok: true, models: ['first-model'], server: listed });
+      expect(shape(same)).toEqual(['# Local model', '  local:auto Automatic', '  local:first-model first-model']);
+    }
   });
 
   it('keeps a chosen local model the server no longer lists, so the tick is not lost', () => {
