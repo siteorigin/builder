@@ -5,7 +5,7 @@ import type { InspectLayoutOptions } from '@shared/api';
 import { attributeFindings, failedImages, missingImages, missingSections, staleImages } from './inspect-check';
 import { descOf } from './model';
 import { MEASURING_SESSION_PREFIX, measuringFrameStyle } from './measuring-frame';
-import { perfMark, perfOn } from './perf';
+import { perfMark, perfOn, picturesOf } from './perf';
 
 /** How long a page check waits for the editor to show the revision it is about (it arrives before the request). */
 const SHOWN_WAIT_MS = 2000;
@@ -46,6 +46,7 @@ export async function runInspection(req: InspectRequest) {
     // The section and image address lists are only for these checks; they are not evidence for the AI.
     delete (report as { sections?: unknown }).sections;
     delete (report as { settled?: unknown }).settled;
+    delete (report as { pictures?: unknown }).pictures;
     delete (report as { images?: { sources?: unknown } }).images?.sources;
     // Each finding names the element to change as operations address it, against the project measured.
     attributeFindings(state(), report);
@@ -70,11 +71,12 @@ async function measure(req: InspectRequest, attempt: number): Promise<unknown> {
       window.removeEventListener('message', onMsg);
       clearTimeout(timer);
       frame.remove();
-      // How long the page waited for its images, fonts and a frame before it was measured (scripts/perf).
+      // How long the page waited for its images, fonts and a frame before it was measured, and the pictures it held
+      // then (scripts/perf).
       if (perfOn) {
         const waited = (report as { settled?: Record<string, unknown> } | null)?.settled;
         const ms = (k: string) => (typeof waited?.[k] === 'number' ? (waited[k] as number) : null);
-        perfMark('inspect.done', { req: req.requestId, attempt, images: ms('images'), fonts: ms('fonts'), frame: ms('frame') });
+        perfMark('inspect.done', { req: req.requestId, attempt, images: ms('images'), fonts: ms('fonts'), frame: ms('frame'), ...picturesOf(report) });
       }
       resolve(report);
     };
@@ -277,11 +279,17 @@ export function componentFrame(): ComponentFrame {
     const measured = await next(
       (m) => m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === requestId,
       PREVIEW_MEASURE_MS,
-      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, width, animations: true, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}) }, view)
+      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, width, animations: true, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}), ...(perfOn ? { timing: true } : {}) }, view)
     );
     if (disposed) return fail('The component preview was closed.');
     if (!measured) return fail('Timed out measuring the component preview.');
     const report = (measured.payload as { report?: { preview?: PreviewState } }).report;
+    // The pictures the preview held when it was measured (scripts/perf), kept out of the result as marks are.
+    if (perfOn && report && typeof report === 'object') {
+      perfMark('componentPreview.measured', { width, ...picturesOf(report) });
+      delete (report as { settled?: unknown }).settled;
+      delete (report as { pictures?: unknown }).pictures;
+    }
     const state = report?.preview;
     if (!state?.mounted) return fail('The component could not be shown.');
     return { state: 'ready', width, definitionId, bounds: state.bounds ?? null, text: typeof state.text === 'string' ? state.text : '', report };

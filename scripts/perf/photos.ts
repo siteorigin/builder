@@ -139,3 +139,63 @@ export async function scenarioHeicPhotos(): Promise<{ dir: string; files: string
   for (const name of names) hash.update(name).update('\0').update(readFileSync(join(dir, name))).update('\0');
   return { dir, files: names.map((n) => join(dir, n)), hash: hash.digest('hex').slice(0, 16) };
 }
+
+/**
+ * The `previewImages` scenario's gallery (#1037): 20 photographs as an import stores them, each a web-sized copy of a
+ * 12-megapixel photo (2560 × 1920, a JPEG at the quality the app writes) with the responsive copies the media worker
+ * makes of it (src/main/project/image-variants.ts renderVariants: JPEG at each smaller width, WebP at those and its
+ * full width, AVIF the same when smaller), named as the library names them. Drawn as the import's photos are, from
+ * seeds of their own. Made once per machine, keyed by this recipe, the encoder's version and the copies' rule, under
+ * `.tmp/perf/photos/`.
+ */
+export const GALLERY_COUNT = 20;
+export const GALLERY_WIDTH = 2560;
+export const GALLERY_HEIGHT = 1920;
+const GALLERY_RECIPE = 1;
+
+/** One gallery photo: its file in the project and the copies beside it, each as the library records them. */
+export interface GalleryPhoto {
+  name: string;
+  file: string;
+  width: number;
+  height: number;
+  variants: Array<{ width: number; file: string }>;
+}
+
+/** The gallery's photos, and the folder holding their files under the names they take in a project's `static/assets/`. */
+export async function galleryPhotos(): Promise<{ dir: string; photos: GalleryPhoto[]; hash: string }> {
+  const sharp = (await import('sharp')).default;
+  const { renderVariants, VARIANT_WIDTHS } = await import('../../src/main/project/image-variants');
+  const { COPY_EXTENSIONS } = await import('../../src/shared/picture-formats');
+  const key = createHash('sha256').update(`gallery:${GALLERY_RECIPE}:${GALLERY_COUNT}:${GALLERY_WIDTH}x${GALLERY_HEIGHT}:${VARIANT_WIDTHS.join(',')}:${sharp.versions.vips}:${sharp.versions.sharp ?? ''}`).digest('hex').slice(0, 12);
+  const dir = join(ROOT, '.tmp', 'perf', 'photos', `${key}-gallery`);
+  const manifest = join(dir, 'gallery.json');
+  if (!existsSync(manifest)) {
+    const part = `${dir}.part-${process.pid}`;
+    rmSync(part, { recursive: true, force: true });
+    mkdirSync(part, { recursive: true });
+    const photos: GalleryPhoto[] = [];
+    for (let i = 1; i <= GALLERY_COUNT; i++) {
+      const data = await sharp(draw(100 + i, GALLERY_WIDTH, GALLERY_HEIGHT), { raw: { width: GALLERY_WIDTH, height: GALLERY_HEIGHT, channels: 3 } })
+        .jpeg({ quality: 82 })
+        .toBuffer();
+      // As planStore names a stored picture and its copies (src/main/project/assets.ts).
+      const stem = `gallery-${String(i).padStart(2, '0')}-${createHash('sha256').update(data).digest('hex').slice(0, 8)}`;
+      writeFileSync(join(part, `${stem}.jpg`), data);
+      const variants: GalleryPhoto['variants'] = [];
+      for (const v of await renderVariants(data, 'image/jpeg', GALLERY_WIDTH)) {
+        const name = `${stem}-${v.width}w.${COPY_EXTENSIONS[v.mime]}`;
+        writeFileSync(join(part, name), v.data);
+        variants.push({ width: v.width, file: `static/assets/${name}` });
+      }
+      photos.push({ name: `Gallery photo ${String(i).padStart(2, '0')}`, file: `static/assets/${stem}.jpg`, width: GALLERY_WIDTH, height: GALLERY_HEIGHT, variants });
+    }
+    writeFileSync(join(part, 'gallery.json'), JSON.stringify(photos, null, 2) + '\n');
+    rmSync(dir, { recursive: true, force: true });
+    renameSync(part, dir);
+  }
+  const photos = JSON.parse(readFileSync(manifest, 'utf8')) as GalleryPhoto[];
+  const hash = createHash('sha256');
+  for (const p of photos) for (const f of [p.file, ...p.variants.map((v) => v.file)]) hash.update(f).update('\0').update(readFileSync(join(dir, f.replace(/^static\/assets\//, '')))).update('\0');
+  return { dir, photos, hash: hash.digest('hex').slice(0, 16) };
+}
