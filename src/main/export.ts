@@ -160,7 +160,7 @@ export async function copyTree(src: string, dest: string, kept: (p: string, e: E
 }
 
 /** What copyTree's `kept` is told of an entry: its type, as listed or as it is when it is copied. */
-type EntryType = Pick<Dirent, 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
+export type EntryType = Pick<Dirent, 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
 
 /** A folder already at `path` that a copy merges into: a real folder, never a link that would lead the copy elsewhere. */
 async function existingFolder(path: string) {
@@ -168,7 +168,7 @@ async function existingFolder(path: string) {
 }
 
 /** A copy of a file as a new file at `to` (cloned where the disk can), replacing one there rather than writing through it, as fs.cp does. */
-async function copyFresh(from: string, to: string) {
+export async function copyFresh(from: string, to: string) {
   await fs.copyFile(from, to, fsConstants.COPYFILE_FICLONE | fsConstants.COPYFILE_EXCL).catch(async (e: NodeJS.ErrnoException) => {
     if (e.code !== 'EEXIST') throw e;
     await fs.unlink(to);
@@ -973,7 +973,7 @@ export async function projectFingerprint(dir: string): Promise<string> {
  * `fn` over every item, a few at a time: enough to overlap the disk's waits, never so many open files that one fails
  * to open. Results in the items' order.
  */
-async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R>, size = 16): Promise<R[]> {
+export async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R>, size = 16): Promise<R[]> {
   const out: R[] = [];
   for (let i = 0; i < items.length; i += size) {
     // Every one of a batch is done before a failure among them is thrown: nothing is still running once it is.
