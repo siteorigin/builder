@@ -32,6 +32,7 @@ import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries, templateOwner } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 import { editLabel, fieldLabel, placeWords, subjectWords } from './edit-label';
+import { listEditLabel } from './list-editor';
 import { heldContent, removalKey, type HeldContent } from './delete-content';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { draftFor, imagesFor, withDraft } from './chatDrafts';
@@ -1055,14 +1056,19 @@ export function showsCodeText(snapshot: ProjectSnapshot, t: CodeTextTarget, show
  */
 export async function commitCodeText(t: CodeTextTarget, text: string | RichText, snapshot = getState().snapshot): Promise<'restore' | void> {
   if (!snapshot) return;
-  if (!codeTextIn(snapshot, t)) return 'restore';
+  // Still text the page can be typed into, as the edit began and as the project is now: a list connected to a
+  // collection meanwhile (which keeps its stored items) shows the collection's entries instead.
+  const now = getState().snapshot;
+  if (!codeTextIn(snapshot, t) || (now && now !== snapshot && !codeTextIn(now, t))) return 'restore';
   const current = codeTextShown(snapshot.state, t);
   if (sameValue(current, text)) return 'restore';
   if (typeof text === 'string' && !text.trim() && codeTextFollowsPage(snapshot.state, t)) {
     toast('This card shows its page’s text while it has none of its own. Type different text to show it here instead.', 'info');
     return 'restore';
   }
-  const label = fieldLabel(snapshot.state, t.label, { owner: t.owner, instancePath: [], nodeId: t.nodeId });
+  // Named as the inspector names the same change: a list item's field by its item and list.
+  const placement = { owner: t.owner, instancePath: [], nodeId: t.nodeId };
+  const label = t.field === undefined ? fieldLabel(snapshot.state, t.label, placement) : listEditLabel(snapshot.state, t.owner, t.nodeId, t.prop, { kind: 'field', itemId: t.itemId!, field: t.field }, fieldLabel(snapshot.state, t.label, placement));
   const op: EditOperation = t.field === undefined ? { type: 'instance.setProp', owner: t.owner, nodeId: t.nodeId, prop: t.prop, value: text } : { type: 'instance.setProp', owner: t.owner, nodeId: t.nodeId, prop: t.prop, itemId: t.itemId, field: t.field, value: text };
   if (!(await applyOps([op], label))) return 'restore';
 }

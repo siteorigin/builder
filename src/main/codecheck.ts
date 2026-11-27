@@ -822,12 +822,14 @@ function textMarkerProblems(ast: Node, locals: ReturnType<typeof propsLocals>, p
   const out: Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> = [];
   const hook = locals.get(CODE_TEXT_HOOK);
   const example = `${CODE_TEXT_ATTR}={${hook?.local ?? CODE_TEXT_HOOK}?.('heading')}`;
+  // The hook's calls that mark text, which are the only places its name may appear.
+  const calls = new Set<Node>();
   if (hook?.defaulted) out.push({ severity: 'error', message: `Give ${CODE_TEXT_HOOK} no default (let { ${CODE_TEXT_HOOK} } = $props()): the published site is given none, so its text carries no marker.` });
   walkAst(ast.fragment, (n) => {
     const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' ? (((n.expression as Node).properties as Node[]) ?? []) : [];
     const keyOf = (k: Node | undefined) => (k?.type === 'Identifier' ? k.name : k?.type === 'Literal' ? k.value : null);
-    if (spread.some((p) => p.type === 'Property' && keyOf(p.key as Node) === CODE_TEXT_ATTR)) out.push({ severity: 'error', message: `Write ${CODE_TEXT_ATTR} as an attribute of its own (${example}), not in a spread.`, node: n });
-    if (n.type !== 'Attribute' || n.name !== CODE_TEXT_ATTR) return;
+    if (spread.some((p) => p.type === 'Property' && String(keyOf(p.key as Node)).toLowerCase() === CODE_TEXT_ATTR)) out.push({ severity: 'error', message: `Write ${CODE_TEXT_ATTR} as an attribute of its own (${example}), not in a spread.`, node: n });
+    if (n.type !== 'Attribute' || String(n.name).toLowerCase() !== CODE_TEXT_ATTR) return;
     const values = n.value === true ? [] : Array.isArray(n.value) ? (n.value as Node[]) : [n.value as Node];
     let call = values.length === 1 && values[0].type === 'ExpressionTag' ? (values[0].expression as Node) : undefined;
     let optional = false;
@@ -836,6 +838,7 @@ function textMarkerProblems(ast: Node, locals: ReturnType<typeof propsLocals>, p
       optional = true;
     }
     const callee = call?.type === 'CallExpression' ? (call.callee as Node) : undefined;
+    if (hook && callee?.type === 'Identifier' && callee.name === hook.local) calls.add(callee);
     if (!hook || callee?.type !== 'Identifier' || callee.name !== hook.local) {
       out.push({ severity: 'error', message: `Mark text through the placement's hook (${example}, with ${CODE_TEXT_HOOK} taken from $props()): any other value would be written into the published site.`, node: n });
       return;
@@ -845,13 +848,14 @@ function textMarkerProblems(ast: Node, locals: ReturnType<typeof propsLocals>, p
       return;
     }
     const args = (call!.arguments as Node[]) ?? [];
-    const written = literalText(args[0]);
+    const written = args.some((a) => a.type === 'SpreadElement') ? null : literalText(args[0]);
     const path = written === null ? null : parseCodeTextPath(written);
     if (path === null) {
       out.push({ severity: 'error', message: written === null ? `Name the text marked with its property written out (${example}): the editor cannot tell which property an expression names.` : `“${written}” is not a property (“heading”) or a list's field (“features.title”).`, node: n });
       return;
     }
-    if (path.field !== undefined && args.length !== 2) {
+    const none = (a: Node | undefined) => (a?.type === 'Literal' && a.value === null) || (a?.type === 'Identifier' && a.name === 'undefined');
+    if (path.field !== undefined && (args.length !== 2 || none(args[1]))) {
       out.push({ severity: 'error', message: `Give the item's ID with a list's field (${hook.local}?.('${written}', item.id)), so the editor knows which item the text is.`, node: n });
       return;
     }
@@ -863,6 +867,25 @@ function textMarkerProblems(ast: Node, locals: ReturnType<typeof propsLocals>, p
     const field = codeTextField(properties, path);
     if ('problem' in field) out.push({ severity: 'error', message: `${field.problem} Mark only text the component declares.`, node: n });
   });
+  // The hook is the preview's, given to this placement alone: passed on to another component, read or replaced
+  // anywhere but the call that marks text, it could write a marker into the published site, or have a component the
+  // code places name this one's properties. A component the code places is never handed one under its name either.
+  walkAst(ast.fragment, (n, around) => {
+    const host = around[around.length - 1];
+    if (n.type === 'Attribute' && n.name === CODE_TEXT_HOOK && /^(Component|SvelteComponent|SvelteSelf)$/.test(String(host?.type)))
+      out.push({ severity: 'error', message: `${CODE_TEXT_HOOK} is the editor's hook for this component's own text: don't give it to a component the code places.`, node: n });
+  });
+  if (hook) {
+    const props = (a: Node) => a.type === 'VariableDeclarator' && ((a.init as Node | null)?.callee as Node | undefined)?.type === 'Identifier' && ((a.init as Node).callee as Node).name === '$props';
+    for (const root of [ast.instance, ast.fragment])
+      walkAst(root, (n, around) => {
+        if (n.type !== 'Identifier' || n.name !== hook.local || calls.has(n) || around.some(props)) return;
+        const parent = around[around.length - 1];
+        // A property of something else (`item.so_text`, `{ so_text: 1 }`) only shares the name.
+        if ((parent?.type === 'MemberExpression' && parent.property === n && !parent.computed) || (parent?.type === 'Property' && parent.key === n && !parent.computed && parent.value !== n)) return;
+        out.push({ severity: 'error', message: `Use ${hook.local} only to mark text (${example}): anywhere else it could write a marker into the published site.`, node: n });
+      });
+  }
   return out;
 }
 

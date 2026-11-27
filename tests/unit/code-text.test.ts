@@ -19,7 +19,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generateProject } from '@generator/index';
 import { parseCodeText } from '@shared/code-text';
-import { checkSvelteSource } from '../../src/main/codecheck';
+import { checkSvelteSource, withoutPartMarkers } from '../../src/main/codecheck';
 import { ProjectSession } from '../../src/main/project/session';
 import { codeTextShown, codeTextTarget, type CodeTextTarget } from '../../src/renderer/src/lib/model';
 
@@ -173,7 +173,20 @@ describe('the editor names the text a marked element shows', () => {
   it('reads a marker’s value as the preview writes it, an item ID with any character in it included', () => {
     expect(parseCodeText('heading')).toEqual({ prop: 'heading' });
     expect(parseCodeText('features.title#a#b c')).toEqual({ prop: 'features', field: 'title', itemId: 'a#b c' });
-    for (const bad of ['', '#x', 'features.title#', 'a.b.c#x', 'bad-name', 'heading#x']) expect(parseCodeText(bad), bad).toBeNull();
+    // A theme's property may hold underscores.
+    expect(parseCodeText('hero_title')).toEqual({ prop: 'hero_title' });
+    for (const bad of ['', '#x', 'features.title#', 'a.b.c#x', 'bad-name', 'heading#x', 'features.bad-name#x', '_x']) expect(parseCodeText(bad), bad).toBeNull();
+  });
+});
+
+describe('the website’s build takes text markers out of the code too', () => {
+  it('cuts each one, written out or through the hook, and leaves words that only mention one', async () => {
+    const clean = await withoutPartMarkers(SOURCE.replace(`data-so-text={so_text?.('heading')}`, 'data-so-text="heading"'));
+    expect(clean).not.toContain('data-so-text');
+    expect(clean).toContain('<h2 class="services__heading">{heading}</h2>');
+    expect(clean).toContain('<SoRichText value={body} />');
+    const said = '<p>Mark text with data-so-text.</p>\n';
+    expect(await withoutPartMarkers(said)).toBe(said);
   });
 });
 
@@ -193,7 +206,21 @@ describe('the code check holds text markers to the hook and to the component’s
     expect(await errors(SOURCE.replace(', so_text }', ' }'))).toEqual(expect.arrayContaining([expect.stringContaining('so_text taken from $props()')]));
     expect(await errors(SOURCE.replace(', so_text }', ', so_text = (p) => p }'))).toEqual([expect.stringContaining('Give so_text no default')]);
     expect(await errors(mark(`data-so-text={so_text('heading')}`))).toEqual([expect.stringContaining('Call so_text with ?.')]);
-    expect(await errors(mark(`{...{ 'data-so-text': so_text?.('heading') }}`))).toEqual([expect.stringContaining('attribute of its own')]);
+    expect(await errors(mark(`{...{ 'data-so-text': so_text?.('heading') }}`))).toEqual(expect.arrayContaining([expect.stringContaining('attribute of its own')]));
+    expect(await errors(mark('DATA-SO-TEXT="heading"'))).toEqual([expect.stringContaining('published site')]);
+  });
+
+  it('follows the hook under another name, and refuses it anywhere but the call that marks text', async () => {
+    const aliased = SOURCE.replace(', so_text }', ', so_text: mark }').replaceAll('so_text?.(', 'mark?.(');
+    expect(await errors(aliased)).toEqual([]);
+    expect(await errors(aliased.replace(`mark?.('heading')`, `mark('heading')`))).toEqual([expect.stringContaining('Call mark with ?.')]);
+    // Handed to a component the code places, or reused, it could write a marker into the published site.
+    const placed = SOURCE.replace('</section>', '\t<SoRichText value={body} so_text={so_text} />\n</section>');
+    expect(await errors(placed)).toEqual(expect.arrayContaining([expect.stringContaining("don't give it to a component"), expect.stringContaining('Use so_text only to mark text')]));
+    expect(await errors(SOURCE.replace('</section>', '\t<SoRichText value={body} so_text={(p) => p} />\n</section>'))).toEqual([expect.stringContaining("don't give it to a component")]);
+    expect(await errors(SOURCE.replace('</script>', '\tso_text ??= (p) => p;\n</script>'))).toEqual([expect.stringContaining('Use so_text only to mark text')]);
+    // Only the name is shared by a property of something else.
+    expect(await errors(SOURCE.replace('</script>', '\tconst note = { so_text: 1 };\n\tconst other = note.so_text;\n</script>'))).toEqual([]);
   });
 
   it('names a marker naming no text property or field, with or without its item, or not written out', async () => {
@@ -204,6 +231,7 @@ describe('the code check holds text markers to the hook and to the component’s
     expect(await errors(mark(`data-so-text={so_text?.('heading.title', 'x')}`))).toEqual([expect.stringContaining('“heading” is not a list')]);
     expect(await errors(SOURCE.replace(`so_text?.('features.title', feature.id)`, `so_text?.('features.title')`))).toEqual([expect.stringContaining("item's ID")]);
     expect(await errors(mark(`data-so-text={so_text?.('heading', 'x')}`))).toEqual([expect.stringContaining('without an item')]);
+    for (const extra of [`feature.id, 2`, `null`, `undefined`]) expect(await errors(SOURCE.replace(`so_text?.('features.title', feature.id)`, `so_text?.('features.title', ${extra})`)), extra).toEqual([expect.stringContaining("item's ID")]);
     expect(await errors(mark(`data-so-text={so_text?.(which)}`))).toEqual([expect.stringContaining('written out')]);
     // Without the component's properties, only how each marker is written is checked.
     expect(await errors(mark(`data-so-text={so_text?.('subtitle')}`), false)).toEqual([]);
@@ -230,7 +258,7 @@ const bridge = {
 // does not follow, with just the shapes this test uses.
 const load = (path: string) => import(/* @vite-ignore */ path);
 let actions: {
-  commitCodeText: (t: CodeTextTarget, text: string | RichText) => Promise<'restore' | void>;
+  commitCodeText: (t: CodeTextTarget, text: string | RichText, snapshot?: ProjectSnapshot) => Promise<'restore' | void>;
   canInlineEditCode: (t: CodeTextTarget | null) => boolean;
   showsCodeText: (snapshot: ProjectSnapshot, t: CodeTextTarget, shown: string) => boolean;
 };
@@ -278,13 +306,13 @@ describe('typing over a code component’s marked text', () => {
     expect(entries().at(-1)!.label).toBe('Edit Heading in Services on Home');
 
     await actions.commitCodeText(target(`features.title#${ids[1]}`), 'Making');
+    expect(entries().at(-1)!.label).toBe('Edit Title of “Building” in Features (Services on Home)');
     const items = props().features as Array<Record<string, unknown>>;
     expect(items.map((it) => [it.id, it.title])).toEqual([
       [ids[0], 'Planning'],
       [ids[1], 'Making']
     ]);
     expect(items[1].count).toBe(2);
-    expect(entries().at(-1)!.label).toBe('Edit Title in Services on Home');
     expect(entries().length).toBe(before + 2);
 
     // One Undo takes back the title alone; the next one the heading.
@@ -317,5 +345,17 @@ describe('typing over a code component’s marked text', () => {
     expect(await actions.commitCodeText(t, 'Making')).toBe('restore');
     expect(entries().length).toBe(before);
     expect((props().features as unknown[]).length).toBe(1);
+  });
+
+  it('writes nothing to a list connected to a collection after the edit began', async () => {
+    const t = target(`features.title#${ids[1]}`);
+    const began = { state: session.state, revision: session.revision } as unknown as ProjectSnapshot;
+    // Connected meanwhile (in another window, say): the list keeps its stored items but shows the collection's.
+    const connected = structuredClone(session.state);
+    (connected.pages[owner.id].nodes[node] as InstanceNode).listSources = { features: { collection: 'posts' } } as never;
+    setState({ snapshot: { state: connected, revision: session.revision + 1, history: session.historyInfo(), workspaceKey: opening, aiBusy: false, dir: 'project' } as unknown as ProjectSnapshot });
+    const before = entries().length;
+    expect(await actions.commitCodeText(t, 'Making', began)).toBe('restore');
+    expect(entries().length).toBe(before);
   });
 });

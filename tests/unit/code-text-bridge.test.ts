@@ -23,6 +23,9 @@ const FRAME = `<!doctype html><html><head><style>body{margin:0;font:16px/1.4 san
     <div id="body" class="so-rich" data-so-text="body"><p>What we do best.</p></div>
     <ul><li><h3 id="t1" data-so-text="features.title#a">Planning</h3></li><li><h3 id="t2" data-so-text="features.title#b">Building</h3></li></ul>
     <p id="dup1" data-so-text="tagline">Same words</p><p id="dup2" data-so-text="tagline">Same words</p>
+    <div id="lead" data-so-text="lead">Lead words <a data-so-ctx="page:p" data-so-node="btn2">Go</a></div>
+    <div id="outer" data-so-text="outer">Outer <span data-so-text="inner">inner</span></div>
+    <svg width="120" height="20"><text id="svgt" data-so-text="caption" x="0" y="15">Caption</text></svg>
     <div class="extras"><a id="btn" data-so-ctx="page:p" data-so-node="btn"><span id="stray" data-so-text="heading">Book a call</span></a></div>
   </section>
 </div>
@@ -102,6 +105,17 @@ describe.skipIf(!browserInstalled)('marked text of a code component in the previ
     await post('beginTextEdit', { desc: desc('heading'), editId: 'r2', rich: true });
     await expect.poll(() => lastOf('textCancel')).toEqual({ desc: desc('heading'), editId: 'r2' });
     expect(await editable('h')).toBeNull();
+    await post('beginTextEdit', { desc: desc('body'), editId: 'r3', rich: false });
+    await expect.poll(() => lastOf('textCancel')).toEqual({ desc: desc('body'), editId: 'r3' });
+    expect(await editable('body')).toBeNull();
+  });
+
+  it('refuses marked text that holds the editor’s own content or other marked text, or is not HTML', async () => {
+    for (const [bind, id] of [['lead', 'lead'], ['outer', 'outer'], ['caption', 'svgt']]) {
+      await post('beginTextEdit', { desc: desc(bind), editId: `c-${bind}`, rich: false });
+      await expect.poll(() => lastOf('textCancel'), bind).toEqual({ desc: desc(bind), editId: `c-${bind}` });
+      expect(await editable(id), bind).toBeNull();
+    }
   });
 
   it('hands back an edit of a row the page reused for another item as text the update took away', async () => {
@@ -110,7 +124,20 @@ describe.skipIf(!browserInstalled)('marked text of a code component in the previ
     await page.keyboard.type(' ahead');
     // A list shown without keys gives the row to the next item: its marker and words change in place.
     await frame.evaluate(`(() => { const el = document.getElementById('t1'); el.setAttribute('data-so-text', 'features.title#c'); el.firstChild.nodeValue = 'Launch'; })()`);
-    await expect.poll(() => lastOf('textCommit')).toMatchObject({ desc: desc('features.title#a'), editId: 'u1', detached: true, before: 'Planning' });
+    // What was typed goes back, never the other item's words the page wrote over it, and nothing is put back there.
+    await expect.poll(() => lastOf('textCommit')).toEqual({ desc: desc('features.title#a'), editId: 'u1', text: 'Planning ahead', detached: true, before: 'Planning' });
     expect(await editable('t1')).toBeNull();
+    expect(await frame.evaluate(`document.getElementById('t1').textContent`)).toBe('Launch');
+  });
+
+  it('ends an edit whose row only changed item, with the same words', async () => {
+    await post('beginTextEdit', { desc: desc('features.title#b'), editId: 'u2', rich: false });
+    await expect.poll(() => editable('t2')).toBe('plaintext-only');
+    await page.keyboard.press('End');
+    await page.keyboard.type(' more');
+    await frame.evaluate(`document.getElementById('t2').setAttribute('data-so-text', 'features.title#d')`);
+    await expect.poll(() => lastOf('textCommit')).toMatchObject({ desc: desc('features.title#b'), editId: 'u2', detached: true, before: 'Building things' });
+    expect((await lastOf('textCommit'))?.text).toMatch(/ more$/);
+    expect(await editable('t2')).toBeNull();
   });
 });

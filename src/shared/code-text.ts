@@ -23,8 +23,8 @@ export const CODE_TEXT_ATTR = 'data-so-text';
  */
 export const CODE_TEXT_HOOK_JS = "(path, item) => (item == null ? path : path + '#' + item)";
 
-/** A property or field ID as a component declares one. */
-const ID = /^[A-Za-z][A-Za-z0-9]*$/;
+/** A property or field ID as a component may declare one (a theme's may hold underscores). */
+const ID = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 /** What a marker's path names: a property, or one field of a list property's items. Null when it is not one. */
 export function parseCodeTextPath(path: string): { prop: string; field?: string } | null {

@@ -178,6 +178,15 @@ function textBindAt(target) {
   }
   return null;
 }
+/**
+ * Whether marked text being edited now shows something else: a list shown without keys gives its row to another item,
+ * whose marker Svelte writes in place. What the page writes there then is that item's, never what was typed.
+ */
+const markMoved = (e) => !!e.desc.bind && e.el.getAttribute(TEXT_ATTR) !== e.desc.bind;
+/** What was typed over marked text, as the last input left it: kept for an edit whose element the page reuses. */
+function keepTyped() {
+  if (editing && !markMoved(editing)) editing.typed = editing.el.cloneNode(true);
+}
 /** Whether `el` is the text `desc` names: its marker, inside the markup of the code placement `desc` names. */
 function marksText(el, desc) {
   if (el.getAttribute(TEXT_ATTR) !== desc.bind) return false;
@@ -2000,6 +2009,10 @@ function beginTextEdit(desc, editId, hitId, wantRich) {
   const el = clicked || findAll(desc)[0];
   // The editor is waiting for this edit to end: tell it there is nothing to edit.
   if (!el) return send('textCancel', { desc, editId });
+  // Marked text is typed over only where it is the text alone, shown as its property is: rich text through RichText,
+  // a line of text otherwise. An element holding the editor's own (content placed in a slot) or other marked text,
+  // or one that is not HTML (an SVG's text), would store more, or other, than the property's words.
+  if (desc.bind && (!(el instanceof HTMLElement) || el.querySelector(`[data-so-node], [data-so-slot-empty], [${TEXT_ATTR}]`) || (typeof wantRich === 'boolean' && el.classList.contains('so-rich') !== wantRich))) return send('textCancel', { desc, editId });
   if (editing) commitEdit();
   // Typed text shown there from the inspector gives way to the page's own text, which the edit then works on.
   restoreDraft(el);
@@ -2010,9 +2023,6 @@ function beginTextEdit(desc, editId, hitId, wantRich) {
   if (node && el.contains(node) && node.nodeValue !== hit.at.text) return send('textCancel', { desc, editId });
   if (node && !el.contains(node)) node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue === hit.at.text);
   const rich = el.classList.contains('so-rich');
-  // Marked text shows its property as the property is: rich text through RichText, a line of text otherwise. Shown
-  // any other way, typing over it would store something else.
-  if (desc.bind && typeof wantRich === 'boolean' && rich !== wantRich) return send('textCancel', { desc, editId });
   // before: the plain text shown as the edit began, so the editor can tell what the author typed over.
   editing = { el, desc, editId, original: el.innerHTML, rich, before: rich ? null : el.innerText.replace(/\s+/g, ' ').trim() };
   // Rich text keeps its bold, italic (⌘B, ⌘I) and links (⌘K); everything else is plain text.
@@ -2043,6 +2053,7 @@ function beginTextEdit(desc, editId, hitId, wantRich) {
   el.addEventListener('input', scheduleRects);
   el.addEventListener('paste', onEditPaste);
   el.addEventListener('drop', onEditDrop);
+  if (desc.bind) el.addEventListener('input', keepTyped);
   if (rich) openToolbar();
   send('textEditStarted', { desc });
 }
@@ -2961,6 +2972,7 @@ function endEdit() {
   el.removeEventListener('input', scheduleRects);
   el.removeEventListener('paste', onEditPaste);
   el.removeEventListener('drop', onEditDrop);
+  el.removeEventListener('input', keepTyped);
   el.removeAttribute('contenteditable');
   el.removeAttribute('spellcheck');
   el.style.outline = '';
@@ -2976,28 +2988,31 @@ const committed = new Map();
 function commitEdit(detached = false) {
   if (!editing) return;
   const { el, desc, editId, rich, original, before } = editing;
-  // Marked text whose element now shows another item (a list shown without keys reuses its rows) is handed over as
-  // text the update took away: the editor checks it against the item it was typed over.
-  if (desc.bind && el.getAttribute(TEXT_ATTR) !== desc.bind) detached = true;
+  // Marked text whose element now shows another item is handed over as text the update took away, typed as the last
+  // input left it: the editor checks it against the item it was typed over. The element is that other item's now, so
+  // nothing is put back into it.
+  const moved = markMoved(editing);
+  if (moved) detached = true;
+  const left = moved ? editing.typed : el;
   // A destination still being checked in the link field is not applied: the editor is told, as saving does.
   if (linkEditor && linkEditor.check) send('linkDropped', { desc, editId });
   // Nothing changed: end the edit without a commit, so no history entry or rebuild follows.
-  if (el.innerHTML === original) {
+  if (!left || left.innerHTML === original) {
     endEdit();
     return send('textCancel', { desc, editId });
   }
   // Rich text goes back as a small copy of its structure (blocks, lists, breaks, marks, links) for the editor
   // to turn into its stored form; plain text as its words.
-  const payload = rich ? { desc, editId, rich: richCopy(el) } : { desc, editId, text: el.innerText.replace(/\s+/g, ' ').trim() };
+  const payload = rich ? { desc, editId, rich: richCopy(left) } : { desc, editId, text: left.innerText.replace(/\s+/g, ' ').trim() };
   if (detached) Object.assign(payload, { detached: true }, typeof before === 'string' ? { before } : {});
   // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
   if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
-    el.innerHTML = original;
+    if (!moved) el.innerHTML = original;
     endEdit();
     return send('textCancel', { desc, editId, reason: 'too-large' });
   }
   endEdit();
-  committed.set(editId, { el, original, left: el.innerHTML });
+  if (!moved) committed.set(editId, { el, original, left: el.innerHTML });
   // Only the last few can still be answered: older ones are let go.
   while (committed.size > 8) committed.delete(committed.keys().next().value);
   send('textCommit', payload);
@@ -3038,8 +3053,8 @@ function richCopy(root) {
 function cancelEdit() {
   if (!editing) return;
   const { el, original, desc, editId } = editing;
-  // Untouched text keeps its live nodes, which Svelte still owns.
-  if (el.innerHTML !== original) el.innerHTML = original;
+  // Untouched text keeps its live nodes, which Svelte still owns; marked text the page gave another item is its now.
+  if (el.innerHTML !== original && !markMoved(editing)) el.innerHTML = original;
   endEdit();
   send('textCancel', { desc, editId });
 }
@@ -5390,7 +5405,7 @@ new MutationObserver(() => {
   // The page re-rendered the element being edited away (an update arrived): the edit is over. Text typed into it
   // is handed to the editor as it would be on leaving it, never dropped: the editor checks it against what the
   // update changed before it is saved, and keeps it for the author when it cannot be.
-  if (editing && (!editing.el.isConnected || (editing.desc.bind && editing.el.getAttribute(TEXT_ATTR) !== editing.desc.bind))) {
+  if (editing && (!editing.el.isConnected || markMoved(editing))) {
     // A link still being typed has nowhere to go: say so, as saving does.
     if (linkEditor) {
       closeLinkEditor(false);
@@ -5409,7 +5424,8 @@ new MutationObserver(() => {
   if (revealDirty || selected || pendingScroll || emptySpace || (hovered && mode === 'edit')) scheduleRects();
   // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
   if (forced) markForced();
-}).observe(document.body, { childList: true, subtree: true, characterData: true });
+  // A text marker changing in place is watched too: the row being typed in may now show another list item.
+}).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: [TEXT_ATTR] });
 /**
  * A page error, with where it came from so the editor can name the component that threw (#738): the stack, the
  * file it was thrown in, and the change the page had been told of when it happened.
