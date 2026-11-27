@@ -4,9 +4,10 @@
  * Covers a development build (no shipped tools) and a packaged one (a cache shipped with the app).
  */
 import { createRequire } from 'node:module';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, promises as fsp, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const env = vi.hoisted(() => ({ packaged: false, userData: '' }));
@@ -26,37 +27,89 @@ vi.mock('electron', () => ({
  * test says (exit 0 unless given). A run that succeeds puts the packages it was asked for into the project, except
  * those in `skip` (npm leaves out an optional package it could not fetch, and still succeeds).
  */
+/** A stand-in for the process that loads native modules: what it was told, whether it was killed, whether it ended. */
+const warmProcess = vi.hoisted(() => () => {
+  const { EventEmitter } = require('node:events') as typeof import('node:events');
+  const record = { messages: [] as Array<{ root: string; files?: string[] }>, killed: false, exited: false };
+  const child = new EventEmitter() as InstanceType<typeof EventEmitter> & { kill(): boolean; stdin: unknown };
+  const exit = () => setTimeout(() => {
+    if (record.exited) return;
+    record.exited = true;
+    child.emit('exit', 0);
+  }, 20);
+  child.kill = () => {
+    record.killed = true;
+    exit();
+    return true;
+  };
+  child.stdin = Object.assign(new EventEmitter(), {
+    write: (chunk: string) => {
+      for (const line of chunk.split('\n').filter(Boolean)) record.messages.push(JSON.parse(line));
+      return true;
+    },
+    end: exit
+  });
+  return { child, record };
+});
+
 const npm = vi.hoisted(() => ({
   runs: [] as string[][],
+  cwds: [] as string[],
+  warmers: [] as Array<{ messages: Array<{ root: string; files?: string[] }>; killed: boolean; exited: boolean }>,
   trace: [] as string[],
   results: [] as Array<{ code: number; stderr?: string }>,
   skip: [] as string[],
   install: null as null | ((dir: string) => void),
-  atSpawn: null as null | ((args: string[]) => void)
+  atSpawn: null as null | ((args: string[]) => void),
+  /** Holds the next run open until it settles: npm part way through, until it ends or is killed. */
+  hold: null as null | Promise<void>
 }));
 vi.mock('node:child_process', async (importOriginal) => {
   const { EventEmitter } = await import('node:events');
   return {
     ...(await importOriginal<typeof import('node:child_process')>()),
     spawn: (_cmd: string, args: string[], opts: { cwd: string }) => {
+      // The process that loads a new project's native modules once (macOS): it reads what to load, line by line, and
+      // ends when its input does, or a moment after it is killed.
+      if (args[0] === '-e') {
+        const warm: ReturnType<typeof warmProcess> = warmProcess();
+        npm.warmers.push(warm.record);
+        return warm.child;
+      }
       npm.runs.push(args);
+      npm.cwds.push(opts.cwd);
       npm.trace.push(`npm ${args.find((a) => a === '--offline' || a === '--prefer-offline')}`);
       npm.atSpawn?.(args);
       const result = npm.results.shift() ?? { code: 0 };
-      const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true });
-      setTimeout(() => {
-        if (result.code === 0) npm.install?.(opts.cwd);
-        // The process ends before the last of its output has been read, as a real one can.
-        child.emit('exit', result.code);
-        if (result.stderr) child.stderr.emit('data', result.stderr);
-        child.emit('close', result.code);
-      }, 0);
+      const held = npm.hold;
+      npm.hold = null;
+      let ended = false;
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        // Killed, it ends without finishing.
+        kill: () => {
+          if (!ended) setTimeout(() => (ended = true) && (child.emit('exit', null), child.emit('close', null)), 0);
+          return true;
+        }
+      });
+      void (held ?? Promise.resolve()).then(() =>
+        setTimeout(() => {
+          if (ended) return;
+          ended = true;
+          if (result.code === 0) npm.install?.(opts.cwd);
+          // The process ends before the last of its output has been read, as a real one can.
+          child.emit('exit', result.code);
+          if (result.stderr) child.stderr.emit('data', result.stderr);
+          child.emit('close', result.code);
+        }, 0)
+      );
       return child;
     }
   };
 });
 
-const { prepareDependencies, starterTools } = await import('../../src/main/runtime/manager');
+const { dependenciesReady, prepareDependencies, stageDependencies, starterTools } = await import('../../src/main/runtime/manager');
 const { ToolsDownloadError, lockedPackages } = await import('../../src/main/runtime/availability');
 
 const require = createRequire(import.meta.url);
@@ -82,25 +135,37 @@ beforeEach(() => {
   project = join(root, 'meadow-studio');
   mkdirSync(project);
   for (const f of ['package.json', 'package-lock.json']) copyFileSync(join(starter, f), join(project, f));
-  npm.install = (dir) => {
-    for (const p of needed) if (!npm.skip.includes(p.location)) {
-      mkdirSync(join(dir, p.location), { recursive: true });
-      writeFileSync(join(dir, p.location, 'package.json'), '{}');
-    }
-  };
+  npm.install = installer(needed);
 });
+/** npm installing `packages` into a folder, as far as setup can tell. */
+const installer = (packages: typeof needed) => (dir: string) => {
+  for (const p of packages) if (!npm.skip.includes(p.location)) {
+    mkdirSync(join(dir, p.location), { recursive: true });
+    writeFileSync(join(dir, p.location, 'package.json'), '{}');
+    if (p.native) writeFileSync(join(dir, p.location, 'binding.node'), 'native code');
+    if (p.location === 'node_modules/svelte') {
+      // A native module in a package npm does not count as a native tool (as fsevents, made only for macOS, is not).
+      mkdirSync(join(dir, p.location, 'build', 'Release'), { recursive: true });
+      writeFileSync(join(dir, p.location, 'build', 'Release', 'watcher.node'), 'native code');
+    }
+  }
+};
 afterEach(() => {
+  vi.restoreAllMocks();
   npm.runs.splice(0);
+  npm.cwds.splice(0);
+  npm.warmers.splice(0);
   npm.trace.splice(0);
   npm.results.splice(0);
   npm.skip.splice(0);
   npm.atSpawn = null;
+  npm.hold = null;
   rmSync(root, { recursive: true, force: true });
 });
 
 /** Every package this computer installs, put in the npm cache at `cache` (as `npm ci --cache` leaves it). */
-const fill = (cache: string) =>
-  needed.map((p) => {
+const fill = (cache: string, packages = needed) =>
+  packages.map((p) => {
     const path = cacachePath(join(cache, '_cacache'), p.integrity!);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, 'tarball');
@@ -264,5 +329,303 @@ describe('a packaged build, with a cache shipped for this platform', () => {
     await install();
     expect(atRun).toEqual([true]);
     expect(modes()).toEqual([['--offline'], ['--offline']]);
+  });
+});
+
+describe('a new project’s tools, installed beside it while it is made', () => {
+  const platform = process.platform;
+  const stages = () => join(env.userData, 'tools-staging');
+  const left = () => (existsSync(stages()) ? readdirSync(stages()) : []);
+  /** The project's checks of its lock, as its session makes them: `mine` says whether this app still owns it. */
+  const owner = (mine: () => boolean = () => true) => {
+    const o = {
+      claims: 0,
+      mayWrite: async () => mine(),
+      whileOwner: async (fn: () => Promise<unknown>) => {
+        o.claims++;
+        if (!mine()) return false;
+        await fn();
+        return true;
+      }
+    };
+    return o;
+  };
+  /** The package files as the app wrote them into the project. */
+  const written = () => ({ 'package.json': readFileSync(join(project, 'package.json'), 'utf8'), 'package-lock.json': readFileSync(join(project, 'package-lock.json'), 'utf8') });
+  const stage = (signal?: AbortSignal) => stageDependencies(project, written(), signal);
+  const lockHash = () => createHash('sha256').update(readFileSync(join(project, 'package-lock.json'), 'utf8') + readFileSync(join(project, 'package.json'), 'utf8')).digest('hex');
+  /** Until npm has run in the stage, and the stage holds what it installed. */
+  const installed = () => vi.waitFor(() => expect(npm.runs.length > 0 && existsSync(join(npm.cwds[0], needed[0].location, 'package.json'))).toBe(true));
+  beforeEach(() => fill(userCache()));
+
+  it('runs npm outside the project, in a folder of its name, and moves what it installed in, marked set up, once adopted', async () => {
+    const before = written();
+    const staged = stage();
+    await installed();
+    expect(npm.cwds[0]).not.toBe(project);
+    expect(npm.cwds[0].startsWith(stages())).toBe(true);
+    expect(basename(npm.cwds[0])).toBe(basename(project));
+    // npm installs from the package files the app wrote, not from what the project folder holds by then.
+    expect(readFileSync(join(npm.cwds[0], 'package-lock.json'), 'utf8')).toBe(before['package-lock.json']);
+    // Nothing is in the project until it is adopted, when the project is this app's for certain.
+    expect(readdirSync(project).sort()).toEqual(['package-lock.json', 'package.json']);
+    expect(await dependenciesReady(project)).toBe(false);
+    const lines: string[] = [];
+    const mine = owner();
+    await staged.adopt((l) => lines.push(l), mine);
+    for (const p of needed) expect(existsSync(join(project, p.location, 'package.json'))).toBe(true);
+    expect(JSON.parse(readFileSync(marker(), 'utf8')).lockHash).toBe(lockHash());
+    expect(await dependenciesReady(project)).toBe(true);
+    expect(written()).toEqual(before);
+    // Moved in under one claim on the lock; npm ran once, and what it said before the dialog reached this step is told then.
+    expect(mine.claims).toBe(1);
+    expect(npm.runs).toHaveLength(1);
+    expect(lines).toEqual(['Setting up the website tools from copies on this computer…', 'Installed the website tools from this computer. Nothing was downloaded.']);
+    expect(left()).toEqual([]);
+  });
+
+  it('moves nothing in, and leaves nothing beside it, when the project is no longer this app’s', async () => {
+    const staged = stage();
+    await installed();
+    await expect(staged.adopt(() => undefined, owner(() => false))).rejects.toThrow('Canceled');
+    expect(existsSync(join(project, 'node_modules'))).toBe(false);
+    expect(existsSync(marker())).toBe(false);
+    expect(left()).toEqual([]);
+  });
+
+  it('installs in the project instead when its package files changed after the install began, and marks that install', async () => {
+    const staged = stage();
+    await installed();
+    const lock = JSON.parse(readFileSync(join(project, 'package-lock.json'), 'utf8'));
+    writeFileSync(join(project, 'package-lock.json'), JSON.stringify({ ...lock, name: 'renamed-meanwhile' }, null, 2));
+    await staged.adopt(() => undefined, owner());
+    expect(npm.cwds).toEqual([npm.cwds[0], project]);
+    expect(JSON.parse(readFileSync(marker(), 'utf8')).lockHash).toBe(lockHash());
+    expect(left()).toEqual([]);
+  });
+
+  it('installs in the project instead when the project has npm settings of its own by then', async () => {
+    const staged = stage();
+    await installed();
+    writeFileSync(join(project, '.npmrc'), 'bin-links=false\n');
+    await staged.adopt(() => undefined, owner());
+    expect(npm.cwds).toEqual([npm.cwds[0], project]);
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  it('installs in the project instead when something is already where its node_modules go', async () => {
+    const staged = stage();
+    await installed();
+    mkdirSync(join(project, 'node_modules', 'left-here'), { recursive: true });
+    await staged.adopt(() => undefined, owner());
+    expect(npm.cwds.at(-1)).toBe(project);
+    expect(existsSync(marker())).toBe(true);
+    expect(left()).toEqual([]);
+  });
+
+  it('installs in the project when no folder of its own can be made for the install', async () => {
+    mkdirSync(env.userData, { recursive: true });
+    writeFileSync(stages(), 'not a folder');
+    await stage().adopt(() => undefined, owner());
+    expect(npm.cwds).toEqual([project]);
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  it('leaves a folder already where its own would go, and installs in the project', async () => {
+    const mkdir = fsp.mkdir.bind(fsp);
+    let theirs = '';
+    vi.spyOn(fsp, 'mkdir').mockImplementation(async (path, opts) => {
+      if (!theirs && /tools-\d+-[0-9a-f]{12}$/.test(String(path))) {
+        theirs = String(path);
+        await mkdir(join(theirs, 'kept'), { recursive: true });
+        throw Object.assign(new Error('EEXIST: file already exists, mkdir'), { code: 'EEXIST' });
+      }
+      return mkdir(path, opts);
+    });
+    await stage().adopt(() => undefined, owner());
+    expect(npm.cwds).toEqual([project]);
+    expect(existsSync(join(theirs, 'kept'))).toBe(true);
+  });
+
+  it('never installs, or clears anything, through a link where its folder goes', async () => {
+    const elsewhere = join(root, 'elsewhere');
+    mkdirSync(join(elsewhere, 'tools-999999-0123456789ab'), { recursive: true });
+    writeFileSync(join(elsewhere, 'tools-999999-0123456789ab', '.siteorigin-tools-stage'), '{}');
+    symlinkSync(elsewhere, stages(), 'dir');
+    await stage().adopt(() => undefined, owner());
+    expect(npm.cwds).toEqual([project]);
+    expect(readdirSync(elsewhere)).toEqual(['tools-999999-0123456789ab']);
+  });
+
+  it('tries a move the system refuses for a moment again, each time under a claim of its own and checked again (Windows)', async () => {
+    const rename = fsp.rename.bind(fsp);
+    let refusals = 0;
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (String(to).endsWith('node_modules') && refusals++ < 2) throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      return rename(from, to);
+    });
+    const mine = owner();
+    await stage().adopt(() => undefined, mine);
+    expect(refusals).toBe(3);
+    expect(mine.claims).toBe(3);
+    expect(npm.cwds).toHaveLength(1);
+    expect(existsSync(join(project, needed[0].location, 'package.json'))).toBe(true);
+  });
+
+  it('moves nothing when the project stops being this app’s between two refused moves', async () => {
+    vi.spyOn(fsp, 'rename').mockImplementation(async () => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' });
+    });
+    let claims = 0;
+    const mine = owner(() => ++claims < 2);
+    await expect(stage().adopt(() => undefined, mine)).rejects.toThrow('Canceled');
+    expect(existsSync(join(project, 'node_modules'))).toBe(false);
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  it('installs in the project when it cannot be moved in at all', async () => {
+    const rename = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (String(to).endsWith('node_modules')) throw Object.assign(new Error('EXDEV: cross-device link not permitted, rename'), { code: 'EXDEV' });
+      return rename(from, to);
+    });
+    await stage().adopt(() => undefined, owner());
+    expect(npm.cwds.at(-1)).toBe(project);
+    expect(existsSync(marker())).toBe(true);
+    expect(left()).toEqual([]);
+  });
+
+  it('stops before npm runs and removes its folder when discarded, writing nothing into the project', async () => {
+    await stage().discard();
+    expect(npm.runs).toEqual([]);
+    expect(readdirSync(project).sort()).toEqual(['package-lock.json', 'package.json']);
+    expect(left()).toEqual([]);
+  });
+
+  it('stops when the creation is cancelled, and says so when adopted', async () => {
+    const abort = new AbortController();
+    const staged = stage(abort.signal);
+    abort.abort();
+    await expect(staged.adopt(() => undefined, owner())).rejects.toThrow('Canceled');
+    expect(existsSync(join(project, 'node_modules'))).toBe(false);
+    expect(left()).toEqual([]);
+  });
+
+  it('reports a download that failed as it would in the project, and leaves the project without tools to try again', async () => {
+    rmSync(userCache(), { recursive: true, force: true });
+    npm.results.push({ code: 1, stderr: 'npm error code ENOTFOUND\nnpm error network request failed\n' });
+    const error = await stage().adopt(() => undefined, owner()).catch((e) => e);
+    expect(error).toBeInstanceOf(ToolsDownloadError);
+    expect(existsSync(join(project, 'node_modules'))).toBe(false);
+    expect(existsSync(marker())).toBe(false);
+    expect(left()).toEqual([]);
+  });
+
+  describe('stopped part way (the app quit or crashed)', () => {
+    it('while npm installs: the project has no tools, so opening it sets them up; what was left is marked as this app’s', async () => {
+      let release!: () => void;
+      npm.hold = new Promise<void>((r) => (release = r));
+      const staged = stage();
+      await vi.waitFor(() => expect(npm.runs).toHaveLength(1));
+      // npm part way through when the app stopped: nothing was moved in, and its folder is one the next creation clears
+      // once this app is gone (below).
+      installer(needed.slice(0, 3))(npm.cwds[0]);
+      expect(existsSync(join(project, 'node_modules'))).toBe(false);
+      expect(await dependenciesReady(project)).toBe(false);
+      expect(left()).toEqual([expect.stringMatching(new RegExp(`^tools-${process.pid}-[0-9a-f]{12}$`))]);
+      expect(existsSync(join(stages(), left()[0], '.siteorigin-tools-stage'))).toBe(true);
+      await prepareDependencies(project, () => undefined);
+      expect(npm.cwds.at(-1)).toBe(project);
+      expect(await dependenciesReady(project)).toBe(true);
+      await staged.discard();
+      release();
+      expect(left()).toEqual([]);
+    });
+
+    it('between moving the tools in and marking them: opening it sets them up again', async () => {
+      const writes = fsp.writeFile.bind(fsp);
+      vi.spyOn(fsp, 'writeFile').mockImplementation(async (path, ...rest) => {
+        if (String(path).endsWith('deps.json')) throw new Error('The app stopped.');
+        return writes(path, ...rest);
+      });
+      await expect(stage().adopt(() => undefined, owner())).rejects.toThrow('The app stopped.');
+      vi.restoreAllMocks();
+      expect(existsSync(join(project, needed[0].location, 'package.json'))).toBe(true);
+      expect(await dependenciesReady(project)).toBe(false);
+      await prepareDependencies(project, () => undefined);
+      expect(npm.cwds.at(-1)).toBe(project);
+      expect(await dependenciesReady(project)).toBe(true);
+    });
+  });
+
+  describe('on macOS, which checks a native binary the first time it is loaded', () => {
+    // What npm installs on a Mac of this computer's CPU, in the cache and installed as npm would there.
+    let mac: typeof needed = [];
+    beforeEach(async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mac = await lockedPackages(npmDir, starter);
+      fill(userCache(), mac);
+      npm.install = installer(mac);
+    });
+    afterEach(() => Object.defineProperty(process, 'platform', { value: platform, configurable: true }));
+    const natives = () => [...mac.filter((p) => p.native).map((p) => join(p.location, 'binding.node')), join('node_modules', 'svelte', 'build', 'Release', 'watcher.node')].sort();
+
+    it('loads the native modules npm installed once in a process of their own, from the project only once it moved them there', async () => {
+      await stage().adopt(() => undefined, owner());
+      // Started with the install, so its own start is not waited for, and given the list once npm is done.
+      expect(npm.warmers).toHaveLength(1);
+      const [warm] = npm.warmers;
+      expect(natives().length).toBeGreaterThan(1);
+      expect(warm.messages).toEqual([{ root: npm.cwds[0], files: natives() }, { root: project }]);
+      expect(warm.killed).toBe(false);
+    });
+
+    it('never points it at the project when the install was not moved in, and ends it', async () => {
+      const staged = stage();
+      await installed();
+      mkdirSync(join(project, 'node_modules', 'left-here'), { recursive: true });
+      await staged.adopt(() => undefined, owner());
+      const [warm] = npm.warmers;
+      expect(warm.messages).toEqual([{ root: npm.cwds[0], files: natives() }]);
+      expect(warm.killed).toBe(true);
+    });
+
+    it('ends it, and waits for it to go, when the install fails as the project is set up', async () => {
+      rmSync(userCache(), { recursive: true, force: true });
+      npm.results.push({ code: 1, stderr: 'npm error code ENOTFOUND\nnpm error network request failed\n' });
+      const error = await stage().adopt(() => undefined, owner()).catch((e) => e);
+      expect(error).toBeInstanceOf(ToolsDownloadError);
+      expect(npm.warmers[0].killed).toBe(true);
+      expect(npm.warmers[0].exited).toBe(true);
+    });
+
+    it('ends it, and waits for it to go, when the install is discarded', async () => {
+      const staged = stage();
+      await installed();
+      await vi.waitFor(() => expect(npm.warmers[0]?.messages).toHaveLength(1));
+      await staged.discard();
+      expect(npm.warmers[0].killed).toBe(true);
+      expect(npm.warmers[0].exited).toBe(true);
+    });
+  });
+
+  it('clears only what a creation that never finished left: its own marked folders, of an app no longer running', async () => {
+    const make = (name: string, mark = true) => {
+      mkdirSync(join(stages(), name, 'old-project', 'node_modules'), { recursive: true });
+      if (mark) writeFileSync(join(stages(), name, '.siteorigin-tools-stage'), '{}');
+    };
+    make('tools-999999-0123456789ab');
+    make(`tools-${process.pid}-0123456789ab`);
+    make(`tools-${process.ppid}-0123456789ab`);
+    make('tools-999998-0123456789ab', false);
+    make('a-project-saved-here', false);
+    // A link named like a stage, to a marked folder elsewhere: neither is touched.
+    const elsewhere = join(root, 'elsewhere', 'tools-999997-0123456789ab');
+    mkdirSync(elsewhere, { recursive: true });
+    writeFileSync(join(elsewhere, '.siteorigin-tools-stage'), '{}');
+    symlinkSync(elsewhere, join(stages(), 'tools-999997-0123456789ab'), 'dir');
+    await stage().adopt(() => undefined, owner());
+    await vi.waitFor(() => expect(left().sort()).toEqual([`tools-${process.ppid}-0123456789ab`, 'a-project-saved-here', 'tools-999997-0123456789ab', 'tools-999998-0123456789ab'].sort()));
+    expect(existsSync(join(elsewhere, '.siteorigin-tools-stage'))).toBe(true);
   });
 });

@@ -105,7 +105,11 @@ describe('the starter’s sample photos', () => {
     for (const a of STARTER_ASSETS) before.push((await importAsset(reference, join(ASSETS, a.source), [])).record);
 
     const first = temp('first');
-    const made = await importSamples(first, ASSETS, cache());
+    // Told as the encoding begins, before any photo is written (creation installs the website tools meanwhile), and only
+    // then: the next project's photos come from the cache.
+    const encoding: number[] = [];
+    const made = await importSamples(first, ASSETS, cache(), () => encoding.push(Object.keys(files(first)).length));
+    expect(encoding).toEqual([0]);
     expect(made.map((s) => s.asset.id)).toEqual(STARTER_ASSETS.map((a) => a.id));
     expect(files(first)).toEqual(files(reference));
     expect(made.map((s) => stable(s.record))).toEqual(before.map(stable));
@@ -115,8 +119,9 @@ describe('the starter’s sample photos', () => {
     worker.requests = 0;
     const second = temp('second');
     const startedAt = Date.now();
-    const again = await importSamples(second, ASSETS, cache());
+    const again = await importSamples(second, ASSETS, cache(), () => encoding.push(Object.keys(files(second)).length));
     expect(worker.requests).toBe(0);
+    expect(encoding).toEqual([0]);
     // The same files, byte for byte, and the same records but for each one's own ID and the time it was added.
     expect(files(second)).toEqual(files(reference));
     expect(again.map((s) => stable(s.record))).toEqual(before.map(stable));

@@ -51,13 +51,19 @@ vi.mock('electron', () => ({
 // Setting up a new project's website tools runs npm; here it finishes at once, or when a test lets it.
 vi.mock('../../src/main/runtime/manager', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../src/main/runtime/manager')>();
+  const prepareDependencies = async (dir: string, _onLine: unknown, signal?: AbortSignal, mayWrite?: () => Promise<boolean>) => {
+    if (mayWrite && !(await mayWrite())) throw new Error('Canceled');
+    await env.prepare?.(dir, signal);
+    if (signal?.aborted) throw new Error('Canceled');
+  };
   return {
     ...real,
-    prepareDependencies: async (dir: string, _onLine: unknown, signal?: AbortSignal, mayWrite?: () => Promise<boolean>) => {
-      if (mayWrite && !(await mayWrite())) throw new Error('Canceled');
-      await env.prepare?.(dir, signal);
-      if (signal?.aborted) throw new Error('Canceled');
-    }
+    prepareDependencies,
+    // A creation's install is staged beside the project; here it runs when it is moved in, as npm did in the project.
+    stageDependencies: (dir: string, _files: unknown, signal?: AbortSignal) => ({
+      adopt: (onLine: unknown, owner: { mayWrite(): Promise<boolean> }) => prepareDependencies(dir, onLine, signal, () => owner.mayWrite()),
+      discard: async () => undefined
+    })
   };
 });
 
