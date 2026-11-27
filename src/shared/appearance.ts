@@ -16,4 +16,4 @@ export function editorScheme(appearance: unknown, systemDark: boolean): 'light' 
 }
 
 /** The window's backing color: the editor's --bg in that scheme (styles.css), so it never flashes another color. */
-export const editorBackground = (scheme: 'light' | 'dark') => (scheme === 'dark' ? '#11151c' : '#f2f4f7');
+export const editorBackground = (scheme: 'light' | 'dark') => (scheme === 'dark' ? '#11151c' : '#ebeff4');

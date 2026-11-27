@@ -13,6 +13,15 @@ const notices = (target: 'main' | 'preload' | 'renderer') => bundledPackagesPlug
 // Each build says which commit it was made from and when (src/main/build-info.ts), for About and bug reports.
 const stamp = readBuildStamp((args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
 
+/** The sync an exported project runs (scripts/sync-cli.ts), shipped beside the main process for the export to copy. */
+const syncCli = () => ({
+  name: 'siteorigin-sync-cli',
+  async generateBundle(this: { emitFile(f: { type: 'asset'; fileName: string; source: string }): string }) {
+    const { buildSyncCli } = await import('./scripts/sync-cli');
+    this.emitFile({ type: 'asset', fileName: 'sync-sources.mjs', source: await buildSyncCli() });
+  }
+});
+
 const alias = {
   '@shared': resolve('src/shared'),
   '@engine': resolve('src/engine'),
@@ -26,7 +35,7 @@ export default defineConfig({
   main: {
     resolve: { alias },
     define: { __BUILD_COMMIT__: JSON.stringify(stamp.commit), __BUILD_DATE__: JSON.stringify(stamp.builtAt) },
-    plugins: [notices('main')],
+    plugins: [notices('main'), syncCli()],
     build: {
       externalizeDeps: { exclude: ['zod'] },
       rollupOptions: {

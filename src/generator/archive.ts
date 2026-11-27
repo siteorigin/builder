@@ -1,7 +1,8 @@
 /**
  * A collection's index and category archive pages (see shared/archives.ts), written as static pages inside the site's
  * own header and footer. Each lists its share of the collection's published entries, newest first, as cards (featured
- * picture, categories, title, date, author and excerpt), and links to the pages before and after it in its series,
+ * picture, categories, title, date, author and excerpt; the boxed card the Post grid section shows, each one link to
+ * its entry through its title), and links to the pages before and after it in its series,
  * in its head (`<link rel="prev">`, `<link rel="next">`) and in a labelled list of page links. Everything shown is
  * written into the page when the site is generated: visitors' browsers look nothing up.
  */
@@ -69,6 +70,8 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   const archives = new Map(series.filter((p) => p.category && p.page === 1).map((p) => [p.category!, p.route]));
   const terms = new Map(categoryTerms(collection).map((t) => [t.id, t.label]));
   const { heading } = archiveWords(state, here);
+  // A category's pages lead back to the whole collection's index, by its own heading.
+  const index = here.category ? series.find((p) => !p.category && p.page === 1) : undefined;
   const rctx = { state };
   // What the markup below turns out to hold, so that the page is styled for that and nothing more: Svelte warns of
   // every selector that matches nothing, in the build of the exported project.
@@ -83,6 +86,8 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     // The lead's picture takes every card picture's rule, and one of its own.
     if (image) uses.add('image');
     if (image && lead) uses.add('leadImage');
+    // The lead sets its picture beside its text; without one, its text takes the whole width.
+    if (image && lead) uses.add('split');
     const ids = Array.isArray(entry.terms?.categories) ? entry.terms.categories.filter((t) => terms.has(t)) : [];
     const lines: string[] = [];
     if (image) lines.push(`\t\t\t<SoImage image={${js(image)}} sizes=${js(lead ? '(min-width: 768px) 50vw, 100vw' : '(min-width: 1024px) 33vw, (min-width: 768px) 50vw, 100vw')}${lead && here.page === 1 ? ' eager' : ''} class="so-archive__image" />`);
@@ -112,7 +117,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
       lines.push(`\t\t\t\t<p class="so-archive__excerpt">{${js(row.excerpt)}}</p>`);
     }
     lines.push(`\t\t\t</div>`);
-    return `<article class="so-archive__card${lead ? ' so-archive__card--lead' : ''}">\n${lines.join('\n')}\n\t\t</article>`;
+    return `<article class="so-archive__card${lead ? ' so-archive__card--lead' : ''}${lead && image ? ' so-archive__card--split' : ''}">\n${lines.join('\n')}\n\t\t</article>`;
   };
   const entryRouteOf = (entryId: string) => `${collection.settings.route}${collection.entries[entryId].slug}/`;
 
@@ -165,9 +170,12 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   for (const line of layout?.imports ?? []) if (!imports.includes(line)) imports.push(line);
   const script = [imports.join('\n'), layout?.script ?? ''].filter(Boolean).join('\n\n');
   if (here.category) uses.add('eyebrow');
+  if (index) uses.add('trail');
   if (here.page > 1) uses.add('count');
   const intro = [
-    here.category ? `\t\t\t<p class="so-archive__eyebrow">{${js(words.archiveCategory)}}</p>` : '',
+    here.category
+      ? `\t\t\t<p class="so-archive__eyebrow">${index ? `<a href=${href(index.route)}>{${js(archiveWords(state, index).heading)}}</a><span aria-hidden="true">/</span>` : ''}{${js(words.archiveCategory)}}</p>`
+      : '',
     `\t\t\t<h1 class="so-archive__heading">{${js(heading)}}</h1>`,
     here.page > 1 ? `\t\t\t<p class="so-archive__count">{${js(fill(words.archivePageOf, { page: here.page, count: here.pages }))}}</p>` : ''
   ].filter(Boolean);
@@ -180,7 +188,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
 }
 
 /** The parts of an archive page that not every one has, each with rules of its own. */
-type ArchivePart = 'eyebrow' | 'count' | 'empty' | 'grid' | 'card' | 'lead' | 'image' | 'leadImage' | 'category' | 'categoryLink' | 'meta' | 'excerpt' | 'pages' | 'gap';
+type ArchivePart = 'eyebrow' | 'trail' | 'count' | 'empty' | 'grid' | 'card' | 'lead' | 'split' | 'image' | 'leadImage' | 'category' | 'categoryLink' | 'meta' | 'excerpt' | 'pages' | 'gap';
 
 /** A style rule: its selectors, each with the part it matches (none: every page has it), its declarations, and its media query if it has one. */
 type ArchiveRule = [selectors: Array<[selector: string, part?: ArchivePart]>, declarations: string, media?: string];
@@ -214,8 +222,27 @@ text-transform: var(--so-text-eyebrow-transform, uppercase);
 color: var(--so-color-brand, inherit);`
   ],
   [
-    [['.so-archive__category a', 'categoryLink']],
-    `color: inherit;`
+    // A category link (and, on a category's pages, the link back to the index) is a label, not a link in running text:
+    // underlined only under the pointer, and at least 24px square to hit. It sits above the card's own link.
+    [['.so-archive__category a', 'categoryLink'], ['.so-archive__eyebrow a', 'trail']],
+    `position: relative;
+z-index: 1;
+display: inline-flex;
+align-items: center;
+min-height: 24px;
+min-inline-size: 24px;
+color: inherit;
+text-decoration: none;`
+  ],
+  [
+    // The link back to the index is underlined at rest: it is the one link in the heading.
+    [['.so-archive__category a:hover', 'categoryLink'], ['.so-archive__eyebrow a', 'trail']],
+    `text-decoration: underline;
+text-underline-offset: 0.2em;`
+  ],
+  [
+    [['.so-archive__eyebrow span', 'trail']],
+    `margin-inline: var(--so-space-xs, 0.5rem);`
   ],
   [
     [['.so-archive__heading']],
@@ -231,29 +258,64 @@ text-transform: var(--so-text-h1-transform, none);`
     `color: var(--so-color-muted, inherit);`
   ],
   [
+    // The theme divides the date from the author (a line holding a date), spaced as this gap.
     [['.so-archive__meta', 'meta']],
     `display: flex;
 flex-wrap: wrap;
-column-gap: var(--so-space-md, 1rem);
+column-gap: var(--so-space-sm, 0.75rem);
 font-family: var(--so-text-small-family, inherit);
 font-size: var(--so-text-small-size, 0.875rem);
 line-height: var(--so-text-small-line-height, 1.5);`
   ],
   [
+    // The Post grid section's columns: one on phones, two on tablets, three from desktops.
     [['.so-archive__grid', 'grid']],
     `display: grid;
-grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+grid-template-columns: minmax(0, 1fr);
 gap: var(--so-space-xl, 2rem);
 margin: 0;
 padding: 0;
 list-style: none;`
   ],
+  [[['.so-archive__grid', 'grid']], `grid-template-columns: repeat(2, minmax(0, 1fr));`, '(min-width: 768px)'],
+  [[['.so-archive__grid', 'grid']], `grid-template-columns: repeat(3, minmax(0, 1fr));`, '(min-width: 1024px)'],
   [
     [['.so-archive__card', 'card']],
-    `display: flex;
+    `position: relative;
+display: flex;
 flex-direction: column;
 gap: var(--so-space-sm, 0.75rem);`
   ],
+  [
+    // Each card of the grid is a bordered box with no fill, as the Post grid section's are, so a post without a picture
+    // is plainly its own and does not read as the caption of the picture beside it.
+    [['.so-archive__grid .so-archive__card', 'grid']],
+    `height: 100%;
+padding: var(--so-space-md, 1rem);
+border: var(--so-border-default, 1px solid currentColor);
+border-radius: var(--so-radius-lg, 10px);`
+  ],
+  [
+    // The lead's picture, text and their lines spaced as the Featured post section spaces its card.
+    [['.so-archive__card--lead', 'lead']],
+    `gap: var(--so-space-lg, 1.5rem);`
+  ],
+  [[['.so-archive__card--lead .so-archive__text', 'lead']], `gap: var(--so-space-md, 1rem);`],
+  [
+    // The whole card opens its entry: the title's link reaches over it, so the card has one link and one stop.
+    [['.so-archive__title a::after', 'card']],
+    `content: '';
+position: absolute;
+inset: 0;
+border-radius: inherit;`
+  ],
+  [
+    // Focus on the title's link rings the whole card it opens.
+    [['.so-archive__card:has(.so-archive__title a:focus-visible)', 'card']],
+    `outline: 2px solid var(--so-surface-ink, var(--so-color-focus, currentColor));
+outline-offset: 3px;`
+  ],
+  [[['.so-archive__title a:focus-visible', 'card']], `outline: none;`],
   [
     [['.so-archive__text', 'card']],
     `display: flex;
@@ -282,11 +344,14 @@ letter-spacing: var(--so-text-h3-tracking, normal);`
 text-decoration: none;`
   ],
   [
+    // Under the pointer anywhere the title's link reaches (not on a category link, which goes elsewhere).
     [['.so-archive__title a:hover', 'card'], ['.so-archive__title a:focus-visible', 'card']],
-    `text-decoration: underline;`
+    `text-decoration: underline;
+text-decoration-thickness: 1px;
+text-underline-offset: 0.15em;`
   ],
   [
-    [['.so-archive__card--lead', 'lead']],
+    [['.so-archive__card--split', 'split']],
     `display: grid;
 grid-template-columns: 1fr 1fr;
 align-items: center;
@@ -333,6 +398,10 @@ border: var(--so-border-default, 1px solid currentColor);
 border-radius: var(--so-radius-md, 6px);
 color: inherit;
 text-decoration: none;`
+  ],
+  [
+    [['.so-archive__pages a:hover', 'pages']],
+    `border-color: currentColor;`
   ],
   [
     [[".so-archive__pages a[aria-current='page']", 'pages']],

@@ -1,8 +1,8 @@
 import './PropEditors.css';
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
-import { refKey } from '@shared/types';
+import type { ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import { isEntryBinding, refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
@@ -35,12 +35,12 @@ import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
 import type { PictureStandIn } from '../lib/sharing';
 import { effectiveItem } from '@shared/page-teasers';
-import { feedLimit } from '@shared/articles';
-import { entryQuery, feedCollection } from '@shared/entry-feed';
+import { articleRows, feedLimit, pageArticle } from '@shared/articles';
+import { entryQuery, feedCollection, hasCollections, listedEntries, publishedEntries, termsNamed, type EntryQuery } from '@shared/entry-feed';
 import { findEntry } from '@shared/collections';
 import { linkableIndexes } from '@shared/archives';
 import { openPost, selectPage } from '../lib/actions';
-import { placedFeedRows, resolveRef } from '../lib/model';
+import { placedFeedRows, resolveRef, sampleQuery } from '../lib/model';
 import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
@@ -1161,9 +1161,12 @@ function ChoiceLabel({ choice, index, describedBy, onRename, clash, onClash }: {
       keep(true);
     });
   };
+  // A textarea that grows with its label (see .choices-label), so a long answer is read whole before it is moved or
+  // removed; Enter still saves, never a new line.
   return (
-    <input
-      className="input sm"
+    <textarea
+      className="input sm choices-label"
+      rows={1}
       value={draft}
       aria-label={`Choice ${index + 1}`}
       aria-describedby={describedBy}
@@ -1287,6 +1290,8 @@ function ChoicesEditor({ schema, value, onChange, read, label, error }: { schema
     }
     setProblem('');
     setDraft('');
+    // Add disables as the box empties: from the button, focus goes back to the box for the next choice.
+    if (document.activeElement !== document.getElementById(addId)) requestAnimationFrame(() => document.getElementById(addId)?.focus());
     // A refused choice comes back to the box, unless something else has been typed there since.
     void act({ kind: 'add', label: text }).then((ok) => {
       if (!ok) setDraft((d) => d || text);
@@ -1296,7 +1301,9 @@ function ChoicesEditor({ schema, value, onChange, read, label, error }: { schema
   const [said, setSaid] = useState({ text: '', count: 0 });
   const move = (c: ChoiceOption, by: -1 | 1) => {
     const direction = by < 0 ? 'up' : 'down';
-    refocus.current = { target: `${direction}-${c.id}`, fallback: `input-${c.id}` };
+    // At the end of the list the arrow it was on goes unavailable: focus moves to the other arrow, so reordering
+    // never turns into typing in the label.
+    refocus.current = { target: `${direction}-${c.id}`, fallback: `${by < 0 ? 'down' : 'up'}-${c.id}` };
     void act({ kind: 'move', id: c.id, by }).then((ok) => {
       if (!ok) return;
       // Where it landed, in the order the project now holds (a queued change may have moved others first).
@@ -1309,7 +1316,11 @@ function ChoicesEditor({ schema, value, onChange, read, label, error }: { schema
   const remove = (c: ChoiceOption, i: number) => {
     const after = choices[i + 1] ?? choices[i - 1];
     refocus.current = { target: after ? `input-${after.id}` : 'add', fallback: 'add' };
-    void act({ kind: 'remove', id: c.id });
+    void act({ kind: 'remove', id: c.id }).then((ok) => {
+      if (!ok) return;
+      const left = (read ? choiceRows(read()?.value) : shownRef.current.filter((x) => x.id !== c.id)).length;
+      setSaid((s) => announcementText(`Removed “${c.label}”. ${left === 1 ? '1 choice' : `${left} choices`} left.`, s.count) ?? s);
+    });
   };
   return (
     <div className="field choices-editor" role="group" aria-labelledby={labelId} aria-describedby={[error ? `${hintId}-error` : '', schema.description ? hintId : ''].filter(Boolean).join(' ') || undefined} ref={rootRef}>
@@ -1364,15 +1375,16 @@ function ChoicesEditor({ schema, value, onChange, read, label, error }: { schema
           })}
         </ol>
       ) : (
-        <p className="field-hint insp-note">No choices yet.</p>
+        <p className="field-hint insp-note choices-none">No choices yet. Add at least two.</p>
       )}
+      {choices.length === 1 && <p className="field-hint insp-note">Add one more, so a visitor has a choice to make.</p>}
       <div className="choices-add">
         <input
           className="input sm"
           id={addId}
           data-choice-focus="add"
           value={draft}
-          placeholder={full ? `At most ${MAX_CHOICE_ROWS} choices` : 'Add a choice'}
+          placeholder="Add a choice"
           aria-label="New choice"
           aria-invalid={problem ? true : undefined}
           readOnly={full}
@@ -1396,7 +1408,11 @@ function ChoicesEditor({ schema, value, onChange, read, label, error }: { schema
           {problem}
         </div>
       )}
-      {full && <p className="field-hint insp-note" id={`${addId}-full`}>This question has the most choices it can hold, {MAX_CHOICE_ROWS}. Remove one to add another.</p>}
+      {full && (
+        <p className="field-hint insp-note choices-full-note" id={`${addId}-full`}>
+          All {MAX_CHOICE_ROWS} choices are in use. Remove one to add another.
+        </p>
+      )}
       {error && (
         <div className="field-error" id={`${hintId}-error`}>
           {error}
@@ -1563,7 +1579,7 @@ export interface ListOrder {
   locked: string | null;
 }
 
-export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill, order, refused }: {
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill, order, refused, setProps }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -1610,8 +1626,10 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
    * `field`) was refused, said at that field in place of an error toast (see claimRefusals).
    */
   refused?: (at: { field?: string; itemId?: string }) => string | undefined;
+  /** For a computed list: change other properties of the placement (its category, say) as one edit, from its empty state. */
+  setProps?: (patch: Record<string, unknown>, label: string) => void;
 }) {
-  if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} place={place} />;
+  if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} place={place} setProps={setProps} />;
   // Fields inside belong to this property of the node around them (see FieldHome).
   if (schema.type === 'list')
     return (
@@ -1672,108 +1690,371 @@ export function placedOnPage(ref: ElementRef | undefined): string | undefined {
   return ref && ref.owner.kind === 'page' ? ref.owner.id : undefined;
 }
 
-/** Open a page's settings in the inspector, where an article's title, date, byline and excerpt are changed. */
+/**
+ * Open a page's settings in the inspector, where an article's title, date, byline and excerpt are changed, at its
+ * Article section: the one with its details on an article, the one with the "Dated article" switch on any other page.
+ */
 export function openPageSettings(pageId: string) {
+  const page = getState().snapshot?.state.pages[pageId];
   selectPage(pageId, null);
   setState({ rightTab: 'inspect', dockOpen: true });
-  // Once the page's settings are showing, open its Article section (it may have been collapsed) and bring it into view.
-  setTimeout(() => openSection('page-article'), 120);
+  // Once the page's settings are showing, open that section (it may have been collapsed) and bring it into view.
+  setTimeout(() => openSection(pageArticle(page) ? 'page-article' : 'page-article-off'), 120);
+}
+
+/** Open the Content panel, where a collection's entries are written and published, or a blog is started. */
+function openContentPanel() {
+  setState({ leftTab: 'posts' });
+}
+
+/** The properties of a post feed's placement that name a collection and its terms, chosen by name (see FeedQueryField). */
+export const FEED_QUERY_PICKS = ['collection', 'category', 'tag'] as const;
+export type FeedQueryPick = (typeof FEED_QUERY_PICKS)[number];
+
+/**
+ * A post feed's collection, category or tag, chosen by name from the project's collections and their terms rather
+ * than typed as an ID. Empty is the default: the blog (in a layout, the entry's own collection), every category, every
+ * tag. A value that names nothing in the project stays listed, marked as not found, until another is chosen.
+ */
+export function FeedQueryField({ prop, label, value, query: own, layout, state, onChange }: { prop: FeedQueryPick; label: string; value: unknown; query: EntryQuery; layout?: { collectionId: string; nodeId: string; properties: Record<string, PropSchema> }; state: ProjectState; onChange: (v: string) => void }) {
+  const current = typeof value === 'string' ? value.trim() : '';
+  // In a layout, the terms offered are those of the collection the preview shows: the query as read on its entry.
+  const templateMode = useStore((s) => s.templateMode);
+  const layoutOf = layout?.collectionId;
+  const sampleId = layout && templateMode?.entryId ? templateMode.entryId : undefined;
+  const query = (layout && sampleId && sampleQuery(state, layout.collectionId, sampleId, layout.nodeId, layout.properties)) || own;
+  const where = layoutOf ? { entry: { collectionId: layoutOf, entryId: sampleId ?? '' } } : {};
+  const collection = feedCollection(state, query, where);
+  let options: Array<{ value: string; label: string }>;
+  let selected = current;
+  let hint: string | undefined;
+  if (prop === 'collection') {
+    const auto = feedCollection(state, { collection: '' }, where);
+    const all = Object.values(state.collections ?? {})
+      .map((c) => ({ value: c.settings.id, label: c.settings.name }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    options = [{ value: '', label: !all.length ? 'No collection yet' : layoutOf ? `This entry’s collection${auto ? ` (${auto.settings.name})` : ''}` : auto ? `The blog (${auto.settings.name})` : 'The blog' }, ...all];
+  } else {
+    // With no collection (none at all, or one that is not there) there is nothing to filter: the list above says so
+    // and offers the fix.
+    if (!collection && !current) return null;
+    const taxonomy = prop === 'category' ? 'categories' : 'tags';
+    const terms = (collection && Object.hasOwn(collection.settings.taxonomies ?? {}, taxonomy) ? collection.settings.taxonomies[taxonomy].terms : undefined) ?? {};
+    options = [{ value: '', label: prop === 'category' ? 'Every category' : 'Every tag' }, ...Object.entries(terms).map(([id, t]) => ({ value: id, label: t.label || id }))];
+    if (current && collection) {
+      // Saved by name, or several at once ("News, Craft"): the one term it names is selected; several stay as written.
+      const found = termsNamed(collection, taxonomy, current);
+      selected = found.length === 1 ? found[0] : current;
+      if (found.length > 1) options.push({ value: current, label: current });
+    }
+    // Said only of a collection that exists: with none, the list above already says so and offers the fix.
+    if (collection && !Object.keys(terms).length) hint = `${collection.settings.name} has no ${prop === 'category' ? 'categories' : 'tags'} yet.`;
+  }
+  if (selected && !options.some((o) => o.value === selected)) options.push({ value: selected, label: `“${selected}” (not found)` });
+  // Nothing to choose but the default: drawn unavailable, unless a saved value is still there to be cleared.
+  const dead = options.length === 1 && !selected;
+  return (
+    <Field label={label} hint={hint}>
+      <select className="select" value={selected} data-feed-pick={prop} disabled={dead} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
+/** A computed list's row: what it shows, and where selecting it goes. */
+interface ComputedRow {
+  id: string;
+  title: string;
+  meta?: string;
+  open: () => void;
+}
+
+/** Why a computed list shows nothing here, and the one thing that changes that. */
+interface ComputedEmpty {
+  text: ReactNode;
+  action?: { label: string; run: () => void };
 }
 
 /**
- * A computed list (news, an article's header): what it shows where it is placed, and where each of those things is
- * changed. It holds nothing of its own to edit.
+ * The rows a computed list shows, each a button that opens where that item is changed, or why it shows none. The
+ * count says how many of the items that could show are shown; one row (a featured post) is shown without a number.
  */
-function ComputedList({ name, schema, state, place }: { name: string; schema: ListProp; state: ProjectState; place?: ListPlace }) {
+function ComputedRows({ label, rows, total, source, opens, rule, empty, single }: { label: string; rows: ComputedRow[]; total?: number; source?: ReactNode; opens: string; rule: string; empty: ComputedEmpty; single?: boolean }) {
+  const labelId = useId();
+  const opensId = useId();
+  const listRef = useRef<HTMLOListElement>(null);
+  // A featured post shows one row, unnumbered; its count still says how many it was chosen from.
+  const counted = rows.length > 0 && total !== undefined && (!single || total > 1);
+  // What the list shows now, said once each time a setting changes it (never on first showing).
+  const summary = rows.length ? `${label}:${total === undefined ? '' : ` ${total > rows.length ? `${rows.length} of ${total}` : rows.length} shown.`}${source ? ` ${source}` : ''}` : typeof empty.text === 'string' ? empty.text : '';
+  const [said, setSaid] = useState({ text: '', count: 0 });
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    setSaid((s) => announcementText(summary, s.count) ?? s);
+  }, [summary]);
+  // An empty state's fix (show every category, say) fills the list in place: focus goes to its first row, where the
+  // button it was on was.
+  const recovering = useRef(false);
+  useEffect(() => {
+    if (!recovering.current || !rows.length) return;
+    recovering.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body) listRef.current?.querySelector<HTMLButtonElement>('.computed-row')?.focus();
+  }, [rows.length]);
+  return (
+    <div className="field computed-list-body">
+      <div className="field-label" id={labelId}>
+        <span className="grow">{label}</span>
+        {counted && (
+          <span className="insp-count">
+            <span aria-hidden="true">{total !== undefined && total > rows.length ? `${rows.length} of ${total}` : rows.length}</span>
+            <span className="sr-only">{total !== undefined && total > rows.length ? `${rows.length} shown of ${total}` : `${rows.length} shown`}</span>
+          </span>
+        )}
+      </div>
+      {source && <p className="computed-source">{source}</p>}
+      {rows.length ? (
+        <ol ref={listRef} className={`computed-rows${single ? ' single' : ''}`} aria-labelledby={labelId}>
+          {rows.map((r, i) => (
+            <li key={r.id}>
+              {/* Named by its title; its date and where it opens are its description. */}
+              <button type="button" className="computed-row" aria-labelledby={`${opensId}-t${i}`} aria-describedby={[r.meta ? `${opensId}-m${i}` : '', opensId].filter(Boolean).join(' ')} onClick={r.open}>
+                {!single && (
+                  <span className="computed-row-num" aria-hidden="true">
+                    {i + 1}
+                  </span>
+                )}
+                <span className="computed-row-text">
+                  <span className="computed-row-title" id={`${opensId}-t${i}`}>
+                    {r.title}
+                  </span>
+                  {r.meta && (
+                    <span className="computed-row-meta" id={`${opensId}-m${i}`}>
+                      {r.meta}
+                    </span>
+                  )}
+                </span>
+                <ChevronRight className="computed-row-go" aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <div className="computed-empty">
+          <p>{empty.text}</p>
+          {empty.action && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                recovering.current = true;
+                empty.action!.run();
+              }}
+            >
+              {empty.action.label}
+            </button>
+          )}
+        </div>
+      )}
+      <span className="sr-only" role="status">
+        {said.text}
+      </span>
+      {rows.length > 0 && (
+        <p className="computed-opens field-hint">
+          <span id={opensId}>{opens}</span> {rule}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** A date and a byline as a row's quiet second line. */
+const rowMeta = (...parts: Array<string | undefined>) => parts.filter((p) => p && p.trim()).join(' · ') || undefined;
+
+/**
+ * A computed list (a post feed, a news list, an article header): what it shows where it is placed, and where each of
+ * those things is changed. It holds nothing of its own to edit; `setProp` changes the placement's other settings,
+ * so an empty list can offer the one change that fills it (show every category, use the blog).
+ */
+function ComputedList({ name, schema, state, place, setProps }: { name: string; schema: ListProp; state: ProjectState; place?: ListPlace; setProps?: (patch: Record<string, unknown>, label: string) => void }) {
   const pageId = placedOnPage(place?.ref);
   const limit = feedLimit(schema);
   const node = place ? resolveRef(state, place.ref).node : undefined;
   const instance = node?.kind === 'instance' ? node : undefined;
   const properties = (instance && state.components[instance.definitionId]?.properties) || {};
+  const props = (instance?.props ?? {}) as Record<string, unknown>;
   // In a collection's layout, the rows of the entry the canvas shows it on.
   const templateMode = useStore((s) => s.templateMode);
-  const sample = templateMode && place?.ref.owner.kind === 'template' && !place.ref.instancePath.length ? { entryId: templateMode.entryId, nodeId: place.ref.nodeId } : undefined;
-  const rows = placedFeedRows(state, schema, place?.ref.owner, properties, (instance?.props ?? {}) as Record<string, unknown>, sample) as unknown as Array<{ id: string; title: string; date?: string; dateLabel?: string }>;
+  const inLayout = place?.ref.owner.kind === 'template';
+  const sample = templateMode && inLayout && !place!.ref.instancePath.length ? { entryId: templateMode.entryId, nodeId: place!.ref.nodeId } : undefined;
+  const raw = placedFeedRows(state, schema, place?.ref.owner, properties, props, sample) as unknown as Array<{ id: string; title: string; date?: string; dateLabel?: string; byline?: string; excerpt?: string }>;
   const page = pageId && Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
-  const hintId = useId();
+  const single = limit === 1;
   if (schema.feed === 'entries') {
-    const query = entryQuery(properties, (instance?.props ?? {}) as Record<string, unknown>);
-    const collection = feedCollection(state, query, place?.ref.owner.kind === 'template' ? { entry: { collectionId: place.ref.owner.id, entryId: '' } } : {});
-    const count = Math.min(limit, query.count ?? Infinity);
+    // In a layout, the entry the canvas shows it on: the rows, the count and the summary all read the query as the
+    // placement reads it there (a category read from that entry, say).
+    const layoutId = inLayout ? place!.ref.owner.id : undefined;
+    const shown = layoutId && sample?.entryId ? sampleQuery(state, layoutId, sample.entryId, sample.nodeId, properties) : undefined;
+    const query = shown ?? entryQuery(properties, props);
+    // A layout read of the entry with no entry to read it on: the rows are every entry's, so no count is given.
+    const unread = !!layoutId && !shown && ['collection', 'category', 'tag', 'count'].some((k) => isEntryBinding(props[k]));
+    const where = layoutId ? { entry: { collectionId: layoutId, entryId: sample?.entryId ?? '' } } : {};
+    const collection = feedCollection(state, query, where);
+    const named = collection?.settings.name ?? 'the blog';
+    // Every entry that could show here, before the placement's own number and the list's limit; and the same with the
+    // entry this layout page shows put back, which tells a filter matching only that entry from one matching nothing.
+    const total = collection ? listedEntries(state, { ...query, count: undefined }, where).entries.length : 0;
+    const withHere = collection && layoutId ? listedEntries(state, { ...query, count: undefined }, { entry: { collectionId: layoutId, entryId: '' } }).entries.length : total;
+    const published = collection ? publishedEntries(state, collection).length : 0;
+    const fallback = feedCollection(state, { collection: '' }, where);
+    const rows: ComputedRow[] = raw.map((r) => ({
+      id: r.id,
+      title: r.title,
+      meta: rowMeta(r.dateLabel, r.byline),
+      open: () => {
+        // Each row's own collection: one read from the entry a layout is shown on can be another.
+        const found = findEntry(state, r.id);
+        if (found) void openPost(found.collection.settings.id, r.id);
+      }
+    }));
+    // A filter by the names its terms have now, as the selects show them; a value naming no term, as it was written.
+    const termWords = (taxonomy: 'categories' | 'tags', wanted: string) => {
+      const terms = collection && Object.hasOwn(collection.settings.taxonomies ?? {}, taxonomy) ? collection.settings.taxonomies[taxonomy].terms : undefined;
+      const ids = collection && wanted ? termsNamed(collection, taxonomy, wanted) : [];
+      return ids.length ? ids.map((id) => `“${terms?.[id]?.label || id}”`).join(' or ') : `“${wanted}”`;
+    };
+    const missingTerm = (taxonomy: 'categories' | 'tags', wanted: string) => !!collection && !!wanted && !termsNamed(collection, taxonomy, wanted).length;
+    const inWords = query.category ? `in ${termWords('categories', query.category)}` : '';
+    const taggedWords = query.tag ? `tagged ${termWords('tags', query.tag)}` : '';
+    // A filter read from each entry (in a layout) is changed in Entry content, never cleared from here.
+    const bound = (prop: 'category' | 'tag') => isEntryBinding(props[prop]);
+    // How many could show with `patch` applied: a fix is offered only when it would fill the list.
+    const after = (patch: Partial<EntryQuery>) => (collection ? listedEntries(state, { ...query, ...patch, count: undefined }, where).entries.length : 0);
+    const fix = (patch: Partial<EntryQuery>, words: string): ComputedEmpty['action'] => (setProps && after(patch) > 0 && !(Object.keys(patch) as Array<'category' | 'tag'>).some(bound) ? { label: words, run: () => setProps(patch, words) } : undefined);
+    const another = 'Publish another entry to fill it.';
+    const filterFix = (patch: Partial<EntryQuery>, words: string, text: string): ComputedEmpty => {
+      const action = fix(patch, words);
+      if (action) return { text, action };
+      // Clearing it would not help: in a layout, the page's own entry is all there is; or the filter is read from each
+      // entry.
+      if ((Object.keys(patch) as Array<'category' | 'tag'>).some(bound)) return { text: `${text} That filter is read from each entry, in Entry content.` };
+      return { text: `${text} ${another}`, action: { label: 'Open Content', run: openContentPanel } };
+    };
+    const both = !!(query.category && query.tag);
+    const empty: ComputedEmpty = !hasCollections(state)
+      ? { text: 'This site has no blog or other collection yet. Start one in Content.', action: { label: 'Open Content', run: openContentPanel } }
+      : !collection
+        ? isEntryBinding(props.collection)
+          ? { text: `There is no collection called “${query.collection}”. The collection is read from each entry, in Entry content.` }
+          : setProps && fallback && listedEntries(state, { ...query, collection: '', count: undefined }, where).entries.length > 0
+            ? { text: `There is no collection called “${query.collection}”.`, action: { label: `Use ${fallback.settings.name} instead`, run: () => setProps({ collection: '' }, `Show ${fallback.settings.name}`) } }
+            : { text: `There is no collection called “${query.collection}”. Choose one under Which entries.` }
+        : missingTerm('categories', query.category)
+          ? filterFix({ category: '' }, 'Show every category', `${named} has no category called “${query.category}”.`)
+          : missingTerm('tags', query.tag)
+            ? filterFix({ tag: '' }, 'Show every tag', `${named} has no tag called “${query.tag}”.`)
+            : !published
+              ? { text: `Nothing in ${named} is published yet. Drafts don’t show.`, action: { label: 'Open Content', run: openContentPanel } }
+              : withHere > 0 && (query.category || query.tag) && fix(both ? { category: '', tag: '' } : query.category ? { category: '' } : { tag: '' }, 'x')
+                ? filterFix(both ? { category: '', tag: '' } : query.category ? { category: '' } : { tag: '' }, both ? 'Clear both filters' : query.category ? 'Show every category' : 'Show every tag', `The only published entry ${[inWords, taggedWords].filter(Boolean).join(' and ')} is the one this page shows, and a list leaves that one out.`)
+              : withHere > 0
+                ? {
+                    text: `The only published entry${query.category || query.tag ? ` ${[inWords, taggedWords].filter(Boolean).join(' and ')}` : ` in ${named}`} is the one this page shows, and a list leaves that one out. ${another}`,
+                    action: { label: 'Open Content', run: openContentPanel }
+                  }
+                : query.category || query.tag
+                  ? filterFix(both ? { category: '', tag: '' } : query.category ? { category: '' } : { tag: '' }, both ? 'Clear both filters' : query.category ? 'Show every category' : 'Show every tag', `${named} has nothing published ${[inWords, taggedWords].filter(Boolean).join(' and ')}.`)
+                  : { text: `Nothing in ${named} can show here. ${another}`, action: { label: 'Open Content', run: openContentPanel } };
+    const filters = [inWords, taggedWords].filter(Boolean).join(', ');
+    // A layout with no entry to show it on: which entries appear depends on that entry, so none are listed as if they did.
+    const unresolved = !!layoutId && !shown;
+    if (unresolved)
+      return (
+        <div className="field computed-list" data-list={name}>
+          <ComputedRows label={schema.label} rows={[]} opens="" rule="" empty={{ text: 'Which entries show here depends on the entry the layout is shown for. Choose an entry to preview the layout on, and they are listed here.' }} />
+        </div>
+      );
     return (
       <div className="field computed-list" data-list={name}>
-        <div className="field-label">
-          {schema.label} <span className="faint">· newest first</span>
-        </div>
-        {rows.length ? (
-          <ol className="computed-rows" aria-label={`${schema.label} shown here`}>
-            {rows.map((r) => (
-              <li key={r.id}>
-                <button
-                  className="link-btn"
-                  onClick={() => {
-                    // Each row's own collection: one read from the entry a layout is shown on can be another.
-                    const found = findEntry(state, r.id);
-                    if (found) void openPost(found.collection.settings.id, r.id);
-                  }}
-                  title={`Open ${r.title} in Posts`}
-                >
-                  {r.title}
-                </button>
-                {r.dateLabel && <span className="faint"> · {r.dateLabel}</span>}
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className="insp-note muted">{collection ? 'No published entries to show here yet.' : query.collection ? `This project has no collection “${query.collection}”.` : 'This project has no collection yet. Start a blog in Posts.'}</p>
-        )}
-        <p className="insp-note field-hint">
-          Filled in from {collection ? `${collection.settings.name}’s` : 'a collection’s'} published entries{query.category ? `, in ${query.category}` : ''}
-          {query.tag ? `, tagged ${query.tag}` : ''}
-          {Number.isFinite(count) ? `, up to ${count}` : ''}. Choose which with the settings above. Write, date and publish them in Posts; drafts are left out
-          {place?.ref.owner.kind === 'template' ? ', and so is the entry whose page shows the list' : ''}.
-        </p>
+        <ComputedRows
+          label={schema.label}
+          rows={rows}
+          total={unread ? undefined : total}
+          single={single}
+          // Said only of a collection that exists: with none, the box below says what is wrong. With nothing to show,
+          // only where it fills from: the box names the filter.
+          source={!collection ? undefined : !raw.length ? `Fills itself from ${named}.` : single ? `Fills itself with the newest published entry of ${named}${filters ? ` ${filters}` : ''}.` : `Fills itself from ${named}${filters ? `, ${filters}` : ''}, newest first.`}
+          opens={single ? 'Select the entry to open it in Content.' : 'Select one to open it in Content.'}
+          rule={`Drafts are left out${inLayout ? ', and so is the entry whose page shows the list' : ''}.`}
+          empty={empty}
+        />
       </div>
     );
   }
-  if (schema.feed === 'currentPage')
+  if (schema.feed === 'currentPage') {
+    const row = raw[0];
+    const dated = !!row?.date;
     return (
       <div className="field computed-list" data-list={name}>
         <div className="field-label">{schema.label}</div>
-        <p className="insp-note field-hint" id={hintId}>
-          {page
-            ? `Shows this page’s title${rows[0]?.date ? ', publication date, byline and excerpt' : ''}${rows[0]?.date ? '' : '. Make it a dated article in its page settings to show a date, byline and excerpt too'}.`
-            : 'Shows the title and article details of the page it is on. In the shared header or footer it has no page of its own and shows nothing.'}
-        </p>
-        {page && (
-          <button className="btn btn-sm insp-inline-btn" aria-describedby={hintId} onClick={() => openPageSettings(page.id)}>
-            Edit in page settings
-          </button>
+        {page ? (
+          <div className="computed-page">
+            <div className="computed-page-title">{row?.title || page.title}</div>
+            <div className="computed-page-meta">{dated ? rowMeta(row.dateLabel, row.byline) : 'Not a dated article, so only its title shows. Turn on Dated article in its page settings to show a date too.'}</div>
+            {dated && row.excerpt?.trim() && <div className="computed-page-excerpt">{row.excerpt}</div>}
+            <button type="button" className="btn btn-sm" onClick={() => openPageSettings(page.id)}>
+              {dated ? 'Edit in page settings' : 'Open page settings'}
+            </button>
+          </div>
+        ) : (
+          <div className="computed-empty">
+            <p>Shows the title and date of the page it is on. In the shared header or footer there is no page, so it shows nothing.</p>
+          </div>
         )}
       </div>
     );
+  }
+  // Every dated article that could show here, before the list's limit.
+  const total = articleRows(state, schema.feed!, pageId).length;
+  // Why no article shows, from what keeps each one out (a draft, hidden from news lists, this page itself), and the
+  // one step that would show one, when a single step would.
+  const openPages: ComputedEmpty['action'] = { label: 'Open Pages', run: () => setState({ leftTab: 'pages' }) };
+  const newsEmpty = (): ComputedEmpty => {
+    const articles = Object.values(state.pages).filter((p) => pageArticle(p));
+    if (!articles.length) return { text: 'This site has no dated articles yet. Add one in Pages with Add page → Dated article.', action: openPages };
+    const others = articles.filter((p) => p.id !== pageId);
+    if (!others.length) return { text: 'The only dated article is this page, and a news list leaves its own page out. Add another in Pages.', action: openPages };
+    const draft = (p: PageDoc) => p.draft === true && p.id !== state.site.homePageId;
+    const hidden = (p: PageDoc) => pageArticle(p)!.hidden === true;
+    const one = others.length === 1;
+    // “Other” only when this page is an article too.
+    const other = others.length < articles.length ? ' other' : '';
+    if (others.every((p) => draft(p) && !hidden(p))) return { text: `${one ? `The one${other} dated article is a draft. Publish it` : `All ${others.length}${other} dated articles are drafts. Publish one`} to show it here.`, action: one ? { label: 'Open page settings', run: () => openPageSettings(others[0].id) } : openPages };
+    if (others.every((p) => hidden(p) && !draft(p))) return { text: `${one ? `The one${other} dated article is hidden from news lists. Show it` : `All ${others.length}${other} dated articles are hidden from news lists. Show one`} in its page settings.`, action: one ? { label: 'Open page settings', run: () => openPageSettings(others[0].id) } : openPages };
+    return { text: 'No dated article can show here: drafts, articles hidden from news lists and this page itself are left out.', action: openPages };
+  };
+  const rows: ComputedRow[] = raw.map((r) => ({ id: r.id, title: r.title, meta: rowMeta(r.dateLabel, r.byline), open: () => openPageSettings(r.id) }));
   return (
     <div className="field computed-list" data-list={name}>
-      <div className="field-label">
-        {schema.label} <span className="faint">· newest first</span>
-      </div>
-      {rows.length ? (
-        <ol className="computed-rows" aria-label={`${schema.label} shown here`}>
-          {rows.map((r) => (
-            <li key={r.id}>
-              <button className="link-btn" onClick={() => openPageSettings(r.id)} title={`Open ${r.title}’s page settings`}>
-                {r.title}
-              </button>
-              {r.dateLabel && <span className="faint"> · {r.dateLabel}</span>}
-            </li>
-          ))}
-        </ol>
-      ) : (
-        <p className="insp-note muted">No articles to show yet.</p>
-      )}
-      <p className="insp-note field-hint">
-        Filled in from the site’s dated articles{Number.isFinite(limit) ? `, up to ${limit}` : ''}. Add one with Add page → Dated article. Change an article’s title, date, byline or excerpt, or hide it from news lists, in its page settings. Drafts are left out.
-      </p>
+      <ComputedRows
+        label={schema.label}
+        rows={rows}
+        total={total}
+        single={single}
+        source={raw.length ? 'Fills itself from the site’s dated articles, newest first.' : 'Fills itself from the site’s dated articles.'}
+        opens={single ? 'Select the article to open its page settings.' : 'Select one to open its page settings.'}
+        rule="Drafts and articles hidden from news lists are left out."
+        empty={newsEmpty()}
+      />
     </div>
   );
 }

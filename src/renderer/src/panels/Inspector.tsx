@@ -54,6 +54,7 @@ import { wasPublishedFor } from '@shared/published';
 import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
+import { entryQuery, listsEntries } from '@shared/entry-feed';
 import { postAt, postShown, postsCollection } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
 import { activeWorkspace } from '../lib/workspace';
@@ -83,7 +84,7 @@ import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-sty
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
 import { designGridRef, isGridChild } from '../lib/grid-child';
 import { TagField } from './TagField';
-import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListFill, type ListItemNote, type ListOp } from './PropEditors';
+import { ContactMismatch, FEED_QUERY_PICKS, FeedQueryField, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type FeedQueryPick, type ListFill, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
 import { ClickActionSection, OverlaySection, UiStateSection, overlayOffered } from './InteractionControls';
@@ -1301,6 +1302,13 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               const own = hideAt(found);
               // A property showing each entry's own value is chosen in Entry content, not typed here.
               if ((owner.kind === 'template' || inCollectionLoop) && isBinding(node.props[key])) return <EntryBoundNote key={key} state={state} owner={owner} node={node} value={node.props[key]} label={label ?? schema.label} />;
+              // A post feed's collection, category and tag are chosen by name from the project's (see FeedQueryField).
+              if (listsEntries(def) && schema.type === 'string' && (FEED_QUERY_PICKS as readonly string[]).includes(key))
+                return (
+                  <FieldHome key={key} part={`prop:${key}`} alive={propAlive(owner, node.id, key)}>
+                    <FeedQueryField prop={key as FeedQueryPick} label={label ?? schema.label} value={node.props[key] ?? schema.default} query={entryQuery(def.properties, node.props as Record<string, unknown>)} layout={owner.kind === 'template' ? { collectionId: owner.id, nodeId: node.id, properties: def.properties } : undefined} state={state} onChange={(v) => void claim(key, {}, () => set(key, v))} />
+                  </FieldHome>
+                );
               const field = (
                 <PropField
                   key={key}
@@ -1317,6 +1325,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   itemAlive={(itemId, field) => rowAlive(owner, node.id, key, itemId, field)}
                   onTable={(edit) => claim(key, {}, () => applyTableEdit(owner, node.id, key, edit, fieldLabel(state, schema.label, here)))}
                   refused={refused(key)}
+                  setProps={schema.type === 'list' && schema.feed ? (patch, words) => void applyOps(Object.entries(patch).map(([prop, value]) => ({ type: 'instance.setProp' as const, owner, nodeId: node.id, prop, value })), words) : undefined}
                   state={state}
                   openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
                   annotate={notes(key)}
@@ -1330,8 +1339,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   order={key === 'links' && headerMenuId === node.id ? { control: <HeaderMenuOrderSelect state={state} />, locked: followsPageOrder(state) ? FOLLOWING_MOVE_NOTE : null } : undefined}
                 />
               );
-              // A list of its own items can show a collection's entries instead (see CollectionListControls).
-              if (schema.type === 'list' && !isBinding(node.props[key])) return <ListSourceSwitch key={key} state={state} owner={owner} node={node} prop={key} schema={schema} manual={field} />;
+              // A list of its own items can show a collection's entries instead (see CollectionListControls); one that
+              // fills itself (a post feed, a news list) has no items of its own to switch from.
+              if (schema.type === 'list' && !schema.feed && !isBinding(node.props[key])) return <ListSourceSwitch key={key} state={state} owner={owner} node={node} prop={key} schema={schema} manual={field} />;
               return field;
             }}
           />
@@ -2516,6 +2526,13 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
                   {label ?? schema.label}: each item of the list has its own.
                 </p>
               );
+            // A post feed's collection, category and tag are chosen by name here too (see FeedQueryField).
+            if (listsEntries(placedDef) && schema.type === 'string' && (FEED_QUERY_PICKS as readonly string[]).includes(key))
+              return (
+                <FieldHome key={key} part={`prop:${key}`} alive={propAlive(owner, node.id, key)}>
+                  <FeedQueryField prop={key as FeedQueryPick} label={label ?? schema.label} value={raw ?? schema.default} query={entryQuery(placedDef.properties, node.props as Record<string, unknown>)} state={state} onChange={(v) => void claim(key, {}, () => applyWith(undefined, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: v }], fieldLabel(state, schema.label, refTo(owner, node.id)), `${def.id}:${node.id}:${key}`))} />
+                </FieldHome>
+              );
             return (
               <PropField
                 key={key}
@@ -2531,6 +2548,9 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
                 alive={propAlive(owner, node.id, key)}
                 itemAlive={(itemId, field) => rowAlive(owner, node.id, key, itemId, field)}
                 onTable={(edit) => claim(key, {}, () => applyTableEdit(owner, node.id, key, edit, fieldLabel(state, schema.label, refTo(owner, node.id))))}
+                // A computed list here shows what this placement in the design lists, and its empty state can change it.
+                place={schema.type === 'list' && schema.feed ? { ref: { owner, instancePath: [], nodeId: node.id }, list: key } : undefined}
+                setProps={schema.type === 'list' && schema.feed ? (patch, words) => void applyOps(Object.entries(patch).map(([prop, value]) => ({ type: 'instance.setProp' as const, owner, nodeId: node.id, prop, value })), words) : undefined}
                 state={state}
                 linkPairs={schema.type === 'list' ? itemLinkPairs(placedDef, key) : undefined}
                 openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}

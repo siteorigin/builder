@@ -18,6 +18,8 @@ export interface VisitorTextField {
   hint: string;
   /** Names in braces the wording may use, filled in when it is shown ("{count}"). */
   fills?: string[];
+  /** Fills a wording may leave out because the site still shows that value ("{title}" goes at the end). */
+  optionalFills?: string[];
 }
 
 export const VISITOR_TEXT_KEYS = [
@@ -124,7 +126,7 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'searchSearching', label: 'Searching', hint: 'Announced while the search runs.' },
       { key: 'searchFailed', label: 'Search failed', hint: 'Shown when the search cannot load.' },
       { key: 'searchNone', label: 'No results', hint: 'Shown when nothing matches, before the advice.', fills: ['query'] },
-      { key: 'searchAdvice', label: 'No-results advice', hint: 'Shown after it, on a search box without advice of its own.' },
+      { key: 'searchAdvice', label: 'No-results advice', hint: 'Shown after the no-results message, on a search box without advice of its own.' },
       { key: 'searchOne', label: 'One result', hint: 'Shown when one page matches.', fills: ['query'] },
       { key: 'searchMany', label: 'Several results', hint: 'Shown when several pages match.', fills: ['count', 'query'] },
       { key: 'searchLimited', label: 'Too many results', hint: 'Shown when more pages match than the list shows.', fills: ['count', 'query', 'shown'] },
@@ -176,8 +178,8 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
     fields: [
       { key: 'readingTime', label: 'Reading time', hint: 'In a post’s layout, how long its text takes to read.', fills: ['count'] },
       { key: 'entryNav', label: 'Links between posts', hint: 'The name screen readers give a post’s links to the posts beside it.' },
-      { key: 'entryPrevious', label: 'Previous post', hint: 'A post’s link to the one listed before it. The title goes at the end if you leave out {title}.', fills: ['title'] },
-      { key: 'entryNext', label: 'Next post', hint: 'A post’s link to the one listed after it. The title goes at the end if you leave out {title}.', fills: ['title'] },
+      { key: 'entryPrevious', label: 'Previous post', hint: 'A post’s link to the one listed before it.', fills: ['title'], optionalFills: ['title'] },
+      { key: 'entryNext', label: 'Next post', hint: 'A post’s link to the one listed after it.', fills: ['title'], optionalFills: ['title'] },
       { key: 'archiveNav', label: 'Page links', hint: 'The name screen readers give the links between the pages of a blog’s index or category archive.' },
       { key: 'archivePrevious', label: 'Previous page', hint: 'The link to the page of newer posts before it.' },
       { key: 'archiveNext', label: 'Next page', hint: 'The link to the page of older posts after it.' },

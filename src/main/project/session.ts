@@ -9,6 +9,8 @@ import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
 import { PUBLISHED_FILE, withPublished } from '@shared/published';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
+import type { SourceWriteGrant } from '@shared/sources';
+import { sourceWriteRefusal } from '../sources/grant';
 import type { ApplyResult, EditBatch, EditOperation, ToolError } from '@shared/ops';
 import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
@@ -44,7 +46,7 @@ import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placeme
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
-import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, safeJoinLooking, sha, syncDir, toJson, FolderPass, WRITES_AT_ONCE, type Looked } from './fsutil';
+import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, safeJoinLooking, sha, stageWrites, syncDir, syncStaged, toJson, FolderPass, WRITES_AT_ONCE, type Looked, type StagedWrite } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
@@ -315,7 +317,16 @@ interface Journal {
   revision?: number;
   /** The AI run this change completes: its marker goes once the change is done. */
   finishRun?: string;
+  /**
+   * The versions (by hash) the change's writes and History name that were not stored when it was journaled: they are
+   * stored after its documents, and from here by a recovery that comes first.
+   */
+  versions?: Record<string, string>;
 }
+
+/** The most new versions, and the most bytes of them, a save's journal carries; a save with more stores them before it. */
+const CARRIED_VERSIONS = 64;
+const CARRIED_BYTES = 4 * 1024 * 1024;
 
 interface GeneratedManifest {
   generator: string;
@@ -1110,6 +1121,23 @@ export class ProjectSession extends EventEmitter {
     return h;
   }
 
+  /** Where each version in `blobs` (by hash) is stored, with its content. */
+  private blobWrites(blobs: Map<string, string>): Array<{ path: string; data: string }> {
+    return [...blobs].map(([h, content]) => ({ path: this.local('history', 'blobs', `${h}.json`), data: content }));
+  }
+
+  /** Store versions (by hash) for good, flushed together. */
+  private async storeBlobs(blobs: Map<string, string>) {
+    if (!blobs.size) return;
+    const files = await stageWrites(this.blobWrites(blobs));
+    try {
+      for (const f of files) await f.replace();
+      await syncStaged(files);
+    } finally {
+      await Promise.all(files.map((f) => f.discard()));
+    }
+  }
+
   private async getBlob(h: string): Promise<string> {
     if (!/^[a-f0-9]{64}$/.test(h)) throw new Error('Invalid history blob reference.');
     const content = await fs.readFile(this.local('history', 'blobs', `${h}.json`), 'utf8');
@@ -1634,6 +1662,13 @@ export class ProjectSession extends EventEmitter {
     return changed;
   }
 
+  /** Whether `disk` is the stored version `blob` of `path`, as a save's check of a file before replacing it sees it. */
+  private async sameAsVersion(path: string, disk: string | null, blob: string | null): Promise<boolean> {
+    if (disk === null || blob === null) return false;
+    const version = await this.getBlob(blob).catch(() => null);
+    return version !== null && sameContent(path, disk, version);
+  }
+
   /** Roll forward an interrupted publication: every intended write is stored as a blob before any file is replaced. */
   private async recoverJournal() {
     const j = await readIfExists(this.local('journal.json'));
@@ -1657,6 +1692,17 @@ export class ProjectSession extends EventEmitter {
     const allPaths = [...journal.writes, ...journal.deletes].map((e) => e?.path);
     const bad = allPaths.some((p) => typeof p !== 'string' || !isCanonicalPath(p)) || new Set(allPaths).size !== allPaths.length;
     if (bad) return keepAside('An interrupted save referred to files it should not touch, so it was set aside.');
+    // Versions the change had not stored yet travel with it: stored first, since its writes and History name them. One
+    // that is not what its name says is never stored, so a change that needs it is set aside below.
+    if (journal.versions && typeof journal.versions === 'object' && !Array.isArray(journal.versions)) {
+      const named = new Set<unknown>([...journal.writes.flatMap((w) => [w?.blob, w?.before]), ...journal.deletes.map((d) => d?.before)]);
+      const steps = (journal.history as { entries?: unknown } | undefined)?.entries;
+      if (Array.isArray(steps)) for (const e of steps) for (const d of Object.values((e as { docs?: Record<string, { before?: unknown; after?: unknown }> } | null)?.docs ?? {})) named.add(d?.before).add(d?.after);
+      for (const [h, content] of Object.entries(journal.versions)) {
+        if (!named.has(h) || !/^[a-f0-9]{64}$/.test(h) || typeof content !== 'string' || sha(content) !== h) continue;
+        if (!(await this.getBlob(h).then(() => true, () => false))) await atomicWrite(this.local('history', 'blobs', `${h}.json`), content);
+      }
+    }
     const contents = new Map<string, string>();
     for (const w of journal.writes) {
       const c = await this.getBlob(w.blob).catch(() => null);
@@ -1707,7 +1753,9 @@ export class ProjectSession extends EventEmitter {
       const disk = await this.diskContent(w.path);
       const h = disk === null ? null : sha(disk);
       if (h === w.blob) continue; // already applied
-      if (h !== w.before) {
+      // A file that differs from the version this change replaced only in its formatting (saved so by another editor,
+      // which the save's own check let pass) is that version: its replacement was lost, not overtaken.
+      if (h !== w.before && !(await this.sameAsVersion(w.path, disk, w.before))) {
         // Changed by someone else since: keep their file, and hold this batch's version so the documents
         // the project is opened with stay consistent with the rest of the batch until the user chooses.
         conflicts++;
@@ -1750,7 +1798,7 @@ export class ProjectSession extends EventEmitter {
         await removeEmptyDirs(dirname(safeJoin(this.dir, d.path)), join(this.dir, d.path.startsWith('src/') ? 'src' : 'siteorigin'));
         continue;
       }
-      if (sha(disk) !== d.before) {
+      if (sha(disk) !== d.before && !(await this.sameAsVersion(d.path, disk, d.before))) {
         conflicts++;
         this.holdConflict(d.path, null, 'Changed outside SiteOrigin Builder while a save was interrupted.');
         continue;
@@ -1927,15 +1975,22 @@ export class ProjectSession extends EventEmitter {
     const changed: Record<string, { before: string | null; after: string | null }> = {};
     const writes: Array<{ path: string; blob: string; content: string; before: string | null }> = [];
     const deletes: Array<{ path: string; before: string }> = [];
+    // The versions this change's journal and History step name that are not stored yet: stored with the journal.
+    const blobs = new Map<string, string>();
+    const blobOf = (content: string) => {
+      const h = sha(content);
+      if (!blobs.has(h) && !existsSync(this.local('history', 'blobs', `${h}.json`))) blobs.set(h, content);
+      return h;
+    };
     for (const [path, content] of nextDocs) {
       const prev = this.docs.get(path);
       if (prev === content) continue;
-      changed[path] = { before: prev === undefined ? null : await this.putBlob(prev), after: await this.putBlob(content) };
+      changed[path] = { before: prev === undefined ? null : blobOf(prev), after: blobOf(content) };
       writes.push({ path, blob: changed[path].after!, content, before: changed[path].before });
     }
     for (const [path, prev] of this.docs) {
       if (nextDocs.has(path)) continue;
-      changed[path] = { before: await this.putBlob(prev), after: null };
+      changed[path] = { before: blobOf(prev), after: null };
       deletes.push({ path, before: changed[path].before! });
     }
     // Authored sources go before the definitions that name them, so a component's definition is never missing
@@ -1969,7 +2024,12 @@ export class ProjectSession extends EventEmitter {
       return true;
     };
     for (const path of Object.keys(changed)) await unchangedOnDisk(path);
-    if (this.activeRun) await this.writeRunMarker(nextDocs);
+    // An AI run's marker names the version it is leaving each file at, which is stored before the marker names it.
+    if (this.activeRun) {
+      await this.storeBlobs(blobs);
+      blobs.clear();
+      await this.writeRunMarker(nextDocs);
+    }
     // The undo position is part of the change: planned now, journaled with the documents, installed with them.
     const planned =
       opts.history !== false && Object.keys(changed).length
@@ -1990,35 +2050,83 @@ export class ProjectSession extends EventEmitter {
     let changedFiles: string[];
     // Files replaced or removed so far: a change stopped before the first one has changed nothing on disk.
     let installed = 0;
+    // The documents, History and revision of this change, written and flushed beside their paths before they replace them.
+    let staged: StagedWrite[] = [];
+    // Whether this change's journal may be on disk: from the moment it is about to take its place.
+    let journalPlaced = false;
+    let event!: SessionEvent;
+    // What a listener of the announcement threw, raised once the save is done, as it was when the save announced last.
+    let unheard: { error: unknown } | null = null;
     try {
-      // Journal first, then replace files.
-      if (journaled) await this.writeJournal({ writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1 }, guard ? async () => stillAllowed() : undefined);
-      // A code component's source the preview watches is replaced with the files generated from it, in one update.
-      changedFiles = await this.publishing(async () => {
-        // Each file is checked again just before it is replaced or removed: one saved outside the app since the check
-        // above (while the journal was being written) is never replaced unseen.
-        for (const w of writes) {
-          await atomicWrite(safeJoin(this.dir, w.path), w.content, { beforeReplace: () => unchangedOnDisk(w.path) });
-          this.landing?.add(w.path);
-          installed++;
-        }
-        for (const d of deletes) {
-          await unchangedOnDisk(d.path);
-          await this.removeCanonical(d.path);
-          this.landing?.add(d.path);
-          installed++;
-        }
-        // The documents, their undo position and the revision change together, before the generated files are
-        // written: a snapshot taken while those land (which can take a second on Windows) never shows the new
-        // documents beside the History and revision of the step before, which would show one step too few to undo.
-        this.state = next;
-        this.docs = nextDocs;
-        if (planned) this.history = planned.history;
-        this.revision++;
-        return this.publishGenerated(false, generated);
-      });
-      if (planned) await this.installHistory(planned.history);
-      await this.saveLocalState();
+      // Journal first, then replace files. Each durable file is written and flushed beside its path, several at once,
+      // before any takes its place, so their flushes overlap; a folder is flushed once for all the files renamed in it.
+      // A batch with many or large new versions (a sync of a whole collection) stores them first, as a smaller journal
+      // is quicker to write than they are; it carries the rest.
+      if (blobs.size > CARRIED_VERSIONS || [...blobs.values()].reduce((n, c) => n + c.length, 0) > CARRIED_BYTES) {
+        await this.storeBlobs(blobs);
+        blobs.clear();
+      }
+      if (journaled)
+        await this.placeJournal(
+          { writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1, ...(blobs.size ? { versions: Object.fromEntries(blobs) } : {}) },
+          async () => {
+            journalPlaced = true;
+            return stillAllowed();
+          }
+        );
+      try {
+        // A code component's source the preview watches is replaced with the files generated from it, in one update.
+        changedFiles = await this.publishing(async () => {
+          // The documents, flushed together once the journal that can finish them is on disk.
+          staged = await stageWrites(writes.map((w) => ({ path: safeJoin(this.dir, w.path), data: w.content })));
+          // Each file is checked again just before it is replaced or removed: one saved outside the app since the check
+          // above (while the journal was being written) is never replaced unseen.
+          for (const [i, w] of writes.entries()) {
+            await staged[i].replace(() => unchangedOnDisk(w.path));
+            this.landing?.add(w.path);
+            installed++;
+          }
+          for (const d of deletes) {
+            await unchangedOnDisk(d.path);
+            await this.removeCanonical(d.path);
+            this.landing?.add(d.path);
+            installed++;
+          }
+          // The documents, their undo position and the revision change together, before the generated files are
+          // written: a snapshot taken while those land (which can take a second on Windows) never shows the new
+          // documents beside the History and revision of the step before, which would show one step too few to undo.
+          this.state = next;
+          this.docs = nextDocs;
+          if (planned) this.history = planned.history;
+          this.revision++;
+          return this.publishGenerated(false, generated);
+        });
+        const files = changedFiles;
+        const announce = () => {
+          // This save reached the disk, so an earlier one that failed no longer describes the project.
+          this.failedSave = null;
+          event = { revision: this.revision, changedDocs: Object.keys(changed), changedFiles: files, label: opts.label, source: opts.source ?? 'user', entryId: planned?.entryId };
+          perf.mark('session.changed', { revision: this.revision, docs: event.changedDocs.length, files: files.length });
+          try {
+            this.emit('changed', event);
+          } catch (error) {
+            unheard = { error };
+          }
+        };
+        // A journaled change is committed now: its journal is on disk, so a crash from here on finishes it, and its
+        // documents and the preview's files are in place. It is announced at once, so the editor need not wait for its
+        // versions, History and revision to take their places and the journal to go; a failure to finish them still
+        // says the project must be reopened. One with no journal has only its revision to record, so that comes first.
+        if (journaled) announce();
+        await this.finishSave(staged, [
+          ...this.blobWrites(blobs),
+          ...(planned ? [{ path: this.local('history', 'history.json'), data: toJson(planned.history) }] : []),
+          { path: this.local('state.json'), data: toJson({ revision: this.revision }) }
+        ]);
+        if (!journaled) announce();
+      } finally {
+        await Promise.all(staged.map((f) => f.discard()));
+      }
       if (journaled) await removeDurable(this.local('journal.json'));
     } catch (e) {
       // Turned away by its guard before its journal took its place: nothing of it reached the project.
@@ -2032,17 +2140,46 @@ export class ProjectSession extends EventEmitter {
         );
         if (cleared) throw e;
       }
-      // The journal on disk may now describe this change; a later save would replace it. Reopening finishes it.
-      if (journaled) this.unsettled = true;
+      // The journal on disk may now describe this change; a later save would replace it. Reopening finishes it. One
+      // stopped before its journal could take its place left only versions no journal names: nothing to finish.
+      if (journalPlaced) this.unsettled = true;
       throw e;
     }
-    // This save reached the disk, so an earlier one that failed no longer describes the project.
-    this.failedSave = null;
-    if (planned && (planned.pruned || --this.gcCountdown <= 0)) await this.sweep();
-    const event: SessionEvent = { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: opts.label, source: opts.source ?? 'user', entryId: planned?.entryId };
-    perf.mark('session.changed', { revision: this.revision, docs: event.changedDocs.length, files: changedFiles.length });
-    this.emit('changed', event);
+    if (planned && (planned.pruned || --this.gcCountdown <= 0)) this.sweepSoon();
+    // Set inside `announce`, which the compiler cannot follow.
+    const listener = unheard as { error: unknown } | null;
+    if (listener) throw listener.error;
     return event;
+  }
+
+  /**
+   * Put a change's journal in place for good: flushed, renamed, its folder flushed. It carries the versions it names
+   * that are not stored yet (`versions`), so nothing else need reach the disk before it. `beforeReplace` is asked as
+   * the journal is about to take its place.
+   */
+  private async placeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace: () => Promise<boolean>) {
+    const [journal] = await stageWrites([{ path: this.local('journal.json'), data: toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal) }]);
+    try {
+      await journal.replace(beforeReplace);
+      await syncStaged([journal]);
+    } finally {
+      await journal.discard();
+    }
+  }
+
+  /**
+   * The end of a save, once the preview has its update: the versions its journal carries, the History that names them
+   * and the revision (`files`, flushed together) take their places after the documents (`documents`, in place already),
+   * then every folder a file of the save was renamed in is flushed, together, before its journal goes.
+   */
+  private async finishSave(documents: StagedWrite[], files: Array<{ path: string; data: string }>) {
+    const staged = await stageWrites(files);
+    try {
+      for (const f of staged) await f.replace();
+      await syncStaged([...documents, ...staged]);
+    } finally {
+      await Promise.all(staged.map((f) => f.discard()));
+    }
   }
 
   private async writeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace?: () => Promise<boolean>) {
@@ -2752,12 +2889,13 @@ export class ProjectSession extends EventEmitter {
   /**
    * `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies.
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
-   * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant).
+   * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant), and
+   * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts).
    * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
    */
   apply(
     batch: EditBatch,
-    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
+    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
     // An edit's own work, once it is its turn (src/shared/perf.ts): the wait for that is the rest of controller.apply.
     return this.serialize(timed('session.apply', async (): Promise<ApplyResult> => {
@@ -2828,9 +2966,12 @@ export class ProjectSession extends EventEmitter {
       // The project brief is the author's own (#518): the assistant reads it as background (#519) but never changes it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };
-      // So are external sources' settings (#676), which name the secrets the user signs in with.
-      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'source.upsert' || o.type === 'source.remove'))
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'External sources can only be changed in the editor.', recoverable: true } };
+      // So are external sources' settings (#676), which name the secrets the user signs in with, apart from the one
+      // mapping or converter the assistant's source tool tested (#680), as it tested it.
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'source.upsert' || o.type === 'source.remove')) {
+        const refused = opts.sourceWrite ? sourceWriteRefusal(ops, opts.sourceWrite, this.state.sources) : 'External sources can only be changed in the editor.';
+        if (refused) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: refused, recoverable: true } };
+      }
       // The assistant reaches a collection only through its collection and entry tools, and a layout only from a request
       // sent while it is open: each grants exactly that batch (see shared/collection-grant). Any other collection change
       // is the editor's.
@@ -3081,7 +3222,7 @@ export class ProjectSession extends EventEmitter {
     const planned = this.planHistory(docs, opts, this.revision);
     await this.installHistory(planned.history);
     // Collect when history was pruned, and every so often for blobs left by provisional AI batches and undo.
-    if (planned.pruned || --this.gcCountdown <= 0) await this.sweep();
+    if (planned.pruned || --this.gcCountdown <= 0) this.sweepSoon();
   }
 
   /** Asset imports in progress: their files are written before their asset records, so no asset sweep runs meanwhile. */
@@ -3122,14 +3263,37 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(() => this.sweep());
   }
 
+  /** How long after a save makes a sweep due it runs (sweepSoon). */
+  sweepDelayMs = 1000;
+  private sweepTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * A sweep a save made due (History let a step go, or enough saves have passed since the last) runs a moment after the
+   * save, in its turn like any command, never inside it: no edit waits on a scan of the project's history and asset
+   * folders before it is acknowledged. Made due again before it runs, it runs once.
+   */
+  private sweepSoon() {
+    if (this.sweepTimer) return;
+    this.sweepTimer = setTimeout(() => {
+      this.sweepTimer = null;
+      this.collectGarbage().catch(() => undefined);
+    }, this.sweepDelayMs);
+    this.sweepTimer.unref?.();
+  }
+
   private async sweep(): Promise<void> {
-    // A save waiting for reopening may need files only its journal names.
-    if (this.unsettled || !(await this.stillOwner())) return;
-    this.gcCountdown = 25;
+    const sweeping = perf.span('session.sweep');
     try {
-      await this.collectGarbageNow();
-    } catch {
-      /* best effort: a failed sweep is retried next time */
+      // A save waiting for reopening may need files only its journal names.
+      if (this.unsettled || !(await this.stillOwner())) return;
+      this.gcCountdown = 25;
+      try {
+        await this.collectGarbageNow();
+      } catch {
+        /* best effort: a failed sweep is retried next time */
+      }
+    } finally {
+      sweeping();
     }
   }
 
@@ -4572,7 +4736,7 @@ export class ProjectSession extends EventEmitter {
           return true;
         }
       }
-      if (planned && (planned.pruned || --this.gcCountdown <= 0)) await this.sweep();
+      if (planned && (planned.pruned || --this.gcCountdown <= 0)) this.sweepSoon();
       this.emit('history');
       return !!planned;
     });
@@ -4850,6 +5014,9 @@ export class ProjectSession extends EventEmitter {
   }
 
   async close() {
+    // A sweep not yet run is left to the next open, which sweeps first.
+    if (this.sweepTimer) clearTimeout(this.sweepTimer);
+    this.sweepTimer = null;
     await this.writing.catch(() => undefined);
     await this.releaseLock();
     this.removeAllListeners();

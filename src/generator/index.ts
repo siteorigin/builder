@@ -1606,6 +1606,8 @@ function sortedDefs(state: ProjectState): ComponentDefinition[] {
 // ---------------------------------------------------------------------------
 
 interface EmitCtx {
+  /** On an entry's page: the layout's rich texts that show the entry's own text, which ARTICLE_STYLE styles. */
+  articleBody?: ReadonlySet<string>;
   state: ProjectState;
   file: string;
   imports: Map<string, string>; // import name -> path
@@ -3169,7 +3171,9 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
           useImport(ctx, '{ richList }', `${RUNTIME_DIR}/util.js`);
           val = `richList(${val}, ${js(listed)})`;
         }
-        return `${p}<SoRichText value={${val}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
+        // An entry's own text (its layout's `{ $entry: 'body' }`) is marked, so the article's rules reach it alone.
+        const body = ctx.articleBody?.has(node.id) ? [js(ARTICLE_BODY_CLASS)] : [];
+        return `${p}<SoRichText value={${val}} class=${classExpr(ctx, node, body)}${anchorAttr(ctx, node)}${ids} />`;
       }
       const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(Array.isArray(node.text) ? richTextToPlain(toRichText(node.text)) : node.text);
       const parentId = parentMap(ctx.tree).get(node.id);
@@ -4619,7 +4623,8 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
     items: [],
     rctx: { state, entry: { collectionId, entryId } },
     indent: 0,
-    locals: new Map()
+    locals: new Map(),
+    articleBody: articleBodyIds(collection)
   };
   if (!opts.instrument && webMcpOn(state.site)) ctx.toolNames = pageToolNames(state, tree, shellTools(state).names);
   // The first section is usually what fills the first screen; its images load eagerly.
@@ -4642,8 +4647,8 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   if (hasMarkdownMirror(state, { kind: 'entry', collectionId, entryId })) head.push(MARKDOWN_ALTERNATE);
   const imports = [renderImports(ctx.imports), hero ? HERO_ASSET_IMPORT : ''].filter(Boolean).join('\n');
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
-  // Section headings and pictures in the entry's text get the article's rules.
-  const article = toRichText(entry.body).some((b) => b.type === 'h2' || isImageBlock(b));
+  // An entry's text, whatever it holds, gets the article's rules.
+  const article = toRichText(entry.body).length > 0;
   return (
     HEADER_NOTE(`siteorigin/collections/${collection.settings.id}/entries/${entry.id}.json`) +
     (script ? `<script>\n${script}\n</script>\n\n` : '') +
@@ -4687,31 +4692,56 @@ export function emitArchiveLayout(state: ProjectState, collectionId: string, ent
   return { imports: imports ? imports.split('\n') : [], script: editingState(ctx).trimEnd(), markup: opts.instrument ? hotBoundary(markup, roots.length) : markup };
 }
 
+/** The class of an entry's own text on its page, which ARTICLE_STYLE styles. */
+const ARTICLE_BODY_CLASS = 'so-article-body';
+
+/** The rich texts of a collection's layout that show an entry's own text (`{ $entry: 'body' }`), by node ID. */
+function articleBodyIds(collection: { settings: { template?: unknown } }): Set<string> {
+  const nodes = (collection.settings.template as { nodes?: Record<string, GraphNode> } | undefined)?.nodes;
+  const ids = new Set<string>();
+  for (const n of Object.values(nodes && typeof nodes === 'object' ? nodes : {}))
+    if (n && n.kind === 'text' && n.rich && isBinding(n.text) && (n.text as { $entry?: unknown }).$entry === 'body') ids.add(n.id);
+  return ids;
+}
+
 /**
- * How an entry's section headings and pictures with a caption look: only an entry's text can hold them, so the rules
- * reach every rich text without touching any other page's.
+ * How an entry's text reads: its lines kept to a comfortable measure, about 72 characters (its pictures keep the
+ * column's width), its section headings with room above them and close to what they introduce, and its pictures with
+ * a caption. The rules reach the entry's own text alone (ARTICLE_BODY_CLASS), not a text section of its layout.
  */
 const ARTICLE_STYLE = `<style>
-	:global(.so-rich h2) {
-		margin-top: 1.5em;
+	:global(.so-rich.so-article-body > :is(p, h2, h3, h4, blockquote, ul, ol)) {
+		max-inline-size: 56ch;
+	}
+	:global(.so-rich.so-article-body > :is(h3, h4)) {
+		margin-top: var(--so-space-lg, 1.5rem);
+	}
+	:global(.so-rich.so-article-body > :is(h2, h3, h4) + *) {
+		margin-top: var(--so-space-xs, 0.5rem);
+	}
+	:global(.so-rich.so-article-body h2) {
+		margin-top: var(--so-space-xl, 2rem);
 		font-family: var(--so-text-h2-family, inherit);
 		font-size: var(--so-text-h2-size, 2rem);
 		line-height: var(--so-text-h2-line-height, 1.2);
 		font-weight: var(--so-text-h2-weight, 600);
 		letter-spacing: var(--so-text-h2-tracking, normal);
 	}
-	:global(.so-rich__figure) {
-		margin-block: 1.5em;
+	:global(.so-article-body .so-rich__figure) {
+		margin-block: var(--so-space-xl, 2rem);
 	}
-	:global(.so-rich__figure img) {
+	:global(.so-article-body .so-rich__figure img) {
 		display: block;
 		width: 100%;
 		height: auto;
 		border-radius: var(--so-radius-md, 0);
 	}
-	:global(.so-rich__figure figcaption) {
-		margin-top: 0.5em;
-		font-size: 0.9em;
+	:global(.so-article-body .so-rich__figure figcaption) {
+		margin-top: var(--so-space-xs, 0.5rem);
+		font-family: var(--so-text-small-family, inherit);
+		font-size: var(--so-text-small-size, 0.875rem);
+		line-height: var(--so-text-small-line-height, 1.5);
+		max-inline-size: 56ch;
 		color: var(--so-color-muted, inherit);
 	}
 </style>

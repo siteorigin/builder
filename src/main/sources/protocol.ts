@@ -73,10 +73,16 @@ export interface SyncRequest {
   converter?: string;
   /** The custom fields of the collection it syncs into. */
   fields?: FieldKinds;
-  /** `sample`: the records read and put in shape, and the first few as the source sent them, with no picture fetched. */
-  mode?: 'sync' | 'sample';
+  /**
+   * `sample`: the records read and put in shape, and the first few as the source sent them, with no picture fetched.
+   * `inspect`: only the first few as the kind of source reads them, and how many it has, put in no shape at all (its
+   * mapping or converter is not run): what the assistant reads to write one (#680).
+   */
+  mode?: 'sync' | 'sample' | 'inspect';
   /** The secrets the source's settings name, by name: only these. */
   secrets: Record<string, string>;
+  /** A sample's pictures' addresses checked as written, never looked up by name (the assistant's test: nothing it wrote is asked anything). */
+  offline?: boolean;
   /** The content hash each record had when it was last synced, by external ID: their pictures are not fetched again. */
   known: Record<string, string>;
 }
@@ -85,7 +91,7 @@ export interface SyncRequest {
 export const SAMPLE_SIZE = 3;
 
 export type SyncReply =
-  | { id: number; ok: true; records: NormalizedRecord[]; images: SyncImage[]; raw?: unknown[] }
+  | { id: number; ok: true; records: NormalizedRecord[]; images: SyncImage[]; raw?: unknown[]; total?: number }
   | { id: number; ok: false; code: SyncFailure; detail?: string };
 
 /** The most records a sync reads, and the most a record's or a picture's bytes may be. */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { AI_EDIT_CASES, aiEdit, canvas, chainFor, colour, COLOUR_STEPS, colourPath, deepest, drag, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, create, createAgain, edit, EDITS, edits, expect as check, expectedCopies, exportAgain, exportSite, findHeading, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, panels, PANELS, runChain, SHOWN_PANELS, switchProject, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
+import { AI_EDIT_CASES, aiEdit, canvas, chainFor, colour, COLOUR_STEPS, colourPath, deepest, drag, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, create, createAgain, edit, editFullHistory, EDITS, edits, expect as check, expectedCopies, exportAgain, exportSite, findHeading, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, panels, PANELS, runChain, SHOWN_PANELS, switchProject, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -339,6 +339,8 @@ describe('edit metrics', () => {
         span('session.generate', 10_034, 3, { attrs: { variant: 'dev' } }),
         span('session.publish', 10_080, 30, { dc: { 'files.read': 1, 'files.hashed': 13, 'files.hashedBytes': 52_000, 'fs.writes': 5, 'fs.durableWrites': 3, 'fs.fsyncs': 6, 'fs.syncCalls': 410, 'files.stats': 120 } }),
         m('runtime.release', 10_082),
+        // A sweep the save waited on, before the edit was acknowledged.
+        span('session.sweep', 10_099, 12),
         span('session.persist', 10_100, 70),
         m('session.changed', 10_101, { attrs: { revision: target } }),
         m('controller.snapshotSent', 10_105, { attrs: { revision: target, bytes: 120_000 } }),
@@ -351,12 +353,15 @@ describe('edit metrics', () => {
         r('canvas.revisionApplied', 10_140, { attrs: { revision: target } }),
         m('session.reloadFromDisk', 10_500),
         m('controller.snapshotSent', 10_600, { attrs: { revision: target, bytes: 1000 } }),
+        // One run after the acknowledgement: counted as a sweep, not as one the edit waited on.
+        span('session.sweep', 10_700, 5),
         m('scenario.end', 11_640, { attrs: { scenario: 'edit' } }),
         r('scenario.end', 11_641, { attrs: { scenario: 'edit' }, c: { 'react.commits': 160 } }),
         // After the scenario: none of its counts.
         m('session.reloadFromDisk', 12_000),
         m('controller.snapshotSent', 12_001, { attrs: { revision: target, bytes: 7 } }),
-        span('main.stall', 12_002, 900)
+        span('main.stall', 12_002, 900),
+        span('session.sweep', 12_003, 40)
       ].filter((x) => !drop(x))
     );
   }
@@ -394,6 +399,9 @@ describe('edit metrics', () => {
       'edit.publishFsyncs': '6 count',
       'edit.publishSyncCalls': '410 count',
       'edit.publishStats': '120 count',
+      'edit.sweepsAwaited': '1 count',
+      'edit.sweepAwaited': '12 ms',
+      'edit.sweeps': '2 count',
       'edit.snapshotsSent': '3 count',
       'edit.snapshotBytes': '121005 bytes',
       'edit.reloadFromDisk': '1 count',
@@ -434,6 +442,24 @@ describe('edit metrics', () => {
     expect(got.missing).toEqual(['edit.snapshotBytes (a snapshot whose size could not be told)']);
     expect(got.metrics['edit.snapshotBytes']).toBeUndefined();
     expect(got.metrics['edit.snapshotsSent'].value).toBe(3);
+  });
+
+  it('time the edit that lets History’s oldest step go by its own boundary marks, under its own names', () => {
+    const renamed = new Trace(trace().records.map((x) => (x.name.startsWith('scenario.') ? { ...x, attrs: { scenario: 'editFullHistory' } } : x)));
+    const got = editFullHistory.measure(renamed, facts);
+    expect(got.missing).toEqual([]);
+    const plain = edit.measure(trace(), facts);
+    expect(Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k.replace(/^editFullHistory\./, 'edit.'), v]))).toEqual(plain.metrics);
+    // Another scenario's boundaries are not its own.
+    expect(editFullHistory.measure(trace(), facts).missing).toContain('edit.requested');
+  });
+
+  it('count no sweep the edit waited on when every one ran after it was acknowledged', () => {
+    const later = new Trace(trace().records.map((x) => (x.name === 'session.sweep' && x.t === 10_099 ? { ...x, t: 10_650 } : x)));
+    const got = edit.measure(later, facts);
+    expect(got.metrics['edit.sweepsAwaited'].value).toBe(0);
+    expect(got.metrics['edit.sweepAwaited'].value).toBe(0);
+    expect(got.metrics['edit.sweeps'].value).toBe(2);
   });
 });
 

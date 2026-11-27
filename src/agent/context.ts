@@ -232,6 +232,8 @@ export function projectSummary(state: ProjectState, revision: number) {
     ...withThemeUpdates(state),
     // What each collection holds and how it is shaped: what a post section, a connected list or a loop can name.
     ...(hasCollections(state) ? { collections: collectionsSummary(state) } : {}),
+    // The external sources the author connected, by ID: what the source tools read and write (#680).
+    ...(Object.keys(state.sources ?? {}).length ? { sources: sourcesSummary(state) } : {}),
     assets: Object.keys(state.assets.assets).length
   };
 }
@@ -298,6 +300,20 @@ export function collectionsSummary(state: ProjectState) {
         ...(fields.length ? { fields } : {}),
         taxonomies
       };
+    });
+}
+
+/**
+ * The external sources the project has, by ID: which collection each is synced into and how it reads its records now.
+ * Never where a source is read or which secrets it signs in with, nor its name (settings edited outside the app can
+ * hold anything there): inspect_source_sample gives that once its settings are checked.
+ */
+export function sourcesSummary(state: ProjectState) {
+  return Object.keys(state.sources ?? {})
+    .sort()
+    .map((id) => {
+      const s = state.sources![id];
+      return { sourceId: id, kind: s.adapter, collectionId: s.collectionId, readsWith: s.converter ? 'converter' : s.mapping ? 'mapping' : 'its kind of source’s own reading' };
     });
 }
 

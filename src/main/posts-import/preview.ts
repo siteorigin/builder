@@ -15,6 +15,7 @@ export function postImportPreview(id: string, plan: PostImportPlan): PostImportP
       title: p.title,
       from: p.from,
       date: p.date,
+      ...(p.dateAssigned ? { dateAssigned: true } : {}),
       draft: p.draft,
       ...(p.draftReason ? { draftReason: p.draftReason } : {}),
       route: p.route,
@@ -30,6 +31,7 @@ export function postImportPreview(id: string, plan: PostImportPlan): PostImportP
     missing: plan.missing,
     newTerms: { categories: plan.newTerms.categories, tags: plan.newTerms.tags },
     redirects: plan.posts.filter((p) => p.redirectFrom).length,
+    redirectsLost: plan.posts.filter((p) => p.lostAddress).length,
     skipped: plan.skipped,
     problems: plan.problems
   };

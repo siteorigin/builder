@@ -1,13 +1,15 @@
 @layer components {
-  .toast.rename-offer { align-items: flex-start; max-width: 460px; }
-  .toast.rename-offer .rename-offer-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .toast.rename-offer .rename-offer-title { font-weight: 600; overflow-wrap: anywhere; }
-  .toast.rename-offer .rename-offer-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
-  .toast.rename-offer button { opacity: 1; }
-  /* A dialog makes the editor inert; the offer waits until it closes, rather than taking edits over it. */
-  body.dialog-open .toast.rename-offer { visibility: hidden; }
-  .toast.rename-offer .rename-offer-list { list-style: none; margin: 2px 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-  .toast.rename-offer .rename-offer-list label { display: flex; align-items: center; gap: 7px; }
-  .toast.rename-offer .rename-offer-list input { margin: 0; accent-color: currentColor; }
-  .toast.rename-offer .rename-offer-note { opacity: 0.85; font-size: 12px; overflow-wrap: anywhere; }
+  /* The card, its title and its answers are the notices' decision card (primitives.css). An old name with no spaces
+     (a pasted identifier) wraps inside the column. */
+  .toast.rename-offer .rename-offer-body { overflow-wrap: anywhere; }
+  .toast.rename-offer .rename-offer-list { list-style: none; margin: 2px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .toast.rename-offer .rename-offer-list label { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+  /* Ticked in the notice's own ink: no blue on a status surface. */
+  .toast.rename-offer .rename-offer-list input { margin: 0; flex: none; accent-color: currentColor; }
+  .toast.rename-offer .rename-offer-note { color: var(--notice-ink-2); font-size: 12px; overflow-wrap: anywhere; }
+  /* A short window keeps the canvas: the reassurance about the address is the line it can most do without. */
+  @media (max-height: 780px) { .toast.rename-offer .rename-offer-note { display: none; } }
+  /* A dialog makes the editor inert: the offer keeps its title and says when it can be answered, rather than taking
+     edits over the dialog. Its ticks are kept for then. */
+  body.dialog-open .toast.rename-offer :is(.rename-offer-list, .rename-offer-note, .rename-offer-why) { display: none; }
 }

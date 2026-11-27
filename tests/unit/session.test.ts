@@ -240,11 +240,11 @@ describe('project session', () => {
     const home = s.state.site.homePageId;
     const file = join(dir, 'siteorigin', 'pages', `${home}.json`);
     // Another editor saves the page while the change's journal is being written: after the check, before the write.
-    const session = s as unknown as { writeJournal: (j: unknown) => Promise<void> };
-    const writeJournal = session.writeJournal.bind(s);
-    session.writeJournal = async (j) => {
-      await writeJournal(j);
-      session.writeJournal = writeJournal;
+    const session = s as unknown as { placeJournal: (...a: unknown[]) => Promise<void> };
+    const placeJournal = session.placeJournal.bind(s);
+    session.placeJournal = async (...a) => {
+      await placeJournal(...a);
+      session.placeJournal = placeJournal;
       const page = JSON.parse(readFileSync(file, 'utf8'));
       page.title = 'Saved in another editor';
       writeFileSync(file, JSON.stringify(page, null, 2) + '\n');
@@ -264,11 +264,11 @@ describe('project session', () => {
   it('says a save stopped part way by a file saved outside the app needs the project reopened', async () => {
     const { dir, s } = await make();
     const [home, about] = s.state.site.pageOrder;
-    const session = s as unknown as { writeJournal: (j: { writes: Array<{ path: string }> }) => Promise<void> };
-    const writeJournal = session.writeJournal.bind(s);
-    session.writeJournal = async (j) => {
-      await writeJournal(j);
-      session.writeJournal = writeJournal;
+    const session = s as unknown as { placeJournal: (j: { writes: Array<{ path: string }> }, ...rest: unknown[]) => Promise<void> };
+    const placeJournal = session.placeJournal.bind(s);
+    session.placeJournal = async (j, ...rest) => {
+      await placeJournal(j, ...rest);
+      session.placeJournal = placeJournal;
       // The second document of the batch is saved outside the app; the first is replaced before that is seen.
       const second = join(dir, j.writes[1].path);
       const doc = JSON.parse(readFileSync(second, 'utf8'));
@@ -291,10 +291,11 @@ describe('project session', () => {
     const home = s.state.site.homePageId;
     const failed: number[] = [];
     s.on('save-failed', () => failed.push(s.revision));
-    const session = s as unknown as { putBlob: (content: string) => Promise<string> };
-    const putBlob = session.putBlob.bind(s);
-    session.putBlob = async () => {
-      session.putBlob = putBlob;
+    // The change's versions and journal cannot be written: nothing of it takes its place.
+    const session = s as unknown as { placeJournal: (...a: unknown[]) => Promise<void> };
+    const placeJournal = session.placeJournal.bind(s);
+    session.placeJournal = async () => {
+      session.placeJournal = placeJournal;
       throw new Error('ENOSPC: no space left on device');
     };
     const revision = s.revision;
@@ -310,6 +311,57 @@ describe('project session', () => {
     // The next save that reaches the disk clears it.
     expect((await s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Saved' }] }, { label: 'Change description' })).ok).toBe(true);
     expect(s.saveFailure).toBeNull();
+  });
+
+  it('announces an edit once it is committed, before its History and revision take their places (#962)', async () => {
+    const { dir, s } = await make();
+    const home = s.state.site.homePageId;
+    const file = join(dir, 'siteorigin', 'pages', `${home}.json`);
+    const journal = join(dir, '.siteorigin', 'journal.json');
+    const state = join(dir, '.siteorigin', 'state.json');
+    const revision = s.revision;
+    const heard: Array<{ journal: boolean; saved: unknown; revision: unknown; undo: unknown }> = [];
+    s.on('changed', () => heard.push({ journal: existsSync(journal), saved: JSON.parse(readFileSync(file, 'utf8')).seo?.description, revision: JSON.parse(readFileSync(state, 'utf8')).revision, undo: s.historyInfo().undoLabel }));
+    expect((await s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Heard' }] }, { label: 'Heard' })).ok).toBe(true);
+    // Heard with the document saved and the journal that would finish the rest after a crash still in place, and with
+    // History already showing the step, before the revision reached the disk.
+    expect(heard).toEqual([{ journal: true, saved: 'Heard', revision, undo: 'Heard' }]);
+    // Then the rest is done before the edit returns.
+    expect(existsSync(journal)).toBe(false);
+    expect(JSON.parse(readFileSync(state, 'utf8')).revision).toBe(revision + 1);
+  });
+
+  it('announces a save with no journal only once its revision is on disk (#962)', async () => {
+    const { dir, s } = await make();
+    const state = join(dir, '.siteorigin', 'state.json');
+    const revision = s.revision;
+    const heard: unknown[] = [];
+    s.on('changed', () => heard.push(JSON.parse(readFileSync(state, 'utf8')).revision));
+    // The name it already has: no document changes and no History step, only the revision moves.
+    expect((await s.apply({ operations: [{ type: 'site.update', name: s.state.site.name }] }, { label: 'Same name' })).ok).toBe(true);
+    expect(s.revision).toBe(revision + 1);
+    expect(heard).toEqual([revision + 1]);
+  });
+
+  it('stores a batch’s many new versions before its journal, which then carries none (#962)', async () => {
+    const { dir, s } = await make();
+    const blobs = join(dir, '.siteorigin', 'history', 'blobs');
+    const session = s as unknown as { placeJournal: (j: { writes: Array<{ blob: string }>; versions?: object }, ...rest: unknown[]) => Promise<void> };
+    const placeJournal = session.placeJournal.bind(s);
+    const seen: Array<{ carried: number; stored: boolean }> = [];
+    session.placeJournal = async (j, ...rest) => {
+      seen.push({ carried: Object.keys(j.versions ?? {}).length, stored: j.writes.every((w) => existsSync(join(blobs, `${w.blob}.json`))) });
+      return placeJournal(j, ...rest);
+    };
+    const pages = Array.from({ length: 70 }, (_, i) => ({ type: 'page.create' as const, title: `Page ${i + 1}` }));
+    expect((await s.apply({ operations: pages }, { label: 'Many pages' })).ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Few' }] }, { label: 'Few' })).ok).toBe(true);
+    // The many are stored first; a small change carries its new versions in its journal.
+    expect(seen[0]).toEqual({ carried: 0, stored: true });
+    expect(seen[1].carried).toBeGreaterThan(0);
+    expect((await s.undo()).ok).toBe(true);
+    expect((await s.undo()).ok).toBe(true);
+    expect(Object.keys(s.state.pages)).toHaveLength(Object.keys(createStarterState('business', 'Persist', false).pages).length);
   });
 
   it('preserves an externally edited generated file and reports a conflict (I02)', async () => {

@@ -58,17 +58,20 @@ await eventually(async () => {
   assert.match(text, /Vertical padding/);
   assert.match(text, /All sizes\s*not set\s*becomes\s*72px/);
   assert.match(text, /Phone\s*not set\s*becomes\s*16px/);
-  // Its own desktop padding would win over the pasted All sizes value, so Every size removes it.
-  assert.match(text, /Desktop\s*96px\s*becomes\s*cleared, uses All sizes/);
+  // Its own desktop padding would win over the pasted All sizes value, so Match the copy removes it.
+  assert.match(text, /Desktop\s*96px\s*becomes\s*cleared\s*uses All sizes/);
 });
-// The hero's minimum height has no control on this kind of section, and the dialog says so.
+// The hero's minimum height has no control on this kind of section, and the dialog says so, folded under its count
+// while there are changes: the heading's "1 not pasted" opens it.
+await dialog.getByRole('button', { name: /^1 not pasted$/ }).click();
+await dialog.getByRole('button', { name: /^Not pasted/, expanded: true }).waitFor();
 assert.match(await dialog.getByRole('region', { name: 'Not pasted' }).innerText(), /Min height[\s\S]*doesn’t offer min height/);
-await dialog.getByLabel('Sizes').selectOption('phone');
+await dialog.getByRole('radio', { name: 'Phone' }).click();
 await eventually(async () => assert.doesNotMatch(await changes.innerText(), /^All sizes$/m, 'Phone only leaves All sizes alone'));
-await dialog.getByLabel('Sizes').selectOption('every');
+await dialog.getByRole('radio', { name: 'Match the copy' }).click();
 await win.waitForTimeout(400);
 await win.screenshot({ path: join(OUT, 'style-paste-review.png') });
-await dialog.getByRole('button', { name: 'Paste style', exact: true }).click();
+await dialog.getByRole('button', { name: /^Paste \d+ styles?$/ }).click();
 await dialog.waitFor({ state: 'detached' });
 
 step('the section has the hero’s padding at desktop and on phones, and keeps its content');
@@ -96,13 +99,13 @@ await win.locator('.list-item', { hasText: 'Content with image' }).first().click
 await win.getByRole('button', { name: 'More actions for Content with image' }).click();
 await win.getByRole('menuitem', { name: /Paste style…/ }).click();
 await dialog.waitFor();
-await dialog.getByLabel('Sizes').selectOption('phone');
+await dialog.getByRole('radio', { name: 'Phone' }).click();
 await eventually(async () => {
   const text = await changes.innerText();
   assert.match(text, /Phone\s*not set\s*becomes\s*16px/);
   assert.doesNotMatch(text, /^(All sizes|Desktop)$/m, 'nothing but Phone changes');
 });
-await dialog.getByRole('button', { name: 'Paste style', exact: true }).click();
+await dialog.getByRole('button', { name: /^Paste \d+ styles?$/ }).click();
 await dialog.waitFor({ state: 'detached' });
 await width('Phone');
 await eventually(async () => assert.deepEqual(await padding(), ['16px', '16px'], 'phone padding'), 30000);

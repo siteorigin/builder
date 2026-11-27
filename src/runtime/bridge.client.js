@@ -5309,6 +5309,9 @@ const style = document.createElement('style');
 style.textContent =
   'html[data-so-editing] a, html[data-so-editing] summary, html[data-so-editing] button { cursor: default; } html[data-so-editing] [contenteditable] { cursor: text; }' +
   ' html:not([data-so-editing]) :is([data-so-unlinked], [data-so-editor-only]):not(#so-editor) { display: none !important; }' +
+  // A blog feed that lists nothing is left off the website (the theme's base styles); Edit shows it, to be changed.
+  " html[data-so-editing] :is([class$='-blog-grid__root'], [class*='-blog-grid__root '], [class$='-blog-list__root'], [class*='-blog-list__root ']):not(:has(li)):not(#so-editor)," +
+  " html[data-so-editing] :is([class$='-blog-featured__root'], [class*='-blog-featured__root ']):not(:has([class$='__card'], [class*='__card '])):not(#so-editor) { display: block; }" +
   ' html[data-so-editing] [data-so-unlinked] { cursor: default; box-shadow: none; opacity: 0.6; outline: 2px dashed #d97706; outline-offset: 2px; }' +
   // An empty slot, where the author can put content: a labelled drop area, never part of the site, on a light
   // ground of its own so its words read on a dark section too.

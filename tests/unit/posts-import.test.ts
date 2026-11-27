@@ -100,7 +100,7 @@ describe('reading a WordPress export', () => {
       { key: 'm4', ref: 'https://riverside.example/wp-content/uploads/2019/05/missing.jpg', problem: 'it is not in the chosen folder' }
     ]);
     expect(winter.featured).toBe('m2');
-    expect(source.skipped).toEqual(['1 page: only posts are imported.', '1 post in the trash or never started.']);
+    expect(source.skipped).toEqual(['1 page (“About us”): only posts are imported.', '1 post (“Old post”) in the trash or never started.']);
   });
 
   it('refuses a file that is not a WordPress export, or is damaged, with a reason', async () => {
@@ -301,8 +301,8 @@ describe('planning an import', () => {
       ['spring-menu-2', 'spring-menu'],
       ['summer-plans-2', 'summer-plans']
     ]);
-    expect(plan.posts[0].notes).toContain('Its old address (/2019/03/winter-workshop/) can’t keep working: it is the address of the old address of “Winter workshop & tasting”.');
-    expect(plan.posts[1].notes).toContain('Its old address (/about/) can’t keep working: it is the address of the page “About”.');
+    expect(plan.posts[0].notes).toContain('Its old address (/2019/03/winter-workshop/) can’t keep working, because it is the address of the old address of “Winter workshop & tasting”.');
+    expect(plan.posts[1].notes).toContain('Its old address (/about/) can’t keep working, because it is the address of the page “About”.');
     expect(plan.taxonomies).toBeNull();
     expect(Object.keys(after.collections.posts.entries)).toHaveLength(6);
     expect(validateState(after).filter((d) => d.severity === 'error')).toEqual([]);
@@ -640,7 +640,7 @@ describe('planning an import: limits, drafts and the review', () => {
   it('keeps no old address at the new blog’s own address, without stopping the import', () => {
     const plan = planPostImport(site(), src([post('p', { slug: 'news', oldPath: '/blog/' })]), '2026-11-24');
     expect(plan.problems).toEqual([]);
-    expect(plan.posts[0].notes).toContain('Its old address (/blog/) can’t keep working: it is the address of the Posts collection.');
+    expect(plan.posts[0].notes).toContain('Its old address (/blog/) can’t keep working, because it is the address of the Posts collection.');
   });
 
   it('refuses at review what the session would refuse at commit', () => {

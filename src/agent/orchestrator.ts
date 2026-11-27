@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft } from '@shared/api';
 import type { EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
+import type { SourceWriteGrant } from '@shared/sources';
+import type { SourceToolHost } from './source-tools';
 import type { ProjectState } from '@shared/types';
 import { autoTitle, byRecentActivity, cleanTitle, NEW_CONVERSATION, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
@@ -14,7 +16,7 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
-import { asksForCollection, asksForComponent, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type RunTools, type ToolHost } from './tools';
+import { asksForCollection, asksForComponent, asksForSource, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
 import { serializeResult, stamp, toolError, type ResultOutcome } from './result';
 import { PreviewCheck } from './preview-check';
@@ -97,7 +99,7 @@ export interface RunSession {
   discardAppliedDrafts(runId: string, paths: string[]): Promise<void>;
   runChanged(): boolean;
   /** `collectionWrite`: the post tool's grant for this one batch, never the model's (see shared/collection-grant). */
-  apply(batch: { operations: EditOperation[]; expectedRevision?: number }, opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant }): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
+  apply(batch: { operations: EditOperation[]; expectedRevision?: number }, opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant }): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   diagnostics(): Diagnostic[];
   undoGroup(runId: string): Promise<{ ok: boolean; error?: { message: string } }>;
   historyInfo(): TurnHistory;
@@ -119,6 +121,8 @@ export interface OrchestratorDeps {
   fileDiagnostics?(): Promise<Diagnostic[]>;
   /** Show and measure a component in isolated previews (see inspect_component); without it the tool says it cannot run. */
   inspectComponent?(steps: ComponentPreviewStep[], signal?: AbortSignal): Promise<ComponentPreviewResult[]>;
+  /** The open project's external sources as the source tools read and test them (#680), ended with `signal`; without it the tools say they cannot run. */
+  sources?(signal: AbortSignal): SourceToolHost;
   onBusyChange(busy: boolean): void;
   /** Whether code components may be created or edited (Developer mode). */
   codeEnabled?(): Promise<boolean>;
@@ -1242,6 +1246,7 @@ export class Orchestrator {
     const componentAsked = !ask && (asksForComponent(userMsg.text) || (CONTINUE.test(userMsg.text) && !!request && asksForComponent(request)));
     // So does a request for a collection: a small site run is then offered the tools that make and show one.
     const collectionAsked = !ask && (asksForCollection(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForCollection(request, session.state)));
+    const sourceAsked = asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state));
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     // Problems the project already had (including components that already fail to build) are not the run's. Each is
@@ -1304,6 +1309,7 @@ export class Orchestrator {
         ...(componentTask ? { task: 'component' as const } : {}),
         ...(componentAsked ? { componentRequest: true } : {}),
         ...(collectionAsked ? { collectionRequest: true } : {}),
+        ...(sourceAsked ? { sourceRequest: true } : {}),
         attachedImages: !!userMsg.images?.length,
         ask,
         focused: onlyFocused,
@@ -1436,7 +1442,7 @@ export class Orchestrator {
           // search_assets reads what the library says about them.
           ...(userMsg.images?.length ? { attachedImages: userMsg.images.map((i) => { const live = libraryImage(session.state, i.assetId); return live ? imageRef(live) : { ...i, removed: true }; }) } : {}),
           // A constrained edit run without code has no code tool to steer away from; a question may still be about code.
-          ...(constrainedJson && !ask && !codeEnabled ? {} : { customCode: codeEnabled ? 'allowed (code is checked before saving)' : 'not available: use theme components, primitives and styles only' }),
+          ...(constrainedJson && !ask && !codeEnabled ? {} : { customCode: codeEnabled ? 'allowed (code is checked before saving)' : 'not available for components: use theme components, primitives and styles only (a source\'s converter is not component code)' }),
           allowedScope: ask
             ? 'nothing: this is a read-only question'
             : authority.kind === 'site'
@@ -1631,7 +1637,7 @@ export class Orchestrator {
         try {
           // A layout's run writes that layout: the grant is the run's own authority, never the model's (see shared/collection-grant).
           const collectionWrite = authority.kind === 'template' ? ({ kind: 'layout', owner: authority.owner } as const) : grants?.collectionWrite;
-          res = await session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}) });
+          res = await session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}) });
         } catch (e) {
           // A save that failed part way may have published the source before it threw: the run is undone, so it is kept.
           await keepDrafts(operations, { ok: true });
@@ -1653,6 +1659,7 @@ export class Orchestrator {
       ...(this.deps.fileDiagnostics ? { fileDiagnostics: () => this.deps.fileDiagnostics!() } : {}),
       signal,
       ...(this.deps.inspectComponent ? { inspectComponent: (steps: ComponentPreviewStep[]) => this.deps.inspectComponent!(steps, signal) } : {}),
+      ...(this.deps.sources ? { sources: this.deps.sources(signal) } : {}),
       ask: (question, choices, widenScope, images) =>
         new Promise<string>((resolve) => {
           // Stopped before the question could be shown: there is nothing to wait for.

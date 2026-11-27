@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { constants, cpSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
 import { sha } from '../../src/main/project/fsutil';
@@ -639,7 +639,8 @@ describe('crash durability', { timeout: 300_000 }, () => {
 });
 
 describe('flush order', () => {
-  type Step = { op: 'write' | 'sync' | 'rename' | 'rm'; path: string; to?: string };
+  /** A flush also has when it started and ended, so flushes that ran together can be told from ones in turn. */
+  type Step = { op: 'write' | 'sync' | 'rename' | 'rm'; path: string; to?: string; start?: number; end?: number };
   /**
    * Record, in completion order, every write through a file handle, every flush of a file or folder, and every rename
    * and removal. A flush takes a few milliseconds here, and any rename or removal while one is still running is
@@ -663,13 +664,14 @@ describe('flush order', () => {
       };
       handle.sync = async () => {
         flushing++;
+        const start = performance.now();
         try {
           await sync();
           await new Promise((r) => setTimeout(r, 5));
         } finally {
           flushing--;
         }
-        log.push({ op: 'sync', path: String(args[0]) });
+        log.push({ op: 'sync', path: String(args[0]), start, end: performance.now() });
       };
       return handle;
     };
@@ -710,10 +712,20 @@ describe('flush order', () => {
     const custom = join(dir, 'src/lib/siteorigin/custom');
     const newCustomFolder = !existsSync(custom);
     const { log, violations, at, durableWrite, durableRemove } = await trace();
+    // What each change's journal said, read as it took its place.
+    const journals: Array<{ versions?: Record<string, string> }> = [];
+    const session = s as unknown as { placeJournal: (j: { versions?: Record<string, string> }, ...rest: unknown[]) => Promise<void> };
+    const placeJournal = session.placeJournal.bind(s);
+    session.placeJournal = async (j, ...rest) => {
+      journals.push(j);
+      return placeJournal(j, ...rest);
+    };
     expect((await s.apply({ operations: [{ type: 'component.createCode', name: 'Widget', source: '<p>Widget</p>' }] }, { label: 'Add widget' })).ok).toBe(true);
     const def = Object.values(s.state.components).find((d) => d.name === 'Widget')!;
     expect((await s.apply({ operations: [{ type: 'component.remove', definitionId: def.id }] }, { label: 'Remove widget' })).ok).toBe(true);
     disarm?.();
+    session.placeJournal = placeJournal;
+    expect(journals).toHaveLength(2);
     expect(violations).toEqual([]);
 
     const local = join(dir, '.siteorigin');
@@ -721,15 +733,17 @@ describe('flush order', () => {
     const meta = join(dir, 'siteorigin/components', def.id, 'component.json');
     const source = join(dir, def.sourcePath!);
     let from = 0;
-    for (const change of ['create', 'remove'] as const) {
+    for (const [n, change] of (['create', 'remove'] as const).entries()) {
       const journalRename = at((e) => e.op === 'rename' && e.to === journal, from);
       const journalWritten = durableWrite(journal, from);
       const removed = at((e) => e.op === 'rm' && e.path === journal, journalWritten);
-      // Every blob the change writes is durable before the journal that names it is renamed into place.
+      // Every version the change stores is carried by its journal (so recovery can store it) or stored before the
+      // journal is renamed into place, and is durable before the journal goes.
+      const carried = journals[n].versions ?? {};
       for (const [i, e] of log.entries()) {
         if (i < from || i > removed || e.op !== 'rename' || !e.to?.includes('/history/blobs/')) continue;
-        expect(i).toBeLessThan(journalRename);
-        expect(durableWrite(e.to, from)).toBeLessThan(journalRename);
+        if (i > journalRename) expect(Object.keys(carried)).toContain(basename(e.to, '.json'));
+        expect(durableWrite(e.to, from)).toBeLessThan(removed);
       }
       const history = durableWrite(join(local, 'history', 'history.json'), journalWritten);
       if (change === 'create') {
@@ -756,6 +770,86 @@ describe('flush order', () => {
       // The journal's removal is itself flushed before the change counts as done.
       from = durableRemove(journal, removed) + 1;
     }
+  });
+
+  it('flushes only the journal and the documents before the preview’s files, then the versions, History and revision together (#962)', async () => {
+    const { dir, s } = await make();
+    const home = s.state.site.homePageId;
+    const { log, violations, at } = await trace();
+    // The project's first edit: neither version of the home page's document is stored yet.
+    expect((await s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Together' }] }, { label: 'Together' })).ok).toBe(true);
+    disarm?.();
+    expect(violations).toEqual([]);
+    const local = join(dir, '.siteorigin');
+    const page = join(dir, 'siteorigin', 'pages', `${home}.json`);
+    const history = join(local, 'history', 'history.json');
+    const state = join(local, 'state.json');
+    const journal = join(local, 'journal.json');
+    const manifest = join(dir, 'siteorigin', 'generated-manifest.json');
+    const renamed = (path: string) => at((e) => e.op === 'rename' && e.to === path);
+    const flushOfTemp = (path: string) => log[at((e) => e.op === 'sync' && e.path === log[renamed(path)].path)];
+    const flushOfFolder = (path: string) => log[at((e) => e.op === 'sync' && e.path === dirname(path), renamed(path))];
+    const together = (a: Step, b: Step) => a.start! < b.end! && b.start! < a.end!;
+    const blobs = log.filter((e) => e.op === 'rename' && e.to?.includes('/history/blobs/')).map((e) => e.to!);
+    expect(blobs).toHaveLength(2);
+    // Before the preview's files are published: the journal, then the document, and nothing else of the save.
+    expect(log.indexOf(flushOfTemp(journal))).toBeLessThan(log.indexOf(flushOfTemp(page)));
+    expect(renamed(page)).toBeLessThan(renamed(manifest));
+    const published = log.findLastIndex((e) => e.op === 'rename' && e.to === manifest);
+    // After them, the versions, History and revision are flushed together, then the folders of all four with the
+    // document's, before the journal goes.
+    for (const p of [...blobs, history, state]) {
+      expect(log.indexOf(flushOfTemp(p))).toBeGreaterThan(published);
+      expect(together(flushOfTemp(blobs[0]), flushOfTemp(p))).toBe(true);
+      expect(together(flushOfFolder(page), flushOfFolder(p))).toBe(true);
+    }
+    expect(log.indexOf(flushOfFolder(page))).toBeLessThan(at((e) => e.op === 'rm' && e.path === journal));
+  });
+
+  it('finishes an edit whose document, versions, History and revision reached their places but not the disk when the power went (#962)', async () => {
+    const { dir, s } = await make();
+    const local = join(dir, '.siteorigin');
+    const files = [join(dir, 'siteorigin', 'site.json'), join(local, 'history', 'history.json'), join(local, 'state.json')];
+    const before = files.map((f) => (existsSync(f) ? readFileSync(f) : null));
+    const stored = new Set(existsSync(join(local, 'history', 'blobs')) ? readdirSync(join(local, 'history', 'blobs')) : []);
+    const revision = s.revision;
+    // Stopped once the files were renamed into place, before the journal went.
+    const c = crashBefore((m, args) => m === 'rm' && slash(args[0]).endsWith('.siteorigin/journal.json'));
+    await s.apply({ operations: [{ type: 'site.update', name: 'Lost' }] }, { label: 'Lost' }).catch(() => undefined);
+    expect(c.crashed()).toBe(true);
+    disarm?.();
+    // Their renames were never flushed, so the disk lost them: each file is as it was before the edit.
+    files.forEach((f, i) => (before[i] === null ? rmSync(f, { force: true }) : writeFileSync(f, before[i]!)));
+    // And so are the versions of the site's document the edit stored, which only its journal still carries.
+    const lost = readdirSync(join(local, 'history', 'blobs')).filter((f) => !stored.has(f));
+    expect(lost.length).toBeGreaterThan(0);
+    for (const f of lost) rmSync(join(local, 'history', 'blobs', f));
+    const again = await reopen(dir);
+    expect(again.state.site.name).toBe('Lost');
+    expect(again.historyInfo().undoLabel).toBe('Lost');
+    expect(again.revision).toBe(revision + 1);
+    expect(existsSync(join(local, 'journal.json'))).toBe(false);
+    expect((await again.undo()).ok).toBe(true);
+    expect(again.state.site.name).toBe('Persist');
+  });
+
+  it('finishes an edit whose replacement of a page another editor had reformatted was lost when the power went (#962)', async () => {
+    const { dir, s } = await make();
+    const home = s.state.site.homePageId;
+    const file = join(dir, 'siteorigin', 'pages', `${home}.json`);
+    // Saved by another editor in its own formatting: the same document, so the edit goes ahead and replaces it.
+    const reformatted = JSON.stringify(JSON.parse(readFileSync(file, 'utf8')));
+    writeFileSync(file, reformatted);
+    const c = crashBefore((m, args) => m === 'rm' && slash(args[0]).endsWith('.siteorigin/journal.json'));
+    await s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Kept' }] }, { label: 'Describe' }).catch(() => undefined);
+    expect(c.crashed()).toBe(true);
+    disarm?.();
+    // The replacement never reached the disk: the page is the other editor's file again.
+    writeFileSync(file, reformatted);
+    const again = await reopen(dir);
+    expect(again.conflicts).toEqual([]);
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ seo: { description: 'Kept' } });
+    expect(again.historyInfo().undoLabel).toBe('Describe');
   });
 
   it('flushes the folders a stopped save created before recovery retires its journal', async () => {

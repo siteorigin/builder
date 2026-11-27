@@ -299,10 +299,10 @@ describe('exporting a project with a draft', () => {
 
   it('#753: refuses to export while a change that failed to save stands, and exports once a later save succeeds', async () => {
     const { c } = await projectWithDraft();
-    const session = (c as unknown as { session: { putBlob: (content: string) => Promise<string> } }).session;
-    const putBlob = session.putBlob.bind(session);
-    session.putBlob = async () => {
-      session.putBlob = putBlob;
+    const session = (c as unknown as { session: { placeJournal: (...a: unknown[]) => Promise<void> } }).session;
+    const placeJournal = session.placeJournal.bind(session);
+    session.placeJournal = async () => {
+      session.placeJournal = placeJournal;
       throw new Error('ENOSPC: no space left on device');
     };
     await expect(c.apply({ operations: [{ type: 'site.update', name: 'Lost name' }] })).rejects.toThrow(/ENOSPC/);

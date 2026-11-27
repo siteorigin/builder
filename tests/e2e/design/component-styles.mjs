@@ -207,7 +207,7 @@ const openPaste = async (row) => {
 };
 await openPaste('Content with image');
 await shot('paste-review', ['h3'], { root: pasteDialog });
-await pasteDialog.getByLabel('Sizes').selectOption('phone');
+await pasteDialog.getByRole('radio', { name: 'Phone' }).click();
 await pause(400);
 await shot('paste-phone-only', ['h3'], { root: pasteDialog, themes: ['light'] });
 await pasteDialog.getByRole('button', { name: 'Cancel' }).click();

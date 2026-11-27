@@ -198,7 +198,7 @@ const hold = async (route) => {
 };
 await app.context().route(`${held}/**`, hold);
 await issue.getByRole('button', { name: 'Try again' }).click();
-await shot('problem-restarting', () => text(issue, /Restarting preview/));
+await shot('problem-restarting', () => text(issue, /Reloading the page/));
 release();
 await app.context().unroute(`${held}/**`, hold);
 await issue.waitFor({ state: 'detached', timeout: 60000 });
@@ -209,20 +209,20 @@ await win.locator('.project-title').click();
 await win.locator('[role^="menuitem"]', { hasText: 'Contact' }).first().click();
 await panel.waitFor({ timeout: 30000 });
 await pause(800);
-const live = panel.getByRole('button', { name: /Test live delivery/ });
+const live = panel.getByRole('button', { name: /Send a real test/ });
 await shot('form-rest', async () => {
-  await text(panel, /simulated/);
+  await text(panel, /practice in Preview/);
   assert.equal(await live.isVisible(), true);
 });
 await shot('form-on-page', shows(panel), { themes: LIGHT, area: 'all' });
 
 // Practice sends, reported as the page reports them.
 await bridge('formResult', { id: 'capture', kind: 'practice', result: 'success' });
-await shot('form-practice-sent', () => text(panel.locator('[role="status"]'), /showed its sent message/), { themes: LIGHT });
-await panel.getByRole('button', { name: 'Error', exact: true }).click();
+await shot('form-practice-sent', () => text(panel.locator('[role="status"]'), /showed its success message/), { themes: LIGHT });
+await panel.getByRole('radio', { name: 'Error', exact: true }).click();
 await bridge('formResult', { id: 'capture', kind: 'practice', result: 'error' });
 await shot('form-practice-error', () => text(panel.locator('[role="status"]'), /showed its error message/));
-await panel.getByRole('button', { name: 'Success', exact: true }).click();
+await panel.getByRole('radio', { name: 'Success', exact: true }).click();
 await pause(200);
 
 // The confirmation, before anything is sent.
@@ -253,7 +253,7 @@ const settle = await (await page()).evaluate(() => window.__captureLive.at(-1));
 await bridge('formResult', { id: settle.id, requestId: settle.requestId, kind: 'live', result: 'not-sent' });
 await pause(300);
 await liveResult('sent', { status: 200 });
-await shot('form-live-sent', () => text(panel.locator('[role="status"]'), /answered with status 200/));
+await shot('form-live-sent', () => text(panel.locator('[role="status"]'), /Check the service to see the message arrived/));
 await liveResult('refused', { status: 422 });
 await shot('form-live-refused', () => text(panel.locator('[role="status"]'), /status 422/), { themes: LIGHT });
 await liveResult('unreadable');
@@ -278,11 +278,11 @@ const MANY = [
   { id: 'capture-d', label: 'Book a site visit', place: 'page', service: 'endpoint', destination: 'https://forms.harbour-lane.test/f/site-visits', live: true }
 ];
 await bridge('forms', { forms: MANY });
-await shot('form-many', () => text(panel, /4 forms/), { area: 'all' });
+await shot('form-many', () => text(panel, /4 forms on this page/), { area: 'all' });
 await panel.locator('summary').click();
 await shot('form-many-open', () => text(panel, /Netlify Forms/), { themes: LIGHT, area: 'all' });
 await panel.locator('summary').click();
-await panel.getByRole('button', { name: /Test live delivery/ }).click();
+await panel.getByRole('button', { name: /Send a real test/ }).click();
 await shot('form-many-choose', () => text(panel, /Choose the form to send from/), { themes: LIGHT, area: 'all' });
 await panel.locator('select').selectOption('capture-a');
 await shot('form-many-confirm', () => text(panel, /go to forms\.harbour-lane\.test/), { themes: LIGHT, area: 'all' });
@@ -291,7 +291,7 @@ await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
 // In a narrow window.
 await win.setViewportSize({ width: 980, height: 720 });
 await pause(500);
-await shot('form-narrow', () => text(panel, /4 forms/), { themes: LIGHT, area: 'all' });
+await shot('form-narrow', () => text(panel, /4 forms on this page/), { themes: LIGHT, area: 'all' });
 await win.setViewportSize({ width: 1440, height: 900 });
 await pause(300);
 

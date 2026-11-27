@@ -161,14 +161,26 @@
   .ss-scale-choices { flex-wrap: wrap; }
   .ss-scale-choices:not(.full) button { flex: 1 0 auto; }
   .ss-scale-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  /* Which palettes visitors get, and which one Colors shows. */
-  .ss-schemes { gap: 8px; }
-  .ss-palette-switch button svg { width: 14px; height: 14px; }
+  /* Which palettes visitors get, and which one Colors shows and edits. */
+  .ss-schemes { gap: 12px; }
+  .ss-schemes .field-hint, .ss-harmony .field-hint { line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  /* The view switch is the panel's, not the site's: its own block under a rule, apart from the two site settings. */
+  .ss-palette-editing { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
   .ss-palette-contrast { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; }
   .ss-palette-contrast .ss-verdict { grid-column: auto; grid-row: auto; }
-  .ss-palette-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  /* A palette made from the brand: a mood chooser, a small page drawn in the proposed colors, their names, and one button. */
-  .ss-harmony { gap: 8px; }
+  .ss-palette-contrast .link-btn { font-size: 12px; }
+  .ss-palette-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  .ss-palette-remake { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .ss-palette-remake .btn svg { width: 13px; height: 13px; }
+  /* The palette a colour group's rows edit, beside its name, on a site with two palettes. */
+  .ss-group-scheme { margin-left: 8px; padding: 1px 6px; border-radius: var(--r-xs); background: var(--track); font-size: 11px; font-weight: 500; color: var(--text-2); }
+  /* A palette made from the brand: a mood, a small page drawn in the proposed colors with their names, what to know, one button. */
+  .ss-harmony { gap: 10px; }
+  /* Four moods in a narrow dock: each label on one line, the row wrapping before a label does. */
+  .ss-harmony .segmented { flex-wrap: wrap; }
+  .ss-harmony .segmented button { flex: 1 0 auto; padding: 0 7px; white-space: nowrap; }
+  .ss-harmony-sample { display: flex; flex-direction: column; gap: 6px; }
+  .ss-harmony-caption { font-size: 11px; font-weight: 500; color: var(--text-3); }
   .ss-harmony-preview { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-strong); font-size: 12px; line-height: 1.3; }
   .ss-harmony-card { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border-radius: var(--r-sm); }
   .ss-harmony-heading { font-size: 13px; font-weight: 600; }
@@ -176,11 +188,16 @@
   .ss-harmony-btn { padding: 2px 8px; border-radius: var(--r-sm); font-weight: 600; }
   .ss-harmony-band { padding: 6px 10px; border-radius: var(--r-sm); font-weight: 600; }
   .ss-harmony-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 3px 10px; margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.35; color: var(--text-2); }
-  .ss-harmony-chips li { display: flex; align-items: center; gap: 5px; min-width: 0; }
-  .ss-harmony-verdict { display: flex; align-items: flex-start; gap: 5px; margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  .ss-harmony-verdict svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }
-  .ss-harmony-verdict.pass svg { color: var(--green); }
-  .ss-harmony-verdict.fail, .ss-harmony-verdict.fail svg { color: var(--red); }
+  .ss-harmony-chips li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  /* A wide swatch, not a ringed circle or a square: in a two-column list those read as radio buttons and checkboxes. */
+  .ss-harmony-chips .ss-chip { width: 22px; height: 12px; border-radius: 3px; }
+  .ss-harmony-facts { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .ss-harmony-facts li { display: flex; align-items: flex-start; gap: 6px; text-wrap: pretty; }
+  .ss-harmony-facts svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+  .ss-harmony-facts .pass svg { color: var(--green); }
+  .ss-harmony-facts .fail, .ss-harmony-facts .fail svg { color: var(--red); }
+  .ss-harmony-pairs { display: flex; flex-direction: column; margin-top: 2px; font-weight: 500; }
+  .ss-harmony-hex { font-family: var(--mono); font-size: 11px; }
   .ss-harmony-apply { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
   .ss-type-specimen { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border-radius: var(--r-sm); background: var(--border); box-shadow: 0 0 0 1px var(--border-strong); overflow: hidden; }
   .ss-type-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 10px 10px; background: var(--raised); color: var(--text); }
@@ -309,4 +326,45 @@
   .so-redirect .so-redirect-form { padding: 6px 0 0; }
   .so-redirect-kinds { display: flex; flex-direction: column; gap: 4px; }
   .so-redirect-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+  /* ---------- AI agents (AgentDiscovery.tsx) ---------- */
+  /* Plain names first; the file or standard each writes follows as secondary text. The index's summary and preview
+     sit under its switch, indented on a rule, because nothing else in the section uses them. */
+  .agents-intro { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .agents-tech { font-family: var(--mono); font-size: 11px; color: var(--text-2); white-space: nowrap; }
+  .agents-feature { display: flex; flex-direction: column; }
+  .agents-sub { display: flex; flex-direction: column; gap: 11px; margin: 10px 0 2px 1px; padding-left: 12px; border-left: 2px solid var(--border); }
+  .agents-copy { height: 22px; margin: -3px -6px -3px 0; padding: 0 6px; gap: 4px; font-weight: 500; color: var(--text-2); }
+  .agents-copy svg { width: 13px; height: 13px; }
+  .agents-file { display: flex; flex-direction: column; gap: 6px; }
+  .agents-file-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+  .agents-file-body:not([hidden]) { display: flex; flex-direction: column; gap: 6px; }
+  .agents-file-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; text-decoration: none; }
+  .agents-file-toggle svg { width: 12px; height: 12px; transition: transform 120ms; }
+  .agents-file-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .agents-file-toggle svg { transition: none; } }
+  /* A short file sized to its lines (the shared code view is a tall pane), its long lines wrapped. */
+  .code-view.agents-preview { height: auto; max-height: 280px; padding: 10px 12px; font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  /* ---------- Visitor text (VisitorText.tsx) ---------- */
+  /* Each wording is a row of its own: name (with its reset while changed), field, then what it is. Rows stand apart so
+     a note never reads as the next row's. */
+  .vt-find { display: flex; flex-direction: column; gap: 5px; }
+  .vt-tools { display: flex; align-items: center; gap: 8px; }
+  .vt-search.search { flex: 1; min-width: 0; margin: 0; }
+  .vt-group.ss-group { gap: 14px; }
+  .vt-group > .ss-group-label { padding-bottom: 0; }
+  .vt-label { display: flex; align-items: center; gap: 2px; min-height: 22px; }
+  .vt-label .reset-dot { margin: -2px 0; }
+  .vt-field .field-hint > span { display: block; margin-top: 3px; }
+  .vt-fills code { margin-left: 4px; font-family: var(--mono); font-size: 11px; color: var(--text-2); }
+  /* A single line that wraps: as tall as an input, growing with its text or its built-in wording, never dragged. */
+  .textarea.vt-input { min-height: 30px; padding: 5px 9px; line-height: 18px; resize: none; }
+  .vt-field .field-quiet > .textarea:focus:has(+ .field-count.quiet) { padding-right: 60px; }
+  .vt-field .field-quiet > .field-count.quiet { align-items: flex-start; padding-top: 6px; }
+  .vt-fallback-text { color: var(--text-2); overflow-wrap: anywhere; }
+  .vt-results { display: flex; flex-direction: column; gap: 11px; }
+  /* While filtering, the list keeps a screen's height, so the find box stays where it was as results shrink. */
+  .vt-results.filtering { min-height: 70vh; }
+  .vt-empty { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 4px 0; font-size: 12px; color: var(--text-2); }
 }

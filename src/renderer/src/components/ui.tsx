@@ -4,7 +4,7 @@ import { shortcutLabel } from '../lib/shortcut-keys';
 import { Children, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal, flushSync } from 'react-dom';
-import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
 import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, StoreViewContext, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
 import { afterLanding, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
@@ -714,7 +714,7 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
  * radio group, so one tab stop and the arrow keys) and the hint describes it. Use it wherever a Segmented answers a
  * question the surrounding form does not already ask.
  */
-export function ChoiceField<T extends string>({ label, hint, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string }>; onChange: (v: T) => void; full?: boolean }) {
+export function ChoiceField<T extends string>({ label, hint, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string; /** Unavailable: shown, skipped by the arrow keys. */ disabled?: boolean }>; onChange: (v: T) => void; full?: boolean }) {
   const id = useId();
   return (
     <div className="field">
@@ -1319,6 +1319,26 @@ const HELD_LABELS: Record<HeldAction, string> = {
   retry: 'Try again',
   discard: 'Discard'
 };
+/** Where focus was before it came into the notices (Toasts records it), for a notice that goes with focus in it. */
+let noticesCameFrom: HTMLElement | null = null;
+
+/**
+ * A decision with focus in it is going (answered, or gone by itself): focus goes on to the next decision's expected
+ * answer (or its first), or back where it was before it came into the notices, never dropping onto the page. Never to
+ * a status notice: the key that answered must not then press its Undo or Dismiss.
+ */
+export function handOffNoticeFocus(going: HTMLElement) {
+  const next = [...document.querySelectorAll<HTMLElement>('.toasts .toast:is(.held, .rename-offer, .live-request)')]
+    .filter((t) => t !== going)
+    .map((t) => t.querySelector<HTMLElement>('.btn-primary:not(:disabled)') ?? t.querySelector<HTMLElement>('button:not(:disabled)'))
+    .find((b): b is HTMLElement => !!b && reachable(b));
+  if (next) return next.focus();
+  const back = noticesCameFrom;
+  if (back?.isConnected && reachable(back) && !going.contains(back)) back.focus();
+}
+
+/** The answers that keep the author's edit: the first of them on offer is the row's expected answer. */
+const KEEPS_EDIT = new Set<HeldAction>(['stop-apply', 'apply', 'replace', 'retry']);
 
 /** A typed edit that could not be saved as it was made (the AI was working, or its field changed somewhere else
  *  meanwhile): kept, with what can be done with it now. */
@@ -1340,14 +1360,27 @@ function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
     () => () => {
       const el = row.current;
       if (!el?.contains(document.activeElement)) return;
+      // The next kept edit first, then any other notice with an answer, then where focus came from.
       const next = [...document.querySelectorAll<HTMLElement>('.toast.held')].find((r) => r !== el);
-      (next?.querySelector<HTMLElement>('button') ?? next)?.focus();
+      if (next) (next.querySelector<HTMLElement>('button') ?? next).focus();
+      else handOffNoticeFocus(el);
     },
     []
   );
+  // Copy text says whether it worked, so the author never discards wording they believe they kept.
+  const [copied, setCopied] = useState<'yes' | 'no' | null>(null);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(null), 3000);
+    return () => clearTimeout(timer);
+  }, [copied]);
   const run = (a: HeldAction) => {
     if (a === 'discard') discardHeld(h.id);
-    else if (a === 'copy') void navigator.clipboard?.writeText(h.text ?? '').catch(() => undefined);
+    else if (a === 'copy')
+      void (navigator.clipboard?.writeText(h.text ?? '') ?? Promise.reject(new Error('No clipboard'))).then(
+        () => setCopied('yes'),
+        () => setCopied('no')
+      );
     // Only "Stop AI and apply my edit" stops anything, and only the request the row showed.
     else void applyHeld(h.id, { replace: a === 'replace', stopRunId: a === 'stop-apply' ? (aiRunId ?? undefined) : undefined });
   };
@@ -1363,19 +1396,25 @@ function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
         // Moving out of the row on purpose; a button removed under focus moves nowhere.
         if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) hadFocus.current = false;
       }}
+      // An answer moves focus on (to the next row's buttons): a held Enter's repeats never press what took it.
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.repeat) e.preventDefault();
+      }}
     >
       <Pencil />
       <div className="grow held-body">
         <span className="held-where">
           {h.label} · {h.place}
         </span>
-        {h.text !== null && <q className="held-text">{h.text || '(empty)'}</q>}
-        {/* Only what this edit's state says is announced when it changes, not the whole row. */}
+        {/* Why it waits comes before what was typed. Only what this edit's state says is announced when it changes,
+            not the whole row. */}
         <span role="status">{message}</span>
+        {h.text !== null && <q className="held-text">{h.text || '(empty)'}</q>}
+        <span className="notice-later">Answer once this dialog is closed.</span>
         <span className="held-actions">
-          {actions.map((a) => (
-            <button key={a} className="btn btn-sm btn-ghost" onClick={() => run(a)}>
-              {HELD_LABELS[a]}
+          {actions.map((a, i) => (
+            <button key={a} className={`btn btn-sm ${i === 0 && KEEPS_EDIT.has(a) ? 'btn-primary' : 'btn-ghost'}`} onClick={() => run(a)}>
+              {a === 'copy' && copied ? (copied === 'yes' ? 'Copied' : 'Could not copy') : HELD_LABELS[a]}
             </button>
           ))}
         </span>
@@ -1539,8 +1578,15 @@ export function Toasts() {
   const snapshot = useStore((s) => s.snapshot);
   const aiRunId = useStore((s) => (s.snapshot?.aiBusy ? (s.snapshot.aiRunId ?? null) : null));
   const dialogOpen = useDialogOpen();
+  const previewing = useStore((s) => s.mode === 'preview');
   const savedRetired = useStore((s) => s.savedRetired);
   const times = useActionTimes(toasts, dialogOpen, savedRetired);
+  // Crowded and scrolled to its foot: how many notices are out of sight above, and whether one is an error.
+  const [aboveCount, setAboveCount] = useState(0);
+  const [aboveError, setAboveError] = useState(false);
+  // Those notices, by id: an action among them waits, as one held back by a dialog does, and its time starts once it
+  // is scrolled into view.
+  const [aboveIds, setAboveIds] = useState('');
   // A kept notice is shown only once no dialog holds it back, and only while its action still applies; it then
   // returns as a new status message, so its Undo is announced again.
   const actionable = ({ action: a }: ToastItem) => !!a && (!a.undoes || undoAvailable(a.undoes, snapshot)) && (!a.stops || aiRunId === a.stops) && (!a.opening || snapshot?.workspaceKey === a.opening);
@@ -1551,33 +1597,89 @@ export function Toasts() {
   const ordered = [...toasts, ...kept].sort((a, b) => a.id - b.id);
   const shownToasts = shownNotices(ordered, times.held);
   useEffect(() => {
-    if (!dialogOpen) times.slots(ordered, new Set(shownToasts.map((t) => t.id)));
+    const above = new Set(aboveIds.split(' ').filter(Boolean).map(Number));
+    if (!dialogOpen) times.slots(ordered, new Set(shownToasts.filter((t) => !above.has(t.id)).map((t) => t.id)));
   });
   useLayoutEffect(() => {
     const text = times.refocus.current;
     if (text === null) return;
     times.refocus.current = null;
     const again = [...shownToasts].reverse().find((t) => t.kind === 'error' && t.text === text);
-    if (again) document.getElementById(`toast-text-${again.id}`)?.parentElement?.querySelector<HTMLElement>('.toast-dismiss')?.focus();
+    if (again) document.getElementById(`toast-text-${again.id}`)?.closest('.toast')?.querySelector<HTMLElement>('.toast-dismiss')?.focus();
   });
-  // The notices' band at the bottom of the window (their height plus clearance), which dialogs stop short of.
+  // The notices' band at the bottom of the window (from their top edge, plus clearance), which dialogs stop short of.
   const stack = useRef<HTMLDivElement>(null);
+  const remeasure = useRef<() => void>(() => undefined);
   useLayoutEffect(() => {
     const el = stack.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const root = document.documentElement;
     const measure = () => {
-      const h = el.getBoundingClientRect().height;
-      root.style.setProperty('--toast-band', h ? `${Math.ceil(h) + 56}px` : '0px');
+      const box = el.getBoundingClientRect();
+      const notices = [...el.querySelectorAll<HTMLElement>('.toast')];
+      root.style.setProperty('--toast-band', notices.length && box.height ? `${Math.ceil(innerHeight - box.top + 16)}px` : '0px');
+      // The room the notices have: below the toolbar, and while a dialog is open, below the least of it a dialog keeps
+      // (its 240px floor under the 11vh it starts at), so a crowded stack never reaches a dialog's controls.
+      const bottom = parseFloat(getComputedStyle(el).getPropertyValue('--notices-bottom')) || 40;
+      const toolbar = parseFloat(getComputedStyle(root).getPropertyValue('--toolbar-h')) || 52;
+      let room = innerHeight - bottom - toolbar - 16;
+      if (openDialogs.length) room = Math.min(room, Math.max(120, 0.89 * innerHeight - 240 - bottom - 16));
+      el.style.setProperty('--notices-room', `${Math.floor(room)}px`);
+      // More notices than fit: the stack is bounded and scrolls (primitives.css), so none is lost off the top of the
+      // window. Measured against the room it has, not its bounded height. Crowded, the cards are a little shorter (a
+      // quote shows one line), so the stack stays crowded until it would fit with room to spare: it never flips back
+      // and forth at the edge.
+      const was = el.hasAttribute('data-crowded');
+      const need = el.scrollHeight - (was ? 16 : 0);
+      // What the quotes would take back uncrowded: each shows up to three lines, two in a short window.
+      const cap = innerHeight <= 780 ? 40 : 60;
+      const regrow = [...el.querySelectorAll<HTMLElement>('.toast.held .held-text')].reduce((sum, q) => sum + Math.max(0, Math.min(q.scrollHeight, cap) - q.clientHeight), 0);
+      const crowded = was ? need + regrow + 24 > room : need > room;
+      // Newly crowded, it opens at its foot: the decisions waiting for an answer sit there, unless focus is in a
+      // notice, which stays in view.
+      if (crowded && !el.hasAttribute('data-crowded'))
+        requestAnimationFrame(() => {
+          const inside = el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+          if (inside) inside.scrollIntoView({ block: 'nearest' });
+          else el.scrollTop = el.scrollHeight;
+        });
+      el.toggleAttribute('data-crowded', crowded);
+      // What is wholly out of sight above, said at the top of the stack by a bar that lies over it and takes no room of
+      // its own (showing it moves nothing). Only once the stack is scrolled further than the bar is tall: scrolled
+      // less, the first notice is clipped like any scrolled content, and its action is still there to press.
+      const barred = crowded && el.scrollTop > 40;
+      const top = el.getBoundingClientRect().top + (barred ? 36 : 0);
+      const hidden = barred ? notices.filter((n) => n.getBoundingClientRect().bottom <= top) : [];
+      setAboveCount(hidden.length);
+      setAboveError(hidden.some((n) => n.classList.contains('error')));
+      // An action waits while its own button is out of sight (behind the bar or above the stack), whatever shows of
+      // the message around it.
+      const covered = crowded ? notices.filter((n) => (n.querySelector('.btn')?.getBoundingClientRect().bottom ?? Infinity) <= top + 2) : [];
+      setAboveIds(covered.map((n) => n.dataset.notice ?? '').join(' '));
     };
+    remeasure.current = measure;
     measure();
     const watch = new ResizeObserver(measure);
     watch.observe(el);
+    // Watch what is inside too: the stack's own box stops growing once it is bounded.
+    const inside = new MutationObserver(measure);
+    inside.observe(el, { childList: true, subtree: true });
+    addEventListener('resize', measure);
+    el.addEventListener('scroll', measure, { passive: true });
     return () => {
       watch.disconnect();
+      inside.disconnect();
+      removeEventListener('resize', measure);
+      el.removeEventListener('scroll', measure);
       root.style.removeProperty('--toast-band');
     };
   }, []);
+  // A dialog opening or closing, and the Preview pill coming or going, change the room the stack has without
+  // changing the stack: measured again once they have drawn.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => remeasure.current());
+    return () => cancelAnimationFrame(frame);
+  }, [dialogOpen, previewing]);
   // Where focus was before it came into the notices, to go back there once none is left to take it.
   const cameFrom = useRef<HTMLElement | null>(null);
   // The dismiss button Enter went down on.
@@ -1607,33 +1709,61 @@ export function Toasts() {
       ref={stack}
       onFocus={(e) => {
         const from = e.relatedTarget as HTMLElement | null;
-        if (from && !e.currentTarget.contains(from)) cameFrom.current = from;
+        if (from && !e.currentTarget.contains(from)) cameFrom.current = noticesCameFrom = from;
       }}
     >
-      <RenameOffer />
-      <JoinRequests />
-      {held.length > 0 && (
-        <div className="toast-group" role="region" aria-label="Edits not saved yet">
-          {held.map((h) => (
-            <HeldEditRow key={h.id} h={h} aiRunId={aiRunId} />
-          ))}
-        </div>
+      {aboveCount > 0 && (
+        <button
+          type="button"
+          className="notices-above"
+          // A press with the pointer leaves focus where it was (in the field being typed in, say): the bar goes once
+          // nothing is above, and would take focus with it.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            const el = stack.current;
+            if (!el) return;
+            // From the keyboard, focus goes to the first notice as it comes into view.
+            if (e.detail === 0) el.querySelector<HTMLElement>('.toast button:not(:disabled)')?.focus({ preventScroll: true });
+            el.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          // Enter acts as it is let go, as Dismiss's does: focus moves on to the first notice, whose Undo a held
+          // key's repeats would otherwise press.
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            if (!e.repeat) pressed.current = e.currentTarget;
+          }}
+          onKeyUp={(e) => {
+            if (e.key !== 'Enter' || pressed.current !== e.currentTarget) return;
+            pressed.current = null;
+            e.currentTarget.click();
+          }}
+        >
+          {aboveError ? <CircleAlert /> : <ChevronUp />}
+          {aboveError ? `${aboveCount} more above, with an error` : `${aboveCount} more above`}
+        </button>
       )}
-      {/* Not atomic: only what arrives is read out, never again every notice that is still waiting to be dismissed. */}
+      {/* Status notices come and go above the decisions, which stay against the bottom edge until they are answered:
+          a notice arriving or going never moves a button the author is reaching for. Not atomic: only what arrives is
+          read out, never again every notice that is still waiting to be dismissed. */}
       <div className="toast-group" role="status" aria-live="polite" aria-atomic="false">
         {shownToasts.map((t) => (
           <div
             key={times.key(t)}
             className={`toast ${t.kind}`}
-            role={t.kind === 'error' ? 'alert' : undefined}
+            data-notice={t.id}
             onMouseEnter={() => times.engage(t, 'hover', true)}
             onMouseLeave={() => times.engage(t, 'hover', false)}
             onFocus={() => times.engage(t, 'focus', true)}
             onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && times.engage(t, 'focus', false)}
           >
             {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
-            <span className="grow toast-text" id={`toast-text-${t.id}`}>
-              {t.text}
+            {/* An error is said at once; its text alone is the alert, never its buttons. */}
+            <span className="grow toast-body">
+              <span className="toast-text" id={`toast-text-${t.id}`} role={t.kind === 'error' ? 'alert' : undefined}>
+                {t.text}
+              </span>
+              {actionable(t) && <span className="notice-later">{t.action!.label} once this dialog is closed.</span>}
             </span>
             {/* An Undo whose change has been undone some other way, or whose project has closed, is withdrawn. */}
             {actionable(t) && (
@@ -1674,6 +1804,15 @@ export function Toasts() {
           </div>
         ))}
       </div>
+      <RenameOffer />
+      <JoinRequests />
+      {held.length > 0 && (
+        <div className="toast-group" role="region" aria-label="Edits not saved yet">
+          {held.map((h) => (
+            <HeldEditRow key={h.id} h={h} aiRunId={aiRunId} />
+          ))}
+        </div>
+      )}
     </div>,
     document.body
   );

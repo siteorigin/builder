@@ -1,36 +1,29 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ResponsiveStyles, StyleState } from '@shared/types';
 import { isGroupStyleState } from '@shared/types';
-import { STYLE_PROP_MAP, stateStyleProps } from '@shared/styles';
 import { setState } from '../store';
 import { statesWithChanges } from '../lib/style-source';
 
 export const STATE_LABEL: Record<StyleState, string> = { groupHover: 'Group hover', groupFocus: 'Group focus', hover: 'Hover', focus: 'Focus', active: 'Active' };
-/** When a state's changes show, for the note under the picker. */
+/** When a state's changes show, for the note under the picker and each option's tooltip. */
 const STATE_WHEN: Record<StyleState, string> = {
-  groupHover: 'while the pointer is anywhere over the nearest interaction group around it (its card), on devices with a pointer',
-  groupFocus: 'while anything in the nearest interaction group around it (its card), or the group itself, has focus',
-  hover: 'while the pointer is over it, on devices with a pointer',
+  groupHover: 'while the pointer is anywhere over its card',
+  groupFocus: 'while anything in its card has focus',
+  hover: 'while the pointer is over it',
   focus: 'while it has keyboard focus',
   active: 'while it is pressed'
 };
-/** What the canvas shows while a state is chosen. */
-const STATE_SHOWN: Record<StyleState, string> = { groupHover: 'with its group hovered', groupFocus: 'with focus in its group', hover: 'hovered', focus: 'focused', active: 'pressed' };
 /** The order the picker lists states in: the element's own, then its group's. */
 const PICKER_STATES: StyleState[] = ['hover', 'focus', 'active', 'groupHover', 'groupFocus'];
 
-/** The properties a state can change, as the note names them. */
-const stateProps = (state: StyleState) => {
-  const names = stateStyleProps(state)
-    .map((p) => STYLE_PROP_MAP[p]?.label.toLowerCase())
-    .filter((n): n is string => !!n && !/^border (top|bottom|left|right|start|end)/.test(n));
-  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-};
+/** "Hover", "Hover and Focus", "Hover, Focus and Active". */
+const listNames = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
 
 /**
  * The state control, under the size picker: whether the next change applies at rest (Default) or on hover, with
- * keyboard focus or while pressed, and which states already hold changes. While a state is chosen, the canvas shows
- * the selected element in it.
+ * keyboard focus or while pressed, and which states already hold changes. The element's own states share the first
+ * row; its card's two states, when offered, take the second, so the rows never break by accident. While a state is
+ * chosen, the canvas shows the selected element in it.
  */
 export function StatePicker({ styles, state, part, grouped = false }: { styles: ResponsiveStyles | undefined; state: StyleState | null; part?: string; grouped?: boolean }) {
   const group = useRef<HTMLDivElement>(null);
@@ -59,6 +52,7 @@ export function StatePicker({ styles, state, part, grouped = false }: { styles: 
     choose(jump >= 0 ? order[jump] : order[(order.indexOf(state) + step + order.length) % order.length], true);
   };
   const marked = new Set(statesWithChanges(styles));
+  const markedNames = order.filter((v): v is StyleState => v !== null && marked.has(v)).map((v) => STATE_LABEL[v]);
   return (
     <div className="style-state">
       <div className="style-scope-label" id={labelId}>
@@ -69,7 +63,17 @@ export function StatePicker({ styles, state, part, grouped = false }: { styles: 
           const name = v ? STATE_LABEL[v] : 'Default';
           const dot = v !== null && marked.has(v);
           return (
-            <button key={name} type="button" role="radio" data-state={v ?? 'default'} aria-checked={state === v} tabIndex={state === v ? 0 : -1} onClick={() => choose(v)} title={dot ? `${name} has its own changes` : v ? `Style it ${STATE_WHEN[v]}` : 'Style it at rest'}>
+            <button
+              key={name}
+              type="button"
+              role="radio"
+              className={v && isGroupStyleState(v) ? 'style-state-group' : undefined}
+              data-state={v ?? 'default'}
+              aria-checked={state === v}
+              tabIndex={state === v ? 0 : -1}
+              onClick={() => choose(v)}
+              title={`${v ? `Style it ${STATE_WHEN[v]}` : 'Style it at rest'}${dot ? '. Has its own changes' : ''}`}
+            >
               {name}
               {dot && (
                 <>
@@ -81,10 +85,19 @@ export function StatePicker({ styles, state, part, grouped = false }: { styles: 
           );
         })}
       </div>
-      {state && (
+      {state ? (
         <p className="style-scope-note" id={noteId}>
-          <strong>{STATE_LABEL[state]} only</strong>, {STATE_WHEN[state]}. The canvas shows it {STATE_SHOWN[state]}. {isGroupStyleState(state) ? 'A group state' : 'A state'} changes only {stateProps(state)}.
+          <strong>{STATE_LABEL[state]} only</strong>, {STATE_WHEN[state]}, as the canvas shows. Only the styles a state can change are listed.
         </p>
+      ) : (
+        markedNames.length > 0 && (
+          // The dot's meaning in words, while it marks a state that isn't chosen. Each marked option already says so to
+          // a screen reader, so this line is for sight only.
+          <p className="style-scope-key" aria-hidden="true">
+            <span className="style-scope-dot" aria-hidden="true" />
+            {listNames(markedNames)} {markedNames.length === 1 ? 'has its' : 'have their'} own changes.
+          </p>
+        )
       )}
     </div>
   );

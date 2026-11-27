@@ -218,7 +218,7 @@ describe('paste style', () => {
     // The hero has no Desktop padding of its own: there is nothing to paste for Desktop, and the reason is given.
     const desktop = planStylePaste(s, copy, dest, 'desktop');
     expect(desktop.operations).toEqual([]);
-    expect(desktop.rows).toEqual([expect.objectContaining({ property: 'paddingBlock', status: 'skip', reason: 'The copy sets it for All sizes, Phone, not Desktop.' })]);
+    expect(desktop.rows).toEqual([expect.objectContaining({ property: 'paddingBlock', status: 'skip', reason: 'The copy sets it for All sizes and Phone, not Desktop.' })]);
     expect(planStylePaste(s, copy, dest, 'phone').operations).toHaveLength(1);
   });
 
@@ -237,7 +237,7 @@ describe('paste style', () => {
     expect(row('customCss', 'Section')).toMatchObject({ status: 'skip' });
     // The same part on both keeps its site style link; a part the destination doesn't have is named.
     expect(row('textStyle', 'Heading')).toMatchObject({ status: 'change', changes: [{ scope: 'base', to: { token: 'text.h2' } }] });
-    expect(row('color', 'Supporting text')).toMatchObject({ status: 'skip', reason: 'Content with image has no supporting text part to take it.' });
+    expect(row('color', 'Supporting text')).toMatchObject({ status: 'skip', reason: 'Content with image has no supporting text part.' });
     // What is shown as not pasted is not pasted.
     expect(plan.operations.map((o) => (o.type === 'node.setStyle' ? `${o.partId}.${o.scope}.${o.property}` : ''))).toEqual(['root.base.paddingBlock', 'root.phone.paddingBlock', 'heading.base.textStyle']);
     const heading = s.pages[homeId(s)].nodes[placed(s, 'content.media').id] as InstanceNode;

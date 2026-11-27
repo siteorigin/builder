@@ -54,6 +54,7 @@ export function FocusEditor({
   ratio,
   fit,
   image,
+  backdrop = false,
   onSet
 }: {
   label: string;
@@ -77,6 +78,11 @@ export function FocusEditor({
   /** The image fit at that size. */
   fit: StyleValue | undefined;
   image?: FocusImage;
+  /**
+   * The picture is a background filling its box (Background image), not an image element: the box's shape is the
+   * element's own as the canvas shows it, so the advice speaks of the box, never of an aspect ratio or Image fit.
+   */
+  backdrop?: boolean;
   /**
    * May return the change's promise: settling to the result (with the revision the change made), or to null
    * when the project refused it.
@@ -280,8 +286,18 @@ export function FocusEditor({
   else if (failed === src) caption = 'The picture couldn’t load, so its crop can’t be shown here.';
   else if (sourceRatio === null) caption = '';
   else if (unreached) caption = `Phone, tablet and desktop each keep their own ${label.toLowerCase()}, so this one shows at no size.`;
+  else if (backdrop && fit === 'contain') caption = `${where}, the whole picture shows, so nothing is cropped.`;
   else if (fit === 'contain')
     caption = `${where}, Fit (no crop) shows the whole picture. ${ratio === null ? 'Choose Fill (crop) and an aspect ratio' : sourceRatio !== null && cropAxis(sourceRatio, ratio) === null ? 'Choose Fill (crop) and a different aspect ratio' : 'Set Image fit to Fill (crop)'} to crop it.`;
+  // A background's box is measured on the canvas, so its crop shows only where the preview shows it. Why there is no
+  // box to crop to: the preview hasn't drawn it yet, shows another picture there, or shows another size.
+  else if (backdrop && ratio === null)
+    caption = previewed
+      ? 'The crop shows here once the preview has drawn this box.'
+      : scope === 'base'
+        ? `The ${sizeName} preview has its own background image, so this crop isn’t drawn here.`
+        : `The crop shows here while the preview is at ${sizeName} size.`;
+  else if (backdrop && !cropped) caption = `${where}, the box has the picture’s shape, so the whole picture shows.`;
   else if (!cropped && uncertain) caption = `${where}, its height is set, so the site may crop it. Choose an aspect ratio to see and control the crop.`;
   else if (!cropped && ratio !== null) caption = `${where}, the aspect ratio matches the picture, so the whole picture shows. Choose a different one to crop it.`;
   else if (!cropped) caption = `${where}, the whole picture shows. Choose an aspect ratio to crop it.`;

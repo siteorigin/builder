@@ -1,13 +1,41 @@
 @layer components {
-  /* A rich text field: its text, then the buttons that add links and lists without typed syntax. */
-  .rich-field { display: flex; flex-direction: column; gap: 4px; }
-  .rich-tools { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+  /* A rich text field: the buttons that add marks, links and lists without typed syntax, above the text they format
+     (as the post writer's are), then the row that adds or edits a link, then the text. */
+  .rich-field { display: flex; flex-direction: column; gap: 6px; }
+  /* A group (marks, link, lists, list items) wraps as one when the Inspector is narrow, its divider with it. */
+  .rich-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; }
+  .rich-tools-group { position: relative; display: inline-flex; flex-wrap: nowrap; gap: 2px; }
+  .rich-tools-group + .rich-tools-group { margin-left: 9px; }
+  .rich-tools-group + .rich-tools-group::before { content: ''; position: absolute; left: -5px; top: 4px; bottom: 4px; width: 1px; background: var(--border-strong); }
+  /* Off is drawn by the primitive (--disabled-ink, no face), never faded, and stays off under the pointer. */
   .rich-tools .icon-btn[aria-disabled='true'] { cursor: default; }
-  .rich-tools .icon-btn[aria-disabled='true']:not(:focus-visible) { opacity: 0.4; }
-  .rich-tools .icon-btn[aria-disabled='true']:hover { background: transparent; color: var(--text-2); }
-  .rich-tools-gap { width: 1px; height: 16px; margin: 0 4px; background: var(--border); }
-  .rich-link { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-  .rich-link .input { flex: 1 1 140px; min-width: 0; }
-  .rich-link .field-error { flex-basis: 100%; }
-  .rich-link .link-rels { flex-basis: 100%; margin-top: 2px; }
+  /* Pressed takes a full ring as well as the tint, so what applies at the caret holds 3:1, as in the post writer. */
+  .rich-tools .icon-btn[aria-pressed='true']:not([aria-disabled='true']) { box-shadow: inset 0 0 0 1px var(--accent); }
+  /* Applied where the selection is, but not something it can take off there: off buttons take no edge, so a dot under
+     the glyph says it is on. */
+  .rich-tools .icon-btn { position: relative; }
+  .rich-tools .icon-btn[aria-pressed='true'][aria-disabled='true']::after { content: ''; position: absolute; left: 50%; bottom: 1px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--disabled-ink); }
+  /* The note's line is kept for its announcement but takes no room while it is empty. */
+  .rich-note:empty { margin-top: -6px; }
+
+  /* The link row: one contained group under the button that opened it, its destination full width, one line of
+     feedback, and the actions together at the end, Apply last and filled. */
+  .rich-link { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+  .rich-link-label { flex-wrap: nowrap; min-width: 0; }
+  .rich-link-label span { flex: none; }
+  .rich-link-label .rich-link-words { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--text-3); }
+  .rich-link .input { width: 100%; min-width: 0; }
+  /* The page list's opener drawn as the house select chevron, in the field's ink, not the platform's black triangle. */
+  .rich-link .input::-webkit-calendar-picker-indicator {
+    width: 10px; height: 10px; margin: 0 -2px 0 6px; padding: 0; opacity: 1; cursor: pointer; color: var(--text-2);
+    background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none' stroke='%23000' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E") center / 10px 6px no-repeat;
+  }
+  /* Feedback holds two lines whatever it says, so Apply does not move under the pointer when a hint becomes an error. */
+  .rich-link-feedback { min-height: calc(2 * 1.4 * 12px); line-height: 1.4; }
+  .rich-link-notice { color: var(--text); }
+  .rich-link .link-rels { margin-top: 2px; }
+  .rich-link .link-rel { min-height: 24px; }
+  .rich-link-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+  .rich-link-remove { margin-right: auto; padding-left: 6px; }
+  .rich-link-remove svg { width: 14px; height: 14px; }
 }

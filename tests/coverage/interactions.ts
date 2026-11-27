@@ -1914,7 +1914,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'preview',
     intent: 'Join someone else’s live session from my own copy of Builder, and edit their site with them, or watch it, until I leave or the session ends',
     start: 'Welcome or a project of my own open, a host’s invite link, the relay in its local simulator',
-    routes: ['welcome:Join live session', 'menu:File > Join Live Session…', 'dialog:Join live session › Ask to join', 'dialog:Join live session › Stop asking', 'toolbar:Live session', 'item:RemoteSession:Leave session', 'item:Toolbar:Leave live session', 'toolbar:Leave session'],
+    routes: ['welcome:Join live session', 'menu:File > Join Live Session…', 'dialog:Join live session › Ask to join', 'dialog:Join live session › Stop asking', 'toolbar:Live session', 'item:RemoteSession:Leave session…', 'item:Toolbar:Leave live session…', 'toolbar:Leave session'],
     outcome:
       'The host is asked under the name given, and once it admits the guest the editor shows the host’s project and its preview; a collaborator’s edits land on the host’s disk as the guest’s own History steps and come back to the guest; a viewer, or a guest made one, cannot edit; leaving, being removed, an expiry or the host ending the session puts the editor back on Welcome, saying why, with this computer’s projects as they were',
     scenario: 'blank · none · relay simulator',

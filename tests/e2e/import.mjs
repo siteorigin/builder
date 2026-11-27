@@ -180,7 +180,8 @@ assert.equal((await win.evaluate(() => window.builder.project.redo())).ok, true,
 await storage.getByText('Kept for Undo').waitFor({ timeout: 15000 });
 
 step('Free up space shows what it deletes and which steps go, then frees it');
-await storage.getByRole('button', { name: 'Free up space…' }).click();
+// The footer's button names what freeing would free, and opens the review.
+await storage.getByRole('button', { name: /^Free .+…$/ }).click();
 const dialog = win.getByTestId('free-space-dialog');
 await dialog.waitFor();
 await dialog.getByText('Nothing will be left to undo.').waitFor();

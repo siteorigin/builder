@@ -98,7 +98,14 @@ editor sending the edit): `apply` (the whole edit in the main process, queue inc
 and `previewApplied` (the headline). Counts: durable writes, fsyncs, file writes, synchronous filesystem calls, path
 stats and bytes hashed in the edit; the publication's files read, hashed and written, its bytes hashed, durable writes,
 fsyncs, synchronous filesystem calls and path stats (`publish…`); `project:changed` sends and bytes, `reloadFromDisk`
-calls and React commits until the scenario ends; the longest main-process stall.
+calls and React commits until the scenario ends; the sweeps of history blobs and unused assets (`session.sweep`) the
+edit waited on before `changed` (`sweepsAwaited`, their time `sweepAwaited`) and all of them until the scenario ends
+(`sweeps`), so a sweep moved later is still seen; the longest main-process stall.
+
+**`editFullHistory`**: as `edit`, once History holds its limit of 100 steps, so the edit lets the oldest go. Before the
+scenario starts (untimed), 100 edits of the hero's Heading are made through the editor's API, each a step of its own.
+Checks: History held 100 applied steps before the edit, and after it still holds 100, the edit's step is the last
+applied one and the oldest is gone; then the same as `edit`. The same metrics as `edit`, named `editFullHistory.*`.
 
 **`edits`** (after `open`): change the home hero's Heading in the Inspector 20 times, each edit sent once the one
 before it is saved and the file watch has gone off for that save (`controller.watchFired`, when the reload a save sets

@@ -17,6 +17,7 @@ import { openEditorDestination } from '../lib/open-destination';
 import { findingHandoff } from '../lib/seoHandoff';
 import { conflictPanes, sameVersions, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
 import { AiHandoffButton } from '../components/AiHandoff';
+import { HeldStyle } from './StylePaste';
 import { Modal, Spinner, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { GENERATED_DIR, defFile } from '@generator/index';
@@ -236,6 +237,7 @@ export function StatusBar() {
       ) : (
         <span className="grow" aria-hidden="true" />
       )}
+      <HeldStyle />
       {/* Each severity keeps its own glyph and words, so both can be picked out at a glance; red rests only on problems. */}
       <button ref={problemsRef} className={`problems${errors ? ' error' : warnings ? ' warn' : ''}`} onClick={openHealth} title="Project health: check this project for problems">
         {errors > 0 && (

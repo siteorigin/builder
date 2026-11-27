@@ -19,8 +19,9 @@ interface Props {
   actions: ReactNode;
 }
 
-/** What is copied for a report: the event, the technical message and, when the app can say, which build it was. */
-async function reportText(title: string, detail: string | undefined, report: string | undefined): Promise<string> {
+/** What is copied for a report: the event, the technical message and, when the app can say, which build it was. Also
+ * what the canvas copies when its preview stops (PreviewStatus.tsx). */
+export async function reportText(title: string, detail: string | undefined, report: string | undefined): Promise<string> {
   let build = '';
   try {
     build = (await window.builder?.app.buildDetails?.()) ?? '';

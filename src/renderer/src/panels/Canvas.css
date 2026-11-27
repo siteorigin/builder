@@ -137,7 +137,7 @@
   .ov-add svg { transition: rotate 120ms ease-out; }
   .ov-add[aria-expanded='true'] svg { rotate: 45deg; }
   @media (prefers-reduced-motion: reduce) { .ov-add, .ov-add svg { transition: none; } }
-  .ov-add:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .ov-add:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; }
   .ov-add-line { position: absolute; height: 2px; margin-top: -1px; background: var(--select); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85); pointer-events: none; opacity: 0; transition: opacity 90ms ease-out; }
   .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) + .ov-add-line { opacity: 1; }
   /* The quick insert list an Add button opens (the canvas's, or a slot's in the Inspector). A popover at the menus'
@@ -212,7 +212,7 @@
   .ov-chip .icon-btn:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.18); color: #fff; }
   /* A disabled move dims its glyph only, so its keyboard focus ring keeps full strength. */
   .ov-chip .icon-btn[aria-disabled='true'] { cursor: default; }
-  .ov-chip .icon-btn[aria-disabled='true'] svg { opacity: 0.45; }
+  .ov-chip .icon-btn[aria-disabled='true'] svg { color: rgb(255 255 255 / 0.6); }
   .ov-chip .icon-btn.grip { width: 24px; cursor: grab; }
   .ov-chip .icon-btn.grip svg { opacity: 0.85; }
   .ov-chip .icon-btn.grip:active { cursor: grabbing; }
@@ -262,53 +262,86 @@
   .canvas-empty .empty-card { pointer-events: auto; max-width: 340px; padding: 22px 24px; gap: 8px; border-color: var(--border-strong); }
   :where(:root[data-appearance='dark']) { .canvas-empty .empty-card { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.1), var(--shadow-md); } }
   .canvas-empty .empty-card .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
-  .canvas-state { position: absolute; inset: 0; display: grid; place-items: center; z-index: 6; }
   .canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
   .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
   .canvas-card p { margin: 0; color: var(--text-2); text-wrap: balance; }
-  .canvas-card pre { max-width: 100%; max-height: 140px; overflow: auto; margin: 0; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; text-align: left; white-space: pre-wrap; color: var(--text-2); user-select: text; }
   .preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: 99px; background: var(--ink); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), var(--shadow-lg); font-size: 13px; font-weight: 500; }
   .preview-pill svg { width: 15px; height: 15px; }
   .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: 99px; background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
   .preview-pill button:hover { background: var(--sky-1); }
-  /* Forms in Preview: what a send does, the practice reply, and a confirmed live test. Above the other bottom bars. */
-  .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 10px 14px; border-radius: 12px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); }
-  .form-practice p { margin: 0; }
-  .form-practice-title { color: var(--text); font-size: 13px; }
-  .form-practice-title svg { display: inline; width: 14px; height: 14px; margin-right: 2px; vertical-align: -2px; color: var(--accent-text); }
-  .form-practice-title strong { font-weight: 600; }
-  .form-practice-where { overflow-wrap: anywhere; }
-  .form-practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-  .form-practice-label { color: var(--text); font-weight: 500; }
-  .form-practice-live { margin-left: auto; }
-  /* A real send is the one consequential act here, so its confirmation is amber rather than the calm accent. */
-  .form-practice-confirm { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 8px; background: color-mix(in srgb, var(--amber) 8%, var(--raised)); border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
-  .form-practice-confirm .form-practice-row > .select { flex: 1 1 0; width: auto; min-width: 0; }
-  .form-practice-confirm .btn[aria-disabled='true'] { cursor: not-allowed; }
-  .form-practice-dest { font-weight: 600; }
-  .form-practice .segmented button[aria-pressed='true'] { box-shadow: inset 0 0 0 1.5px var(--text-2), var(--shadow-sm); }
-  .form-practice .segmented button svg { width: 12px; height: 12px; }
+  /* Forms in Preview: what a send does, the practice reply, and a confirmed real test. Above the other bottom bars,
+     which the canvas stacks by the panel's measured height. Folds to its title line so the page gets its foot back. */
+  .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 8px; padding: 8px 6px 12px 14px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); container-type: inline-size; }
   /* On a short canvas the panel scrolls inside itself rather than running off the top. */
   .form-practice { overflow-y: auto; }
-  .form-practice-forms summary { width: fit-content; min-height: 24px; padding: 4px 6px 4px 0; border-radius: 4px; cursor: pointer; color: var(--accent-text); font-weight: 500; }
-  .form-practice-forms summary:hover { color: var(--text); }
-  .form-practice-forms ul { display: flex; flex-direction: column; gap: 3px; max-height: 120px; margin: 4px 0 0; padding: 0 0 0 16px; overflow-y: auto; overflow-wrap: anywhere; }
-  .form-practice-live[aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
-  .form-practice-outcome { display: flex; flex-direction: column; gap: 2px; padding-top: 7px; border-top: 1px solid var(--border); }
-  .form-practice-outcome:has(.form-practice-result:empty) { margin-top: -6px; padding-top: 0; border-top: 0; }
-  .form-practice-lead { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--text-2); }
-  .form-practice-lead svg { width: 13px; height: 13px; flex: none; }
+  .form-practice[data-folded] { padding-bottom: 8px; }
+  .form-practice p { margin: 0; }
+  .form-practice-head { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+  .form-practice-head > svg { flex: none; width: 15px; height: 15px; color: var(--text-2); }
+  .form-practice-title { flex: 1; min-width: 0; color: var(--text); font-size: 13px; text-wrap: balance; }
+  .form-practice-title strong { font-weight: 600; }
+  .form-practice-head .form-practice-lead { flex: none; max-width: 45%; margin-right: 2px; padding: 2px 6px; border-radius: var(--r-xs); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .form-practice-fold { flex: none; width: 28px; height: 28px; }
+  .form-practice-fold svg { width: 16px; height: 16px; transition: transform 120ms; }
+  .form-practice-fold[aria-expanded='false'] svg { transform: rotate(180deg); }
+  .form-practice-body { display: flex; flex-direction: column; gap: 8px; padding-right: 8px; }
+  .form-practice-body[hidden] { display: none; }
+  .form-practice-where { overflow-wrap: anywhere; }
+  .form-practice-dest { display: inline; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+  .form-practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+  .form-practice-choice { display: flex; align-items: center; gap: 8px; }
+  .form-practice-label { color: var(--text); font-weight: 500; }
+  .form-practice-live { margin-left: auto; }
+  .form-practice-live[aria-disabled='true'] { cursor: not-allowed; }
+  /* The forms list: the app's disclosure, a quiet row with a chevron that turns when open. */
+  .form-practice-forms summary { display: flex; align-items: center; gap: 4px; width: fit-content; min-height: 24px; padding: 2px 6px 2px 2px; margin-left: -2px; border-radius: var(--r-xs); list-style: none; cursor: default; color: var(--text-2); font-weight: 500; }
+  .form-practice-forms summary::-webkit-details-marker { display: none; }
+  .form-practice-forms summary:hover { color: var(--text); background: var(--hover); }
+  .form-practice-forms summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .form-practice-forms summary svg { width: 14px; height: 14px; flex: none; transition: transform 120ms; }
+  .form-practice-forms[open] summary svg { transform: rotate(90deg); }
+  .form-practice-forms ul { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 0; padding: 0 0 0 22px; overflow-wrap: anywhere; }
+  /* A real send is the one consequential act here, so its confirmation is amber rather than the calm accent. */
+  .form-practice-confirm { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--amber) 8%, var(--raised)); border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
+  .form-practice-ask { display: flex; align-items: flex-start; gap: 7px; }
+  .form-practice-ask > svg { flex: none; width: 14px; height: 14px; margin-top: 1px; color: var(--amber); }
+  .form-practice-pick { display: flex; align-items: center; gap: 8px; }
+  .form-practice-pick > .select { flex: 1 1 0; width: auto; min-width: 0; }
+  .form-practice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .form-practice-confirm .btn[aria-disabled='true'] { cursor: not-allowed; }
+  /* The last send. A practice send is neutral and marked with the reply glyph; a real test sits in a box toned by its
+     outcome, so the two never read alike. */
+  .form-practice-outcome { display: flex; flex-direction: column; gap: 2px; margin: 0 8px 0 -9px; padding: 5px 9px; border-radius: var(--r-sm); }
+  /* Mounted from the start so the first send is announced; with nothing to say it takes no room. */
+  .form-practice-outcome:empty { margin-top: -8px; padding: 0; }
+  .form-practice-lead { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--text); }
+  .form-practice-lead svg { width: 13px; height: 13px; flex: none; color: var(--text-2); }
   .form-practice-lead .spinner { width: 12px; height: 12px; }
-  .form-practice-outcome[data-tone='ok'] .form-practice-lead { color: var(--green); }
-  .form-practice-outcome[data-tone='warn'] .form-practice-lead { color: var(--amber); }
-  .form-practice-outcome[data-tone='bad'] .form-practice-lead { color: var(--red); }
-  /* A real send's outcome sits in a tinted box, so it never reads as a practice run. */
-  .form-practice-outcome[data-kind='live'] { --tone: var(--accent); padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--tone) 40%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--tone) 7%, var(--raised)); }
-  .form-practice-outcome[data-kind='live'][data-tone='busy'] .form-practice-lead { color: var(--accent-text); }
+  .form-practice-result { color: var(--text-2); overflow-wrap: anywhere; }
+  /* A practice result is one line where it fits, so a practice send moves the page as little as it can. */
+  .form-practice-outcome[data-kind='practice'] { display: block; padding-block: 0; }
+  .form-practice-outcome[data-kind='practice'] .form-practice-lead { margin-right: 6px; vertical-align: top; }
+  .form-practice-outcome[data-kind='practice'] .form-practice-result { display: inline; }
+  .form-practice-outcome[data-kind='live'] { --tone: var(--accent); margin-left: 0; border: 1px solid color-mix(in srgb, var(--tone) 40%, var(--border)); background: color-mix(in srgb, var(--tone) 7%, var(--raised)); }
+  .form-practice-outcome[data-kind='live'] .form-practice-result { color: var(--text); }
   .form-practice-outcome[data-kind='live'][data-tone='ok'] { --tone: var(--green); }
   .form-practice-outcome[data-kind='live'][data-tone='warn'] { --tone: var(--amber); }
   .form-practice-outcome[data-kind='live'][data-tone='bad'] { --tone: var(--red); }
-  .form-practice-result { color: var(--text); overflow-wrap: anywhere; }
+  :is(.form-practice-outcome[data-kind='live'] .form-practice-lead, .form-practice-lead[data-kind='live']) svg { color: inherit; }
+  .form-practice-outcome[data-kind='live'][data-tone='busy'] .form-practice-lead, .form-practice-lead[data-kind='live'][data-tone='busy'] { color: var(--accent-text); }
+  :is(.form-practice-outcome[data-tone='ok'] .form-practice-lead, .form-practice-lead[data-tone='ok']) { color: var(--green); }
+  :is(.form-practice-outcome[data-tone='warn'] .form-practice-lead, .form-practice-lead[data-tone='warn']) { color: var(--amber); }
+  :is(.form-practice-outcome[data-tone='bad'] .form-practice-lead, .form-practice-lead[data-tone='bad']) { color: var(--red); }
+  /* Narrow: the reply choice keeps its row, and the real test takes the next one whole rather than trailing alone. */
+  @container (max-width: 440px) {
+    .form-practice-row { flex-direction: column; align-items: stretch; }
+    .form-practice-choice { justify-content: space-between; }
+    .form-practice-live { margin-left: 0; }
+    /* Folded, the last result takes a line of its own under the title rather than being cut short. */
+    .form-practice-head { flex-wrap: wrap; row-gap: 2px; }
+    .form-practice-head .form-practice-lead { order: 3; flex-basis: 100%; max-width: none; margin-left: 17px; padding-left: 6px; white-space: normal; }
+  }
+  @media (prefers-reduced-motion: reduce) { .form-practice-fold svg, .form-practice-forms summary svg { transition: none; } }
   /* Back, Forward and the address of the visitor's journey: quiet controls on the pill itself. */
   .preview-pill .pill-note { flex: none; display: inline-flex; align-items: center; gap: 6px; }
   .preview-pill .pill-step { width: 26px; padding: 0; justify-content: center; background: transparent; color: #fff; }
@@ -328,18 +361,19 @@
   .ai-veil .spark { color: var(--accent-text); }
 
 
-  .starting-mark { position: relative; display: grid; place-items: center; width: 64px; height: 64px; }
-  .starting-mark > svg { position: absolute; }
-  .starting-mark .spinner.lg { width: 64px; height: 64px; border-width: 2px; border-color: color-mix(in srgb, var(--accent) 18%, transparent); border-top-color: var(--accent); }
-  .ai-veil.issue { width: min(560px, calc(100% - 24px)); border-radius: 18px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
-  /* While editing, the bar sits below the page as a status card: a card's corners and a 3:1 edge. Preview's is its own. */
-  .canvas.edit-mode .ai-veil.issue:not(.retrying) { border-radius: var(--r-md); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); }
-  .canvas.edit-mode .ai-veil.issue.retrying { border-radius: var(--r-md); }
-  .ai-veil.issue > span:not(.spinner) { flex: 1; min-width: 0; }
+  /* A page problem: a card (--r-md, a 3:1 red edge) in both modes, the words first and the actions after them as one
+     group. Where both fit they share a row; on a narrow canvas the actions wrap below the words as a row of their own,
+     trailing, so the words never shrink to a column. Its height is measured (issueH), so whatever stands on it moves. */
+  .ai-veil.issue { width: min(760px, calc(100% - 24px)); flex-wrap: wrap; row-gap: 8px; padding: 7px 7px 7px 14px; border-radius: var(--r-md); background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); line-height: 1.4; }
+  .ai-veil.issue > .issue-text { flex: 1 1 210px; min-width: 0; text-wrap: balance; }
+  /* The sentence stays whole: where the words take two lines, they break between it and the reassurance. */
+  .ai-veil.issue .issue-text strong { display: inline-block; }
+  .ai-veil.issue .issue-safe { white-space: nowrap; }
   .ai-veil.issue > .spinner { flex: none; }
-  /* Restarting is progress, not a fresh failure. */
-  .ai-veil.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
   .ai-veil.issue > svg { flex: none; color: var(--red); }
+  .ai-veil.issue .issue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
+  /* Reloading is progress, not a fresh failure. */
+  .ai-veil.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
   .ai-veil.issue .btn { flex: none; }
   .ai-veil.issue .btn[aria-disabled='true'] { cursor: not-allowed; }
   /* Focus on filled dark surfaces (selection chip, preview pill): a white ring that reads on the fill. */
@@ -353,6 +387,8 @@
 
   /* A tile dragged from Insert onto the page (#52): the container it goes into, outlined, and what it carries beside the pointer. */
   .ov-drop-target { outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 6%, transparent); }
+  /* Refusals sit on the user's page, so their red is the same in both themes and always holds white lettering. */
+  .ov-drop-target.refused, .ov-drop-reason, .ov-moving.ov-placing.refused, .insert-ghost.refused { --red: #b02e28; --red-soft: rgb(176 46 40 / 0.09); }
   .ov-drop-target.refused { outline-color: var(--red); background: var(--red-soft); }
   /* Why the place under the pointer can't take it, on the place itself (#652). */
   .ov-drop-reason { position: absolute; left: 4px; bottom: 4px; width: max-content; max-width: max(calc(100% - 8px), 220px); padding: 3px 6px; border-radius: var(--r-xs); background: var(--red); color: #fff; font-size: 11px; font-weight: 600; line-height: 1.3; }
@@ -373,11 +409,13 @@
   /* A collection's layout being edited: whose layout, the entry it is shown on, and Done, in the strip above the page. */
   .frame-status.template-strip { gap: 6px; color: var(--text); overflow: visible; }
   .frame-status.template-strip svg { flex: none; width: 14px; height: 14px; color: var(--accent-text); }
-  .template-strip-name { font-weight: 600; flex: none; }
+  /* The name keeps its width; a long one stops at under half the strip, so the entry picker and Done keep their room. */
+  .template-strip-name { font-weight: 600; flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .template-strip-sample { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); }
   .template-strip-sample .select { height: 24px; max-width: 220px; padding-block: 0; font-size: 12px; }
   .frame-status.template-strip .link-btn { flex: none; min-height: 24px; }
-  .template-no-entries { position: absolute; inset: 0; z-index: 4; display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; background: color-mix(in srgb, var(--canvas-bg, #eef0f3) 88%, transparent); }
+  .template-no-entries { position: absolute; inset: 0; z-index: 4; display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; background: var(--canvas); }
+  .template-no-entries .status-card-icon { width: 22px; height: 22px; color: var(--accent-text); }
   /* The drop line: 2px of the selection colour between opaque keylines (white, then ink), so it holds at 3:1 on any
      page, with a ring at its start (inside the page, so the page edge never clips it). */
   .ov-drop { position: absolute; background: var(--select); border-radius: 1px; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; pointer-events: none; }

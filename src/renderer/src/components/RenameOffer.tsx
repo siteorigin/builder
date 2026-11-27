@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pencil } from 'lucide-react';
 import { applyOps, getState, setState, useStore } from '../store';
 import { renameLabels } from '../lib/page-navigation';
+import { handOffNoticeFocus } from './ui';
 import './RenameOffer.css';
 
 /**
@@ -16,6 +17,9 @@ export function RenameOffer() {
   // The author's ticks, by label: a label not in here keeps its preselection.
   const [ticks, setTicks] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [busy, setBusy] = useState(false);
+  // The card while focus is in it: answered (or gone by itself) then, focus goes on to the next notice, or back where
+  // it came from, never dropping onto the page.
+  const focusedCard = useRef<HTMLElement | null>(null);
   useEffect(() => setTicks(new Map()), [offer]);
   // The project as the rename left it, or later: an older snapshot has not caught up with it yet.
   const arrived = !!offer && snap?.workspaceKey === offer.opening && snap.revision >= offer.revision;
@@ -28,9 +32,21 @@ export function RenameOffer() {
   useEffect(() => {
     if (offer && arrived && !(live && found.length) && getState().renameOffer === offer) setState({ renameOffer: null });
   }, [offer, arrived, live, found.length]);
+  const visible = !!(offer && snap && page && found.length);
+  useEffect(() => {
+    const el = focusedCard.current;
+    if (visible || !el) return;
+    focusedCard.current = null;
+    if (!document.activeElement || document.activeElement === document.body) handOffNoticeFocus(el);
+  }, [visible]);
   if (!offer || !snap || !page || !found.length) return null;
   const ticked = (key: string, preselect: boolean) => ticks.get(key) ?? preselect;
   const picked = found.filter((l) => ticked(l.key, l.preselect));
+  // Labels in the same place (a page linked again and again from the footer) cannot be told apart, so they are one
+  // choice: "Footer links (6)", ticked when all of them are.
+  const byPlace = new Map<string, typeof found>();
+  for (const l of found) byPlace.set(l.where, [...(byPlace.get(l.where) ?? []), l]);
+  const places = [...byPlace].map(([where, labels]) => ({ where, labels }));
   const update = async () => {
     setBusy(true);
     // Against the project these labels were read from: one that has changed since shows its labels again.
@@ -39,27 +55,56 @@ export function RenameOffer() {
     if (r && getState().renameOffer === offer) setState({ renameOffer: null });
   };
   const id = `rename-offer-${offer.pageId}`;
+  const one = found.length === 1;
   return (
-    <div className="toast rename-offer" role="group" aria-labelledby={`${id}-title`}>
+    <div
+      className="toast rename-offer"
+      role="group"
+      aria-labelledby={`${id}-title`}
+      onFocus={(e) => (focusedCard.current = e.currentTarget)}
+      onBlur={(e) => {
+        // Moving out of the card on purpose; a button removed under focus moves nowhere.
+        if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) focusedCard.current = null;
+      }}
+      // An answer that arrived from another notice by Enter never takes that key's repeats.
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.repeat) e.preventDefault();
+      }}
+    >
       <Pencil />
       <div className="grow rename-offer-body">
         <span className="rename-offer-title" id={`${id}-title`}>
-          Renamed to “{offer.to}”
+          {one ? 'Update the label' : 'Update labels'} to “{offer.to}”?
         </span>
-        <span role="status">{`${found.length === 1 ? 'This still says' : 'These still say'} ${[...new Set(found.map((l) => `“${l.text}”`))].join(' or ')}:`}</span>
+        <span className="rename-offer-why" role="status">{`The page was renamed, but ${one ? 'this still says' : 'these still say'} ${[...new Set(found.map((l) => `“${l.text}”`))].join(' or ')}:`}</span>
         <ul className="rename-offer-list">
-          {found.map((l) => (
-            <li key={l.key}>
-              <label>
-                <input type="checkbox" checked={ticked(l.key, l.preselect)} disabled={busy} onChange={(e) => setTicks(new Map(ticks).set(l.key, e.target.checked))} />
-                {l.where}
-              </label>
-            </li>
-          ))}
+          {places.map(({ where, labels }) => {
+            const count = labels.filter((l) => ticked(l.key, l.preselect)).length;
+            return (
+              <li key={where}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={count === labels.length}
+                    // Some of the place's labels, not all: shown as mixed, and a click ticks them all.
+                    ref={(box) => void (box && (box.indeterminate = count > 0 && count < labels.length))}
+                    disabled={busy}
+                    onChange={(e) => {
+                      const next = new Map(ticks);
+                      for (const l of labels) next.set(l.key, e.target.checked);
+                      setTicks(next);
+                    }}
+                  />
+                  {labels.length > 1 ? `${where}s (${labels.length})` : where}
+                </label>
+              </li>
+            );
+          })}
         </ul>
         <span className="rename-offer-note">The address stays {page.route}, so links already shared keep working.</span>
+        <span className="notice-later">Answer once this dialog is closed.</span>
         <span className="rename-offer-actions">
-          <button className="btn btn-sm btn-ghost" disabled={!picked.length || busy} onClick={() => void update()}>
+          <button className="btn btn-sm btn-primary" disabled={!picked.length || busy} onClick={() => void update()}>
             {picked.length > 1 ? `Update ${picked.length} labels` : 'Update label'}
           </button>
           <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => setState({ renameOffer: null })}>

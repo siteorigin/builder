@@ -5,6 +5,8 @@
 //
 // Each capture is verified on screen after it settles; a state that did not render throws instead
 // of writing a plausible-looking wrong image. Files are named `{state}--{theme}.png`.
+// DESIGN_CAPTURE_THEMES=all captures every state in both themes, including the ones that are light only by
+// default (menus, the toast, History), for reviewing the app's colours.
 import { _electron as electron } from 'playwright';
 import { MOD, openInspector } from './harness.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -45,6 +47,7 @@ async function setTheme(theme) {
 
 /** Capture a state in the given themes; `check` must be visible at the moment of capture. */
 async function shot(state, check, themes = THEMES) {
+  if (process.env.DESIGN_CAPTURE_THEMES === 'all') themes = THEMES;
   for (const theme of themes) {
     await setTheme(theme);
     await win.mouse.move(2, 450);
@@ -251,10 +254,10 @@ await win.locator('[role="treeitem"]', { hasText: /^Heading$/ }).first().click()
 await win.locator('.rail [aria-label="Layers"]').click();
 await pause(900);
 await shot('window-1280', '.editor');
-await win.locator('[aria-label="Right panel"]').click();
+await win.locator('.toolbar [aria-label="Right panel"]').click();
 await pause(900);
 await shot('dock-collapsed', '.editor', ['light']);
-await win.locator('[aria-label="Right panel"]').click();
+await win.locator('.toolbar [aria-label="Right panel"]').click();
 await win.setViewportSize({ width: 1440, height: 900 });
 if ((await win.locator('.rail [aria-label="Pages"]').getAttribute('aria-pressed')) !== 'true') await win.locator('.rail [aria-label="Pages"]').click();
 await pause(900);

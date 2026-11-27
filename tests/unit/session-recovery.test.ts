@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, readF
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
+import { HISTORY_LIMIT } from '@shared/api';
 import type { AssetRecord } from '@shared/types';
 import { LOCK_STALE_MS, ProjectLockedError, ProjectSession } from '../../src/main/project/session';
 import { sha, toJson } from '../../src/main/project/fsutil';
@@ -545,6 +546,49 @@ describe('history retention and garbage collection (spec 18.4)', () => {
     expect(blobs(dir)).not.toContain(`${sha(orphan)}.json`);
     // Undo still works: its blobs are kept.
     expect((await s.undo()).ok).toBe(true);
+  });
+
+  it('acknowledges an edit that lets History’s oldest step go before sweeping what that step kept, and sweeps it a moment later (#962)', { timeout: 120_000 }, async () => {
+    const { dir, s } = await make();
+    const first = `${sha(readFileSync(join(dir, SITE), 'utf8'))}.json`;
+    s.sweepDelayMs = 0;
+    for (let i = 1; i <= HISTORY_LIMIT; i++) expect((await s.apply({ operations: [{ type: 'site.update', name: `Name ${i}` }] }, { label: `Edit ${i}` })).ok).toBe(true);
+    // Any sweep the edits so far made due has run: History is full, and its oldest step still needs the first version.
+    await s.collectGarbage();
+    expect(s.historyInfo().entries).toHaveLength(HISTORY_LIMIT);
+    expect(blobs(dir)).toContain(first);
+    s.sweepDelayMs = 50;
+    const swept = vi.spyOn(s as unknown as { collectGarbageNow: () => Promise<void> }, 'collectGarbageNow');
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'One more' }] }, { label: 'One more' })).ok).toBe(true);
+    // The step that went was the only one that needed the first version: it is swept, but not before the edit returned.
+    expect(s.historyInfo().entries).toHaveLength(HISTORY_LIMIT);
+    expect(swept).not.toHaveBeenCalled();
+    expect(blobs(dir)).toContain(first);
+    await vi.waitFor(() => expect(blobs(dir)).not.toContain(first), { timeout: 5000 });
+    expect(swept).toHaveBeenCalledTimes(1);
+    // Everything History still holds can be undone.
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.site.name).toBe(`Name ${HISTORY_LIMIT}`);
+  });
+
+  it('schedules one sweep for saves that each make it due, and runs none once the project is closed (#962)', async () => {
+    const { s } = await make();
+    s.sweepDelayMs = 60_000;
+    const swept = vi.spyOn(s as unknown as { collectGarbageNow: () => Promise<void> }, 'collectGarbageNow');
+    const internal = s as unknown as { gcCountdown: number; sweepTimer: unknown };
+    let scheduled: unknown = null;
+    for (const name of ['A', 'B', 'C']) {
+      internal.gcCountdown = 0;
+      expect((await s.apply({ operations: [{ type: 'site.update', name }] }, { label: name })).ok).toBe(true);
+      scheduled ??= internal.sweepTimer;
+      expect(scheduled).not.toBeNull();
+      expect(internal.sweepTimer).toBe(scheduled);
+    }
+    expect(swept).not.toHaveBeenCalled();
+    // Closed before it runs: the next open sweeps instead.
+    await s.close();
+    expect(internal.sweepTimer).toBeNull();
+    expect(swept).not.toHaveBeenCalled();
   });
 
   it('prunes the oldest groups past the byte cap', async () => {
@@ -1329,7 +1373,8 @@ describe('converting a design’s edited file to a code component (#737)', () =>
 
   it('says to reopen when the save stops after the project’s files are written', async () => {
     const { s } = await editedHero();
-    vi.spyOn(s as unknown as { installHistory: () => Promise<unknown> }, 'installHistory').mockRejectedValueOnce(new Error('disk went away'));
+    // History and the revision cannot take their places once the documents and generated files have.
+    vi.spyOn(s as unknown as { finishSave: () => Promise<unknown> }, 'finishSave').mockRejectedValueOnce(new Error('disk went away'));
     const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
     expect(r).toEqual({ ok: false, message: expect.stringMatching(/could not be finished: disk went away Close and reopen the project/) });
     expect(Object.values(s.state.components).some((d) => d.generatedFrom === HERO)).toBe(true);
