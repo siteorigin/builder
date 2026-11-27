@@ -137,7 +137,7 @@
   .result-body .changes li > span { padding: 3px 0; line-height: 18px; }
   .result-body .change-link { min-height: 24px; padding: 3px 0; border: 0; background: none; color: var(--accent-text); text-align: left; font-size: 12px; line-height: 18px; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); text-underline-offset: 2px; overflow-wrap: anywhere; }
   .result-body .change-link:hover { text-decoration-color: currentColor; }
-  .result-body .change-ops { padding: 3px 0; font-family: var(--mono); font-size: 11px; line-height: 18px; color: var(--text-2); user-select: text; }
+  .result-body .change-ops { padding: 3px 0; font-family: var(--mono); font-size: 12px; line-height: 18px; color: var(--text-2); user-select: text; }
   .result-section { display: flex; flex-direction: column; gap: 2px; }
   .result-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
   .result-section li { font-size: 12px; line-height: 18px; }
@@ -190,14 +190,22 @@
      whole card scrolls instead, so a focused option is never hidden. */
   .question-options { flex: 0 1 auto; min-height: 38px; overflow: auto; display: flex; flex-direction: column; gap: 8px; margin: -4px; padding: 4px; scroll-padding: 8px 0; scrollbar-width: thin; }
   .question-options:has(.image-choices) { min-height: 150px; }
-  /* What saying yes to a wider change allows, before it is given. */
-  .question-scope { flex: none; display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 6px 8px; border-radius: var(--r-sm); background: var(--amber-soft); font-size: 12px; line-height: 1.4; font-weight: 500; color: var(--text); }
+  /* What saying yes to a wider change allows, before it is given: a line of text with the site-wide globe, not a filled
+     row, so it never reads as one more answer beside the answers it sits above. */
+  .question-scope { flex: none; display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 0; font-size: 12px; line-height: 1.4; font-weight: 500; color: var(--text); }
   /* Site-wide, in the house's site-wide amber, with its icon and words. */
   .question-scope svg { flex: none; width: 13px; height: 13px; margin-top: 1.5px; color: var(--amber); }
   .question-text { flex: none; font-size: 13px; font-weight: 600; line-height: 1.45; color: var(--text); border-radius: var(--r-xs); overflow-wrap: anywhere; }
   .question-card .choices { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
-  .question-card .choice { justify-content: flex-start; height: auto; min-height: 30px; padding: 5px 10px; text-align: left; white-space: normal; line-height: 1.35; overflow-wrap: anywhere; }
-  .question-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  /* Each answer is a quiet filled row, as the empty chat's suggestions are: a soft --panel-2 face marks it as something
+     to press without the 3:1 edge of a form control, so the answers never read as text fields beside the composer. */
+  .question-card .choice { display: flex; align-items: flex-start; gap: 7px; min-height: 32px; padding: 7px 10px; border: 0; border-radius: var(--r-sm); background: var(--panel-2); text-align: left; font-size: 13px; font-weight: 500; line-height: 18px; color: var(--text); overflow-wrap: anywhere; text-wrap: pretty; }
+  .question-card .choice:hover { background-image: linear-gradient(var(--hover), var(--hover)); }
+  .question-card .choice:active { background-image: linear-gradient(var(--active), var(--active)); }
+  .question-card .choice > span { min-width: 0; }
+  /* The answer that widens the request carries the site-wide globe of the note above it, in its amber. */
+  .question-card .choice svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--amber); }
+  .question-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
   /* On a short window the card scrolls before the conversation disappears. */
   .chat:has(> .question-card) .chat-body { min-height: 64px; }
   /* Library images in the chat: offered as choices, attached to a message, or shown in the log. The pictures load
@@ -206,38 +214,46 @@
   /* Each offered photo: the picture opens a larger preview, its name, and a labelled Choose that answers. Looking and
      answering are separate targets, so a click meant to look never answers. */
   .image-choice { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 5px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
-  .image-choice-preview { position: relative; display: block; width: 100%; padding: 0; border: 0; border-radius: var(--r-xs); background: none; overflow: hidden; }
+  .image-choice-preview { position: relative; display: block; width: 100%; padding: 0; border: 0; border-radius: var(--r-xs); background: none; overflow: hidden; cursor: zoom-in; }
   .image-choice-preview .asset-thumb { width: 100%; aspect-ratio: 16 / 10; border-radius: var(--r-xs); }
   .image-choice-preview:disabled { cursor: default; }
-  /* Says the picture opens larger: a solid badge with a full edge, legible on bright and dark photos alike. */
-  .image-choice-zoom { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--r-xs); border: 1px solid var(--border-control); background: var(--raised); color: var(--text); box-shadow: var(--shadow-sm); }
-  .image-choice-zoom svg { width: 12px; height: 12px; }
-  .image-choice-preview:hover:not(:disabled) .image-choice-zoom { background: var(--panel-2); }
+  /* Says the picture opens larger. It is a mark on the picture, not a button of its own: a flat solid badge with no
+     edge or lift, legible on bright and dark photos alike. The whole picture is the target, and says so on hover. */
+  .image-choice-zoom { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--r-xs); background: rgb(16 22 38 / 0.72); color: #fff; pointer-events: none; }
+  .image-choice-zoom svg { width: 13px; height: 13px; }
+  .image-choice-preview:hover:not(:disabled) .asset-thumb::after { box-shadow: inset 0 0 0 2px var(--border-control); }
+  .image-choice-preview:hover:not(:disabled) .image-choice-zoom { background: rgb(16 22 38 / 0.88); }
   .image-choice-name { display: flex; flex-direction: column; min-width: 0; padding: 0 2px; font-size: 12px; line-height: 1.35; }
-  .image-choice-pick { justify-content: center; width: 100%; height: 24px; margin-top: auto; }
-  /* Sits on a photo of any brightness, so it takes a solid fill and a full 3:1 edge. */
-
+  .image-choice-pick { justify-content: center; width: 100%; margin-top: auto; }
   /* --text-2, because the chip's own tint takes --text-3 under 4.5:1 in dark. */
-  .image-chip-id { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .image-chip-id { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .image-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
   .msg-user .image-chips { padding: 6px 0 0; white-space: normal; }
   /* On the request's own tint, a solid chip keeps its secondary text above 4.5:1 in dark. */
   .msg-user .image-chip { background: var(--panel-2); }
-  .image-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; min-height: 32px; padding: 3px 2px 3px 3px; border-radius: var(--r-sm); background: var(--active); font-size: 12px; color: var(--text); vertical-align: middle; }
-  .image-chip:not(:has(button)) { padding-right: 8px; }
+  .image-chip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; min-height: 32px; padding: 0 2px 0 0; border-radius: var(--r-sm); background: var(--active); font-size: 12px; color: var(--text); vertical-align: middle; }
+  .image-chip:not(.removable) { padding-right: 0; }
+  /* The picture and name: a button that opens it larger, with its size and description. */
+  .image-chip-open { display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; padding: 3px 8px 3px 3px; border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; text-align: left; }
+  button.image-chip-open { cursor: zoom-in; }
+  button.image-chip-open:hover { background: var(--hover); }
+  .image-chip.removable .image-chip-open { padding-right: 2px; }
   .image-chip .asset-thumb { width: 26px; border-radius: var(--r-xs); }
   .image-chip .asset-noimg { width: 14px; height: 14px; }
-  .image-chip-text { display: flex; flex-direction: column; min-width: 0; max-width: 180px; line-height: 1.2; }
-  .image-chip.missing .image-chip-text > .ellipsis { color: var(--text-2); text-decoration: line-through; }
-  .image-chip button { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; color: var(--text-2); padding: 0; }
-  .image-chip button:hover { background: var(--hover); color: var(--text); }
-  .image-chip button svg { width: 12px; height: 12px; }
+  .image-chip-text { display: flex; flex-direction: column; min-width: 0; max-width: 180px; line-height: 1.25; }
+  /* No longer in Assets: the placeholder glyph and the words say it; the name stays whole and legible. */
+  .image-chip-name { overflow-wrap: anywhere; }
+  .image-chip.missing .image-chip-text > .image-chip-name { color: var(--text-2); }
+  .image-chip-remove { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; color: var(--text-2); padding: 0; }
+  .image-chip-remove:hover { background: var(--hover); color: var(--text); }
+  .image-chip-remove svg { width: 14px; height: 14px; }
   .answered-image { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
   .answered-image .image-chips { padding: 0; }
   .image-preview { display: flex; flex-direction: column; gap: 10px; }
   .image-preview-frame { position: relative; display: flex; align-items: center; justify-content: center; min-height: 160px; border-radius: var(--r-sm); background: var(--panel-2); overflow: hidden; }
   .image-preview-frame img { display: block; max-width: 100%; max-height: min(60vh, 560px); width: auto; height: auto; }
   .image-preview-frame .asset-noimg { width: 28px; height: 28px; }
+  .image-preview-wait { position: absolute; bottom: 10px; left: 0; right: 0; margin: 0; text-align: center; font-size: 12px; color: var(--text-2); }
   .image-preview-meta { margin: 0; font-size: 12px; color: var(--text-2); }
   .answered { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 1.45; color: var(--text-2); }
   .answered strong { color: var(--text); font-weight: 600; }
@@ -263,8 +279,9 @@
   /* Images flow with the scope chip, at its height, so one or two sit beside it rather than starting a row; many
      scroll inside the row (about three lines) instead of pushing the conversation away. */
   .composer-context .image-chips { display: contents; }
-  .composer-context .image-chip { min-height: 24px; padding: 0 0 0 3px; gap: 5px; }
-  .composer-context .image-chip .asset-thumb { width: 18px; height: 18px; object-fit: cover; }
+  .composer-context .image-chip { min-height: 24px; }
+  .composer-context .image-chip-open { min-height: 24px; padding: 2px 2px 2px 2px; gap: 6px; }
+  .composer-context .image-chip .asset-thumb { width: 20px; height: 20px; object-fit: cover; }
   .composer .chip.scope-chip { flex: 0 1 auto; min-width: 0; max-width: 100%; height: 24px; gap: 5px; padding: 0 6px; border: 0; font-size: 12px; font-weight: 500; color: var(--text-2); }
   .composer button.scope-chip:is(:hover, [aria-expanded='true']) { color: var(--text); }
   .composer .scope-chip svg { width: 12px; height: 12px; flex: none; }
@@ -344,9 +361,9 @@
   .run-strip:not(:has(.run-actions)) { padding-right: 10px; }
   /* The model the running turn went to, under what it may change. */
   /* It wraps rather than cut the model's own name, which is what tells two models apart. */
-  .run-model { font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; }
+  .run-model { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
   /* The model a turn went to, under the turn: quiet, and never cut by its result card. */
-  .turn-model { display: flex; align-items: flex-start; gap: 5px; min-width: 0; padding: 0 2px; font-size: 11px; color: var(--text-3); }
+  .turn-model { display: flex; align-items: flex-start; gap: 5px; min-width: 0; padding: 0 2px; font-size: 12px; color: var(--text-3); }
   .turn-model svg { width: 12px; height: 12px; flex: none; margin-top: 2px; }
   /* Shown only where the model changes, so it wraps rather than cut the name that tells two models apart. */
   .turn-model > span { min-width: 0; overflow-wrap: anywhere; }

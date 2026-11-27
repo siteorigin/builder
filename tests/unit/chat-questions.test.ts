@@ -156,8 +156,8 @@ describe('questions that offer library images (#12)', () => {
 
   it('says how a picture question is answered, and keeps the other hints', () => {
     const img = [{ assetId: 'a_1', name: 'hero' }];
-    expect(questionHint({ choices: [], images: img })).toBe('Choose a picture, or type your own answer below. Select a picture to see it larger first.');
-    expect(questionHint({ choices: ['Keep it'], images: img })).toBe('Choose a picture or an option, or type your own answer below. Select a picture to see it larger first.');
+    expect(questionHint({ choices: [], images: img })).toBe('Open a picture to see it larger. The Choose button under a picture answers with it. You can also type your own answer below.');
+    expect(questionHint({ choices: ['Keep it'], images: img })).toBe('Open a picture to see it larger. The Choose button under a picture answers with it. You can also pick an option or type your own answer below.');
     expect(questionHint({ choices: ['A'] })).toBe('Choose an option, or type your own answer below.');
     expect(questionHint({ choices: [] })).toBe('Type your answer below.');
     expect(questionHint({ choices: ['Yes', 'No'], widen: true })).toBe('Choose an option, or type a reply below. A typed “yes” or “OK” allows it too.');

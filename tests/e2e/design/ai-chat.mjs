@@ -466,8 +466,8 @@ await ta.fill('Use these two photos in the gallery, with the wider one first');
 await pause(300);
 await shot('composer-images', '.composer .image-chip');
 await ta.fill('');
-while (await win.locator('.composer .image-chip button').count()) {
-  await win.locator('.composer .image-chip button').first().click();
+while (await win.locator('.composer .image-chip-remove').count()) {
+  await win.locator('.composer .image-chip-remove').first().click();
   await pause(120);
 }
 await win.getByRole('button', { name: 'Assets', exact: true }).click();

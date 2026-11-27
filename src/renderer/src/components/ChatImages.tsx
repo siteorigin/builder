@@ -61,24 +61,40 @@ const sizeOf = (a: AssetRecord | null) => (a?.width && a.height ? `${a.width} ×
 
 /**
  * One image named in a message: its picture and name, the asset ID when another image shown with it has the same
- * name, and (in the message being written) a button that takes it out again.
+ * name, and (in the message being written) a button that takes it out again. The picture and name open it larger,
+ * with its size and description, so those are never only in a tooltip. One no longer in Assets says so in words.
  */
 export function ImageChip({ image, label, sharedName, onRemove }: { image: ChatImageRef; label: string; sharedName: boolean; onRemove?: () => void }) {
   const live = useLibraryImage(image.assetId);
+  const [open, setOpen] = useState(false);
   const name = image.name;
-  return (
-    <span className={`image-chip${live ? '' : ' missing'}`} title={live ? [name, sizeOf(live), live.description].filter(Boolean).join('\n') : `${name} is no longer in Assets`} data-asset-id={image.assetId}>
+  const body = (
+    <>
       <ChatThumb assetId={image.assetId} />
       <span className="image-chip-text">
-        <span className="ellipsis">{name}</span>
+        <span className={live ? 'ellipsis' : 'image-chip-name'}>{name}</span>
         {sharedName && <span className="image-chip-id">{image.assetId}</span>}
         {!live && <span className="image-chip-id">Not in Assets</span>}
       </span>
+    </>
+  );
+  return (
+    <span className={`image-chip${live ? '' : ' missing'}${onRemove ? ' removable' : ''}`} data-asset-id={image.assetId}>
+      {live ? (
+        <button type="button" className="image-chip-open" aria-label={`See ${label} larger`} title="See it larger" onClick={() => setOpen(true)}>
+          {body}
+        </button>
+      ) : (
+        <span className="image-chip-open" title={`${name} is no longer in Assets`}>
+          {body}
+        </span>
+      )}
       {onRemove && (
-        <button type="button" aria-label={`Remove ${label} from the message`} title="Remove from the message" onClick={onRemove}>
+        <button type="button" className="image-chip-remove" aria-label={`Remove ${label} from the message`} title="Remove from the message" onClick={onRemove}>
           <X />
         </button>
       )}
+      {open && <ImagePreview img={{ ...image, label, sharedName }} onClose={() => setOpen(false)} />}
     </span>
   );
 }
@@ -133,16 +149,17 @@ function ImageChoice({ img, onChoose, onPreview }: { img: ChatImageRef & { label
   const detail = [sizeOf(live), live?.description?.trim()].filter(Boolean).join(' · ');
   return (
     <li className={`image-choice${live ? '' : ' missing'}`} data-asset-id={img.assetId}>
-      <button type="button" className="image-choice-preview" disabled={!live || !devUrl} aria-label={`Preview ${img.label}`} title={!live ? `${img.name} is no longer in Assets` : devUrl ? 'Preview larger' : 'The picture appears once the site preview is running'} onClick={onPreview}>
+      <button type="button" className="image-choice-preview" disabled={!live} aria-label={`Preview ${img.label}`} title={!live ? `${img.name} is no longer in Assets` : 'Preview larger'} onClick={onPreview}>
         <Thumb key={fileState} a={live} devUrl={devUrl} />
-        {live && devUrl && (
+        {live && (
           <span className="image-choice-zoom" aria-hidden="true">
             <Expand />
           </span>
         )}
       </button>
       <span className="image-choice-name">
-        <span className="ellipsis">{img.name}</span>
+        {/* A missing picture is told apart by its full name alone, so it wraps rather than clip. */}
+        <span className={live ? 'ellipsis' : 'image-chip-name'}>{img.name}</span>
         {img.sharedName && <span className="image-chip-id">{img.assetId}</span>}
         {!live && <span className="image-chip-id">Not in Assets</span>}
       </span>
@@ -160,7 +177,8 @@ function ImageChoice({ img, onChoose, onPreview }: { img: ChatImageRef & { label
   );
 }
 
-function ImagePreview({ img, onClose, onChoose }: { img: ChatImageRef & { label: string; sharedName: boolean }; onClose: () => void; onChoose: () => void }) {
+/** A library image larger, with its size and description; offered as an answer, it can be chosen from here. */
+function ImagePreview({ img, onClose, onChoose }: { img: ChatImageRef & { label: string; sharedName: boolean }; onClose: () => void; onChoose?: () => void }) {
   const live = useLibraryImage(img.assetId);
   const devUrl = useDevUrl();
   const fileState = useFileState(img.assetId);
@@ -177,15 +195,19 @@ function ImagePreview({ img, onClose, onChoose }: { img: ChatImageRef & { label:
             Close
           </button>
           {/* Not focused on open: an Enter held down on Preview never chooses before the picture has been seen. */}
-          <button className="btn btn-primary" onClick={(e) => e.detail <= 1 && onChoose()}>
-            <Check /> Choose this picture
-          </button>
+          {onChoose && (
+            <button className="btn btn-primary" onClick={(e) => e.detail <= 1 && onChoose()}>
+              <Check /> Choose this picture
+            </button>
+          )}
         </>
       }
     >
       <div className="image-preview">
         <div className="image-preview-frame">
           <Picture key={fileState} a={live} devUrl={devUrl} original />
+          {/* Its details are here whatever the preview is doing; the picture itself loads from it. */}
+          {!devUrl && <p className="image-preview-wait">The picture appears once the site preview is running.</p>}
         </div>
         <p className="image-preview-meta">{[sizeOf(live), live.description?.trim()].filter(Boolean).join(' · ') || 'No description yet.'}</p>
       </div>
