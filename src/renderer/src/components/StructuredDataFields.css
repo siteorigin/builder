@@ -1,0 +1,32 @@
+@layer components {
+  /* A page's structured data fields (StructuredDataFields.tsx), the same in the Inspector's section and the SEO view's
+     page settings: they space themselves, so neither mount has to, and lay out by their own width. */
+  .sd-fields { container: sd-fields / inline-size; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  /* Whether the page's structured data includes the details yet, under the type: a check when it does, a dashed circle
+     (not the alert glyph: nothing is wrong yet) with what they still need, in the stronger hint ink. */
+  .sd-status { display: flex; align-items: flex-start; gap: 6px; }
+  .sd-status > svg { flex: none; width: 13px; height: 13px; margin-top: 2px; }
+  .sd-status[data-structured-missing] { color: var(--text-2); }
+  /* What choosing another type costs, said only while the type has focus. */
+  .sd-consequence { display: block; margin-top: 4px; color: var(--text-2); }
+  /* Facts read together (an event's when, its where) sit in one ring, named by a small heading. Side by side where the
+     form is wide (the SEO view), one above the other in the Inspector. */
+  .sd-event { display: grid; gap: 12px; min-width: 0; }
+  @container sd-fields (min-width: 640px) { .sd-event { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+  .sd-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin: 0; padding: 10px 12px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-md); }
+  .sd-group-head { display: flex; align-items: center; font-size: 12px; font-weight: 600; color: var(--text); }
+  .sd-group-hint { margin: -6px 0 0; }
+  /* Two controls for one fact on one line: a date and its time, an amount and its currency. */
+  .sd-row { display: grid; gap: 8px; }
+  .sd-row > * { min-width: 0; }
+  .sd-when { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
+  .sd-price { grid-template-columns: minmax(0, 1fr) minmax(0, 128px); }
+  /* Where the form is wide, the currency has room for its name. */
+  @container sd-fields (min-width: 640px) { .sd-price { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  /* Closed, the currency shows its code and as much of its name as fits, cut with an ellipsis. */
+  .sd-price .select { text-overflow: ellipsis; }
+  /* An address shown whole: one line of data that wraps rather than scrolls, growing with it, never resized by hand. */
+  .sd-oneline.input { height: auto; min-height: 30px; max-height: none; padding: 5px 9px; line-height: 1.4; resize: none; overflow: hidden; field-sizing: content; overflow-wrap: anywhere; }
+  /* The price field and, under it, its currency's own problem. */
+  .sd-price-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+}
