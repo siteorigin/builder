@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Check, CircleAlert, CloudAlert, CloudDownload, Copy, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
 import type { DuplicateProjectResult, ProgressEvent, WebsiteTools } from '@shared/api';
 import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
@@ -97,18 +97,24 @@ const STARTER_PAGES: Record<StarterId, PageSketch[]> = {
 
 const STARTERS: Array<{ id: StarterId; name: string; blurb: string }> = [
   { id: 'business', name: 'Business', blurb: 'Sample text, services, a gallery and testimonials, ready to make your own.' },
-  { id: 'blank', name: 'Blank site', blurb: 'One empty page with a header and footer. Add sections as you go.' }
+  { id: 'blank', name: 'Blank site', blurb: 'One empty page with a header and footer.' }
 ];
 const pagesOf = (id: StarterId) => STARTER_PAGES[id].map((p) => p.name);
 
-/** The site's own colours, from the theme it starts with, so the sketch around the thumbnails matches them. */
-function siteColours(themeId: string): CSSProperties {
+/**
+ * The site's own colours and type, from the theme it starts with, so the sketch around the thumbnails matches them.
+ * The fonts are the theme's stacks: the editor does not load a pack's font files, so each falls back to a face of
+ * its own kind (a serif display stays a serif), which keeps a theme's character even on a blank page.
+ */
+function siteLook(themeId: string): CSSProperties {
   const tokens = getTheme(themeId).tokens;
   const read = (id: string) => {
     const v = tokens.find((t) => t.id === id)?.value;
     return typeof v === 'string' ? v : undefined;
   };
   const vars: Record<string, string | undefined> = {
+    '--site-display': read('font.display'),
+    '--site-body': read('font.body'),
     '--site-bg': read('color.background'),
     '--site-text': read('color.text'),
     '--site-muted': read('color.muted'),
@@ -195,7 +201,7 @@ function StarterArt({ starter, siteName, themeId }: { starter: StarterId; siteNa
   const name = siteName.trim() || 'Your site';
   const nav = pagesOf(starter);
   return (
-    <div className={`starter-art ${starter}`} aria-hidden="true" data-loading={waiting.size ? '' : undefined} data-theme={themeId} style={siteColours(themeId)}>
+    <div className={`starter-art ${starter}`} aria-hidden="true" data-loading={waiting.size ? '' : undefined} data-theme={themeId} style={siteLook(themeId)}>
       <PageSheet key={themeId} themeId={themeId} page={home} nav={nav} siteName={name} className="home" onReady={onReady} />
       {rest.length > 0 && (
         <div className="sheet-side">
@@ -603,6 +609,18 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
   const chosenParent = useRef(false);
   const live = useRef(true);
   const stepRef = useRef<ProgressEvent['step'] | null>(null);
+  // A long destination wraps; the previews give back the height of its extra lines (--np-path), so the form still
+  // fits the window rather than scrolling.
+  const pathWatch = useRef<ResizeObserver | null>(null);
+  const watchPath = useCallback((form: HTMLDivElement | null) => {
+    pathWatch.current?.disconnect();
+    pathWatch.current = null;
+    const path = form?.querySelector<HTMLElement>('#new-project-path');
+    if (!form || !path) return;
+    const one = parseFloat(getComputedStyle(path).minHeight) || 0;
+    pathWatch.current = new ResizeObserver(() => form.style.setProperty('--np-path', `${Math.max(0, path.offsetHeight - one)}px`));
+    pathWatch.current.observe(path);
+  }, []);
   // The form on screen, and the check of the website tools settled, which Create waits for (src/shared/perf.ts).
   useLayoutEffect(() => perfMarkAtCommit('newProject.formShown'), []);
   useLayoutEffect(() => {
@@ -832,7 +850,7 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
       }
     >
       {status}
-      <div className="new-project-form">
+      <div className="new-project-form" ref={watchPath}>
         <div className="np-identity">
           <Field label="Project name" controlId="new-project-name">
             <input
@@ -882,25 +900,33 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
           )}
         </div>
         <div className="np-start">
-          <div className="np-start-head">
-            <div className="field-label" id="new-project-starter-label">
-              Start from
-            </div>
+          {/* The theme heads the choice it changes: what it is for beside it, and the previews below drawn in it. */}
+          <div className="np-theme">
             {themes.length > 1 ? (
-              <span className="np-theme">
-                <label htmlFor="new-project-theme">Theme</label>
-                <select id="new-project-theme" className="select sm" value={theme.id} title={theme.description} aria-describedby="new-project-theme-hint" onChange={(e) => setThemeId(e.target.value)}>
+              <>
+                <label className="field-label" htmlFor="new-project-theme">
+                  Theme
+                </label>
+                <select id="new-project-theme" className="select" value={theme.id} aria-describedby="new-project-theme-about" onChange={(e) => setThemeId(e.target.value)}>
                   {themes.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name}
                     </option>
                   ))}
                 </select>
-                <span id="new-project-theme-hint">change it any time in Site styles</span>
-              </span>
+              </>
             ) : (
-              <span className="np-theme">Previews show the {theme.name} theme · change it any time in Site styles</span>
+              <>
+                <span className="field-label">Theme</span>
+                <strong className="np-theme-name">{theme.name}</strong>
+              </>
             )}
+            <p className="np-theme-about" id="new-project-theme-about">
+              {theme.description} <span className="np-theme-later">You can change it any time in Site styles.</span>
+            </p>
+          </div>
+          <div className="field-label" id="new-project-starter-label">
+            Start from
           </div>
           <div
             className="starter-grid"

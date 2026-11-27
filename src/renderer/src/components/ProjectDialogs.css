@@ -1,10 +1,14 @@
 @layer components {
   /* ---------- New project, setup, Trust this project, Unpacking ---------- */
-  /* Wide enough for two starting points drawn at the size of the theme's own thumbnails. */
-  .modal:has(> .modal-body > .new-project-form), .modal:has(> .modal-body > .setup) { width: min(720px, calc(100vw - 48px)); }
+  /* New project is wide enough to draw the site at nearly its thumbnails' own size, so a theme reads at a glance; it
+     still fits the smallest window (1100px). Setup shows the starter beside its steps and needs less. */
+  .modal:has(> .modal-body > .new-project-form) { width: min(960px, calc(100vw - 48px)); }
+  .modal:has(> .modal-body > .setup) { width: min(720px, calc(100vw - 48px)); }
   .new-project-form { display: flex; flex-direction: column; gap: 18px; }
-  /* Name and folder are one decision; the starting point is the next. */
-  .np-identity { display: flex; flex-direction: column; gap: 12px; }
+  /* Name and folder are one decision, side by side so the starting point below has the height; a problem with either
+     spans both. */
+  .np-identity { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); align-items: start; gap: 12px; }
+  .np-identity > .scope-note { grid-column: 1 / -1; }
   .np-path-row { display: flex; align-items: flex-start; gap: 8px; }
   .np-path-row > .path-readout { flex: 1; }
   .np-path-row > .btn { flex: none; }
@@ -32,11 +36,18 @@
   .path-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 
   .np-start { display: flex; flex-direction: column; gap: 8px; }
-  .np-start-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-  .np-theme { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; font-size: 12px; color: var(--text-3); }
-  .np-theme label { color: var(--text-2); font-weight: 500; }
-  .np-theme .select { width: auto; }
-  .starter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  /* The theme, then what it is for. Two lines are kept for the description whichever theme is chosen, so switching
+     never moves the previews or the buttons. */
+  .np-theme { display: grid; grid-template-columns: auto 176px minmax(0, 1fr); align-items: start; column-gap: 10px; margin-bottom: 6px; }
+  .np-theme > .field-label, .np-theme-name { line-height: 30px; }
+  .np-theme-name { font-size: 13px; font-weight: 600; }
+  /* Two lines beside a 30px select: the first line sits level with the select's text. */
+  .np-theme > .np-theme-about { padding-top: 6px; }
+  .np-theme-about { min-height: calc(2 * 18px + 6px); margin: 0 0 0 4px; font-size: 13px; line-height: 18px; color: var(--text-2); text-wrap: pretty; }
+  /* Kept whole: a shorter description puts it on the second line rather than leaving its last words there. */
+  .np-theme-later { color: var(--text-3); white-space: nowrap; }
+  /* Business draws three pages and gets the room for them; a blank site is one page at the same scale. */
+  .starter-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; }
   .starter-card { position: relative; display: flex; flex-direction: column; min-width: 0; padding: 0; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); color: var(--text); text-align: left; overflow: hidden; transition: border-color 120ms, box-shadow 120ms; }
   /* Hover keeps the control edge and lifts the surface, and the empty ring firms up. */
   .starter-card:hover:not([aria-checked='true']) { background: var(--panel-2); }
@@ -49,28 +60,29 @@
   .starter-card .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
   /* A radio's own mark: an empty ring, filled with a check when chosen, so the choice never rests on colour alone. */
   .starter-card .mark { width: 16px; height: 16px; flex: none; display: grid; place-items: center; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--border-control); }
-  .starter-card[aria-checked='true'] .mark { background: var(--accent); box-shadow: none; color: var(--on-accent); }
+  .starter-card[aria-checked='true'] .mark { background: var(--accent-fill); box-shadow: none; color: var(--on-accent); }
   .starter-card .mark svg { width: 11px; height: 11px; stroke-width: 3; }
   .starter-card strong { font-size: 13px; font-weight: 600; }
   .starter-card .pages { display: flex; gap: 4px; margin-left: auto; }
-  .starter-card .pages span { padding: 1px 6px; border-radius: var(--r-xs); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-size: 11px; line-height: 16px; color: var(--text-2); }
-  .starter-card .blurb { padding-left: 24px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .starter-card .pages span { padding: 1px 7px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-size: 13px; line-height: 18px; color: var(--text-2); }
+  .starter-card .blurb { padding-left: 24px; font-size: 13px; line-height: 18px; color: var(--text-2); }
 
-  /* The starter's pages on a quiet desk, in the site's own colours (set inline from its theme), light in either app
-     theme: Home tall on the left and bleeding off the bottom, each other page's top beside it. */
+  /* The starter's pages on a quiet desk, in the site's own colours and type (set inline from its theme), light in
+     either app theme: Home tall on the left and running on below the card's edge, each other page's top beside it.
+     The pages are cut by the card, never faded into it, so no app colour is painted over the site's. */
   .starter-art { position: relative; display: flex; gap: 10px; height: 196px; padding: 16px 16px 0; overflow: hidden; background: var(--panel-2); }
   .starter-art.blank { justify-content: center; padding-bottom: 14px; }
-  /* Business's pages carry on below the card: they fade into the desk rather than stopping at a cut. */
-  .starter-art.business::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 18px; background: linear-gradient(transparent, var(--panel-2)); pointer-events: none; }
   .starter-art .sheet { position: relative; display: flex; flex-direction: column; min-width: 0; border-radius: 3px 3px 0 0; background: var(--site-bg, var(--raised)); color: var(--site-text, var(--text)); box-shadow: var(--shadow-sm), 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent); overflow: hidden; }
   .starter-art .sheet.home { flex: 0 0 60%; min-height: calc(100% + 1px); container-type: inline-size; }
   .starter-art.blank .sheet.home { min-height: 0; height: 100%; border-radius: 3px; }
   .starter-art .sheet-side { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .starter-art .sheet.side { flex: 1; min-height: 0; border-radius: 3px; container-type: inline-size; }
   .starter-art .sheet.side:last-child { border-radius: 3px 3px 0 0; margin-bottom: -1px; }
-  .starter-art .sheet-head { display: flex; align-items: center; gap: 6px; height: 16px; flex: none; padding: 0 6px; border-bottom: 1px solid var(--site-border, var(--border)); font-size: 7.5px; }
-  .starter-art .sheet-head b { min-width: 0; font-weight: 650; }
-  .starter-art .sheet-nav { display: flex; gap: 4px; margin-left: auto; flex: none; color: var(--site-muted, var(--text-2)); font-size: 6.5px; }
+  /* The header is drawn at the thumbnails' scale, so it grows with its sheet: the site's name in its display face, the
+     links in its body face. */
+  .starter-art .sheet-head { display: flex; align-items: center; gap: 1.2em; height: clamp(16px, 8.8cqw, 30px); flex: none; padding: 0 0.8em; border-bottom: 1px solid var(--site-border, var(--border)); font-size: clamp(7.5px, 4.1cqw, 13px); }
+  .starter-art .sheet-head b { min-width: 0; font-family: var(--site-display, inherit); font-weight: 650; }
+  .starter-art .sheet-nav { display: flex; gap: 0.6em; margin-left: auto; flex: none; color: var(--site-muted, var(--text-2)); font-family: var(--site-body, inherit); font-size: 0.87em; }
   /* The page a sheet shows, marked the way a site's own navigation marks the current page. */
   .starter-art .sheet-nav .here { color: var(--site-text, var(--text)); font-weight: 600; }
   /* A small Home sheet keeps the site's name and lets its navigation go. */
@@ -80,16 +92,29 @@
   .starter-art .sheet-page { display: flex; flex-direction: column; }
   .starter-art .sheet-shot { overflow: hidden; }
   .starter-art .sheet-shot img { display: block; width: 100%; height: auto; }
-  .starter-art .sheet-empty { flex: 1; display: grid; place-items: center; margin: 8px; border: 1px dashed var(--site-border, var(--border)); border-radius: 3px; font-size: 7.5px; color: var(--site-muted, var(--text-2)); }
-  .starter-art .sheet-foot { flex: none; display: flex; align-items: center; min-width: 0; height: 18px; padding: 0 7px; background: var(--site-inverse, var(--ink)); color: var(--site-on-inverse, var(--panel)); font-size: 6.5px; }
-  @media (max-height: 820px) { .new-project-form .starter-art { height: 156px; padding-top: 14px; } }
+  .starter-art .sheet-empty { flex: 1; display: grid; place-items: center; margin: 4cqw; border: 1px dashed var(--site-border, var(--border)); border-radius: 3px; font-family: var(--site-display, inherit); font-size: clamp(8px, 5cqw, 16px); color: var(--site-muted, var(--text-2)); }
+  .starter-art .sheet-foot { flex: none; display: flex; align-items: center; min-width: 0; height: clamp(18px, 9.6cqw, 30px); padding: 0 0.8em; background: var(--site-inverse, var(--ink)); color: var(--site-on-inverse, var(--panel)); font-family: var(--site-body, inherit); font-size: clamp(6.5px, 3.6cqw, 11px); }
+  /* New project's previews take what the window can spare, from a strip that still shows each page's top on the
+     smallest window to most of Home's first screen on a tall one, so a few pixels of height never step them. A
+     problem or the offline note takes its own height from the previews, so Create stays where it was. The budget is
+     the dialog's own height limit (89vh less its margin, primitives.css) less the rest of the form at its spacing. */
+  .new-project-form { --np-rest: 443px; --np-problem: 0px; --np-note: 0px; --np-path: 0px; }
+  .new-project-form:has(> .np-identity > .scope-note) { --np-problem: 44px; }
+  .new-project-form:has(> #new-project-tools-note) { --np-note: 50px; }
+  .new-project-form .starter-art { height: clamp(112px, calc(89vh - var(--np-rest) - var(--np-problem) - var(--np-note) - var(--np-path)), 300px); container: np-art / size; }
+  /* At its shallowest, Business shows About alone beside Home, whole enough to read, rather than two slivers. */
+  @container np-art (max-height: 150px) {
+    .starter-art .sheet.side:last-child:not(:first-child) { display: none; }
+    .starter-art .sheet.side:first-child { border-radius: 3px 3px 0 0; margin-bottom: -1px; }
+  }
+  .new-project-form .starter-art.blank .sheet.home { flex-basis: 92%; }
   /* The minimum window: the tallest form (a problem and its note) fits without scrolling. */
   @media (max-height: 740px) {
-    .new-project-form { gap: 6px; }
+    .new-project-form { --np-rest: 412px; gap: 6px; }
+    .new-project-form:has(> #new-project-tools-note) { --np-note: 44px; }
     .new-project-form .np-identity { gap: 6px; }
-    .new-project-form .starter-art { height: 86px; padding-top: 8px; }
-    /* Home narrows so its whole hero shows; About and Contact take the room. */
-    .new-project-form .starter-art .sheet.home { flex-basis: 44%; }
+    .new-project-form .starter-art { padding-top: 10px; }
+    .new-project-form .np-theme { margin-bottom: 2px; }
     .starter-card .copy { gap: 2px; padding: 6px 12px 8px; }
   }
 
@@ -97,7 +122,7 @@
   .np-option { display: flex; align-items: center; min-height: 42px; }
   @media (max-height: 740px) { .np-option { min-height: 34px; } }
   .np-option > .switch-row { flex: 1; }
-  .np-option-note { margin: 0; font-size: 12px; color: var(--text-2); }
+  .np-option-note { margin: 0; font-size: 13px; color: var(--text-2); }
   .tools-note[data-tools='local'] svg { color: var(--green); }
 
   /* Setup: the starter being made beside its steps and the folder it goes in. */
