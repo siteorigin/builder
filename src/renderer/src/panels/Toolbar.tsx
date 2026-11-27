@@ -8,7 +8,7 @@ import { api, editRunStatus, projectHistory, setState, setViewport, setZoom, toa
 import { Segmented, useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
-import { pageChoices } from '../lib/page-switch';
+import { pageMenuItems } from '../lib/page-switch';
 import { templateOwner } from '../lib/template-view';
 import { ownerLabel } from '../lib/model';
 import { toolbarAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
@@ -256,13 +256,7 @@ export function Toolbar() {
   // The project menu is read again while it is open, so a page added, renamed or removed meanwhile shows as it is.
   projectRows.current = [
     { heading: 'Pages' },
-    ...pageChoices(state).map((p): MenuItem => ({
-      id: p.id,
-      label: p.title,
-      checked: seo ? false : shown ? p.id === shownPage?.id : !definitionMode && !layoutName && p.id === pageId,
-      hint: p.home ? 'Home page · /' : p.address,
-      onSelect: () => selectPage(p.id)
-    })),
+    ...pageMenuItems(state, seo ? null : shown ? (shownPage?.id ?? null) : !definitionMode && !layoutName ? pageId : null, (id) => selectPage(id)),
     { separator: true },
     // The host's project is the host's: it alone opens, reveals, copies, versions and closes it.
     ...(remoteShell

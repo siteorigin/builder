@@ -521,17 +521,22 @@ export const INTERACTIONS: Interaction[] = [
     area: 'pages',
     intent: 'Go to another page to edit it',
     start: 'Business site with two pages of the same title',
-    routes: ['panel:Pages › page row', 'toolbar:Page menu', 'command:page:*', 'command:page:more', 'item:Toolbar:<data>'],
-    outcome: 'The toolbar’s page menu and the command menu tell same-title pages apart by address, find a page by its address, follow a rename, and open the page shown when chosen by keyboard',
+    routes: ['panel:Pages › page row', 'toolbar:Page menu', 'command:page:*', 'command:page:more', 'item:Toolbar:<data>', 'item:page-switch:<data>'],
+    outcome: 'The toolbar’s page menu and the command menu tell same-title pages apart by address, find a page by its address, follow a rename, and open the page shown when chosen by keyboard; the head of Layers names the page, layout or component it shows and opens another page from the same list',
     scenario: 'Business starter · none',
     proof: [
       { test: 'tests/e2e/page-switchers.mjs', kind: 'e2e', step: 'toolbar page menu shows each address' },
       { test: 'tests/e2e/page-switchers.mjs', kind: 'e2e', step: 'command menu shows and searches by address' },
       { test: 'tests/e2e/page-switchers.mjs', kind: 'e2e', step: 'both menus follow a rename' },
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'another page: chosen in Pages, its heading edited' },
-      { test: 'tests/unit/page-switch.test.ts', kind: 'unit' }
+      { test: 'tests/unit/page-switch.test.ts', kind: 'unit' },
+      { test: 'tests/unit/layers-panel-browser.test.ts', kind: 'unit', step: 'names the page Layers shows in its head, and switches page from there (#953)' },
+      { test: 'tests/unit/layers-panel-browser.test.ts', kind: 'unit', step: 'labels a component or layout with its kind, and opens a page from it even when it is the page underneath (#953)' }
     ],
-    gaps: [{ missing: 'The command menu’s Show more pages row is never chosen by a test', owner: 'pages' }]
+    gaps: [
+      { missing: 'The command menu’s Show more pages row is never chosen by a test', owner: 'pages' },
+      { missing: 'No e2e script chooses a page from the switcher in the head of Layers', owner: 'layers' }
+    ]
   },
   {
     id: 'pages.shell',
