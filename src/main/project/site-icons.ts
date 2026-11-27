@@ -18,6 +18,7 @@ import { DRAWN_ICON_FILES } from '@shared/site-icons';
 import { siteIconSet } from '@generator/site-icons';
 import type { IconSpec, IconsResult } from './media-client';
 import { perf } from '../perf';
+import { stampOf, statTrusted } from './stable-read';
 
 /**
  * Draws square PNG icons of a picture, one for each spec, in order. `untrusted` says the picture is a file of the
@@ -103,6 +104,19 @@ function rasterType(b: Buffer): string | null {
   return null;
 }
 
+/** A favicon picture as it was read: its bytes, what they are and their SHA-256. */
+interface Picture {
+  data: Buffer;
+  mime: string;
+  hash: string;
+}
+
+/** Favicon files read lately, by path: each one's bytes and their SHA-256, under the stat it had just before it was read (stampOf). */
+type SeenPictures = Map<string, { stamp: string; data: Buffer; hash: string }>;
+
+/** How many favicon files a project's icons remember: its own, and a copy an export looked at. */
+const KEEP_PICTURES = 4;
+
 /**
  * A favicon picture's bytes and what they are, or null. The path comes from the documents, which can be edited by hand,
  * so only a regular file directly in the project's own static/assets/ is read: not through a linked folder (checked
@@ -110,36 +124,66 @@ function rasterType(b: Buffer): string | null {
  * indefinitely. The file may have been replaced outside the app since it was imported, whatever its record says, so
  * the decoder is told what its bytes are: SVG markup is drawn only once the renderer has cleaned it as an import
  * cleans one, and anything that is neither SVG nor a picture the library takes is not used.
+ *
+ * A picture read once its file had been left alone for `settleMs` is kept in `seen` under the stat the file had then
+ * (statTrusted): while a look at the file, checked as above, shows that very stat, those are still its bytes and it is
+ * not read again. Any write to it, or another file in its place, changes the stat.
  */
-async function readFavicon(dir: string, a: AssetRecord): Promise<{ data: Buffer; mime: string } | null> {
+async function readFavicon(dir: string, a: AssetRecord, seen: SeenPictures, settleMs: number): Promise<Picture | null> {
   if (a.kind !== 'image' || !LIBRARY_FILE.test(a.file) || a.file.includes('..')) return null;
   let bytes: Buffer;
+  let path: string;
+  let stamp: string;
+  let trusted: boolean;
   try {
     const root = await fs.realpath(dir);
     const assets = join(root, 'static', 'assets');
     const ownFolder = async () => (await fs.realpath(join(dir, 'static', 'assets'))) === assets;
-    const path = join(assets, basename(a.file));
-    if (!(await ownFolder()) || !(await fs.lstat(path)).isFile()) return null;
+    path = join(assets, basename(a.file));
+    if (!(await ownFolder())) return null;
+    const started = Date.now();
+    const looked = await fs.lstat(path, { bigint: true });
+    if (!looked.isFile()) return null;
+    stamp = stampOf(looked);
+    const was = seen.get(path);
+    // The folder checked again once the file has been looked at, as it is once a file is open below.
+    if (was?.stamp === stamp) return (await ownFolder()) ? pictureOf(a, was.data, was.hash) : null;
+    trusted = statTrusted(looked, started, settleMs);
     const handle = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     try {
-      const st = await handle.stat();
+      const st = await handle.stat({ bigint: true });
       if (!st.isFile() || st.size > MAX_SOURCE) return null;
-      const there = await fs.lstat(path);
+      const there = await fs.lstat(path, { bigint: true });
       if (!(await ownFolder()) || there.dev !== st.dev || there.ino !== st.ino) return null;
       bytes = await handle.readFile();
       perf.count('favicon.read');
       perf.count('favicon.readBytes', bytes.length);
+      // Kept only when the path showed the very stat it was looked at with until the file was opened, and the file
+      // did not change while it was read.
+      trusted &&= stampOf(there) === stamp && stampOf(await handle.stat({ bigint: true })) === stampOf(st);
     } finally {
       await handle.close();
     }
   } catch {
     return null;
   }
-  const raster = rasterType(bytes);
-  if (raster) return { data: bytes, mime: raster };
+  seen.delete(path);
+  perf.count('favicon.hashedBytes', bytes.length);
+  const hash = sha(bytes);
+  if (trusted) {
+    seen.set(path, { stamp, data: bytes, hash });
+    for (const k of seen.keys()) if (seen.size > KEEP_PICTURES) seen.delete(k);
+  }
+  return pictureOf(a, bytes, hash);
+}
+
+/** What a favicon file's bytes are taken as, under the record that names it now; null when they are not to be drawn. */
+function pictureOf(a: AssetRecord, data: Buffer, hash: string): Picture | null {
+  const raster = rasterType(data);
+  if (raster) return { data, mime: raster, hash };
   // Neither a picture nor (compressed or otherwise) anything but plain SVG markup is given to the decoder.
-  if (a.mime !== 'image/svg+xml' && !/^\s*</.test(bytes.toString('utf8', 0, Math.min(bytes.length, 256)).replace(/^﻿/, ''))) return null;
-  return { data: bytes, mime: 'image/svg+xml' };
+  if (a.mime !== 'image/svg+xml' && !/^\s*</.test(data.toString('utf8', 0, Math.min(data.length, 256)).replace(/^\uFEFF/, ''))) return null;
+  return { data, mime: 'image/svg+xml', hash };
 }
 
 /** What a set of icons is made from now, and the key that names it. */
@@ -190,8 +234,17 @@ export class SiteIconMaker {
   private drawn = 0;
   private last: string | null = null;
 
-  /** `onLate` is told when a set a save stopped waiting for is ready, so it can be published. */
-  constructor(private onLate: (() => void) | null = null) {}
+  /** The favicon pictures read lately (readFavicon). */
+  private pictures: SeenPictures = new Map();
+
+  /**
+   * `onLate` is told when a set a save stopped waiting for is ready, so it can be published. `settleMs` is how long a
+   * favicon's file must have been left alone before its stat can stand for its bytes (ProjectSession.settleMs).
+   */
+  constructor(
+    private onLate: (() => void) | null = null,
+    private settleMs: () => number = () => 3000
+  ) {}
 
   /** What the icons for `state` are made from, read from the project in `dir` (or a copy of it). */
   async input(dir: string, state: ProjectState): Promise<IconInput> {
@@ -199,11 +252,10 @@ export class SiteIconMaker {
     const monogram = Buffer.from(set.monogram);
     const favicon = set.source.kind === 'file' && state.site.favicon ? state.assets.assets[state.site.favicon] : undefined;
     // A favicon whose file is missing, or cannot be used, still gives the website its icons: the monogram's.
-    const picture = favicon ? await readFavicon(dir, favicon) : null;
+    const picture = favicon ? await readFavicon(dir, favicon, this.pictures, this.settleMs()) : null;
     const data = picture?.data ?? monogram;
     const mime = picture?.mime ?? 'image/svg+xml';
-    if (picture) perf.count('favicon.hashedBytes', data.length);
-    const key = sha(JSON.stringify({ mime, data: sha(data), monogram: sha(monogram), icons: set.icons }));
+    const key = sha(JSON.stringify({ mime, data: picture?.hash ?? sha(data), monogram: sha(monogram), icons: set.icons }));
     return { key, data, mime, untrusted: !!picture, monogram: picture ? monogram : null, icons: set.icons };
   }
 
@@ -342,6 +394,7 @@ export class SiteIconMaker {
   /** Forget every set, and announce none still being drawn (the project is closing). */
   clear(): void {
     this.made.clear();
+    this.pictures.clear();
     this.failed.clear();
     this.queued?.finish();
     this.queued = null;

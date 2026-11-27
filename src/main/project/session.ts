@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, PublishedDoc, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
@@ -34,7 +34,7 @@ import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { HISTORY_LIMIT } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile } from '@generator/index';
+import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
@@ -610,9 +610,12 @@ export class ProjectSession extends EventEmitter {
    * set a save stopped waiting for is published on its own once it is ready, while this app holds the project's lock
    * (a new project's session has none until the app takes it; the set is then published as the project opens).
    */
-  private siteIcons = new SiteIconMaker(() => {
-    if (this.lockState === 'held') void this.refreshSiteIcons().catch(() => null);
-  });
+  private siteIcons = new SiteIconMaker(
+    () => {
+      if (this.lockState === 'held') void this.refreshSiteIcons().catch(() => null);
+    },
+    () => this.settleMs
+  );
   /** The icons the last finished publication carried (what they were made from, and which drawing made them). */
   private iconsPublished: { key: string; id: number | null } | null = null;
   /** What the icons the last publication asked for are made from. */
@@ -2473,33 +2476,36 @@ export class ProjectSession extends EventEmitter {
     // The theme's font files are copied from its pack beside the generated text, under the same ownership rules.
     const copies = new Map<string, string | Buffer>();
     const fonts = packFileCopies(this.state, this.generation).filter((c) => !authored.has(c.path) && !clean.has(c.path));
-    // Looked at together, each folder once (see the project's files below).
-    const fontPass = new FolderPass();
-    const fontLooks = fonts.map((c) => safeJoinLooking(this.dir, c.path, fontPass));
-    for (const [i, c] of fonts.entries()) {
-      // Published last time from bytes that hash to what the pack lists for it now (so the pack's validated bytes), and
-      // still those bytes on disk: nothing to write, so the pack is not read, nor its bytes hashed, again. A copy that
-      // is not in place is read from the pack as before.
-      const { abs, st } = fontLooks[i];
-      const was = this.contentHashes.get(abs);
-      if (was && was.hash === packFileInfo(c.pack, c.file)?.sha256 && (await this.seenHash(abs, st)) === was.hash) {
+    /** Copies taken from the pack's bytes the last publication held rather than read from the pack now (see below). */
+    const held = new Map<string, PackFileCopy>();
+    /** A pack that cannot supply a copy costs that font's update, not the save. */
+    const uncopied = async (c: PackFileCopy, e: unknown) => {
+      // A copy already in the project stays, still claimed, so it is neither replaced nor removed as obsolete.
+      console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
+      // Only a copy that already is the pack's validated file is kept: another theme's file of the same name is not.
+      // A copy that cannot be read stays claimed, so it is never removed and a missing one is still noticed.
+      if (!known(c.path)) return;
+      // Checked again on its own: the pack was being read meanwhile.
+      const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
+      const h = disk === null ? null : sha(disk);
+      if (h === null) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
+      else if (ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
+    };
+    for (const c of fonts) {
+      // Published last time from bytes that hash to what the pack lists for it now: the pack's validated bytes, held
+      // since. While the copy on disk is still those bytes (found below), the pack is not read, nor its bytes hashed,
+      // again; a copy that is anything else is decided only once the pack has been read and checked, as ever.
+      // Named as the check below names it (safeJoinLooking): `resolve` is what it comes to for any path it accepts.
+      const was = this.contentHashes.get(resolvePath(this.dir, c.path));
+      if (was && was.hash === packFileInfo(c.pack, c.file)?.sha256) {
         copies.set(c.path, was.content);
+        held.set(c.path, c);
         continue;
       }
       try {
         copies.set(c.path, await readPackFile(c.pack, c.file));
       } catch (e) {
-        // A damaged or missing pack file costs that font's update, not the save: a copy already in the project stays,
-        // still claimed, so it is neither replaced nor removed as obsolete.
-        console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
-        // Only a copy that already is the pack's validated file is kept: another theme's file of the same name is not.
-        // A copy that cannot be read stays claimed, so it is never removed and a missing one is still noticed.
-        if (!known(c.path)) continue;
-        // Checked again on its own: the pack was being read meanwhile.
-        const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
-        const h = disk === null ? null : sha(disk);
-        if (h === null) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
-        else if (ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
+        await uncopied(c, e);
       }
     }
     // The website's icons are drawn from the favicon (or the monogram) beside the generated text, under the same rules.
@@ -2565,6 +2571,22 @@ export class ProjectSession extends EventEmitter {
       if (settled) continue;
       const { hash: diskHash, stamp } = onDisk[i]!;
       if (diskHash === h) continue;
+      // A copy taken from the pack's held bytes that is not those bytes on disk (gone, or someone else's): the pack is
+      // read and checked first, and one that cannot supply it now leaves the copy as a failed read of it would.
+      const copy = held.get(path);
+      if (copy) {
+        const failed = await readPackFile(copy.pack, copy.file).then(
+          () => null,
+          (e: unknown) => ({ e })
+        );
+        if (failed) {
+          delete desired[path];
+          delete nextFiles[path];
+          hashes.delete(abs);
+          await uncopied(copy, failed.e);
+          continue;
+        }
+      }
       if (!initial && diskHash !== null && known(path) && !ours(path, diskHash)) {
         // Edited outside the app (or no longer readable by it): keep the external version.
         nextFiles[path] = prev[path] ?? inflight[path];
