@@ -75,7 +75,7 @@ export type ReadEntryArgs = z.infer<typeof READ_ENTRY_ARGS>;
 export type UpsertEntryArgs = z.infer<typeof UPSERT_ENTRY_ARGS>;
 
 const BODY_FORMAT =
-  'Each line of body is a block: a paragraph, "## " or "### " a heading, "- " or "1. " a list item, "> " a quote, with **bold**, *italic* and [label](/route/, https://… or entry:en_…) links. A picture line (![…](asset:…)) is placed by the author: keep each one as read, where it belongs.';
+  'Each line of body is a block: a paragraph, "## " or "### " a heading, "- " or "1. " a list item, "> " a quote, with **bold**, *italic* and [label](/route/, https://… or entry:en_…) links. A picture line (![…](asset:…)) is placed by the author: keep each one exactly as read (its alt text and caption cannot be changed here), on a line of its own, where it belongs.';
 
 export const LIST_ENTRIES_DESCRIPTION = `List a collection's entries (blog posts, projects), ${ENTRY_LIST_PAGE} at a time in the collection's order, drafts included: each entry's ID, title, date and whether it is a draft. Call again with offset set to next for more.`;
 export const LIST_ENTRIES_BRIEF = `${ENTRY_LIST_PAGE} entries at a time: ID, title, date, draft. More: offset=next.`;
@@ -275,13 +275,21 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
   };
 }
 
-/** A picture line as an entry's Markdown writes it (see richTextToMarkdown). */
-const PICTURE_LINE = /^!\[[^\n]*\]\(asset:([^\s)"]+)(?:\s+"[^\n]*")?\)$/;
+/**
+ * The asset a line of text places as a picture, or null where it places none. Looser than a read writes it, so a line
+ * retyped with other quotes, text around it or a block marker is still caught. A read escapes the brackets of literal
+ * text, so its own words never match.
+ */
+function pictureIn(line: string): string | null {
+  const open = line.indexOf('![');
+  const m = open < 0 ? null : /\]\(\s*<?asset:([^\s)"'>]*)/.exec(line.slice(open + 2));
+  return m ? m[1] : null;
+}
 
 /**
- * The text a call sent, as the operation takes it: a picture line read from the entry becomes that picture again (a
- * picture is placed with the library picker, never typed), in the order the lines put them. A picture line the entry
- * does not have is refused, as an empty line would otherwise hide a lost picture.
+ * The text a call sent, as the operation takes it: a picture line exactly as read from the entry becomes that picture
+ * again (a picture is placed with the library picker, never typed), in the order the lines put them. Any other picture
+ * line is refused: one altered would otherwise lose its change, or be written as text in the picture's place.
  */
 function bodyValue(lines: string[], current: RichText, pages: ProjectState['pages'], issues: FieldIssue[]): Array<string | RichBlock> {
   const pictures = current.filter(isImageBlock);
@@ -290,16 +298,21 @@ function bodyValue(lines: string[], current: RichText, pages: ProjectState['page
   const used = new Set<number>();
   return lines.map((raw, i) => {
     const line = raw.trim();
-    const m = PICTURE_LINE.exec(line);
-    if (!m) return raw;
-    const exact = read.findIndex((r, j) => !used.has(j) && r === line);
-    const at = exact >= 0 ? exact : pictures.findIndex((p, j) => !used.has(j) && p.assetId === m[1]);
-    if (at < 0) {
-      issues.push({ field: `body[${i}]`, message: `the entry has no picture "${m[1]}" to keep here. Pictures are added by the author; keep each picture line as read, or leave it out to remove that picture` });
-      return raw;
+    const at = read.findIndex((r, j) => !used.has(j) && r === line);
+    if (at >= 0) {
+      used.add(at);
+      return structuredClone(pictures[at]);
     }
-    used.add(at);
-    return structuredClone(pictures[at]);
+    // Every line of it: the engine reads one string of several lines as several blocks.
+    const assetId = raw.split('\n').map(pictureIn).find((id) => id !== null);
+    if (assetId === undefined) return raw;
+    issues.push({
+      field: `body[${i}]`,
+      message: pictures.some((p) => p.assetId === assetId)
+        ? "this picture line does not match a picture of the entry that is still to be placed. A picture's alt text and caption are changed by the author in the editor: send each picture line exactly as read, once, as a body line of its own, or leave it out to remove that picture"
+        : `the entry has no picture "${assetId}" to keep here. Pictures are added by the author; keep each picture line as read, or leave it out to remove that picture`
+    });
+    return raw;
   });
 }
 

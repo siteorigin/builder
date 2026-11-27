@@ -235,6 +235,39 @@ describe('collection tools for every model', () => {
     expect(entry(now(), 'en_spring').terms.categories).toEqual(['news']);
   });
 
+  it('refuses a picture line whose caption or alt was altered, applying nothing, and keeps exact lines reordered or left out', async () => {
+    const s = applyOperations(blog(), [
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: [{ type: 'image', assetId: PHOTO.id, alt: 'Kiln', caption: 'Before' }, 'Between.', { type: 'image', assetId: PHOTO.id, alt: 'Kiln', caption: 'After' }] }
+    ] as EditOperation[]).state;
+    const { h, grants, now } = host(s);
+    const write = (body: string[]) => tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_winter', title: 'Rewritten', categories: ['Events'], body });
+    for (const altered of ['![Kiln](asset:a_kiln "During")', '![A new description](asset:a_kiln "Before")', '![Kiln](asset:a_kiln)']) {
+      const r = await write(['![Kiln](asset:a_kiln "After")', altered]);
+      expect(r.content, altered).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/body\[1\]: this picture line does not match/) } });
+    }
+    // Nor is one retyped, given text around it, or sent inside a longer element written as text in the picture's place.
+    for (const altered of [`![Kiln](asset:a_kiln 'Before')`, '![Kiln](asset:a_kiln "Before") and more', '- ![Kiln](asset:a_kiln "Before")', '![A [new] kiln](<asset:a_kiln>)', 'Between.\n\n![Kiln](asset:a_kiln "Before")']) {
+      const r = await write(['![Kiln](asset:a_kiln "After")', altered]);
+      expect(r.content, altered).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/body\[1\]: this picture line does not match/) } });
+    }
+    // One figure cannot be placed twice.
+    expect((await write(['![Kiln](asset:a_kiln "After")', '![Kiln](asset:a_kiln "After")'])).content).toMatchObject({ error: { message: expect.stringMatching(/body\[1\]: this picture line does not match/) } });
+    // Nothing reached the project: no text, title or new category.
+    expect(grants).toEqual([]);
+    expect(now()).toEqual(s);
+    const [before, , after] = entry(s, 'en_winter').body;
+    expect((await write(['![Kiln](asset:a_kiln "After")', '![Kiln](asset:a_kiln "Before")'])).ok).toBe(true);
+    expect(entry(now(), 'en_winter').body).toEqual([after, before]);
+    expect((await write(['![Kiln](asset:a_kiln "Before")'])).ok).toBe(true);
+    expect(entry(now(), 'en_winter').body).toEqual([before]);
+    // Literal text that looks like a picture reads back escaped, and is written as the text it is.
+    const literal = applyOperations(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: [{ type: 'p', spans: [{ text: 'Type ![Kiln](asset:a_kiln) here.' }] }] }] as EditOperation[]).state;
+    const other = host(literal);
+    const read = (await tool(other.h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter' })).content as unknown as { text: string };
+    expect((await tool(other.h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_winter', body: [read.text] })).ok).toBe(true);
+    expect(entry(other.now(), 'en_winter').body).toEqual(entry(literal, 'en_winter').body);
+  });
+
   it('gives a collection without categories its first one', async () => {
     const s = applyOperations(blog(), [
       { type: 'collection.create', collectionId: 'projects', route: '/projects/' },
