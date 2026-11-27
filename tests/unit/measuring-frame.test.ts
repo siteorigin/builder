@@ -105,9 +105,9 @@ describe('the frame a page is measured in', () => {
 
   /**
    * A page whose entrance starts when the test says (so it is under way when the check begins), in one step or two, the
-   * second set off as the first ends, beside a spinner that never stops. Each step would run for a minute: it ends when
-   * the bridge waits on it (its `finished` read through document.getAnimations, which the page wraps), so a step is under
-   * way whenever the bridge looks, and ends only because the bridge waited for it. The page tells the test as each step
+   * second set off as the first ends, beside a spinner that never stops. Each step would run for a minute: it ends three
+   * frames after the bridge takes its `finished` (read through document.getAnimations, which the page wraps), so a step
+   * is under way whenever the bridge looks, and a bridge that looks again without waiting finds it still running. The page tells the test as each step
    * ends, and records each look (when, after the request, and what was running) and what the bridge waited on, so the
    * checks are told apart by what the bridge did, never by how long frames took.
    */
@@ -118,7 +118,7 @@ describe('the frame a page is measured in', () => {
     `<main data-so-node="n" data-so-ctx="page:p">${steps ? '<div class="in">Sliding in</div>' : ''}<div class="spin"></div></main>` +
     '<script>const probe = { looks: [], waitedOn: [] }; let asked = 0; const all = document.getAnimations.bind(document);' +
     " document.getAnimations = () => { const found = all(); probe.looks.push({ after: performance.now() - asked, running: found.filter((a) => a.playState === 'running').map((a) => a.animationName) });" +
-    " return found.map((a) => new Proxy(a, { get(t, k) { if (k === 'finished') { probe.waitedOn.push(t.animationName); setTimeout(() => t.finish(), 0); } const v = Reflect.get(t, k, t); return typeof v === 'function' ? v.bind(t) : v; } })); };" +
+    " return found.map((a) => new Proxy(a, { get(t, k) { if (k === 'finished') { probe.waitedOn.push(t.animationName); let n = 0; const later = () => (++n < 3 ? requestAnimationFrame(later) : t.finish()); requestAnimationFrame(later); } const v = Reflect.get(t, k, t); return typeof v === 'function' ? v.bind(t) : v; } })); };" +
     " addEventListener('message', (e) => { if (!e.data) return; if (e.data.type === 'inspect') asked = performance.now(); if (e.data.startEntrance) document.querySelector('.in')?.classList.add('go'); if (e.data.probe) parent.postMessage({ probed: probe }, '*'); });" +
     ` addEventListener('animationend', (e) => { parent.postMessage({ ended: e.animationName }, '*'); if (e.animationName === 'in' && ${steps} > 1) e.target.classList.add('again'); });</script>`;
   /** A frame shown in full, which the browser draws every frame: a check's frames then come at the display's rate. */
