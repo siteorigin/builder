@@ -4,7 +4,7 @@
  * destinations (a page by its address, a post as `entry:` and its ID). Pictures are single blocks the text flows
  * around: they are chosen and described in a dialog, never typed into.
  */
-import type { LinkValue, ProjectState, RichBlock, RichImageBlock, RichSpan, RichText } from '@shared/types';
+import type { LinkValue, ProjectState, RichBlock, RichImageBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from '@shared/types';
 import { isImageBlock, isListBlock, isRichBlock, linkToTarget } from '@shared/richtext';
 import { linkRels, relsFromAttribute } from '@shared/link-rel';
 import { blocksFromDom, type RichDomNode } from './richtext';
@@ -168,14 +168,28 @@ function toDom(n: Node): RichDomNode | null {
  * writer since it was last read takes its destination now, so it keeps it however addresses change later.
  */
 export function readArticle(root: HTMLElement, state: ProjectState): RichText {
+  return readText(root, () => articleDom(root), state);
+}
+
+/** One block of the writer's root (see readArticle), as the blocks the text stores for it. */
+function readArticleNodes(block: Node, state: ProjectState): RichText {
+  return readText(block, () => {
+    const dom = toDom(block);
+    return dom === null ? [] : [dom];
+  }, state);
+}
+
+/** The text `dom` reads from `within`, once each link made in the writer since it was last read keeps its destination. */
+function readText(within: Node, dom: () => RichDomNode[], state: ProjectState): RichText {
   const links = articleLinks(state);
-  root.querySelectorAll<HTMLElement>('a[href]').forEach((a) => {
+  const anchors = within instanceof Element ? [...(within.matches('a[href]') ? [within] : []), ...within.querySelectorAll('a[href]')] : [];
+  for (const a of anchors as HTMLElement[]) {
     const href = a.getAttribute('href') ?? '';
-    if (a.dataset.link && a.dataset.href === href) return;
+    if (a.dataset.link && a.dataset.href === href) continue;
     const link = links.link(href, a.getAttribute('target') === '_blank', relsFromAttribute(a.getAttribute('rel')));
     if (link) keepLink(a, link, href);
-  });
-  return blocksFromDom(articleDom(root), state.pages, links).blocks;
+  }
+  return blocksFromDom(dom(), state.pages, links).blocks;
 }
 
 /**
@@ -196,6 +210,198 @@ export function articleProblem(body: unknown): string | null {
       return isListBlock(b) ? b.items.every(spans) : spans(b.spans);
     });
   return ok ? null : 'This post’s text holds something the writer cannot show (a hand edit, or a newer version of SiteOrigin Builder), so it is not edited here. Project health says what.';
+}
+
+/** Pasted elements dropped with everything inside them: nothing active, and no pictures (they come from the library). */
+const PASTE_DROP = new Set(['head', 'title', 'meta', 'link', 'base', 'style', 'script', 'template', 'noscript', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'svg', 'math', 'canvas', 'img', 'picture', 'video', 'audio', 'map', 'area', 'form', 'input', 'select', 'textarea', 'button', 'option', 'dialog']);
+/** Pasted elements the writer has a block of its own for, by the name it reads them with. */
+const PASTE_KEEP = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'ul', 'ol', 'li', 'br']);
+/** Pasted blocks the writer has no kind of its own for: their words stay, as paragraphs. */
+const PASTE_AS_BLOCK = new Set(['div', 'section', 'article', 'header', 'footer', 'main', 'aside', 'nav', 'address', 'pre', 'figure', 'figcaption', 'dl', 'dt', 'dd', 'table', 'tr', 'caption', 'details', 'summary', 'hr', 'center', 'hgroup', 'fieldset', 'legend']);
+const HTML_NS = 'http://www.w3.org/1999/xhtml';
+
+/** A pasted node as the small copy blocksFromDom reads: only what the writer can hold, every element a new one. */
+function pastedNodes(n: Node, pre: boolean, preview: string | null): RichDomNode[] {
+  if (n.nodeType === Node.TEXT_NODE) {
+    const text = (n as Text).data;
+    if (!pre) return [text];
+    // Preformatted text keeps its lines, as breaks.
+    const out: RichDomNode[] = [];
+    text.split(/\r?\n/).forEach((line, i) => {
+      if (i) out.push({ tag: 'br', children: [] });
+      if (line) out.push(line.replace(/ /g, ' '));
+    });
+    return out;
+  }
+  const el = n as Element;
+  if (n.nodeType !== Node.ELEMENT_NODE || el.namespaceURI !== HTML_NS) return [];
+  const tag = el.localName;
+  if (PASTE_DROP.has(tag)) return [];
+  const inPre = pre || tag === 'pre';
+  const children = [...el.childNodes].flatMap((c) => pastedNodes(c, inPre, preview));
+  // A table cell's words stay apart from the next cell's.
+  if (tag === 'td' || tag === 'th') return [' ', ...children];
+  const out: Exclude<RichDomNode, string> = { tag: PASTE_KEEP.has(tag) ? tag : PASTE_AS_BLOCK.has(tag) ? 'div' : tag === 'a' ? 'a' : 'span', children };
+  // Bold and italic as marks the element's own style can take back: Google Docs wraps a whole copy in
+  // <b style="font-weight:normal"> and marks its bold words with a style instead.
+  const style = (el as HTMLElement).style;
+  const weight = style?.fontWeight;
+  if (weight) out.b = weight === 'bold' || weight === 'bolder' || Number(weight) >= 600;
+  else if (tag === 'b' || tag === 'strong') out.b = true;
+  const slant = style?.fontStyle;
+  if (slant) out.i = slant === 'italic' || slant === 'oblique';
+  else if (tag === 'i' || tag === 'em') out.i = true;
+  if (tag === 'a') {
+    const href = el.getAttribute('href');
+    // Only an address: the writer's own stored destinations are never taken from a copy.
+    if (href !== null && !href.trim().startsWith(KEPT_LINK)) out.href = previewPath(href, preview);
+    if (el.getAttribute('target') === '_blank') out.newTab = true;
+    const rel = relsFromAttribute(el.getAttribute('rel'));
+    if (rel.length) out.rel = rel;
+  }
+  if (tag === 'ul' && el.classList.contains(CHECK_CLASS)) out.check = true;
+  return [out];
+}
+
+/** A link copied from the site's preview, as the address of its page on the site; any other address as it is. */
+function previewPath(href: string, preview: string | null): string {
+  if (!preview || !/^https?:\/\//i.test(href.trim())) return href;
+  try {
+    const url = new URL(href.trim());
+    return url.origin === new URL(preview).origin ? url.pathname + url.hash : href;
+  } catch {
+    return href;
+  }
+}
+
+/**
+ * Copied HTML as the blocks of an article's text: paragraphs, section headings (h2 to h4), quotes, lists, bold, italic,
+ * line breaks and links to anywhere the writer can link to, read with the rules the writer reads its own text with.
+ * Everything else keeps only its words: styles, classes, pictures, tables and the like. A link copied from the site's
+ * preview (at `preview`) goes to its page. Empty when it holds no words.
+ */
+export function pastedArticle(html: string, state: ProjectState, preview: string | null = null): RichText {
+  if (!html || html.length > 2_000_000) return [];
+  // Parsed inert (nothing runs or loads), from inside a body: what comes before the copy's own body (comments, Word's
+  // conditional blocks) lands there too.
+  const body = new DOMParser().parseFromString(`<body>${html}`, 'text/html').body;
+  const nodes = [...body.childNodes].flatMap((c) => pastedNodes(c, false, preview));
+  return blocksFromDom(nodes, state.pages, articleLinks(state)).blocks.filter((b) => !isImageBlock(b));
+}
+
+/** Where a paste goes while the writer finds it in its text: a character no copy or typing holds. */
+const PASTE_AT = '';
+
+/** A block of text, or one item of a list, as a paste splits and joins them; a picture is carried as it is. */
+type PasteLine = { kind: RichTextBlock['type'] | 'li'; list?: RichListBlock['type']; spans: RichSpan[] } | { kind: 'image'; block: RichImageBlock };
+
+const linesOf = (blocks: RichText): PasteLine[] =>
+  blocks.flatMap((b): PasteLine[] => (isImageBlock(b) ? [{ kind: 'image', block: b }] : isListBlock(b) ? b.items.map((spans) => ({ kind: 'li', list: b.type, spans })) : [{ kind: b.type, spans: b.spans }]));
+const spansWords = (spans: RichSpan[]) => /\S/.test(spans.map((s) => s.text).join(''));
+const spansLength = (spans: RichSpan[]) => spans.reduce((n, s) => n + s.text.replace(/\n/g, '').length, 0);
+
+/** `spans` split where the paste goes, without its mark; null when it is not in them. */
+function splitAtPaste(spans: RichSpan[]): [RichSpan[], RichSpan[]] | null {
+  for (let i = 0; i < spans.length; i++) {
+    const at = spans[i].text.indexOf(PASTE_AT);
+    if (at < 0) continue;
+    const s = spans[i];
+    const before = { ...s, text: s.text.slice(0, at) };
+    const after = { ...s, text: s.text.slice(at + 1).replaceAll(PASTE_AT, '') };
+    return [[...spans.slice(0, i), ...(before.text ? [before] : [])], [...(after.text ? [after] : []), ...spans.slice(i + 1)]];
+  }
+  return null;
+}
+
+/**
+ * Put pasted blocks (see pastedArticle) in the writer's text at the selection, in place of what is selected, as one
+ * formatting command (PostWriter runs it as one undo step). The block the caret is in splits around the paste and keeps
+ * its kind: a paragraph's words that start the paste join the words before the caret, and a paragraph's words that end it
+ * join the words after the caret, so one paragraph pasted is only its words. Every other block pasted keeps its own kind,
+ * a list included, and ends the caret's block or list item there. Only the caret's block is drawn again; the caret ends
+ * after the pasted words. False, with nothing changed, when the caret is not in the text.
+ */
+export function pasteArticle(root: HTMLElement, pasted: RichText, state: ProjectState, devUrl: string | null): boolean {
+  const doc = root.ownerDocument;
+  const sel = doc.getSelection();
+  if (!pasted.length || !sel?.rangeCount || !root.contains(sel.getRangeAt(0).commonAncestorContainer)) return false;
+  // What is selected goes first, as typing over it would take it: the blocks it ran across join, as the browser joins them.
+  if (!sel.isCollapsed) doc.execCommand('delete');
+  if (!sel.rangeCount || !root.contains(sel.anchorNode)) return false;
+  const range = sel.getRangeAt(0);
+  // A caret beside a picture or in the root itself is put in a paragraph of its own there.
+  const mark = doc.createTextNode(PASTE_AT);
+  range.insertNode(mark);
+  let host: Node = mark;
+  while (host.parentNode && host.parentNode !== root) host = host.parentNode;
+  if (host.parentNode !== root || (host instanceof HTMLElement && host.tagName === 'FIGURE')) {
+    mark.remove();
+    return false;
+  }
+  const lines = linesOf(readArticleNodes(host, state));
+  const at = lines.findIndex((l) => l.kind !== 'image' && splitAtPaste(l.spans));
+  if (at < 0) {
+    mark.remove();
+    return false;
+  }
+  const line = lines[at] as Exclude<PasteLine, { kind: 'image' }>;
+  const [before, after] = splitAtPaste(line.spans)!;
+  const head = { ...line, spans: before };
+  const tail = { ...line, spans: after };
+  const middle = linesOf(pasted);
+  let caret: { line: PasteLine; offset: number };
+  const first = middle[0];
+  if (first.kind === 'p' && (spansWords(before) || middle.length === 1)) {
+    head.spans = [...head.spans, ...first.spans];
+    middle.shift();
+  }
+  const last = middle[middle.length - 1];
+  if (!last) {
+    // All the paste joined the caret's block: the words after the caret follow it in the same block.
+    caret = { line: head, offset: spansLength(head.spans) };
+    head.spans = [...head.spans, ...tail.spans];
+    tail.spans = [];
+  } else if (last.kind === 'p' && spansWords(after)) {
+    middle.pop();
+    tail.spans = [...last.spans, ...tail.spans];
+    caret = { line: tail, offset: spansLength(last.spans) };
+  } else caret = { line: last, offset: last.kind === 'image' ? 0 : spansLength(last.spans) };
+  const out: PasteLine[] = [...lines.slice(0, at), ...(spansWords(head.spans) ? [head] : []), ...middle, ...(spansWords(tail.spans) ? [tail] : []), ...lines.slice(at + 1)];
+
+  // Drawn as the writer draws its text, items of the same kind side by side in one list.
+  const els: HTMLElement[] = [];
+  let list: HTMLElement | null = null;
+  let caretEl: HTMLElement | null = null;
+  for (const l of out) {
+    let el: HTMLElement;
+    if (l.kind === 'image') {
+      list = null;
+      el = figureElement(l.block, state, devUrl);
+      els.push(el);
+    } else if (l.kind === 'li') {
+      if (!list || listKind(list) !== l.list) els.push((list = newList(doc, l.list!)));
+      el = doc.createElement('li');
+      appendSpans(el, l.spans, state);
+      list.appendChild(el);
+    } else {
+      list = null;
+      el = doc.createElement(l.kind);
+      appendSpans(el, l.spans, state);
+      els.push(el);
+    }
+    if (l === caret.line) caretEl = el;
+  }
+  (host as ChildNode).replaceWith(...els);
+  // A list drawn beside a list of the same kind is one list with it, as the text stores them.
+  const join = (a: Element | null | undefined, b: Element | null | undefined) => {
+    if (!a || !b || !listKind(a) || listKind(a) !== listKind(b)) return;
+    a.append(...b.childNodes);
+    b.remove();
+  };
+  join(els[els.length - 1], els[els.length - 1]?.nextElementSibling);
+  join(els[0]?.previousElementSibling, els[0]);
+  if (caretEl?.isConnected) caretTo(caretEl, caret.offset);
+  return true;
 }
 
 /** Where the caret is, as the number of the block it is in and how far into that block's text: kept across a redraw. */
