@@ -294,6 +294,27 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     expect(await slow()).toBe('true');
   });
 
+  it('times a preview not started yet and its start as one wait, and says so in the region already there', async () => {
+    const slow = () => page.locator('#status').getAttribute('data-slow');
+    await so('status', { runtime: { state: 'idle' }, outlined: true });
+    await page.evaluate(() => {
+      const g = globalThis as unknown as Dom;
+      g.region = g.document.querySelector('#status [role="status"]');
+    });
+    await page.clock.runFor(10_000);
+    await so('status', { runtime: { state: 'starting' }, outlined: true });
+    await page.clock.runFor(4_000);
+    expect(await slow()).toBe('false');
+    await page.clock.runFor(1_500);
+    expect(await slow()).toBe('true');
+    expect(
+      await page.evaluate(() => {
+        const g = globalThis as unknown as Dom;
+        return g.region === g.document.querySelector('#status [role="status"]') && g.region?.textContent;
+      })
+    ).toBe('Starting the preview is taking longer than usual.');
+  });
+
   it('keeps the slow-start announcer as the same region when the card takes over from the outline', async () => {
     await so('status', { runtime: { state: 'starting' }, outlined: true, slow: false });
     await page.evaluate(() => {

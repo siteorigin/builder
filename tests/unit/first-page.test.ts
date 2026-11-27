@@ -17,6 +17,8 @@ describe('the outline over a project’s first page', () => {
 
   it('gives way to the card for a start that runs long, setting up the tools, a stop and a preview that cannot run', () => {
     expect(outlinesFirstPage(wait({ runtime: 'starting', slow: true }))).toBe(false);
+    // A preview that never begins hands back to its paused card, with Start preview, as a long start does.
+    expect(outlinesFirstPage(wait({ runtime: 'idle', slow: true }))).toBe(false);
     expect(outlinesFirstPage(wait({ runtime: 'preparing' }))).toBe(false);
     expect(outlinesFirstPage(wait({ runtime: 'error' }))).toBe(false);
     expect(outlinesFirstPage(wait({ runtime: 'unavailable' }))).toBe(false);

@@ -233,16 +233,9 @@ function Waiting({ runtime, slow, outlined }: { runtime: Extract<RuntimeState, {
   const later = 'This is taking longer than usual.';
   // Setting up is installing the website tools, or, for a project open read-only, copying it to preview it unchanged.
   const copying = preparing && /^Copying/.test(runtime.message);
-  // Mounted from the start, under the outline too, so the change is announced when it comes.
-  const announcer = (
-    <p className="sr-only" role="status">
-      {slow ? `${copying ? 'Preparing the preview' : preparing ? 'Setting up website tools' : 'Starting the preview'} is taking longer than usual.` : ''}
-    </p>
-  );
-  // The announcer keeps its place whether or not the card shows, so it is the same region when its words arrive.
-  if (outlined && !preparing && !slow) return <>{null}{announcer}</>;
+  // Under the outline a start that has not run long shows nothing; its slow word is said by PreviewStatus.
+  if (outlined && !preparing && !slow) return null;
   return (
-    <>
       <StatusCard
       testId={preparing ? 'preview-preparing' : 'preview-starting'}
       mark={<Working />}
@@ -259,8 +252,6 @@ function Waiting({ runtime, slow, outlined }: { runtime: Extract<RuntimeState, {
       {preparing && slow && <p>{later}</p>}
       {slow && <p className="status-card-safe">{safe}</p>}
       </StatusCard>
-      {announcer}
-    </>
   );
 }
 
@@ -268,6 +259,21 @@ function Waiting({ runtime, slow, outlined }: { runtime: Extract<RuntimeState, {
  *  useSlowWait's answer for this runtime; `outlined`, that the canvas is showing the project's first page as an outline,
  *  which a start or a preview not started yet leave in place. */
 export function PreviewStatus({ runtime, slow, outlined = false }: { runtime: RuntimeState; slow: boolean; outlined?: boolean }) {
+  const preparing = runtime.state === 'preparing';
+  const copying = runtime.state === 'preparing' && /^Copying/.test(runtime.message);
+  return (
+    <>
+      <PreviewCard runtime={runtime} slow={slow} outlined={outlined} />
+      {/* Mounted with the status whatever it shows (the outline, a card, nothing yet), so a wait running long is
+          announced when it does, from a preview not started yet, a start, or setting up the tools. */}
+      <p className="sr-only" role="status">
+        {slow && (preparing || runtime.state === 'starting') ? `${copying ? 'Preparing the preview' : preparing ? 'Setting up website tools' : 'Starting the preview'} is taking longer than usual.` : ''}
+      </p>
+    </>
+  );
+}
+
+function PreviewCard({ runtime, slow, outlined }: { runtime: RuntimeState; slow: boolean; outlined: boolean }) {
   const safe = useSafeLine();
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   if (runtime.state === 'ready') return null;

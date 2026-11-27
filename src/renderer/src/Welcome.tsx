@@ -264,7 +264,7 @@ export function Welcome({ covered = false }: { covered?: boolean }) {
     } finally {
       // Refused, waiting on trust, or failed: Welcome comes back in the same frame as the prompt or the notice. Only
       // this open's own outline: one that has since been taken over by the project, or closed, is left alone.
-      if (direct && !opened && getState().openingProject?.id === direct.id) setState({ openingProject: null });
+      if (direct && !opened && getState().openingProject?.id === direct.id) setState({ openingProject: null, openingSince: null });
       openingRef.current = false;
       setOpening(null);
       refresh();

@@ -3045,9 +3045,12 @@ export function Canvas() {
     onPage: mode === 'edit' && !templateMode && !studioView
   });
   // The opening's one loading sign: the status bar and the announcements leave the first page's wait to it.
+  // Not while the SEO view or the post writer covers the canvas: the outline is out of sight there.
+  const canvasHidden = useStore((s) => canvasCovered(activeWorkspace(s)));
   useLayoutEffect(() => {
-    if (getState().openingPage !== outlined) setState({ openingPage: outlined });
-  }, [outlined]);
+    const on = outlined && !canvasHidden;
+    if (getState().openingPage !== on) setState({ openingPage: on });
+  }, [outlined, canvasHidden]);
   useEffect(() => () => setState({ openingPage: false }), []);
   // The page arriving takes the outline's place by a short fade, the outline lifting off the page underneath; with
   // reduced motion, or when the wait ended any other way (a card, a problem), at once.
