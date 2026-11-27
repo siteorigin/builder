@@ -466,7 +466,7 @@ export async function loadPackDir(dir: string, root: PackRoot, reviewed: Readonl
 
 /**
  * A bundled folder's packs in the order the app ships them (BUNDLED_PACK_IDS), not by name: the first that is not a
- * development fixture is the default theme, and "editorial" would otherwise come before "foundation". Folders the
+ * development fixture is the default theme, and a pack whose name sorts earlier would otherwise take it from Foundation. Folders the
  * list does not name follow, by name.
  */
 function bundledOrder(names: string[]): string[] {

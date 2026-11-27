@@ -325,7 +325,7 @@ describe('theme switching (P06, I03)', () => {
     expect(css).toContain('foundation-alt-hero-split');
   });
 
-  it('moves a Foundation site to Editorial and back with its content, links, images, styles and forks intact (#390)', () => {
+  it('moves a Foundation site to another theme and back with its content, links, images, styles and forks intact (#390)', () => {
     let s = fresh();
     const p = owner(s);
     const about = s.site.pageOrder.find((id) => id !== s.site.homePageId)!;
@@ -354,31 +354,31 @@ describe('theme switching (P06, I03)', () => {
     const builtId = built.results[0].definitionId as string;
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
 
-    const editorial = applyOperations(s, [{ type: 'theme.apply', themeId: 'editorial' }]).state;
-    expect(editorial.site.themeId).toBe('editorial');
-    expect(editorial.themeLock.theme).toMatchObject({ id: 'editorial' });
-    // Every placement of a theme section now uses Editorial's, with what the author set unchanged.
-    for (const page of Object.values(editorial.pages))
+    const switched = applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state;
+    expect(switched.site.themeId).toBe('foundation-alt');
+    expect(switched.themeLock.theme).toMatchObject({ id: 'foundation-alt' });
+    // Every placement of a theme section now uses The other theme's, with what the author set unchanged.
+    for (const page of Object.values(switched.pages))
       for (const n of Object.values(page.nodes)) {
         if (n.kind !== 'instance') continue;
-        const def = editorial.components[n.definitionId];
-        if (def.owner === 'theme') expect(n.definitionId, `${page.title} ${def.componentId}`).toBe(`editorial.${def.componentId}`);
+        const def = switched.components[n.definitionId];
+        if (def.owner === 'theme') expect(n.definitionId, `${page.title} ${def.componentId}`).toBe(`foundation-alt.${def.componentId}`);
         const was = s.pages[page.id].nodes[n.id] as InstanceNode;
         expect({ props: n.props, overrides: n.overrides, itemOverrides: n.itemOverrides, variants: n.variants }).toEqual({ props: was.props, overrides: was.overrides, itemOverrides: was.itemOverrides, variants: was.variants });
       }
-    expect(editorial.site.shell).toEqual({ header: expect.anything(), footer: expect.anything() });
-    for (const part of ['header', 'footer'] as const) expect(Object.values(editorial.site.shell[part].nodes).map((n) => (n.kind === 'instance' ? n.definitionId : n.kind))).toEqual([`editorial.shell.${part}`]);
-    expect(editorial.components[forkId]).toEqual(s.components[forkId]);
-    expect(editorial.components[builtId]).toEqual(s.components[builtId]);
-    expect(editorial.assets).toEqual(s.assets);
-    expect(editorial.tokens).toEqual(s.tokens);
-    expect(validateState(editorial).filter((d) => d.severity === 'error')).toEqual([]);
-    // Editorial's own layout reaches the site: its split hero is asymmetric and its stylesheet is the theme's.
-    const files = generateProject(editorial);
-    expect(files.get('src/lib/siteorigin/styles/components.css')).toMatch(/\.so-editorial-hero-split__grid \{[^}]*grid-template-columns: minmax\(0, 5fr\) minmax\(0, 6fr\);/);
-    expect(files.get('src/lib/siteorigin/styles/theme.css')).toContain('Editorial theme base styles');
+    expect(switched.site.shell).toEqual({ header: expect.anything(), footer: expect.anything() });
+    for (const part of ['header', 'footer'] as const) expect(Object.values(switched.site.shell[part].nodes).map((n) => (n.kind === 'instance' ? n.definitionId : n.kind))).toEqual([`foundation-alt.shell.${part}`]);
+    expect(switched.components[forkId]).toEqual(s.components[forkId]);
+    expect(switched.components[builtId]).toEqual(s.components[builtId]);
+    expect(switched.assets).toEqual(s.assets);
+    expect(switched.tokens).toEqual(s.tokens);
+    expect(validateState(switched).filter((d) => d.severity === 'error')).toEqual([]);
+    // Its own layout reaches the site: its split hero is stacked and centred, and its stylesheet is the theme's.
+    const files = generateProject(switched);
+    expect(files.get('src/lib/siteorigin/styles/components.css')).toContain('.so-foundation-alt-hero-split__grid');
+    expect(files.get('src/lib/siteorigin/styles/components.css')).not.toContain('.so-foundation-hero-split__grid');
 
-    const back = applyOperations(editorial, [{ type: 'theme.apply', themeId: 'foundation' }]).state;
+    const back = applyOperations(switched, [{ type: 'theme.apply', themeId: 'foundation' }]).state;
     // Nothing was lost or changed on the way: the project is the one it was before the two switches.
     expect(back).toEqual(s);
   });

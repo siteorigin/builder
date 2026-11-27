@@ -180,7 +180,7 @@ describe('entry fields', () => {
     expect(pageOf(files, 'winter-workshop')).toContain('{"Next: Spring open studio"}');
   });
 
-  it.each(['foundation', 'editorial', 'signal'])('names the links to the posts beside one, as two links of one kind, in a named nav (%s)', (theme) => {
+  it.each(['foundation', 'foundation-alt'])('names the links to the posts beside one, as two links of one kind, in a named nav (%s)', (theme) => {
     const s = run(blog(theme), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false });
     expect(s.site.themeId).toBe(theme);
     const c = s.collections.posts;

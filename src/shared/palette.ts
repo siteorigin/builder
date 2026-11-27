@@ -11,7 +11,7 @@
  *    text at the other, dark sections black, their text white). On those ends only the brand itself can fail,
  *    as text on the grounds, and for any colour one of white and black gives it at least 4.58:1, so the brand is
  *    kept exactly, on light grounds when it reads there and on dark ones when only those work.
- * 2. When neither works (a mid-tone brand under Signal's tinted eyebrow pill), the brand's lightness moves the
+ * 2. When neither works (a mid-tone brand under a tinted eyebrow pill), the brand's lightness moves the
  *    least it must, keeping its hue, and the palette says so.
  * 3. The colours then move from those ends towards the mood's targets, a group at a time; a target that would spoil
  *    a pair is approached only as far as every pair still passes.

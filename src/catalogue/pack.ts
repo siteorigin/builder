@@ -120,7 +120,7 @@ export interface AuthoredPack extends PackMeta {
  * IDs of the packs that ship with the app, which an installed pack can never take, even when a release is missing.
  * Listed in the order the app loads them: the first that is not a development fixture is the default theme.
  */
-export const BUNDLED_PACK_IDS = ['foundation', 'editorial', 'signal', 'foundation-alt'];
+export const BUNDLED_PACK_IDS = ['foundation', 'foundation-alt'];
 
 /** The release format this version of the app reads. */
 export const PACK_FORMAT = 1;

@@ -20,6 +20,7 @@ import type { EditOperation } from '@shared/ops';
 import { compactPropsSchema, hasOpenSchema, propsJsonSchema } from '@agent/propschema';
 import { propSchemaSummary } from '@agent/context';
 import { P } from '@catalogue/dsl';
+import { registerSecondTheme } from './second-theme';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { envelopeInstructions } from '@agent/constrained';
 import { selectionTools } from '@agent/selection';
@@ -74,6 +75,9 @@ function inSection(s: ProjectState, node: GraphNode) {
   home.nodes[node.id] = node;
   home.rootIds.push(section.id);
 }
+
+// Only Foundation ships, so the brand tool's theme switch is exercised against a second, offered theme.
+registerSecondTheme();
 
 async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, starter: 'business' | 'blank' = 'business', prepare?: (s: ProjectState) => void, deps: Partial<ConstructorParameters<typeof Orchestrator>[0]> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'so-tools-'));
@@ -749,22 +753,22 @@ describe('update_site_brand', () => {
 
   it("switches a small model's site to another theme with a new brand color, in one undoable step (#391)", async () => {
     const small = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'native' as const };
-    // JetBrains Mono comes with Signal only: the rest of the call is worked out against the theme it switches to.
-    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'signal', brandColor: '#0f766e', headingFont: 'JetBrains Mono' })], () => finish()], small);
+    // Test Mono comes with the second theme only: the rest of the call is worked out against the theme it switches to.
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'modern', brandColor: '#0f766e', headingFont: 'Test Mono' })], () => finish()], small);
     const before = structuredClone(session.state);
     const { result } = await run('Make the site look like a modern software product, in teal');
     // A small site run ends with its one macro call, at the context limit: kept, and partial.
     expect(result?.status).toBe('partial');
     const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, { enum?: string[]; description?: string }> };
     // The shipped themes it can switch to, each described so the model can choose.
-    expect(schema.properties.theme.enum).toEqual(['editorial', 'signal']);
-    expect(schema.properties.theme.description).toContain('signal: Geometric and crisp');
+    expect(schema.properties.theme.enum).toEqual(['modern']);
+    expect(schema.properties.theme.description).toContain('modern: Geometric and crisp');
     const s = session.state;
-    expect(s.site.themeId).toBe('signal');
+    expect(s.site.themeId).toBe('modern');
     expect(s.tokens.overrides['color.brand']).toBe('#0f766e');
-    expect(String(s.tokens.overrides['font.display'])).toContain('JetBrains Mono Variable');
-    // The pages hold what they did; only their sections now come from Signal.
-    expect(JSON.parse(JSON.stringify(s.pages).replace(/"definitionId":"signal\./g, '"definitionId":"foundation.'))).toEqual(before.pages);
+    expect(String(s.tokens.overrides['font.display'])).toContain('Test Mono Variable');
+    // The pages hold what they did; only their sections now come from the second theme.
+    expect(JSON.parse(JSON.stringify(s.pages).replace(/"definitionId":"modern\./g, '"definitionId":"foundation.'))).toEqual(before.pages);
     expect(await compileProject(s)).toEqual([]);
     await session.undo();
     expect(session.state.site.themeId).toBe('foundation');
@@ -806,17 +810,17 @@ describe('update_site_brand', () => {
 
   it("makes the palette from the site's own brand when only a mood is sent, against the theme switched to in the same call", async () => {
     // The site's brand follows a color of its own, which the palette keeps following.
-    const { session, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'signal', paletteMood: 'warm' })], () => finish()], {}, 'business', (s) => {
+    const { session, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'modern', paletteMood: 'warm' })], () => finish()], {}, 'business', (s) => {
       s.tokens.custom.push({ id: 'color.custom-sea', label: 'Sea', group: 'color', value: '#0f766e' });
       s.tokens.overrides['color.brand'] = { token: 'color.custom-sea' };
     });
-    const switched = applyOperations(session.state, [{ type: 'theme.apply', themeId: 'signal' }]).state;
+    const switched = applyOperations(session.state, [{ type: 'theme.apply', themeId: 'modern' }]).state;
     expect(effectiveTokens(switched).find((t) => t.id === 'color.brand')?.value).toEqual({ token: 'color.custom-sea' });
     await run('Switch to the software look, with warm backgrounds');
     const s = session.state;
-    expect(s.site.themeId).toBe('signal');
+    expect(s.site.themeId).toBe('modern');
     expect(s.tokens.overrides['color.brand']).toEqual({ token: 'color.custom-sea' });
-    const expected = harmonizePalette({ brand: '#0f766e', mood: 'warm', tokens: effectiveTokens(switched), pairs: getTheme('signal').contrastPairs! });
+    const expected = harmonizePalette({ brand: '#0f766e', mood: 'warm', tokens: effectiveTokens(switched), pairs: getTheme('modern').contrastPairs! });
     for (const id of ['color.background', 'color.brand-strong', 'color.inverse', 'color.accent'] as const) expect(s.tokens.overrides[id], id).toBe(expected.values[id]);
     expect(unreadable(s)).toEqual([]);
   });
@@ -833,9 +837,9 @@ describe('update_site_brand', () => {
   });
 
   it('moves a brand no page can carry as text the least it must, and says which way', async () => {
-    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'signal', brandColor: '#747474', paletteMood: 'tinted' })], () => finish()]);
-    const switched = applyOperations(session.state, [{ type: 'theme.apply', themeId: 'signal' }]).state;
-    const expected = harmonizePalette({ brand: '#747474', mood: 'tinted', tokens: effectiveTokens(switched), pairs: getTheme('signal').contrastPairs! });
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'modern', brandColor: '#747474', paletteMood: 'tinted' })], () => finish()]);
+    const switched = applyOperations(session.state, [{ type: 'theme.apply', themeId: 'modern' }]).state;
+    const expected = harmonizePalette({ brand: '#747474', mood: 'tinted', tokens: effectiveTokens(switched), pairs: getTheme('modern').contrastPairs! });
     expect(expected.adjusted).toBe(true);
     await run('Grey brand please');
     const s = session.state;
@@ -858,7 +862,7 @@ describe('update_site_brand', () => {
   });
 
   it('refuses an accent no dark section can carry, with the theme switch and rename in the same call, changing nothing', async () => {
-    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'signal', siteName: 'Kept Out', brandColor: '#1e3a5f', accentColor: '#000000', paletteMood: 'neutral' })], () => finish()]);
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'modern', siteName: 'Kept Out', brandColor: '#1e3a5f', accentColor: '#000000', paletteMood: 'neutral' })], () => finish()]);
     const before = structuredClone(session.state);
     await run('Navy with a black accent');
     expect(lastResult(adapter.requests[1]).error.details.fields).toEqual([
@@ -890,15 +894,15 @@ describe('update_site_brand', () => {
   });
 
   it('names the dark pairs that newly fail when a theme switch in the same call brings pairs of its own', async () => {
-    // A dark palette that reads in Foundation: the grey palette, whose brand Signal's eyebrow pill cannot carry.
+    // A dark palette that reads in Foundation: the grey palette, whose brand the second theme's eyebrow pill cannot carry.
     const grey = harmonizePalette({ brand: '#777777', mood: 'neutral', tokens: getTheme('foundation').tokens, pairs: getTheme('foundation').contrastPairs! });
-    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'signal', brandColor: '#1e3a5f', paletteMood: 'neutral' })], () => finish()], {}, 'business', (s) => {
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'modern', brandColor: '#1e3a5f', paletteMood: 'neutral' })], () => finish()], {}, 'business', (s) => {
       Object.assign(s, applyOperations(s, [{ type: 'token.setColorScheme', mode: 'system' }]).state);
       s.tokens.darkOverrides = { ...grey.values };
     });
     expect(unreadable(session.state, 'dark')).toEqual([]);
     await run('Software look in navy');
-    expect(session.state.site.themeId).toBe('signal');
+    expect(session.state.site.themeId).toBe('modern');
     expect(unreadable(session.state)).toEqual([]);
     const failing = unreadable(session.state, 'dark');
     expect(failing).toEqual(['eyebrow-background', 'eyebrow-surface-alt']);
@@ -911,23 +915,23 @@ describe('update_site_brand', () => {
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'foundation-alt', siteName: 'Kept Out' })], () => finish()]);
     await run('Use the other theme');
     const r = lastResult(adapter.requests[1]);
-    expect(r.error.details.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: editorial, signal') })]);
+    expect(r.error.details.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: modern') })]);
     expect(session.state.site.themeId).toBe('foundation');
     expect(session.state.site.name).toBe('Test Studio');
   });
 
   it('applies nothing in the call when the switch itself is refused', async () => {
-    // On Signal, an eyebrow style the author edited keeps its JetBrains Mono, which Foundation does not ship.
-    const eyebrow = { family: "'JetBrains Mono Variable', ui-monospace, monospace", size: '0.8rem', lineHeight: '1.4', weight: 500, tracking: '0.08em', transform: 'uppercase' };
+    // On the second theme, an eyebrow style the author edited keeps its Test Mono, which Foundation does not ship.
+    const eyebrow = { family: "'Test Mono Variable', ui-monospace, monospace", size: '0.8rem', lineHeight: '1.4', weight: 500, tracking: '0.08em', transform: 'uppercase' };
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'foundation', siteName: 'Kept Out', brandColor: '#0b5cad' })], () => finish()], {}, 'business', (s) => {
-      Object.assign(s, applyOperations(s, [{ type: 'theme.apply', themeId: 'signal' }, { type: 'token.set', tokenId: 'text.eyebrow', value: eyebrow }]).state);
+      Object.assign(s, applyOperations(s, [{ type: 'theme.apply', themeId: 'modern' }, { type: 'token.set', tokenId: 'text.eyebrow', value: eyebrow }]).state);
     });
-    expect(session.state.site.themeId).toBe('signal');
+    expect(session.state.site.themeId).toBe('modern');
     const tokens = structuredClone(session.state.tokens);
     await run('Go back to the classic look and rename the site');
     const r = lastResult(adapter.requests[1]);
-    expect(r.error.details.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('JetBrains Mono: your site uses this font') })]);
-    expect(session.state.site.themeId).toBe('signal');
+    expect(r.error.details.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Test Mono: your site uses this font') })]);
+    expect(session.state.site.themeId).toBe('modern');
     expect(session.state.site.name).toBe('Test Studio');
     expect(session.state.tokens).toEqual(tokens);
   });

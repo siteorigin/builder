@@ -58,30 +58,29 @@ describe('generated Svelte compiles', () => {
     expect(compileAll(generateProject(createStarterState('blank', 'Blank', false), { instrument: true }))).toEqual([]);
   });
 
-  // Every section and block of two themes, compiled: seconds of work, more under a busy machine.
-  it('compiles and validates an Editorial site with every section, and exports it unchanged after a trip to Foundation (#390)', { timeout: 30_000 }, () => {
-    const s = createStarterState('business', 'Magazine', false, 'editorial');
-    const entries = catalogueEntries('editorial');
+  // Every section and block of a second theme, compiled: seconds of work, more under a busy machine.
+  it('compiles and validates a site on another theme with every section, and exports it unchanged after a trip to Foundation (#390)', { timeout: 30_000 }, () => {
+    const s = createStarterState('business', 'Magazine', false, 'foundation-alt');
+    const entries = catalogueEntries('foundation-alt');
     expect(entries.length).toBeGreaterThan(25);
     for (const e of entries) if (!instanceOf(s, e.componentId)) addToHome(s, e.componentId);
     const placed = [...Object.values(s.pages), s.site.shell.header, s.site.shell.footer].flatMap((t) => Object.values(t.nodes)).filter((n): n is InstanceNode => n.kind === 'instance');
     expect(new Set(placed.map((n) => s.components[n.definitionId].componentId))).toEqual(new Set([...entries.map((e) => e.componentId), 'shell.header', 'shell.footer']));
-    for (const n of placed) expect(n.definitionId).toMatch(/^editorial\./);
+    for (const n of placed) expect(n.definitionId).toMatch(/^foundation-alt\./);
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
     const files = generateProject(s);
     expect(compileAll(files)).toEqual([]);
     expect(compileAll(generateProject(s, { instrument: true }))).toEqual([]);
-    expect(files.get(`${STYLES_DIR}/theme.css`)).toContain('Editorial theme base styles');
-    // Its display serif and grotesk travel with the site as files from the pack, so it needs no network.
+    expect(files.get(`${STYLES_DIR}/theme.css`)).toContain('Foundation theme base styles');
+    // Its fonts travel with the site as files from the pack, so it needs no network.
     const fonts = packFileCopies(s);
     expect(fonts.length).toBeGreaterThan(0);
-    for (const f of fonts) expect([f.pack, /^fonts\/(playfair-display|space-grotesk)-/.test(f.file)], f.file).toEqual(['editorial', true]);
-    expect(fonts.map((f) => f.file)).toEqual(expect.arrayContaining([expect.stringMatching(/^fonts\/playfair-display-/), expect.stringMatching(/^fonts\/space-grotesk-/)]));
+    for (const f of fonts) expect([f.pack, /^fonts\//.test(f.file)], f.file).toEqual(['foundation-alt', true]);
     // To Foundation and back: the same site, file for file.
     const onFoundation = applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation' }]).state;
     expect(compileAll(generateProject(onFoundation))).toEqual([]);
     expect(generateProject(onFoundation).get(`${STYLES_DIR}/theme.css`)).toContain('Foundation theme base styles');
-    expect(generateProject(applyOperations(onFoundation, [{ type: 'theme.apply', themeId: 'editorial' }]).state)).toEqual(files);
+    expect(generateProject(applyOperations(onFoundation, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state)).toEqual(files);
   });
 });
 

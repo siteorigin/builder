@@ -21,7 +21,11 @@ import { applyOperations } from '@engine/apply';
 import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import type { CanonicalItem, ToolDefinition } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
+import { registerSecondTheme } from './second-theme';
 import { closedPort, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
+
+// Only Foundation ships, so the brand tool's theme switch (and the room its grammar needs) is measured against a second theme.
+registerSecondTheme();
 
 let server: MockOpenAIServer;
 const dirs: string[] = [];
@@ -752,7 +756,7 @@ describe('what a constrained local run sends first (#364)', () => {
   /**
    * Switching the theme from the brand tool (#391) is another: a site run's update_site_brand takes a `theme` among the
    * other shipped themes in its grammar and signature, and its brief says it switches the whole design and keeps the
-   * content: 115 bytes measured on the site runs with Editorial and Signal to switch to. Made room for the same way.
+   * content: 115 bytes measured on the site runs with a second theme to switch to. Made room for the same way.
    */
   const THEME_BYTES = 130;
   /**
@@ -847,7 +851,7 @@ describe('what a constrained local run sends first (#364)', () => {
     expect(actions.includes('apply_source_patch'), label).toBe(source > 0);
     expect(JSON.stringify(body.response_format).includes('"node.removeKeepContent"'), label).toBe(keep > 0);
     // The compact grammar drops the theme field's description, so the brand brief is what says what a switch does.
-    expect(JSON.stringify(body.response_format).includes('"theme":{"enum":["editorial","signal"]}'), label).toBe(theme > 0);
+    expect(JSON.stringify(body.response_format).includes('"theme":{"enum":["modern"]}'), label).toBe(theme > 0);
     expect(JSON.stringify(body.messages).includes('Switch the theme (the whole design; content stays)'), label).toBe(theme > 0);
     expect(JSON.stringify(body.response_format).includes('"paletteMood":{"enum":["neutral","tinted","warm","high-contrast"]}'), label).toBe(palette > 0);
     expect(JSON.stringify(body.messages).includes('paletteMood re-colors the whole site from it, or from the current brand; an accentColor sent stays'), label).toBe(palette > 0);

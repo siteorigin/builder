@@ -748,10 +748,10 @@ describe('protecting what was already there', () => {
 describe('the theme a new project starts with (#390)', () => {
   it('records the theme chosen, and refuses one it cannot start from before writing anything', async () => {
     const { c, parent } = setup();
-    expect(await c.create({ ...opts(parent), themeId: 'editorial' })).toEqual({ ok: true });
+    expect(await c.create({ ...opts(parent), themeId: 'foundation' })).toEqual({ ok: true });
     const site = JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'site.json'), 'utf8'));
-    expect(site.themeId).toBe('editorial');
-    expect(JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'theme-lock.json'), 'utf8')).theme).toEqual({ id: 'editorial', version: '0.1.0' });
+    expect(site.themeId).toBe('foundation');
+    expect(JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'theme-lock.json'), 'utf8')).theme).toEqual({ id: 'foundation', version: '0.1.0' });
 
     const other = realpathSync(mkdtempSync(join(tmpdir(), 'so-create-theme-')));
     dirs.push(other);

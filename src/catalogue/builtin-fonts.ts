@@ -21,9 +21,7 @@ export const BUILTIN_FONTS: PackFontSource[] = [
   { family: 'DM Sans Variable', name: 'DM Sans', category: 'sans-serif', stack: "'DM Sans Variable', 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif", ...fontsource('dm-sans', { italic: true }) },
   { family: 'Space Grotesk Variable', name: 'Space Grotesk', category: 'sans-serif', stack: "'Space Grotesk Variable', 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif", ...fontsource('space-grotesk', { italic: false }) },
   { family: 'Playfair Display Variable', name: 'Playfair Display', category: 'serif', stack: "'Playfair Display Variable', 'Playfair Display', Georgia, 'Times New Roman', serif", ...fontsource('playfair-display', { italic: true }) },
-  { family: 'Lora Variable', name: 'Lora', category: 'serif', stack: "'Lora Variable', 'Lora', Georgia, 'Times New Roman', serif", ...fontsource('lora', { italic: true }) },
-  { family: 'Sora Variable', name: 'Sora', category: 'sans-serif', stack: "'Sora Variable', 'Sora', system-ui, -apple-system, 'Segoe UI', sans-serif", ...fontsource('sora', { italic: false }) },
-  { family: 'JetBrains Mono Variable', name: 'JetBrains Mono', category: 'monospace', stack: "'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace", ...fontsource('jetbrains-mono', { italic: true, subsets: ['latin', 'latin-ext'] }) }
+  { family: 'Lora Variable', name: 'Lora', category: 'serif', stack: "'Lora Variable', 'Lora', Georgia, 'Times New Roman', serif", ...fontsource('lora', { italic: true }) }
 ];
 
 /** One of these fonts, by its name. */

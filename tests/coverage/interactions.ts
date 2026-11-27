@@ -151,7 +151,7 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Make a new site, choosing its theme and starter content',
     start: 'Welcome in a fresh profile, or a project already open',
     routes: ['welcome:New project', 'dialog:New project › Theme', 'dialog:New project › Starter', 'dialog:New project › Create project', 'dialog:New project › Escape', 'menu:File > New Project…', 'command:newproject', 'item:Toolbar:New project…'],
-    outcome: 'The project is written to the folder the chooser gave and opens in the editor; Editorial is offered with its own starter thumbnails and sets headings from the project’s own font files; a Blank site’s Home starts empty with a note only the editor shows; over an open project the focused field is saved first, and Escape makes nothing and leaves the project as it was',
+    outcome: 'The project is written to the folder the chooser gave and opens in the editor; a Blank site’s Home starts empty with a note only the editor shows; over an open project the focused field is saved first, and Escape makes nothing and leaves the project as it was',
     scenario: 'welcome · none',
     proof: [
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'Welcome: a dialog opens from its button, keeps the focus, and Escape closes it with nothing made' },
@@ -160,7 +160,6 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/mcp.mjs', kind: 'driver', step: 'open New project, fill its name and read it back' },
       { test: 'tests/e2e/smoke.mjs', kind: 'e2e', step: 'create a project' },
       { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Welcome: Export and Close Project are unavailable, New Project opens its dialog' },
-      { test: 'tests/e2e/editorial.mjs', kind: 'e2e', step: 'New project offers Editorial' },
       { test: 'tests/e2e/starter-content.mjs', kind: 'e2e', step: 'Blank: Home starts empty, and only the editor says how to begin' },
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'name, starter and folder chosen through its controls' },
       { test: 'tests/e2e/lifecycle.mjs', kind: 'e2e', step: 'File > New Project opens over the project, saving the focused field, and Escape leaves the project as it was' },
@@ -1067,13 +1066,9 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Switch the site to another theme, including one I installed, and back',
     start: 'Business site on Foundation, Site styles open, with a pack in userData/packs beside a malformed one',
     routes: ['panel:Site styles › Theme'],
-    outcome: 'Every section and what it says is kept; Signal draws the pages with its own thumbnails and passes the layout inspection; an installed pack loads while a malformed one is listed as refused with its reason, and switching copies its fonts into the project for the preview; switching back leaves the project exactly as it was',
+    outcome: 'Every section and what it says is kept; an installed pack loads while a malformed one is listed as refused with its reason, and switching copies its fonts into the project for the preview; switching back leaves the project exactly as it was',
     scenario: 'Business starter · none',
     proof: [
-      { test: 'tests/e2e/signal-theme.mjs', kind: 'e2e', step: 'Site styles switches the project to Signal and shows its built thumbnail' },
-      { test: 'tests/e2e/signal-theme.mjs', kind: 'e2e', step: 'switching back to Foundation leaves the project as it was' },
-      { test: 'tests/e2e/editorial.mjs', kind: 'e2e', step: 'Site styles switches to Foundation and back, keeping every section and what it says' },
-      { test: 'tests/unit/signal-pack.test.ts', kind: 'unit' },
       { test: 'tests/unit/theme-packs.test.ts', kind: 'unit' },
       { test: 'tests/e2e/theme-packs.mjs', kind: 'e2e', step: 'Site styles offers the installed pack, lists the refused one, and switching copies the new font in' },
       { test: 'tests/e2e/theme-packs.mjs', kind: 'e2e', step: 'the preview loads the new font from the project' },
@@ -1111,7 +1106,6 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/insert-at.test.ts', kind: 'unit' },
       { test: 'tests/unit/insert-search.test.ts', kind: 'unit' },
       { test: 'tests/e2e/theme-packs.mjs', kind: 'e2e', step: 'Variants lists each option with its own thumbnail, and inserts the option shown' },
-      { test: 'tests/e2e/signal-theme.mjs', kind: 'e2e', step: 'Insert shows Signal’s thumbnails for its sections and variants' },
       { test: 'tests/unit/thumbs.test.ts', kind: 'unit' }
     ]
   },
