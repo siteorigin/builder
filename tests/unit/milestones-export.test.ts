@@ -199,15 +199,24 @@ describe('the milestone of an export (#1156)', () => {
     expect(listed(c)).toEqual(['Approved']);
   });
 
-  it('delivers nothing when the milestone can’t be saved', async () => {
+  it('still exports when the milestone can’t be saved, and says so', async () => {
     const c = await open(await project('Bookshop', 'Approved'));
-    vi.spyOn(ProjectSession.prototype, 'captureExported').mockRejectedValueOnce(new Error('ENOSPC: no space left on device'));
-    const dest = join(temp('out'), 'source');
-    const r = await c.exportSourceTo(dest);
-    expect(r.ok).toBe(false);
-    expect(r.message).toMatch(/couldn’t be saved in Saved versions as “Exported source project”, so nothing was exported\. ENOSPC/);
-    expect(existsSync(dest)).toBe(false);
+    vi.spyOn(ProjectSession.prototype, 'captureExported').mockRejectedValue(new Error('ENOSPC: no space left on device'));
+    for (const r of [await c.exportSourceTo(join(temp('out'), 'source')), await exported(c)]) {
+      expect(r.ok).toBe(true);
+      expect(r.warnings.join(' ')).toMatch(/couldn’t be saved in Saved versions as “Exported (source project|website)”: ENOSPC/);
+    }
     expect(listed(c)).toEqual(['Approved']);
+  });
+
+  it('exports a project whose manifest is laid out other than the app writes it', async () => {
+    git.enabled = true;
+    const dir = await project('Bookshop', 'Approved');
+    const manifest = join(dir, 'siteorigin.project.json');
+    writeFileSync(manifest, JSON.stringify(JSON.parse(readFileSync(manifest, 'utf8'))) + '\n');
+    const c = await open(dir);
+    expect((await c.exportSourceTo(join(temp('out'), 'source'))).ok).toBe(true);
+    expect(listed(c)).toEqual(['Exported source project', 'Approved']);
   });
 
   it('still exports when the list of versions can’t be used, and says so', async () => {
