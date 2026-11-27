@@ -23,27 +23,23 @@ let win = null;
 let browser = null;
 let second = null;
 let serving = true;
+let secondServer = null;
 
 const share = () => win.locator('.toolbar .share-btn');
 const popover = () => win.locator('.share-popover');
 const hostState = () => win.evaluate(() => window.builder.live.state());
 const roster = async () => (await hostState()).participants ?? [];
-const refused = (status) => status === 401 || status === 403;
 
 /** The viewer's preview frame on `previewOrigin`, once it shows a page with a heading. */
-async function previewFrame(tab, previewOrigin) {
-  for (let i = 0; i < 400; i++) {
+async function previewFrame(tab, previewOrigin, ms = 15000) {
+  const end = Date.now() + ms;
+  for (;;) {
     const frame = tab.frames().find((f) => f.url().startsWith(previewOrigin));
-    if (frame) {
-      const ready = await frame.waitForSelector('h1', { timeout: 2000 }).then(
-        () => true,
-        () => false
-      );
-      if (ready) return frame;
-    }
+    const left = end - Date.now();
+    if (frame && left > 0 && (await frame.waitForSelector('h1', { timeout: Math.min(left, 2000) }).then(() => true, () => false))) return frame;
+    if (Date.now() > end) throw new Error(`No preview frame on ${previewOrigin} within ${ms} ms`);
     await wait(25);
   }
-  throw new Error(`No preview frame on ${previewOrigin}`);
 }
 
 /** The first heading the viewer's frame shows, or null while the frame is between pages. */
@@ -70,7 +66,7 @@ async function askToJoin(tab, name) {
   await tab.waitForSelector('[data-phase="pending"]');
 }
 
-/** What a script on `fromOrigin`'s page gets when it asks for `url` with the browser's cookies. */
+/** What a script on `frame`'s page gets when it asks for `url` with the browser's cookies. */
 const readAcross = (frame, url) =>
   frame.evaluate(async (target) => {
     try {
@@ -80,6 +76,15 @@ const readAcross = (frame, url) =>
       return { error: String(e) };
     }
   }, url);
+
+/**
+ * The relay's answer to a script on `from`'s page asking for `to`'s preview with `cookie`, sent as Chromium sends a
+ * same-site fetch: the destination's own cookie goes with it, so only the relay itself can turn it away.
+ */
+const fetchedAcross = async (from, to, cookie) => {
+  const response = await relay.http(`${to}/`, { headers: { cookie, origin: from, 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty' } });
+  return { status: response.status, body: await response.text() };
+};
 
 try {
   // Started here, so the relay and the app are let go whatever fails, even while they start.
@@ -94,11 +99,11 @@ try {
   const launched = await launch(WORK, { SITEORIGIN_LIVE_RELAY_URL: origin });
   ({ app, win } = launched);
   const { errors } = launched;
-  // The host connects from the app's main process, through Node's resolver. Where the system does not answer names
-  // under `localhost` (Windows; see resolveLocalhostNames in the relay harness), they are given loopback there too.
-  await app.evaluate(async () => {
+  // The host connects from the app's main process, through Node's resolver, which may not answer names under
+  // `localhost` (Windows; see resolveLocalhostNames in the relay harness) or may answer only ::1 while the simulator
+  // listens on 127.0.0.1. There they are given the simulator's address, whatever the system says.
+  await app.evaluate(() => {
     const dns = process.getBuiltinModule('node:dns');
-    if (await dns.promises.lookup('relay.localhost').then(() => true, () => false)) return;
     const local = (name) => /(^|\.)localhost\.?$/i.test(name);
     const original = dns.lookup;
     dns.lookup = (hostname, options, callback) => {
@@ -116,8 +121,9 @@ try {
   const home = await win.evaluate(async () => {
     const s = await window.builder.project.snapshot();
     const page = s.state.pages[s.state.site.homePageId];
-    return { pageId: page.id, heroId: page.rootIds[0] };
+    return { pageId: page.id, heroId: page.rootIds[0], heading: page.nodes[page.rootIds[0]].props.heading };
   });
+  assert.ok(home.heading, 'the starter’s Home hero has a heading');
 
   step('the host starts a session on relay.localhost');
   await share().click();
@@ -141,11 +147,17 @@ try {
   tab.on('pageerror', (e) => pageErrors.push(String(e)));
   await tab.goto(invite);
   assert.equal(await tab.textContent('h1'), 'Join the live session');
-  const early = await context.request.get(`${previewA}/`, { failOnStatusCode: false });
-  assert.ok(refused(early.status()), `the preview turns away a browser not let in, got ${early.status()}`);
-  assert.doesNotMatch(await early.text(), /Harbour Lane/, 'and shows nothing of the site');
-  const opened = await (await context.newPage()).goto(`${previewA}/`);
-  assert.ok(refused(opened.status()), `opening the preview as a page is turned away too, got ${opened.status()}`);
+  // Opened as a page in the browser...
+  const outside = await context.newPage();
+  const opened = await outside.goto(`${previewA}/`);
+  assert.equal(opened.status(), 401, 'the preview turns away a browser not let in');
+  assert.doesNotMatch(await opened.text(), new RegExp(home.heading), 'and shows nothing of the site');
+  await outside.close();
+  // ...and asked for as the viewer's frame asks, with no cookie yet.
+  const framed = await relay.http(`${previewA}/`, { headers: { 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe' } });
+  assert.equal(framed.status, 401, 'a frame asking before admission is turned away');
+  assert.doesNotMatch(await framed.text(), new RegExp(home.heading));
+  assert.deepEqual(await context.cookies(previewA), [], 'no preview cookie before admission');
 
   step('the browser asks to join under a name, and the host admits it as a viewer');
   await askToJoin(tab, 'Ann Lee');
@@ -162,12 +174,16 @@ try {
   const ann = (await roster()).find((p) => p.displayName === 'Ann Lee');
   assert.equal(ann?.status, 'admitted');
   assert.equal(ann.role, 'viewer');
-  const shownHeading = await frame.textContent('h1');
-  assert.ok(shownHeading?.trim(), 'the live site loads with its heading');
-  // The preview's cookie is the preview origin's alone.
+  assert.equal((await frame.textContent('h1'))?.trim(), home.heading, 'the live site loads with the host’s Home');
+  // The site runs sandboxed: it may not navigate the viewer away.
+  const sandbox = await tab.getAttribute('iframe', 'sandbox');
+  assert.ok(sandbox !== null, 'the preview frame is sandboxed');
+  assert.doesNotMatch(sandbox, /allow-top-navigation/);
+  // The preview's cookie is the preview origin's alone, out of the page's reach.
   const cookiesA = await context.cookies(previewA);
   assert.equal(cookiesA.length, 1);
   assert.equal(cookiesA[0].name, 'so_preview');
+  assert.equal(cookiesA[0].httpOnly, true);
   assert.equal(cookiesA[0].domain, new URL(previewA).hostname, 'the cookie is held by the room’s preview host alone');
   assert.deepEqual(await context.cookies(origin), [], 'the viewer’s own origin holds nothing');
   await tab.screenshot({ path: join(SHOTS, 'live-viewer-admitted.png') });
@@ -177,13 +193,22 @@ try {
   tab.on('framenavigated', (f) => {
     if (f === tab.mainFrame()) viewerLoads++;
   });
-  await tab.evaluate(() => (window.__sameViewer = true));
+  // The bridge in the frame says when it reloads the page in place; the viewer's fallback would navigate it instead.
+  await tab.evaluate((from) => {
+    window.__sameViewer = true;
+    window.__bridgeReloads = 0;
+    addEventListener('message', (e) => {
+      if (e.origin === from && e.data?.type === 'siteorigin-live:reloading') window.__bridgeReloads++;
+    });
+  }, previewA);
   const heading = 'Rooms that welcome you in';
+  assert.notEqual(home.heading, heading);
   const edited = await win.evaluate(([owner, nodeId, value]) => window.builder.project.apply({ operations: [{ type: 'instance.setProp', owner, nodeId, prop: 'heading', value }] }, { label: 'Hero heading' }), [{ kind: 'page', id: home.pageId }, home.heroId, heading]);
   assert.equal(edited.ok, true, edited.error?.message);
   await poll(async () => (await frameHeading(tab, previewA)) === heading, 'the edited heading in the viewer’s frame', 30000);
   assert.equal(viewerLoads, 0, 'the viewer itself was not reloaded');
   assert.equal(await tab.evaluate(() => window.__sameViewer), true, 'the same viewer page is still showing');
+  assert.ok((await tab.evaluate(() => window.__bridgeReloads)) >= 1, 'the frame was reloaded in place by its bridge');
   assert.equal(await tab.locator('#connection').getAttribute('data-state'), 'live');
   frame = await previewFrame(tab, previewA);
 
@@ -192,25 +217,33 @@ try {
   await tab.click('#point');
   await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'attached' });
   await frame.click('h1');
-  await win.locator(`.ov-peer.spotlight[data-peer="${ann.guestId}"]`).waitFor({ state: 'attached' });
-  await win.locator('.ov-peer-tag.spotlight', { hasText: /^Ann Lee$/ }).waitFor({ state: 'attached' });
+  await win.locator(`.ov-peer.spotlight[data-peer="${ann.guestId}"]`).waitFor({ state: 'visible' });
+  await win.locator(`.ov-peer-tag.spotlight[data-peer="${ann.guestId}"]`, { hasText: /^Ann Lee$/ }).waitFor({ state: 'visible' });
   await win.screenshot({ path: join(SHOTS, 'live-viewer-spotlight.png') });
 
-  step('a note the viewer pins shows to the host');
+  step('a note the viewer pins shows to the host, on the page the viewer is on');
+  // The viewer goes to About on their own; the host stays on Home.
+  await frame.click('a[href="/about/"]');
+  frame = await previewFrame(tab, previewA);
+  await poll(async () => new URL(frame.url()).pathname === '/about/', 'the viewer on About');
+  let aboutHeading = null;
+  await poll(async () => (aboutHeading = await frameHeading(tab, previewA)) !== null && aboutHeading !== heading, 'About shows its own heading');
   await tab.click('#notes-button');
   await tab.waitForSelector('#notes:not([hidden])');
-  await poll(async () => !!(await tab.textContent('#note-where'))?.trim(), 'the page the note is pinned to');
+  await poll(async () => !!(await tab.textContent('#note-where'))?.includes('/about/'), 'the note pinned to About');
   const noteText = 'Could the hero photo be brighter?';
   await tab.fill('#note-text', noteText);
   await tab.click('#note-send');
   await poll(async () => (await tab.inputValue('#note-text')) === '', 'the note sent');
   await poll(async () => (await tab.locator('#note-list .note-text', { hasText: noteText }).count()) === 1, 'the note listed in the viewer');
+  // Counted in the toolbar before the host opens anything: the guest's note was pushed to the editor.
   const notesButton = win.locator('.toolbar .notes-btn');
   await eventually(async () => assert.equal(await notesButton.getAttribute('aria-label'), 'Notes: 1 open', 'the host’s toolbar counts the guest’s note'), 10000);
   await notesButton.click();
   const hostNote = win.locator('.notes-popover .notes-list .notes-row', { hasText: noteText });
   await hostNote.waitFor();
   assert.match(await hostNote.innerText(), /Ann Lee/, 'the host sees who left it');
+  assert.equal(await hostNote.locator('.notes-jump').getAttribute('title'), 'Go to About', 'pinned to the page the viewer was on');
   await win.screenshot({ path: join(SHOTS, 'live-viewer-note.png') });
   await win.keyboard.press('Escape');
 
@@ -219,13 +252,13 @@ try {
   second = await openRoom(relay, { projectName: 'Second Room' });
   const previewB = await roomPreviewOrigin(origin, second.roomId);
   const secondSite = '<!doctype html><html><head><title>Second room</title></head><body><h1>Second room only</h1></body></html>';
-  void (async () => {
+  secondServer = (async () => {
     while (serving) {
       const request = second.host.take('preview:request', () => true);
       if (request) answerPreview(second.host, request.requestId, { body: enc(secondSite) });
       await wait(10);
     }
-  })().catch(() => undefined);
+  })();
   const tabB = await context.newPage();
   await tabB.goto(`${origin}/s/${second.roomId}`);
   await askToJoin(tabB, 'Ann Lee');
@@ -242,31 +275,40 @@ try {
   const [cookieA] = await context.cookies(previewA);
   const [cookieB] = await context.cookies(previewB);
   assert.ok(cookieA && cookieB, 'the profile holds a preview cookie for each room');
+  assert.equal(cookieB.httpOnly, true);
   assert.notEqual(cookieA.domain, cookieB.domain);
   assert.notEqual(cookieA.value, cookieB.value);
+  const sendA = `${cookieA.name}=${cookieA.value}`;
+  const sendB = `${cookieB.name}=${cookieB.value}`;
 
-  // A script on one room's preview cannot read the other's, either way round.
+  // A script on one room's preview cannot read the other's, either way round...
   const aReadsB = await readAcross(frame, `${previewB}/`);
-  assert.ok(aReadsB.error || refused(aReadsB.status), `room A's page cannot read room B's preview: ${JSON.stringify(aReadsB).slice(0, 200)}`);
-  assert.doesNotMatch(aReadsB.body ?? '', /Second room only/);
+  assert.ok(aReadsB.error || aReadsB.status === 403, `room A's page cannot read room B's preview: ${JSON.stringify(aReadsB).slice(0, 200)}`);
   const bReadsA = await readAcross(frameB, `${previewA}/`);
-  assert.ok(bReadsA.error || refused(bReadsA.status), `room B's page cannot read room A's preview: ${JSON.stringify(bReadsA).slice(0, 200)}`);
-  assert.doesNotMatch(bReadsA.body ?? '', new RegExp(heading));
-  // Nor does either room's cookie open the other's preview, sent there by hand.
-  const swappedA = await relay.http(`${previewA}/`, { headers: { cookie: `${cookieB.name}=${cookieB.value}` } });
-  assert.ok(refused(swappedA.status), `room B's cookie does not open room A's preview, got ${swappedA.status}`);
+  assert.ok(bReadsA.error || bReadsA.status === 403, `room B's page cannot read room A's preview: ${JSON.stringify(bReadsA).slice(0, 200)}`);
+  // ...and that is the relay refusing, not only the browser: asked as Chromium asks, with the destination's own cookie.
+  const relayAtoB = await fetchedAcross(previewA, previewB, sendB);
+  assert.equal(relayAtoB.status, 403, 'the relay refuses room B’s preview to a fetch from room A');
+  assert.doesNotMatch(relayAtoB.body, /Second room only/);
+  const relayBtoA = await fetchedAcross(previewB, previewA, sendA);
+  assert.equal(relayBtoA.status, 403, 'the relay refuses room A’s preview to a fetch from room B');
+  assert.doesNotMatch(relayBtoA.body, new RegExp(heading));
+  // Nor does either room's cookie open the other's preview, sent there by hand: each is bound to its own room.
+  const swappedA = await relay.http(`${previewA}/`, { headers: { cookie: sendB } });
+  assert.equal(swappedA.status, 401, 'room B’s cookie does not open room A’s preview');
   assert.doesNotMatch(await swappedA.text(), new RegExp(heading));
-  const swappedB = await relay.http(`${previewB}/`, { headers: { cookie: `${cookieA.name}=${cookieA.value}` } });
-  assert.ok(refused(swappedB.status), `room A's cookie does not open room B's preview, got ${swappedB.status}`);
+  const swappedB = await relay.http(`${previewB}/`, { headers: { cookie: sendA } });
+  assert.equal(swappedB.status, 401, 'room A’s cookie does not open room B’s preview');
   assert.doesNotMatch(await swappedB.text(), /Second room only/);
   // Each room still shows its own site to its own tab.
-  assert.equal(await frameHeading(tab, previewA), heading);
+  assert.equal(await frameHeading(tab, previewA), aboutHeading);
   assert.equal(await frameHeading(tabB, previewB), 'Second room only');
 
   assert.deepEqual(pageErrors, [], 'no uncaught errors in the viewer');
   assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 } finally {
   serving = false;
+  await secondServer?.catch(() => undefined);
   second?.host.close();
   await browser?.close().catch(() => undefined);
   await app?.close().catch(() => undefined);
