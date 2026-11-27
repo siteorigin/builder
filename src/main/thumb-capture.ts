@@ -8,7 +8,7 @@
 import { BrowserWindow, session as electronSession } from 'electron';
 import { THUMB_SIZE, THUMB_VIEW, thumbCrop, type Box, type CaptureResult } from './runtime/component-thumbs';
 import { sameOrigin } from './player-frames';
-import { parseReads, thumbReads, THUMB_READS_WORLD } from './runtime/thumb-reads';
+import { parseReads, STILL_CSS, thumbReads, THUMB_READS_WORLD } from './runtime/thumb-reads';
 import { previewKeyOf } from '@shared/component-preview';
 
 /** How long a preview gets to load, mount, settle and be measured; one that takes longer is not pictured. */
@@ -46,8 +46,6 @@ const MEASURE = `(async () => {
   return p && typeof p === 'object' ? { key: String(p.key || ''), mounted: p.mounted === true, error: p.error ? String(p.error) : undefined } : null;
 })()`;
 
-/** Every animation and transition at its end at once, so nothing is photographed half way. */
-const STILL_CSS = 'html { scroll-behavior: auto !important; } *, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition: none !important; }';
 
 /** The custom properties the page in `w` can show (see ./runtime/thumb-reads), or null when it cannot tell. */
 async function reads(w: BrowserWindow, phase: 'before' | 'after'): Promise<string[] | null> {

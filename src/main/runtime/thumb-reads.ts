@@ -14,6 +14,9 @@
  * an escape) makes the answer unknown.
  */
 
+/** Every animation and transition at its end at once, so nothing is photographed half way (main/thumb-capture). */
+export const STILL_CSS = 'html { scroll-behavior: auto !important; } *, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition: none !important; }';
+
 /** The isolated world the script runs in: the page's own scripts can neither see nor change its functions. */
 export const THUMB_READS_WORLD = 1972;
 

@@ -21,7 +21,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { generateComponentPreview } from '@generator/preview';
 import { PREVIEW_COMPONENT_STYLES, PREVIEW_MODULE } from '@shared/component-preview';
-import { parseReads, thumbReads } from '../../src/main/runtime/thumb-reads';
+import { parseReads, STILL_CSS, thumbReads } from '../../src/main/runtime/thumb-reads';
 import { brandParts } from '../../src/main/runtime/component-thumbs';
 
 const GEN = '\0gen:';
@@ -118,12 +118,16 @@ afterAll(async () => {
 
 async function show(s: Pick<Shown, 'body' | 'tokens' | 'css'>, scheme: 'light' | 'dark' = 'light') {
   await page.emulateMedia({ colorScheme: scheme });
-  await page.setContent(`<!doctype html><html lang="en" dir="ltr" class="so-js"><head><style id="tokens"></style><style id="rest"></style></head><body>${s.body}</body></html>`);
-  await page.evaluate(([tokens, css]) => {
+  await page.setContent(`<!doctype html><html lang="en" dir="ltr" class="so-js"><head><style id="tokens"></style><style id="rest"></style><style id="still"></style></head><body>${s.body}</body></html>`);
+  await page.evaluate(([tokens, css, still]) => {
     const g = globalThis as unknown as { document: { getElementById(id: string): { textContent: string } } };
     g.document.getElementById('tokens').textContent = tokens;
     g.document.getElementById('rest').textContent = css;
-  }, [s.tokens, s.css] as const);
+    // As the hidden window shows it: every animation and transition at its end.
+    g.document.getElementById('still').textContent = still;
+  }, [s.tokens, s.css, STILL_CSS] as const);
+  // And, as it does, once the fonts have arrived (or failed) and the page has drawn.
+  await page.evaluate(`document.fonts.ready.then(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))`);
 }
 
 const readsNow = async (phase: 'before' | 'after' = 'before') => parseReads(await page.evaluate(thumbReads(phase)));
@@ -168,7 +172,12 @@ async function holds(s: Shown, scheme: 'light' | 'dark'): Promise<string[] | nul
   const after = (await page.evaluate(LOOKS)) as string[];
   expect(after.length, s.name).toBe(before.length);
   const differs = after.findIndex((v, i) => v !== before[i]);
-  expect(differs, `${s.name} (${scheme}): changing colours it does not read (${[...s.colours].filter((c) => !reads.includes(c)).join(', ')}) changed how it looks`).toBe(-1);
+  const what = differs < 0 ? '' : (() => {
+    const was = new Map(before[differs].split(';').map((d) => [d.slice(0, d.indexOf(':')), d]));
+    const now = after[differs].split(';').filter((d) => was.get(d.slice(0, d.indexOf(':'))) !== d);
+    return `element ${Math.floor(differs / 4)}${['', '::before', '::after', '::marker'][differs % 4]}: ${now.slice(0, 6).map((d) => `${was.get(d.slice(0, d.indexOf(':'))) ?? '(none)'} -> ${d}`).join(' | ')}`;
+  })();
+  expect(differs, `${s.name} (${scheme}): changing colours it does not read (${[...s.colours].filter((c) => !reads.includes(c)).join(', ')}) changed how it looks: ${what}`).toBe(-1);
   return reads;
 }
 
