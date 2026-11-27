@@ -132,9 +132,29 @@ export function redirectDiagnostic(p: Exclude<RedirectProblem, { kind: 'invalid'
  * Schema and reference validation: IDs, references, nesting and routes, links to sections that do not exist, each
  * page's heading outline, layout styles that quietly undo each other (engine/layout-guardrails), and how reusable each
  * project component is. Save gates pass `sectionLinks: false`: section links, headings, layout guardrails and
- * reusability never block a save, so they need not be worked out.
+ * reusability never block a save, so they need not be worked out. It is `coreValidation` and `adviceValidation`
+ * joined, which the session works out apart, each once per state, so a save gate and Project health share the core.
  */
 export function validateState(state: ProjectState, opts: { sectionLinks?: boolean } = {}): Diagnostic[] {
+  const core = coreValidation(state);
+  return opts.sectionLinks === false ? core.core : joinValidation(core, adviceValidation(state));
+}
+
+/** What a save gate checks, as `validateState(state, { sectionLinks: false })` reports it, and where the advice goes. */
+export interface CoreValidation {
+  core: Diagnostic[];
+  /** The places in `core` the advice goes: the section links', then the rest's (see joinValidation). */
+  at: readonly [number, number];
+}
+
+/** The advice only Project health shows: the links to missing sections, and the rest (see adviceValidation). */
+export type AdviceValidation = readonly [links: Diagnostic[], rest: Diagnostic[]];
+
+/**
+ * Everything `validateState` checks but the advice (adviceValidation): what a save gate checks. Each finding is in the
+ * order `validateState` reports it, and `at` records where the advice goes among them.
+ */
+export function coreValidation(state: ProjectState): CoreValidation {
   const out: Diagnostic[] = [];
   const routes = new Map<string, string>();
   if (!Object.hasOwn(state.pages, state.site.homePageId)) out.push({ severity: 'error', code: 'HOME_MISSING', message: 'The site has no Home page.' });
@@ -490,7 +510,52 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       // one of several cards losing its link, is not.
       site: `card:${p.nodeId}`
     });
-  for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
+  // The links to sections that do not exist go here (adviceValidation).
+  const linksAt = out.length;
+  // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
+  // ones), and the pictures of a project component, which can only show images.
+  for (const def of Object.values(state.components)) {
+    const owner = { kind: 'component', id: def.id };
+    for (const [k, schema] of Object.entries(def.properties)) {
+      if (schema.type === 'list' && !schema.feed)
+        for (const id of duplicateItemIds(schema.default))
+          out.push({ severity: 'error', code: 'LIST_ITEM_DUPLICATE', message: `${def.name}: ${duplicateItemMessage('its default content', schema, id)}`, owner, site: `default|${k}|${id}` });
+      if (def.owner === 'theme') continue;
+      for (const a of nonImageAssets(state, schema.type === 'image' || (schema.type === 'list' && !schema.feed) ? schema.default : undefined))
+        out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${def.name}: the default of “${schema.label}” shows “${a.name}”, which is a ${a.kind}, not a picture. Choose an image instead.`, owner, site: `default|${k}|${a.id}` });
+    }
+  }
+  // The site's icon and sharing images are pictures too.
+  const picture = (id: unknown, what: string, site: string, owner?: Diagnostic['owner']) => {
+    const a = typeof id === 'string' && Object.hasOwn(state.assets.assets, id) ? state.assets.assets[id] : undefined;
+    if (a && a.kind !== 'image') out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${what} is “${a.name}”, which is a ${a.kind}, not a picture. Choose an image instead.`, owner, site });
+  };
+  picture(state.site.favicon, 'The site icon', 'favicon');
+  picture(state.site.socialImage, 'The site’s sharing image', 'socialImage');
+  picture(state.site.identity?.logo, 'The site’s logo', 'logo');
+  for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
+  // The page outlines, form names, run-time fonts, layout guardrails and reusability go here (adviceValidation).
+  const adviceAt = out.length;
+  out.push(...structureDiagnostics(state));
+  // A required value left empty (a hand edit, or a swap, theme change or import that carried one over). A binding that
+  // could pass an empty value is reported with the other binding problems.
+  for (const p of requiredProblems(state, { bindings: false }))
+    out.push({ severity: 'error', code: 'PROP_REQUIRED_EMPTY', message: p.message, owner: p.owner, ...(p.nodeId ? { nodeId: p.nodeId } : {}), site: p.key });
+  for (const a of Object.values(state.assets.assets)) {
+    // A download is the size it is; only what pages load and show is worth making smaller.
+    if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
+  }
+  return { core: out, at: [linksAt, adviceAt] };
+}
+
+/**
+ * The advice only Project health shows, never a reason to refuse a save: links to sections that do not exist, then the
+ * pages' heading outlines, form names, fonts code may choose at run time, layout guardrails and how reusable each project
+ * component is. `joinValidation` puts each in its place among the core's findings.
+ */
+export function adviceValidation(state: ProjectState): AdviceValidation {
+  const links: Diagnostic[] = [];
+  for (const i of missingSectionLinks(state)) {
     const entry = i.owner.kind === 'entry' ? findEntry(state, i.owner.id) : undefined;
     const where =
       i.owner.kind === 'shell'
@@ -525,55 +590,28 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     // Which link it is, and where it goes: a link in text by its text, since another link added before it renumbers it. The
     // pages missing the section are left out, so fixing one of them never makes the link look newly broken.
     const which = i.inText ? [i.key.replace(/:\d+$/, ''), i.label] : [i.key];
-    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
+    links.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId || undefined, site: JSON.stringify([i.nodeId ?? null, ...which, i.pageId ?? null, i.fragment]) });
   }
-  // What a component gives placements that set nothing of their own: a list's items (a theme update can bring new
-  // ones), and the pictures of a project component, which can only show images.
+  const rest: Diagnostic[] = [...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state)];
+  for (const d of layoutGuardrailDiagnostics(state)) rest.push(d);
+  // Theme components are fixed theme data; only a project's own components are its author's to make reusable.
+  const tokens = effectiveTokens(state);
   for (const def of Object.values(state.components)) {
-    const owner = { kind: 'component', id: def.id };
-    for (const [k, schema] of Object.entries(def.properties)) {
-      if (schema.type === 'list' && !schema.feed)
-        for (const id of duplicateItemIds(schema.default))
-          out.push({ severity: 'error', code: 'LIST_ITEM_DUPLICATE', message: `${def.name}: ${duplicateItemMessage('its default content', schema, id)}`, owner, site: `default|${k}|${id}` });
-      if (def.owner === 'theme') continue;
-      for (const a of nonImageAssets(state, schema.type === 'image' || (schema.type === 'list' && !schema.feed) ? schema.default : undefined))
-        out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${def.name}: the default of “${schema.label}” shows “${a.name}”, which is a ${a.kind}, not a picture. Choose an image instead.`, owner, site: `default|${k}|${a.id}` });
+    if (def.kind !== 'managed' || def.owner !== 'project') continue;
+    // Advice on a definition edited by hand into a shape it cannot have is skipped, never a reason it cannot open.
+    try {
+      rest.push(...componentReusabilityDiagnostics(def, tokens));
+    } catch {
+      /* the structural checks above say what is wrong with it */
     }
   }
-  // The site's icon and sharing images are pictures too.
-  const picture = (id: unknown, what: string, site: string, owner?: Diagnostic['owner']) => {
-    const a = typeof id === 'string' && Object.hasOwn(state.assets.assets, id) ? state.assets.assets[id] : undefined;
-    if (a && a.kind !== 'image') out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${what} is “${a.name}”, which is a ${a.kind}, not a picture. Choose an image instead.`, owner, site });
-  };
-  picture(state.site.favicon, 'The site icon', 'favicon');
-  picture(state.site.socialImage, 'The site’s sharing image', 'socialImage');
-  picture(state.site.identity?.logo, 'The site’s logo', 'logo');
-  for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
-  if (opts.sectionLinks !== false) {
-    out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state));
-    for (const d of layoutGuardrailDiagnostics(state)) out.push(d);
-    // Theme components are fixed theme data; only a project's own components are its author's to make reusable.
-    const tokens = effectiveTokens(state);
-    for (const def of Object.values(state.components)) {
-      if (def.kind !== 'managed' || def.owner !== 'project') continue;
-      // Advice on a definition edited by hand into a shape it cannot have is skipped, never a reason it cannot open.
-      try {
-        out.push(...componentReusabilityDiagnostics(def, tokens));
-      } catch {
-        /* the structural checks above say what is wrong with it */
-      }
-    }
-  }
-  out.push(...structureDiagnostics(state));
-  // A required value left empty (a hand edit, or a swap, theme change or import that carried one over). A binding that
-  // could pass an empty value is reported with the other binding problems.
-  for (const p of requiredProblems(state, { bindings: false }))
-    out.push({ severity: 'error', code: 'PROP_REQUIRED_EMPTY', message: p.message, owner: p.owner, ...(p.nodeId ? { nodeId: p.nodeId } : {}), site: p.key });
-  for (const a of Object.values(state.assets.assets)) {
-    // A download is the size it is; only what pages load and show is worth making smaller.
-    if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
-  }
-  return out;
+  return [links, rest];
+}
+
+/** Every finding of `validateState`, in its order: the core's, with the advice in its two places among them. */
+export function joinValidation(core: CoreValidation, advice: AdviceValidation): Diagnostic[] {
+  const [links, rest] = core.at;
+  return [...core.core.slice(0, links), ...advice[0], ...core.core.slice(links, rest), ...advice[1], ...core.core.slice(rest)];
 }
 
 /**

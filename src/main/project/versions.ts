@@ -104,11 +104,20 @@ export function sameContents(a: Pick<SavedVersion, 'docs' | 'media' | 'filled'>,
  * the next collection removes.
  */
 export class VersionStore {
-  versions: SavedVersion[] = [];
+  /** The list, newest last. Always replaced whole (publish, load), never changed in place: what is worked out from it is kept by its identity. */
+  versions: readonly SavedVersion[] = [];
   /** Why the list can't be changed: it is unreadable, or from a newer app. Nothing is saved, deleted or collected. */
   problem: string | null = null;
   /** The size of every stored object, by hash. */
   private sizes = new Map<string, number>();
+  /** Counts the changes to `sizes`, so what is worked out from them is known to be current. */
+  private sized = 0;
+  /** The bytes of `usage`, for the list and sizes they were worked out from. */
+  private used: { versions: readonly SavedVersion[]; sized: number; total: number; exclusive: Map<SavedVersion, number> | null } | null = null;
+  /** Changes whenever an object's size does: with the list and its problem, all the sizes shown depend on. */
+  get sizesChanged(): number {
+    return this.sized;
+  }
   /** Objects whose bytes were checked against their hash (or written) since the store was loaded: reused as they are. */
   private verified = new Set<string>();
 
@@ -151,11 +160,15 @@ export class VersionStore {
       }
     }
     this.sizes.clear();
+    this.sized++;
     this.verified.clear();
     for (const name of await fs.readdir(this.objectDir).catch(() => [] as string[])) {
       if (!OBJECT_RE.test(name)) continue;
       const st = await fs.stat(join(this.objectDir, name)).catch(() => null);
-      if (st?.isFile()) this.sizes.set(name, st.size);
+      if (st?.isFile()) {
+        this.sizes.set(name, st.size);
+        this.sized++;
+      }
     }
   }
 
@@ -179,6 +192,7 @@ export class VersionStore {
     if (await this.has(h, buf.length)) return h;
     await atomicWrite(this.objectPath(h), buf);
     this.sizes.set(h, buf.length);
+    this.sized++;
     this.verified.add(h);
     return h;
   }
@@ -223,6 +237,7 @@ export class VersionStore {
     }
     await syncDir(this.objectDir);
     this.sizes.set(h, buf.length);
+    this.sized++;
     this.verified.add(h);
     return h;
   }
@@ -308,6 +323,7 @@ export class VersionStore {
           continue;
         }
         this.sizes.delete(name);
+        this.sized++;
         this.verified.delete(name);
       } else if (name.endsWith('.tmp')) {
         const st = await fs.stat(path).catch(() => null);
@@ -319,17 +335,43 @@ export class VersionStore {
 
   /** The bytes every version together holds, each object counted once. */
   totalBytes(): number {
-    const all = new Set(this.versions.flatMap((v) => [...objectsOf(v)]));
-    let n = 0;
-    for (const h of all) n += this.sizes.get(h) ?? 0;
-    return n;
+    return this.usage().total;
   }
 
   /** The bytes deleting `v` would free: the objects no other version holds. */
   exclusiveBytes(v: SavedVersion): number {
+    const kept = this.usage().exclusive?.get(v);
+    if (kept !== undefined) return kept;
     const others = new Set(this.versions.filter((x) => x.id !== v.id).flatMap((x) => [...objectsOf(x)]));
     let n = 0;
     for (const h of objectsOf(v)) if (!others.has(h)) n += this.sizes.get(h) ?? 0;
     return n;
+  }
+
+  /**
+   * What every version together holds and what each alone holds, in one pass over the versions (an object only one
+   * version holds is that version's alone), worked out again only once the list or an object's size changed. With two
+   * versions of one ID (an index never holds them) each version's own bytes are left to `exclusiveBytes`.
+   */
+  private usage() {
+    if (this.used?.versions === this.versions && this.used.sized === this.sized) return this.used;
+    const holders = new Map<string, number>();
+    for (const v of this.versions) for (const h of objectsOf(v)) holders.set(h, (holders.get(h) ?? 0) + 1);
+    let total = 0;
+    for (const h of holders.keys()) total += this.sizes.get(h) ?? 0;
+    // By the version itself, so one not in the list (or a copy of one) is worked out on its own.
+    let exclusive: Map<SavedVersion, number> | null = new Map();
+    const ids = new Set<string>();
+    for (const v of this.versions) {
+      if (ids.has(v.id)) {
+        exclusive = null;
+        break;
+      }
+      ids.add(v.id);
+      let n = 0;
+      for (const h of objectsOf(v)) if (holders.get(h) === 1) n += this.sizes.get(h) ?? 0;
+      exclusive.set(v, n);
+    }
+    return (this.used = { versions: this.versions, sized: this.sized, total, exclusive });
   }
 }

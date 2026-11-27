@@ -48,9 +48,9 @@ export function missingParts(m: Pick<MissingAssetFiles, 'original' | 'variants'>
  * One Project health entry per image with missing files, naming it. An image the site uses is a problem, one it does
  * not use a warning. The message never mentions the uses themselves, so it reads the same while they change.
  */
-export function missingFileDiagnostics(state: ProjectState, missing: MissingAssetFiles[]): Diagnostic[] {
+export function missingFileDiagnostics(state: ProjectState, missing: MissingAssetFiles[], usages: () => Record<string, number> = () => assetUsages(state)): Diagnostic[] {
   if (!missing.length) return [];
-  const used = assetUsages(state);
+  const used = usages();
   const out: Diagnostic[] = [];
   for (const m of missing) {
     const a = state.assets.assets[m.assetId];

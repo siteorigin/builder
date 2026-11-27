@@ -28,7 +28,7 @@ import { syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
-import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
+import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
@@ -410,6 +410,7 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
 
 /** A page's document path, capturing the page ID. */
 const PAGE_DOC = new RegExp(`^${DOC_DIR}/pages/([^/]+)\\.json$`);
+const SITE_DOC = `${DOC_DIR}/site.json`;
 
 /** How many recent copies a session keeps for Paste. */
 const CLIPBOARD_LIMIT = 5;
@@ -579,7 +580,7 @@ export class ProjectSession extends EventEmitter {
    */
   settleMs = 3000;
   /** Checks worked out from a state, kept for as long as it is the session's: the state is replaced, never changed. */
-  private derived = new WeakMap<ProjectState, { diagnostics?: Diagnostic[]; saving?: Diagnostic[]; usages?: Record<string, number>; updates?: ThemeUpdates }>();
+  private derived = new WeakMap<ProjectState, { core?: CoreValidation; diagnostics?: Diagnostic[]; saving?: Diagnostic[]; usages?: Record<string, number>; updates?: ThemeUpdates }>();
   conflicts: Conflict[] = [];
   /**
    * For each canonical document in conflict, the version SiteOrigin Builder holds (null = the document should not
@@ -2120,6 +2121,7 @@ export class ProjectSession extends EventEmitter {
           // The documents, their undo position and the revision change together, before the generated files are
           // written: a snapshot taken while those land (which can take a second on Windows) never shows the new
           // documents beside the History and revision of the step before, which would show one step too few to undo.
+          this.carryChecks(this.state, next, Object.keys(changed));
           this.state = next;
           this.docs = nextDocs;
           if (planned) this.history = planned.history;
@@ -3147,7 +3149,7 @@ export class ProjectSession extends EventEmitter {
   /** Document problems. File conflicts are reported separately (`conflicts`), with their actions, never twice. */
   diagnostics(): Diagnostic[] {
     try {
-      return this.memo(this.state, 'diagnostics', validateState);
+      return this.problemsOf(this.state);
     } catch (e) {
       // A project from a newer version may not follow this version's shapes; it is open read-only anyway.
       if (this.readOnly) return [];
@@ -3165,9 +3167,24 @@ export class ProjectSession extends EventEmitter {
     return this.memo(this.state, 'updates', themeUpdates);
   }
 
+  /** Every problem `validateState` finds in `state`, as Project health shows them, worked out once. */
+  private problemsOf(state: ProjectState): Diagnostic[] {
+    return this.memo(state, 'diagnostics', (st) => joinValidation(this.coreOf(st), adviceValidation(st)));
+  }
+
   /** Problems that stop a state from being saved. */
   private savingProblems(state: ProjectState): Diagnostic[] {
-    return this.memo(state, 'saving', (st) => validateState(st, { sectionLinks: false }).filter(blocksSaving));
+    return this.memo(state, 'saving', (st) => this.coreOf(st).core.filter(blocksSaving));
+  }
+
+  /**
+   * What a save gate checks of `state` (`validateState` without the advice), worked out once: the save gate and Project
+   * health share it, so the edit that makes a state checks it once and the snapshot adds only the advice. Always worked
+   * out inside the check that asks for it (`saving` or `diagnostics`), whose time it is.
+   */
+  private coreOf(state: ProjectState): CoreValidation {
+    const checks = this.checksOf(state);
+    return (checks.core ??= coreValidation(state));
   }
 
   /**
@@ -3190,6 +3207,18 @@ export class ProjectSession extends EventEmitter {
     const value = compute(state);
     timing();
     return (checks[key] = value);
+  }
+
+  /**
+   * What a committed state keeps of the checks of the state it replaced. Its theme updates, while there were none and
+   * the commit changed only pages, collection entries and the site document, naming the same theme: with none, theme
+   * updates read only the installed theme components, the site's theme and the packs, which load once while the app runs.
+   */
+  private carryChecks(from: ProjectState, to: ProjectState, changed: readonly string[]) {
+    const updates = this.derived.get(from)?.updates;
+    if (!updates || updates.available.length || updates.kept.length || from.site.themeId !== to.site.themeId) return;
+    if (!changed.every((path) => path === SITE_DOC || PAGE_DOC.test(path) || collectionPathOf(path)?.entryId !== undefined)) return;
+    this.checksOf(to).updates ??= updates;
   }
 
   private checksOf(state: ProjectState) {
@@ -3727,9 +3756,17 @@ export class ProjectSession extends EventEmitter {
   // Saved versions (issue 260)
   // -------------------------------------------------------------------------
 
-  /** The saved versions, newest first, with what each one alone takes on disk. */
+  /** What `versionsInfo` last said, and the list, problem and sizes it said it of. */
+  private versionsShown: { store: VersionStore; versions: readonly SavedVersion[]; problem: string | null; sizes: number; info: VersionsInfo } | null = null;
+
+  /**
+   * The saved versions, newest first, with what each one alone takes on disk. Every snapshot shows them, and an edit
+   * changes none of it: worked out again only once the list, its problem or a stored object's size changed.
+   */
   versionsInfo(): VersionsInfo {
     const store = this.versions;
+    const shown = this.versionsShown;
+    if (shown && shown.store === store && shown.versions === store.versions && shown.problem === store.problem && shown.sizes === store.sizesChanged) return shown.info;
     const timing = perf.span('session.versionsInfo', { versions: store.versions.length });
     const info: VersionsInfo = {
       list: [...store.versions].reverse().map((v) => ({
@@ -3745,6 +3782,7 @@ export class ProjectSession extends EventEmitter {
       ...(store.problem ? { problem: store.problem } : {})
     };
     timing();
+    this.versionsShown = { store, versions: store.versions, problem: store.problem, sizes: store.sizesChanged, info };
     return info;
   }
 
@@ -4226,7 +4264,7 @@ export class ProjectSession extends EventEmitter {
     const next = docsToState(docs, this.state);
     // History restores only its own documents, and another may have changed outside the app since (a page now on
     // a route this restores, an old address kept there): never save a project that could not be opened again.
-    const fatal = (s: ProjectState) => validateState(s, { sectionLinks: false }).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
+    const fatal = (s: ProjectState) => this.coreOf(s).core.filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     const already = new Set(fatal(this.state).map((d) => d.message));
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${broken.message}`, recoverable: false } };
@@ -4396,8 +4434,8 @@ export class ProjectSession extends EventEmitter {
     const next: ProjectState = { ...this.state, pages: { ...this.state.pages, [pageId]: { ...page, rootIds: put.tree.rootIds, nodes: put.tree.nodes } } };
     // What it brings back must still make sense with everything changed since (a component or image it uses may be
     // gone). Diagnostics are told apart by where they are, as two missing images on one page share a message.
-    const known = new Set(validateState(this.state, { sectionLinks: false }).filter(blocksSaving).map(diagnosticKey));
-    const introduced = validateState(next, { sectionLinks: false }).filter((x) => blocksSaving(x) && !known.has(diagnosticKey(x)));
+    const known = new Set(this.savingProblems(this.state).map(diagnosticKey));
+    const introduced = this.savingProblems(next).filter((x) => !known.has(diagnosticKey(x)));
     if (introduced.length) return refuse(introduced.map((x) => x.message).join(' '));
     let ev: SessionEvent;
     try {
@@ -4625,7 +4663,7 @@ export class ProjectSession extends EventEmitter {
     if (synced) return refuse(`Undoing it on its own ${synced}`);
     // Anything the project would newly fail, warnings aside: a broken link is as much a reason as a page left out of
     // the page order.
-    const broken = introducedDiagnostics(validateState(this.state), validateState(next), { byNode: true }).filter((d) => d.severity === 'error');
+    const broken = introducedDiagnostics(this.problemsOf(this.state), this.problemsOf(next), { byNode: true }).filter((d) => d.severity === 'error');
     if (broken.length) return problem(broken[0].message);
     // Links to a page that would be gone, counted rather than told apart by message, so one already broken nearby
     // never hides another.

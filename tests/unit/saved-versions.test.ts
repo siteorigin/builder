@@ -220,6 +220,42 @@ describe('saved versions', () => {
     expect(a.bytes + b.bytes).toBeLessThan(s.versionsInfo().bytes);
   });
 
+  it('works out what the versions take again only once the list or a stored object changed (#966)', async () => {
+    const { dir, s } = await make();
+    const a = picture(dir, 'photo', 1);
+    await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_photo', ...a.asset } }] }, { label: 'Import photo' }));
+    const first = await ok(s.saveVersion('First'));
+    await describe1(s, 'Changed', 'Change');
+    await ok(s.saveVersion('Second'));
+    await describe1(s, 'Changed again', 'Change');
+    await ok(s.saveVersion('Third'));
+    // Each version's own bytes and all of them together, worked out object by object from what is on disk.
+    const onDisk = () => {
+      const index = JSON.parse(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).versions as Array<{ docs: Record<string, string>; media: Record<string, string | null> }>;
+      const held = (v: (typeof index)[number]) => new Set([...Object.values(v.docs), ...Object.values(v.media).filter((h): h is string => !!h)]);
+      const size = (h: string) => readFileSync(join(dir, '.siteorigin/versions/objects', h)).length;
+      const sum = (hs: Iterable<string>) => [...hs].reduce((n, h) => n + size(h), 0);
+      const alone = index.map((v, i) => sum([...held(v)].filter((h) => !index.some((o, j) => j !== i && held(o).has(h)))));
+      return { list: alone.reverse(), bytes: sum(new Set(index.flatMap((v) => [...held(v)]))) };
+    };
+    const shown = s.versionsInfo();
+    expect({ list: shown.list.map((v) => v.bytes), bytes: shown.bytes }).toEqual(onDisk());
+    expect(shown.list.every((v) => v.bytes > 0)).toBe(true);
+    // An edit changes no version: every snapshot after it shows the same answer.
+    await describe1(s, 'Not a version', 'Edit');
+    expect(s.versionsInfo()).toBe(shown);
+    await ok(s.renameVersion(first.id!, 'Renamed'));
+    const renamed = s.versionsInfo();
+    expect(renamed).not.toBe(shown);
+    expect(renamed.list.find((v) => v.id === first.id)?.name).toBe('Renamed');
+    await ok(s.deleteVersion(first.id!));
+    const left = s.versionsInfo();
+    expect(left.list).toHaveLength(2);
+    expect({ list: left.list.map((v) => v.bytes), bytes: left.bytes }).toEqual(onDisk());
+    await ok(s.saveVersion('Fourth'));
+    expect({ list: s.versionsInfo().list.map((v) => v.bytes), bytes: s.versionsInfo().bytes }).toEqual(onDisk());
+  });
+
   it('deletes a version and only what no other version holds', async () => {
     const { dir, s } = await make();
     const a = picture(dir, 'photo', 1);
