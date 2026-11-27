@@ -359,7 +359,9 @@ function onFrame(frame) {
       if (!call || call.method !== frame.method) return;
       calls.delete(frame.requestId);
       clearTimeout(call.timer);
-      return call.resolve(frame.ok === true ? { ok: true, result: frame.result } : { ok: false, message: String(frame.error?.message ?? 'The host could not do that.') });
+      // The host's own UNAVAILABLE may come after the change was saved (the disk failed as it finished): it counts as an
+      // answer lost, so the guest looks before sending again.
+      return call.resolve(frame.ok === true ? { ok: true, result: frame.result } : { ok: false, message: String(frame.error?.message ?? 'The host could not do that.'), lost: frame.error?.code === 'UNAVAILABLE' });
     }
     case 'rpc:event':
       // The notes changed, or whether guests may leave them: read again, once they have been read at all.

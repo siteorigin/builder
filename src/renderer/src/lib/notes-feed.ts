@@ -6,6 +6,12 @@ import { api, getState, setState, useStore } from '../store';
  * them). Apart from it so the app's first screen loads without the editor's code.
  */
 
+/** Read the shown project's notes again now (the Notes popover opening), while they are followed. */
+export function refreshNotes(): void {
+  reload?.();
+}
+let reload: (() => void) | null = null;
+
 /**
  * Keep the shown project's notes read: whenever another project (or another opening of it) is shown, and whenever
  * its notes change. Returns the unsubscriber.
@@ -37,10 +43,13 @@ export function followNotes(): () => void {
   });
   const offStore = useStore.subscribe((s) => follow(s.snapshot?.workspaceKey ?? null));
   follow(getState().snapshot?.workspaceKey ?? null);
+  const again = () => opening && load(opening);
+  reload = again;
   return () => {
     offChanged();
     offStore();
     asked++;
+    if (reload === again) reload = null;
   };
 }
 

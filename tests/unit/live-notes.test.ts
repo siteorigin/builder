@@ -187,6 +187,16 @@ describe('keeping notes', () => {
     }
   });
 
+  it('reads a notes file put back after it was missing, rather than writing over it', async () => {
+    const file = join(tempDir(), 'notes.json');
+    const store = new NotesStore(file, owner);
+    expect(await store.list()).toEqual([]);
+    // A sync puts the file back after the store found none.
+    writeFileSync(file, JSON.stringify({ notes: [note('synced')] }));
+    expect(await store.add(note('mine'))).toMatchObject({ ok: true });
+    expect(JSON.parse(readFileSync(file, 'utf8')).notes.map((n: LiveNote) => n.id)).toEqual(['mine', 'synced']);
+  });
+
   it('keeps a list at the cap readable after a resolved note is opened again', async () => {
     const file = join(tempDir(), 'notes.json');
     const deep = Array.from({ length: 16 }, (_, i) => `${i}`.padEnd(128, 'x'));

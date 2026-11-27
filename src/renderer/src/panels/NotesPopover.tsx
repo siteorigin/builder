@@ -9,6 +9,7 @@ import { shownLive } from '../lib/live-host';
 import { hasRoom } from '../lib/live-session';
 import { isRemoteShell } from '../lib/remote-session';
 import { refLabel } from '../lib/model';
+import { refreshNotes } from '../lib/notes-feed';
 import { addNote, deleteNote, jumpToNote, noteAge, notePlaceLabel, notePlaceNow, noteRights, openNotes, resolveNote } from '../lib/notes';
 
 /**
@@ -24,7 +25,8 @@ export function NotesControl({ compact }: { compact?: boolean }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const id = useId();
   const count = notes ? openNotes(notes.notes).length : 0;
-  if (!notes || (!remote && !hosting && notes.notes.length === 0)) return null;
+  // In the remote shell it is always there, read or not yet: opening it asks for the host's notes again.
+  if (!remote && (!notes || (!hosting && notes.notes.length === 0))) return null;
   const label = count === 0 ? 'Notes: none open' : `Notes: ${count} open`;
   return (
     <>
@@ -37,7 +39,10 @@ export function NotesControl({ compact }: { compact?: boolean }) {
         aria-controls={open ? id : undefined}
         aria-label={label}
         title={label.replace(/^Notes: /, 'Notes, ')}
-        onClick={() => setState({ notesOpen: !open })}
+        onClick={() => {
+          if (!open) refreshNotes();
+          setState({ notesOpen: !open });
+        }}
       >
         <StickyNote aria-hidden="true" />
         {!compact && <span className="notes-text">Notes</span>}
@@ -68,7 +73,8 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
   useEffect(() => {
     openMenus.count++;
     const el = box.current;
-    const first = ['textarea:not(:disabled)', '.notes-jump', 'button:not(:disabled)'].map((q) => el?.querySelector<HTMLElement>(q)).find(Boolean) ?? el;
+    // A note's button in the open list only: one folded away under Resolved cannot take focus.
+    const first = ['textarea:not(:disabled)', '.notes-scroll > .notes-list .notes-jump', 'button:not(:disabled)'].map((q) => el?.querySelector<HTMLElement>(q)).find(Boolean) ?? el;
     first?.focus({ preventScroll: true });
     return () => {
       openMenus.count--;
@@ -140,7 +146,9 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
       <div className="share-body">
         {canAdd ? <NoteForm /> : <p className="share-quiet">{notes?.guestNotes === false ? 'The host has turned off notes from guests.' : 'You can read the notes, but not leave one.'}</p>}
         <div className="share-scroll notes-scroll">
-          {open.length === 0 && done.length === 0 ? (
+          {!notes ? (
+            <p className="share-quiet notes-empty">Reading the notes…</p>
+          ) : open.length === 0 && done.length === 0 ? (
             <p className="share-quiet notes-empty">No notes yet. Pin one to what is selected, or to the page, for whoever works on it next.</p>
           ) : (
             <>

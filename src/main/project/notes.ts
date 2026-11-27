@@ -109,6 +109,12 @@ export class NotesStore {
     if (dir && !dir.isDirectory()) throw new Error('The project’s local folder is not a plain folder, so its notes are not read.');
   }
 
+  /** Whether what is at the notes' path is no file of notes at all: a link, something other than a file, or too large. */
+  private async notNotes(): Promise<boolean> {
+    const at = await fs.lstat(this.path).catch(() => null);
+    return !!at && (!at.isFile() || at.size > MAX_FILE_BYTES);
+  }
+
   private turn<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.queue.then(fn, fn);
     this.queue = run.catch(() => undefined);
@@ -130,10 +136,11 @@ export class NotesStore {
       text = (await readRegularFile(this.path, MAX_FILE_BYTES)).toString('utf8');
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') return (this.notes = []);
-      // A file that cannot be read now (its permissions, the disk) is left where it is; only one that is not the notes
-      // (a link, too large, not a plain file: refused with no system code) is set aside below.
-      if (code) throw e;
+      // None yet. Not kept as an empty list: a file put back meanwhile (by a sync, say) is read before the next change.
+      if (code === 'ENOENT') return [];
+      // A file that cannot be read now (its permissions, the disk) is left where it is, and so is one replaced while
+      // it was read; only one that is not the notes at all (a link, too large, not a plain file) is set aside below.
+      if (code || !(await this.notNotes())) throw e;
     }
     if (text !== null) {
       try {

@@ -274,6 +274,12 @@ describe('pinned notes in the remote shell (#770)', () => {
     await flush();
     await flush();
     expect(store.getState().notes).toEqual({ ...newer, opening: 'remote:join-1' });
+    // Opening Notes asks for them again.
+    const asked = calls.notes.length;
+    notesFeed.refreshNotes();
+    await flush();
+    expect(calls.notes.slice(asked)).toEqual([['list', 'join-1']]);
+    expect(store.getState().notes).toEqual({ ...NOTES, opening: 'remote:join-1' });
   });
 
   it('reads and changes the host’s notes, never this computer’s, and follows the host’s changes for the join shown', async () => {

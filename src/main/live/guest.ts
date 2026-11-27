@@ -191,6 +191,8 @@ interface Join {
   /** Asks again for notes that could not be read (BUSY, the relay's backlog), a few times, each later than the last. */
   notesTimer: ReturnType<typeof setTimeout> | null;
   notesRetries: number;
+  /** The last read of the notes failed: what is kept may be behind the host's. */
+  notesStale: boolean;
   tooLarge: boolean;
   hostRuntime: RuntimeState['state'] | null;
   /** The latest project revision the host said its preview serves (preview:reload), or null before it said one. */
@@ -361,6 +363,7 @@ export class LiveGuestManager {
       notesRefetch: false,
       notesTimer: null,
       notesRetries: 0,
+      notesStale: false,
       tooLarge: false,
       hostRuntime: null,
       previewRevision: null,
@@ -493,7 +496,10 @@ export class LiveGuestManager {
         // Whatever the host changed while it was away reaches the editor now.
         if (back && join.phase === 'admitted') {
           void this.fetchSnapshot(join);
-          if (join.notesWanted) void this.fetchNotes(join);
+          if (join.notesWanted) {
+            join.notesRetries = 0;
+            void this.fetchNotes(join);
+          }
           this.reload(join);
         }
         // A host back, or on a connection that replaced one still open, may not have heard where this app is: told
@@ -600,7 +606,10 @@ export class LiveGuestManager {
         // project is asked for; a role or deadline changing on a live connection needs no new copy.
         if (!returning || back || !join.latest) void this.fetchSnapshot(join);
         // Notes the editor already holds may have changed while the connection was down.
-        if (join.notesWanted && back) void this.fetchNotes(join);
+        if (join.notesWanted && back) {
+          join.notesRetries = 0;
+          void this.fetchNotes(join);
+        }
         this.answerJoin(join);
         return this.publish();
       }
@@ -900,6 +909,7 @@ export class LiveGuestManager {
         const answer = await this.call(join, 'notes.list', []);
         if (join.ended || this.current !== join) return null;
         const read = answer.ok && isLiveNotes(answer.result);
+        join.notesStale = !read;
         if (read) {
           join.notesRetries = 0;
           this.takeNotes(join, answer.result as LiveNotes);
@@ -932,7 +942,9 @@ export class LiveGuestManager {
     const join = this.current;
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
     join.notesWanted = true;
-    return join.notes ?? (await this.fetchNotes(join));
+    // Asked again by the editor (its Notes opened): notes that could not be read last time are asked for now.
+    if (join.notesStale) join.notesRetries = 0;
+    return join.notes && !join.notesStale ? join.notes : ((await this.fetchNotes(join)) ?? join.notes);
   }
 
   addNote(joinId: unknown, draft: unknown): Promise<LiveNoteResult> {

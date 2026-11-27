@@ -524,6 +524,19 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       answer(again.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo'), note('n1', '<b>Check</b> the price')], guestNotes: true });
       await poll(async () => (await s.tab.locator('#note-list li').count()) === 2, 'the notes read again');
 
+      // The host could not say the note was kept (the disk failed as it finished): the guest is told it may have been.
+      await s.tab.fill('#note-text', 'Second note');
+      await s.tab.click('#note-send');
+      const unsure = await s.host.next('rpc:request');
+      expect(unsure.method).toBe('notes.add');
+      s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId: unsure.requestId, method: 'notes.add', ok: false, error: { code: 'UNAVAILABLE', message: 'The project’s notes could not be saved.', recoverable: true } });
+      await poll(async () => !!(await s.tab.textContent('#note-error'))?.includes('may have been sent'), 'the guest told the note may have been sent');
+      expect(await s.tab.inputValue('#note-text')).toBe('Second note');
+      const look = await s.host.next('rpc:request');
+      expect(look.method).toBe('notes.list');
+      answer(look.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo'), note('n1', '<b>Check</b> the price')], guestNotes: true });
+      await s.tab.fill('#note-text', '');
+
       // Too long a note is never sent.
       await s.tab.fill('#note-text', 'x'.repeat(281));
       expect(await s.tab.isDisabled('#note-send')).toBe(true);
