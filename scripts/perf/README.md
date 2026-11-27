@@ -13,6 +13,7 @@ npm run perf:compare -- before.json after.json  # before, after, change and verd
 npm run perf:compare -- before.json after.json --markdown   # the tables a pull request carries
 npm run perf:static                             # built output sizes and the main entry's packages, beside the baseline
 npm run perf:prompt                             # what each turn of an AI run sends, and what a provider's cache serves
+npm run perf:git                                # a version saved in the bundled Git's repository: time, memory, growth
 ```
 
 `perf:run` takes `--scenario` (comma-separated; default `launch,open,edit`), `--fixture` (`small`, `large` or both;

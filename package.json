@@ -27,7 +27,8 @@
     "perf:run": "tsx --tsconfig tsconfig.node.json scripts/perf/run.ts",
     "perf:compare": "tsx --tsconfig tsconfig.node.json scripts/perf/compare.ts",
     "perf:static": "tsx --tsconfig tsconfig.node.json scripts/perf/static.ts",
-    "perf:prompt": "tsx --tsconfig tsconfig.node.json scripts/perf/prompt.ts"
+    "perf:prompt": "tsx --tsconfig tsconfig.node.json scripts/perf/prompt.ts",
+    "perf:git": "tsx --tsconfig tsconfig.node.json scripts/perf/git-snapshots.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261125.1",
@@ -85,6 +86,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "1.12.0",
     "acorn": "8.19.0",
+    "isomorphic-git": "1.44.13",
     "openai": "7.62.0",
     "sharp": "0.35.5",
     "svelte": "5.59.1",

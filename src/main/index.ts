@@ -36,6 +36,7 @@ import { stopToolsChecks, toolsChecker } from './runtime/tools-process';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
 import { stopSourceSyncs } from './sources/process';
+import { stopGitWorker } from './git/process';
 import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navigationAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
@@ -1362,6 +1363,7 @@ app.on('will-quit', () => {
   stopPhotoDecoders();
   stopPostReads();
   stopSourceSyncs();
+  stopGitWorker();
   stopToolsChecks();
 });
 

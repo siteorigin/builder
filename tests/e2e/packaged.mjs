@@ -1,13 +1,14 @@
-// P01: the packaged app creates a project and previews it with no system Node on PATH, makes the starter
+// P01: the packaged app creates a project and previews it with no system Node or Git on PATH, makes the starter
 // images' responsive copies in its media worker, and serves the preview with the packaged-only frame policy. It carries
-// its own licence and the generated third-party notices, which Help > Third-Party Notices opens (#823). On macOS its
-// bundle also declares no camera, microphone, audio capture or Bluetooth use.
+// its own licence and the generated third-party notices, which Help > Third-Party Notices opens (#823), and its bundled
+// Git writes and reads a versions repository from its own worker (#1152). On macOS its bundle also declares no camera,
+// microphone, audio capture or Bluetooth use.
 // Written for macOS, Windows and Linux; for now only the local stabilization run takes it, on macOS. APP_BIN overrides
 // the executable.
 import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chooseMenu, desktopCursor, desktopIntents } from './harness.mjs';
@@ -31,10 +32,25 @@ if (process.platform === 'darwin') {
   assert.deepEqual(declared, [], 'the bundle declares no camera, microphone, audio capture or Bluetooth use');
   assert.equal(plist.LSApplicationCategoryType, 'public.app-category.graphics-design', 'the bundle is in Graphics & Design');
 }
-const minimalPath = process.platform === 'win32' ? 'C:\\Windows\\System32;C:\\Windows' : '/usr/bin:/bin';
+/**
+ * The system's own programs and nothing else, and no Git among them: Windows' folders have none, and elsewhere PATH is a
+ * folder of links to everything in /usr/bin and /bin but git (macOS's /usr/bin/git stand-in included).
+ */
+function minimalPath() {
+  if (process.platform === 'win32') {
+    for (const dir of ['C:\\Windows\\System32', 'C:\\Windows']) assert.ok(!existsSync(join(dir, 'git.exe')), `no git in ${dir}`);
+    return 'C:\\Windows\\System32;C:\\Windows';
+  }
+  const dir = join(WORK, 'path');
+  mkdirSync(dir, { recursive: true });
+  for (const from of ['/usr/bin', '/bin'])
+    for (const name of readdirSync(from)) if (!/^git(-|$)/.test(name) && !existsSync(join(dir, name))) symlinkSync(join(from, name), join(dir, name));
+  assert.ok(!existsSync(join(dir, 'git')), 'no git on the app’s PATH');
+  return dir;
+}
 // Launched by path, the app does not see Playwright's loader: SITEORIGIN_HEADLESS says a test drives it, so it stays
 // off screen and answers its own native choosers (#494).
-const env = { PATH: minimalPath, SITEORIGIN_USER_DATA: join(WORK, 'u'), SITEORIGIN_HEADLESS: '1' };
+const env = { PATH: minimalPath(), SITEORIGIN_USER_DATA: join(WORK, 'u'), SITEORIGIN_HEADLESS: '1' };
 for (const k of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SystemRoot', 'DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR']) if (process.env[k]) env[k] = process.env[k];
 const app = await electron.launch({
   executablePath,
@@ -93,6 +109,7 @@ try {
     [/^rolldown \d/, 'MIT', 'compiled into the editor', /--- THIRD-PARTY-LICENSE ---\n\n[\s\S]*github\.com\/rollup\/rollup[\s\S]*Copyright \(c\) 2020 Evan Wallace/],
     [/^@oxc-project\/runtime \d/, 'MIT', 'compiled into the app', /Sebastian McKenzie/],
     [/^svelte \d/, 'MIT', 'shipped with the app', /Copyright \(c\) .*Svelte Contributors/],
+    [/^isomorphic-git \d/, 'MIT', 'shipped with the app', /the 'isomorphic-git' authors[\s\S]*Permission is hereby granted/],
     [/^sharp \d/, 'Apache-2.0', 'shipped with the app', /Apache License/],
     [/^npm \d/, 'Artistic-2.0', 'npm, which sets projects up', /The Artistic License 2\.0/],
     [/^@sveltejs\/kit \d/, 'MIT', 'the website starter, cached for setting projects up offline', /Copyright \(c\) 2020 \[these people\]/],
@@ -111,6 +128,58 @@ try {
   await chooseMenu(app, ['Help', 'Third-Party Notices']);
   const opened = (await desktopIntents(app, before)).map((e) => [e.kind, e.target]);
   assert.deepEqual(opened, [['open-path', join(resources, 'THIRD_PARTY_NOTICES.txt')]], 'Help > Third-Party Notices opens the notices');
+
+  // The bundled Git (#1152): its worker, from inside the packaged app, makes a versions repository, saves a commit to
+  // its branch and reads it back, with nothing on its PATH at all.
+  const gitProject = join(WORK, 'git-project');
+  const emptyPath = join(WORK, 'empty-path');
+  mkdirSync(gitProject, { recursive: true });
+  mkdirSync(emptyPath, { recursive: true });
+  const bundledGit = await app.evaluate(
+    async ({ app: electronApp, utilityProcess }, { project, path }) => {
+      const worker = utilityProcess.fork(`${electronApp.getAppPath()}/out/main/git-worker.js`, [], { serviceName: 'SiteOrigin versions (test)', env: { PATH: path }, stdio: 'pipe' });
+      let stderr = '';
+      worker.stderr?.on('data', (d) => (stderr += d));
+      const waiting = new Map();
+      worker.on('message', (m) => waiting.get(m.id)?.(m));
+      // A worker that cannot start says why at once, rather than at the first answer's deadline.
+      const ended = new Promise((_, reject) => worker.once('exit', (code) => reject(new Error(`the Git worker exited (${code}): ${stderr.slice(0, 2000)}`))));
+      ended.catch(() => undefined);
+      let ids = 0;
+      const ask = (op) =>
+        Promise.race([
+          ended,
+          new Promise((resolve, reject) => {
+            const id = ++ids;
+            const timer = setTimeout(() => reject(new Error(`the Git worker did not answer ${op.op} within 30s: ${stderr.slice(0, 2000)}`)), 30000);
+            waiting.set(id, (m) => (clearTimeout(timer), m.ok ? resolve(m.value) : reject(new Error(`${op.op}: ${m.code}: ${m.message}`))));
+            worker.postMessage({ id, ...op });
+          })
+        ]);
+      try {
+        const version = await ask({ op: 'version' });
+        await ask({ op: 'init', root: project });
+        const unborn = await ask({ op: 'resolveRef', root: project, ref: 'refs/heads/siteorigin-versions' });
+        const tree = await ask({ op: 'writeFiles', root: project, files: [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Packaged"}\n') }] });
+        const who = { name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: 1790000000, timezoneOffset: 0 };
+        const commit = await ask({ op: 'writeCommit', root: project, commit: { tree, parents: [], author: who, committer: who, message: 'Packaged\n' } });
+        await ask({ op: 'advanceRef', root: project, ref: 'refs/heads/siteorigin-versions', next: commit, expected: null });
+        const tip = await ask({ op: 'resolveRef', root: project, ref: 'refs/heads/siteorigin-versions' });
+        const text = new TextDecoder().decode(await ask({ op: 'readBlob', root: project, oid: commit, filepath: 'siteorigin/site.json' }));
+        return { version, unborn, commit, tip, text };
+      } finally {
+        worker.kill();
+      }
+    },
+    { project: gitProject, path: emptyPath }
+  );
+  console.log('bundled git', bundledGit.version, bundledGit.commit);
+  assert.equal(bundledGit.version, JSON.parse(readFileSync('package.json', 'utf8')).dependencies['isomorphic-git'], 'the bundled Git is the version the app pins');
+  assert.equal(bundledGit.unborn, null, 'a new repository’s branch does not exist yet');
+  assert.match(bundledGit.commit, /^[0-9a-f]{40}$/, 'the commit has a Git name');
+  assert.equal(bundledGit.tip, bundledGit.commit, 'the branch points at the commit saved');
+  assert.equal(bundledGit.text, '{"name":"Packaged"}\n', 'the file reads back as saved');
+  assert.equal(readFileSync(join(gitProject, '.siteorigin', 'versions.git', 'refs', 'heads', 'siteorigin-versions'), 'utf8'), `${bundledGit.commit}\n`, 'the branch is on the disk');
 
   const progress = [];
   await win.exposeFunction('__progress', (p) => progress.push(p));

@@ -1,6 +1,6 @@
 // The app's third-party notices (issue #823): which package owns a bundled module, what licence text a package carries,
 // and the notices file built from the bundles, the shipped packages and the theme packs' fonts.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { MenuItemConstructorOptions } from 'electron';
@@ -194,6 +194,36 @@ describe('the licence text a package carries', () => {
     const text = lucide.texts.map((t) => t.text).join('\n');
     expect(text).toMatch(/ISC License[\s\S]*Permission to use, copy, modify/);
     expect(text).toMatch(/Copyright \(c\) 2013-present Cole Bemis/);
+  });
+
+  it('ships the bundled Git and every package it loads, none of them native code, with Git’s own licence text', () => {
+    const repo = process.cwd();
+    const lock = JSON.parse(readFileSync(join(repo, 'package-lock.json'), 'utf8')) as { packages: Record<string, { version?: string; dependencies?: Record<string, string> }> };
+    // What Node loads for isomorphic-git: each dependency from the nearest node_modules up from the package needing it.
+    const closure = new Set<string>();
+    const visit = (at: string) => {
+      if (closure.has(at)) return;
+      closure.add(at);
+      for (const dep of Object.keys(lock.packages[at]?.dependencies ?? {})) {
+        let from = at;
+        while (!lock.packages[`${from}/node_modules/${dep}`] && from.includes('/node_modules/')) from = from.slice(0, from.lastIndexOf('/node_modules/'));
+        visit(lock.packages[`${from}/node_modules/${dep}`] ? `${from}/node_modules/${dep}` : `node_modules/${dep}`);
+      }
+    };
+    visit('node_modules/isomorphic-git');
+    // Pinned exactly, and what is installed is what the lockfile says.
+    const pinned = (JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }).dependencies['isomorphic-git'];
+    expect(pinned).toMatch(/^\d+\.\d+\.\d+$/);
+    expect((lock.packages['node_modules/isomorphic-git'] as { version?: string }).version).toBe(pinned);
+    expect((JSON.parse(readFileSync(join(repo, 'node_modules', 'isomorphic-git', 'package.json'), 'utf8')) as { version: string }).version).toBe(pinned);
+    const shipped = notices.productionPackages(repo).map((d) => d.slice(repo.length + 1).split('\\').join('/'));
+    expect(closure.size).toBeGreaterThan(10);
+    expect(shipped).toEqual(expect.arrayContaining([...closure]));
+    for (const dir of closure) expect(readdirSync(join(repo, dir), { recursive: true }).map(String).filter((f) => /\.(node|dylib|dll|exe)$|\.so(\.\d+)*$/.test(f)), dir).toEqual([]);
+    const { text } = notices.buildNotices({ parts: { shipped: [...closure].map((d) => join(repo, d)) } });
+    const entry = text.split(`${'='.repeat(78)}\n`).find((e) => e.startsWith('isomorphic-git '));
+    expect(entry?.startsWith(`isomorphic-git ${pinned}\n`)).toBe(true);
+    expect(entry).toMatch(/^isomorphic-git 1\.\d+\.\d+\nLicence: MIT\nSource: \S*isomorphic-git\S*\nIncluded in: shipped with the app\n\n--- LICENSE\.md ---\n\nCopyright 2017-\d+ the 'isomorphic-git' authors\n\nPermission is hereby granted/);
   });
 });
 
