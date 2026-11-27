@@ -53,6 +53,14 @@ const CLEAR = 19;
 const onHeader = (at: AddAt, headers: AddBox[]) =>
   headers.filter((r) => at.left + CLEAR > r.left && at.left - CLEAR < r.left + r.width && at.top + CLEAR > r.top && at.top - CLEAR < r.top + r.height);
 
+/** The first spot past every header in the way, going down (`step` 1) or up (-1): one header can sit right under another. */
+function past(at: AddAt, headers: AddBox[], step: 1 | -1): AddAt {
+  let spot = at;
+  for (let over = onHeader(spot, headers); over.length; over = onHeader(spot, headers))
+    spot = { left: at.left, top: step > 0 ? Math.max(...over.map((r) => r.top + r.height)) + CLEAR : Math.min(...over.map((r) => r.top)) - CLEAR };
+  return spot;
+}
+
 /**
  * An edge button that would cover the header (the first section's top edge meets it, and a header that stays in view
  * has other sections pass under it) moves just below it, or just above one at the foot of the window. It moves only
@@ -60,14 +68,14 @@ const onHeader = (at: AddAt, headers: AddBox[]) =>
  * edge scrolled out of view.
  */
 function clearOfHeaders(at: AddAt, edge: number, b: AddBox, h: number, headers: AddBox[]): AddAt | null {
-  const over = onHeader(at, headers);
-  if (!over.length) return at;
-  const start = Math.min(...over.map((r) => r.top));
-  const end = Math.max(...over.map((r) => r.top + r.height));
-  const below = { left: at.left, top: end + CLEAR };
-  if (below.top <= h - 14 && (edge >= end - 2 || b.top + b.height >= below.top) && !onHeader(below, headers).length) return below;
-  const above = { left: at.left, top: start - CLEAR };
-  if (above.top >= 14 && (edge <= start + 2 || b.top <= above.top) && !onHeader(above, headers).length) return above;
+  if (!onHeader(at, headers).length) return at;
+  const below = past(at, headers, 1);
+  const end = below.top - CLEAR;
+  // The edge shows past the header only with some of its section beside it: a section wholly under it has neither edge.
+  if (below.top <= h - 14 && ((edge >= end - 2 && b.top + b.height > end + 2) || b.top + b.height >= below.top)) return below;
+  const above = past(at, headers, -1);
+  const start = above.top + CLEAR;
+  if (above.top >= 14 && ((edge <= start + 2 && b.top < start - 2) || b.top <= above.top)) return above;
   return null;
 }
 
@@ -77,23 +85,40 @@ export function underHeader(y: number, b: AddBox, headers: AddBox[]): boolean {
   return headers.some((r) => b.left + b.width > r.left && b.left < r.left + r.width && y >= r.top && y < r.top + r.height - 2);
 }
 
-/** Two edge buttons left on top of each other (above and below a shallow section, the selection's and the hovered one's)
- *  have the later stepped back a button's width along its edge (on instead, where that would leave the page or put it
- *  on the header), so each stays its own target. */
-export function spreadAdds<T extends { side: AddSide; at: AddAt }>(buttons: T[], headers: AddBox[] = []): T[] {
+/** Two edge buttons left on top of each other (above and below a shallow section, the selection's and the hovered
+ *  one's) have the later stepped a button's width along its edge, back where there is room, so each stays its own
+ *  target: never off the page or onto the header. With no such room it stays where it is. */
+function spreadAdds<T extends { side: AddSide; at: AddAt }>(buttons: T[], width: number, headers: AddBox[]): T[] {
   const out: T[] = [];
   for (const b of buttons) {
-    if (b.side === 'inside') {
+    const taken = (at: AddAt) => out.some((o) => o.side !== 'inside' && Math.abs(o.at.left - at.left) < 34 && Math.abs(o.at.top - at.top) < 34);
+    if (b.side === 'inside' || !taken(b.at)) {
       out.push(b);
       continue;
     }
-    const at = { ...b.at };
-    for (const o of out)
-      if (o.side !== 'inside' && Math.abs(o.at.left - at.left) < 34 && Math.abs(o.at.top - at.top) < 34) {
-        const back = { left: at.left - 34, top: at.top };
-        at.left = back.left >= 14 && !onHeader(back, headers).length ? back.left : at.left + 34;
-      }
-    out.push({ ...b, at });
+    const free = [-34, 34, -68, 68]
+      .map((step) => ({ left: b.at.left + step, top: b.at.top }))
+      .find((at) => at.left >= 14 && at.left <= width - 14 && !taken(at) && !onHeader(at, headers).length);
+    out.push(free ? { ...b, at: free } : b);
   }
   return out;
+}
+
+/** The buttons the canvas draws, each in its place. Of two for one gap (`key`), the first that can be drawn, so one
+ *  with no place leaves the gap to the other. `held`: where the one whose list is open was drawn, which stays. */
+export function placeAdds<T extends { key: string; side: AddSide; box: AddBox; rtl?: boolean }>(
+  buttons: T[],
+  frame: { width: number; height: number },
+  headers: AddBox[],
+  held?: AddAt
+): Array<T & { at: AddAt }> {
+  const placed = buttons.flatMap((b) => {
+    const at = held ?? placeAdd(b.side, b.box, frame, b.rtl, headers);
+    return at ? [{ ...b, at }] : [];
+  });
+  return spreadAdds(
+    placed.filter((b, i) => placed.findIndex((o) => o.key === b.key) === i),
+    frame.width,
+    headers
+  );
 }

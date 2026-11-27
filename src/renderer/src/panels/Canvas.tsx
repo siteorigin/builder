@@ -59,7 +59,7 @@ import { isRemoteShell, loadedRevision } from '../lib/remote-session';
 import { SpacingHandles } from './SpacingHandles';
 import { QuickInsert } from './QuickInsert';
 import { addPoints, offeredAt, pointLabel, resolvePoint, type AddPoint, type QuickItem } from '../lib/inline-insert';
-import { placeAdd, spreadAdds, underHeader, type AddBox } from '../lib/add-place';
+import { placeAdds, underHeader, type AddBox } from '../lib/add-place';
 import { copyPasteItems, PasteHere } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
@@ -3088,15 +3088,11 @@ export function Canvas() {
       ];
   // The shared header's boxes as the page shows them now: an edge's Add button keeps off them (see placeAdd).
   const headerBoxes = rects.headers.map(toBox);
-  // Each in its place. Of two for one gap, the first that can be drawn, so one with no place leaves the gap to the other.
-  const placedAdds = spreadAdds(
-    addButtons
-      .flatMap(({ p, box, rtl }) => {
-        const at = adding ? adding.at : placeAdd(p.side, box, { width: frameW, height: frameH * z }, rtl, headerBoxes);
-        return at ? [{ p, box, side: p.side, at }] : [];
-      })
-      .filter((b, i, all) => all.findIndex((o) => o.p.key === b.p.key) === i),
-    headerBoxes
+  const placedAdds = placeAdds(
+    addButtons.map((b) => ({ ...b, key: b.p.key, side: b.p.side })),
+    { width: frameW, height: frameH * z },
+    headerBoxes,
+    adding?.at
   );
   const device = viewport < 768 ? 'Phone' : viewport < 1024 ? 'Tablet' : 'Desktop';
   const scalePct = Math.round(z * 100);

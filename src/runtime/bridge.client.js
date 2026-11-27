@@ -300,11 +300,12 @@ function emptyArea() {
   return { key: emptySpace.key, top: r.top, height: r.height, headerBottom: Math.max(0, ...headers.map((h) => h.y + h.height)) };
 }
 
-/** The shared header's boxes, one for each thing it holds at its top level: the editor keeps its Add buttons off them. */
+/** The shared header's boxes in view, one for each thing it holds at its top level: the editor keeps its Add buttons
+ *  off them. One scrolled away is left out, so scrolling on past it changes nothing the editor draws. */
 function headerBoxes() {
   if (mode !== 'edit') return [];
   const shell = '[data-so-ctx="shell:header"], [data-so-ctx^="shell:header|"]';
-  return [...document.querySelectorAll(shell)].filter((el) => !el.parentElement?.closest(shell)).map(rectOf).filter((r) => r && r.width && r.height);
+  return [...document.querySelectorAll(shell)].filter((el) => !el.parentElement?.closest(shell)).map(rectOf).filter((r) => r && r.width && r.height && r.y + r.height > 0 && r.y < innerHeight);
 }
 
 let raf = 0;

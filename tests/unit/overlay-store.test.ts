@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { ElementRef } from '../../src/shared/types';
 
 type Box = { x: number; y: number; width: number; height: number };
-type Rects = { selected: Box[]; hovered: Box[]; revealed: Box[] };
+type Rects = { selected: Box[]; hovered: Box[]; revealed: Box[]; headers: Box[] };
 interface OverlayState {
   hover: ElementRef | null;
   rects: Rects;

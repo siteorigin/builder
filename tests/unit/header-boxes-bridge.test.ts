@@ -59,10 +59,26 @@ describe.skipIf(!browserInstalled)('the header boxes the preview reports with it
     await expect.poll(both).toEqual({ selected: [30], headers: [box] });
     await frame.evaluate(`document.querySelector('header').style.position = 'static'; window.scrollTo(0, 60)`);
     await expect.poll(both).toEqual({ selected: [20], headers: [{ ...box, y: -60 }] });
+    // Scrolled right past it, it is out of the editor's way.
+    await frame.evaluate(`window.scrollTo(0, 200)`);
+    await expect.poll(both).toEqual({ selected: [-120], headers: [] });
+    await frame.evaluate(`window.scrollTo(0, 0)`);
+    await expect.poll(both).toEqual({ selected: [80], headers: [box] });
+  });
+
+  it('reports each root of a header placed as a managed component, and none in Preview', async () => {
+    await frame.evaluate(`document.querySelector('main').insertAdjacentHTML('beforebegin', '<div data-so-ctx="shell:header|banner" data-so-node="b" style="height:20px"><b data-so-ctx="shell:header|banner" data-so-node="c">New</b></div>')`);
+    await expect.poll(async () => (await reported())?.headers.map((r) => r.height)).toEqual([80, 20]);
+    await post('mode', { mode: 'preview' });
+    await expect.poll(async () => (await reported())?.headers).toEqual([]);
+    await post('mode', { mode: 'edit' });
+    await expect.poll(async () => (await reported())?.headers.length).toBe(2);
+    await frame.evaluate(`document.querySelector('[data-so-ctx="shell:header|banner"]').remove()`);
   });
 
   it('reports none for a page without the header', async () => {
-    await frame.evaluate(`document.querySelector('[data-so-ctx="shell:header"]').remove()`);
+    // A section's own <header>, and the shared footer, are neither.
+    await frame.evaluate(`document.querySelector('main').insertAdjacentHTML('afterend', '<footer data-so-ctx="shell:footer" data-so-node="f">Footer</footer>'); document.querySelector('section').innerHTML = '<header>Section title</header>'; document.querySelector('[data-so-ctx="shell:header"]').remove()`);
     await expect.poll(async () => (await reported())?.headers).toEqual([]);
   });
 });
