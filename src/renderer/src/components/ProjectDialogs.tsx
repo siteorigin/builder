@@ -1020,7 +1020,7 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
               </>
             )}
             <p className="np-theme-about" id="new-project-theme-about">
-              {theme.description} <span className="np-theme-later">You can change it any time in Site styles.</span>
+              {theme.description} {themes.length > 1 && <span className="np-theme-later">You can change it any time in Site styles.</span>}
             </p>
           </div>
           <div className="field-label" id="new-project-starter-label">

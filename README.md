@@ -246,4 +246,4 @@ flowchart LR
 
 ## Licence
 
-SiteOrigin Builder is released under the [Apache License 2.0](LICENSE). The three built-in themes are MIT-0, so the code they generate in your site is yours to do whatever you like with. Icons are from Lucide (ISC). The bundled fonts (DM Sans, Fraunces, Inter, JetBrains Mono, Lora, Playfair Display, Plus Jakarta Sans, Sora and Space Grotesk) are under the SIL Open Font License 1.1. The starter sample images are original, and free to use, modify and redistribute in websites built with SiteOrigin Builder (see `resources/starter-assets/NOTICE.md`).
+SiteOrigin Builder is released under the [Apache License 2.0](LICENSE). The built-in theme is MIT-0, so the code it generates in your site is yours to do whatever you like with. Icons are from Lucide (ISC). The bundled fonts (DM Sans, Fraunces, Inter, Lora, Playfair Display, Plus Jakarta Sans and Space Grotesk) are under the SIL Open Font License 1.1. The starter sample images are original, and free to use, modify and redistribute in websites built with SiteOrigin Builder (see `resources/starter-assets/NOTICE.md`).

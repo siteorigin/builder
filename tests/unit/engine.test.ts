@@ -375,7 +375,7 @@ describe('theme switching (P06, I03)', () => {
     expect(validateState(switched).filter((d) => d.severity === 'error')).toEqual([]);
     // Its own layout reaches the site: its split hero is stacked and centred, and its stylesheet is the theme's.
     const files = generateProject(switched);
-    expect(files.get('src/lib/siteorigin/styles/components.css')).toContain('.so-foundation-alt-hero-split__grid');
+    expect(files.get('src/lib/siteorigin/styles/components.css')).toMatch(/\.so-foundation-alt-hero-split__grid \{[^}]*flex-direction: column;[^}]*text-align: center;/);
     expect(files.get('src/lib/siteorigin/styles/components.css')).not.toContain('.so-foundation-hero-split__grid');
 
     const back = applyOperations(switched, [{ type: 'theme.apply', themeId: 'foundation' }]).state;

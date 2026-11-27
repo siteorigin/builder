@@ -11,7 +11,8 @@ import type { ThemePack } from '@catalogue/pack';
 import { createPack } from '@catalogue/dsl';
 import { BUILTIN_PACKS, FOUNDATION_PACK } from '@catalogue/builtin';
 import { registerPacks } from '@catalogue/index';
-import { buildPack } from '../../src/main/packs/build';
+import { buildPack, fileSource } from '../../src/main/packs/build';
+import { registerPackFiles } from '../../src/main/packs/files';
 
 export const SECOND_THEME_ID = 'modern';
 /** The font only the second theme ships. */
@@ -19,7 +20,7 @@ export const SECOND_THEME_FONT = { name: 'Test Mono', family: 'Test Mono Variabl
 
 const pill = (fg: string, ground: string) => ({ mix: [fg, 8, ground] as [string, number, string] });
 
-export function secondTheme(): ThemePack {
+function buildSecondTheme(): { pack: ThemePack; files: Map<string, string> } {
   const { components, ...meta } = FOUNDATION_PACK;
   const author = createPack({
     ...meta,
@@ -33,14 +34,16 @@ export function secondTheme(): ThemePack {
       { id: 'eyebrow-dark', use: 'Eyebrow labels in dark sections', fg: 'color.accent', bg: pill('color.accent', 'color.inverse'), state: 'rest', group: 'dark-accent', fixable: false }
     ]
   });
-  const { pack } = buildPack(author.define(components.map((c) => author.adopt(c))));
+  const { pack, files } = buildPack(author.define(components.map((c) => author.adopt(c))));
   // The extra font borrows Inter's files, which the pack ships.
   const inter = pack.fonts.find((f) => f.name === 'Inter')!;
   const mono = { ...inter, ...SECOND_THEME_FONT, category: 'monospace' as const, stack: `'${SECOND_THEME_FONT.family}', ui-monospace, monospace` };
-  return { ...pack, fonts: [...pack.fonts, mono] };
+  return { pack: { ...pack, fonts: [...pack.fonts, mono] }, files };
 }
 
-/** Register the built-in packs and the second theme. */
+/** Register the built-in packs, their files, and the second theme. */
 export function registerSecondTheme(): void {
-  registerPacks([...BUILTIN_PACKS.map((a) => buildPack(a).pack), secondTheme()]);
+  const built = [...BUILTIN_PACKS.map((a) => buildPack(a)), buildSecondTheme()];
+  registerPacks(built.map((b) => b.pack));
+  for (const { pack, files } of built) registerPackFiles(pack.id, new Map([...files].map(([k, abs]) => [k, fileSource(abs)])));
 }
