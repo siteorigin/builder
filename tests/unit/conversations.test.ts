@@ -156,6 +156,8 @@ describe('how the list words a conversation', () => {
 /** Each model turn answers at once, unless the test holds it at its gate. */
 class Adapter implements AgentModelAdapter {
   hold = false;
+  /** A held turn that fails, once released, the way a provider that refuses the key does. */
+  fail = false;
   /** Turns answered as written, before any default one. */
   script: ModelEvent[][] = [];
   private gates: Array<() => void> = [];
@@ -173,6 +175,7 @@ class Adapter implements AgentModelAdapter {
     if (scripted) return yield* scripted;
     yield { type: 'text', delta: 'Done.' };
     if (this.hold) await new Promise<void>((r) => this.gates.push(r));
+    if (this.fail) return yield { type: 'error', code: 'auth', message: 'The API key was refused.' };
     yield { type: 'done', stopReason: 'end', text: 'Done.', toolCalls: [] };
   }
 }
@@ -624,5 +627,144 @@ describe('managing conversations (#235)', () => {
     expect(env.session.historyInfo()).toEqual(steps);
     expect((await env.session.undo()).ok).toBe(true);
     expect(env.session.state.site.name).toBe('Studio');
+  });
+});
+
+describe('a run saves the conversation it was sent in (#1122)', () => {
+  /** Another thread made the open one while a request in `first` runs, the way a thread switch mid-run would. */
+  const switchMidRun = (env: Awaited<ReturnType<typeof setup>>) => {
+    const other = thread('c_other', [['Plan the gallery page', '2026-11-20T09:00:00.000Z']]);
+    env.write(other);
+    const before = readFileSync(env.file(other.id), 'utf8');
+    (env.orch as unknown as { conversation: Conversation }).conversation = structuredClone(other);
+    return { id: other.id, before };
+  };
+
+  for (const end of ['finishes', 'is stopped', 'fails'] as const) {
+    it(`a request that ${end} after the open thread changed saves its turn in its own transcript, and no other`, async () => {
+      const env = await setup();
+      const first = await env.ask('Write an About page');
+      env.adapter.hold = true;
+      env.adapter.fail = end === 'fails';
+      const r = await env.orch.send('And a footer', env.ctx, first);
+      expect(r.ok).toBe(true);
+      await until(() => env.adapter.waiting, 'the request to stream');
+      const other = switchMidRun(env);
+      if (end === 'is stopped') {
+        const stopping = env.orch.stopRun(r.runId!);
+        env.adapter.release();
+        await stopping;
+      } else env.adapter.release();
+      await until(() => !env.orch.busy, 'the request to finish');
+      // A list read waits its turn behind the request's own save.
+      await env.orch.loadConversations();
+      const saved = env.stored(first);
+      expect(saved.messages.map((m) => m.text).slice(0, 3)).toEqual(['Write an About page', 'Done.', 'And a footer']);
+      expect(saved.messages).toHaveLength(4);
+      expect(saved.messages[3]).toMatchObject({ role: 'assistant', runId: r.runId, result: { status: { finishes: 'no-changes', 'is stopped': 'cancelled', fails: 'failed' }[end] } });
+      expect(readFileSync(env.file(other.id), 'utf8')).toBe(other.before);
+    });
+  }
+
+  it('a request still ending when its project closes writes nothing, into that project or the next', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    const before = readFileSync(env.file(first), 'utf8');
+    env.adapter.hold = true;
+    expect((await env.orch.send('And a footer', env.ctx, first)).ok).toBe(true);
+    await until(() => env.adapter.waiting, 'the request to stream');
+    env.orch.reset();
+    env.adapter.release();
+    await until(() => !env.orch.busy, 'the request to finish');
+    await env.orch.loadConversations();
+    expect(readFileSync(env.file(first), 'utf8')).toBe(before);
+    expect(readdirSync(env.chatDir).filter((f) => f.endsWith('.json'))).toEqual([`${first}.json`]);
+  });
+
+  it('a request whose save was still queued when its project closed writes nothing once the queue moves on', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    const before = readFileSync(env.file(first), 'utf8');
+    // The request ends while the queue is held, so its save waits; the project closes before its turn comes.
+    const release = hold(env.orch);
+    expect((await env.orch.send('And a footer', env.ctx, first)).ok).toBe(true);
+    await until(() => !env.orch.busy, 'the request to finish');
+    const queued = (env.orch as unknown as { saving: Promise<void> }).saving;
+    env.orch.reset();
+    release();
+    await queued;
+    expect(readFileSync(env.file(first), 'utf8')).toBe(before);
+    expect(readdirSync(env.chatDir)).toEqual([`${first}.json`]);
+  });
+
+  it('closing the project stops a running request and waits for its turn to be saved, even behind other writes', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    env.adapter.hold = true;
+    const r = await env.orch.send('And a footer', env.ctx, first);
+    await until(() => env.adapter.waiting, 'the request to stream');
+    // An earlier change to the stored conversations is still under way when the close begins.
+    const release = hold(env.orch);
+    let closed = false;
+    const closing = env.orch.close().then(() => (closed = true));
+    env.adapter.release();
+    await until(() => !env.orch.busy, 'the request to stop');
+    // No request starts while the close waits: it would run on past it, unstopped.
+    expect(await env.orch.send('And a contact form', env.ctx, first)).toMatchObject({ ok: false, message: 'The project is closing.' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(closed).toBe(false);
+    release();
+    await closing;
+    expect(env.stored(first).messages).toHaveLength(4);
+    expect(env.stored(first).messages[3]).toMatchObject({ runId: r.runId, result: { status: 'cancelled' } });
+    expect(env.orch.conversation).toBeNull();
+
+    // With no request running, the close still waits for a change to the stored conversations under way...
+    let release2 = hold(env.orch);
+    closed = false;
+    const again = env.orch.close().then(() => (closed = true));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(closed).toBe(false);
+    release2();
+    await again;
+    // ...but never past its deadline, and one that ended badly never keeps the project from closing.
+    await env.orch.openConversation(first);
+    release2 = hold(env.orch);
+    const failed = Promise.reject(new Error('rollback threw'));
+    failed.catch(() => undefined);
+    (env.orch as unknown as { runEnded: Promise<void> }).runEnded = failed;
+    await env.orch.close(20);
+    expect(env.orch.conversation).toBeNull();
+    release2();
+  });
+
+  it('a write the project’s close overtakes is never moved into place: a request’s save is dropped, a rename refused', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    const before = readFileSync(env.file(first), 'utf8');
+    const real = fsPromises.writeFile.bind(fsPromises) as (...a: unknown[]) => Promise<void>;
+    const queue = env.orch as unknown as { saving: Promise<void> };
+    // The project closes while the next write of this conversation is being written beside its file, once its bytes
+    // are down and before it is moved into place. `overtaken` is the queue that write is in.
+    let overtaken: Promise<void> | null = null;
+    const write = vi.spyOn(fsPromises, 'writeFile').mockImplementation(((path: unknown, ...rest: unknown[]) => {
+      if (!String(path).includes(`${first}.json.`)) return real(path, ...rest);
+      overtaken = queue.saving;
+      return real(path, ...rest).then(() => env.orch.reset());
+    }) as typeof fsPromises.writeFile);
+    try {
+      expect((await env.orch.send('And a footer', env.ctx, first)).ok).toBe(true);
+      await until(() => !env.orch.busy && overtaken !== null, 'the request to finish and its save to start');
+      await overtaken;
+      expect(readFileSync(env.file(first), 'utf8')).toBe(before);
+      expect(readdirSync(env.chatDir)).toEqual([`${first}.json`]);
+
+      await env.orch.openConversation(first);
+      await expect(env.orch.renameConversation(first, 'About page')).rejects.toThrow(/closed/);
+      expect(readFileSync(env.file(first), 'utf8')).toBe(before);
+      expect(readdirSync(env.chatDir)).toEqual([`${first}.json`]);
+    } finally {
+      write.mockRestore();
+    }
   });
 });

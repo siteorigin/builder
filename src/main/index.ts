@@ -464,12 +464,8 @@ function importChoices(v: unknown): ImportChoices | undefined {
   );
   return { opening: c.opening, files };
 }
-controller.onSessionClosing = async () => {
-  orchestrator.stop();
-  // Let a running request finish reverting before the project lock is released.
-  for (let i = 0; i < 100 && orchestrator.busy; i++) await new Promise((r) => setTimeout(r, 50));
-  orchestrator.reset();
-};
+// Let a running request finish reverting, and its turn be saved, before the project lock is released.
+controller.onSessionClosing = () => orchestrator.close();
 
 // ---------------------------------------------------------------------------
 // IPC: every handler checks that the sender is our editor window.
