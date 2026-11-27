@@ -68,6 +68,8 @@ export function createReviewShooter(): ReviewShooter {
     const listeners = new Set<(method: string, params: Record<string, unknown>) => void>();
     const onMessage = (_e: unknown, method: string, params: Record<string, unknown>) => listeners.forEach((l) => l(method, params));
     try {
+      // A window that has loaded nothing has no page to speak to yet: its DevTools session would never answer.
+      await wc.loadURL('about:blank');
       wc.debugger.attach('1.3');
       wc.debugger.on('message', onMessage);
       const page: CdpPage = {
