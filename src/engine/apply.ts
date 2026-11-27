@@ -68,7 +68,7 @@ import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneCom
 import { slotsInsideCards } from '@generator/card-links';
 import { chosenUses, imageUses, variantBackgrounds } from './image-uses';
 import { isPictureAsset } from '@shared/background-image';
-import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
+import { NO_SHELL_IDS, labelKeyFor, pageIds, type CheckParts } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
@@ -710,6 +710,62 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   }
 }
 
+/** The assets a value uses (walkValues): each picture, and each document a link goes to, as often as it is used. */
+function valueUses(root: unknown, out = new Map<string, number>()): Map<string, number> {
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') {
+      countUse(out, v);
+      Object.values(v).forEach(walk);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+function countUse(out: Map<string, number>, v: unknown) {
+  const id = (v as { assetId?: unknown }).assetId;
+  if (typeof id === 'string') out.set(id, (out.get(id) ?? 0) + 1);
+  // A document is in use while a link goes to it.
+  if (isDocumentLink(v)) out.set(v.target, (out.get(v.target) ?? 0) + 1);
+}
+
+/** The site's own pictures, each page's sharing image, then each entry's featured and sharing images. */
+function pictureUses(state: ProjectState): Map<string, number> {
+  const out = new Map<string, number>();
+  const count = (id: string) => out.set(id, (out.get(id) ?? 0) + 1);
+  for (const k of [state.site.favicon, state.site.socialImage, state.site.identity?.logo]) if (typeof k === 'string' && k) count(k);
+  for (const p of Object.values(state.pages)) if (p.seo.socialImage) count(p.seo.socialImage);
+  for (const e of collectionEntries(state)) {
+    if (typeof e.featuredImage === 'string' && e.featuredImage) count(e.featuredImage);
+    const sharing = entrySharingImage(e);
+    if (sharing) count(sharing);
+  }
+  return out;
+}
+
+/** The assets the components' properties use, then the backgrounds of their designs' variant options. */
+function componentUses(state: ProjectState): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const d of Object.values(state.components)) valueUses(d.properties, out);
+  for (const v of variantBackgrounds(state)) countUse(out, v.value);
+  return out;
+}
+
+/** The assets the collections' fields use: each picture, link or rich text field's default, and each entry's value and text. */
+function collectionUses(state: ProjectState): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const c of Object.values(state.collections ?? {})) {
+    const holding = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image' || f?.type === 'link' || f?.type === 'richtext');
+    for (const [, f] of holding) valueUses(f.default, out);
+    for (const e of Object.values(c.entries)) {
+      for (const [name] of holding) if (Object.hasOwn(e.values ?? {}, name)) valueUses(e.values[name], out);
+      valueUses(e.body, out);
+    }
+  }
+  return out;
+}
+
 /** Every entry of every collection. */
 const collectionEntries = (state: ProjectState) => Object.values(state.collections ?? {}).flatMap((c) => Object.values(c.entries));
 
@@ -747,21 +803,24 @@ export function isDocumentLink(v: unknown): v is LinkValue & { type: 'document' 
 /** Whether a file is one of the document formats, its name and MIME type agreeing. */
 const isDocumentFile = (file: string, mime: string) => isDocumentMime(mime) && documentFormat(file)?.mime === mime;
 
-export function assetUsages(state: ProjectState): Record<string, number> {
+/**
+ * How many places use each library asset. With `parts` (a session's validation keeper), each document's own count is
+ * kept between states, so an edit counts again only what it changed (#966); the totals, and the order assets are named
+ * in, are the same either way.
+ */
+export function assetUsages(state: ProjectState, parts?: CheckParts): Record<string, number> {
   const out: Record<string, number> = {};
-  walkValues(state, (v) => {
-    const id = (v as { assetId?: unknown }).assetId;
-    if (typeof id === 'string') out[id] = (out[id] ?? 0) + 1;
-    // A document is in use while a link goes to it.
-    if (isDocumentLink(v)) out[v.target] = (out[v.target] ?? 0) + 1;
-  });
-  for (const k of [state.site.favicon, state.site.socialImage, state.site.identity?.logo]) if (typeof k === 'string' && k) out[k] = (out[k] ?? 0) + 1;
-  for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
-  for (const e of collectionEntries(state)) {
-    if (typeof e.featuredImage === 'string' && e.featuredImage) out[e.featuredImage] = (out[e.featuredImage] ?? 0) + 1;
-    const sharing = entrySharingImage(e);
-    if (sharing) out[sharing] = (out[sharing] ?? 0) + 1;
-  }
+  const add = (counts: ReadonlyMap<string, number>) => {
+    for (const [id, n] of counts) out[id] = (Object.hasOwn(out, id) ? out[id] : 0) + n;
+  };
+  const shared = (key: string, compute: () => Map<string, number>) => (parts ? parts.shared(key, compute) : compute());
+  // The uses walkValues finds, part by part in its order: each tree, the components, each page's sharing settings,
+  // then the collections.
+  for (const t of allTrees(state)) add(parts ? parts.tree(t, 'assetUses', () => valueUses(t.tree.nodes)) : valueUses(t.tree.nodes));
+  add(shared('componentAssetUses', () => componentUses(state)));
+  for (const [id, p] of Object.entries(state.pages)) add(parts ? parts.tree({ owner: { kind: 'page', id }, tree: p, label: p.title }, 'seoAssetUses', () => valueUses(p.seo)) : valueUses(p.seo));
+  add(shared('collectionAssetUses', () => collectionUses(state)));
+  add(shared('pictureAssetUses', () => pictureUses(state)));
   // An imported font is in use while a token or style names its family.
   for (const [id, n] of Object.entries(fontAssetUsages(state, themeFontTokens(state)))) out[id] = (out[id] ?? 0) + n;
   return out;

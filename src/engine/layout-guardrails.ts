@@ -8,6 +8,7 @@ import { detachedClasses, nodeAxes, nodeClass, pageNodeClass, variantClass } fro
 import { allTrees, childLists, displayName } from './tree';
 import { themeLayoutRules, type ThemeLayoutRules } from './theme-layout-rules';
 import type { Diagnostic } from './validate';
+import type { Keeper } from './validation-cache';
 
 /*
  * Layout guardrails (#668): three CSS combinations that quietly break a layout, said in plain words.
@@ -242,7 +243,7 @@ interface Shared {
  * Diagnostics for every page, header, footer, collection layout and project component, read against the project
  * theme's stylesheet (or `themeCss`).
  */
-export function layoutGuardrailDiagnostics(state: ProjectState, themeCss?: string): Diagnostic[] {
+export function layoutGuardrailDiagnostics(state: ProjectState, themeCss?: string, keep?: Keeper): Diagnostic[] {
   const out: Diagnostic[] = [];
   let theme: ThemeLayoutRules;
   try {
@@ -257,11 +258,16 @@ export function layoutGuardrailDiagnostics(state: ProjectState, themeCss?: strin
     // Theme components are fixed theme data, though their styles count where they are placed; a code component
     // renders its source, whatever tree it was saved with.
     if (def && (def.owner === 'theme' || def.kind !== 'managed')) continue;
-    try {
-      for (const d of treeGuardrails(state, owner, tree, label, def, shared)) out.push(d);
-    } catch {
-      /* a document damaged by hand: the structural checks say what is wrong with it */
-    }
+    // A session's validation keeps each document's own (its stylesheet is the theme's, which the keeper's context holds).
+    const guardrails = () => {
+      try {
+        return treeGuardrails(state, owner, tree, label, def, shared);
+      } catch {
+        /* a document damaged by hand: the structural checks say what is wrong with it */
+        return [];
+      }
+    };
+    for (const d of keep && themeCss === undefined ? keep.tree({ owner, tree, label }, 'guardrails', guardrails) : guardrails()) out.push(d);
   }
   return out;
 }

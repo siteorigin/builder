@@ -282,10 +282,9 @@ export function loopMembers(tree: NodeTree): ReadonlyMap<string, RepeatNode> {
  * entry would decide where a contact form sends (destinationProblems), in every tree but a theme's designs (fixed
  * theme data, checked when the theme is built).
  */
-export function collectionSourceProblems(state: ProjectState): SourceProblem[] {
+export function collectionSourceProblems(state: ProjectState, trees: Array<{ owner: OwnerRef; tree: NodeTree; label: string }> = allTrees(state), destination: FormDestinationLookup = formDestinationLookup(state)): SourceProblem[] {
   const out: SourceProblem[] = [];
-  const destination = formDestinationLookup(state);
-  for (const { owner, tree, label } of allTrees(state)) {
+  for (const { owner, tree, label } of trees) {
     const def: ComponentDefinition | undefined = owner.kind === 'component' ? state.components[owner.id] : undefined;
     if (!tree?.nodes || typeof tree.nodes !== 'object') continue;
     // A theme's design is fixed theme data, checked when the theme is built, but read from the project's files like any
