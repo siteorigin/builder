@@ -128,7 +128,9 @@ describe('the starting version', () => {
     mkdirSync(join(dir, '.siteorigin/versions'), { recursive: true });
     writeFileSync(join(dir, '.siteorigin/versions/versions.json'), '{ not json');
     const again = await reopen(dir);
+    const stored = vi.spyOn(VersionStore.prototype, 'putText');
     expect(await again.recordStartingVersion()).toBe(false);
+    expect(stored).not.toHaveBeenCalled();
     expect(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).toBe('{ not json');
   });
 
@@ -156,12 +158,17 @@ describe('the starting version', () => {
       await held;
       return check.call(this, objects);
     });
+    const stored = vi.spyOn(VersionStore.prototype, 'putText');
     const starting = s.recordStartingVersion();
     await vi.waitFor(() => expect(begun).toHaveBeenCalled());
     const closing = s.close();
+    const calls = git.calls.length;
     release();
     await closing;
     expect(await starting).toBe(false);
+    // Nothing more was stored once the project began closing: no document, and nothing sent to Git.
+    expect(stored).not.toHaveBeenCalled();
+    expect(git.calls.length).toBe(calls);
     expect(rows(dir)).toEqual([]);
     expect(s.recoveryNotes).toEqual([]);
   });
@@ -206,6 +213,18 @@ describe('before changing theme', () => {
     expect(s.state.site.themeId).toBe('foundation');
     expect(s.revision).toBe(revision);
     expect(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')).toBe(site);
+    expect(s.versionsInfo().list).toEqual([]);
+  });
+
+  it('saves nothing for an AI request’s own switch, whose stop takes it back', async () => {
+    const { s } = await make();
+    expect(await s.beginRun('run_theme')).toBeNull();
+    const ai = { label: 'AI', source: 'ai' as const, runId: 'run_theme', history: false };
+    expect((await s.apply({ operations: [{ type: 'page.create', title: 'Provisional' }] }, ai)).ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation-alt' }] }, ai)).ok).toBe(true);
+    expect(s.versionsInfo().list).toEqual([]);
+    await s.abortRun();
+    expect(s.state.site.themeId).toBe('foundation');
     expect(s.versionsInfo().list).toEqual([]);
   });
 
