@@ -405,6 +405,7 @@ describe('a component’s first variant', () => {
 
   it('adds no second option when the first one is the base option itself', () => {
     const { def } = placedWithVariant({ axis: 'tone', variant: 'default', label: 'Plain' });
-    expect(def.variantAxes!.tone).toEqual({ label: 'Tone', default: 'default', options: { default: { label: 'Plain' } } });
+    // A code component's new axis arrives in a property named as the axis.
+    expect(def.variantAxes!.tone).toEqual({ label: 'Tone', default: 'default', options: { default: { label: 'Plain' } }, prop: 'tone' });
   });
 });

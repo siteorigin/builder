@@ -25,11 +25,12 @@ function preview(state: ProjectState, spec: Parameters<typeof generateComponentP
 
 /** A code component with a variant axis, made through the same operations the editor uses. */
 function withCodeComponent(state: ProjectState) {
-  const source = `<script>\n\tlet { title = 'Hello', variant = 'plain', variant_size = 'small', so_o, class: className = '' } = $props();\n</script>\n\n<p class="sample {className} sample--{variant} sample--{variant_size}">{title}</p>\n`;
+  const source = `<script>\n\tlet { title = 'Hello', variant = 'plain', size: scale = 'small', so_o, class: className = '' } = $props();\n</script>\n\n<p class="sample {className} sample--{variant} sample--{scale}">{title}</p>\n`;
   const made = applyOperations(state, [{ type: 'component.createCode', name: 'Sample note', source, properties: { title: { type: 'string', label: 'Title', default: 'Hello' } } }]);
   const id = made.results[0].definitionId as string;
   const withAxis = applyOperations(made.state, [
-    { type: 'component.setVariant', definitionId: id, axis: 'tone', axisLabel: 'Tone', variant: 'plain', label: 'Plain', makeDefault: true },
+    // The tone arrives in `variant`; the size in a prop named as its axis, which the code reads as `scale`.
+    { type: 'component.setVariant', definitionId: id, axis: 'tone', axisLabel: 'Tone', prop: 'variant', variant: 'plain', label: 'Plain', makeDefault: true },
     { type: 'component.setVariant', definitionId: id, axis: 'tone', variant: 'loud', label: 'Loud' },
     { type: 'component.setVariant', definitionId: id, axis: 'size', axisLabel: 'Size', variant: 'small', label: 'Small', makeDefault: true },
     { type: 'component.setVariant', definitionId: id, axis: 'size', variant: 'big', label: 'Big' }
@@ -125,14 +126,14 @@ describe('isolated component preview files', () => {
     expect(attrs(module)).toEqual(attrs(page));
   });
 
-  it('shows a code component with its first axis as `variant`, as a placement passes it', () => {
+  it('shows a code component with each axis in the property its manifest declares, as a placement passes it', () => {
     const { state, id } = withCodeComponent(starter());
     const loud = preview(state, { definitionId: id, variants: { tone: 'loud', size: 'big' }, props: { title: 'Shout' } });
     const module = loud.files.get(PREVIEW_MODULE)!;
     expect(module).toContain('variant="loud"');
-    // An axis the source reads by its own name gets it; one it does not read never lands in its other props.
-    expect(module).toContain('variant_size="big"');
-    expect(module).not.toContain('variant_tone=');
+    expect(module).toContain('size="big"');
+    // Nothing else: no prop a design's file would take, and the tone under its declared name only.
+    expect(module).not.toMatch(/\bvariant_\w+=|\btone=/);
     expect(module).toContain('title={"Shout"}');
     expect(module).toContain('data-so-code="true"');
     expect(loud.files.get(defFile(state.components[id]))).toBe(state.components[id].source);

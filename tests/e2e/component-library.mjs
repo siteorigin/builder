@@ -401,7 +401,7 @@ await win.evaluate(() => window.builder.app.setSettings({ developerMode: true })
 const [{ definitionId: note }] = await apply([{ type: 'component.createCode', name: 'Sample note', source: NOTE, properties: { title: { type: 'string', label: 'Title', default: 'Hello' } } }], 'Create code component');
 await apply(
   [
-    { type: 'component.setVariant', definitionId: note, axis: 'tone', axisLabel: 'Tone', variant: 'plain', label: 'Plain', makeDefault: true },
+    { type: 'component.setVariant', definitionId: note, axis: 'tone', axisLabel: 'Tone', prop: 'variant', variant: 'plain', label: 'Plain', makeDefault: true },
     { type: 'component.setVariant', definitionId: note, axis: 'tone', variant: 'loud', label: 'Loud' }
   ],
   'Add tones'

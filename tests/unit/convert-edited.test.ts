@@ -227,10 +227,14 @@ describe('placements of a converted design file (#737)', () => {
   });
 
   it('is called as code once it no longer names the design it was made from', () => {
-    const { after, before, ids } = converted(false);
+    const { after, before, ids, hero } = converted(false);
     const now = generateProject(after, { instrument: false });
-    // Without the link it is called as any code component is: the first axis as `variant`, no entrance passed.
-    expect(now.get('src/routes/+page.svelte')).toMatch(/\bvariant=/);
+    // Without the link it is called as any code component is: each axis in the prop its manifest declares (the one
+    // the design's file took, which the code still reads), no entrance passed.
+    const call = now.get('src/routes/+page.svelte')!.match(/<C_code_split_hero[^<>]*>/)![0];
+    expect(call).toContain('variant_tone=');
+    expect(call).toContain('variant_layout=');
+    expect(call).not.toMatch(/\bvariant=/);
     expect(now.get('src/routes/+page.svelte')).not.toMatch(/so_appear=\{?"lift"/);
     expect(asDesigns(now.get('src/routes/+page.svelte')!, after, ids)).not.toBe(asDesigns(before.get('src/routes/+page.svelte')!, after, ids));
   });
@@ -252,6 +256,8 @@ describe('the code a design’s file becomes (#737)', () => {
         const { styles: _styles, ...rest } = o;
         expect(code.variantAxes?.[axis]?.options[option]).toEqual(rest);
       }
+    // Each axis arrives in the prop the design's file takes it through.
+    expect(Object.fromEntries(Object.entries(code.variantAxes ?? {}).map(([axis, a]) => [axis, a.prop]))).toEqual({ tone: 'variant_tone', layout: 'variant_layout' });
   });
 });
 

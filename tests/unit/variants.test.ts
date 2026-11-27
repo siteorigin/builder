@@ -118,6 +118,8 @@ describe('migrating single variants to axes', () => {
     });
     const code = Object.values(migrateProject(stored)!.state.components).find((d) => d.kind === 'code' && d.owner === 'project')!;
     expect(Object.keys(code.variantAxes!)).toEqual(['style']);
+    // The single value its source reads arrives as `variant`, as it always did.
+    expect(code.variantAxes!.style.prop).toBe('variant');
   });
 
   it('keeps a forked definition and its own variant rules', async () => {
@@ -170,7 +172,8 @@ describe('migrating single variants to axes', () => {
     // As before axes: the stale value passes nothing, so the code's own fallback shows; the others pass their option.
     for (const text of ['Stale', 'Empty']) expect(call(state, text)).not.toMatch(/\bvariant(_style)?=/);
     expect(call(state, 'Wide')).toContain('variant="wide"');
-    expect(call(state, 'Wide')).toContain('variant_style="wide"');
+    // Only the prop its axis declares, though the source also reads one a design's file would take.
+    expect(call(state, 'Wide')).not.toContain('variant_style=');
     expect(call(state, 'Plain')).toContain('variant="default"');
     // Choosing an option replaces the stale value, and the code gets it.
     const chosen = applyOperations(state, [{ type: 'instance.setVariant', owner: owner(state), nodeId: 'n_stale', variant: 'wide' }]).state;
@@ -407,9 +410,10 @@ describe('generating variant axes', () => {
     expect(generateProject(s).get(`${STYLES_DIR}/components.css`)).not.toContain(':is(.so-foundation-features-grid--layout');
   });
 
-  it('gives a code component an axis prop only when its source reads it', () => {
+  it('gives a theme’s code component its tone in the prop its manifest declares, and no other', () => {
     const s = fresh();
     add(s, 'contact.form', { tone: 'inverse' });
+    expect(s.components['foundation.contact.form'].variantAxes!.tone.prop).toBe('variant');
     const page = generateProject(s).get('src/routes/+page.svelte')!;
     const tag = page.slice(page.indexOf('<C_foundation_contact_form'));
     const form = tag.slice(0, tag.indexOf('/>'));
