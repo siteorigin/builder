@@ -99,23 +99,23 @@ function partExcluded(part: string, i: number): SnapshotExclusion | null {
   const p = fold(part);
   if (LOCAL_STATE.has(p)) return 'local-state';
   if (CACHES.has(p) || (i === 0 && p === 'build')) return 'cache';
-  return privateName(part, p) ? 'private' : null;
+  return isPrivateFileName(part) || isPrivateFileName(p) ? 'private' : null;
 }
 
 /** What an editor or a sync tool adds to a file's name for its copy: a backup, a swap file, an autosave. */
 const EDITOR_SUFFIX = /(~|#|\.(bak|old|orig|swp|swo|tmp|sav))+$/;
 
 /**
- * Whether a name (and `folded`, the same name folded) is a private file's (isPrivateFileName) or a copy of one: what an
- * editor leaves (`client.pem~`, `.env.swp`, `#.npmrc#`), and any JSON file named after the app's own credential files
- * whatever was added to the name (`api-keys (conflicted copy).json`, as a sync tool names its copy). Broader than an
- * export's rule on purpose: a snapshot keeps what it holds for good, so a public file named after them stays out too.
+ * Whether a file named `folded` (folded) is a copy of a private file: what an editor leaves of one (`client.pem~`,
+ * `.env.swp`, `#.npmrc#`), and any JSON file named after the app's own credential files whatever was added to the name
+ * (`api-keys (conflicted copy).json`, as a sync tool names its copy). Broader than an export's rule on purpose: a
+ * snapshot keeps what it holds for good, so a public file named after them stays out too. A file's name only: a
+ * folder's is never stripped, and a canonical document is never one.
  */
-function privateName(name: string, folded: string): boolean {
-  if (isPrivateFileName(name) || isPrivateFileName(folded)) return true;
+function copyOfPrivate(folded: string): boolean {
   const bare = folded.replace(EDITOR_SUFFIX, '').replace(/^\.?#/, '');
   if (bare && bare !== folded && isPrivateFileName(bare)) return true;
-  return /(source-secrets|api-keys).*\.json/.test(folded);
+  return /(source-secrets|api-keys).*\.json([~#]|\.(bak|old|orig|swp|swo|tmp|sav))*$/.test(folded);
 }
 
 /**
@@ -142,6 +142,7 @@ export function snapshotPlace(rel: string): SnapshotPlace {
   }
   const name = fold(parts[parts.length - 1]);
   if (CLUTTER.test(name)) return excluded('clutter');
+  if (copyOfPrivate(name) && !isCanonicalPath(rel)) return excluded('private');
   if (fold(parts[0]) === 'siteorigin' && parts.length > 1) {
     // The brief, and any copy of it an editor or a file manager left beside it (`brief.json~`, `.#brief.json`,
     // `brief (1).json`), which can hold notes the author has since taken out.

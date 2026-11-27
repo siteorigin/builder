@@ -79,6 +79,11 @@ describe('which files a snapshot holds', () => {
       // The author's own hook, which takes the generated one's place.
       'src/hooks.server.ts',
       'src/lib/siteorigin/fonts/inter.woff2',
+      // Named like a copy of a private file only in part: a folder, a canonical document, another kind of file.
+      'siteorigin/components/docs.key.old/component.json',
+      'siteorigin/pages/api-keys-guide.json',
+      'static/docs/api-keys.jsonld',
+      'src/lib/siteorigin/fonts/api-keys-guide.json.woff2',
       'static/assets/photo-1234abcd.jpg',
       'static/assets/photo-1234abcd-640w.webp',
       'static/robots.txt',
