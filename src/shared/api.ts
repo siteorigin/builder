@@ -1,5 +1,5 @@
 import type { ApplyResult, EditBatch, Op } from './ops';
-import type { ElementRef, OwnerRef, ProjectState, PropSchema } from './types';
+import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
 import type { ShortcutSettings } from './shortcuts';
@@ -1147,8 +1147,8 @@ export type SourceSyncResult =
 export interface SourceManifest {
   /** The component being edited, for its variant axes and, without `properties`, its stored properties. */
   definitionId?: string;
-  /** The properties as edited, not yet saved. */
-  properties?: Record<string, PropSchema>;
+  /** The properties as edited, not yet saved (the editor's draft, which may not be complete). */
+  properties?: Record<string, unknown>;
 }
 
 export interface BuilderApi {

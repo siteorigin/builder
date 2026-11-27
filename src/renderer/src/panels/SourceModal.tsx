@@ -874,6 +874,7 @@ export function NewCodeComponentModal() {
       const id = r?.[0]?.definitionId as string | undefined;
       if (!id) return setErrors([CREATE_FAILED]);
       if (checked.fixed) toast(`Fixed and created: ${checked.fixed}`);
+      else if (checked.warnings?.length) toast(`Created with ${checked.warnings.length} warning${checked.warnings.length === 1 ? '' : 's'}. ${checked.warnings[0]}`);
       setState({ modal: null });
       await insert({ definitionId: id }, title);
     } catch {

@@ -34,7 +34,7 @@ import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { HISTORY_LIMIT } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
+import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
@@ -3205,14 +3205,12 @@ export class ProjectSession extends EventEmitter {
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined) continue;
         const was = this.state.components[def.id];
-        // The props its axes arrive in and its properties, checked alone against code that passed its other checks:
-        // unchanged code (a theme refresh among them), or code the app ships. A design's edited file takes what the
-        // design's file took (see the generator's designCalled), so only its axes are held to its manifest.
+        // What its code is held to of its manifest (a design's edited file takes what the design's file took: see
+        // the generator's designCalled), checked alone against code that passed its other checks: unchanged code (a
+        // theme refresh among them), or code the app ships.
+        const manifest = designCalled(next, def) ? { ...def, designFile: true } : def;
         const axesOnly = async () => {
-          const errors = [
-            ...((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []),
-            ...((def.generatedFrom ? [] : await codeManifestProblems(def.source!, def, opts.source === 'ai' || importing)) ?? [])
-          ].filter((p) => p.severity === 'error');
+          const errors = [...((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []), ...((await codeManifestProblems(def.source!, manifest, opts.source === 'ai' || importing)) ?? [])].filter((p) => p.severity === 'error');
           return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
         };
         if (was?.source === def.source) {
@@ -3243,8 +3241,8 @@ export class ProjectSession extends EventEmitter {
             filename: def.sourcePath,
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
             ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties } } : {}),
-            // Its code takes what its properties hold, and nothing they do not (a design's edited file takes the design's).
-            ...(def.generatedFrom ? {} : { manifest: def }),
+            // Its code takes what its properties hold, and nothing they do not.
+            manifest,
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }

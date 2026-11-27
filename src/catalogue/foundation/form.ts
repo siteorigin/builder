@@ -52,7 +52,7 @@ function formSource(kind: 'section' | 'block'): string {
 		endpoint = '',
 		accessKey = '',
 		formName = '${block ? 'newsletter' : 'contact'}',
-		fields = [],
+		fields,
 		submitLabel,
 		successMessage,
 		errorMessage,

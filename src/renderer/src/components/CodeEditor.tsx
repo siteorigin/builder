@@ -186,6 +186,9 @@ function savedWrap(readOnly: boolean): boolean {
   }
 }
 
+/** Marks the transaction that tells the live check the manifest it holds the code to has changed. */
+const manifestChanged = Annotation.define<boolean>();
+
 /**
  * Svelte source editor with syntax highlighting, live compiler diagnostics and a status strip. Tab indents, so
  * Escape then Tab leaves the editor (WCAG 2.1.2); a second Escape reaches the dialog. `locked` holds the text
@@ -326,7 +329,8 @@ export function CodeEditor({
         setChecking(false);
         return diagnostics;
       },
-      { delay: 600 }
+      // A change of the manifest checks the code again (see below), though the text stayed the same.
+      { delay: 600, needsRefresh: (u) => u.transactions.some((tr) => tr.annotation(manifestChanged)) }
     );
     const editKeys = readOnly
       ? []
@@ -459,7 +463,10 @@ export function CodeEditor({
   useEffect(() => {
     if (linted.current === manifestKey) return;
     linted.current = manifestKey;
-    if (view.current && !readOnly) forceLinting(view.current);
+    if (!view.current || readOnly) return;
+    setChecking(true);
+    view.current.dispatch({ annotations: manifestChanged.of(true) });
+    forceLinting(view.current);
   }, [manifestKey, readOnly]);
 
   const toggleWrap = () => {

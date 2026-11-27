@@ -29,6 +29,7 @@ import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter,
 import { CompileCache, compileProject } from './compile';
 import { createCompilePool } from './compile-client';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
+import { designCalled } from '@generator/index';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
 import { setSiteIconRenderer } from './project/site-icons';
 import { setToolsCheck } from './runtime/manager';
@@ -756,10 +757,10 @@ function registerIpc() {
     if (names) declareCodeNames(contract, names);
     // The properties being edited (or the component's own) and its axes, which a user's code is warned against.
     const given = manifest && typeof manifest === 'object' ? (manifest as SourceManifest) : {};
-    const components = controller.session?.state.components;
-    const def = typeof given.definitionId === 'string' && components && Object.hasOwn(components, given.definitionId) ? components[given.definitionId] : undefined;
-    const properties = given.properties && typeof given.properties === 'object' && !Array.isArray(given.properties) ? given.properties : def?.properties;
-    const held = properties && !def?.generatedFrom ? { manifest: { properties, variantAxes: def?.variantAxes } } : {};
+    const state = controller.session?.state;
+    const def = typeof given.definitionId === 'string' && state && Object.hasOwn(state.components, given.definitionId) ? state.components[given.definitionId] : undefined;
+    const properties = given.properties && typeof given.properties === 'object' && !Array.isArray(given.properties) ? (given.properties as ComponentDefinition['properties']) : def?.properties;
+    const held = properties ? { manifest: { properties, variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) } } : {};
     const problems = await checkSvelteSource(String(source), { contract, ...held });
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };

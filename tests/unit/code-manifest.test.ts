@@ -71,16 +71,53 @@ describe('checking a code component against its manifest', () => {
       count: { type: 'number', label: 'Count', default: 3 },
       open: { type: 'boolean', label: 'Open', default: false },
       size: { type: 'enum', label: 'Size', default: 'md', options: [{ value: 'md', label: 'Medium' }, { value: 'lg', label: 'Large' }] },
-      body: { type: 'richtext', label: 'Body', default: 'First paragraph' },
+      body: { type: 'richtext', label: 'Body', default: [{ type: 'p', spans: [{ text: 'First paragraph' }] }] },
       table: { type: 'table', label: 'Table', default: { columns: [{ id: 'col_a', label: 'A' }], rows: [] } }
     });
     const take = (defaults: string) => `<script>\n\tlet { ${defaults} } = $props();\n</script>\n<p>{count}{open}{size}{body}{table}</p>\n`;
     expect(await messages(take(`count = 3, open = false, size = 'md', body = ['First paragraph'], table = { rows: [], columns: [{ label: 'A', id: 'col_a' }] }`), manifest)).toEqual([]);
-    // Worked out, or explicitly undefined or null, a default says nothing against the manifest's.
-    expect(await messages(take(`count = 1 + 2, open = undefined, size = null, body = [], table`).replace('body = []', 'body = [...[]]'), manifest)).toEqual([]);
+    // Worked out, or explicitly undefined, a default says nothing against the manifest's.
+    expect(await messages(take(`count = 1 + 2, open = undefined, size, body = [...[]], table`), manifest)).toEqual([]);
+    // Null is a default like any other: an unplaced component would show nothing where the manifest says md.
+    expect(await messages(take(`count, open, size = null, body, table`), manifest)).toEqual(['error: The code\'s default for size (null) is not the “Size” property\'s default ("md"): write the manifest\'s default, or none.']);
     const off = await messages(take(`count = -3, open = true, size = 'lg', body = [], table = { columns: [], rows: [] }`), manifest);
     expect(off.map((m) => /default for (\w+)/.exec(m)?.[1])).toEqual(['count', 'open', 'size', 'body', 'table']);
     expect(off[0]).toBe('error: The code\'s default for count (-3) is not the “Count” property\'s default (3): write the manifest\'s default, or none.');
+  });
+
+  it('compares an object’s and a list’s defaults field by field, and skips what the site gives them', async () => {
+    const manifest = props({
+      cta: { type: 'object', label: 'Button', fields: { label: str('Label', 'Go'), note: str('Note', 'Soon') }, default: { label: 'Start' } },
+      rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { name: str('Name', 'Untitled') }, default: [{ id: 'r1', name: 'One' }, { id: 'r2' }] },
+      links: { type: 'list', label: 'Links', itemLabel: 'Link', fields: { to: { type: 'link', label: 'Link', default: { kind: 'external', url: 'https://example.com' } } }, default: [{ id: 'l1' }] }
+    } as Record<string, PropSchema>);
+    const take = (defaults: string) => `<script>\n\tlet { ${defaults} } = $props();\n</script>\n<p>{cta}{rows}{links}</p>\n`;
+    expect(await messages(take(`cta = { label: 'Start', note: 'Soon' }, rows = [{ id: 'r1', name: 'One' }, { id: 'r2', name: 'Untitled' }], links = []`), manifest)).toEqual([]);
+    const off = await messages(take(`cta = { label: 'Wrong', note: 'Soon' }, rows = [], links`), manifest);
+    expect(off.map((m) => /default for (\w+)/.exec(m)?.[1])).toEqual(['cta', 'rows']);
+  });
+
+  it('says nothing of a default the draft manifest leaves out, rather than failing', async () => {
+    const draft = props({ enabled: { type: 'boolean', label: 'On' } as unknown as PropSchema, count: { type: 'number', label: 'Count' } as unknown as PropSchema });
+    expect(await messages(`<script>\n\tlet { enabled = false, count = 1 } = $props();\n</script>\n<p>{enabled}{count}</p>\n`, draft)).toEqual([]);
+    // A manifest that is not one at all holds the code to nothing it can read.
+    expect(await messages(`<script>\n\tlet { title } = $props();\n</script>\n<p>{title}</p>\n`, { properties: { title: 'x', lead: null } } as unknown as CodeManifest)).toEqual([
+      "error: The code takes title from $props(), which is not one of the component's properties: declare it, or stop reading it, as no placement can set it."
+    ]);
+  });
+
+  it('holds a design’s edited file to the keys the design’s file took its properties by, and nothing more', async () => {
+    // A property named class arrives in prop_class, as the design's file was given it; variant and so_appear are its own.
+    const manifest: CodeManifest = { ...props({ class: str('Class name'), title: str('Title', 'Hi') }), designFile: true };
+    const file = `<script>\n\tlet { prop_class, title = 'Other', variant, so_appear, class: className } = $props();\n</script>\n<p class={[className, variant, so_appear]}>{prop_class}{title}</p>\n`;
+    expect(await messages(file, manifest)).toEqual([]);
+    expect(await messages(file.replace('prop_class, ', ''), manifest)).toEqual([
+      'error: The “Class name” property arrives in prop_class, which the code never takes from $props(): take it (let { prop_class } = $props()), or remove the property, as what placements set there will not show.'
+    ]);
+    // Ordinary code is never given the entrance a design's file takes.
+    expect(await messages(`<script>\n\tlet { so_appear } = $props();\n</script>\n<p>{so_appear}</p>\n`, props({}))).toEqual([
+      "error: The code takes so_appear from $props(), which is not one of the component's properties: declare it, or stop reading it, as no placement can set it."
+    ]);
   });
 
   it('runs in the full check with the manifest given, at the policy’s severity', async () => {

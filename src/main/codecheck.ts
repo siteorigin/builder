@@ -13,10 +13,11 @@ import { posix } from 'node:path';
 import type { ComponentDefinition } from '@shared/types';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { CODE_TEXT_ATTR, CODE_TEXT_HOOK, codeTextField, parseCodeTextPath } from '@shared/code-text';
-import { codeTakesBlocks, slotIdent } from '@generator/index';
+import { codeTakesBlocks, propKey, slotIdent } from '@generator/index';
 import { axesOf } from '@shared/variants';
 import { richTextToParagraphs, toRichText } from '@shared/richtext';
 import { tokenVar } from '@shared/styles';
+import { COPYRIGHT_PROP, copyrightYearParts } from '@shared/site-name';
 
 export interface CodeProblem {
   severity: 'error' | 'warning';
@@ -131,8 +132,13 @@ export interface CheckOptions {
   manifest?: CodeManifest;
 }
 
-/** What of a code component's manifest its code is held to: the properties placements pass, and its axes' props. */
-export type CodeManifest = Pick<ComponentDefinition, 'properties' | 'variantAxes'>;
+/**
+ * What of a code component's manifest its code is held to: the properties placements pass, and its axes' props.
+ * `designFile` is for a design's generated file edited outside the app and converted (`generatedFrom`): its placements
+ * pass each property under the key the design's file took it by (see the generator's propKey), with the props a
+ * design's file takes for itself, so only a declared property the code no longer takes is reported.
+ */
+export type CodeManifest = Pick<ComponentDefinition, 'properties' | 'variantAxes'> & { designFile?: boolean };
 
 /** A code component's contract as the code check holds its code to it (see contractProblems). */
 export interface CodeContract {
@@ -640,11 +646,11 @@ export async function codeAxisPropProblems(source: string, variantAxes: Componen
 
 /**
  * The props a placement passes a code component besides its declared properties (see the generator's emitInstance):
- * its part classes and root class, its anchor, its content, and what the site's entrances, page lists and forms hand
- * on, and in the editor's preview the hook its marked text is edited through. Its slots arrive as `slot_<name>` and
+ * its part classes and root class, its anchor, its content, and what the site's page lists, eager images and forms
+ * hand on, and in the editor's preview the hook its marked text is edited through. Its slots arrive as `slot_<name>` and
  * its axes in the props they name.
  */
-const EDITOR_PROPS = new Set(['class', 'children', 'so_o', 'so_oi', 'so_id', 'so_webmcp', 'so_appear', 'so_stagger', 'so_pages', 'so_eager', CODE_TEXT_HOOK]);
+const EDITOR_PROPS = new Set(['class', 'children', 'so_o', 'so_oi', 'so_id', 'so_webmcp', 'so_pages', 'so_eager', CODE_TEXT_HOOK]);
 
 /** Each prop the script destructures from $props() by name, with the default written for it, if any. */
 function propsTaken(ast: Node): Map<string, { node: Node; right?: Node }> {
@@ -690,28 +696,65 @@ function literalValue(n: Node | undefined, depth = 0): { value: unknown } | unde
   return undefined;
 }
 
+type PropDef = ComponentDefinition['properties'][string];
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
 /**
- * A property's default as its code receives it, or undefined when that depends on the site it is placed in (a link
- * or picture resolved against the project, a list or object of them, a copyright line that reads the year).
+ * A property's value as its code receives it (see the generator's resolveValue for code), or undefined when that
+ * depends on the site it is placed in: a link or picture resolved against the project, a list worked out from its
+ * pages or filled from the pages it links to, or a list or object holding any of those.
  */
-function codeDefault(schema: ComponentDefinition['properties'][string]): { value: unknown } | undefined {
+function codeValue(schema: PropDef, value: unknown, depth = 0): { value: unknown } | undefined {
+  if (!isRecord(schema) || value === undefined || depth > 4) return undefined;
   switch (schema.type) {
     case 'string':
     case 'enum':
     case 'icon':
-      return typeof schema.default === 'string' && !schema.default.includes('{year}') ? { value: schema.default } : undefined;
-    case 'number':
-    case 'boolean':
     case 'choices':
     case 'table':
-      return { value: schema.default };
+      return { value };
+    case 'number':
+      return typeof value === 'number' ? { value } : undefined;
+    case 'boolean':
+      return typeof value === 'boolean' ? { value } : undefined;
     case 'richtext':
-      return codeTakesBlocks(schema) ? undefined : { value: richTextToParagraphs(toRichText(schema.default, schema.plainAs)) };
+      return codeTakesBlocks(schema) ? undefined : { value: richTextToParagraphs(toRichText(value, schema.plainAs)) };
     case 'token':
-      return typeof schema.default?.token === 'string' ? { value: `var(${tokenVar(schema.default.token)})` } : undefined;
+      return isRecord(value) && typeof value.token === 'string' ? { value: `var(${tokenVar(value.token)})` } : undefined;
+    case 'object': {
+      if (!isRecord(value) || !isRecord(schema.fields)) return undefined;
+      const out: Record<string, unknown> = {};
+      for (const [k, f] of Object.entries(schema.fields)) {
+        const v = codeValue(f, Object.hasOwn(value, k) ? value[k] : f?.default, depth + 1);
+        if (!v) return undefined;
+        out[k] = v.value;
+      }
+      return { value: out };
+    }
+    case 'list': {
+      if (schema.feed || schema.pageTeaser || !Array.isArray(value) || !isRecord(schema.fields)) return undefined;
+      const items: unknown[] = [];
+      for (const item of value) {
+        if (!isRecord(item)) return undefined;
+        const out: Record<string, unknown> = { id: item.id };
+        for (const [k, f] of Object.entries(schema.fields)) {
+          const v = codeValue(f, item[k] ?? f?.default, depth + 1);
+          if (!v) return undefined;
+          out[k] = v.value;
+        }
+        items.push(out);
+      }
+      return { value: items };
+    }
     default:
       return undefined;
   }
+}
+
+/** A property's default as its code receives it (see codeValue); a copyright line that reads the year has none. */
+function codeDefault(name: string, schema: PropDef): { value: unknown } | undefined {
+  if (name === COPYRIGHT_PROP && typeof schema.default === 'string' && copyrightYearParts(schema.default)) return undefined;
+  return codeValue(schema, schema.default);
 }
 
 /** Whether two literal values are the same, whatever order an object's keys are written in. */
@@ -724,7 +767,7 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 const short = (v: unknown) => {
-  const s = JSON.stringify(v);
+  const s = JSON.stringify(v) ?? String(v);
   return s.length > 60 ? `${s.slice(0, 57)}…` : s;
 };
 
@@ -740,34 +783,43 @@ const short = (v: unknown) => {
 function manifestProblems(ast: Node, manifest: CodeManifest, strict: boolean): Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> {
   const out: Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> = [];
   const severity: CodeProblem['severity'] = strict ? 'error' : 'warning';
-  const properties = manifest.properties && typeof manifest.properties === 'object' ? manifest.properties : {};
-  const declared = (name: string) => Object.hasOwn(properties, name) && !!properties[name] && typeof properties[name] === 'object';
+  const properties = isRecord(manifest.properties) ? (manifest.properties as ComponentDefinition['properties']) : {};
+  const declared = (name: string) => Object.hasOwn(properties, name) && isRecord(properties[name]) && typeof properties[name].type === 'string';
+  const labelOf = (name: string) => (typeof properties[name].label === 'string' && properties[name].label.trim() ? properties[name].label.trim() : name);
   const taken = propsTaken(ast);
   const whole = wholePropsReads(ast);
   const axisProps = new Set(axesOf(manifest).flatMap(([, a]) => (typeof a.prop === 'string' ? [a.prop] : [])));
   const editors = (name: string) => EDITOR_PROPS.has(name) || name.startsWith('slot_') || axisProps.has(name);
+  // A design's file takes each property by the key the design's file was given it under.
+  const keyOf = (name: string) => (manifest.designFile ? propKey({ kind: 'managed', properties } as ComponentDefinition, name) : name);
   for (const name of Object.keys(properties)) {
-    if (!declared(name) || taken.has(name) || whole.read.has(name) || axisProps.has(name)) continue;
-    const label = typeof properties[name].label === 'string' && properties[name].label.trim() ? properties[name].label.trim() : name;
+    const key = keyOf(name);
+    if (!declared(name) || taken.has(key) || whole.read.has(key) || (!manifest.designFile && axisProps.has(name))) continue;
     out.push(
       whole.handed
-        ? { severity: 'warning', message: `The “${label}” property arrives in ${name}, which the code does not take from $props() by name: take it (let { ${name} } = $props()) so the check can see the code reads it.` }
-        : { severity, message: `The “${label}” property arrives in ${name}, which the code never takes from $props(): take it (let { ${name} } = $props()), or remove the property, as what placements set there will not show.` }
+        ? { severity: 'warning', message: `The “${labelOf(name)}” property arrives in ${key}, which the code does not take from $props() by name: take it (let { ${key} } = $props()) so the check can see the code reads it.` }
+        : { severity, message: `The “${labelOf(name)}” property arrives in ${key}, which the code never takes from $props(): take it (let { ${key} } = $props()), or remove the property, as what placements set there will not show.` }
     );
   }
+  if (manifest.designFile) return out;
   const undeclared = (name: string, node?: Node) =>
     out.push({ severity, message: `The code takes ${name} from $props(), which is not one of the component's properties: declare it, or stop reading it, as no placement can set it.`, ...(node ? { node } : {}) });
   for (const [name, { node }] of taken) if (!declared(name) && !editors(name)) undeclared(name, node);
   for (const name of whole.read) if (!taken.has(name) && !declared(name) && !editors(name)) undeclared(name);
   for (const [name, { right }] of taken) {
     if (!right || !declared(name)) continue;
+    // No default, or one the code works out, says nothing against the manifest's; null is a default like any other.
     const written = literalValue(right);
-    // No default, or one the code works out, says nothing against the manifest's.
-    if (!written || written.value === null) continue;
-    const expected = codeDefault(properties[name]);
+    if (!written) continue;
+    let expected: { value: unknown } | undefined;
+    try {
+      expected = codeDefault(name, properties[name]);
+    } catch {
+      // A default the code could not be given (a draft the editor has not finished) is not compared.
+      expected = undefined;
+    }
     if (!expected || sameValue(written.value, expected.value)) continue;
-    const label = typeof properties[name].label === 'string' && properties[name].label.trim() ? properties[name].label.trim() : name;
-    out.push({ severity, message: `The code's default for ${name} (${short(written.value)}) is not the “${label}” property's default (${short(expected.value)}): write the manifest's default, or none.`, node: right });
+    out.push({ severity, message: `The code's default for ${name} (${short(written.value)}) is not the “${labelOf(name)}” property's default (${short(expected.value)}): write the manifest's default, or none.`, node: right });
   }
   return out;
 }
