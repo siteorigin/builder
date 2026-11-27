@@ -2,28 +2,28 @@
   "schemaVersion": 1,
   "rows": {
     "renderer.script": {
-      "raw": 2961287,
-      "gzip": 771458,
+      "raw": 1452183,
+      "gzip": 448328,
       "files": []
     },
     "renderer.style": {
-      "raw": 130456,
-      "gzip": 29590,
+      "raw": 155277,
+      "gzip": 36471,
       "files": []
     },
     "renderer.later": {
-      "raw": 6884790,
-      "gzip": 1581219,
+      "raw": 3701073,
+      "gzip": 1066050,
       "files": []
     },
     "main": {
-      "raw": 4612634,
-      "gzip": 1327268,
+      "raw": 4750571,
+      "gzip": 1369313,
       "files": []
     },
     "preload": {
-      "raw": 8745,
-      "gzip": 2550,
+      "raw": 8869,
+      "gzip": 2574,
       "files": []
     },
     "worker.compile-worker": {
@@ -32,23 +32,23 @@
       "files": []
     },
     "worker.media-worker": {
-      "raw": 135379,
-      "gzip": 44879,
+      "raw": 136669,
+      "gzip": 45127,
       "files": []
     },
     "worker.posts-import-worker": {
-      "raw": 171732,
-      "gzip": 57540,
+      "raw": 172532,
+      "gzip": 57946,
       "files": []
     },
     "worker.runtime-worker": {
-      "raw": 356501,
-      "gzip": 111354,
+      "raw": 359779,
+      "gzip": 112515,
       "files": []
     },
     "worker.source-sync-worker": {
-      "raw": 230406,
-      "gzip": 73517,
+      "raw": 232806,
+      "gzip": 74409,
       "files": []
     },
     "worker.tools-worker": {
