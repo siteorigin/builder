@@ -17,7 +17,7 @@ import { PagesPanel } from './panels/PagesPanel';
 import { FirstSteps, GetStartedStatus, useFirstStepsTracking } from './panels/FirstSteps';
 import { PostsPanel } from './panels/PostsPanel';
 import { PostWriter } from './panels/PostWriter';
-import { SeoPanel, SeoView } from './panels/SeoView';
+import { SeoPanel, SeoView, useLeaveInspectorForSeo } from './panels/SeoView';
 import { LayersPanel } from './panels/LayersPanel';
 import { InsertPanel } from './panels/InsertPanel';
 import { AssetsPanel } from './panels/AssetsPanel';
@@ -55,7 +55,7 @@ import { admittedRemote, confirmLeaveLive, isRemoteShell, LOCAL_PROJECT_COMMANDS
 import { RemoteChat } from './panels/RemoteChat';
 import { timedPanel } from './lib/perf-panels';
 import { perfMark } from './lib/perf';
-import { Hideable } from './lib/hideable';
+import { Hideable, ShownOnce } from './lib/hideable';
 
 /** Leave "editing everywhere" for the page it was entered from. However it is left (Done editing, Esc), focus
  *  lands on the page switcher, where the page now being edited is named. */
@@ -465,6 +465,8 @@ export function Editor() {
   const writing = workspace === 'write';
   const seoing = workspace === 'seo';
   const covered = canvasCovered(workspace);
+  // A field with focus in the Inspector is left as the SEO view comes in front, the first time too (it is built then).
+  useLeaveInspectorForSeo();
   // In the remote shell, this collaborator's own request to the host's AI (#769).
   const aiStatus = useStore((s) => (isRemoteShell(s) ? remoteRunStatus(s) : s.runStatus));
   const aiBusy = !!aiStatus;
@@ -736,7 +738,8 @@ export function Editor() {
       label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI',
       icon: <Sparkles />,
       extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined,
-      // In the remote shell the AI is the host's, asked for this collaborator's own requests (#769).
+      // In the remote shell the AI is the host's, asked for this collaborator's own requests (#769). Built at once, shown
+      // or not: it announces a run's progress, which can start while another view is in front.
       panel: () => timedPanel('chat', remoteShell ? <RemoteChat /> : <Chat />)
     },
     inspect: {
@@ -745,9 +748,11 @@ export function Editor() {
       panel: () =>
         timedPanel(
           'inspect',
-          <Hideable hidden={!dockOpen || rightTab !== 'inspect'}>
-            <Inspector />
-          </Hideable>
+          <ShownOnce shown={dockOpen && rightTab === 'inspect'}>
+            <Hideable hidden={!dockOpen || rightTab !== 'inspect'}>
+              <Inspector />
+            </Hideable>
+          </ShownOnce>
         )
     },
     styles: {
@@ -756,13 +761,25 @@ export function Editor() {
       panel: () =>
         timedPanel(
           'styles',
-          <Hideable hidden={!dockOpen || rightTab !== 'styles'}>
-            <SiteStyles />
-          </Hideable>
+          <ShownOnce shown={dockOpen && rightTab === 'styles'}>
+            <Hideable hidden={!dockOpen || rightTab !== 'styles'}>
+              <SiteStyles />
+            </Hideable>
+          </ShownOnce>
         )
     },
     // The project's private brief (#518), apart from Site details' visitor-facing description.
-    project: { label: 'Project', icon: <NotebookPen />, panel: () => timedPanel('project', <ProjectBrief />) }
+    project: {
+      label: 'Project',
+      icon: <NotebookPen />,
+      panel: () =>
+        timedPanel(
+          'project',
+          <ShownOnce shown={dockOpen && rightTab === 'project'}>
+            <ProjectBrief />
+          </ShownOnce>
+        )
+    }
   };
 
   return (
@@ -847,21 +864,24 @@ export function Editor() {
             <Palette />
           </button>
         </div>
-        {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching, and
-            are held while hidden, so they do no work for what they cannot show (lib/hideable). */}
+        {/* Each view is built the first time it shows, and stays mounted while hidden from then on, so a search,
+            expanded layers or scroll position survive switching; it is held while hidden, so it does no work for what
+            it cannot show (lib/hideable). */}
         <aside id="editor-sidebar" className={`side-panel${shown.left < 250 ? ' narrow' : ''}`} style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar">
           {leftTabs.map(({ id: t }) => (
             <div key={t} className="side-panel-view" hidden={leftTab !== t}>
               {timedPanel(
                 t,
-                <Hideable hidden={leftTab !== t}>
-                  {t === 'pages' && <PagesPanel />}
-                  {t === 'posts' && <PostsPanel />}
-                  {t === 'layers' && <LayersPanel />}
-                  {t === 'insert' && <InsertPanel />}
-                  {t === 'assets' && <AssetsPanel narrow={shown.left < 240} />}
-                  {t === 'seo' && <SeoPanel />}
-                </Hideable>
+                <ShownOnce shown={leftTab === t}>
+                  <Hideable hidden={leftTab !== t}>
+                    {t === 'pages' && <PagesPanel />}
+                    {t === 'posts' && <PostsPanel />}
+                    {t === 'layers' && <LayersPanel />}
+                    {t === 'insert' && <InsertPanel />}
+                    {t === 'assets' && <AssetsPanel narrow={shown.left < 240} />}
+                    {t === 'seo' && <SeoPanel />}
+                  </Hideable>
+                </ShownOnce>
               )}
               {t === 'pages' && !remoteShell && <FirstSteps />}
             </div>
@@ -876,11 +896,18 @@ export function Editor() {
           {timedPanel('postWriter', <PostWriter hidden={!writing} />)}
         </div>
         <div className="seo-view-holder" style={{ left: RAIL_WIDTH + shown.left, right: shown.right }} hidden={!seoing}>
-          {timedPanel('seoView', <SeoView shown={seoing} />)}
+          {timedPanel(
+            'seoView',
+            // Built only where the sidebar offers SEO: a guest's request for it (refused, put back to Pages) builds nothing.
+            <ShownOnce shown={seoing && leftTabs.some((t) => t.id === 'seo')}>
+              <SeoView shown={seoing} />
+            </ShownOnce>
+          )}
         </div>
         <Seam side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} at={shown.right} restore={() => setState({ dockOpen: true })} />
         <aside id="editor-dock" className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }} aria-label="Right panel">
-          {/* Every dock panel stays mounted, so the chat and inspector keep their state while hidden. */}
+          {/* Every dock panel but the AI's is built the first time it shows, and each stays mounted from then on, so
+              the chat and the inspector keep their state while hidden. */}
           <Tabs<RightTab>
             className="dock-tabs"
             label="Right panel views"

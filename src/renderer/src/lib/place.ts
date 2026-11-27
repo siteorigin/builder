@@ -1,18 +1,39 @@
 import type { ProjectSnapshot } from '@shared/api';
 import type { AssetRecord } from '@shared/types';
-import { api, commitIfUnchanged, errorText, getState, setState, toast } from '../store';
+import { api, commitIfUnchanged, errorText, getState, setState, toast, useStore } from '../store';
 import { trackApply, type ApplyOutcome } from './pending';
 import { reviewImport } from './import-review';
 
 /** Asks the Assets panel to open on one image or document. `detail`: { opening, assetId }. */
 export const SHOW_ASSET_EVENT = 'builder-show-asset';
 
-/** Open the Assets panel on an image or document, if it is still in the opening of the project it was offered in. */
+/**
+ * The last request to show an asset that no Assets panel has taken yet: one asked for before the panel was first built.
+ * It lasts only while the sidebar is on Assets, so a showing that never happened (put back at once, as the remote shell
+ * does) is dropped rather than opened the next time the author chooses Assets.
+ */
+let unshown: { opening: string; assetId: string } | null = null;
+useStore.subscribe((s) => {
+  if (unshown && s.leftTab !== 'assets') unshown = null;
+});
+/** The request `showAsset` made that no Assets panel has taken, taken once (by the panel that shows it). */
+export function takeShowAsset(): { opening: string; assetId: string } | null {
+  const req = unshown;
+  unshown = null;
+  return req;
+}
+
+/**
+ * Open the Assets panel on an image or document, if it is still in the opening of the project it was offered in. A
+ * panel already built hears it as SHOW_ASSET_EVENT; one built by this showing takes it from `takeShowAsset` as it
+ * mounts. Either way the panel checks the opening again, so a request left over from another opening does nothing.
+ */
 export function showAsset(opening: string, assetId: string): void {
   const snap = getState().snapshot;
   if (snap?.workspaceKey !== opening) return;
   const kind = Object.hasOwn(snap.state.assets.assets, assetId) ? snap.state.assets.assets[assetId]?.kind : undefined;
   if (kind !== 'image' && kind !== 'document') return toast('That file is no longer in Assets.', 'info');
+  unshown = { opening, assetId };
   setState({ leftTab: 'assets' });
   window.dispatchEvent(new CustomEvent(SHOW_ASSET_EVENT, { detail: { opening, assetId } }));
 }

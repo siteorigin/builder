@@ -11,7 +11,8 @@ import { missingKey } from './ImagesPicker';
 /** Site details, with the cursor on the site's sharing image (the one a page without an image of its own follows) or its public URL. */
 export function openSiteSharing(field: 'socialImage' | 'baseUrl') {
   openSiteStyles();
-  openSection('site-settings', { focus: field === 'baseUrl' ? '#site-public-url' : '.insp-image.plain-social .insp-image-top .btn' });
+  // Once Site styles shows (built then, the first time it does): its section hears the request only once it is there.
+  requestAnimationFrame(() => openSection('site-settings', { focus: field === 'baseUrl' ? '#site-public-url' : '.insp-image.plain-social .insp-image-top .btn' }));
 }
 
 /** A length of the card at full size, which shrinks with the card where there is less room (see SeoPreview.css). */
