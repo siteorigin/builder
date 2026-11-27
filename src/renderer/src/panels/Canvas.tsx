@@ -712,6 +712,53 @@ export function Canvas() {
     const shown = s.snapshot ? shownView(s.snapshot.state, s.pageId, s.templateMode) : null;
     if (shown?.route) recoverRoute(shown.route, s.snapshot!.revision, session);
   }), [origin, session]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * The selection's outline while the page scrolls (#1307): the page draws it in its own document, which its compositor
+   * moves with the page in the same frame, where the editor's own would follow a frame behind. `ghostKey` is what the
+   * page should draw as this render has it (set below, from the outline's own conditions), null whenever the editor
+   * draws anything but the plain outline; `paged` is the selection whose outline the page says it is drawing, and the
+   * key it drew it for, while the editor's own (and the controls on it, which would trail) is kept out of sight.
+   */
+  const ghostKey = useRef<string | null>(null);
+  const ghostSent = useRef<string | null | undefined>(undefined);
+  const [paged, setPaged] = useState<string | null>(null);
+  // Not drawing the plain outline (nothing selected, Preview, a frame on its way, a control in use): whatever the page
+  // said of its own no longer stands, and is not reused once the outline is drawn again before it says it anew.
+  useEffect(() => {
+    if (paged && !ghostKey.current) setPaged(null);
+  });
+  const pagedWas = useRef(false);
+  function syncGhost(force = false) {
+    const key = ghostKey.current;
+    if (!force && key === ghostSent.current) return;
+    ghostSent.current = key;
+    if (!key) return post('outlineGhost', { spec: null });
+    const { pad, z } = JSON.parse(key) as { pad: number; z: number };
+    const color = (canvasRef.current && getComputedStyle(canvasRef.current).getPropertyValue('--select').trim()) || '#1766c0';
+    post('outlineGhost', { spec: { key, color, pad, z } });
+  }
+  useEffect(() => syncGhost());
+  // A frame of another session knows nothing of it.
+  useEffect(() => {
+    ghostSent.current = undefined;
+    setPaged(null);
+  }, [session]);
+  // The editor's outline is back where the page's is: once a frame has shown it, the page's can go.
+  useEffect(() => {
+    if (paged) {
+      pagedWas.current = true;
+      return;
+    }
+    if (!pagedWas.current) return;
+    pagedWas.current = false;
+    let second = 0;
+    const first = requestAnimationFrame(() => (second = requestAnimationFrame(() => post('outlineGhostDone'))));
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, [paged]); // eslint-disable-line react-hooks/exhaustive-deps
   // Saving or leaving the project asks the preview to hand back an inline edit that is still open.
   useEffect(() => {
     setCanvasCommit(() => post('commitTextEdit'));
@@ -1001,6 +1048,9 @@ export function Canvas() {
           setFormsView((v) => v + 1);
           post('formPractice', { result: practice });
           syncTrack();
+          // A new page load draws no outline of its own until it scrolls.
+          setPaged(null);
+          syncGhost(true);
           // A new page starts with nothing revealed.
           sentReveal.current = null;
           syncReveal();
@@ -1135,6 +1185,10 @@ export function Canvas() {
           }
           const hovered = rectList(p.hovered);
           const selected = rectList(p.selected);
+          // The page drawing the selection's outline as it scrolls, as the editor would draw it now (the key it was drawn
+          // for: the room, the zoom, the colour), for the selection the editor has: its own steps aside.
+          const sel = s.selection;
+          setPaged(typeof p.ghost === 'string' && p.ghost === ghostKey.current && sel && JSON.stringify(descFor(sel)) === JSON.stringify(p.selectedDesc ?? null) ? JSON.stringify([refKey(sel), p.ghost]) : null);
           // The pointer is on the name of what it was over (or its Add button): that element keeps its outline while it
           // rests there.
           const kept = !hovered.length && overTag.current;
@@ -3206,6 +3260,13 @@ export function Canvas() {
   const firstSel = selBoxes[0];
   // Only on the inserted element's own outline, and not once it is being moved or its text typed.
   const arriving = !!arrival && !!selection && arrival.key === refKey(selection) && !reorder && !editing;
+  // What the page draws of the selection's outline while it scrolls: the plain outline only, as drawn below (no repeated
+  // items dimmed, nothing moved, placed, typed or arriving), and not while a control on it is in use.
+  const plainInk = selBoxes.length > 0 && !!selection && !(selection.itemPath?.length && selBoxes.length > 1) && !insertDrop && !imageDrop && !reorder && !editing && !arriving && !adding && !dragging && !resizing;
+  ghostKey.current = plainInk ? JSON.stringify({ pad, z, dpr, shared: selection?.owner.kind === 'shell', defining: !!definitionMode }) : null;
+  // Only while the page's outline is drawn for what the editor would draw now: a change of zoom shows the editor's own
+  // until the page has drawn the outline again for it.
+  const inkPaged = plainInk && !!paged && paged === JSON.stringify([refKey(selection!), ghostKey.current]);
   // Spacing handles sit on the selected box itself (not its outline's breathing room), while editing and not while
   // text is being typed, a block moved, the page resized or a component's design edited everywhere.
   const spaceDesc = selection ? descFor(selection) : null;
@@ -3644,7 +3705,7 @@ export function Canvas() {
                 tabIndex={staleFrame || noEntries ? -1 : undefined}
               />
             </div>
-            <div className="overlay-layer">
+            <div className={`overlay-layer${inkPaged ? ' paged' : ''}`}>
               <div className="overlay-clip">
                 {/* The others in a live session, under everything of the editor's own. */}
                 {!staleFrame && peerMarks.marks.length > 0 && marksOnFrame() && <PeerMarks marks={peerMarks.marks} boxes={markBoxes} toBox={toBox} width={frameW} height={frameH * z} />}
@@ -3690,7 +3751,7 @@ export function Canvas() {
                   // The arrival cue's box is a new one, so the next insertion's cue starts from its beginning.
                   <div
                     key={i === 0 && arriving ? `s0-${arrival.n}` : `s${i}`}
-                    className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && (reorder || insertDrop?.moving) ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}${i === 0 && arriving ? ' arriving' : ''}`}
+                    className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && (reorder || insertDrop?.moving) ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}${i === 0 && arriving ? ' arriving' : ''}${inkPaged ? ' paged' : ''}`}
                     style={b}
                   />
                 ))}

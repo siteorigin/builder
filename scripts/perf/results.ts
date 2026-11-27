@@ -9,7 +9,7 @@ import { MEMORY_PROTOCOL, readingPrefix, type MemoryReading } from './memory';
  * `bytes` are sizes (IPC payloads, files), exact; `memory` is resident or heap memory, in bytes, with a noise band;
  * `share` is one duration as a fraction of another (0 to 1, shown as a percentage), with a noise band as durations have.
  */
-export type Unit = 'ms' | 'count' | 'bytes' | 'memory' | 'share';
+export type Unit = 'ms' | 'count' | 'bytes' | 'memory' | 'share' | 'px';
 
 /** One iteration's value of a metric. */
 export interface Measured {
@@ -169,6 +169,12 @@ export class Collector {
     if (Number.isFinite(value)) this.metrics[name] = { unit: 'share', value };
     else this.need(`${name} (a finite share)`, undefined);
   }
+
+  /** A distance on screen, in the editor's CSS pixels, read from what Chromium drew. */
+  px(name: string, value: number) {
+    if (Number.isFinite(value)) this.metrics[name] = { unit: 'px', value };
+    else this.need(`${name} (a finite distance)`, undefined);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -272,10 +278,12 @@ export function noiseBand(a: Summary, b: Summary): number {
   if (a.unit === 'memory') return Math.max(MEMORY_FLOOR, 3 * Math.max(a.mad, b.mad), 0.1 * Math.abs(a.median));
   // A share moves with the durations it is made of: the same band, its floor one percentage point.
   if (a.unit === 'share') return Math.max(0.01, 3 * Math.max(a.mad, b.mad), 0.1 * Math.abs(a.median));
+  // A distance read off drawn frames moves with the frames' timing: the same band, its floor a pixel.
+  if (a.unit === 'px') return Math.max(1, 3 * Math.max(a.mad, b.mad), 0.1 * Math.abs(a.median));
   return 0;
 }
 /** Units whose changes are judged against a noise band. */
-const banded = (unit: Unit) => unit === 'ms' || unit === 'memory' || unit === 'share';
+const banded = (unit: Unit) => unit === 'ms' || unit === 'memory' || unit === 'share' || unit === 'px';
 
 export interface MetricChange {
   metric: string;
@@ -364,6 +372,7 @@ export function formatValue(value: number | null, unit: Unit): string {
   if (value === null || !Number.isFinite(value)) return '–';
   if (unit === 'ms') return `${value >= 100 ? Math.round(value).toLocaleString('en-US') : value.toFixed(1)} ms`;
   if (unit === 'share') return `${(value * 100).toFixed(1)}%`;
+  if (unit === 'px') return `${value.toFixed(1)} px`;
   if (unit === 'memory') return `${(value / 2 ** 20).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MiB`;
   if (unit === 'bytes') return value >= 10_240 ? `${(value / 1024).toLocaleString('en-US', { maximumFractionDigits: 1 })} KiB` : `${value} B`;
   return value.toLocaleString('en-US', { maximumFractionDigits: 1 });
@@ -423,10 +432,10 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
   };
   const m = after.machine;
   const profile = (r: RunResult) => (r.config.cold ? 'cold profile' : r.config.second ? 'second launch after an update' : 'warm profile');
-  const footer = (memory: boolean) =>
+  const footer = (memory: boolean, distances = false) =>
     [
       `Machine: ${m.cpu ?? '?'}, ${m.platform ?? '?'} ${m.osRelease ?? ''}`.trim() +
-        ` · ${before.config.iterations} → ${after.config.iterations} iterations, 1 warm-up · ${profile(after)} · median · ${memory ? `noise band ${MEMORY_NOISE_RULE} for memory, process counts exact` : `noise band ${NOISE_RULE}`}`,
+        ` · ${before.config.iterations} → ${after.config.iterations} iterations, 1 warm-up · ${profile(after)} · median · ${memory ? `noise band ${MEMORY_NOISE_RULE} for memory, process counts exact` : `noise band ${NOISE_RULE}${distances ? ', 1 px for distances' : ''}`}`,
       `Trees: ${before.build.commit ?? before.build.head ?? '?'} → ${after.build.commit ?? after.build.head ?? '?'}, both built with \`npm run build\``,
       ...(machineDifference(before, after) ? [`${memory ? 'Memory figures' : 'Durations'} are not comparable: ${machineDifference(before, after)}.`] : [])
     ].join('  \n');
@@ -470,7 +479,7 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
       const memory = c.metrics.filter((x) => memoryMetric(x.metric));
       const others = c.metrics.filter((x) => !memoryMetric(x.metric));
       const rows = others.map((x) => `| ${x.metric} | ${formatValue(x.before, x.unit)} | ${formatValue(x.after, x.afterUnit ?? x.unit)} | ${improvement(x)} |`);
-      if (!memory.length) return `${head}\n\n| Metric | Before | After | Improvement |\n| --- | ---: | ---: | ---: |\n${rows.join('\n')}\n| Predicate | pass | pass | ok |\n\n${footer(false)}`;
+      if (!memory.length) return `${head}\n\n| Metric | Before | After | Improvement |\n| --- | ---: | ---: | ---: |\n${rows.join('\n')}\n| Predicate | pass | pass | ok |\n\n${footer(false, others.some((x) => x.unit === 'px'))}`;
       const table = others.length ? `| Metric | Before | After | Improvement |\n| --- | ---: | ---: | ---: |\n${rows.join('\n')}\n\n` : '';
       return `${head}\n\n${table}${memoryTables(c, memory)}\n\nPredicate: pass → pass.\n\n${footer(true)}`;
     })

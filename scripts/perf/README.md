@@ -683,6 +683,33 @@ hero's selection or the outlines' check, during which the preview loaded a page 
 3 s of quiet, up to five times; the window measured is its last attempt, and five disturbed attempts fail the
 iteration. Both arms are held to the same rule.
 
+**`outlineScroll`** (after `open`; run it on `large`, as #1307 asks: the page it scrolls is the home page): how far
+the selection's outline trails the page while the page scrolls under it. With the home hero selected by a click on it
+and the page at its top, the wheel scrolls it 24 events of 12 px down and as many back up, each 16 ms after the one before
+was taken (about a frame apart, as a trackpad sends them), with the pointer a third of the way across the page as in
+`canvas`. Before the window (untimed) the scenario puts three markers in the page, magenta blocks 8 × 30 of the page's
+pixels starting 0, 40 and 80 px below the hero's bottom edge (its box measured as the bridge measures what it outlines),
+which scroll exactly as the page does; they are removed after it. Through the window a CDP screencast of the editor's
+window records every frame Chromium composited, the preview frame's pixels with the editor's own over them, and each
+frame is read (`outline.ts`): the hero's bottom edge from the earliest marker edge (an overlay drawn over a marker can
+only hide its first rows), and the outline's bottom edge from its keylines (ink, the selection colour, white): by the centre of the selection
+colour's keyline, which an outline drawn in the page blends into its neighbours as it moves by fractions of a pixel with
+the page, taken for a bottom edge when the ink is below it and the white above, every outline found in the column read
+within 100 px of the hero's edge. Checks: the hero is still selected, the wheel moved the
+page most of the way down and back, every frame shows the hero's edge and an outline (one hidden while the page moves
+trails nothing, and fails), at least 10 frames show the page moving, the outline sits within 1.5 px of the hero's edge in
+the frame before the scroll and in the last one, once everything has stopped, and afterwards the outline's box in the
+editor is on the hero's and the selection has its Add buttons. Metrics: `outlineScroll.offsetPx` (the headline: the
+median, over the frames in which the hero moved, of how far the outline was from it, in the editor's CSS pixels; an
+outline drawn twice counts as the one further off), `lagMs` (the median of how long before each such frame the hero was
+where the outline is drawn, from the hero's path through the frames before), `speedPx` (how far the hero moved per frame
+period: the same in both arms), `restAfterPx`, `trailingFrames` (frames, moving or catching up, with the outline more than
+1.5 px off), `movingFrames` and `frames`; over the window, `ms`, `rectReports`, `canvasRenders` and `rendererCommits`; and
+the frame period, `framePeriodMs`. The hidden window draws at the display's rate as Chromium gives it (60 Hz on the Mac it
+was written on): a 120 Hz figure needs a launch that draws at 120 Hz. The screencast's encoding takes some of the
+browser process's time in both arms alike. Done again, as `canvas`'s windows are, when the preview loaded a page or the
+project was read from disk during it.
+
 **`create`** (after `launch`): on Welcome, New project, a name, the Business starter with its sample images in the app's
 default projects folder, Create; to the canvas bridge reporting the new project's home page ready to edit.
 **`createAgain`** follows it: the project `create` made is closed (untimed) and a second one made the same way, in the
@@ -769,7 +796,8 @@ view then).
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
 same median. Durations are for this machine only, and move between runs; the median is what is compared, never a max or
-a tail from a handful of iterations.
+a tail from a handful of iterations. Distances read off drawn frames (unit `px`, `outlineScroll`'s) move with the
+frames' timing as durations do, and have the same band, its floor one pixel.
 
 `perf:compare` matches cases by scenario and fixture, refuses fixtures whose hash differs and results measured
 differently (`--cold` against warm, or another `--settle`), notes results from different machines (their durations do

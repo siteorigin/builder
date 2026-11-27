@@ -64,6 +64,11 @@
     .ov-selected.arriving { animation: none; box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 6px var(--select), inset 0 0 0 7px #fff; background: color-mix(in srgb, var(--select) 12%, transparent); }
   }
   /* What a drag is moving stays marked in place: dashed, on a faint tint of the selection colour. */
+  /* While the page draws the selection's outline as it scrolls (#1307), the editor's own, and its controls on it that
+     would trail the page's, keep out of sight (and out of the pointer's way) until it stops; a control in use stays. */
+  .ov-selected.paged { box-shadow: none; }
+  .overlay-layer.paged .ov-add-at:not(:focus-within) > *, .overlay-layer.paged .ov-space-group:not(:focus-within), .overlay-layer.paged:not(:has(.ov-space-group:focus-within)) .ov-space-band { opacity: 0; }
+  .overlay-layer.paged .ov-add-at:not(:focus-within) > *, .overlay-layer.paged .ov-space-group:not(:focus-within) * { pointer-events: none; }
   .ov-selected.moving { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 8%, transparent); }
   /* Spacing handles. One colour, the selection's (green on a shared header or footer), with the kind told by shape:
      padding a solid bar inside the box, margin a hollow bar outside it, a gap two parallel lines, a column divider an

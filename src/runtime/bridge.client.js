@@ -399,6 +399,189 @@ function headerBoxes() {
   return [...document.querySelectorAll(shell)].filter((el) => !el.parentElement?.closest(shell)).map(rectOf).filter((r) => r && r.width && r.height && r.y + r.height > 0 && r.y < innerHeight);
 }
 
+// ---------------------------------------------------------------------------
+// The selection's outline drawn in the page while it scrolls (#1307)
+// ---------------------------------------------------------------------------
+
+/**
+ * The editor draws the selection's outline over the frame from the boxes this page reports, so while the page scrolls
+ * the outline is a frame behind it: the page moves first, on its own compositor, and the editor hears of it after. While
+ * the document scrolls, the page draws the outline itself, in the document, where the compositor moves it with
+ * everything else in the same frame. The editor sends what to draw (`outlineGhost`: its selection colour, the room it
+ * gives the box, its zoom, and a key naming all that), or nothing while it draws anything but the plain outline (text
+ * being typed, a block moved, an insertion arriving). Once a frame has shown the page's outline, each report names the
+ * key it was drawn for (`ghost`) and the editor, if that is still what it would draw, stops drawing its own; once the
+ * scroll has stopped (or the page went elsewhere), the report no longer does, the editor draws its own again where the
+ * page's is and says so (`outlineGhostDone`), and only then is the page's taken away. Only for a scroll the person makes
+ * (see handScrollAt). At rest the editor's outline is the only one, exactly as before. Left to the editor: a selection
+ * that stays put while the document scrolls (sticky, fixed, or laid out as children that are), a box scrolling inside
+ * the page, a page whose root is transformed (the outline would be scaled twice), and a page showing something in the
+ * top layer (a modal dialog would cover it).
+ */
+let ghostSpec = null;
+/** The outline the page draws: its host, the boxes drawn, whether a frame has shown it, whether the page still scrolls;
+ *  or, for a scroll it is not drawn in, only that (`refused`), so the scroll is not looked at again until it stops. */
+let ghost = null;
+/** A scroll this long without another has stopped. */
+const GHOST_HOLD_MS = 150;
+/**
+ * When the person last scrolled the page themselves (a wheel or trackpad, a touch, a key that scrolls). The page draws
+ * the outline for those scrolls, and for the rest of one it started (its smooth animation, its momentum), never for its
+ * own: keeping the selection where it was as the width changes, a scroll the editor asked for, a drag's edge scroll.
+ * Those leave the editor's outline and its controls as they were, so a handle can be taken at once after a change of
+ * width.
+ */
+let handScrollAt = -Infinity;
+const HAND_SCROLL_MS = 300;
+const HAND_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+const byHand = () => (handScrollAt = performance.now());
+addEventListener('wheel', byHand, { capture: true, passive: true });
+addEventListener('touchmove', byHand, { capture: true, passive: true });
+addEventListener('keydown', (e) => HAND_SCROLL_KEYS.has(e.key) && byHand(), { capture: true, passive: true });
+/** The longest the page keeps its outline once it has told the editor to draw its own, if the editor never answers. */
+const GHOST_RELEASE_MS = 1000;
+const GHOST_HOST = 'so-outline-ghost';
+
+function ghostSpecOf(spec) {
+  if (!spec || typeof spec !== 'object') return null;
+  const num = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+  if (!num(spec.z, 0.05, 8) || !num(spec.pad, 0, 32) || typeof spec.key !== 'string' || !spec.key || spec.key.length > 500) return null;
+  const color = typeof spec.color === 'string' && /^(#[0-9a-f]{3,8}|rgba?\([\d\s.,%]+\))$/i.test(spec.color.trim()) ? spec.color.trim() : null;
+  return color ? { key: spec.key, color, z: spec.z, pad: spec.pad } : null;
+}
+const ghostWanted = () => !!ghostSpec && !!selected && mode === 'edit' && !editing;
+/** Something shown in the top layer (a modal dialog, a popover, full screen), above anything the page could draw. */
+function topLayerShown() {
+  try {
+    return !!document.fullscreenElement || !!document.querySelector(':modal, :popover-open');
+  } catch {
+    return !!document.querySelector('dialog[open]');
+  }
+}
+/** Whether an element stays where it is on screen while the document scrolls: pinned itself (or, laid out as its
+ *  children as a placement's wrapper is, one of the boxes it is laid out as), or by something holding it. */
+function staysPut(el) {
+  const pinnedBox = (e) => {
+    const s = getComputedStyle(e);
+    if (s.position === 'sticky' || s.position === 'fixed') return true;
+    if (s.display === 'contents') for (const c of Object.getOwnPropertyDescriptor(Element.prototype, 'children').get.call(e)) if (pinnedBox(c)) return true;
+    return false;
+  };
+  if (pinnedBox(el)) return true;
+  for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+    const position = getComputedStyle(p).position;
+    if (position === 'sticky' || position === 'fixed') return true;
+  }
+  return false;
+}
+/** Whether the page can draw the outline for this scroll: what is selected moves with the document, and nothing covers
+ *  or rescales what the page draws. */
+function ghostCan() {
+  const els = findAll(selected).filter((el) => rectOf(el));
+  if (!els.length || els.some((el) => staysPut(el)) || topLayerShown()) return false;
+  const rs = getComputedStyle(document.documentElement);
+  return rs.transform === 'none' && rs.scale === 'none' && rs.rotate === 'none' && rs.translate === 'none' && (!rs.zoom || rs.zoom === '1' || rs.zoom === 'normal');
+}
+/** The document scrolled: the page draws the outline until the scroll has stopped. */
+function noteGhostScroll() {
+  if (!ghostWanted()) return dropGhost();
+  if (!ghost) ghost = ghostCan() ? { refused: false, host: null, root: null, boxes: [], drawn: '', ltr: getComputedStyle(document.documentElement).direction !== 'rtl', shown: false, told: false, scrolling: true, showing: 0, endTimer: 0, releaseTimer: 0 } : { refused: true, endTimer: 0 };
+  ghost.scrolling = true;
+  clearTimeout(ghost.releaseTimer);
+  ghost.releaseTimer = 0;
+  clearTimeout(ghost.endTimer);
+  ghost.endTimer = setTimeout(releaseGhost, GHOST_HOLD_MS);
+}
+/** The scroll stopped, or the page went elsewhere: the editor is told, and draws its own outline again; the page's stays
+ *  until the editor says it has (or GHOST_RELEASE_MS), so a frame never shows neither. */
+function releaseGhost() {
+  if (!ghost) return;
+  clearTimeout(ghost.endTimer);
+  ghost.endTimer = 0;
+  ghost.scrolling = false;
+  // Never said to the editor: it never stopped drawing its own.
+  if (ghost.refused || !ghost.told) return dropGhost();
+  // Said, and maybe already taken back by a release before this one: the editor may still not draw its own, so the
+  // page's stays until it says it does.
+  ghost.shown = false;
+  if (!ghost.releaseTimer) ghost.releaseTimer = setTimeout(dropGhost, GHOST_RELEASE_MS);
+  scheduleRects();
+}
+/** Taken away at once: the editor already draws its own (or none), having changed what it draws. */
+function dropGhost() {
+  if (!ghost) return;
+  const was = ghost;
+  ghost = null;
+  clearTimeout(was.endTimer);
+  clearTimeout(was.releaseTimer);
+  if (was.refused) return;
+  cancelAnimationFrame(was.showing);
+  if (was.host) was.host.remove();
+  if (was.told) scheduleRects();
+}
+/**
+ * Draw the outline on the selection's boxes, measured this frame (in the frame's pixels), as the editor would draw it:
+ * keylines of 1, 2 and 1 of its pixels, the room it gives the box, in its colour. In the document, so the compositor
+ * carries it with the page, exactly where the page lays the boxes out (between pixels, as the page is, while it moves).
+ */
+function placeGhost(boxes) {
+  if (!ghost || ghost.refused) return;
+  if (!ghostWanted()) return dropGhost();
+  // A dialog opened over the page meanwhile would cover the outline: the editor's goes over it.
+  if (ghost.scrolling && topLayerShown()) return releaseGhost();
+  const { key, color, z, pad } = ghostSpec;
+  const room = pad / z;
+  const root = document.documentElement;
+  if (!ghost.host) {
+    const host = document.createElement('div');
+    host.id = GHOST_HOST;
+    host.setAttribute('aria-hidden', 'true');
+    // At the page's own origin before it is measured against, taking no room and no pointer.
+    host.style.cssText = 'all: initial; position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 2147483647; pointer-events: none;';
+    ghost.root = host.attachShadow({ mode: 'open' });
+    ghost.host = host;
+    root.appendChild(host);
+  }
+  const at = Element.prototype.getBoundingClientRect.call(ghost.host);
+  // The far edges kept inside the document: the room around a box at the very end would make the page longer or wider.
+  const width = ghost.ltr ? root.scrollWidth : Infinity;
+  const height = root.scrollHeight;
+  const placed = boxes.filter(Boolean).map((b) => {
+    const left = b.x - room - at.left;
+    const top = b.y - room - at.top;
+    return { left, top, width: Math.max(0, Math.min(b.x + b.width + room - at.left, width) - left), height: Math.max(0, Math.min(b.y + b.height + room - at.top, height) - top) };
+  });
+  // In the document's own pixels: unchanged while the document scrolls, so nothing is drawn again for it.
+  const drawn = JSON.stringify([key, placed]);
+  if (drawn !== ghost.drawn) {
+    ghost.drawn = drawn;
+    const k = (n) => `${n / z}px`;
+    const ring = `inset 0 0 0 ${k(1)} #101828, inset 0 0 0 ${k(3)} ${color}, inset 0 0 0 ${k(4)} #fff`;
+    while (ghost.boxes.length > placed.length) ghost.boxes.pop().remove();
+    placed.forEach((p, i) => {
+      let el = ghost.boxes[i];
+      if (!el) {
+        el = document.createElement('div');
+        ghost.root.appendChild(el);
+        ghost.boxes.push(el);
+      }
+      el.style.cssText = `position: absolute; box-sizing: border-box; left: ${p.left}px; top: ${p.top}px; width: ${p.width}px; height: ${p.height}px; border-radius: ${k(2)}; box-shadow: ${ring};`;
+    });
+  }
+  // Said to the editor only from the frame after it was first drawn, by when it is on screen: the editor never stops
+  // drawing its own before the page's shows.
+  if (!ghost.shown && !ghost.showing && ghost.scrolling && placed.length) {
+    ghost.showing = requestAnimationFrame(() => {
+      if (!ghost) return;
+      ghost.showing = 0;
+      if (!ghost.scrolling) return;
+      ghost.shown = true;
+      ghost.told = true;
+      sendRects();
+    });
+  }
+}
+
 let raf = 0;
 function scheduleRects() {
   if (raf) return;
@@ -457,6 +640,7 @@ function sendRects() {
   const selBoxes = selEls.map(rectOf);
   sampleSelection(selEls, selBoxes);
   const sel = selBoxes.filter(Boolean);
+  placeGhost(sel);
   // A slot's placeholder is outlined where it first shows: a copy hidden at this width (a layout's mobile copy on
   // desktop) has no box to outline.
   const hovEls = hovered && mode === 'edit' ? findAll(hovered) : [];
@@ -478,7 +662,7 @@ function sendRects() {
     const box = (m.desc ? findAll(m.desc).map(rectOf).find((r) => r && (r.width || r.height)) : null) ?? (m.point ? pointBox(m.point) : null);
     return box ? [{ key: m.key, box }] : [];
   });
-  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, marks, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
+  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, marks, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY }, ...(ghost && ghost.shown && ghostSpec ? { ghost: ghostSpec.key } : {}) };
   const seen = JSON.stringify([navigationId, revision, report]);
   if (timeRects) measuringMs += performance.now() - t0;
   if (seen === rectsPosted) return;
@@ -5208,6 +5392,7 @@ window.addEventListener('message', async (e) => {
       // A double-click from before the change starts nothing after it.
       pendingHit = null;
       if (editing) commitEdit();
+      if (mode !== 'edit') dropGhost();
       document.documentElement.toggleAttribute('data-so-editing', mode === 'edit');
       // The mode this document took from the editor: its page is hydrated, the bridge is listening and it shows what
       // the editor asked for, in Edit and Preview alike (data-so-editing alone cannot tell a page previewed as visitors
@@ -5228,6 +5413,8 @@ window.addEventListener('message', async (e) => {
     case 'track': {
       const was = { selected, hovered, slots: trackedSlots };
       selected = m.payload.selected || null;
+      // The page's outline is of what was selected: the editor draws the new selection's own.
+      if (!sameDesc(was.selected, selected)) dropGhost();
       // The author selected something else meanwhile: the element asked for is no longer the one to show.
       if (pendingScroll && !sameDesc(pendingScroll.desc, selected)) pendingScroll = null;
       if (shownHold && !sameDesc(shownHold.desc, selected)) shownHold = null;
@@ -5247,6 +5434,19 @@ window.addEventListener('message', async (e) => {
       scheduleRects();
       break;
     }
+    // What the page draws of the selection's outline while it scrolls, or nothing (see placeGhost).
+    case 'outlineGhost':
+      ghostSpec = ghostSpecOf(m.payload.spec);
+      if (!ghostWanted()) dropGhost();
+      else if (ghost) {
+        ghost.drawn = '';
+        scheduleRects();
+      }
+      break;
+    // The editor draws its own outline again, where the page's is: the page's goes.
+    case 'outlineGhostDone':
+      if (ghost && !ghost.scrolling && !ghost.shown) dropGhost();
+      break;
     case 'emptySpace':
       // Said of a page this frame has since left: the editor says it again for the page shown.
       if (leftBehind(m)) break;
@@ -5521,6 +5721,9 @@ window.addEventListener('message', async (e) => {
 window.addEventListener(
   'scroll',
   (e) => {
+    // The document itself scrolled, by the person's hand or in a scroll they started: the page draws the selection's
+    // outline while it moves (see placeGhost).
+    if (e.target === document && ghostSpec && selected && (ghost || performance.now() - handScrollAt < HAND_SCROLL_MS)) noteGhostScroll();
     if (e.target === document || selected || reveal || trackedMarks.length || (hovered && mode === 'edit')) scheduleRects();
   },
   { passive: true, capture: true }
@@ -5593,6 +5796,8 @@ window.addEventListener('unhandledrejection', (e) => {
 
 function reportNav() {
   nextNavigation();
+  // What the page drew is of the page it was on: the editor draws its own (or none) before it goes.
+  releaseGhost();
   // Another page's room is not this one's: the editor asks again for the page it shows. A jump within the page keeps it.
   if (emptySpace && emptySpace.path !== shownPath()) setEmptySpace(null);
   stopKeeping();
