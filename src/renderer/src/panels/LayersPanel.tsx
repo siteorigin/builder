@@ -29,6 +29,7 @@ import { templateOwner } from '../lib/template-view';
 import { layerSlots, placeOps } from '../lib/layer-drop';
 import { sameSlotTarget, type SlotTarget } from '../lib/slot-target';
 import { askAiHint } from '../lib/ask-ai-key';
+import { perfCount } from '../lib/perf';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -1026,6 +1027,8 @@ function TreeList(props: ListProps & { ids: string[]; labelledBy: string }) {
 type Drop = { where: 'before' | 'after' | 'inside' | 'first'; depth: number; label?: string };
 
 function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlot }: ListProps & { id: string; parentId?: string; inSlot?: string }) {
+  // Each render of a row, for the performance harness (scripts/perf/README.md); nothing while timing marks are off.
+  perfCount('layers.rows');
   const selection = useStore((s) => s.selection);
   const definitionMode = useStore((s) => s.definitionMode);
   const picked = useContext(Picked);

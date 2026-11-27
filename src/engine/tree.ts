@@ -66,7 +66,17 @@ export interface ParentInfo {
   index: number;
 }
 
+/**
+ * Told of each walk below that scans a tree, for the performance harness (scripts/perf/README.md): set only while the
+ * editor's timing marks are on, so otherwise a walk costs one look at an empty variable.
+ */
+let countWalk: ((walk: 'findParent' | 'subtreeIds') => void) | null = null;
+export function countTreeWalks(count: typeof countWalk): void {
+  countWalk = count;
+}
+
 export function findParent(tree: NodeTree, nodeId: string): ParentInfo | null {
+  countWalk?.('findParent');
   const ri = tree.rootIds.indexOf(nodeId);
   if (ri >= 0) return { parentId: null, list: tree.rootIds, index: ri };
   for (const n of Object.values(tree.nodes)) {
@@ -79,6 +89,7 @@ export function findParent(tree: NodeTree, nodeId: string): ParentInfo | null {
 }
 
 export function subtreeIds(tree: NodeTree, nodeId: string): string[] {
+  countWalk?.('subtreeIds');
   const out: string[] = [];
   const walk = (id: string) => {
     const n = tree.nodes[id];

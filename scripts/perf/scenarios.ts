@@ -1033,6 +1033,441 @@ export const panels: Scenario = {
 };
 
 // ---------------------------------------------------------------------------
+// layers
+// ---------------------------------------------------------------------------
+
+/** The pages `layers` makes and works in, by how many nodes each holds. */
+export const LAYERS_SIZES = [300, 1000] as const;
+/** The nodes in one of a layers page's sections (see layersPage), and the cards in its row. */
+const LAYERS_SECTION = 25;
+const LAYERS_CARDS = 4;
+/** What a layers page is measured by: clicks on rows, steps of the arrow keys, and edits from a row's eye, each a sample. */
+export const LAYERS_KINDS = ['click', 'key', 'edit'] as const;
+export type LayersKind = (typeof LAYERS_KINDS)[number];
+export const LAYERS_SAMPLES: Record<LayersKind, number> = { click: 7, key: 7, edit: 2 };
+/** How long a sample goes on once its change is shown, so the work it set off afterwards (focus, scrolling, effects) is counted. */
+const LAYERS_SETTLE_MS = 300;
+/** A sample the project's being read again from disk lands in is done again, up to this many times. */
+const LAYERS_TRIES = 5;
+
+export interface LayersPage {
+  size: number;
+  pageId: string;
+  title: string;
+  /** Each node's parent; null for a section. */
+  parents: Map<string, string | null>;
+  /** The nodes in outline order: the order Layers lists them in with every branch open. */
+  order: string[];
+  /** The rows Layers shows hidden in the desktop preview: a section's inner container, hidden at every size, and what it holds. */
+  hidden: string[];
+  /** What the clicks select, in turn: rows of sections across the page, at every depth. The arrow keys start from the last. */
+  clicks: string[];
+  /** The section whose row's eye hides it, and then shows it again. */
+  hides: string;
+  /** The change that makes the page. */
+  operations: Array<Record<string, unknown>>;
+}
+
+/**
+ * A page of `size` nodes as a site's long pages are made: sections, each a container holding a container with a heading,
+ * a paragraph and a row of four cards, each card a heading, a paragraph and a button in a stack of its own (25 nodes, 6
+ * deep). The second section's inner container is hidden at every size, and the fourth section's first card on phones.
+ */
+export function layersPage(size: number): LayersPage {
+  const sections = size / LAYERS_SECTION;
+  if (!Number.isInteger(sections)) throw new Error(`A layers page holds whole sections of ${LAYERS_SECTION} nodes, not ${size}.`);
+  const pageId = `pg_layers${size}`;
+  const title = `Layers ${size}`;
+  const owner = { kind: 'page', id: pageId };
+  const operations: Array<Record<string, unknown>> = [{ type: 'page.create', pageId, title, route: `/layers-${size}/` }];
+  const parents = new Map<string, string | null>();
+  const order: string[] = [];
+  const id = (s: number, part: string) => `n_l${size}s${String(s).padStart(2, '0')}${part}`;
+  const add = (nodeId: string, parentId: string | null, primitive: string, text?: string) => {
+    parents.set(nodeId, parentId);
+    order.push(nodeId);
+    operations.push({ type: 'node.insert', newNodeId: nodeId, owner, parentId, primitive, ...(text === undefined ? {} : { text }) });
+  };
+  for (let s = 0; s < sections; s++) {
+    add(id(s, 'o'), null, 'container');
+    add(id(s, 'i'), id(s, 'o'), 'container');
+    add(id(s, 'h'), id(s, 'i'), 'heading', `Section ${s + 1}: what we make for the people we work with`);
+    add(id(s, 'p'), id(s, 'i'), 'paragraph', `Every project in section ${s + 1} starts with a conversation about what you need, and ends with something you can use every day.`);
+    add(id(s, 'r'), id(s, 'i'), 'row');
+    for (let c = 1; c <= LAYERS_CARDS; c++) {
+      add(id(s, `c${c}`), id(s, 'r'), 'stack');
+      add(id(s, `c${c}h`), id(s, `c${c}`), 'heading', `Card ${c} of section ${s + 1}`);
+      add(id(s, `c${c}p`), id(s, `c${c}`), 'paragraph', `A short description of what card ${c} offers, long enough to be cut short in Layers.`);
+      add(id(s, `c${c}s`), id(s, `c${c}`), 'stack');
+      add(id(s, `c${c}b`), id(s, `c${c}s`), 'button', `Read more about card ${c}`);
+    }
+  }
+  const hide = (nodeId: string, scope: string) => operations.push({ type: 'node.setStyle', owner, nodeId, scope, property: 'hidden', value: true });
+  hide(id(1, 'i'), 'base');
+  hide(id(3, 'c1'), 'phone');
+  const at = (f: number) => Math.min(sections - 1, Math.round(f * sections));
+  const from = order.indexOf(id(1, 'i'));
+  return {
+    size,
+    pageId,
+    title,
+    parents,
+    order,
+    hidden: order.slice(from, from + LAYERS_SECTION - 1),
+    clicks: [id(at(0.15), 'c2b'), id(at(0.9), 'o'), id(at(0.35), 'c3p'), id(at(0.7), 'r'), id(at(0.5), 'c4'), id(at(0.25), 'i'), id(at(0.6), 'o')],
+    hides: id(at(0.45), 'o'),
+    operations
+  };
+}
+
+/** A node's containers on its page, nearest first. */
+export function layersAncestors(page: LayersPage, nodeId: string): string[] {
+  const out: string[] = [];
+  for (let p = page.parents.get(nodeId) ?? null; p; p = page.parents.get(p) ?? null) out.push(p);
+  return out;
+}
+
+/** A node and everything inside it, in outline order. */
+function layersSubtree(page: LayersPage, nodeId: string): string[] {
+  return page.order.filter((n) => n === nodeId || layersAncestors(page, n).includes(nodeId));
+}
+
+/** What Layers shows of a page's rows: their order, and which are selected, hold the selection, or are hidden. */
+interface LayersRows {
+  /** Every row of the tree, the shared header's and footer's too. */
+  all: number;
+  closed: number;
+  rows: string[];
+  selected: string[];
+  within: string[];
+  hidden: string[];
+  hiddenBy: string[];
+  focused: string | null;
+}
+
+/** Read in the editor's page. Source text, not a function: the scripts' compiler wraps a named function in a helper the
+ *  page does not have (see WATCH_FRAMES). */
+const LAYERS_ROWS = (owner: string) => `(() => {
+  const owner = ${JSON.stringify(owner)};
+  const tree = [...document.querySelectorAll('.layers-tree [role="treeitem"]')];
+  const out = { all: tree.length, closed: 0, rows: [], selected: [], within: [], hidden: [], hiddenBy: [], focused: null };
+  for (const r of tree) {
+    if (r.getAttribute('aria-expanded') === 'false') out.closed++;
+    if (r.getAttribute('data-owner') !== owner) continue;
+    const id = r.dataset.node ?? '';
+    out.rows.push(id);
+    if (r.getAttribute('aria-selected') === 'true') out.selected.push(id);
+    if (r.classList.contains('contains-sel')) out.within.push(id);
+    if (r.classList.contains('is-hidden')) out.hidden.push(id);
+    if (r.querySelector('.layer-hider')) out.hiddenBy.push(id);
+  }
+  out.focused = document.activeElement?.closest('.layers-tree [role="treeitem"]')?.dataset.node ?? null;
+  return out;
+})()`;
+
+async function layersRows(win: Page, pageId: string): Promise<LayersRows> {
+  return (await win.evaluate(LAYERS_ROWS(`page:${pageId}`))) as LayersRows;
+}
+
+const sameIds = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join() === [...b].sort().join();
+const listed = (ids: string[]) => (ids.length > 4 ? `${ids.slice(0, 4).join(', ')} and ${ids.length - 4} more` : ids.join(', ') || 'none');
+
+/**
+ * Layers shows every layer of the page, in order, with `selected` the one selection, exactly its containers marked as
+ * holding it, and exactly `hidden` dimmed as hidden in this preview, the ones a layer above hides saying so.
+ */
+function checkLayersRows(page: LayersPage, got: LayersRows, selected: string, hidden: string[], what: string) {
+  expect(got.rows.length === page.size && got.rows.every((n, i) => n === page.order[i]), `${what}: Layers lists ${got.rows.length} rows of the ${page.title} page, not its ${page.size} layers in order`);
+  expect(got.closed === 0, `${what}: ${got.closed} branches of Layers are closed`);
+  expect(got.selected.length === 1 && got.selected[0] === selected, `${what}: Layers shows ${listed(got.selected)} selected, not ${selected}`);
+  const up = layersAncestors(page, selected);
+  expect(sameIds(got.within, up), `${what}: Layers marks ${listed(got.within)} as holding the selection, not its containers ${listed(up)}`);
+  expect(sameIds(got.hidden, hidden), `${what}: Layers shows ${got.hidden.length} rows hidden in this preview (${listed(got.hidden)}), not ${hidden.length}`);
+  const below = hidden.filter((n) => layersAncestors(page, n).some((a) => hidden.includes(a)));
+  expect(sameIds(got.hiddenBy, below), `${what}: ${got.hiddenBy.length} rows say a layer above hides them, not ${below.length}`);
+}
+
+/** The editor's marks for one edge of one of `layers`' samples, in one attempt (any attempt without one). */
+const atLayersSample =
+  (size: number, kind: LayersKind, i: number, edge: 'start' | 'end', attempt?: number) =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.scenario === 'layers' && r.attrs?.size === size && r.attrs?.kind === kind && r.attrs?.i === i && r.attrs?.edge === edge && (attempt === undefined || r.attrs?.attempt === attempt);
+
+/** A sample's window in its last attempt, the one measured. */
+export function layersWindow(t: Trace, size: number, kind: LayersKind, i: number): { start?: PerfRecord; end?: PerfRecord } {
+  const starts = t.all('layers.sample', atLayersSample(size, kind, i, 'start'));
+  if (!starts.length) return {};
+  const attempt = Math.max(...starts.map((r) => (typeof r.attrs?.attempt === 'number' ? r.attrs.attempt : 0)));
+  return { start: starts.find((r) => r.attrs?.attempt === attempt), end: t.first('layers.sample', atLayersSample(size, kind, i, 'end', attempt)) };
+}
+
+/**
+ * A listener in the editor's page, ahead of the editor's own, that marks each click and arrow key a person makes in
+ * Layers at the moment the event happened (`layers.input`), and the end of the first frame painted after it
+ * (`layers.painted`: a message posted from the frame's animation callback runs once the frame is drawn). The click
+ * that the arrow keys make on the row they reach is the key's, not another input.
+ */
+const WATCH_LAYERS_INPUT = `(() => {
+  if (globalThis.__layersInputWatched) return;
+  globalThis.__layersInputWatched = true;
+  for (const [type, kind] of [['click', 'click'], ['keydown', 'key']]) {
+    document.addEventListener(type, (e) => {
+      if (!e.isTrusted || !e.target?.closest?.('.layers-tree')) return;
+      if (type === 'keydown' && e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      globalThis.__siteoriginPerf?.mark('layers.input', { kind }, performance.timeOrigin + e.timeStamp);
+      requestAnimationFrame(() => {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => globalThis.__siteoriginPerf?.mark('layers.painted', { kind });
+        ch.port2.postMessage(0);
+      });
+    }, true);
+  }
+})()`;
+async function watchLayersInput(win: Page) {
+  await win.evaluate(WATCH_LAYERS_INPUT);
+}
+
+/** Show a sidebar view (its rail button pressed), and wait for it. */
+async function showSidebar(win: Page, label: string) {
+  const button = win.locator(`.rail [aria-label="${label}"]`);
+  if ((await button.getAttribute('aria-pressed')) !== 'true') await button.click();
+  await win.locator('#editor-sidebar').waitFor({ state: 'visible', timeout: 15_000 });
+}
+
+/** Every branch of Layers opened, as a person opens them one by one, and the rows they show drawn. */
+async function openEveryBranch(win: Page) {
+  type Toggle = { click(): void };
+  type Doc = { document: { querySelectorAll(s: string): Iterable<{ querySelector(s: string): Toggle | null }> } };
+  for (let round = 0; round < 20; round++) {
+    const closed = await win.evaluate(() => {
+      const rows = [...(globalThis as unknown as Doc).document.querySelectorAll('.layers-tree [role="treeitem"][aria-expanded="false"]')];
+      for (const r of rows) r.querySelector('.tree-toggle')?.click();
+      return rows.length;
+    });
+    if (!closed) return;
+    await sleep(300);
+  }
+  throw new PredicateError('Layers still has closed branches after opening every one 20 times');
+}
+
+export const layers: Scenario = {
+  name: 'layers',
+  after: 'open',
+  description: 'On pages of 300 and 1,000 layers with every branch open in Layers, click rows, step through them with the arrow keys, and hide a section from its row’s eye and show it again.',
+  deadlineMs: 10 * 60_000,
+  async run(ctx) {
+    const { win } = ctx;
+    const editor = () => win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    expect(await editor(), 'no project is open');
+    // Not timed: the pages, each made in one change, and the input watch.
+    const pages = LAYERS_SIZES.map(layersPage);
+    for (const page of pages) {
+      const r = await win.evaluate(async (a) => (globalThis as unknown as EditorPage).builder.project.apply({ operations: a.operations as never, label: a.label }), { operations: page.operations, label: `Make ${page.title}` });
+      expect(r.ok, `making the ${page.title} page failed: ${r.error?.message ?? 'no reason given'}`);
+      await ctx.waitTrace((t) => !!t.first('renderer.commit', atRevision(r.revision)), 30_000);
+    }
+    await watchLayersInput(win);
+    await ctx.mark('scenario.start', { scenario: 'layers' });
+    for (const page of pages) {
+      const tree = win.locator('.layers-tree');
+      const row = (nodeId: string) => tree.locator(`[role="treeitem"][data-node="${nodeId}"]`);
+      // Not timed: the page opened from Pages, Layers shown with every branch open, the first section selected.
+      await showSidebar(win, 'Pages');
+      await win.locator(`.side-panel-view:not([hidden]) [data-page="${page.pageId}"]`).first().click();
+      await showSidebar(win, 'Layers');
+      await row(page.order[0]).waitFor({ timeout: 30_000 });
+      await openEveryBranch(win);
+      await row(page.order[0]).locator('.layer-name').click();
+      await row(page.order[0]).and(win.locator('[aria-selected="true"]')).waitFor({ timeout: 15_000 });
+      let selected = page.order[0];
+      let hidden = page.hidden;
+      const shown = await layersRows(win, page.pageId);
+      checkLayersRows(page, shown, selected, hidden, `${page.title} opened`);
+      await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+
+      /**
+       * One sample: `act` makes the change, which is done once `done` finds it in the trace; the window then stays open
+       * LAYERS_SETTLE_MS more. A window the project's being read from disk, or another project snapshot, lands in (an
+       * edit's own is its one) is done again from where it started, `undo` putting that back first.
+       */
+      const sample = async (kind: LayersKind, i: number, act: () => Promise<void>, done: (t: Trace, from: number) => boolean, undo: () => Promise<void>) => {
+        for (let attempt = 1; ; attempt++) {
+          const at = { scenario: 'layers', size: page.size, kind, i, attempt };
+          await ctx.mark('layers.sample', { ...at, edge: 'start', rows: shown.all });
+          await act();
+          await ctx.waitTrace((t) => {
+            const s = t.first('layers.sample', atLayersSample(page.size, kind, i, 'start', attempt));
+            return !!s && done(t, s.t);
+          }, 30_000);
+          await sleep(LAYERS_SETTLE_MS);
+          await ctx.mark('layers.sample', { ...at, edge: 'end' });
+          const t = await ctx.waitTrace((x) => !!x.first('layers.sample', atLayersSample(page.size, kind, i, 'end', attempt)), 15_000);
+          const s = t.first('layers.sample', atLayersSample(page.size, kind, i, 'start', attempt));
+          const e = t.first('layers.sample', atLayersSample(page.size, kind, i, 'end', attempt));
+          expect(s && e, `the ${page.title} ${kind} ${i + 1} window was never marked`);
+          const snapshots = t.all('renderer.snapshotReceived', inProc('renderer'), s.t, e.t).length;
+          if (!t.first('session.reloadFromDisk', inProc('main'), s.t, e.t) && snapshots === (kind === 'edit' ? 1 : 0)) return;
+          if (attempt >= LAYERS_TRIES) throw new Error(`the project was read from disk during the ${page.title} ${kind} ${i + 1} ${LAYERS_TRIES} times (its files kept changing on disk)`);
+          await undo();
+          await sleep(QUIET_MS);
+        }
+      };
+      const selectionShown = (kind: LayersKind) => (t: Trace, from: number) => {
+        const input = t.first('layers.input', (r) => r.proc === 'renderer' && r.attrs?.kind === kind, from);
+        return !!input && !!t.first('renderer.selectionCommit', (r) => r.proc === 'renderer' && r.attrs?.selected === true, input.t) && !!t.first('layers.painted', (r) => r.proc === 'renderer' && r.attrs?.kind === kind, input.t);
+      };
+      /** Select a row by a click, untimed, as the way back for a sample done again. */
+      const clickRow = async (nodeId: string) => {
+        await row(nodeId).locator('.layer-name').click();
+        await row(nodeId).and(win.locator('[aria-selected="true"]')).waitFor({ timeout: 15_000 });
+        await sleep(LAYERS_SETTLE_MS);
+      };
+
+      // Clicks: each row scrolled into view and pointed at first (untimed), then pressed where the pointer is.
+      for (const [i, target] of page.clicks.entries()) {
+        const from = selected;
+        const name = row(target).locator('.layer-name');
+        const ready = async () => {
+          await name.scrollIntoViewIfNeeded();
+          await name.hover();
+          await sleep(150);
+        };
+        await ready();
+        await sample(
+          'click',
+          i,
+          async () => {
+            await win.mouse.down();
+            await win.mouse.up();
+          },
+          selectionShown('click'),
+          async () => {
+            await clickRow(from);
+            await ready();
+          }
+        );
+        selected = target;
+        checkLayersRows(page, await layersRows(win, page.pageId), selected, hidden, `${page.title} click ${i + 1}`);
+      }
+      // Arrow keys: each step selects the row below the selected one, which keyboard focus follows.
+      for (let i = 0; i < LAYERS_SAMPLES.key; i++) {
+        const from = selected;
+        const next = page.order[page.order.indexOf(from) + 1];
+        const focus = (await layersRows(win, page.pageId)).focused;
+        expect(focus === from, `keyboard focus is on ${focus ?? 'no row'} of Layers, not the selected ${from}`);
+        await sample(
+          'key',
+          i,
+          () => win.keyboard.press('ArrowDown'),
+          selectionShown('key'),
+          async () => {
+            await win.keyboard.press('ArrowUp');
+            await row(from).and(win.locator('[aria-selected="true"]')).waitFor({ timeout: 15_000 });
+            await sleep(LAYERS_SETTLE_MS);
+          }
+        );
+        selected = next;
+        checkLayersRows(page, await layersRows(win, page.pageId), selected, hidden, `${page.title} key ${i + 1}`);
+      }
+      // Edits: a section hidden at every size from its row's eye, then shown again from the same eye.
+      const eye = row(page.hides).locator('.layer-eye');
+      const section = layersSubtree(page, page.hides);
+      for (let i = 0; i < LAYERS_SAMPLES.edit; i++) {
+        const hiding = i % 2 === 0;
+        // The row pointed at first (untimed), which shows its eye.
+        const ready = async () => {
+          await row(page.hides).locator('.layer-name').scrollIntoViewIfNeeded();
+          await row(page.hides).locator('.layer-name').hover();
+          await sleep(150);
+        };
+        const revision = (await editor())?.revision ?? NaN;
+        await ready();
+        await sample(
+          'edit',
+          i,
+          () => eye.click(),
+          (t, from) => {
+            const req = t.first('edit.requested', inProc('renderer'), from);
+            const target = typeof req?.attrs?.revision === 'number' ? req.attrs.revision + 1 : NaN;
+            return !!t.first('renderer.commit', (r) => r.proc === 'renderer' && r.attrs?.revision === target, req?.t ?? Infinity);
+          },
+          async () => {
+            // The eye pressed again takes the edit back.
+            await eye.click();
+            await sleep(1000);
+            await ready();
+          }
+        );
+        const after = await editor();
+        expect(after && after.revision > revision, `the ${page.title} eye left the project at revision ${after?.revision}, not past ${revision}`);
+        const styles = (after.state.pages[page.pageId]?.nodes[page.hides] as { styles?: { base?: { hidden?: unknown } } } | undefined)?.styles;
+        expect((styles?.base?.hidden === true) === hiding, `the project ${hiding ? 'does not hide' : 'still hides'} the ${page.title} section the eye ${hiding ? 'hid' : 'showed'}`);
+        hidden = hiding ? [...page.hidden, ...section] : page.hidden;
+        checkLayersRows(page, await layersRows(win, page.pageId), selected, hidden, `${page.title} ${hiding ? 'hide' : 'show'}`);
+      }
+    }
+    await ctx.mark('scenario.end', { scenario: 'layers' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('layers', 'renderer')) && !!t.first('scenario.end', forScenario('layers', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('layers', 'renderer')));
+    const end = m.need('scenario.end (renderer)', trace.first('scenario.end', forScenario('layers', 'renderer')));
+    if (!begin || !end) return m;
+    const byKind = (kind: string) => (r: PerfRecord) => r.proc === 'renderer' && r.attrs?.kind === kind;
+    for (const size of LAYERS_SIZES) {
+      const p = `layers.at${size}`;
+      let rows: unknown;
+      for (const kind of LAYERS_KINDS) {
+        const got: Record<string, number[]> = { commitMs: [], paintMs: [], layersMs: [], rowRenders: [], renders: [], layersRenders: [], commits: [], findParent: [], subtreeIds: [] };
+        for (let i = 0; i < LAYERS_SAMPLES[kind]; i++) {
+          const what = `${p} ${kind} ${i + 1}`;
+          const w = layersWindow(trace, size, kind, i);
+          const s = m.need(`layers.sample start (${what})`, w.start && w.start.t >= begin.t && w.start.t <= end.t ? w.start : undefined);
+          const e = m.need(`layers.sample end (${what})`, w.end);
+          if (!s || !e) continue;
+          rows ??= s.attrs?.rows;
+          if (kind === 'edit') {
+            // From the editor receiving the edited project to the commit that shows it.
+            const req = m.need(`edit.requested (${what})`, trace.first('edit.requested', inProc('renderer'), s.t, e.t));
+            const target = typeof req?.attrs?.revision === 'number' ? req.attrs.revision + 1 : NaN;
+            const received = m.need(`renderer.snapshotReceived (${what})`, trace.first('renderer.snapshotReceived', (r) => r.proc === 'renderer' && r.attrs?.revision === target, req?.t ?? Infinity, e.t));
+            const committed = m.need(`renderer.commit (${what})`, trace.first('renderer.commit', (r) => r.proc === 'renderer' && r.attrs?.revision === target, received?.t ?? Infinity, e.t));
+            if (received && committed) got.commitMs.push(committed.t - received.t);
+          } else {
+            // From the click or key, as the event happened, to the commit that shows the selection and the frame after it.
+            const input = m.need(`layers.input (${what})`, trace.first('layers.input', byKind(kind), s.t, e.t));
+            const shown = m.need(`renderer.selectionCommit (${what})`, trace.first('renderer.selectionCommit', (r) => r.proc === 'renderer' && r.attrs?.selected === true, input?.t ?? Infinity, e.t));
+            const painted = m.need(`layers.painted (${what})`, trace.first('layers.painted', byKind(kind), input?.t ?? Infinity, e.t));
+            if (input && shown) got.commitMs.push(shown.t - input.t);
+            if (input && painted) got.paintMs.push(painted.t - input.t);
+          }
+          // What the editor counted over the window: a counter it never had is missing, never a zero.
+          const counted = (name: string, key: string) => {
+            if (e.c?.[name] === undefined) return void m.need(`${name} (the editor never counted it)`, undefined);
+            got[key].push(counter(e, name) - counter(s, name));
+          };
+          counted('layers.rows', 'rowRenders');
+          counted('panel.layers.renders', 'layersRenders');
+          counted('panel.layers.renderMs', 'layersMs');
+          counted('react.renders', 'renders');
+          counted('react.commits', 'commits');
+          counted('tree.findParent', 'findParent');
+          counted('tree.subtreeIds', 'subtreeIds');
+        }
+        const k = `${p}.${kind}`;
+        m.ms(`${k}.commitMs`, median(got.commitMs));
+        if (kind !== 'edit') m.ms(`${k}.paintMs`, median(got.paintMs));
+        m.ms(`${k}.layersMs`, median(got.layersMs));
+        for (const name of ['rowRenders', 'layersRenders', 'renders', 'commits', 'findParent', 'subtreeIds']) if (got[name].length) m.count(`${k}.${name}`, median(got[name]));
+      }
+      if (typeof rows === 'number') m.count(`${p}.rows`, rows);
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // chat
 // ---------------------------------------------------------------------------
 
@@ -3239,7 +3674,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, chat, aiEdit, ai, canvas, drag, colour, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, layers, chat, aiEdit, ai, canvas, drag, colour, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

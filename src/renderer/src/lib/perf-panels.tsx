@@ -11,8 +11,9 @@
  * not timed, though its components are counted.
  */
 import type { ReactNode } from 'react';
+import { countTreeWalks } from '@engine/tree';
 import { useStore } from '../store';
-import { perfOn, perfPanel, setPerfPanelTypes } from './perf';
+import { perfCount, perfOn, perfPanel, setPerfPanelTypes } from './perf';
 
 const now = () => performance.now();
 /** When each panel's probe before it rendered, in the render under way. */
@@ -39,7 +40,13 @@ function PerfPanel({ children }: { id: string; children: ReactNode }) {
   return children;
 }
 
-if (perfOn) setPerfPanelTypes(PerfPanel, [PanelStart, PanelEnd]);
+if (perfOn) {
+  setPerfPanelTypes(PerfPanel, [PanelStart, PanelEnd]);
+  // The editor's scans of a tree (src/engine/tree.ts), counted from zero so a build without them is told apart.
+  perfCount('tree.findParent', 0);
+  perfCount('tree.subtreeIds', 0);
+  countTreeWalks((walk) => perfCount(`tree.${walk}`));
+}
 
 /** `panel`, timed and counted as `id` while marks are on; `panel` itself otherwise. */
 export function timedPanel(id: string, panel: ReactNode): ReactNode {
