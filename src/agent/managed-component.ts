@@ -524,9 +524,10 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
     return fieldError([{ field: o === place ? 'placeOnPage' : node !== undefined ? `nodes[${node}]` : 'arguments', message: v.message }], NOTHING_APPLIED);
   }
 
-  // The engine checks the description as the finished component: run it on a copy first, alone so a problem it finds
-  // is named by the field it came from, then with its placement, as the session will apply them, so what only the two
-  // together break (a list item placed straight on a page) is named by placeOnPage.
+  // The engine checks the description as the finished component: run it on a copy first, with its placement as the
+  // session will apply them. A placement adds a fresh page section and can only add problems, never take one away, so
+  // when the two fail together the component is tried alone: a problem it has by itself is named by the field it came
+  // from, and what only the two together break (a list item placed straight on a page) by placeOnPage.
   const failure = (e: unknown, placing: boolean) => {
     const details = (e as EngineError).details;
     const owner = isRecord(details) && isRecord(details.owner) ? details.owner.kind : undefined;
@@ -536,16 +537,15 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
     return fieldError([{ field, message: (e as Error).message }], NOTHING_APPLIED);
   };
   try {
-    applyOperations(state, [op]);
+    applyOperations(state, ops);
   } catch (e) {
-    return failure(e, false);
-  }
-  if (place) {
+    if (!place) return failure(e, false);
     try {
-      applyOperations(state, ops);
-    } catch (e) {
-      return failure(e, true);
+      applyOperations(state, [op]);
+    } catch (alone) {
+      return failure(alone, false);
     }
+    return failure(e, true);
   }
 
   const label = `${op.definitionId ? 'Rebuild' : 'Build'} ${op.name}`;

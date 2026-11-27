@@ -391,9 +391,9 @@ describe('edit metrics', () => {
         span('session.check', 10_019, 4, { attrs: { check: 'saving' } }),
         span('session.validateState', 10_020, 5),
         span('session.generate', 10_030, 4, { attrs: { variant: 'clean' } }),
-        m('session.generateCheck', 10_030, { attrs: { variant: 'clean', ms: 1.5, files: 40 } }),
+        m('session.generateCheck', 10_030, { attrs: { variant: 'clean', ms: 1.5, files: 40, looked: 900, derived: 30 } }),
         span('session.generate', 10_034, 3, { attrs: { variant: 'dev' } }),
-        m('session.generateCheck', 10_034, { attrs: { variant: 'dev', ms: 1, files: 40 } }),
+        m('session.generateCheck', 10_034, { attrs: { variant: 'dev', ms: 1, files: 40, looked: 12, derived: 0 } }),
         span('session.changedDocs', 10_036, 2, { attrs: { docs: 20, changed: 1 } }),
         span('session.publish', 10_080, 30, { dc: { 'files.read': 1, 'files.hashed': 13, 'files.hashedBytes': 52_000, 'fs.writes': 5, 'fs.durableWrites': 3, 'fs.fsyncs': 6, 'fs.syncCalls': 410, 'files.stats': 120 } }),
         m('runtime.release', 10_082),
@@ -445,6 +445,8 @@ describe('edit metrics', () => {
       'edit.validate': '5 ms',
       'edit.generate': '7 ms',
       'edit.generateCheck': '2.5 ms',
+      'edit.generateLooked': '912 count',
+      'edit.generateDerived': '30 count',
       'edit.changedDocs': '2 ms',
       'edit.docsCopied': '20 count',
       'edit.docsSerialized': '20 count',
@@ -529,6 +531,10 @@ describe('edit metrics', () => {
     // So would a dependency check of one variant, or a document search that is not there.
     expect(edit.measure(trace((x) => x.name === 'session.generateCheck' && x.attrs?.variant === 'dev'), facts).missing).toEqual(['session.generateCheck (both variants)']);
     expect(edit.measure(trace((x) => x.name === 'session.generateCheck' && x.attrs?.variant === 'dev'), facts).metrics['edit.generateCheck']).toBeUndefined();
+    // A check that does not say what it looked up and worked out has no count of them, never a count of nothing.
+    const uncounted = new Trace(trace().records.map((x) => (x.name === 'session.generateCheck' && x.attrs?.variant === 'dev' ? { ...x, attrs: { variant: 'dev', ms: 1, files: 40 } } : x)));
+    expect(edit.measure(uncounted, facts).missing).toEqual(['session.generateCheck (looked)', 'session.generateCheck (derived)']);
+    expect(edit.measure(uncounted, facts).metrics['edit.generateDerived']).toBeUndefined();
     expect(without('session.changedDocs').missing).toEqual(['session.changedDocs']);
   });
 
@@ -723,9 +729,9 @@ describe('batch metrics', () => {
         span('session.applyOperations', 1110, 6),
         span('session.validateState', 1120, 9),
         span('session.generate', 1130, 8, { attrs: { variant: 'clean' } }),
-        m('session.generateCheck', 1130, { attrs: { variant: 'clean', ms: 3, files: 40 } }),
+        m('session.generateCheck', 1130, { attrs: { variant: 'clean', ms: 3, files: 40, looked: 700, derived: 20 } }),
         span('session.generate', 1140, 7, { attrs: { variant: 'dev' } }),
-        m('session.generateCheck', 1140, { attrs: { variant: 'dev', ms: 2, files: 40 } }),
+        m('session.generateCheck', 1140, { attrs: { variant: 'dev', ms: 2, files: 40, looked: 5, derived: 1 } }),
         span('session.changedDocs', 1142, 2),
         span('session.runMarker', 1150, 4, { attrs: { paths: 1 } }),
         m('controller.snapshotSent', 1160, { attrs: { revision: 3, bytes: 200 } }),
@@ -758,6 +764,8 @@ describe('batch metrics', () => {
       'batch.validate': '9 ms',
       'batch.generate': '15 ms',
       'batch.generateCheck': '5 ms',
+      'batch.generateLooked': '705 count',
+      'batch.generateDerived': '21 count',
       'batch.changedDocs': '2 ms',
       'batch.persist': '38 ms',
       'batch.publish': '15 ms',

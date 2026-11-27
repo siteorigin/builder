@@ -18,6 +18,7 @@ import { subtreeIds } from '@engine/tree';
 import { catalogueIndex, compactNode, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars } from '@agent/context';
 import { applyOperations } from '@engine/apply';
 import { drafts } from '@engine/draft';
+import { COMPONENT_BLUEPRINTS } from '@agent/examples';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
 import { diagnosticKey, validateState } from '@engine/validate';
@@ -145,6 +146,33 @@ describe('an AI batch applied to copies of the project', () => {
     await env.run('Rewrite the hero', { scope: 'page' });
     expect(applied.ok).toBe(true);
     expect(made).toBeLessThanOrEqual(editor + 1);
+  });
+});
+
+describe('a managed component built and placed by a run, applied to copies of the project', () => {
+  it('copies the project no more often than the same batch from the editor does, and once more', async () => {
+    for (const codeEnabled of [true, false]) {
+      let made = 0;
+      let applied: { ok?: boolean } = {};
+      const env = await setup(
+        [
+          () => {
+            made = drafts.made;
+            return [call('c1', 'upsert_managed_component', { ...COMPONENT_BLUEPRINTS[0].args, placeOnPage: { pageId: env.session.state.site.homePageId } })];
+          },
+          (req) => {
+            made = drafts.made - made;
+            applied = JSON.parse((req.items.at(-1) as { content: string }).content);
+            return finish('Built the cards.');
+          }
+        ],
+        { codeEnabled }
+      );
+      await env.run('Build feature cards and put them on the home page');
+      expect(applied.ok).toBe(true);
+      // From the editor, the same two operations are one batch, applied to one copy.
+      expect(made).toBeLessThanOrEqual(2);
+    }
   });
 });
 

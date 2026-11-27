@@ -18,6 +18,7 @@ import { agentDiscovery, LLMS_FULL_FILE, markdownMirrorRoute, oneLine } from '@s
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
 import { isArticleDate } from '@shared/articles';
+import { isDraftEntry } from '@shared/collections';
 import { derived } from './cache';
 import { createSeoResolver } from './seo-metadata';
 import { entryMarkdown, escapeLineStart, inlineMarkdown, pageMarkdown, type MarkdownContext } from './markdown';
@@ -32,6 +33,8 @@ export const subjectKey = (s: SeoSubject) => (s.kind === 'page' ? `page\n${s.pag
 interface Listing {
   documents: readonly EffectiveSeo[];
   routes: Map<string, string>;
+  /** The same routes by key, made when first asked for. */
+  byKey?: Record<string, string>;
 }
 const listings = new WeakMap<ProjectState, Listing>();
 
@@ -58,7 +61,14 @@ function listingOf(state: ProjectState): Listing {
  */
 export function listedRoute(state: ProjectState, subject: SeoSubject): string | null {
   const key = subjectKey(subject);
-  return derived(state, `llms:${key}`, (s) => listingOf(s).routes.get(key) ?? null);
+  // The listing's addresses are one value of their own, read by each document's.
+  return derived(state, `llms:${key}`, (s) => {
+    const routes = derived(s, 'llms:routes', (t) => {
+      const listing = listingOf(t);
+      return (listing.byKey ??= Object.fromEntries(listing.routes));
+    });
+    return Object.hasOwn(routes, key) ? routes[key] : null;
+  });
 }
 
 /**
@@ -107,11 +117,28 @@ function publishedOnce(state: ProjectState): ProjectState {
 function listedDescription(state: ProjectState, subject: SeoSubject): string {
   if (subject.kind === 'page') return ownDescription(state, subject);
   const { collectionId, entryId } = subject;
-  return derived(state, `llms:summary:${subjectKey(subject)}`, (s) => {
-    const live = publishedOnce(s);
-    const collection = live.collections[collectionId];
-    const entry = collection?.entries[entryId];
-    return entry ? entrySummary(live, collection, entry) : '';
+  const key = subjectKey(subject);
+  // An entry's own words read only the entry: its text, quoted as its page shows it, is worked out from the published
+  // projection of the whole project, for every state.
+  const quoted = (s: ProjectState) =>
+    derived(
+      s,
+      `llms:summaryText:${key}`,
+      (t) => {
+        const live = publishedOnce(t);
+        const collection = live.collections[collectionId];
+        const entry = collection?.entries[entryId];
+        return entry ? entrySummary(live, collection, entry) : '';
+      },
+      { opaque: true }
+    );
+  return derived(state, `llms:summary:${key}`, (s) => {
+    const entries = s.collections[collectionId]?.entries;
+    if (!entries || typeof entries !== 'object') return quoted(s);
+    // Only an entry the website publishes has one: publishedState leaves the rest out, and the published ones as they are.
+    const entry = entries[entryId];
+    if (!entry || typeof entry !== 'object' || isDraftEntry(entry)) return '';
+    return oneLine(entry.excerpt) || oneLine(entry.seo?.description) || quoted(s);
   });
 }
 

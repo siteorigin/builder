@@ -27,7 +27,9 @@ function detached(query: unknown, place: unknown): Detached | null {
   return key === null ? null : { q, here, key };
 }
 
-const idsOf = (state: ProjectState, d: Detached): readonly string[] => derived(state, `collectionQuery:${d.key}`, (s) => queryEntries(s, d.q, d.here).map((e) => e.id));
+// One for each place a query excluding it is shown (every entry's page of a layout), each reading the whole collection:
+// worked out for every state.
+const idsOf = (state: ProjectState, d: Detached): readonly string[] => derived(state, `collectionQuery:${d.key}`, (s) => queryEntries(s, d.q, d.here).map((e) => e.id), { opaque: true });
 
 /** The IDs of the entries a query finds where it runs, in its order: the derived value a file depends on. */
 export function queriedEntryIds(state: ProjectState, query: unknown, place: QueryPlace = {}): readonly string[] {

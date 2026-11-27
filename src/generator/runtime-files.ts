@@ -1,4 +1,5 @@
-import type { ProjectState } from '@shared/types';
+import type { ComponentDefinition, ProjectState } from '@shared/types';
+import { ofFrozen } from '@engine/draft';
 import { ICONS } from '@shared/icons';
 import { derived } from './cache';
 
@@ -469,26 +470,46 @@ export const FALLBACK_ICON = 'sparkles';
  */
 export function usedIcons(state: ProjectState): string[] {
   const found = new Set<string>([FALLBACK_ICON]);
+  const add = (names: readonly string[]) => {
+    for (const n of names) found.add(n);
+  };
+  // Each document's names on their own: one frozen through is looked through once, for as long as it is that object.
+  const names = (v: unknown) => (v && typeof v === 'object' ? ofFrozen(iconsIn, v, iconNames) : iconNames(v));
+  for (const page of Object.values(state.pages)) add(names(page));
+  add(names(state.site.shell));
+  // Each collection's layout shows on every entry's page.
+  for (const c of Object.values(state.collections ?? {})) add(names(c?.settings?.template));
+  for (const c of Object.values(state.collections ?? {})) add(names(c?.settings?.archiveTemplate));
+  for (const def of Object.values(state.components)) add(ofFrozen(iconsOfDefinition, def, definitionIconNames));
+  return Object.keys(ICONS).filter((n) => found.has(n));
+}
+
+/** The bundled icons any string in `v` names, at any depth. */
+function iconNames(v: unknown): string[] {
+  const found = new Set<string>();
   const visit = (v: unknown) => {
     if (typeof v === 'string') {
       if (Object.hasOwn(ICONS, v)) found.add(v);
     } else if (Array.isArray(v)) v.forEach(visit);
     else if (v && typeof v === 'object') Object.values(v).forEach(visit);
   };
-  visit(state.pages);
-  visit(state.site.shell);
-  // Each collection's layout shows on every entry's page.
-  for (const c of Object.values(state.collections ?? {})) visit(c?.settings?.template);
-  for (const c of Object.values(state.collections ?? {})) visit(c?.settings?.archiveTemplate);
-  for (const def of Object.values(state.components)) {
-    if (def.kind === 'code') {
-      for (const m of (def.source ?? '').matchAll(/['"`]([a-z0-9-]+)['"`]/g)) if (Object.hasOwn(ICONS, m[1])) found.add(m[1]);
-    }
-    visit(def.properties);
-    visit(def.tree);
-  }
-  return Object.keys(ICONS).filter((n) => found.has(n));
+  visit(v);
+  return [...found];
 }
+
+/** The icons a component definition names: in its properties and design, and quoted in a code component's source. */
+function definitionIconNames(def: ComponentDefinition): string[] {
+  const found = new Set<string>();
+  if (def.kind === 'code') {
+    for (const m of (def.source ?? '').matchAll(/['"`]([a-z0-9-]+)['"`]/g)) if (Object.hasOwn(ICONS, m[1])) found.add(m[1]);
+  }
+  for (const n of iconNames(def.properties)) found.add(n);
+  for (const n of iconNames(def.tree)) found.add(n);
+  return [...found];
+}
+
+const iconsIn = new WeakMap<object, string[]>();
+const iconsOfDefinition = new WeakMap<ComponentDefinition, string[]>();
 
 /**
  * Icon data for the icons the project uses, and any named in `alsoShown` (values shown outside the project's
@@ -496,7 +517,8 @@ export function usedIcons(state: ProjectState): string[] {
  */
 export function iconsJs(state: ProjectState, alsoShown?: unknown): string {
   // Any string in any document may name an icon: a file that depends on the answer, not on every document.
-  let names = derived(state, 'icons', usedIcons);
+  // Its reads are every document whole, so it is looked for every state (each frozen document once, usedIcons).
+  let names = derived(state, 'icons', usedIcons, { opaque: true });
   if (alsoShown !== undefined) {
     const more = new Set(names);
     const visit = (v: unknown) => {

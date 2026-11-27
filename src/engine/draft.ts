@@ -79,6 +79,18 @@ export function isFrozenThrough(value: object): boolean {
   return frozenThrough.has(value);
 }
 
+/**
+ * What `make` works out from `value` alone, kept in `memo` for as long as `value` is that object when it is frozen
+ * through: nothing in it can change, so neither can the answer. Anything else is worked out every time.
+ */
+export function ofFrozen<K extends object, V>(memo: WeakMap<K, V>, value: K, make: (value: K) => V): V {
+  if (!frozenThrough.has(value)) return make(value);
+  if (memo.has(value)) return memo.get(value) as V;
+  const made = make(value);
+  memo.set(value, made);
+  return made;
+}
+
 /** How many drafts have been made: how many times a batch was applied to a copy of a project, for tests. */
 export const drafts = { made: 0 };
 
