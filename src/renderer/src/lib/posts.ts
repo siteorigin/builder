@@ -257,7 +257,7 @@ export function futurePublishQuestion(publishedAt: unknown, noun: string, langua
     icon: 'warning',
     subject: day,
     details: [
-      { kind: 'risk', text: `Readers see it from the next export, dated ${day}.` },
+      { kind: 'risk', text: `It is included in the next export, dated ${day}.` },
       { kind: 'keep', text: 'Kept as a draft, it stays off the website until you publish it.' }
     ]
   };

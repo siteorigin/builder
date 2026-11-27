@@ -23,7 +23,8 @@ describe('publishing a future-dated post', () => {
     expect(q).not.toBeNull();
     expect(q!.title).toBe('Publish this post dated 28 November 2026?');
     expect(q!.subject).toBe('28 November 2026');
-    expect(q!.body).toContain('next export');
+    expect(q!.body).toContain('published now, it is included in the next export');
+    expect(q!.details.map((d) => d.text)).toEqual(['It is included in the next export, dated 28 November 2026.', 'Kept as a draft, it stays off the website until you publish it.']);
     expect(q!.confirmLabel).toBe('Publish now');
     expect(q!.cancelLabel).toBe('Keep as draft');
   });
@@ -33,6 +34,9 @@ describe('publishing a future-dated post', () => {
     expect(futurePublishQuestion('2027-01-01', 'post', 'en-GB', '2026-12-31')?.subject).toBe('1 January 2027');
     expect(futurePublishQuestion('2026-12-01', 'post', 'en-GB', '2026-11-30')).not.toBeNull();
     expect(futurePublishQuestion('2026-11-30', 'post', 'en-GB', '2026-12-01')).toBeNull();
+    // Tomorrow within the same month, and a day ahead in a later year.
+    expect(futurePublishQuestion('2026-11-15', 'post', 'en-GB', '2026-11-14')).not.toBeNull();
+    expect(futurePublishQuestion('2027-11-14', 'post', 'en-GB', '2026-11-15')).not.toBeNull();
   });
 
   it('names the collection’s own noun and writes the date in the site’s language', () => {
@@ -45,6 +49,8 @@ describe('publishing a future-dated post', () => {
     expect(ask(undefined)).toBeNull();
     expect(ask('')).toBeNull();
     expect(ask('2026-02-30')).toBeNull();
+    expect(ask('2099-02-30')).toBeNull();
+    expect(ask('2099-1-1')).toBeNull();
   });
 
   it('compares calendar days on this computer: today is the local day, not the UTC one', () => {
