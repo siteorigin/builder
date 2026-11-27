@@ -26,7 +26,7 @@ if (!markAppearance()) {
 }
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence', 'remote:state', 'remote:changed', 'remote:reload', 'remote:presence', 'remote:ai', 'remote:notes', 'notes:changed']);
 
 const api: BuilderApi = {
   platform: process.platform,
@@ -132,6 +132,12 @@ const api: BuilderApi = {
     fixCode: invoke('ai:fixCode'),
     cancelFix: invoke('ai:cancelFix')
   } as BuilderApi['ai'],
+  notes: {
+    list: invoke('notes:list'),
+    add: invoke('notes:add'),
+    resolve: invoke('notes:resolve'),
+    delete: invoke('notes:delete')
+  } as BuilderApi['notes'],
   live: {
     start: invoke('live:start'),
     stop: invoke('live:stop'),
@@ -141,6 +147,7 @@ const api: BuilderApi = {
     setGuestExpiry: invoke('live:setGuestExpiry'),
     kick: invoke('live:kick'),
     setLocked: invoke('live:setLocked'),
+    setGuestNotes: invoke('live:setGuestNotes'),
     extend: invoke('live:extend'),
     presence: invoke('live:presence'),
     setAi: invoke('live:setAi'),
@@ -156,7 +163,11 @@ const api: BuilderApi = {
     ai: invoke('remote:ai'),
     aiSend: invoke('remote:aiSend'),
     aiStop: invoke('remote:aiStop'),
-    aiAnswer: invoke('remote:aiAnswer')
+    aiAnswer: invoke('remote:aiAnswer'),
+    notes: invoke('remote:notes'),
+    addNote: invoke('remote:addNote'),
+    resolveNote: invoke('remote:resolveNote'),
+    deleteNote: invoke('remote:deleteNote')
   } as BuilderApi['remote'],
   on: ((channel: string, cb: (payload: unknown) => void) => {
     if (!ALLOWED_EVENTS.has(channel)) throw new Error(`Unknown channel ${channel}`);

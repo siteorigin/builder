@@ -1,0 +1,29 @@
+@layer components {
+  /* The Notes button (#770): quiet like Share while idle, with the count of open notes on its corner. */
+  .toolbar .notes-btn { position: relative; height: 28px; padding: 0 8px; gap: 5px; background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); }
+  .toolbar .notes-btn:hover { background: var(--hover); color: var(--text); }
+  .toolbar .notes-btn[aria-expanded='true'] { box-shadow: inset 0 0 0 1px var(--border-control); }
+  .toolbar .notes-btn:has(.notes-badge) { padding-right: 14px; }
+  .notes-btn .notes-badge { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--panel); font-variant-numeric: tabular-nums; }
+
+  /* The popover takes the Share popover's frame (SharePopover.css); only its checklist is its own. */
+  .notes-popover .notes-form { display: flex; flex-direction: column; gap: 6px; flex: none; }
+  .notes-popover .notes-form textarea { width: 100%; resize: vertical; min-height: 44px; max-height: 120px; font: inherit; font-size: 13px; padding: 6px 8px; border-radius: var(--r-sm); border: 1px solid var(--border-control); background: var(--field, var(--panel)); color: var(--text); }
+  .notes-popover .notes-form-foot { display: flex; align-items: center; gap: 8px; }
+  .notes-popover .notes-where { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .notes-popover .notes-count { font-variant-numeric: tabular-nums; }
+  .notes-popover .notes-count.over { color: var(--danger, var(--red)); font-weight: 600; }
+  .notes-popover .notes-scroll { min-height: 0; }
+  .notes-popover .notes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .notes-popover .notes-row { display: flex; align-items: flex-start; gap: 8px; padding: 4px 2px; border-radius: var(--r-sm); }
+  .notes-popover .notes-row:hover { background: var(--hover); }
+  .notes-popover .notes-row input[type='checkbox'] { margin: 4px 0 0; flex: none; }
+  .notes-popover .notes-jump { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 2px 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--r-sm); }
+  .notes-popover .notes-jump:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .notes-popover .notes-body { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+  .notes-popover .notes-meta { font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; }
+  .notes-popover .notes-row.resolved .notes-body { text-decoration: line-through; color: var(--text-2); }
+  .notes-popover .notes-delete { flex: none; }
+  .notes-popover .notes-done summary { cursor: pointer; font-size: 12px; color: var(--text-2); padding: 6px 2px 2px; }
+  .notes-popover .notes-empty { padding: 4px 2px; }
+}

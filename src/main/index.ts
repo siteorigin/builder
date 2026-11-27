@@ -645,6 +645,7 @@ function registerIpc() {
   handle('live:setGuestExpiry', (run: unknown, guestId: unknown, guestExpiresAt: unknown) => controller.live.setGuestExpiry(run, guestId, guestExpiresAt));
   handle('live:kick', (run: unknown, guestId: unknown) => controller.live.kick(run, guestId));
   handle('live:setLocked', (run: unknown, locked: unknown) => controller.live.setLocked(run, locked));
+  handle('live:setGuestNotes', (run: unknown, allowed: unknown) => controller.live.setGuestNotes(run, allowed));
   handle('live:extend', (run: unknown, expiresAt: unknown) => controller.live.extend(run, expiresAt));
   handle('live:presence', (run: unknown, presence: unknown) => controller.live.setPresence(run, presence));
   handle('live:setAi', (run: unknown, guestId: unknown, grant: unknown) => controller.live.setAi(run, guestId, grant));
@@ -661,6 +662,15 @@ function registerIpc() {
   handle('remote:aiSend', (joinId: unknown, text: unknown, context: unknown) => controller.remote.aiSend(joinId, text, context));
   handle('remote:aiStop', (joinId: unknown, runId: unknown) => controller.remote.aiStop(joinId, runId));
   handle('remote:aiAnswer', (joinId: unknown, runId: unknown, questionId: unknown, answer: unknown) => controller.remote.aiAnswer(joinId, runId, questionId, answer));
+  handle('remote:notes', (joinId: unknown) => controller.remote.notes(joinId));
+  handle('remote:addNote', (joinId: unknown, draft: unknown) => controller.remote.addNote(joinId, draft));
+  handle('remote:resolveNote', (joinId: unknown, id: unknown, resolved: unknown) => controller.remote.resolveNote(joinId, id, resolved));
+  handle('remote:deleteNote', (joinId: unknown, id: unknown) => controller.remote.deleteNote(joinId, id));
+  // The open project's pinned notes (#770), in the opening each call names.
+  handle('notes:list', (opening: unknown) => controller.listNotes(opening));
+  handle('notes:add', (opening: unknown, draft: unknown) => controller.addNote(opening, draft));
+  handle('notes:resolve', (opening: unknown, id: unknown, resolved: unknown) => controller.resolveNote(opening, id, resolved));
+  handle('notes:delete', (opening: unknown, id: unknown) => controller.deleteNote(opening, id));
   handle('project:snapshot', () => controller.snapshot(), { anytime: true });
   // The editor's copy of the project (shared/project-feed.ts): a page that has just loaded is given it whole, and
   // the changes that follow are made against it; one that missed a change is sent it whole on project:changed.

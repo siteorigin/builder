@@ -19,6 +19,7 @@ import { startEditorFonts } from './lib/editor-fonts';
 import { isAskAiKey } from './lib/ask-ai-key';
 import { followLive, syncPresence } from './lib/live-host';
 import { followRemote, syncRemotePresence } from './lib/remote-session';
+import { followNotes } from './lib/notes-feed';
 import { JoinLiveDialog } from './components/JoinLive';
 import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
@@ -196,7 +197,9 @@ export function App() {
       syncPresence(),
       // Another computer's live session this app is a guest in, and where it is for the others (#766).
       ...followRemote(),
-      syncRemotePresence()
+      syncRemotePresence(),
+      // The shown project's pinned notes (#770).
+      followNotes()
     ];
     // A project already open (the editor reloaded, or a window opened again over it) shows the editor at once, once
     // its code and the catalogue are here: Welcome never shows in between. The changes that follow are made against

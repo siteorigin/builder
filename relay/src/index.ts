@@ -1,6 +1,7 @@
 import { newRoomId, PREVIEW_HOST_LABEL_RE, previewHostLabel } from '../../src/shared/live/crypto';
 import { DISPLAY_NAME_MAX, LIVE_PROTOCOL_VERSION, MAX_PREVIEW_HEADERS, ROOM_ID_RE } from '../../src/shared/live/limits';
 import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewTarget } from '../../src/shared/live/preview';
+import { NOTE_TEXT_MAX } from '../../src/shared/live/notes';
 import { formatInviteLink, HOST_SOCKET_PATH, PREVIEW_ADMISSION_PATH, relaySocketUrl, roomPreviewOrigin, roomSocketPath } from '../../src/shared/live/relay-url';
 import { MAX_ADMISSION_BODY_BYTES, previewCookieName, previewCookieValues } from './admission';
 import { hasSigningKey, relayOrigin, type Env } from './config';
@@ -353,7 +354,8 @@ async function guestPage(request: Request, relay: string, roomId: string): Promi
     'data-preview-origin': previewOrigin,
     'data-invite-link': formatInviteLink(relay, roomId),
     'data-protocol-version': String(LIVE_PROTOCOL_VERSION),
-    'data-name-max': String(DISPLAY_NAME_MAX)
+    'data-name-max': String(DISPLAY_NAME_MAX),
+    'data-note-max': String(NOTE_TEXT_MAX)
   };
   const data = Object.entries(attrs)
     .map(([name, value]) => `${name}="${escapeHtml(value)}"`)
@@ -390,12 +392,24 @@ async function guestPage(request: Request, relay: string, roomId: string): Promi
     <label class="switch-row"><input type="checkbox" role="switch" id="follow" checked><span>Follow host’s page</span></label>
     <button type="button" class="btn" id="point" aria-pressed="false" disabled title="Click something on the site to point it out to the host"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></svg><span>Point</span></button>
     <button type="button" class="btn" id="copy-invite" aria-expanded="false" aria-controls="handoff" hidden>How to edit</button>
+    <button type="button" class="btn" id="notes-button" aria-expanded="false" aria-controls="notes">Notes<span class="notes-count" id="notes-count" hidden></span></button>
   </div>
 </header>
 <section class="handoff" id="handoff" aria-labelledby="handoff-title" aria-describedby="handoff-text" hidden>
   <div class="handoff-head"><h2 id="handoff-title" tabindex="-1">Edit with the host</h2><button type="button" class="icon-btn" id="handoff-close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
   <p id="handoff-text"></p>
   <div class="handoff-row"><input type="text" class="input" id="handoff-link" readonly aria-label="Invite link"><button type="button" class="btn btn-primary" id="handoff-copy">Copy link</button></div>
+</section>
+<section class="handoff notes" id="notes" aria-labelledby="notes-title" hidden>
+  <div class="handoff-head"><h2 id="notes-title" tabindex="-1">Notes</h2><button type="button" class="icon-btn" id="notes-close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+  <form id="note-form" novalidate>
+    <label for="note-text" id="note-where">Leave a note on this page</label>
+    <textarea id="note-text" class="input" rows="3" aria-describedby="note-length note-error"></textarea>
+    <div class="note-foot"><span class="hint" id="note-length"></span><button type="submit" class="btn btn-primary" id="note-send">Send note</button></div>
+    <p class="error" id="note-error" role="alert" hidden></p>
+  </form>
+  <p class="hint" id="notes-off" hidden>The host has turned off notes from guests.</p>
+  <ul class="note-list" id="note-list" aria-label="Notes left on this site"></ul>
 </section>
 <p class="host-note" id="host-note" hidden></p>
 <main class="stage" id="stage" hidden>

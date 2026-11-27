@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
 import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
@@ -259,6 +260,13 @@ export interface State {
   /** The Share popover is open. */
   shareOpen: boolean;
   /**
+   * The shown project's pinned notes (#770), for the opening they were read in (its snapshot's workspaceKey): this
+   * computer's own, or the host's in the remote shell. Null until read, or while no project is shown.
+   */
+  notes: (LiveNotes & { opening: string }) | null;
+  /** The Notes popover is open. */
+  notesOpen: boolean;
+  /**
    * This app as a guest in another computer's live session (lib/remote-session.ts), as the main process last said.
    * While it is admitted the editor shows the host's project, and `snapshot` is that project's.
    */
@@ -434,6 +442,8 @@ const live = create<State>((set) => ({
   liveNotice: { id: 0, text: '' },
   livePresence: null,
   shareOpen: false,
+  notes: null,
+  notesOpen: false,
   remote: { phase: 'idle', ended: null },
   remotePresence: null,
   remoteAi: null,

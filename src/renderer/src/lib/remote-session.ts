@@ -3,6 +3,7 @@ import type { GuestRole } from '@shared/live/limits';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { Presence } from '@shared/live/messages';
 import type { LiveProjectSnapshot } from '@shared/live/snapshot';
+import type { LiveNoteResult, NoteDraft } from '@shared/live/notes';
 import { LIVE_BATCH_LABEL_MAX } from '@shared/live/limits';
 import { refKey } from '@shared/types';
 import { api, confirmDialog, getState, setState, toast, transport, useStore, type State } from '../store';
@@ -101,6 +102,10 @@ export function followRemote(): Array<() => void> {
     }),
     api.on('remote:ai', (ai) => {
       if (shown?.joinId === ai.joinId) setState({ remoteAi: ai });
+    }),
+    // The host's pinned notes (#770) reach the editor as the shown project's own.
+    api.on('remote:notes', ({ joinId, notes }) => {
+      if (shown?.joinId === joinId) transport.emit(shown.remote, 'notes:changed', notes);
     })
   ];
   let gone = false;
@@ -295,6 +300,7 @@ export function remoteApi(joinId: string): RemoteApi {
   const mine = () => (shown?.joinId === joinId ? shown : null);
   const revision = () => mine()?.snapshot?.revision ?? 0;
   const local = () => window.builder;
+  const ended = async (): Promise<LiveNoteResult> => ({ ok: false, message: 'That live session has ended.' });
   const historyRefused = async (): Promise<ApplyResult> => ({
     ok: false,
     revision: revision(),
@@ -363,6 +369,13 @@ export function remoteApi(joinId: string): RemoteApi {
     live: {
       state: async () => IDLE_LIVE,
       presence: async () => ({ ok: true as const })
+    },
+    // The host's pinned notes (#770), as far as this guest's role allows; the host checks every call again.
+    notes: {
+      list: async (key: string) => (key === opening ? api.remote.notes(joinId) : null),
+      add: (key: string, draft: NoteDraft) => (key === opening ? api.remote.addNote(joinId, draft) : ended()),
+      resolve: (key: string, id: string, resolved: boolean) => (key === opening ? api.remote.resolveNote(joinId, id, resolved) : ended()),
+      delete: (key: string, id: string) => (key === opening ? api.remote.deleteNote(joinId, id) : ended())
     }
   } as unknown as RemoteApi;
 }
