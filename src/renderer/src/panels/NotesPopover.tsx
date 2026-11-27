@@ -56,7 +56,9 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
   const box = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const notes = useStore((s) => s.notes);
-  const rights = useStore(noteRights);
+  // Each read as a value of its own: a selector that made a new object every time would never settle.
+  const canAdd = useStore((s) => noteRights(s).add);
+  const canManage = useStore((s) => noteRights(s).manage);
   const close = (back: boolean) => {
     setState({ notesOpen: false });
     if (back) requestAnimationFrame(() => trigger.current?.focus());
@@ -126,21 +128,21 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
         </button>
       </div>
       <div className="share-body">
-        {rights.add ? <NoteForm /> : <p className="share-quiet">{notes?.guestNotes === false ? 'The host has turned off notes from guests.' : 'You can read the notes, but not leave one.'}</p>}
+        {canAdd ? <NoteForm /> : <p className="share-quiet">{notes?.guestNotes === false ? 'The host has turned off notes from guests.' : 'You can read the notes, but not leave one.'}</p>}
         <div className="share-scroll notes-scroll">
           {open.length === 0 && done.length === 0 ? (
             <p className="share-quiet notes-empty">No notes yet. Pin one to what is selected, or to the page, for whoever works on it next.</p>
           ) : (
             <>
               <ul className="notes-list" aria-label="Open notes">
-                {open.length === 0 ? <li className="share-quiet notes-empty">Every note is resolved.</li> : open.map((n) => <NoteRow key={n.id} note={n} manage={rights.manage} onJump={() => close(false)} />)}
+                {open.length === 0 ? <li className="share-quiet notes-empty">Every note is resolved.</li> : open.map((n) => <NoteRow key={n.id} note={n} manage={canManage} onJump={() => close(false)} />)}
               </ul>
               {done.length > 0 && (
                 <details className="notes-done">
                   <summary>Resolved ({done.length})</summary>
                   <ul className="notes-list" aria-label="Resolved notes">
                     {done.map((n) => (
-                      <NoteRow key={n.id} note={n} manage={rights.manage} onJump={() => close(false)} />
+                      <NoteRow key={n.id} note={n} manage={canManage} onJump={() => close(false)} />
                     ))}
                   </ul>
                 </details>
