@@ -1,5 +1,5 @@
 import './StatusBar.css';
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type ReactNode } from 'react';
 import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, GitCompareArrows, Info, Link2, Lock, Network, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
 import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
 import type { SeoFinding, SeoPillar } from '@shared/seo';
@@ -15,7 +15,7 @@ import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOf
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 import { findingHandoff } from '../lib/seoHandoff';
-import { conflictPanes, sameVersions, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
+import { conflictPanes, diffCaption, lineDiff, sameVersions, savedCopyDay, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
 import { AiHandoffButton } from '../components/AiHandoff';
 import { HeldStyle } from './StylePaste';
 import { Modal, Spinner, useMenu, type MenuItem } from '../components/ui';
@@ -292,11 +292,14 @@ function conflictSubject(state: ProjectState, path: string): string {
   const page = /^siteorigin\/pages\/([^/]+)\.json$/.exec(path)?.[1];
   if (page) return Object.hasOwn(state.pages, page) ? `${state.pages[page].title} page` : 'Page file';
   const component = /^siteorigin\/components\/([^/]+)\//.exec(path)?.[1];
-  if (component) return Object.hasOwn(state.components, component) ? `${state.components[component].name} component` : 'Component file';
+  // One no longer in the project (a saved copy from earlier, say) is named from its path.
+  if (component) return Object.hasOwn(state.components, component) ? `${state.components[component].name} component` : `${capitalise(component.replace(/^[a-z]+\./, '').replace(/[-_.]+/g, ' '))} component`;
   if (Object.hasOwn(DOCUMENT_NAMES, path)) return DOCUMENT_NAMES[path];
   const route = /^src\/routes\/(.*)\+page\.svelte$/.exec(path)?.[1];
   const built = route === undefined ? undefined : Object.values(state.pages).find((p) => p.route === `/${route}`);
-  return built ? `${built.title} website file` : 'Project file';
+  if (built) return `${built.title} website file`;
+  if (route !== undefined) return `${route ? capitalise(route.replace(/\/$/, '').split('/').pop()!.replace(/[-_]+/g, ' ')) : 'Home'} website file`;
+  return 'Project file';
 }
 
 /** The SHA-256 of text as a file holds it (UTF-8), in hex: the bytes a conversion expects to find on disk. */
@@ -307,7 +310,20 @@ async function textDigest(text: string): Promise<string> {
 
 /** A generated file's reason, without the word "generated". */
 const conflictReason = (reason: string) =>
-  reason === 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.' ? 'Edited outside SiteOrigin Builder, which can’t update this file until it is restored.' : reason;
+  reason === 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.'
+    ? 'Edited outside SiteOrigin Builder, which can’t update this file until it is restored.'
+    : reason === 'Changed outside SiteOrigin Builder during an AI run.' || reason === 'Changed outside SiteOrigin Builder during an interrupted AI run.'
+      ? 'Changed outside SiteOrigin Builder while an AI request was working on it, so the request’s change to it was undone.'
+      : reason;
+
+/** Where settling a conflict put the versions not used, said only for those it kept. */
+function keptAs(sides: SavedCopy['side'][]): string {
+  const names = { external: 'the edited file', builder: 'SiteOrigin Builder’s version', attempted: 'the AI request’s attempted version' };
+  const list = [...new Set(sides)].map((side) => names[side]);
+  if (!list.length) return '';
+  const joined = list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0];
+  return ` ${capitalise(joined)} ${list.length > 1 ? 'are' : 'is'} under Saved copies.`;
+}
 
 /** Why a theme component stays as it is, in plain words where the engine's reason is about its stored data. */
 const keptReason = (reason: string) => (reason === 'Its stored definition was changed outside the theme.' ? 'It has its own edits, so this update leaves it as it is.' : reason);
@@ -701,7 +717,7 @@ export function HealthModal() {
         if (message && choice === 'convert' && onRefused) onRefused(message);
         else if (message) toast(message, 'error');
       } else if (choice === 'convert') setStatus(r.message ?? `${subject} is now a code component, which the component’s placements use. The edited file is also under Saved copies.`);
-      else setStatus(`${subject} settled. The version you replaced is under Saved copies.`);
+      else setStatus(`${subject} ${choice === 'keep' ? 'now uses the file on disk.' : 'uses SiteOrigin Builder’s version again.'}${keptAs(r.saved ?? [])}`);
     } catch (e) {
       settling.current = null;
       if (choice === 'convert' && onRefused) onRefused(`The file could not be converted: ${(e as Error).message}`);
@@ -1005,7 +1021,7 @@ export function HealthModal() {
                 </h4>
                 <p className="health-place-note" id={recoveryNote}>
                   <Archive aria-hidden="true" />
-                  The version you replace is kept under Saved copies.
+                  {readOnly ? 'Once the project is editable, choose a version of each to carry on editing.' : 'Choose a version of each to carry on editing.'} The one not used is kept under Saved copies.
                 </p>
                 <ul>
                   {snap.conflicts.map((c) => (
@@ -1015,6 +1031,7 @@ export function HealthModal() {
                       state={st}
                       dir={snap.dir}
                       busy={!!busy}
+                      settling={busy === c.path}
                       readOnly={readOnly}
                       canUnlock={!!snap.readOnly?.canUnlock}
                       codeEnabled={codeEnabled}
@@ -1078,7 +1095,8 @@ export function HealthModal() {
             </HealthRow>
           </HealthGroup>
         )}
-        {saved.length > 0 && <SavedCopies copies={saved} state={st} dir={snap.dir} readOnly={readOnly} />}
+        {/* Kept mounted with no copies: one just taken off the list keeps its Undo in its place. */}
+        <SavedCopies copies={saved} state={st} dir={snap.dir} readOnly={readOnly} />
         {!toolsFailed && (
           <HealthGroup title="Website tools" tone="quiet">
             <HealthRow
@@ -1105,19 +1123,89 @@ const NOT_SHOWN: Record<Exclude<FileContent['state'], 'text'>, string> = {
   unreadable: 'This file can’t be read.'
 };
 
-/** One version of a file, as read-only text, or why it is not shown. */
-function VersionText({ label, version }: { label: string; version: FileContent | undefined }) {
+/** How far a line is indented, in character widths (a tab is two, as code is shown), so a wrapped line hangs under it. */
+const indentOf = (line: string) => [...(/^[\t ]*/.exec(line)?.[0] ?? '')].reduce((n, ch) => n + (ch === '\t' ? 2 : 1), 0);
+
+/**
+ * One version of a file, as read-only text, or why it is not shown. Given the version it is compared with, the lines
+ * that differ are marked (a bar and a tint), the places where the other has lines this one lacks get a rule, the
+ * caption says which, and the first is scrolled into view. Alone (a saved copy), the caption counts its lines.
+ */
+function VersionText({ label, version, against, versus }: { label: string; version: FileContent | undefined; against?: FileContent; versus?: string }) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const labelId = useId();
+  const text = version?.state === 'text' ? version.text : null;
+  const other = against?.state === 'text' ? against.text : null;
+  const diff = useMemo(() => (text !== null && other !== null ? lineDiff(text, other) : null), [text, other]);
+  const lines = useMemo(() => (text === null ? [] : text.split('\n')), [text]);
+  // Where each difference starts: a run of changed lines, or a place where the other version has lines this one lacks.
+  const starts = useMemo(() => (diff ? [...new Set([...[...diff.changed].filter((i) => !diff.changed.has(i - 1)), ...[...diff.gaps].map((i) => Math.min(i, lines.length - 1))])].sort((x, y) => x - y) : []), [diff, lines.length]);
+  const marks = () => [...(preRef.current?.querySelectorAll<HTMLElement>('[data-diff-start]') ?? [])];
+  const scrollTo = (line: HTMLElement) => preRef.current && (preRef.current.scrollTop = Math.max(0, line.offsetTop - 2 * line.offsetHeight));
+  useLayoutEffect(() => {
+    const first = marks()[0];
+    if (first) scrollTo(first);
+  }, [diff]);
+  // For a file changed in several places: the difference shown, stepped through in order and round to the first after
+  // the last (one near the end may not scroll any further, so the step is counted, not read from the scroll).
+  const [at, setAt] = useState(0);
+  useEffect(() => setAt(0), [diff]);
+  const next = () => {
+    const all = marks();
+    if (!all.length) return;
+    const to = (at + 1) % all.length;
+    setAt(to);
+    scrollTo(all[to]);
+  };
+  const count = diff ? diffCaption(diff, versus) : text !== null && !against ? plural(lines.length, 'line') : null;
   return (
     <figure className="version-pane">
-      <figcaption>{label}</figcaption>
-      {version?.state === 'text' ? <pre className="code-view">{version.text || ' '}</pre> : <p className="faint">{version ? NOT_SHOWN[version.state] : 'This file can’t be read.'}</p>}
+      <figcaption>
+        <span id={labelId}>{label}</span>
+        {count && (
+          <span className="version-count">
+            {count}
+            {starts.length > 1 && (
+              <button className="version-next" aria-describedby={labelId} onClick={next}>
+                Next difference
+                <span className="version-step">
+                  ({at + 1} of {starts.length})
+                </span>
+                <ArrowDown aria-hidden="true" />
+              </button>
+            )}
+          </span>
+        )}
+      </figcaption>
+      {text !== null ? (
+        <pre ref={preRef} className="code-view" tabIndex={0} role="group" aria-labelledby={labelId}>
+          {lines.map((line, i) => {
+            const changed = diff?.changed.has(i);
+            const gap = diff?.gaps.has(i) ? ' gap-before' : i === lines.length - 1 && diff?.gaps.has(lines.length) ? ' gap-after' : '';
+            return (
+              <span key={i} className={`version-line${changed ? ' changed' : ''}${gap}`} data-diff-start={starts.includes(i) || undefined} style={{ '--indent': `${indentOf(line)}ch` } as CSSProperties}>
+                {gap === ' gap-before' && <span className="sr-only">Lines only in the other version go here. </span>}
+                {changed && <span className="sr-only">Changed: </span>}
+                {line || ' '}
+                {gap === ' gap-after' && <span className="sr-only"> Lines only in the other version follow.</span>}
+              </span>
+            );
+          })}
+        </pre>
+      ) : (
+        <p className="version-missing">{version ? NOT_SHOWN[version.state as Exclude<FileContent['state'], 'text'>] : 'This file can’t be read.'}</p>
+      )}
     </figure>
   );
 }
 
+/** What a choice is doing while it runs, said on its button. */
+const RUNNING: Record<ConflictChoice, string> = { keep: 'Keeping the file on disk…', restore: 'Putting back SiteOrigin Builder’s version…', convert: 'Converting…' };
+
 /**
- * A file in conflict: what it is and what happened, the versions to look at, then each choice beside what it does.
- * Both choices weigh the same: whichever version is not used is kept under Saved copies. A conflict an AI request's
+ * A file in conflict: what it is and what happened, then each choice beside what it does and where the other version
+ * goes. Compared, each version sits in the card of the choice that uses it, with the lines that differ marked. Both
+ * choices weigh the same: whichever version is not used is kept under Saved copies. A conflict an AI request's
  * rollback left also shows what the request tried to save, for inspection only; it is kept under Saved copies too.
  */
 function ConflictRow({
@@ -1125,6 +1213,7 @@ function ConflictRow({
   state,
   dir,
   busy,
+  settling,
   readOnly,
   canUnlock,
   codeEnabled,
@@ -1135,11 +1224,13 @@ function ConflictRow({
   state: ProjectState;
   dir: string;
   busy: boolean;
+  /** This row's choice is the one running. */
+  settling: boolean;
   readOnly: boolean;
   canUnlock: boolean;
   /** Developer mode: a design's edited file can become a code component only with it on. */
   codeEnabled: boolean;
-  /** The band's line saying the version replaced is kept: every choice is described by it too. */
+  /** The band's line saying the version not used is kept: every choice is described by it too. */
   recoveryNote: string;
   onResolve: (choice: ConflictChoice, check?: () => Promise<false | { expect?: string }>, onRefused?: (message: string) => void) => void;
 }) {
@@ -1155,6 +1246,11 @@ function ConflictRow({
   const compareRef = useRef<HTMLButtonElement>(null);
   // The versions were shown but couldn't be read again before a choice: say so here, and choose nothing.
   const [recheck, setRecheck] = useState(false);
+  // The choice pressed, said on its button while it runs.
+  const [pending, setPending] = useState<ConflictChoice | null>(null);
+  useEffect(() => {
+    if (!busy) setPending(null);
+  }, [busy]);
   const load = async () => {
     const ask = ++asked.current;
     setRecheck(false);
@@ -1168,6 +1264,8 @@ function ConflictRow({
     setVersions(shownVersions(r));
   };
   const compare = () => {
+    // Held while this row's choice is checked against the versions shown, and while the versions are being read.
+    if (settling || versions === 'loading') return;
     if (!versions) return void load();
     ++asked.current;
     setRecheck(false);
@@ -1179,6 +1277,7 @@ function ConflictRow({
   const choose = (choice: ConflictChoice) => {
     if (held) return;
     setRefused(null);
+    setPending(choice);
     const onRefused = choice === 'convert' ? setRefused : undefined;
     const shown = versions;
     if (!shown) return onResolve(choice, undefined, onRefused);
@@ -1203,16 +1302,54 @@ function ConflictRow({
     };
     onResolve(choice, check, onRefused);
   };
-  const restoreDoes = kind === 'generated' ? (c.builderMissing ? 'Removes the file, which your pages no longer make. Your version is kept as a copy.' : 'Makes the file again from your pages. To keep a change to it, make the change in the page or in a code component.') : c.builderMissing ? 'Removes the file, which SiteOrigin Builder’s version doesn’t have.' : 'Puts back the version you were editing.';
+  const shown = versions && versions !== 'loading' ? versions : null;
+  const panes = shown ? conflictPanes(kind, shown) : [];
+  /** A version, compared with the one it would replace (the other choice's), its differing lines marked. */
+  const pane = (key: 'builder' | 'disk' | 'attempted') => {
+    const p = panes.find((x) => x.key === key);
+    if (!p) return null;
+    if (key === 'attempted') return <VersionText label={p.label} version={p.version} against={shown?.builder} versus="SiteOrigin Builder’s version" />;
+    return <VersionText label={p.label} version={p.version} against={key === 'disk' ? shown?.builder : shown?.disk} />;
+  };
+  // Where the version not used goes, said only when there is one: a file deleted outside leaves nothing to keep.
+  const diskGoes = shown?.disk?.state === 'missing' ? ' There’s no edited file on disk to save.' : ' The edited file goes to Saved copies.';
+  // Known only once compared: the file was deleted outside, so keeping "the file on disk" keeps it deleted.
+  const diskDeleted = shown?.disk?.state === 'missing';
+  const keepDoes = c.builderMissing
+    ? 'Adds the file to the project as it is now.'
+    : diskDeleted
+      ? 'The file was deleted outside SiteOrigin Builder, and this keeps it deleted. SiteOrigin Builder’s version goes to Saved copies.'
+      : 'Uses the file as it was edited outside SiteOrigin Builder. SiteOrigin Builder’s version goes to Saved copies.';
+  const restoreDoes =
+    kind === 'generated'
+      ? c.builderMissing
+        ? `Removes the file, which your pages no longer make.${diskGoes}`
+        : `Makes the file again from your pages.${diskGoes} To keep a change, make it in the page or in a code component.`
+      : c.builderMissing
+        ? `Removes the file, which SiteOrigin Builder’s version doesn’t have.${diskGoes}`
+        : `${c.aiRun ? 'Uses the version from before the AI request.' : 'Puts back the version you had in SiteOrigin Builder.'}${diskGoes}`;
+  const button = (choice: ConflictChoice, label: string, unavailable = false) => (
+    // Held, not disabled, while a choice is being made: focus stays where it was.
+    <button className="btn btn-sm" aria-disabled={held || unavailable || undefined} aria-describedby={`${ids}-${choice}`} onClick={() => !unavailable && choose(choice)}>
+      {settling && pending === choice ? (
+        <>
+          <Spinner decorative />
+          {RUNNING[choice]}
+        </>
+      ) : (
+        label
+      )}
+    </button>
+  );
   return (
     <HealthRow
       tone="danger"
       icon={<CircleAlert />}
       actions={
         <>
-          <button ref={compareRef} className="btn btn-sm btn-ghost" aria-expanded={!!versions} onClick={() => void compare()}>
-            <GitCompareArrows aria-hidden="true" />
-            {versions ? 'Hide versions' : 'Compare versions'}
+          <button ref={compareRef} className="btn btn-sm btn-ghost" aria-expanded={!!shown} aria-disabled={settling || versions === 'loading' || undefined} onClick={() => void compare()}>
+            {versions === 'loading' ? <Spinner decorative /> : <GitCompareArrows aria-hidden="true" />}
+            {versions === 'loading' ? 'Reading versions…' : shown ? 'Hide versions' : 'Compare versions'}
           </button>
           <button className="btn btn-sm btn-ghost" onClick={() => void api.projects.reveal(`${dir}/${c.path}`)}>
             <FolderOpen aria-hidden="true" />
@@ -1224,15 +1361,6 @@ function ConflictRow({
         <>
           {/* The path runs the row's full width, under the actions, so a long one wraps less. */}
           <span className="health-path">{c.path}</span>
-          {versions === 'loading' ? (
-            <Spinner />
-          ) : versions ? (
-            <div className="versions">
-              {conflictPanes(kind, versions).map((p) => (
-                <VersionText key={p.key} label={p.label} version={p.version} />
-              ))}
-            </div>
-          ) : null}
           {recheck && (
             <p className="health-hint health-recheck" role="status">
               The versions couldn’t be read again to check they haven’t changed.{' '}
@@ -1249,39 +1377,56 @@ function ConflictRow({
             </p>
           )}
           {readOnly ? (
-            <p className="health-hint">{canUnlock ? 'Unlock the project to settle this.' : 'This can be settled once the project is editable.'}</p>
+            <>
+              {shown && (
+                <div className="versions">
+                  {kind === 'generated' ? pane('builder') : pane('disk')}
+                  {kind === 'generated' ? pane('disk') : pane('builder')}
+                  {pane('attempted')}
+                </div>
+              )}
+              <p className="health-hint">{canUnlock ? 'Unlock the project to choose a version.' : 'A version can be chosen once the project is editable.'}</p>
+            </>
           ) : (
-            <div className="health-choices" role="group" aria-label={kind === 'generated' ? (c.convert ? `Restore or convert the ${subject}` : `Restore the ${subject}`) : `Choose a version of the ${subject}`} aria-describedby={recoveryNote}>
-              {kind === 'canonical' && (
+            <>
+              <div className={`health-choices${shown ? ' compared' : ''}`} role="group" aria-label={kind === 'generated' ? (c.convert ? `Restore or convert the ${subject}` : `Restore the ${subject}`) : `Choose a version of the ${subject}`} aria-describedby={recoveryNote}>
+                {kind === 'canonical' && (
+                  <div className="health-choice">
+                    {pane('disk')}
+                    {button('keep', diskDeleted && !c.builderMissing ? 'Keep the file deleted' : 'Keep the file on disk')}
+                    <span id={`${ids}-keep`}>{keepDoes}</span>
+                  </div>
+                )}
                 <div className="health-choice">
-                  {/* Held, not disabled, while a choice is being made: focus stays where it was. */}
-                  <button className="btn btn-sm" aria-disabled={held || undefined} aria-describedby={`${ids}-keep`} onClick={() => choose('keep')}>
-                    Keep the file on disk
-                  </button>
-                  <span id={`${ids}-keep`}>{c.builderMissing ? 'Adds the file to the project as it is now.' : 'Uses the edited file as it is now.'}</span>
+                  {pane('builder')}
+                  {button('restore', c.builderMissing ? 'Use SiteOrigin Builder’s version (remove the file)' : 'Use SiteOrigin Builder’s version')}
+                  <span id={`${ids}-restore`}>{restoreDoes}</span>
                 </div>
-              )}
-              <div className="health-choice">
-                <button className="btn btn-sm" aria-disabled={held || undefined} aria-describedby={`${ids}-restore`} onClick={() => choose('restore')}>
-                  {c.builderMissing ? 'Use SiteOrigin Builder’s version (remove the file)' : 'Use SiteOrigin Builder’s version'}
-                </button>
-                <span id={`${ids}-restore`}>{restoreDoes}</span>
+                {kind === 'generated' && c.convert ? (
+                  <div className="health-choice">
+                    {pane('disk')}
+                    {/* Shown without Developer mode too, held, with why: a choice left out would say nothing. */}
+                    {button('convert', 'Convert to code component', !codeEnabled)}
+                    <span id={`${ids}-convert`}>{codeEnabled ? 'Makes the edited file a code component that this component’s placements use.' : 'Custom code needs Developer mode. Turn it on in Settings to make the edited file a code component.'}</span>
+                    {refused && (
+                      <p className="health-hint health-refused" role="alert">
+                        {refused}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  // A generated file with one way back: its edit is still shown, beside the choice that replaces it.
+                  kind === 'generated' && shown && <div className="health-choice view-only">{pane('disk')}</div>
+                )}
               </div>
-              {kind === 'generated' && c.convert && (
-                <div className="health-choice">
-                  {/* Shown without Developer mode too, held, with why: a choice left out would say nothing. */}
-                  <button className="btn btn-sm" aria-disabled={held || !codeEnabled || undefined} aria-describedby={`${ids}-convert`} onClick={() => codeEnabled && choose('convert')}>
-                    Convert to code component
-                  </button>
-                  <span id={`${ids}-convert`}>{codeEnabled ? 'Makes the edited file a code component that this component’s placements use.' : 'Custom code needs Developer mode. Turn it on in Settings to make the edited file a code component.'}</span>
-                  {refused && (
-                    <p className="health-hint health-refused" role="alert">
-                      {refused}
-                    </p>
-                  )}
+              {/* What an AI request tried to save: not a choice, so it sits below them, across the row. */}
+              {shown?.attempted !== undefined && (
+                <div className="versions attempted">
+                  {pane('attempted')}
+                  {shown.attempted?.state !== 'unreadable' && <p className="health-hint">Whichever version you choose, this one is kept under Saved copies too.</p>}
                 </div>
               )}
-            </div>
+            </>
           )}
         </>
       }
@@ -1291,23 +1436,160 @@ function ConflictRow({
   );
 }
 
-/** The versions not used when conflicts were settled: still there to read, find in the folder, or take off the list. */
+/**
+ * The versions not used when conflicts were settled: still there to read, find in the folder, or take off the list.
+ * Listed newest first under the day each was saved, so a copy from an earlier day says which day. A copy taken off
+ * the list while the dialog is open leaves a line in its place with Undo, until it is put back or the dialog closes.
+ */
 function SavedCopies({ copies, state, dir, readOnly }: { copies: SavedCopy[]; state: ProjectState; dir: string; readOnly: boolean }) {
+  // Taken off in this dialog: `focus` when the focus was on the row as it went, so Undo carries it on.
+  const [taken, setTaken] = useState<Array<{ copy: SavedCopy; focus: boolean }>>([]);
+  // Put back by Undo: that row takes the focus Undo had.
+  const [back, setBack] = useState<string | null>(null);
+  const [said, setSaid] = useState('');
+  // Said afresh each time, even when the words are the same as the last: the region is emptied first.
+  const say = (text: string) => {
+    setSaid('');
+    requestAnimationFrame(() => setSaid(text));
+  };
+  const shownTaken = taken.filter((t) => !copies.some((c) => c.id === t.copy.id));
+  if (!copies.length && !shownTaken.length) return null;
+  const now = Date.now();
+  const days: Array<{ day: string; copies: SavedCopy[] }> = [];
+  for (const c of [...copies, ...shownTaken.map((t) => t.copy)].sort((a, b) => b.savedAt - a.savedAt)) {
+    const day = savedCopyDay(c.savedAt, now);
+    const last = days[days.length - 1];
+    if (last?.day === day) last.copies.push(c);
+    else days.push({ day, copies: [c] });
+  }
   return (
-    <HealthGroup title="Saved copies" count={copies.length} tone="quiet" anchor="saved" note="The versions replaced when a file was changed in two places. Each stays in this project’s recovery folder, even after you take it off this list.">
-      {copies.map((c) => (
-        <SavedCopyRow key={c.id} copy={c} state={state} dir={dir} readOnly={readOnly} />
+    <HealthGroup
+      title="Saved copies"
+      count={copies.length}
+      tone="quiet"
+      anchor="saved"
+      note={`The versions not used when a file was changed in two places. Each saved file stays in this project’s recovery folder${readOnly ? '.' : ', even after you take it off this list.'}`}
+    >
+      {days.map((d) => (
+        <li key={d.day} className="health-place saved-day">
+          <h4>{d.day}</h4>
+          <ul>
+            {d.copies.map((c) => {
+              const t = shownTaken.find((x) => x.copy === c);
+              return t ? (
+                <TakenCopyRow
+                  key={c.id}
+                  copy={c}
+                  state={state}
+                  focus={t.focus}
+                  readOnly={readOnly}
+                  onUndone={(hadFocus) => {
+                    setTaken((list) => list.filter((x) => x.copy.id !== c.id));
+                    setBack(hadFocus ? c.id : null);
+                    say(`${conflictSubject(state, c.path)}, ${whichInSentence(c)}, is back on the list.`);
+                  }}
+                />
+              ) : (
+                <SavedCopyRow
+                  key={c.id}
+                  copy={c}
+                  state={state}
+                  dir={dir}
+                  readOnly={readOnly}
+                  autoFocus={back === c.id}
+                  onTaken={(focus) => {
+                    // A focus hand-off asked for by an earlier Undo of this copy is spent.
+                    setBack(null);
+                    say(`${conflictSubject(state, c.path)}, ${whichInSentence(c)}, is off the list.`);
+                    setTaken((list) => [...list.filter((x) => x.copy.id !== c.id), { copy: c, focus }]);
+                  }}
+                />
+              );
+            })}
+          </ul>
+        </li>
       ))}
+      <li className="sr-only">
+        <span role="status">{said}</span>
+      </li>
     </HealthGroup>
   );
 }
 
-function SavedCopyRow({ copy: c, state, dir, readOnly }: { copy: SavedCopy; state: ProjectState; dir: string; readOnly: boolean }) {
+/** A saved copy's source in the middle of a sentence: "the file as edited outside SiteOrigin Builder". */
+const whichInSentence = (c: SavedCopy) => savedCopyLabel(c).replace(/^The /, 'the ');
+
+/**
+ * A copy just taken off the list, said in its place with Undo. Undo takes the focus when the row had it as it went,
+ * and an Undo that fails stays, with why, to try again.
+ */
+function TakenCopyRow({ copy: c, state, focus, readOnly, onUndone }: { copy: SavedCopy; state: ProjectState; focus: boolean; readOnly: boolean; onUndone: (hadFocus: boolean) => void }) {
+  const [undoing, setUndoing] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const undoRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (focus) undoRef.current?.focus();
+  }, [focus]);
+  const textId = useId();
+  const undo = async () => {
+    if (undoing) return;
+    // Asked before the list changes: the row put back can replace this one before the answer arrives.
+    const hadFocus = document.activeElement === undoRef.current;
+    setUndoing(true);
+    setFailed(null);
+    const r = await api.project.restoreSavedCopy(c.id).catch((e: Error) => ({ ok: false, message: e.message }));
+    setUndoing(false);
+    const active = document.activeElement;
+    if (r.ok) onUndone(hadFocus && (!active || active === document.body || active === undoRef.current || active.classList.contains('health-summary')));
+    else setFailed(r.message ?? 'That saved copy couldn’t be put back on the list.');
+  };
+  const time = new Date(c.savedAt).toLocaleTimeString(undefined, { timeStyle: 'short' });
+  return (
+    <HealthRow
+      tone="quiet"
+      icon={<Check />}
+      actions={
+        // Read-only since (another copy of the app took the project): nothing can be written, so nothing is offered.
+        readOnly ? undefined : (
+          <button ref={undoRef} className="btn btn-sm" aria-disabled={undoing || undefined} aria-describedby={textId} onClick={() => void undo()}>
+            {undoing && <Spinner decorative />}
+            {undoing ? 'Putting back…' : failed ? 'Try Undo again' : 'Undo'}
+          </button>
+        )
+      }
+      details={
+        failed ? (
+          <p className="health-hint health-refused" role="alert">
+            {failed}
+          </p>
+        ) : undefined
+      }
+    >
+      <span className="saved-taken" id={textId}>
+        <strong>{conflictSubject(state, c.path)}</strong>, {whichInSentence(c)} ({time}), is off the list.{!c.removed && ' Its file is still in the recovery folder.'}{readOnly && ' It can be put back once the project is editable.'}
+      </span>
+    </HealthRow>
+  );
+}
+
+function SavedCopyRow({ copy: c, state, dir, readOnly, autoFocus, onTaken }: { copy: SavedCopy; state: ProjectState; dir: string; readOnly: boolean; autoFocus: boolean; onTaken: (focus: boolean) => void }) {
   const [content, setContent] = useState<FileContent | 'loading' | null>(null);
+  const [removing, setRemoving] = useState(false);
   const asked = useRef(0);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const removeRef = useRef<HTMLButtonElement>(null);
+  // Put back by Undo, which had the focus: it carries on from this row's first action.
+  useLayoutEffect(() => {
+    if (autoFocus) actionsRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+  }, [autoFocus]);
   const which = savedCopyLabel(c);
-  const when = new Date(c.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const subject = conflictSubject(state, c.path);
+  const at = new Date(c.savedAt);
+  const time = at.toLocaleTimeString(undefined, { timeStyle: 'short' });
+  const full = at.toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'short' });
   const view = async () => {
+    // Held while the copy is read: a second press would drop the read.
+    if (content === 'loading') return;
     const ask = ++asked.current;
     if (content) return setContent(null);
     setContent('loading');
@@ -1320,19 +1602,31 @@ function SavedCopyRow({ copy: c, state, dir, readOnly }: { copy: SavedCopy; stat
     setContent(r.content);
   };
   const dismiss = async () => {
+    if (removing) return;
+    const hadFocus = document.activeElement === removeRef.current;
+    setRemoving(true);
     const r = await api.project.dismissSavedCopy(c.id).catch((e: Error) => ({ ok: false, message: e.message }));
-    if (!r.ok) toast(r.message ?? 'That saved copy could not be removed from the list.', 'error');
+    setRemoving(false);
+    if (!r.ok) return toast(r.message ?? 'That saved copy could not be removed from the list.', 'error');
+    // The row may be gone already, its focus with it (to the summary, by the dialog): Undo carries it on, unless it
+    // has moved somewhere else meanwhile.
+    const active = document.activeElement;
+    onTaken(hadFocus && (!active || active === document.body || active === removeRef.current || active.classList.contains('health-summary')));
   };
+  const shown = content && content !== 'loading' ? content : null;
   return (
     <HealthRow
       tone="quiet"
       icon={<Archive />}
       details={
         <>
-          <div className="health-inline-actions" role="group" aria-label={`${conflictSubject(state, c.path)}, saved copy`}>
-            <button className="btn btn-sm" aria-expanded={!!content} onClick={() => void view()}>
-              {content ? 'Hide copy' : 'View copy'}
-            </button>
+          <div ref={actionsRef} className="health-inline-actions" role="group" aria-label={`${subject}, ${which}, saved ${full}`}>
+            {!c.removed && (
+              <button className="btn btn-sm" aria-expanded={!!shown} aria-disabled={content === 'loading' || undefined} onClick={() => void view()}>
+                {content === 'loading' && <Spinner decorative />}
+                {content === 'loading' ? 'Opening…' : shown ? 'Hide copy' : 'View copy'}
+              </button>
+            )}
             {!c.removed && (
               <button className="btn btn-sm btn-ghost" onClick={() => void api.projects.reveal(`${dir}/${c.file}`)}>
                 <FolderOpen aria-hidden="true" />
@@ -1340,26 +1634,29 @@ function SavedCopyRow({ copy: c, state, dir, readOnly }: { copy: SavedCopy; stat
               </button>
             )}
             {!readOnly && (
-              <button className="btn btn-sm btn-ghost" title="The file stays in the recovery folder." onClick={() => void dismiss()}>
-                <X aria-hidden="true" />
-                Remove from list
+              // Held, not disabled, while it runs: focus stays on it until the row goes.
+              <button ref={removeRef} className="btn btn-sm btn-ghost" aria-disabled={removing || undefined} onClick={() => void dismiss()}>
+                {removing ? <Spinner decorative /> : <X aria-hidden="true" />}
+                {removing ? 'Removing from list…' : 'Remove from list'}
               </button>
             )}
           </div>
-          {content === 'loading' ? (
-            <Spinner />
-          ) : content ? (
+          {shown && (
             <>
               <div className="versions">
-                <VersionText label={`${which}, as saved`} version={content} />
+                <VersionText label={`${which}, as saved`} version={shown} />
               </div>
-              {content.state === 'text' && <CopyButton text={content.text} label="Copy text" />}
+              {shown.state === 'text' && <CopyButton text={shown.text} label="Copy text" />}
             </>
-          ) : null}
+          )}
         </>
       }
     >
-      <strong>{conflictSubject(state, c.path)}.</strong> {which}, saved {when}.
+      <strong>{subject}.</strong> {which}, saved at{' '}
+      <time dateTime={at.toISOString()} title={full}>
+        {time}
+      </time>
+      .{c.removed && ' There’s no file to open.'}
       <span className="health-path">{c.path}</span>
     </HealthRow>
   );

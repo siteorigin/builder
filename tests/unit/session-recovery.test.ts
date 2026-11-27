@@ -798,6 +798,31 @@ describe('comparing conflict versions and saved copies (#82)', () => {
     expect((await reopen(dir)).savedCopies).toEqual([second]);
   });
 
+  it('puts a copy taken off the list back on it, in date order, and only one this opening took off', async () => {
+    const { dir, s } = await generatedConflict();
+    await s.resolveConflict(HOME, 'restore');
+    writeFileSync(join(dir, HOME), '<h1>Second hand edit</h1>\n');
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Touch' }] }, { label: 'Touch' })).ok).toBe(true);
+    await s.resolveConflict(HOME, 'restore');
+    const [second, first] = s.savedCopies;
+    expect((await s.restoreSavedCopy(first.id)).ok).toBe(true);
+    expect(s.savedCopies).toEqual([second, first]);
+    expect((await s.restoreSavedCopy('0123456789abcdef')).ok).toBe(false);
+    await s.dismissSavedCopy(first.id);
+    expect(s.savedCopies).toEqual([second]);
+    expect(await s.restoreSavedCopy(first.id)).toEqual({ ok: true });
+    expect(s.savedCopies).toEqual([second, first]);
+    // Put back on the list on disk too, so a reopened project lists it.
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.savedCopies).toEqual([second, first]);
+    // A copy whose file has gone is not put back.
+    await again.dismissSavedCopy(second.id);
+    rmSync(join(dir, second.file));
+    expect((await again.restoreSavedCopy(second.id)).ok).toBe(false);
+    expect(again.savedCopies).toEqual([first]);
+  });
+
   it('keeps a copy that is away for a while on the list, so it is shown again once it is back', async () => {
     const { dir, s } = await generatedConflict();
     await s.resolveConflict(HOME, 'restore');

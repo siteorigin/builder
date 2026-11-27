@@ -1320,9 +1320,9 @@ export interface BuilderApi {
     /**
      * Settle a file conflict. `convert` (a design's own file, `conflicts[].convert`) makes the edited file a code
      * component in the design's place; `expect` is the SHA-256 of the file's bytes as the author compared them, and
-     * `opening` the snapshot's `workspaceKey` it was chosen in.
+     * `opening` the snapshot's `workspaceKey` it was chosen in. `saved`: the sides settling it kept under Saved copies.
      */
-    resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: string; opening?: string }): Promise<{ ok: boolean; message?: string; definitionId?: string }>;
+    resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: string; opening?: string }): Promise<{ ok: boolean; message?: string; definitionId?: string; saved?: SavedCopy['side'][] }>;
     /**
      * The versions of a file in conflict, to compare before choosing: SiteOrigin Builder's and the one on disk, and
      * for a conflict an AI request's rollback left (`aiRun`), the version that request tried to save.
@@ -1332,6 +1332,8 @@ export interface BuilderApi {
     readSavedCopy(id: string): Promise<{ ok: boolean; content?: FileText; message?: string }>;
     /** Take a saved copy off the list in Project health. The file itself stays in the project's recovery folder. */
     dismissSavedCopy(id: string): Promise<{ ok: boolean; message?: string }>;
+    /** Put a saved copy taken off the list in this opening of the project back on it (Undo). */
+    restoreSavedCopy(id: string): Promise<{ ok: boolean; message?: string }>;
     unlock(): Promise<{ ok: boolean; message?: string }>;
     /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
     saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;
