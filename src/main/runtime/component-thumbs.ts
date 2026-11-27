@@ -2,9 +2,9 @@
  * Thumbnails of the project's own components for Insert → Your components: each one photographed from its isolated
  * preview (see @shared/component-preview) and kept in the editor's cache, `.siteorigin/cache/thumbs/`, under a key
  * made from everything that changes how it looks (the component and what it places or needs, the site's brand, its
- * language and how thumbnails are drawn), so an unchanged component is never drawn again. The cache is the editor's
- * alone: exports leave `.siteorigin` out. Nothing here depends on Electron, so it is unit tested directly; the
- * photograph itself is taken by main/thumb-capture.
+ * language and the way its text runs, and how thumbnails are drawn), so an unchanged component is never drawn again.
+ * The cache is the editor's alone: exports leave `.siteorigin` out. Nothing here depends on Electron, so it is unit
+ * tested directly; the photograph itself is taken by main/thumb-capture.
  */
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import type { ComponentDefinition, ProjectState } from '@shared/types';
 import type { PreparedComponentPreview } from '@shared/component-preview';
 import type { ComponentThumb } from '@shared/component-thumbs';
-import { siteLanguage } from '@shared/languages';
+import { siteDirection, siteLanguage } from '@shared/languages';
 import { articleRows } from '@shared/articles';
 import { entryRow, listsEntries, publishedEntries } from '@shared/entry-feed';
 import { getTheme } from '@catalogue/index';
@@ -120,7 +120,7 @@ function keyOf(state: ProjectState, definitionId: string, known?: string): strin
         ])
     : null;
   return createHash('sha256')
-    .update(JSON.stringify([RECIPE, definitionId, siteLanguage(state.site), brand, json, assets, rows, ...(posts ? [posts] : [])]))
+    .update(JSON.stringify([RECIPE, definitionId, siteLanguage(state.site), siteDirection(state.site), brand, json, assets, rows, ...(posts ? [posts] : [])]))
     .digest('hex');
 }
 
@@ -266,15 +266,40 @@ export class ComponentThumbs {
   /** Versions whose photograph failed in a way that may not be theirs, tried once more, by the server it was on. */
   private retried = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
+  /**
+   * The keys worked out for one project state and the theme it was worked out with. A change installs a new state
+   * (applyOperations never changes one), and a theme pack registered again is a new object, so an entry for either is
+   * never asked again: the site's brand is worked out once per change, not for every tile and check.
+   */
+  private keys: { state: ProjectState; theme: unknown; brand: string; byId: Map<string, string | null> } | null = null;
   /** How many thumbnails were photographed, for tests. */
   captures = 0;
+  /** How many times the site's brand was worked out, for tests. */
+  brands = 0;
 
   constructor(private host: ThumbHost) {}
+
+  /** thumbKey(state, definitionId), worked out once for each state and theme. */
+  private keyOf(state: ProjectState, definitionId: string): string | null {
+    const theme = getTheme(state.site.themeId);
+    let k = this.keys;
+    if (!k || k.state !== state || k.theme !== theme) {
+      const started = perf.on ? performance.now() : 0;
+      this.brands++;
+      k = this.keys = { state, theme, brand: brandFingerprint(state), byId: new Map() };
+      // Counted with the keys' time, as when every key worked the brand out itself (scripts/perf: the thumbs scenario).
+      if (perf.on) perf.count('thumbs.keyMs', performance.now() - started);
+    }
+    let key = k.byId.get(definitionId);
+    if (key === undefined) k.byId.set(definitionId, (key = thumbKey(state, definitionId, k.brand)));
+    return key;
+  }
 
   /** Forget the thumbnails and failures of an earlier opening. */
   private forOpening(opening: string) {
     if (this.opening === opening) return;
     this.opening = opening;
+    this.keys = null;
     this.memory.clear();
     this.failed.clear();
     this.running.clear();
@@ -284,6 +309,7 @@ export class ComponentThumbs {
   /** Forget every thumbnail and failure kept in memory (the project closed): nothing under way may keep one. */
   forget() {
     this.opening = null;
+    this.keys = null;
     this.memory.clear();
     this.failed.clear();
     this.running.clear();
@@ -305,7 +331,7 @@ export class ComponentThumbs {
     this.forOpening(opening);
     const def = own(now.state.components, definitionId);
     if (!def || def.owner !== 'project') return { state: 'unavailable' };
-    const key = thumbKey(now.state, definitionId);
+    const key = this.keyOf(now.state, definitionId);
     if (!key) return { state: 'unavailable' };
     const answer = (url: string): ComponentThumb => (have === key ? { state: 'ready', key } : { state: 'ready', key, url });
     const known = this.memory.get(key);
@@ -343,7 +369,7 @@ export class ComponentThumbs {
   /** Whether the project is still the opening, with the component as it was when `key` was made. */
   private still(definitionId: string, opening: string, key: string) {
     const now = this.host.current();
-    return !!now && now.opening === opening && this.opening === opening && thumbKey(now.state, definitionId) === key;
+    return !!now && now.opening === opening && this.opening === opening && this.keyOf(now.state, definitionId) === key;
   }
 
   private async photograph(definitionId: string, opening: string, key: string): Promise<ComponentThumb> {

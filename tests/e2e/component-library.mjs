@@ -430,8 +430,9 @@ const projectDir = await win.evaluate(async () => (await window.builder.project.
 const thumbsDir = join(projectDir, '.siteorigin/cache/thumbs');
 const captures = () => win.evaluate(() => window.builderTest.thumbCaptures());
 const thumb = (name) => tile(name).locator('.component-thumb');
-/** The picture a tile shows (a data URL), once it shows one. */
+/** The picture a tile shows (a data URL), once it shows one: scrolled into view first, as a tile out of view asks for none. */
 const picture = async (name) => {
+  await tile(name).scrollIntoViewIfNeeded();
   const img = thumb(name).locator('img.insert-shot');
   await img.waitFor({ timeout: 90000 });
   return img.getAttribute('src');
@@ -541,7 +542,10 @@ await eventually(async () => {
 }, 90000);
 assert.match(await picture('Sample note'), /^data:image\/png;base64,/, 'and its tile shows it');
 const [{ definitionId: throwing }] = await apply([{ type: 'component.createCode', name: 'Throwing note', source: BROKEN }], 'Create a throwing component');
-await eventually(async () => assert.equal(await thumb('Throwing note').getAttribute('data-thumb'), 'failed', 'a component that throws keeps its sketch'), 90000);
+await eventually(async () => {
+  await tile('Throwing note').scrollIntoViewIfNeeded();
+  assert.equal(await thumb('Throwing note').getAttribute('data-thumb'), 'failed', 'a component that throws keeps its sketch');
+}, 90000);
 assert.equal(await thumb('Throwing note').locator('img').count(), 0);
 await apply([{ type: 'component.remove', definitionId: throwing }], 'Remove the throwing component');
 const thumbFiles = readdirSync(thumbsDir);
