@@ -835,7 +835,9 @@ function registerIpc() {
   handle('ai:readConversation', async (id: unknown, key?: unknown) => {
     const changed = 'The project changed, so the conversation was not read.';
     if (typeof key !== 'string' || key !== controller.openingKey) throw new Error(changed);
-    const read = await orchestrator.readConversation(id);
+    const read = await orchestrator.readConversation(id).catch((e: unknown) => {
+      throw key === controller.openingKey ? e : new Error(changed);
+    });
     if (key !== controller.openingKey) throw new Error(changed);
     return read;
   });

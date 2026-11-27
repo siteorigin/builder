@@ -835,7 +835,8 @@ describe('reading a conversation by its ID (#1123)', () => {
     expect(env.orch.conversation?.id).toBe(fresh);
     // The open conversation is read as it is in memory, though it has no file.
     expect((await env.orch.readConversation(fresh)).conversation.id).toBe(fresh);
-    await expect(env.orch.readConversation('c_missing')).rejects.toThrow();
+    // A conversation with no file is unknown, without saying where it was looked for.
+    await expect(env.orch.readConversation('c_missing')).rejects.toThrow(/^Unknown conversation\.$/);
     await expect(env.orch.readConversation('../c_stored')).rejects.toThrow('Unknown conversation.');
     await env.orch.deleteConversation(stored.id);
     await expect(env.orch.readConversation(stored.id)).rejects.toThrow('Unknown conversation.');
@@ -851,6 +852,17 @@ describe('reading a conversation by its ID (#1123)', () => {
     env.orch.reset();
     release();
     await expect(reading).rejects.toThrow('The project changed');
+    // A read that fails after the close (its file gone) says the project changed, not why the earlier one failed.
+    await env.orch.openConversation(first);
+    await env.orch.newConversation();
+    const bytes = readFileSync(env.file(first), 'utf8');
+    const release2 = hold(env.orch);
+    const failing = env.orch.readConversation(first);
+    rmSync(env.file(first));
+    env.orch.reset();
+    release2();
+    await expect(failing).rejects.toThrow('The project changed');
+    writeFileSync(env.file(first), bytes);
 
     // A request still ending from the earlier opening is not this opening's: the same thread reads as its file has it.
     env.adapter.hold = true;

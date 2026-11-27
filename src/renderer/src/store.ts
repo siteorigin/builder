@@ -1520,6 +1520,8 @@ export function applyAiEvent(e: AiEvent) {
         lost = true;
         return m;
       }
+      // A piece that follows what is shown makes this copy as new as main's: a read under way is no newer.
+      shownWhole?.add(m.id);
       return { ...m, text: m.text + piece };
     });
     // Text for a turn this window does not show at all is as lost as a piece that does not fit.

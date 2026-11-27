@@ -825,8 +825,13 @@ export class Orchestrator {
     const live = this.liveConversation(id);
     if (live) return live;
     const opening = this.opening;
-    const c = await this.queueFileChange(() => this.readStoredConversation(dir, id));
-    if (this.deps.session() !== session || this.opening !== opening) throw new Error('The project changed while its conversation was loading.');
+    const changed = () => this.deps.session() !== session || this.opening !== opening;
+    const c = await this.queueFileChange(() => this.readStoredConversation(dir, id)).catch((e: NodeJS.ErrnoException) => {
+      // Neither an earlier opening's failure nor where its file was is this opening's to hear.
+      if (changed()) throw new Error('The project changed while its conversation was loading.');
+      throw e.code === 'ENOENT' ? new Error('Unknown conversation.') : e;
+    });
+    if (changed()) throw new Error('The project changed while its conversation was loading.');
     if (this.gone(id)) throw new Error('That conversation was deleted.');
     // A request may have been filed in it, or it opened, while the file was read: that copy is newer.
     return this.liveConversation(id) ?? { conversation: c, run: null };

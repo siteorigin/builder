@@ -14,6 +14,7 @@ import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { turnState } from '@shared/turns';
 import { ProjectSession } from '../../src/main/project/session';
 import { undoableId } from '../../src/renderer/src/lib/result';
+import { waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
 
 vi.stubGlobal('window', { builder: { platform: 'test' } });
 
@@ -189,7 +190,7 @@ describe('AI events reach only their own conversation', () => {
     // Detached, its text goes whole again: nothing names the copy it would follow.
     expect(events.slice(mark).filter((e) => e.kind === 'text').map((e) => [e.text, e.at])).toEqual([['Working on it. Still working.', undefined]]);
     expect(store.getState().conversation).toBe(before);
-    expect(store.getState().runStatus).toBeNull();
+    expect(store.getState().activeRunId).toBeNull();
   });
 
   it('an Undo beside a finished request updates it in the conversation on screen', async () => {
@@ -425,13 +426,39 @@ describe('a reloaded window shows the conversation by its ID, with the request r
     expect(store.getState().runStatus).toBeNull();
   });
 
+  it('keeps text streamed after it shows over the older copy the read again brings', async () => {
+    const time = '2026-11-24T00:00:00.000Z';
+    const user: ChatMessage = { id: 'm_q', role: 'user', text: 'Hi', time };
+    const reply = (text: string): ChatMessage => ({ id: 'm_reply', role: 'assistant', text, time, runId: 'r_live' });
+    const conv = (messages: ChatMessage[]): Conversation => ({ id: 'c_live', title: 'Live', createdAt: time, messages });
+    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    const answers: Array<(s: ConversationState) => void> = [];
+    w().builder.ai = { readConversation: vi.fn(() => new Promise<ConversationState>((resolve) => answers.push(resolve))) };
+    const showing = store.showConversation(conv([]), 'w1', () => true);
+    await until(() => answers.length === 1, 'the read');
+    // Text arrives while it is read, with nothing to land in; main's answer already has it.
+    store.applyAiEvent({ runId: 'r_live', conversationId: 'c_live', kind: 'text', text: 'Hel' });
+    answers[0]({ conversation: conv([user, reply('Hel')]), run: { runId: 'r_live', status: 'running', mode: 'edit' } });
+    await showing;
+    expect(store.getState()).toMatchObject({ runStatus: 'running', activeRunId: 'r_live' });
+    await until(() => answers.length === 2, 'the read again');
+    // The next piece follows what is shown; the read again, taken before it, is older and leaves it.
+    store.applyAiEvent({ runId: 'r_live', conversationId: 'c_live', kind: 'text', text: 'lo', at: 3 });
+    answers[1]({ conversation: conv([user, reply('Hel')]), run: { runId: 'r_live', status: 'running', mode: 'edit' } });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello']);
+  });
+
   it('shows a question waiting for an answer as waiting, and nothing from another opening or a read that failed', async () => {
     const time = '2026-11-24T00:00:00.000Z';
-    const asking: Conversation = { id: 'c_live', title: 'Live', createdAt: time, messages: [{ id: 'm_reply', role: 'assistant', text: '', time, runId: 'r_ask' }] };
+    const asking: Conversation = { id: 'c_live', title: 'Live', createdAt: time, messages: [{ id: 'm_reply', role: 'assistant', text: '', time, runId: 'r_ask', questions: [{ id: 'q_1', text: 'Which page?', choices: ['Home', 'About'] }] }] };
     store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
     w().builder.ai = { readConversation: async () => ({ conversation: asking, run: { runId: 'r_ask', status: 'awaiting-input', mode: 'ask' } }) };
     await store.showConversation({ ...asking, messages: [] }, 'w1', () => true);
     expect(store.getState()).toMatchObject({ conversation: asking, runStatus: 'awaiting-input', activeRunId: 'r_ask', runMode: 'ask' });
+    // The composer answers it again.
+    const s = store.getState();
+    expect(waitingQuestion(s.conversation, s.activeRunId, s.runStatus)).toMatchObject({ runId: 'r_ask', messageId: 'm_reply', question: { id: 'q_1' } });
 
     // A restore overtaken by a newer one, or by another opening, shows nothing.
     store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null });
