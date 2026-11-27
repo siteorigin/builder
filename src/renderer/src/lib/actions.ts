@@ -1369,6 +1369,9 @@ export function openOutline(pageId?: string | null) {
  *  must never sit over site-wide controls. A change to them is watched on the page, so a workspace over the canvas
  *  (the SEO view, the post writer) gives way too (#1108). */
 export function openSiteStyles() {
+  // A Preview still waiting on the writer's save never began. It goes first, so the page is never seen as previewed.
+  const asked = getState();
+  if (activeWorkspace(asked) === 'write' && asked.mode === 'preview') setMode('edit');
   const s = getState();
   const dm = s.definitionMode;
   const uncover = canvasCovered(activeWorkspace(s)) ? { leftTab: panelShowingCanvas(s) } : {};
@@ -1376,9 +1379,9 @@ export function openSiteStyles() {
 }
 
 /** The sidebar panel that leaves a covering workspace: the one the SEO view replaced, else Pages. */
-function panelShowingCanvas(s: ReturnType<typeof getState>) {
+function panelShowingCanvas(s: State): State['leftTab'] {
   if (s.leftTab !== 'seo') return 'pages';
-  const back = panelAfterSeo() as typeof s.leftTab;
+  const back = panelAfterSeo() as State['leftTab'];
   return canvasCovered(activeWorkspace({ ...s, leftTab: back })) ? 'pages' : back;
 }
 

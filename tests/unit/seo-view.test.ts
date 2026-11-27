@@ -30,12 +30,19 @@ interface EditorState {
   postView: 'write' | 'preview';
   seoSubject: SeoSubject | null;
   modal: { kind: string } | null;
+  rightTab: string;
+  dockOpen: boolean;
   definitionMode: unknown;
   templateMode: unknown;
   chatContextEnabled: { page: boolean; scope: 'selection' | 'page' | 'site' };
 }
 const load = (path: string) => import(/* @vite-ignore */ path);
-const { getState, setState } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void };
+const { getState, setState, useStore } = (await load('../../src/renderer/src/store')) as {
+  getState: () => EditorState;
+  setState: (p: Partial<EditorState>) => void;
+  useStore: { subscribe: (listener: (s: EditorState) => void) => () => void };
+};
+const subscribe = (listener: (s: EditorState) => void) => useStore.subscribe(listener);
 const { openSeoView, openSeoViewFrom, openSiteStyles, pageOutOfSight, selectPage } = (await load('../../src/renderer/src/lib/actions')) as {
   openSeoView: (subject?: SeoSubject | null) => boolean;
   openSeoViewFrom: (subject: SeoSubject, place: { leave: () => void; refused: () => { name: string; focus: () => void } | null }) => boolean;
@@ -399,10 +406,10 @@ describe('Site styles opened over a workspace (#1108)', () => {
 
   it('brings the canvas back from the Content writer, with a post open or none, keeping the post', () => {
     for (const post of [spring, null]) {
-      open({ leftTab: 'posts', post });
+      open({ leftTab: 'posts', post, rightTab: 'inspect', dockOpen: false });
       openSiteStyles();
       expect(shown()).toEqual({ covered: false, leftTab: 'pages' });
-      expect(getState().post).toEqual(post);
+      expect(getState()).toMatchObject({ post, postView: 'write', mode: 'edit', rightTab: 'styles', dockOpen: true });
     }
   });
 
@@ -414,9 +421,22 @@ describe('Site styles opened over a workspace (#1108)', () => {
   });
 
   it('goes to Pages from an SEO view opened over the writer, which would cover the canvas again', () => {
-    open({ leftTab: 'posts', post: spring });
-    setState({ leftTab: 'seo' });
+    for (const post of [spring, null]) {
+      open({ leftTab: 'posts', post });
+      setState({ leftTab: 'seo' });
+      openSiteStyles();
+      expect(shown()).toEqual({ covered: false, leftTab: 'pages' });
+    }
+  });
+
+  it('ends a Preview still waiting on the writer before the page shows, so it is never seen as previewed', () => {
+    open({ leftTab: 'posts', post: spring, mode: 'preview' });
+    const previewed: boolean[] = [];
+    const stop = subscribe((s) => void previewed.push(s.mode === 'preview' && !canvasCovered(activeWorkspace(s))));
     openSiteStyles();
+    stop();
+    expect(previewed).not.toContain(true);
+    expect(getState()).toMatchObject({ mode: 'edit', post: spring, postView: 'write' });
     expect(shown()).toEqual({ covered: false, leftTab: 'pages' });
   });
 
@@ -429,11 +449,12 @@ describe('Site styles opened over a workspace (#1108)', () => {
     open({ leftTab: 'posts', post: spring, postView: 'preview', mode: 'preview' });
     openSiteStyles();
     expect(shown()).toEqual({ covered: false, leftTab: 'posts' });
+    expect(getState()).toMatchObject({ post: spring, postView: 'preview', mode: 'preview' });
   });
 
   it('has the rail button bring the canvas back, not close, when Site styles already show beside a workspace', () => {
     const showing = { dockOpen: true, rightTab: 'styles', leftTab: 'pages', postView: 'write', mode: 'edit', post: null } as const;
-    expect(stylesShortcutCloses(showing)).toBe(true);
+    for (const leftTab of ['pages', 'layers', 'assets', null]) expect(stylesShortcutCloses({ ...showing, leftTab })).toBe(true);
     expect(stylesShortcutCloses({ ...showing, leftTab: 'posts' })).toBe(false);
     expect(stylesShortcutCloses({ ...showing, leftTab: 'seo' })).toBe(false);
     expect(stylesShortcutCloses({ ...showing, leftTab: 'posts', postView: 'preview', mode: 'preview', post: spring })).toBe(true);
