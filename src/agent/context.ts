@@ -14,7 +14,7 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { hasCollections } from '@shared/entry-feed';
-import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, isSyncedCollection, pagesPrefix } from '@shared/collections';
+import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, inSiteFeed, isSyncedCollection, pagesPrefix } from '@shared/collections';
 import { teaserFields } from '@shared/page-teasers';
 import { pageParents } from '@shared/page-tree';
 import { notFoundCopy } from '@shared/not-found';
@@ -293,6 +293,8 @@ export function collectionsSummary(state: ProjectState) {
         pages: { detail: hasDetailPages(s), archive: hasArchivePages(s) },
         ...(pagesPrefix(c) !== undefined ? { route: pagesPrefix(c) } : {}),
         ...(!collectionHasBody(s) ? { hasBody: false } : {}),
+        // Its entries are in the site's RSS feed: they have pages, and it says so or its kind does.
+        inRss: hasDetailPages(s) && inSiteFeed(s),
         // Its entries come from an external source: they are read-only until the author detaches it in the editor.
         ...(isSyncedCollection(s) ? { sourceId: s.sourceId, readOnly: true } : {}),
         entries: entries.length,

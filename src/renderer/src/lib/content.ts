@@ -6,7 +6,7 @@
 import type { Collection, CollectionFieldSchema, CollectionKind, CollectionTaxonomy, ProjectState } from '@shared/types';
 import { COLLECTION_FIELD_TYPES } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, collectionRoutes, hasArchivePages, hasDetailPages, isCollectionId, isSyncedCollection, isTermId } from '@shared/collections';
+import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, feedsByDefault, inSiteFeed, collectionRoutes, hasArchivePages, hasDetailPages, isCollectionId, isSyncedCollection, isTermId } from '@shared/collections';
 import { numberedSlug, slugify, suggestRoute } from '@shared/routes';
 import { checkPropName } from '@engine/schema';
 import { optionValueFor } from './ui-state';
@@ -293,9 +293,23 @@ export interface SchemaDraft {
   detail: boolean;
   archive: boolean;
   route: string;
+  /** In or out of the site's RSS feed by the collection's own choice; absent, as its kind says. */
+  rss?: boolean;
   fields: FieldRow[];
   taxonomies: TaxonomyRow[];
 }
+
+/** Whether the draft's entries would be in the site's RSS feed: its own choice, or its kind's as the draft has it. */
+export const draftInFeed = (draft: SchemaDraft): boolean => inSiteFeed({ kind: draft.kind, rss: draft.rss });
+
+/**
+ * The draft's choice once the feed switch is set: the collection's own, kept whatever its kind becomes, until the
+ * author leaves it to the kind again (`rss: undefined`).
+ */
+export const draftFeedChoice = (on: boolean): Pick<SchemaDraft, 'rss'> => ({ rss: on });
+
+/** Whether the collection's kind would put it in the feed, as the draft has the kind: what leaving it to the kind gives. */
+export const draftKindFeeds = (draft: SchemaDraft): boolean => feedsByDefault(draft.kind);
 
 export function schemaDraftOf(collection: Collection): SchemaDraft {
   const s = collection.settings;
@@ -307,6 +321,7 @@ export function schemaDraftOf(collection: Collection): SchemaDraft {
     detail: hasDetailPages(s),
     archive: hasArchivePages(s),
     route: typeof s.route === 'string' ? s.route : `/${s.id}/`,
+    ...(typeof s.rss === 'boolean' ? { rss: s.rss } : {}),
     fields: Object.entries(s.fields ?? {}).map(([name, schema]) => ({
       name,
       schema: structuredClone(schema)
@@ -474,6 +489,8 @@ export function schemaUpdateOp(collection: Collection, draft: SchemaDraft): Extr
   if (draft.detail !== was.detail || archive !== was.archive) op.pages = { detail: draft.detail, archive };
   const route = normalizePrefix(draft.route);
   if (draft.detail && route !== (typeof s.route === 'string' ? s.route : undefined)) op.route = route;
+  // null leaves it to the collection's kind again.
+  if (draft.rss !== was.rss) op.rss = draft.rss ?? null;
   const fields: Record<string, CollectionFieldSchema> = Object.fromEntries(draft.fields.map((f) => [f.name, f.schema]));
   if (!same(fields, s.fields ?? {})) op.fields = fields as unknown as Record<string, Record<string, unknown>>;
   const own = s.taxonomies ?? {};

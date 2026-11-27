@@ -625,6 +625,7 @@ describe('after the review', () => {
         kind: 'editorial',
         pages: { detail: true, archive: true },
         route: '/blog/',
+        inRss: true,
         entries: 6,
         published: 5,
         taxonomies: { categories: { label: 'Categories', terms: { news: 'News', craft: 'Craft', events: 'Events' } }, tags: { label: 'Tags', terms: { glaze: 'Glaze' } } }

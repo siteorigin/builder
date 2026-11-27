@@ -10,7 +10,7 @@ import { z } from 'zod';
 import type { Collection, CollectionFieldSchema, CollectionFieldValue, EntryDoc, ProjectState } from '@shared/types';
 import { COLLECTION_FIELD_TYPES } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { assignedTermIds, collectionKind, entryRoute, hasDetailPages, isCollectionId, isSyncedCollection, orderedEntries, termIdFor } from '@shared/collections';
+import { assignedTermIds, collectionKind, entryRoute, hasDetailPages, inSiteFeed, isCollectionId, isSyncedCollection, orderedEntries, termIdFor } from '@shared/collections';
 import { syncedRefusal } from '@shared/collection-grant';
 import { ENTRY_LINK_PREFIX, isImageBlock, richTextToMarkdown, type RichBlock, type RichText } from '@shared/richtext';
 import { sha256Hex } from '@shared/sha256';
@@ -679,6 +679,7 @@ export const DEFINE_COLLECTION_ARGS = z
       .optional()
       .describe('Its pages on the website: one per entry (detail) and an index (archive, which needs detail). Default both; neither makes it data that other pages show.'),
     route: z.string().min(1).max(200).optional().describe('The address its pages start with ("/team/"). Only with pages.'),
+    rss: z.boolean().nullable().optional().describe('Whether its published entries are listed in the website\'s RSS feed. Default: editorial yes, structured no (so staff or listings never join a blog\'s feed); null goes back to that default.'),
     fields: z.array(FIELD_ROW).max(30).optional().describe('Custom fields each entry fills in. update: a field named here is added, or relabelled (an enum also gains the options given); every field it has stays, with its values.'),
     taxonomies: z
       .array(z.object({ id: z.string().min(1).max(60).describe('Stable lowercase ID ("departments").'), label: z.string().min(1).max(60) }).strict())
@@ -737,7 +738,7 @@ export async function runDefineCollection(args: DefineCollectionArgs, host: Tool
   if (collection && isSyncedCollection(collection.settings)) return toolError('SCOPE_MISMATCH', `${syncedRefusal(collection.settings.name)} Nothing was applied.`, { details: { collectionId: id, sourceId: collection.settings.sourceId } });
 
   const issues: FieldIssue[] = [];
-  const settings: Record<string, unknown> = given({ name: args.name?.trim(), kind: args.kind, hasBody: args.hasBody, pages: args.pages, route: args.route?.trim() });
+  const settings: Record<string, unknown> = given({ name: args.name?.trim(), kind: args.kind, hasBody: args.hasBody, pages: args.pages, route: args.route?.trim(), rss: args.rss });
   if (args.singularName !== undefined) settings.singularName = args.singularName.trim() || (collection ? null : undefined);
   if (settings.singularName === undefined) delete settings.singularName;
   if (args.fields) {
@@ -786,7 +787,7 @@ export async function runDefineCollection(args: DefineCollectionArgs, host: Tool
       ok: true,
       revision: res.revision,
       collectionId: id,
-      ...(now ? { name: now.name, kind: collectionKind(now), fields: Object.keys(now.fields ?? {}), taxonomies: Object.keys(now.taxonomies ?? {}), ...(hasDetailPages(now) && now.route ? { route: now.route } : {}) } : {})
+      ...(now ? { name: now.name, kind: collectionKind(now), inRss: hasDetailPages(now) && inSiteFeed(now), fields: Object.keys(now.fields ?? {}), taxonomies: Object.keys(now.taxonomies ?? {}), ...(hasDetailPages(now) && now.route ? { route: now.route } : {}) } : {})
     }
   };
 }

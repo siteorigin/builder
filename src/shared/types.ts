@@ -1491,6 +1491,11 @@ export interface CollectionDoc {
   /** Whether each category with a published entry gets an archive at `category/<term ID>/`. Absent: it does. */
   categoryArchives?: boolean;
   /**
+   * Whether its published entries with pages of their own are listed in the website's RSS feed. Absent: as its kind
+   * says, so a blog's posts are and a structured collection's records (staff, listings) are not.
+   */
+  rss?: boolean;
+  /**
    * The layout every entry's page is shown with: a tree of sections and elements, edited like a page's, whose nodes
    * and placed sections read the entry they are shown for through `{ $entry: field }` bindings. Editing it changes
    * every entry's page; each entry keeps its own words and details.

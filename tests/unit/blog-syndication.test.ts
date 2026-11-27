@@ -16,6 +16,7 @@ import { generateLlmsTxt } from '@generator/llms';
 import { buildSearchIndex, generateSearchIndex } from '@generator/search';
 import { documentGraph } from '@generator/structured-data';
 import { validateRoute } from '@shared/routes';
+import { validateState } from '@engine/validate';
 import { leaveOutDrafts, publicUrlWarning } from '../../src/main/export';
 import { heldAsMedia } from '../../src/main/project/versions';
 import { ProjectSession } from '../../src/main/project/session';
@@ -321,6 +322,95 @@ describe('the RSS feed', () => {
     expect(out).toEqual(fresh(publishedState(s)));
     expect(out.has(RSS_PATH)).toBe(false);
     expect(generateLayout(publishedState(s), {})).not.toContain('rss.xml');
+  });
+});
+
+describe('which collections the feed lists', () => {
+  const team = (fields: Record<string, unknown> = {}): EditOperation[] => [
+    { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', route: '/team/', ...fields } as EditOperation,
+    { type: 'entry.create', collectionId: 'team', entryId: 'en_ana', title: 'Ana Ruiz', publishedAt: '2028-01-05', draft: false } as EditOperation
+  ];
+  const built = (xml: string) => /<lastBuildDate>([^<]*)<\/lastBuildDate>/.exec(xml.split('<item>')[0])?.[1];
+
+  it('leaves a structured collection out by default, from its items and its build date alike', () => {
+    const { state } = seoSite();
+    const s = run(state, ...team());
+    const { xml, items } = feedOf(s);
+    expect(items.map((i) => i.title)).toEqual(['Spring pottery classes']);
+    // The record's newer day is not the feed's.
+    expect(built(xml)).toBeDefined();
+    expect(built(xml)).toBe(built(feedOf(state).xml));
+    expect(built(xml)).not.toBe(rssDate('2028-01-05'));
+  });
+
+  it('lists a structured collection opted in, and leaves out an editorial one opted out', () => {
+    const { state } = seoSite();
+    const opted = run(state, ...team({ rss: true }));
+    expect(feedOf(opted).items.map((i) => i.title)).toEqual(['Ana Ruiz', 'Spring pottery classes']);
+    expect(built(feedOf(opted).xml)).toBe(rssDate('2028-01-05'));
+    // Back to its kind's default, then the blog opted out: only the opted-in records are left.
+    const reset = run(opted, { type: 'collection.update', collectionId: 'team', rss: null } as EditOperation);
+    expect(Object.hasOwn(reset.collections.team.settings, 'rss')).toBe(false);
+    expect(feedOf(reset).items).toHaveLength(1);
+    const blogOut = run(opted, { type: 'collection.update', collectionId: 'posts', rss: false } as EditOperation);
+    expect(feedOf(blogOut).items.map((i) => i.title)).toEqual(['Ana Ruiz']);
+  });
+
+  it('has no feed, no link to one and no note of one left out when only records not in it are published', () => {
+    const { state } = seoSite();
+    const s = run(state, update('en_spring', { draft: true }), ...team());
+    const out = generateProject(publishedState(s));
+    expect(generateRssFeed(s)).toBeNull();
+    expect(out.has(RSS_PATH)).toBe(false);
+    expect(out.get('src/routes/+layout.svelte')).not.toContain('application/rss+xml');
+    expect(publicUrlWarning(run(s, { type: 'site.update', baseUrl: '' }))).toMatch(/social image URLs and the sitemap were omitted\./);
+    // Opted in, the records make a feed of their own.
+    const opted = run(s, { type: 'collection.update', collectionId: 'team', rss: true } as EditOperation);
+    expect(feedOf(opted).items.map((i) => i.title)).toEqual(['Ana Ruiz']);
+    expect(publicUrlWarning(run(opted, { type: 'site.update', baseUrl: '' }))).toMatch(/the sitemap and the RSS feed were omitted\./);
+    expect(generateProject(publishedState(opted)).get('src/routes/+layout.svelte')).toContain('application/rss+xml');
+  });
+
+  it('a cached run follows a collection opted in or out, feed and layout link alike', () => {
+    const { state } = seoSite();
+    const cache = new GenerationCache();
+    let s = run(state, update('en_spring', { draft: true }), ...team());
+    generateProject(publishedState(s), {}, cache);
+    for (const rss of [true, false, null]) {
+      s = run(s, { type: 'collection.update', collectionId: 'team', rss } as EditOperation);
+      const out = generateProject(publishedState(s), {}, cache);
+      expect(out).toEqual(generateProject(publishedState(s)));
+      expect(out.has(RSS_PATH)).toBe(rss === true);
+      expect(out.get('src/routes/+layout.svelte')!.includes('application/rss+xml')).toBe(rss === true);
+    }
+    // With the blog in the feed, opting the records in makes the feed again but leaves the layout's link to it alone.
+    s = run(s, update('en_spring', { draft: false }));
+    const before = generateProject(publishedState(s), {}, cache);
+    s = run(s, { type: 'collection.update', collectionId: 'team', rss: true } as EditOperation);
+    const after = generateProject(publishedState(s), {}, cache);
+    expect(after.get(RSS_PATH)).not.toBe(before.get(RSS_PATH));
+    expect(cache.made).toContain('rss.xml');
+    expect(cache.made.filter((k) => k.startsWith('layout'))).toEqual([]);
+  });
+
+  it('leaves out a post whose address a record left out of the feed holds, and records without pages even opted in', () => {
+    const { state } = seoSite();
+    // Edited outside the app: the records (shared out first, by ID) hold the post's address.
+    const held = copy(run(state, { type: 'collection.create', collectionId: 'crew', name: 'Crew', kind: 'structured', route: '/crew/' } as EditOperation, { type: 'entry.create', collectionId: 'crew', entryId: 'en_bo', title: 'Bo', draft: false } as EditOperation));
+    held.collections.crew.settings.route = '/blog/';
+    held.collections.crew.entries.en_bo.slug = 'spring-pottery-classes';
+    expect(generateRssFeed(held)).toBeNull();
+    // Data only: no entry has an address to list, whatever the collection says.
+    const data = run(state, update('en_spring', { draft: true }), ...team({ rss: true, pages: { detail: false, archive: false } }));
+    expect(data.collections.team.settings.rss).toBe(true);
+    expect(generateRssFeed(data)).toBeNull();
+  });
+
+  it('is a problem in a collection edited outside the app to say something other than true or false', () => {
+    const { state } = seoSite();
+    const broken = copy(state);
+    (broken.collections.posts.settings as unknown as Record<string, unknown>).rss = 'false';
+    expect(validateState(broken).some((d) => /RSS feed is not true or false/.test(d.message))).toBe(true);
   });
 });
 

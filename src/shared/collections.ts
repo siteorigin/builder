@@ -35,6 +35,14 @@ export function collectionKind(settings: { kind?: unknown } | undefined): Collec
   return settings?.kind === 'structured' ? 'structured' : 'editorial';
 }
 
+/** Whether a collection of this kind is in the site's RSS feed when it says nothing of its own: dated articles are, records are not. */
+export const feedsByDefault = (kind: CollectionKind): boolean => kind === 'editorial';
+
+/** Whether a collection's entries are listed in the site's RSS feed: as it says, otherwise as its kind does. */
+export function inSiteFeed(settings: { kind?: unknown; rss?: unknown } | undefined): boolean {
+  return typeof settings?.rss === 'boolean' ? settings.rss : feedsByDefault(collectionKind(settings));
+}
+
 const pagesOf = (settings: { pages?: unknown } | undefined) => (settings?.pages && typeof settings.pages === 'object' ? (settings.pages as { detail?: unknown; archive?: unknown }) : {});
 
 /** Whether each of a collection's entries has a page of its own: yes unless it says no. */

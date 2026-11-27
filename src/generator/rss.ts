@@ -1,11 +1,13 @@
 /**
- * The website's RSS 2.0 feed (`/rss.xml`): every published collection entry, newest first, each with its title, its
+ * The website's RSS 2.0 feed (`/rss.xml`): every published entry of the collections in it, newest first, each with its title, its
  * address, when it was published, who wrote it and its summary (see ./entry-summary). Feed readers need full addresses, so the site has a
  * feed only once it has a public URL; without one the export says the feed was left out. Every page of the website
  * names the feed in its `<head>` (the shared layout), so a reader finds it from any address on the site.
  *
- * Which entries the feed lists follows the website, not search: drafts and entries without a page of their own are
- * left out, while an entry hidden from search engines or from the site's own search is still a published post its
+ * Which collections it lists is each collection's own choice, by default its kind's: a blog's posts are in it, and a
+ * structured collection's records (staff bios, listings) are not. Which entries it lists follows the website, not
+ * search: drafts and entries without a page of their own are left out, while an entry hidden from search engines or
+ * from the site's own search is still a published post its
  * subscribers read. An item's link is the entry's own address on this site, and its ID names the project and the
  * entry, so renaming a post, moving the site to another domain or reordering the feed never delivers it twice.
  *
@@ -14,7 +16,7 @@
  */
 import type { ProjectState } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
-import { siteEntries } from '@shared/collections';
+import { inSiteFeed, siteEntries } from '@shared/collections';
 import { isLanguageCode, siteLanguage } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
@@ -97,7 +99,7 @@ function buildFeed(state: ProjectState): Feed | null {
   // Drafts leave before addresses are shared out, so a post whose address a draft held first is the one listed.
   const live = publishedState(state);
   const days: string[] = [];
-  const items = siteEntries(live).map(({ collection, entry, route }) => {
+  const items = feedEntries(live).map(({ collection, entry, route }) => {
     const item: FeedItem = { title: oneLine(entry.title) || entry.slug, link: base + routeUrl(route), guid: project ? `${project}:${entry.id}` : entry.id };
     if (isArticleDate(entry.publishedAt)) item.published = entry.publishedAt;
     for (const day of [entry.publishedAt, entry.updatedAt]) if (isArticleDate(day)) days.push(day);
@@ -167,7 +169,16 @@ export function generateRssFeed(state: ProjectState): string | null {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">\n\t<channel>\n${[...channel, ...items].join('\n')}\n\t</channel>\n</rss>\n`;
 }
 
-/** Whether the website would have a feed once it has a public URL: it has a published entry. */
+/**
+ * The entries the feed lists, of a state without drafts: each published entry with a page of its own whose collection
+ * is in the feed (a blog by default, records only when their collection says so). Addresses are shared out across every
+ * collection first, so an entry left out of the feed still keeps the address it holds from one listed.
+ */
+function feedEntries(live: ProjectState) {
+  return siteEntries(live).filter(({ collection }) => inSiteFeed(collection.settings));
+}
+
+/** Whether the website would have a feed once it has a public URL: it has a published entry the feed lists. */
 export function hasFeedEntries(state: ProjectState): boolean {
-  return siteEntries(publishedState(state)).length > 0;
+  return feedEntries(publishedState(state)).length > 0;
 }
