@@ -269,7 +269,9 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
  * has index.html and SvelteKit's _app/ folder in the same place, and no manifest.
  */
 export function classifyZip(entries: ZipEntry[]): ZipContents {
-  const kept = entries.filter((e) => !e.special && !isSystemClutter(e.path));
+  // Another project's state at the archive's top (a repository beside the project's folder) or anywhere in it says
+  // nothing about what the archive holds, and is never extracted.
+  const kept = entries.filter((e) => !e.special && !isSystemClutter(e.path) && !isLocalState(e.path));
   const files = kept.filter((e) => !e.directory);
   const has = (path: string) => files.some((e) => e.path === path);
   const tops = new Set(kept.map((e) => e.path.split('/')[0]));
@@ -277,7 +279,7 @@ export function classifyZip(entries: ZipEntry[]): ZipContents {
   const wrapper = tops.size === 1 && !has([...tops][0]) ? `${[...tops][0]}/` : null;
   const roots = wrapper === null ? [''] : ['', wrapper];
   for (const root of roots) {
-    if (has(`${root}${MANIFEST}`)) return { kind: 'project', root, entries: kept.filter((e) => e.path.startsWith(root)) };
+    if (has(`${root}${MANIFEST}`)) return { kind: 'project', root, entries: kept.filter((e) => e.path.startsWith(root) && !isLocalState(e.path.slice(root.length))) };
   }
   if (files.some((e) => e.path.endsWith(`/${MANIFEST}`))) return { kind: 'other' };
   for (const root of roots) {
@@ -358,8 +360,20 @@ export async function readEntryText(file: string, e: ZipEntry, limit = MAX_MANIF
   }
 }
 
+/**
+ * Another project's own state, by its path under the project's folder in the archive (#1151): a Git folder or worktree
+ * file (`.git`) anywhere in it, which carries that repository's history and remotes, and the project's local state
+ * (`.siteorigin/`: its undo history, saved versions and their repositories, locks and remote bindings). Never written:
+ * a project opened from a ZIP file starts clean, with no history or remote of anyone else's. Without case: on a
+ * case-insensitive disk, `.GIT` is the same folder.
+ */
+export function isLocalState(rel: string): boolean {
+  const parts = rel.toLowerCase().split('/');
+  return parts[0] === '.siteorigin' || parts.includes('.git');
+}
+
 /** Whether an entry under `root` is one extraction writes (a folder or a file), rather than one it passes over. */
-const extracted = (e: ZipEntry, root: string) => !e.special && !isSystemClutter(e.path) && e.path.startsWith(root) && e.path.length > root.length;
+const extracted = (e: ZipEntry, root: string) => !e.special && !isSystemClutter(e.path) && e.path.startsWith(root) && e.path.length > root.length && !isLocalState(e.path.slice(root.length));
 
 /** How many files extracting `entries` under `root` writes, so the count of those written can be shown against it. */
 export const filesToWrite = (entries: ZipEntry[], root: string) => entries.filter((e) => !e.directory && extracted(e, root)).length;

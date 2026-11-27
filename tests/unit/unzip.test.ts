@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { zipDirectory } from '../../src/main/zip';
-import { classifyZip, decodeName, extractEntries, readZipEntries, safeEntryPath, unpackProject, ZipError } from '../../src/main/unzip';
+import { classifyZip, decodeName, extractEntries, filesToWrite, isLocalState, readZipEntries, safeEntryPath, unpackProject, ZipError } from '../../src/main/unzip';
 
 const dirs: string[] = [];
 const temp = (p = 'so-unzip-') => {
@@ -172,6 +172,21 @@ describe('telling ZIP files apart', () => {
     expect(await kind([{ name: 'cafe/siteorigin.project.json', data: '{}' }, { name: '__MACOSX/cafe/._x', data: '' }])).toBe('project');
     // Even when the project's folder is named like it in other letters, and the Finder's comes first.
     expect(await kind([{ name: '__MACOSX/._x', data: '' }, { name: '__macosx/siteorigin.project.json', data: '{}' }])).toBe('project');
+  });
+
+  it('finds the project’s folder past a repository or local state beside it, and never a project inside one', async () => {
+    for (const beside of [[{ name: '.git/' }, { name: '.git/HEAD', data: 'ref: refs/heads/main' }], [{ name: '.git', data: 'gitdir: ../repo/.git/worktrees/cafe' }], [{ name: '.SiteOrigin/history/1.json', data: '{}' }]]) {
+      const zip = zipFile([...beside, { name: 'cafe/siteorigin.project.json', data: '{}' }, { name: 'cafe/static/.siteorigin/notes.txt', data: 'kept' }, { name: 'cafe/.git', data: 'gitdir: ../.git' }]);
+      const contents = await project(zip);
+      expect(contents.root).toBe('cafe/');
+      // Only what is written is listed, and an ordinary folder deeper in that happens to be named .siteorigin stays.
+      expect(contents.entries.map((e) => e.path)).toEqual(['cafe/siteorigin.project.json', 'cafe/static/.siteorigin/notes.txt']);
+      expect(filesToWrite(contents.entries, contents.root)).toBe(2);
+    }
+    // A manifest only inside another project's state is no project.
+    expect(await kind([{ name: '.git/siteorigin.project.json', data: '{}' }])).toBe('other');
+    expect(await kind([{ name: '.siteorigin/versions/siteorigin.project.json', data: '{}' }, { name: 'notes.txt', data: '' }])).toBe('other');
+    expect(await kind([{ name: 'cafe/.siteorigin/siteorigin.project.json', data: '{}' }])).toBe('other');
   });
 
   it('reads names older Windows tools write in code page 437, and Info-ZIP’s Unicode names', async () => {
@@ -393,6 +408,53 @@ describe('unpacking a project into a new folder', () => {
     const zip = zipFile([{ name: 'siteorigin.project.json', data: '{}' }]);
     const parent = temp();
     expect(await unpackProject(zip, await project(zip), parent, 'con')).toBe(join(parent, 'con-site'));
+  });
+
+  it('opens a project zipped with its Git repository and local state as a clean project, with neither carried over', async () => {
+    const zip = zipFile([
+      { name: 'Cafe/' },
+      { name: 'Cafe/siteorigin.project.json', data: '{"name":"Cafe"}' },
+      { name: 'Cafe/siteorigin/pages/home.json', data: '{}' },
+      { name: 'Cafe/.gitignore', data: 'node_modules\n' },
+      { name: 'Cafe/src/lib/.gitkeep', data: '' },
+      // Someone else's repository: its history, its remote and its lock.
+      { name: 'Cafe/.git/' },
+      { name: 'Cafe/.git/HEAD', data: 'ref: refs/heads/main\n' },
+      { name: 'Cafe/.git/config', data: '[remote "origin"]\n\turl = https://example.com/theirs.git\n' },
+      { name: 'Cafe/.git/index.lock', data: '' },
+      { name: 'Cafe/.git/objects/ab/cdef0123', data: 'blob', deflate: true },
+      // A worktree or submodule's `.git` file, and a repository spelled another way, deeper in.
+      { name: 'Cafe/src/lib/vendor/.git', data: 'gitdir: ../../../.git/modules/vendor\n' },
+      { name: 'Cafe/src/lib/vendor/index.js', data: 'export {}' },
+      { name: 'Cafe/static/old/.Git/config', data: '[core]\n' },
+      // The project's own local state: history, saved versions and their repository, a lock and a remote binding.
+      { name: 'Cafe/.siteorigin/' },
+      { name: 'Cafe/.siteorigin/history/0001.json', data: '{}' },
+      { name: 'Cafe/.siteorigin/versions/versions.json', data: '{}' },
+      { name: 'Cafe/.siteorigin/versions.git/HEAD', data: 'ref: refs/heads/siteorigin-versions\n' },
+      { name: 'Cafe/.siteorigin/versions.git/config', data: '[remote "hosting"]\n' },
+      { name: 'Cafe/.siteorigin/session.lock', data: '' }
+    ]);
+    const contents = await project(zip);
+    expect(contents.root).toBe('Cafe/');
+    const kept = ['.gitignore', 'siteorigin.project.json', 'siteorigin/pages/home.json', 'src/lib/.gitkeep', 'src/lib/vendor/index.js'];
+    // The count shown while it unpacks is of the files it writes.
+    expect(filesToWrite(contents.entries, contents.root)).toBe(kept.length);
+    const parent = temp();
+    const counts: number[] = [];
+    const dest = await unpackProject(zip, contents, parent, 'cafe', { onProgress: (done, total) => counts.push(done, total) });
+    expect(tree(dest)).toEqual(kept);
+    expect(counts.slice(-2)).toEqual([kept.length, kept.length]);
+    for (const gone of ['.git', '.siteorigin', 'src/lib/vendor/.git', 'static/old']) expect(existsSync(join(dest, gone)), gone).toBe(false);
+    // The extractor leaves them out on its own, given every entry.
+    const raw = temp();
+    await extractEntries(zip, await readZipEntries(zip), 'Cafe/', raw);
+    expect(tree(raw)).toEqual(kept);
+  });
+
+  it('tells another project’s state from the project’s own files by path, whatever its case', () => {
+    for (const p of ['.git', '.git/HEAD', '.GIT/config', 'src/lib/vendor/.git', 'static/a/.Git/objects/x', '.siteorigin', '.siteorigin/versions.git/HEAD', '.SiteOrigin/history/1.json']) expect(isLocalState(p), p).toBe(true);
+    for (const p of ['.gitignore', '.gitattributes', '.gitmodules', 'src/lib/.gitkeep', 'static/my.git', 'static/.siteorigin', 'siteorigin/site.json', 'static/.siteorigin/x.png', 'siteorigin.project.json']) expect(isLocalState(p), p).toBe(false);
   });
 
   it('removes what it wrote when a file turns out damaged', async () => {
