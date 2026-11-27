@@ -948,7 +948,9 @@ describe('chat metrics', () => {
    */
   function chatCase(key: string, at: number, o: { keyMs?: number[]; keys?: number; events?: number[]; sent?: number; renders?: [number, number, number, number]; bytes?: [number, number] } = {}): PerfRecord[] {
     const [k0, k1, s0, s1] = o.renders ?? [0, 98, 98, 200];
-    const c = (commits: number, renders: number) => ({ c: { 'react.commits': commits, 'chat.messageRenders': renders, 'chat.textParses': Math.floor(renders / 2) } });
+    const c = (commits: number, renders: number) => ({ c: { 'react.commits': commits, 'react.renders': renders * 3, 'chat.messageRenders': renders, 'chat.textParses': Math.floor(renders / 2) } });
+    // The page's work so far, as CDP counts it: each mark later by `n` layouts and style passes, `n` ms of each time.
+    const w = (n: number) => ({ layouts: n, layoutMs: n, styles: 2 * n, styleMs: n / 2, scriptMs: 3 * n, taskMs: 10 * n });
     const [b0, b1] = o.bytes ?? [1000, 9000];
     const keyMs = o.keyMs ?? [0.5, 0.7, 0.6];
     const keys = o.keys ?? CHAT_TYPED.length;
@@ -956,14 +958,14 @@ describe('chat metrics', () => {
     const sent = o.sent ?? events.length;
     return [
       r('chat.keystroke', at - 1, { kind: 'span', ms: 50, attrs: { commits: 1 } }),
-      r('chat.typeStart', at, { attrs: { at: key }, ...c(10, k0) }),
+      r('chat.typeStart', at, { attrs: { at: key, ...w(1) }, ...c(10, k0) }),
       ...Array.from({ length: keys }, (_, i) => r('chat.keystroke', at + 1 + i * 0.1, { kind: 'span', ms: keyMs[i % keyMs.length], attrs: { commits: 1 } })),
-      r('chat.typeEnd', at + 10, { attrs: { at: key }, ...c(13, k1) }),
+      r('chat.typeEnd', at + 10, { attrs: { at: key, ...w(5) }, ...c(13, k1) }),
       m('chat.streamStart', at + 11, { attrs: { at: key }, c: { 'ipc.aiEvent.sends': 5, 'ipc.aiEvent.bytes': b0 } }),
-      r('chat.streamStart', at + 11.5, { attrs: { at: key }, ...c(13, s0) }),
+      r('chat.streamStart', at + 11.5, { attrs: { at: key, ...w(6) }, ...c(13, s0) }),
       ...events.map((ms, i) => r('chat.aiEvent', at + 20 + i * 10, { kind: 'span', ms, attrs: { kind: 'text', commits: 1 } })),
       m('chat.streamEnd', at + 90, { attrs: { at: key }, c: { 'ipc.aiEvent.sends': 5 + sent, 'ipc.aiEvent.bytes': b1 } }),
-      r('chat.streamEnd', at + 90.5, { attrs: { at: key }, ...c(13 + events.length, s1) }),
+      r('chat.streamEnd', at + 90.5, { attrs: { at: key, ...w(26) }, ...c(13 + events.length, s1) }),
       r('chat.aiEvent', at + 91, { kind: 'span', ms: 50, attrs: { kind: 'status', commits: 1 } })
     ];
   }
@@ -980,6 +982,20 @@ describe('chat metrics', () => {
     expect([v('chat.at100.streamCommits'), v('chat.at100.streamMessageRenders'), v('chat.at100.streamTextParses')]).toEqual([3, 102, 100 - 49]);
     expect(got.metrics['chat.at100.eventBytes']).toEqual({ unit: 'bytes', value: 31_000 });
     expect(got.metrics['chat.at6.eventBytes']).toEqual({ unit: 'bytes', value: 8000 });
+    // Every component rendered in each window, and the page's own work over it.
+    expect([v('chat.at6.keyRenders'), v('chat.at6.streamRenders'), v('chat.at100.keyRenders'), v('chat.at100.streamRenders')]).toEqual([12, 48, 294, 306]);
+    expect([v('chat.at100.keyLayouts'), v('chat.at100.keyLayoutMs'), v('chat.at100.keyStyles'), v('chat.at100.keyStyleMs'), v('chat.at100.keyScriptMs'), v('chat.at100.keyTaskMs')]).toEqual([4, 4, 8, 2, 12, 40]);
+    expect([v('chat.at6.streamLayouts'), v('chat.at6.streamLayoutMs'), v('chat.at6.streamStyles'), v('chat.at6.streamStyleMs'), v('chat.at6.streamScriptMs'), v('chat.at6.streamTaskMs')]).toEqual([20, 20, 40, 10, 60, 200]);
+    expect(got.metrics['chat.at6.streamLayouts'].unit).toBe('count');
+    expect(got.metrics['chat.at6.streamTaskMs'].unit).toBe('ms');
+  });
+
+  it('leave the page’s work missing when a mark does not carry it, never a false zero', () => {
+    const records = both().map((x) => (x.name === 'chat.streamEnd' && x.proc === 'renderer' && x.attrs?.at === 'at100' ? { ...x, attrs: { at: 'at100' } } : x));
+    const got = chat.measure(new Trace(records), facts);
+    expect(got.missing).toEqual(["chat.at100.streamLayouts (the page's layouts on both marks)", "chat.at100.streamLayoutMs (the page's layoutMs on both marks)", "chat.at100.streamStyles (the page's styles on both marks)", "chat.at100.streamStyleMs (the page's styleMs on both marks)", "chat.at100.streamScriptMs (the page's scriptMs on both marks)", "chat.at100.streamTaskMs (the page's taskMs on both marks)"]);
+    expect(got.metrics['chat.at100.streamTaskMs']).toBeUndefined();
+    expect(got.metrics['chat.at100.keyTaskMs'].value).toBe(40);
   });
 
   it('take the longest main-process stall inside each reply only', () => {
