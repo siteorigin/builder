@@ -324,6 +324,8 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const [expanded, setExpanded] = useState(() => !!resumed);
   const findRef = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLInputElement>(null);
+  /** An entry's Open waiting for the post writer to switch posts. */
+  const entryOpening = useRef(false);
   const actionRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef('');
@@ -363,7 +365,9 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const refused = useMemo(() => (state && plan?.error && replacement === '' ? new Set(chosen.filter((m) => m.kind === 'link' && planReplace(state, [m], '').error).map((m) => m.id)) : new Set<string>()), [state, plan?.error, replacement, chosen]);
   const groups = groupsOf(matches);
   const replaceable = matches.filter((m) => !m.blocked).length;
-  const needInspector = matches.length - replaceable;
+  // A synced entry's match is read-only: it changes at the source, not in the inspector.
+  const syncedOnly = matches.filter((m) => m.blocked && m.field.entry?.synced).length;
+  const needInspector = matches.length - replaceable - syncedOnly;
   const readOnly = !!snap?.readOnly;
   const aiBusy = !!snap?.aiBusy;
   // Read-only or the AI at work holds every replacement: said once, on its own row above the buttons.
@@ -459,9 +463,14 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
     setState({ modal: null });
   };
   const openMatch = (m: ContentMatch) => {
+    // While an entry waits for the open post to save, another Open would be overtaken when that save lands.
+    if (entryOpening.current) return;
     const opening = openContentMatch(m.field);
     // An entry opens once the post open in the writer is saved; one that cannot be leaves the dialog as it is.
-    if (opening) return void opening.then((ok) => ok && openedMatch(m));
+    if (opening) {
+      entryOpening.current = true;
+      return void opening.then((ok) => ok && openedMatch(m)).finally(() => (entryOpening.current = false));
+    }
     // A match that has gone says so and leaves the dialog open, with nothing to hand over.
     if (getState().modal) return;
     openedMatch(m);
@@ -624,6 +633,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
         leftOut > 0 && chosen.length > 0 ? `${leftOut} left out` : '',
         already ? `${already} already ${already === 1 ? 'reads' : 'read'} this way` : '',
         needInspector ? `${needInspector} ${needInspector === 1 ? 'needs' : 'need'} the inspector` : '',
+        syncedOnly ? `${syncedOnly} read-only` : '',
         refusedCount ? `${plural(refusedCount, 'link')} ${refusedCount === 1 ? 'needs' : 'need'} an address` : '',
         needAnotherLook ? `the site changed, so ${needAnotherLook === 1 ? '1 choice needs' : `${needAnotherLook} choices need`} another look` : ''
       ].filter(Boolean)
@@ -657,7 +667,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
   const inspectorHint = (
     <span className="find-foot-note">
       <Lock aria-hidden />
-      {inspectBlock ? 'Open each match to see it in the inspector.' : 'Open each match to change it in the inspector.'}
+      {matches.every((m) => m.field.entry?.synced) ? 'These are synced from an external source. Change them there.' : inspectBlock ? 'Open each match to see it in the inspector.' : 'Open each match to change it in the inspector.'}
     </span>
   );
   const footNote = !replacing ? (
