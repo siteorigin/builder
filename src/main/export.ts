@@ -147,11 +147,13 @@ export async function copyTree(src: string, dest: string, kept: (p: string, e: E
     const st = await fs.lstat(from).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
     // Gone since it was listed: as fs.cp's filter, which looks again, leaves it out.
     if (!st) return;
-    if (st.isFile()) return copyFresh(from, to);
+    // Each file or link copied is counted for the benchmark (export.filesCopied, scripts/perf/README.md).
+    if (st.isFile()) return copyFresh(from, to).then(() => perf.count('export.filesCopied'));
     // Not the file it was listed as (or never one): judged again as it is now, and a folder copied entry by entry.
     if (!kept(from, st)) return;
     if (st.isDirectory()) return copyTree(from, to, kept);
     await fs.cp(from, to, { recursive: true, verbatimSymlinks: true });
+    perf.count('export.filesCopied');
   });
   for (const r of [...dirs].reverse()) if (made.has(r)) await fs.chmod(join(dest, r), (await fs.stat(join(src, r))).mode);
   if (made.has('')) await fs.chmod(dest, (await fs.stat(src)).mode);

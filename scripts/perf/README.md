@@ -292,6 +292,7 @@ snapshot to copying the tools), `copyTools`, `build` (the production build), `ve
 and images checked again), `publish` (the folder put in place), `finish` (the export recorded and its preview started)
 and `cleanup` (the staging folder removed). Counts: files and bytes the export read in the main process (`filesRead`,
 `bytesRead`; copies are not reads), the same under the lock (`lockFilesRead`, `lockBytesRead`), file writes, the
+files and links it copied (`filesCopied`) and of those the website tools' (`toolsCopied`, during `copyTools`), the
 library's files and bytes beside them, and the files and bytes of the exported folder; the longest main-process stall.
 The fixture has no drafts, and only the folder format is measured.
 
@@ -645,7 +646,7 @@ project file looked at by its path without being read: a stat, an lstat, or a ha
 `src/main/project/stable-read.ts` and the session's publication), `fs.syncCalls` (synchronous filesystem calls on the
 main process's event loop by path containment, `safeJoin`, the server-hook check and the publication), `docs.read` (canonical document files read from the project folder, also
 counted in `files.read`; `src/main/project/documents.ts`), `export.filesRead`, `export.bytesRead` (what an export reads
-in the main process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as
+in the main process, `src/main/export.ts`), `export.filesCopied` (files and links its copies made, `copyTree`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as
 IPC serializes the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's
 events, sized the same way), `compile.files` and `compile.svelte` (Svelte files a build check looked at, and the
 compiler runs it made for them: `src/main/compile.ts`), `apply.docsCopied` (per applied edit, the canonical documents
