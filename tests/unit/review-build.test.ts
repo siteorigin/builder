@@ -79,7 +79,7 @@ async function open(dir: string) {
 
 const hash = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
 /** Each file of the project's canonical documents and private records (revision, versions, History), by its bytes' hash. */
-const recordFiles = (dir: string) => ({
+const recordFiles = (dir: string): Record<string, string> => ({
   '.siteorigin/state.json': hash(join(dir, '.siteorigin/state.json')),
   ...Object.fromEntries(['siteorigin', '.siteorigin/versions', '.siteorigin/history'].flatMap((root) => filesIn(join(dir, root)).map((f) => [`${root}/${f}`, hash(join(dir, root, f))])))
 });
