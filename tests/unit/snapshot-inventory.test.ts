@@ -5,7 +5,7 @@
  * repository.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, promises as fsp, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, promises as fsp, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -14,7 +14,7 @@ import { createStarterState } from '@catalogue/starters';
 import { generateProject } from '@generator/index';
 import { stateToDocs } from '../../src/main/project/documents';
 import { SYNC_SCRIPT } from '../../src/main/export';
-import { captureSnapshotInventory, foldName, GENERATED_MANIFEST, nameClash, SnapshotCaptureError, snapshotPlace, SNAPSHOT_SYNC_SCRIPT, windowsCanHold, type SnapshotExclusion } from '../../src/main/project/snapshot-inventory';
+import { captureSnapshotInventory, foldName, GENERATED_MANIFEST, MAX_SNAPSHOT_FILE, nameClash, SnapshotCaptureError, snapshotPlace, SNAPSHOT_SYNC_SCRIPT, windowsCanHold, type SnapshotExclusion } from '../../src/main/project/snapshot-inventory';
 
 const dirs: string[] = [];
 const temp = () => {
@@ -128,7 +128,16 @@ describe('which files a snapshot holds', () => {
         // A folder named like a key leaves everything in it out.
         'static/id_rsa.d/readme.txt',
         // The same name to a case-insensitive disk: `K` here is a Kelvin sign.
-        'static/client.\u212Aey'
+        'static/client.\u212Aey',
+        // Copies an editor or a sync tool makes of one, and anything named after the app's credential files.
+        'static/client.pem~',
+        'src/.env~',
+        'static/.client.pem.swp',
+        'src/#.npmrc#',
+        'static/id_rsa.bak',
+        'static/api-keys (conflicted copy).json',
+        'static/Source-Secrets (Someone’s conflicted copy 2026-11-27).json',
+        'static/api-keys-guide.json'
       ],
       // `ſ` is a long s, which APFS takes for an s; HFS+ ignores a zero-width non-joiner.
       'local-state': ['.siteorigin/history/1.json', '.siteorigin/versions.git/HEAD', '.SiteOrigin/versions/versions.json', '.git/config', '.git', 'src/lib/vendor/.git', 'static/old/.GIT/HEAD', 'src/lib/.siteorigin/x.json', 'static/.\u017Fiteorigin/history/1.json', 'src/lib/.g\u200Cit/config'],
@@ -159,12 +168,17 @@ describe('which files a snapshot holds', () => {
     expect(foldName('client.\u212Aey')).toBe('client.key');
     expect(foldName('STRA\u1E9EE')).toBe(foldName('Stra\u00dfe'));
     expect(foldName('.g\u200Cit')).toBe('.git');
-    expect(foldName('cafe\u0301')).toBe(foldName('CAF\u00c9'));
+    expect(foldName('cafe\u0301')).toBe('caf\u00e9');
+    expect(foldName('CAF\u00c9')).toBe('caf\u00e9');
+    // What HFS+ ignores is taken out before the accents are composed.
+    expect(foldName('cafe\u200C\u0301')).toBe('caf\u00e9');
+    for (const c of ['\u200d', '\u200f', '\u202a', '\u202e', '\u206a', '\u206f', '\ufeff']) expect(foldName(`.g${c}it`), JSON.stringify(c)).toBe('.git');
     expect(foldName('\uff47')).not.toBe('g');
   });
 
   it('tells a restore which names Windows cannot hold as they are', () => {
-    for (const p of ['static/before:after.png', 'static/photo.jpg:preview', 'static/con.png', 'src/routes/aux/+page.svelte', 'static/photo.jpg.', 'static/photo.jpg ', 'static/banner?.svg', 'static/a|b.png', 'static/"quoted".png']) expect(windowsCanHold(p), p).toBe(false);
+    for (const p of ['static/before:after.png', 'static/photo.jpg:preview', 'static/con.png', 'src/routes/aux/+page.svelte', 'static/CONIN$', 'static/conout$.txt', 'static/photo.jpg.', 'static/photo.jpg ', 'static/banner?.svg', 'static/a|b.png', 'static/"quoted".png', 'static/a*.png', 'static/<b>.png', 'static/a>b.png'])
+      expect(windowsCanHold(p), p).toBe(false);
     for (const p of ['static/photo.jpg', 'src/routes/about/+page.svelte', 'static/console.png', 'static/.well-known/x.json', 'siteorigin/pages/home.json']) expect(windowsCanHold(p), p).toBe(true);
   });
 });
@@ -269,6 +283,7 @@ describe('capturing a project', () => {
     expect(nameClash(['static/Logo', 'static/logo/thumb.png'])).toEqual(['static/Logo', 'static/logo/thumb.png']);
     expect(nameClash(['static/logo/thumb.png', 'static/LOGO'])).toEqual(['static/LOGO', 'static/logo/thumb.png']);
     expect(nameClash(['static/Logo', 'static/logo/a/b.png'])).toEqual(['static/Logo', 'static/logo/a/b.png']);
+    expect(nameClash(['static/a/b/Logo', 'static/a/b/logo/c/d.png'])).toEqual(['static/a/b/Logo', 'static/a/b/logo/c/d.png']);
     expect(nameClash(['static/Stra\u00dfe.png', 'static/STRA\u1E9EE.png'])).not.toBeNull();
     // Accents composed and decomposed, and a long s, are the same names to APFS.
     expect(nameClash(['static/caf\u00e9.png', 'static/cafe\u0301.png'])).not.toBeNull();
@@ -288,10 +303,28 @@ describe('capturing a project', () => {
 
   it.runIf(posix)('keeps a name only Windows cannot hold, as a Finder name with a slash or a page at /aux/ has', async () => {
     const root = smallProject();
-    for (const name of ['static/before:after.png', 'src/routes/aux/+page.svelte']) write(root, name, 'x');
+    const names = ['static/before:after.png', 'src/routes/aux/+page.svelte', 'static/photo.jpg ', 'static/notes.', 'static/what?.png'];
+    for (const name of names) write(root, name, 'x');
     const tree = (await captureSnapshotInventory(root, { settleMs: 0 })).tree.map((f) => f.path);
-    expect(tree).toContain('static/before:after.png');
-    expect(tree).toContain('src/routes/aux/+page.svelte');
+    for (const name of names) expect(tree, name).toContain(name);
+  });
+
+  it.runIf(posix)('refuses a file larger than a version can hold, rather than leave it out or hold it whole', async () => {
+    const root = smallProject();
+    // Sparse: as large as it says, with nothing written.
+    const video = join(root, 'static/assets/film-1234abcd.mp4');
+    writeFileSync(video, '');
+    truncateSync(video, MAX_SNAPSHOT_FILE + 1);
+    const opened = vi.spyOn(fsp, 'open');
+    try {
+      expect(await failure(captureSnapshotInventory(root, { settleMs: 0 }))).toMatchObject({ reason: 'too-large', path: 'static/assets/film-1234abcd.mp4' });
+      // Refused before anything is read.
+      expect(opened).not.toHaveBeenCalled();
+    } finally {
+      opened.mockRestore();
+    }
+    truncateSync(video, 1024);
+    expect((await captureSnapshotInventory(root, { settleMs: 0 })).tree.map((f) => f.path)).toContain('static/assets/film-1234abcd.mp4');
   });
 
   it.runIf(posix)('refuses a file whose name is not valid text, rather than miss it', async () => {
@@ -303,10 +336,26 @@ describe('capturing a project', () => {
       return;
     }
     expect(await failure(captureSnapshotInventory(root))).toMatchObject({ reason: 'name', path: 'static/photo-\ufffd.jpg' });
+    // A folder by such a name is refused too.
+    const folder = smallProject();
+    mkdirSync(Buffer.concat([Buffer.from(`${join(folder, 'static')}/dir-`), Buffer.from([0xff])]));
+    expect(await failure(captureSnapshotInventory(folder))).toMatchObject({ reason: 'name', path: 'static/dir-\ufffd' });
     // A link by such a name is left out like any link, with nothing to refuse.
     const other = smallProject();
-    symlinkSync(join(other, 'package.json'), Buffer.concat([Buffer.from(`${join(other, 'static')}/link-`), Buffer.from([0xff])]));
+    const link = Buffer.concat([Buffer.from(`${join(other, 'static')}/link-`), Buffer.from([0xff])]);
+    symlinkSync(join(other, 'package.json'), link);
     expect((await captureSnapshotInventory(other, { settleMs: 0 })).tree.map((f) => f.path)).not.toContain('static/link-\ufffd');
+    // One that cannot be looked at, so cannot be told to be a link, fails the capture rather than be passed over.
+    const real = fsp.lstat.bind(fsp);
+    const denied = vi.spyOn(fsp, 'lstat').mockImplementation((async (p: Parameters<typeof fsp.lstat>[0], ...rest: unknown[]) => {
+      if (Buffer.isBuffer(p) && p.equals(link)) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return (real as (...a: unknown[]) => ReturnType<typeof fsp.lstat>)(p, ...rest);
+    }) as typeof fsp.lstat);
+    try {
+      expect(await failure(captureSnapshotInventory(other))).toMatchObject({ reason: 'unreadable', path: 'static/link-\ufffd' });
+    } finally {
+      denied.mockRestore();
+    }
   });
 
   it.runIf(posix && process.getuid?.() !== 0)('never looks in a folder that can hold no file of a snapshot’s', async () => {

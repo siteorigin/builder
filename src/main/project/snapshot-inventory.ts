@@ -71,7 +71,7 @@ const LOCAL_STATE = new Set(['.git', '.siteorigin']);
 const CACHES = new Set(['node_modules', '.svelte-kit', '.vite', '.vite-temp']);
 const CLUTTER = /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|.*\.tmp)$/;
 /** Names Windows gives another meaning: devices (COM¹ too), whatever their extension. */
-const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
 
 /** What HFS+ leaves out when it compares names (as Git's own check for `.git` does): joiners, direction marks, a BOM. */
 const IGNORED_BY_HFS = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
@@ -82,7 +82,7 @@ const IGNORED_BY_HFS = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
  * with a Kelvin sign is `client.key`; `STRAẞE` is `straße`). One name at a time: never a whole path, which a character
  * that folds into a slash would split.
  */
-export const foldName = (name: string) => name.normalize('NFC').replace(IGNORED_BY_HFS, '').toLowerCase().toUpperCase().toLowerCase();
+export const foldName = (name: string) => name.replace(IGNORED_BY_HFS, '').normalize('NFC').toLowerCase().toUpperCase().toLowerCase();
 const fold = foldName;
 
 const TREE: SnapshotPlace = { kind: 'tree' };
@@ -99,7 +99,23 @@ function partExcluded(part: string, i: number): SnapshotExclusion | null {
   const p = fold(part);
   if (LOCAL_STATE.has(p)) return 'local-state';
   if (CACHES.has(p) || (i === 0 && p === 'build')) return 'cache';
-  return isPrivateFileName(part) || isPrivateFileName(p) ? 'private' : null;
+  return privateName(part, p) ? 'private' : null;
+}
+
+/** What an editor or a sync tool adds to a file's name for its copy: a backup, a swap file, an autosave. */
+const EDITOR_SUFFIX = /(~|#|\.(bak|old|orig|swp|swo|tmp|sav))+$/;
+
+/**
+ * Whether a name (and `folded`, the same name folded) is a private file's (isPrivateFileName) or a copy of one: what an
+ * editor leaves (`client.pem~`, `.env.swp`, `#.npmrc#`), and any JSON file named after the app's own credential files
+ * whatever was added to the name (`api-keys (conflicted copy).json`, as a sync tool names its copy). Broader than an
+ * export's rule on purpose: a snapshot keeps what it holds for good, so a public file named after them stays out too.
+ */
+function privateName(name: string, folded: string): boolean {
+  if (isPrivateFileName(name) || isPrivateFileName(folded)) return true;
+  const bare = folded.replace(EDITOR_SUFFIX, '').replace(/^\.?#/, '');
+  if (bare && bare !== folded && isPrivateFileName(bare)) return true;
+  return /(source-secrets|api-keys).*\.json/.test(folded);
 }
 
 /**
@@ -191,19 +207,26 @@ export interface SnapshotInventory {
 
 /**
  * Why a project could not be captured: a file `changed` while it was read (edited, replaced, added, removed, swapped for
- * a link), could not be read (`unreadable`), or has a `name` some computers cannot use: one they cannot tell from
- * another file's or folder's, or one that is not valid text. `path` is the file's project path.
+ * a link), could not be read (`unreadable`), has a `name` some computers cannot use (one they cannot tell from another
+ * file's or folder's, or one that is not valid text), or is larger than a snapshot holds (`too-large`,
+ * MAX_SNAPSHOT_FILE). `path` is the file's project path.
  */
 export class SnapshotCaptureError extends Error {
   constructor(
     readonly path: string,
-    readonly reason: 'changed' | 'unreadable' | 'name',
+    readonly reason: 'changed' | 'unreadable' | 'name' | 'too-large',
     message: string
   ) {
     super(message);
     this.name = 'SnapshotCaptureError';
   }
 }
+
+/**
+ * The largest file a snapshot holds: what one buffer read whole can hold everywhere (Node reads no more into one), as
+ * Git's own tools hold each file. A larger one fails the capture rather than be left out or held in memory whole.
+ */
+export const MAX_SNAPSHOT_FILE = 2 ** 31 - 1;
 
 const changed = (rel: string) => new SnapshotCaptureError(rel, 'changed', `${rel || 'The project folder'} changed while the project was being read. Try again once nothing is changing it.`);
 const unreadable = (rel: string, e: unknown) => new SnapshotCaptureError(rel, 'unreadable', `${rel || 'The project folder'} could not be read: ${(e as Error)?.message ?? e}`);
@@ -275,7 +298,11 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
       const a = join(abs, name);
       const valid = Buffer.from(name, 'utf8').equals(bytes);
       if (!valid) {
-        const st = await fs.lstat(Buffer.concat([Buffer.from(`${abs}${sep}`), bytes])).catch(() => null);
+        const st = await fs.lstat(Buffer.concat([Buffer.from(`${abs}${sep}`), bytes])).catch((e: unknown) => {
+          // Gone since the folder was read, it is no part of the project; anything else can't be told to be a link.
+          if (isMissing(e)) return null;
+          throw unreadable(r, e);
+        });
         if (st && (st.isFile() || st.isDirectory())) throw badName(r, 'has a name that is not valid text');
         continue;
       }
@@ -291,7 +318,10 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
         if (!descend) continue;
         record(r, a, st, place);
         await walk(r, a);
-      } else if (st.isFile() && place.kind !== 'excluded') record(r, a, st, place);
+      } else if (st.isFile() && place.kind !== 'excluded') {
+        if (st.size > BigInt(MAX_SNAPSHOT_FILE)) throw new SnapshotCaptureError(r, 'too-large', `${r} is larger than a saved version can hold (2 GB). Move it out of the project, then try again.`);
+        record(r, a, st, place);
+      }
       // A link, or anything else that is not a plain file (a pipe, a socket, a device), is no file of a snapshot's.
     }
   };
