@@ -1989,7 +1989,9 @@ function CodePartInspector({ state, selection, tokens }: { state: ProjectState; 
   const codeStyled = codeTakesOverrides(def);
   const allowed = placementStyleControls(def, partId, codeStyled);
   // A part its code shows once per item of a list (a card) can also be styled for the item it was picked in alone.
-  const itemList = repeatedPartList(def, partId);
+  // A list connected to a collection shows its entries, which are styled together (see codeItemMarks).
+  const repeated = repeatedPartList(def, partId);
+  const itemList = repeated && !Object.hasOwn(inst.listSources ?? {}, repeated) ? repeated : undefined;
   const listSchema = itemList ? (def.properties[itemList] as ListProp) : undefined;
   const listItems = itemList ? placementItems(def, inst, itemList) : [];
   const itemId = itemList && selection.itemPath?.length === 1 ? selection.itemPath[0] : undefined;

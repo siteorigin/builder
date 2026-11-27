@@ -1570,8 +1570,12 @@ export function generateSiteCss(state: ProjectState): string {
           addRules(rules, sel, n.overrides![partId], { ...overrideOpts(state, def, n, partId), grouped: partInInteractionGroup(def, partId, placed, lookups) });
         }
         for (const partId of Object.keys(n.itemOverrides ?? {}).sort()) {
+          // A part the code converted from a design added is its code's own (see calledFor).
+          const def = placedDef ? calledFor(placedDef, design, partId) : undefined;
           const entry = liveItemStyles(def, n, partId);
           if (!entry) continue;
+          // A code component's list connected to a collection shows its entries, which take no item classes.
+          if (def!.kind === 'code' && Object.hasOwn(n.listSources ?? {}, entry.list)) continue;
           // A code component has no tree: its part is an element of its own markup.
           const target = def!.tree?.nodes[def!.parts[partId].nodeId];
           // One class more than the part's shared override, so an item's own value wins over it at every size.
@@ -3564,7 +3568,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // Styles of single list items: each item's parts get a class of their own, looked up by the item's ID.
   /** In the editor's preview, the item each class names for a code placement's repeated parts (see codeItemMarks). */
   let partItems: Record<string, [string, string]> | undefined;
-  if (!ctx.def && (node.itemOverrides || (ctx.instrument && code))) {
+  if (!ctx.def && (node.itemOverrides || (ctx.instrument && def.kind === 'code'))) {
     const byItem: Record<string, Record<string, string>> = {};
     const give = (partId: string, itemId: string) => {
       // Own keys only: an item ID can be any word, "toString" included.
@@ -3572,16 +3576,17 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
       byItem[itemId][partId] = itemOverrideClass(node.id, partId, itemId);
     };
     for (const partId of Object.keys(node.itemOverrides ?? {}).sort()) {
-      const entry = liveItemStyles(design ?? def, node, partId);
+      const owner = calledFor(def, design, partId);
+      const entry = liveItemStyles(owner, node, partId);
       // A code placement's list connected to a collection shows its entries, not the items these were set for.
-      if (code && entry && Object.hasOwn(node.listSources ?? {}, entry.list)) continue;
+      if (owner.kind === 'code' && entry && Object.hasOwn(node.listSources ?? {}, entry.list)) continue;
       for (const itemId of Object.keys(entry?.items ?? {}).sort()) {
         if (!entry!.items[itemId] || typeof entry!.items[itemId] !== 'object') continue;
         give(partId, itemId);
       }
     }
-    if (ctx.instrument && code) {
-      partItems = codeItemMarks(def, node);
+    if (ctx.instrument && def.kind === 'code') {
+      partItems = codeItemMarks(def, node, design);
       for (const [partId, itemId] of Object.values(partItems)) give(partId, itemId);
     }
     if (Object.keys(byItem).length) attrs.push(`so_oi={${js(byItem)}}`);
@@ -3673,9 +3678,11 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
  * and the item it names. The classes are the ones the item's own styles use, so they follow the item when the list
  * is reordered. A list connected to a collection shows entries, not its own items, and takes none.
  */
-function codeItemMarks(def: ComponentDefinition, node: InstanceNode): Record<string, [string, string]> {
+function codeItemMarks(def: ComponentDefinition, node: InstanceNode, design?: ComponentDefinition): Record<string, [string, string]> {
   const out: Record<string, [string, string]> = {};
+  // Code converted from a design's file shows the design's own parts as the design did; only its code's own are marked.
   for (const partId of Object.keys(def.parts).sort()) {
+    if (calledFor(def, design, partId) !== def) continue;
     const list = repeatedPartList(def, partId);
     if (!list || Object.hasOwn(node.listSources ?? {}, list)) continue;
     for (const item of placementItems(def, node, list)) out[itemOverrideClass(node.id, partId, item.id)] = [partId, item.id];

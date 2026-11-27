@@ -120,7 +120,7 @@ function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
 function sameDesc(a, b) {
-  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && (a.partItem || '') === (b.partItem || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
 }
 /**
  * The slot an empty slot's placeholder stands for, as the editor names it: its placement's descriptor and the slot's
@@ -234,13 +234,16 @@ function partItemOf(el, owner, part) {
 }
 /**
  * A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. A part
- * shown once per item of a list names its item, so one card is picked rather than all of them.
+ * shown once per item of a list names its item (`partItem`, apart from the items the placement itself is shown for),
+ * so one card is picked rather than all of them.
  */
 function partDesc(el) {
   if (el.hasAttribute('data-so-node')) return null;
   const part = partIdOf(el);
   const owner = part ? partOwner(el) : null;
-  return owner ? { ...descOf(owner), items: partItemOf(el, owner, part), part } : null;
+  if (!owner) return null;
+  const item = partItemOf(el, owner, part);
+  return { ...descOf(owner), part, ...(item ? { partItem: item } : {}) };
 }
 /**
  * What the pointer is on, as the editor names it: the innermost marked part of a code placement or editor element
@@ -288,19 +291,19 @@ function findAll(desc) {
     return [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-slot-items') || '') === desc.items);
   }
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
+  const els = [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
   const part = typeof desc.part === 'string' && desc.part ? desc.part : '';
-  // A code placement's part names its own item, not the placement's: the item is found among the part's elements.
-  const els = [...document.querySelectorAll(sel)].filter((el) => part || !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
   // Text a code placement's author marked: every element of its own markup carrying that marker.
   if (typeof desc.bind === 'string' && desc.bind) return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(`[${TEXT_ATTR}="${cssEscape(desc.bind)}"]`)].filter((t) => partOwner(t) === el));
   if (!part) return els;
+  const item = typeof desc.partItem === 'string' ? desc.partItem : '';
   // A marked part of a code placement: every element of that placement's own markup carrying the marker (the
   // author's code can show one more than once), never one in another placement or in content placed in a slot. One
   // item's part is the elements of it shown for that item.
   const marked = `[data-so-part="${cssEscape(part)}"], .${cssEscape(PART_CLASS + part)}`;
   return els
     .filter((el) => el.hasAttribute('data-so-code'))
-    .flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === part && partOwner(p) === el && (!desc.items || partItemOf(p, el, part) === desc.items)));
+    .flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === part && partOwner(p) === el && (!item || partItemOf(p, el, part) === item)));
 }
 /** The box an element is laid out as (with display: contents, its first child that shows), and whether its container
  *  lays its items out by CSS order: only a flex or grid container does. */

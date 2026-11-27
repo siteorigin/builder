@@ -2269,6 +2269,8 @@ function itemStyleTarget(state: ProjectState, owner: OwnerRef, node: GraphNode, 
   if (!own(def.parts, partId)) fail(`"${def.name}" has no part "${partId}". Parts: ${Object.keys(def.parts).join(', ')}.`);
   const list = repeatedPartList(def, partId);
   if (!list) fail(`"${def.parts[partId].label}" in "${def.name}" is not shown once per list item, so it has no single item to style. Leave out itemId to style it everywhere.`);
+  // A code placement's list connected to a collection shows its entries, which take no item classes of their own.
+  if (def.kind === 'code' && Object.hasOwn(node.listSources ?? {}, list)) fail(`${def.properties[list].label} shows a collection's entries here, so its items are styled together. Leave out itemId, or disconnect the list first.`);
   const items = placementItems(def, node, list);
   // An item copied from the definition's defaults is found by the default's ID too (see placedItemIndex).
   const at = placedItemIndex(items, owner, node.id, itemId);

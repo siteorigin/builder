@@ -90,6 +90,16 @@ describe('a code component declares the list a part repeats over', () => {
     // Taken under another name, with a fallback, and a part named in brackets.
     expect(await lists(SOURCE.replace('plans = []', 'plans: rows').replace('{#each plans as plan (plan.id)}', '{#each rows ?? [] as plan (plan.id)}').replace('so_oi?.[plan.id]?.card', 'so_oi?.[plan.id]?.["card"]'))).toEqual({ card: 'plans' });
     // Not keyed by the item, an index for an ID, outside any list, in a list the code worked out, or inside another list.
+    expect(await lists(SOURCE.replace('{#each plans as plan', '{#each plans || [] as plan'))).toEqual({ card: 'plans' });
+    // A hook anywhere but a class gives no element its class: it neither names a list nor takes one away.
+    expect(await lists(SOURCE.replace('<h3 class={so_o?.name}>', '<h3 class={so_o?.name} title={so_oi?.[plan.id]?.card}>'))).toEqual({ card: 'plans' });
+    // Read plainly, inside a snippet (which can be given any list), in a list inside the card, or under a name declared again.
+    expect(await lists(SOURCE.replace('so_oi?.[plan.id]?.card', 'so_oi[plan.id].card'))).toEqual({});
+    expect(await lists(SOURCE.replace('<ul>', '{#snippet cards(plans)}<ul>').replace('</ul>', '</ul>{/snippet}{@render cards(addons)}'))).toEqual({});
+    expect(await lists(SOURCE.replace(', so_oi?.[plan.id]?.card', '').replace("<h3 class={so_o?.name}>{plan.name}</h3>", "{#each [1, 2] as n}<i class={[so_o?.card, so_oi?.[plan.id]?.card]}>{n}</i>{/each}"))).toEqual({});
+    expect(await lists(SOURCE.replace("<li class=", "{@const plan = plans[0]}<li class="))).toEqual({});
+    // An so_oi of the code's own is not the placement's.
+    expect(await lists(SOURCE.replace(', so_oi = undefined', '').replace('</script>', '\tconst so_oi = {};\n</script>'))).toEqual({});
     expect(await lists(SOURCE.replace('(plan.id)', ''))).toEqual({});
     expect(await lists(SOURCE.replace('{#each plans as plan (plan.id)}', '{#each plans as plan, i (plan.id)}').replace('so_oi?.[plan.id]', 'so_oi?.[i]'))).toEqual({});
     expect(await lists(SOURCE.replace("<h2>{heading}</h2>", "<h2 class={so_oi?.[heading.id]?.title}>{heading}</h2>"))).toEqual({ card: 'plans' });
@@ -100,6 +110,10 @@ describe('a code component declares the list a part repeats over', () => {
     expect(await lists(two)).toEqual({});
     const problems = await checkSvelteSource(two, { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' } } } });
     expect(problems.map((p) => p.message).join(' ')).toMatch(/more than one list/);
+    const plainRead = await checkSvelteSource(SOURCE.replace('so_oi?.[plan.id]?.card', 'so_oi[plan.id].card'), { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } } });
+    expect(plainRead.filter((p) => p.severity === 'error').map((p) => p.message).join(' ')).toMatch(/so_oi\?\.\[…\]\?\.card/);
+    const itemOnly = await checkSvelteSource(SOURCE.replace("so_o?.card, ", ''), { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } } });
+    expect(itemOnly.map((p) => p.message).join(' ')).toMatch(/shared class too/);
     const unkeyed = await checkSvelteSource(SOURCE.replace('(plan.id)', ''), { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } } });
     expect(unkeyed.map((p) => p.message).join(' ')).toMatch(/keyed by the item's ID/);
   });
@@ -112,6 +126,12 @@ describe('a code component declares the list a part repeats over', () => {
     const names = (await codeContractNames(plain))!;
     const saved = applyOperations(relabelled, [{ type: 'component.updateSource', definitionId: defId, source: plain }], { codeNames: () => names }).state;
     expect(saved.components[defId].parts.card).toEqual({ nodeId: 'card', label: 'Plan card' });
+    // Repeated over another of its lists, the part says so.
+    const both = { ...PROPERTIES, tiers: { ...PROPERTIES.plans, label: 'Tiers' } };
+    const tiers = SOURCE.replace(/plans/g, 'tiers');
+    const tierNames = (await codeContractNames(tiers))!;
+    const switched = applyOperations(relabelled, [{ type: 'component.updateSource', definitionId: defId, source: tiers, properties: both } as EditOperation], { codeNames: () => tierNames });
+    expect(switched.state.components[defId].parts.card.list).toBe('tiers');
     // A list the component has no such property for is never declared.
     const other = (await codeContractNames(SOURCE.replace(/plans/g, 'tiers')))!;
     expect(other.lists).toEqual({ card: 'tiers' });
@@ -197,7 +217,7 @@ describe('the canvas picks one card of a code component', () => {
     expect(isCodePart(s, card)).toBe(true);
     expect(refExists(s, card)).toBe(true);
     const desc = descOf(s, card);
-    expect(desc).toEqual({ ctx: `page:${owner.id}`, node: list, items: 'p_plus', part: 'card' });
+    expect(desc).toEqual({ ctx: `page:${owner.id}`, node: list, items: '', part: 'card', partItem: 'p_plus' });
     const placement = descOf(s, { owner, instancePath: [], nodeId: list });
     const chain = [{ ...desc, tag: 'li' }, { ...placement, code: true }];
     const first = selectionFromChain(s, chain, null, false);
@@ -234,6 +254,62 @@ describe('the canvas picks one card of a code component', () => {
   });
 });
 
+describe('one card’s style stays with its card and its list', () => {
+  it('follows its list when the code’s properties rename it', async () => {
+    const { s: base, owner, list, defId } = await pricing();
+    const s = styleItem(base, owner, list, 'p_plus', '#dbeeff');
+    const tiers = SOURCE.replace(/plans/g, 'tiers');
+    const names = (await codeContractNames(tiers))!;
+    const { plans, ...rest } = PROPERTIES;
+    const renamed = applyOperations(s, [{ type: 'component.updateSource', definitionId: defId, source: tiers, properties: { ...rest, tiers: plans }, renames: [{ from: 'plans', to: 'tiers' }] } as EditOperation], { codeNames: () => names }).state;
+    expect(renamed.components[defId].parts.card.list).toBe('tiers');
+    expect(node(renamed, list).itemOverrides).toEqual({ card: { list: 'tiers', items: { p_plus: { base: { background: '#dbeeff' } } } } });
+    expect(soOi(page(renamed))).toEqual({ p_plus: { card: itemOverrideClass(list, 'card', 'p_plus') } });
+  });
+
+  it('keeps its list when the part is pointed at another name, and refuses one card of a list a collection fills', async () => {
+    const { s, owner, list, defId } = await pricing();
+    const moved = applyOperations(s, [{ type: 'component.setPart', definitionId: defId, partId: 'card', nodeId: 'row', label: 'Card' } as EditOperation]).state;
+    expect(moved.components[defId].parts.card.list).toBe('plans');
+    const connected = structuredClone(s);
+    node(connected, list).listSources = { plans: { collectionId: 'nope' } } as unknown as InstanceNode['listSources'];
+    expect(() => styleItem(connected, owner, list, 'p_plus', '#000')).toThrow(/collection's entries/);
+    const card: ElementRef = { owner, instancePath: [list], nodeId: 'card', partId: 'card', itemPath: ['p_plus'] };
+    expect(isCodePart(connected, card)).toBe(false);
+  });
+
+  it('names an item with a comma or a percent sign, and finds it again', async () => {
+    const { s: base, owner, list } = await pricing();
+    const s = applyOperations(base, [{ type: 'instance.setProp', owner, nodeId: list, prop: 'plans', value: [{ id: 'a,b%c', name: 'Odd' }, { id: 'p_pro', name: 'Pro' }] } as EditOperation]).state;
+    const card: ElementRef = { owner, instancePath: [list], nodeId: 'card', partId: 'card', itemPath: ['a,b%c'] };
+    const desc = descOf(s, card);
+    expect(desc.partItem).toBe('a%2Cb%25c');
+    const placement = descOf(s, { owner, instancePath: [], nodeId: list });
+    const chain = [{ ...desc, tag: 'li' }, { ...placement, code: true }];
+    const first = selectionFromChain(s, chain, null, false);
+    expect(first).toEqual({ owner, instancePath: [], nodeId: list });
+    expect(selectionFromChain(s, chain, first, false)).toEqual(card);
+  });
+
+  it('keeps the assistant on the selected card once its code stops repeating it, and for a reset too', async () => {
+    const { s, owner, list, defId } = await pricing();
+    const authority = authorityFor({ owner, instancePath: [list], nodeId: 'card', partId: 'card', itemPath: ['p_plus'] }, 'the Plus card', null, s);
+    const reset = (itemId?: string) => ({ type: 'node.resetStyles', owner, nodeId: list, partId: 'card', ...(itemId ? { itemId } : {}) }) as EditOperation;
+    expect(checkAuthority(s, [reset('p_plus')], authority)).toBeNull();
+    expect(checkAuthority(s, [reset()], authority)).toMatch(/every item/);
+    const flat = structuredClone(s);
+    delete flat.components[defId].parts.card.list;
+    expect(checkAuthority(flat, [{ type: 'node.setStyle', owner, nodeId: list, partId: 'card', scope: 'base', property: 'background', value: '#000' } as EditOperation], authority)).toMatch(/ask the user/);
+  });
+
+  it('reports a list declared by something other than a name, without failing', async () => {
+    const { s, defId } = await pricing();
+    const bad = structuredClone(s);
+    (bad.components[defId].parts.card as { list?: unknown }).list = { toString: 'plans' };
+    expect(validateState(bad).filter((i) => i.code === 'PART_LIST').map((i) => i.message)).toEqual([expect.stringContaining('not named by a property name')]);
+  });
+});
+
 describe('a theme switch keeps one card’s style', () => {
   it('while the new implementation repeats the same part over the same list', async () => {
     const { s: base, owner, list, defId } = await pricing();
@@ -267,6 +343,7 @@ describe('a theme switch keeps one card’s style', () => {
   });
 });
 
+mkdirSync(resolve('.tmp'), { recursive: true });
 const tmp = mkdtempSync(join(resolve('.tmp'), 'code-items-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 

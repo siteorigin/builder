@@ -32,6 +32,8 @@ const FRAME = `<!doctype html><html><head><style>body{margin:0;font:16px/1.4 san
 <div style="display: contents" data-so-ctx="page:p" data-so-node="plans" data-so-part-items='{"so-oi-aaa":["card","p,1"],"so-oi-bbb":["card","p_two"],"so-oi-ccc":["name","p_two"]}' data-so-code="true">
   <ul><li id="c1" class="plan so-part--card so-oi-aaa">One</li><li id="c2" class="plan so-part--card so-oi-bbb"><b id="nm2" class="so-part--name so-oi-ccc">Two</b></li><li id="c3" class="plan so-part--card so-oi-zzz">Three</li></ul>
 </div>
+<div style="display: contents" data-so-ctx="page:p" data-so-node="looped" data-so-items="r1" data-so-part-items='{"so-oi-lll":["card","a"]}' data-so-code="true"><ul><li id="r1a" class="so-part--card so-oi-lll">Row one</li></ul></div>
+<div style="display: contents" data-so-ctx="page:p" data-so-node="looped" data-so-items="r2" data-so-part-items='{"so-oi-lll":["card","a"]}' data-so-code="true"><ul><li id="r2a" class="so-part--card so-oi-lll">Row two</li></ul></div>
 <div style="display: contents" data-so-ctx="page:p" data-so-node="formy" data-so-code="true">
   <form style="display: contents"><input name="children" id="formy-input" style="display:block;width:80px;height:20px" /></form>
 </div>
@@ -118,14 +120,14 @@ describe.skipIf(!browserInstalled)('marked parts of a code component in the prev
     await page.evaluate(`window.seen = []`);
     const c2 = await boxOf('c2');
     await page.mouse.click(c2.x + c2.width - 4, c2.y + 3);
-    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]).toEqual({ ctx: 'page:p', node: 'plans', items: 'p_two', part: 'card', tag: 'li' });
+    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]).toEqual({ ctx: 'page:p', node: 'plans', items: '', part: 'card', partItem: 'p_two', tag: 'li' });
     // A part inside the card names its own item, by its own class; one whose class names no item, none.
     await page.evaluate(`window.seen = []`);
     const nm2 = await boxOf('nm2');
     await page.mouse.click(nm2.x + 2, nm2.y + 2);
     await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.slice(0, 2)).toEqual([
-      { ctx: 'page:p', node: 'plans', items: 'p_two', part: 'name', tag: 'b' },
-      { ctx: 'page:p', node: 'plans', items: 'p_two', part: 'card', tag: 'li' }
+      { ctx: 'page:p', node: 'plans', items: '', part: 'name', partItem: 'p_two', tag: 'b' },
+      { ctx: 'page:p', node: 'plans', items: '', part: 'card', partItem: 'p_two', tag: 'li' }
     ]);
     await page.evaluate(`window.seen = []`);
     const c3 = await boxOf('c3');
@@ -135,14 +137,29 @@ describe.skipIf(!browserInstalled)('marked parts of a code component in the prev
     await page.evaluate(`window.seen = []`);
     const c1 = await boxOf('c1');
     await page.mouse.click(c1.x + 3, c1.y + 3);
-    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]?.items).toBe('p%2C1');
-    await post('track', { selected: { ctx: 'page:p', node: 'plans', items: 'p%2C1', part: 'card' } });
+    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]?.partItem).toBe('p%2C1');
+    await post('track', { selected: { ctx: 'page:p', node: 'plans', items: '', part: 'card', partItem: 'p%2C1' } });
     await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([c1]);
-    await post('track', { selected: { ctx: 'page:p', node: 'plans', items: 'p_two', part: 'card' } });
+    await post('track', { selected: { ctx: 'page:p', node: 'plans', items: '', part: 'card', partItem: 'p_two' } });
     await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([c2]);
     // Every card, with no item named.
     await post('track', { selected: { ctx: 'page:p', node: 'plans', items: '', part: 'card' } });
     await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([c1, c2, c3]);
+  });
+
+  it('keeps the row a code placement is shown for apart from the card picked in it, and reads a changed item map', async () => {
+    await post('setMode', { mode: 'edit' });
+    await page.evaluate(`window.seen = []`);
+    const r2a = await boxOf('r2a');
+    await page.mouse.click(r2a.x + 3, r2a.y + 3);
+    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]).toEqual({ ctx: 'page:p', node: 'looped', items: 'r2', part: 'card', partItem: 'a', tag: 'li' });
+    await post('track', { selected: { ctx: 'page:p', node: 'looped', items: 'r2', part: 'card', partItem: 'a' } });
+    await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([r2a]);
+    // A class the map gives another part names no item of this one; a new map is read again.
+    await frame.evaluate(`document.querySelector('[data-so-node="looped"][data-so-items="r2"]').setAttribute('data-so-part-items', '{"so-oi-lll":["name","a"]}')`);
+    await page.evaluate(`window.seen = []`);
+    await page.mouse.click(r2a.x + 3, r2a.y + 3);
+    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]).toEqual({ ctx: 'page:p', node: 'looped', items: 'r2', part: 'card', tag: 'li' });
   });
 
   it('outlines a placement whose only content is an image in a <picture>, which lays out no box of its own', async () => {

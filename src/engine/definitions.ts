@@ -408,8 +408,11 @@ function moveProps(state: ProjectState, def: ComponentDefinition, renames: PropR
     for (const [to, v] of held) rec[to] = v;
   };
   move(def.properties as Record<string, unknown>);
+  const renamed = new Map(renames.map((r) => [r.from, r.to]));
   for (const { node } of instancesOf(state, def.id)) {
     move(node.props);
+    // One item's styles name the list they were set for: a renamed list keeps them.
+    for (const entry of Object.values(node.itemOverrides ?? {})) if (entry && typeof entry === 'object' && typeof entry.list === 'string' && renamed.has(entry.list)) entry.list = renamed.get(entry.list)!;
     // A brand text kept through renames is the old property's: the one now under its name starts afresh.
     for (const r of renames) {
       releaseKept(node, r.from);
@@ -483,7 +486,7 @@ export function setPart(state: ProjectState, op: Op<'component.setPart'>): OpRes
     controls = [...new Set(op.styleControls)];
   } else controls = prev && prev.nodeId === op.nodeId ? prev.styleControls : node ? styleSetFor(node) : undefined;
   // A code component's part keeps the list its code repeats it over (see declareCodeNames).
-  const list = def.kind === 'code' && prev && prev.nodeId === op.nodeId ? prev.list : undefined;
+  const list = def.kind === 'code' && prev ? prev.list : undefined;
   def.parts[op.partId] = { nodeId: op.nodeId, label: op.label.trim(), ...(controls ? { styleControls: controls } : {}), ...(list !== undefined ? { list } : {}) };
   return {};
 }

@@ -257,8 +257,10 @@ export function coreValidation(state: ProjectState): CoreValidation {
           ? 'only a code component declares the list a part repeats over; a design shows it with a repeat'
           : pid === 'root'
             ? 'the root part is the whole component, so it repeats over no list'
-            : typeof list !== 'string' || !schema
-              ? `it repeats over "${String(list)}", which is not one of its properties`
+            : typeof list !== 'string'
+              ? 'the list it repeats over is not named by a property name'
+              : !schema
+              ? `it repeats over "${list}", which is not one of its properties`
               : schema.type !== 'list' || schema.feed
                 ? `it repeats over "${list}", which is not a list that keeps its own items`
                 : null;

@@ -31,6 +31,11 @@ export interface BridgeDesc {
    */
   part?: string;
   /**
+   * The one item (encoded as `items` is) of the list a code placement's part repeats over that the part was picked in
+   * or is looked for in; `items` still names the items the placement itself is shown for.
+   */
+  partItem?: string;
+  /**
    * One slot of a placement, by the box the page shows while it is empty (#652): the rest of the descriptor names the
    * placement, in the context it is placed in (never through its definition's root, as the placement itself is).
    */
@@ -87,7 +92,9 @@ export function descOf(state: ProjectState, ref: ElementRef): BridgeDesc {
   // One item's part is found by the item it is shown for (see codeItemMarks in the generator).
   if (isCodePart(state, ref)) {
     const placement = ref.instancePath[ref.instancePath.length - 1];
-    return { ctx: ctxOf({ ...ref, instancePath: ref.instancePath.slice(0, -1) }), node: placement, items: (ref.itemPath ?? []).map(encodeItemId).join(','), part: ref.partId };
+    const desc: BridgeDesc = { ctx: ctxOf({ ...ref, instancePath: ref.instancePath.slice(0, -1) }), node: placement, items: '', part: ref.partId };
+    if (ref.itemPath?.length) desc.partItem = ref.itemPath.map(encodeItemId).join(',');
+    return desc;
   }
   const items = (ref.itemPath ?? []).map(encodeItemId).join(',');
   // A slot of a placement is found by its empty box, which names the placement where it is placed, whatever renders it.
@@ -207,7 +214,7 @@ function decodeItemId(segment: string): string {
 function refFromDesc(state: ProjectState, d: BridgeDesc): ElementRef | null {
   const p = parseCtx(d.ctx);
   if (!p) return null;
-  if (d.part !== undefined) return codePartRef(state, p.owner, p.path, d.node, d.part, d.items ? d.items.split(',').map(decodeItemId) : []);
+  if (d.part !== undefined) return codePartRef(state, p.owner, p.path, d.node, d.part, d.partItem ? d.partItem.split(',').map(decodeItemId) : []);
   const ref: ElementRef = { owner: p.owner, instancePath: p.path, nodeId: d.node };
   if (d.items) ref.itemPath = d.items.split(',').map(decodeItemId);
   if (d.slot !== undefined) {
