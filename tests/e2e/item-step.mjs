@@ -84,7 +84,7 @@ await selectedIs(1);
 step('Previous scrolls a card out of sight back into view, with the Inspector closed');
 // The Inspector reveals its item on the page too: closed, only the selection's own scroll can bring the card back.
 await win.getByRole('button', { name: 'Right panel', exact: true }).click();
-await eventually(async () => assert.equal(await chip.getByRole('button', { name: 'Edit', exact: true }).count(), 1, 'the Inspector is closed: the chip offers the way back'));
+await eventually(async () => assert.equal(await chip.getByRole('button', { name: 'Inspect', exact: true }).count(), 1, 'the Inspector is closed: the chip offers the way back'));
 await frame.locator('html').evaluate(() => window.scrollTo(0, 0));
 await eventually(async () => {
   const r = await title(0).evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom, h: innerHeight }));

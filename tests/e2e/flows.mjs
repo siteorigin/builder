@@ -424,7 +424,7 @@ await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Image' }).wai
 // Edit on the selection chip moves focus to the first control in the inspector, a picker button included.
 await win.locator('.dock-tab', { hasText: 'AI' }).click();
 await win.locator('#dock-panel-inspect').waitFor({ state: 'hidden' });
-await win.locator('.ov-chip .chip-text', { hasText: 'Edit' }).click();
+await win.locator('.ov-chip .chip-text', { hasText: 'Inspect' }).click();
 await eventually(async () => {
   const at = await win.evaluate(() => {
     const el = document.activeElement;
