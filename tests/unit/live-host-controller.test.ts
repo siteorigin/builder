@@ -14,6 +14,7 @@ import type { LiveHostState, LiveJoinRequest, LiveRun } from '../../src/shared/a
 import type { GuestRole } from '../../src/shared/live/limits';
 import type { LiveProjectChanged, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { joinGuest, previewOrigin, randomAddress, redeemTicket, startRelay, wait, type JoinedGuest, type Relay } from './relay-harness';
+import { collected } from './collect-garbage';
 
 /**
  * A stand-in for Electron's utility process that reports the test's preview server as ready, holds a save's updates
@@ -207,6 +208,28 @@ describe('a live session hosted by the open project', () => {
     const idleAt = sent.findIndex(([ch, p]) => ch === 'live:state' && (p as LiveHostState).phase === 'idle');
     expect(idleAt).toBeGreaterThan(-1);
     expect(idleAt).toBeLessThan(sent.findIndex(([ch]) => ch === 'project:closed'));
+  });
+
+  it('lets go of the copy of the project its guests were given once it ends, with the project still open (#1039)', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { run, guest } = await hosting(c, sent, dir, 'collaborator');
+    // A change guests are sent as it is saved, and the project a guest reads.
+    const home = c.session!.state.site.homePageId;
+    expect((await c.apply({ operations: [{ type: 'page.update', pageId: home, seoTitle: 'Fresh bread daily' }] })).ok).toBe(true);
+    await changedTo(guest, c.session!.revision);
+    expect((await rpc(guest, 'project.snapshot')).ok).toBe(true);
+    // The very copy the controller keeps for the next guest who asks, and the session as the last one it sent.
+    const copy = new WeakRef(c.guestSnapshot(run.workspaceKey)!);
+    expect(c.guestSnapshot(run.workspaceKey)).toBe(copy.deref());
+    // The session itself still reachable after it has ended, as a closing connection's handlers can keep it.
+    const ended = (c.live as unknown as { run: { sentSnapshot: unknown } | null }).run;
+    expect(ended?.sentSnapshot).toBe(copy.deref());
+    expect((await c.live.stop(run)).ok).toBe(true);
+    await until(() => c.live.state.phase === 'idle', 'the session ended');
+    expect(c.session?.dir).toBe(dir);
+    expect(await collected(copy), 'the copy given to guests is still reachable').toBe(true);
+    expect(ended?.sentSnapshot).toBeNull();
   });
 
   it('ends when another project is opened in its place, which starts with none', async () => {

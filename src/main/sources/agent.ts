@@ -37,8 +37,9 @@ const readByItsCode = (source: SourceDoc) => !!source.converter && (typeof sourc
 
 /** The tools' host for each run, ended with its signal. */
 export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal) => SourceToolHost {
-  /** Tested changes waiting to land, by the ticket the tool holds: only the latest few. */
-  const tickets = new Map<string, { project: AgentSourceProject; sourceId: string; candidate: string }>();
+  /** Tested changes waiting to land, by the ticket the tool holds: only the latest few. Each names its project weakly,
+   *  so a ticket never used keeps no closed project (#1039); one whose project has gone approves nothing. */
+  const tickets = new Map<string, { project: WeakRef<AgentSourceProject>; sourceId: string; candidate: string }>();
 
   const linked = async <T>(signal: AbortSignal, fn: (signal: AbortSignal) => Promise<T>): Promise<T> => {
     const abort = new AbortController();
@@ -136,7 +137,7 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
     if (r.raw.length && !r.total) return fail(`The ${'converter' in change ? 'converter' : 'mapping'} gives no entries for the ${r.raw.length === 1 ? 'record' : 'records'} “${source.name}” has, so its next sync would take away every entry it synced.`, [{ stage: 'records', message: 'It gives no entries.' }]);
     if (!r.raw.length) return fail(`“${source.name}” has no records now, so nothing shows the ${'converter' in change ? 'converter' : 'mapping'} is right. Ask the author to add one at the source first.`, [], false);
     const ticket = randomUUID();
-    tickets.set(ticket, { project, sourceId, candidate: sourceFingerprint(made.source) });
+    tickets.set(ticket, { project: new WeakRef(project), sourceId, candidate: sourceFingerprint(made.source) });
     // A run that never applied what it tested leaves nothing behind for long.
     while (tickets.size > 20) tickets.delete(tickets.keys().next().value!);
     return { ok: true, operation: { ...draft, type: 'source.upsert' } as EditOperation, grant: { sourceId, base, change: sourceConversionKey(draft) }, ticket, records: r.records, total: r.total, created: r.created, updated: r.updated, unchanged: r.unchanged, unpublished: r.unpublished, removed: r.removed, kept: r.kept };
@@ -150,12 +151,13 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
   const approve = async (ticket: string): Promise<boolean> => {
     const t = tickets.get(ticket);
     tickets.delete(ticket);
-    if (!t || deps.project() !== t.project) return false;
-    const now = Object.hasOwn(t.project.state.sources ?? {}, t.sourceId) ? t.project.state.sources![t.sourceId] : undefined;
+    const project = t?.project.deref();
+    if (!t || !project || deps.project() !== project) return false;
+    const now = Object.hasOwn(project.state.sources ?? {}, t.sourceId) ? project.state.sources![t.sourceId] : undefined;
     if (!now || sourceFingerprint(now) !== t.candidate || readByItsCode(now)) return false;
     if (!sourceSecretNames(now).length) return true;
     try {
-      await deps.approvals.approve(t.project.state.manifest.projectId, now);
+      await deps.approvals.approve(project.state.manifest.projectId, now);
       return true;
     } catch {
       return false;

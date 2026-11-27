@@ -11,6 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { collected } from './collect-garbage';
 
 const env = vi.hoisted(() => ({ userData: '' }));
 vi.mock('electron', () => ({
@@ -236,6 +237,19 @@ describe('the source tools’ host', () => {
     const right = await host.verify('crew', { mapping: { externalId: 'uuid', title: 'headline', publishedAt: 'joined', body: 'bio', bodyFormat: 'html', values: { role: 'job' } } });
     expect(right).toMatchObject({ ok: true, total: 2, created: 2, operation: { type: 'source.upsert', sourceId: 'crew', mapping: { title: 'headline' } } });
     expect(api.seen.every((p) => p === '/v1/people')).toBe(true);
+  });
+
+  it('keeps no project for a tested change that never landed, and approves nothing once its project has gone (#1039)', async () => {
+    const { s, runner, secrets, approvals } = await setup();
+    // The project as the tools are given it, until it closes: an object of its own, so nothing here keeps it.
+    let current: { readonly state: typeof s.state } | null = { state: s.state };
+    const host = createAgentSources({ project: () => current, runner, secrets, approvals })(new AbortController().signal);
+    const tested = await host.verify('crew', { converter: GOOD });
+    if (!tested.ok) throw new Error(tested.message);
+    const project = new WeakRef(current);
+    current = null;
+    expect(await collected(project), 'the closed project is still reachable from a ticket').toBe(true);
+    expect(await host.approve(tested.ticket)).toBe(false);
   });
 
   it('approves only the very change it tested, once it has landed, and runs only a converter’s exported reader', async () => {
