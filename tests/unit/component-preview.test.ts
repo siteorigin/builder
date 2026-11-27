@@ -314,6 +314,7 @@ describe('a preview and the site’s colours', () => {
       const specs = [...Object.values(base.components).filter((d) => d.owner === 'project').map((d) => ({ definitionId: d.id })), ...theme.components.map((c) => ({ componentId: c.componentId }))];
       // The brand card and every component the theme ships.
       expect(specs.length).toBe(1 + theme.components.length);
+      expect(new Set(specs.map((s) => JSON.stringify(s))).size, theme.id).toBe(specs.length);
       expected += specs.length;
       for (const spec of specs) {
         const a = generateComponentPreview(base, spec);
