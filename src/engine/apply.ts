@@ -371,6 +371,7 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       return {};
     }
     case 'component.fork': {
+      if (op.placements) return forkPlacements(state, op);
       const id = ensureProjectOwned(state, op.definitionId);
       return { definitionId: id };
     }
@@ -3410,14 +3411,39 @@ export function ensureProjectOwned(state: ProjectState, defId: string): string {
 function makeUnique(state: ProjectState, op: Op<'component.makeUnique'>): OpResult {
   const { node, def, tree } = instanceTarget(state, op.owner, op.nodeId);
   const copy = copyDefinition(state, def, op.name?.trim() || uniqueCopyName(state, def.name));
-  // The slot it sits in must take the copy too: one that names the original by its ID takes only the original.
+  rebindTo(state, tree, node, def, copy);
+  return { definitionId: copy.id };
+}
+
+/**
+ * A copy of a definition for some of its placements (§8.4): the placements a change covers move to one project copy
+ * they share, and every other keeps the original, which stays available to insert.
+ */
+function forkPlacements(state: ProjectState, op: Op<'component.fork'>): OpResult {
+  const def = own(state.components, op.definitionId) ?? fail(`Component "${op.definitionId}" does not exist.`);
+  const seen = new Set<string>();
+  const uses = (op.placements ?? []).map(({ owner, nodeId }) => {
+    const key = JSON.stringify([owner.kind, owner.id, nodeId]);
+    if (seen.has(key)) fail(`"${nodeId}" is listed twice in placements.`);
+    seen.add(key);
+    const { node, tree } = instanceTarget(state, owner, nodeId);
+    if (node.definitionId !== def.id) fail(`"${nodeId}" is not a placement of “${def.name}”.`);
+    return { node, tree };
+  });
+  const copy = copyDefinition(state, def, uniqueCopyName(state, def.name));
+  for (const { node, tree } of uses) rebindTo(state, tree, node, def, copy);
+  return { definitionId: copy.id, moved: uses.length };
+}
+
+/** Move one placement to a copy of its definition. The slot it sits in must take the copy too: one that names the
+ *  original by its ID takes only the original. */
+function rebindTo(state: ProjectState, tree: NodeTree, node: InstanceNode, def: ComponentDefinition, copy: ComponentDefinition) {
   const at = findParent(tree, node.id);
   const holder = at?.parentId && Object.hasOwn(tree.nodes, at.parentId) ? tree.nodes[at.parentId] : undefined;
   const decl = holder?.kind === 'instance' && at?.slot !== undefined ? slotDecl(state, holder, at.slot) : undefined;
   if (decl && !takesComponent(decl, copy))
     fail(`The “${decl.label}” slot of “${state.components[(holder as InstanceNode).definitionId]?.name ?? 'its component'}” takes ${slotAccepts(decl, state)}, not a copy of “${def.name}”. Move it out of the slot first.`);
   node.definitionId = copy.id;
-  return { definitionId: copy.id };
 }
 
 /**

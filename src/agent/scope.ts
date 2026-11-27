@@ -619,9 +619,10 @@ function checkPageOne(state: ProjectState, op: EditOperation, authority: Extract
       const wider = Object.keys(op).filter((k) => k !== 'type' && k !== 'pageId' && !PAGE_SETTINGS.has(k));
       return wider.length ? `page.update ${wider.join(' and ')} changes more than ${label}: it reaches other pages.` : null;
     }
-    // Both add a new component to the site, which every page can then place.
+    // Each adds a new component to the site, which every page can then place.
     case 'component.makeUnique':
     case 'component.convertToCode':
+    case 'component.fork':
       return `${op.type} adds a new component to the site, which changes more than ${label}.`;
     case 'instance.listInsert':
       // A menu link to this page, added because the page tool was asked to add it.
@@ -686,6 +687,7 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
   // Inside a component's design, a placement made unique or turned into code adds a new component to the site.
   if (authority.owner.kind === 'component' && (op.type === 'component.makeUnique' || op.type === 'component.convertToCode')) return `${op.type} adds a new component to the site, which changes more than ${authority.label}.`;
   if (op.type === 'component.updateSource') return sourceWithin(state, op.definitionId, authority, allowed, sameOwner);
+  if (op.type === 'component.fork') return forkWithin(op, authority, allowed, sameOwner);
   // Siblings wrapped or ungrouped where they are: every one inside the selection, never the selected element itself (a
   // new container around it, or what it held put beside it, would be outside it), and inside the selected part.
   if (op.type === 'node.wrap' || op.type === 'node.unwrap') {
@@ -758,7 +760,20 @@ function sourceWithin(state: ProjectState, definitionId: string, authority: Extr
   const loaders = Object.values(state.components).filter((d) => d.id !== def.id && d.kind === 'code' && DYNAMIC_IMPORT.test(d.source ?? ''));
   const unknown = loaders.some((d) => (instancesOf(state, d.id).length || dependentsOf(state, d.id).length) && !inside(d.id));
   if (inside(def.id) && !unknown) return null;
-  return `Changing the source of "${def.name}" changes every placement of it, and it is used outside ${authority.label}. Give the selected placement a component of its own first (component.convertToCode for a managed component, component.makeUnique for code), then patch that copy.`;
+  return `Changing the source of "${def.name}" changes every placement of it, and it is used outside ${authority.label}. Give the selected placement a component of its own first (component.convertToCode for a managed component, component.makeUnique for code, or component.fork with placements for several inside it), then patch that copy.`;
+}
+
+/**
+ * Whether a copy of a component stays inside a selection: as component.makeUnique makes one for the selected
+ * placement, a fork may move placements inside the selected element to a copy they share (§8.4), and never one outside
+ * it. A selected part reaches neither, and a selection inside a component's design adds no component to the site.
+ */
+function forkWithin(op: Extract<EditOperation, { type: 'component.fork' }>, authority: Extract<Authority, { kind: 'selection' }>, allowed: Set<string>, sameOwner: (o: OwnerRef) => boolean): string | null {
+  if (authority.owner.kind === 'component') return `component.fork adds a new component to the site, which changes more than ${authority.label}.`;
+  if (authority.part) return 'component.fork gives the component the selected part is in a copy, which is more than the part.';
+  if (!op.placements?.length) return `component.fork without placements moves every placement of the component to the copy, which changes more than ${authority.label}: list the placements inside it.`;
+  if (!op.placements.every((u) => sameOwner(u.owner) && allowed.has(u.nodeId))) return `component.fork moves placements outside ${authority.label} to the copy.`;
+  return null;
 }
 
 /** An import whose target is chosen by a pattern or at run time (developer code may use them; the assistant's may not). */
