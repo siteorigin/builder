@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, promises as fsp, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, promises as fsp, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative as nativeRelative, sep } from 'node:path';
+import { basename, dirname, join, relative as nativeRelative, sep } from 'node:path';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -10,6 +10,7 @@ import { applyOperations } from '@engine/apply';
 import { generateProject, packFileCopies, pageFile } from '@generator/index';
 import { ProjectSession, statTrusted, type SessionEvent } from '../../src/main/project/session';
 import { stateToAuthoredSources } from '../../src/main/project/documents';
+import { packFileInfo, readPackFile } from '../../src/main/packs/files';
 
 const dirs: string[] = [];
 /** A path relative to a folder as the project names its files, with forward slashes on every platform. */
@@ -105,6 +106,42 @@ describe('publishing only what an edit changes (#183)', () => {
     expect(reads.filter((p) => generated.has(p))).toEqual([aboutFile]);
     expect(replaced.filter((p) => generated.has(p)).sort()).toEqual([aboutFile, 'dev:' + aboutFile].sort());
     expect(event?.changedFiles).toEqual([aboutFile]);
+    expectFullOutput(dir, s);
+  });
+
+  it('reads no theme font from its pack for an edit that changes none, and reads it again to put back a copy that went', async () => {
+    const { dir, s, about } = await make();
+    for (const v of ['Warm one', 'Warm two']) await s.apply({ operations: [headingEdit(s.state, about, v)] }, { label: v });
+    const copies = packFileCopies(s.state);
+    const source = (c: (typeof copies)[number]) => packFileInfo(c.pack, c.file)!.abs;
+    const sources = new Set(copies.map(source));
+    expect(sources.size).toBe(copies.length);
+    /** The pack files `fn` opens (each read of one opens it, to check it is still the file the pack lists). */
+    const packOpens = async (fn: () => Promise<unknown>) => {
+      const open = fsp.open.bind(fsp) as (...a: unknown[]) => Promise<unknown>;
+      const opened: string[] = [];
+      vi.spyOn(fsp, 'open').mockImplementation(((p: unknown, ...rest: unknown[]) => {
+        if (sources.has(String(p))) opened.push(String(p));
+        return open(p, ...rest);
+      }) as typeof fsp.open);
+      await fn();
+      vi.restoreAllMocks();
+      return opened;
+    };
+    expect(await packOpens(() => s.apply({ operations: [headingEdit(s.state, about, 'No font changed')] }, { label: 'Edit heading' }))).toEqual([]);
+    // A copy that went is read from its pack again, checked as ever, and put back byte for byte.
+    const gone = copies[0];
+    rmSync(join(dir, gone.path));
+    expect(await packOpens(() => s.apply({ operations: [headingEdit(s.state, about, 'Font back')] }, { label: 'Edit heading' }))).toEqual([source(gone)]);
+    expect(readFileSync(join(dir, gone.path)).equals(await readPackFile(gone.pack, gone.file))).toBe(true);
+    // Written just now, it is read once more by the next publication before its stat stands for its bytes.
+    await s.apply({ operations: [headingEdit(s.state, about, 'Font settled')] }, { label: 'Edit heading' });
+    // A copy edited outside the app is never mistaken for the pack's: the pack is read, and the copy kept as theirs.
+    const edited = copies[1];
+    writeFileSync(join(dir, edited.path), Buffer.from('wOF2 my own'));
+    expect(await packOpens(() => s.apply({ operations: [headingEdit(s.state, about, 'Font edited')] }, { label: 'Edit heading' }))).toEqual([source(edited)]);
+    expect(readFileSync(join(dir, edited.path)).toString()).toBe('wOF2 my own');
+    expect(s.conflicts).toContainEqual(expect.objectContaining({ path: edited.path, kind: 'generated' }));
     expectFullOutput(dir, s);
   });
 
@@ -249,6 +286,62 @@ describe('publishing only what an edit changes (#183)', () => {
     expect(fired()).toBe(true);
     expect(lstatSync(file).isSymbolicLink()).toBe(true);
     expect(s.conflicts).toContainEqual(expect.objectContaining({ path: rel, kind: 'generated' }));
+  });
+
+  /** Moves the folder of `rel` out of the project and leaves a link to it in its place: its files are the very same. */
+  function linkOut(dir: string, rel: string) {
+    const outside = mkdtempSync(join(tmpdir(), 'so-outside-'));
+    dirs.push(outside);
+    const folder = dirname(join(dir, rel));
+    const moved = join(outside, 'moved');
+    renameSync(folder, moved);
+    symlinkSync(moved, folder);
+    return join(moved, basename(rel));
+  }
+
+  it.skipIf(process.platform === 'win32')('refuses a save while an untouched route reaches out of the project through a link made since it opened', async () => {
+    const { dir, s, about, contact } = await make();
+    for (const v of ['Warm one', 'Warm two']) await s.apply({ operations: [headingEdit(s.state, about, v)] }, { label: v });
+    const file = linkOut(dir, pageFile(s.state.pages[contact]));
+    const before = readFileSync(file, 'utf8');
+    await expect(s.apply({ operations: [headingEdit(s.state, about, 'Through a link?')] }, { label: 'Edit heading' })).rejects.toThrow(/escapes the project through a link/);
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it.skipIf(process.platform === 'win32')('never replaces a file through a link put in place of its folder after it was looked at', async () => {
+    const { dir, s, about } = await make();
+    for (const v of ['Warm one', 'Warm two']) await s.apply({ operations: [headingEdit(s.state, about, v)] }, { label: v });
+    const rel = pageFile(s.state.pages[about]);
+    let file = '';
+    let before = '';
+    // While the claim on the new files is being written, after every file was looked at, the page's folder is moved
+    // out of the project and a link to it left in its place.
+    const fired = whileWriting(join(dir, 'siteorigin', 'generated-manifest.json'), () => {
+      file = linkOut(dir, rel);
+      before = readFileSync(file, 'utf8');
+    });
+    await expect(s.apply({ operations: [headingEdit(s.state, about, 'Through a link?')] }, { label: 'Edit heading' })).rejects.toThrow(/escapes the project through a link/);
+    vi.restoreAllMocks();
+    expect(fired()).toBe(true);
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it.skipIf(process.platform === 'win32')('never replaces a file through a link put in place of its folder while its replacement was being written', async () => {
+    const { dir, s, about } = await make();
+    for (const v of ['Warm one', 'Warm two']) await s.apply({ operations: [headingEdit(s.state, about, v)] }, { label: v });
+    const rel = pageFile(s.state.pages[about]);
+    let file = '';
+    let before = '';
+    const fired = whileWriting(join(dir, rel), () => {
+      file = linkOut(dir, rel);
+      before = readFileSync(file, 'utf8');
+    });
+    await expect(s.apply({ operations: [headingEdit(s.state, about, 'Through a link?')] }, { label: 'Edit heading' })).rejects.toThrow(/escapes the project through a link/);
+    vi.restoreAllMocks();
+    expect(fired()).toBe(true);
+    expect(readFileSync(file, 'utf8')).toBe(before);
+    // Nor is the new version left beside it.
+    expect(readdirSync(dirname(file))).toEqual([basename(file)]);
   });
 
   it('keeps a file put in place of a generated folder, and still saves', async () => {

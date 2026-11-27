@@ -572,10 +572,11 @@ function tokenCssValue(v: TokenValue | unknown): string {
 /** Text placed inside a CSS comment, which must not be able to end it. */
 const inComment = (text: string) => text.replace(/\*\//g, '* /');
 
+const USED_FONTS = 'fonts';
 /** The theme fonts this site uses, which the editor copies into the project from the theme's pack. */
 function usedFonts(state: ProjectState) {
   // Any string in any document may name a font: a file that depends on the answer, not on every document.
-  return derived(state, 'fonts', (s) => usedPackFonts(s, effectiveTokens(s).map((t) => t.value)));
+  return derived(state, USED_FONTS, (s) => usedPackFonts(s, effectiveTokens(s).map((t) => t.value)));
 }
 
 /** The pack files a site needs beside its generated source: project path → the file inside the theme's pack. */
@@ -587,11 +588,13 @@ export interface PackFileCopy {
 
 /**
  * Binary files the generated source refers to: the faces of every theme font the site uses. They come byte for
- * byte from the theme's pack, so the editor copies them rather than generating them.
+ * byte from the theme's pack, so the editor copies them rather than generating them. With the `cache` a run over this
+ * very state used, the fonts it worked out for the state are taken as they are, rather than worked out again.
  */
-export function packFileCopies(state: ProjectState): PackFileCopy[] {
+export function packFileCopies(state: ProjectState, cache?: GenerationCache): PackFileCopy[] {
   const pack = getTheme(state.site.themeId).id;
-  return usedFonts(state).flatMap((f) => f.faces.map((face) => ({ path: `${FONTS_DIR}/${face.file.slice('fonts/'.length)}`, pack, file: face.file })));
+  const fonts = cache?.derivedFor<ReturnType<typeof usedFonts>>(websiteState(state), USED_FONTS) ?? usedFonts(state);
+  return fonts.flatMap((f) => f.faces.map((face) => ({ path: `${FONTS_DIR}/${face.file.slice('fonts/'.length)}`, pack, file: face.file })));
 }
 
 /** @font-face rules for the theme fonts the site uses, served from the copies under FONTS_DIR. */
@@ -5230,15 +5233,25 @@ export function generateLibrary(state: ProjectState, opts: GenerateOptions = {})
  * is the same bytes either way.
  */
 export function generateProject(state: ProjectState, opts: GenerateOptions = {}, cache?: GenerationCache): FileMap {
-  // The project brief (#518) is the author's own: nothing that makes the website is ever handed it.
-  const site = state.brief ? withoutBrief(state) : state;
+  const site = websiteState(state);
   // Every page's and entry's structured data reads the same documents: the run works them out once (structured-data.ts).
   return inGenerationRun(() => generateFiles(site, opts, cache));
 }
 
-function withoutBrief(state: ProjectState): ProjectState {
-  const { brief: _brief, ...rest } = state;
-  return rest;
+/**
+ * The state the website is made from: the project brief (#518) is the author's own, and nothing that makes the
+ * website is ever handed it. One object for each state (states never change), so every run over a state, and
+ * whatever asks a cache what a run worked out for it, sees the same one.
+ */
+const withoutBriefs = new WeakMap<ProjectState, ProjectState>();
+function websiteState(state: ProjectState): ProjectState {
+  if (!state.brief) return state;
+  let site = withoutBriefs.get(state);
+  if (!site) {
+    const { brief: _brief, ...rest } = state;
+    withoutBriefs.set(state, (site = rest));
+  }
+  return site;
 }
 
 function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: GenerationCache): FileMap {

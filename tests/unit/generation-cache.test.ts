@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { InstanceNode, ListItem, ListProp, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { applyOperations } from '@engine/apply';
-import { RUNTIME_DIR, STYLES_DIR, defFile, generateProject, pageFile } from '@generator/index';
+import { RUNTIME_DIR, STYLES_DIR, defFile, generateProject, packFileCopies, pageFile } from '@generator/index';
+import { derived } from '@generator/cache';
+import * as fonts from '@catalogue/fonts';
 import { GenerationCache } from '@generator/cache';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { usedIcons } from '@generator/runtime-files';
@@ -318,6 +320,42 @@ describe('incremental generation (#183)', () => {
     expect(once(['a', 'b'])).toEqual(['a', 'b']);
     expect(once(['a'])).toEqual([]);
     expect(once(['a', 'b'])).toEqual(['b']);
+  });
+
+  it('gives back a derived value a run worked out for that very state, and for no other (#964)', () => {
+    const { s } = multiPageSite();
+    const cache = new GenerationCache();
+    let computed = 0;
+    const count = (st: ProjectState) => (computed++, Object.keys(st.pages).length);
+    const run = cache.run(s, false);
+    run.file('a', (st) => String(derived(st, 'pages', count)));
+    run.finish();
+    expect(computed).toBe(1);
+    expect(cache.derivedFor(s, 'pages')).toBe(Object.keys(s.pages).length);
+    // Another state, even one equal to it, was never run: nothing is given for it.
+    expect(cache.derivedFor(structuredClone(s), 'pages')).toBeUndefined();
+    expect(cache.derivedFor(s, 'other')).toBeUndefined();
+    expect(computed).toBe(1);
+  });
+
+  it('copies the theme fonts a run found the site using, brief or not (#964)', () => {
+    const { s } = multiPageSite();
+    for (const state of [s, applyOperations(s, [{ type: 'brief.update', description: 'A studio', notes: 'Notes' }]).state]) {
+      const cache = new GenerationCache();
+      generateProject(state, {}, cache);
+      generateProject(state, { instrument: true }, cache);
+      // The fonts are not searched for again: the runs over this very state found them.
+      const search = vi.spyOn(fonts, 'usedPackFonts');
+      const copies = packFileCopies(state, cache);
+      expect(search).not.toHaveBeenCalled();
+      search.mockRestore();
+      expect(copies.length).toBeGreaterThan(0);
+      expect(copies).toEqual(packFileCopies(state));
+      // A later state the cache has not run over is worked out for itself.
+      const later = applyOperations(state, [{ type: 'token.set', tokenId: 'font.display', value: 'Lora' }]).state;
+      expect(packFileCopies(later, cache)).toEqual(packFileCopies(later));
+      expect(packFileCopies(later, cache)).not.toEqual(packFileCopies(state, cache));
+    }
   });
 
   it('forgets everything when a generator throws', () => {

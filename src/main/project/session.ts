@@ -44,7 +44,7 @@ import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placeme
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
-import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson, WRITES_AT_ONCE } from './fsutil';
+import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, safeJoinLooking, sha, syncDir, toJson, FolderPass, WRITES_AT_ONCE, type Looked } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
@@ -2072,13 +2072,17 @@ export class ProjectSession extends EventEmitter {
 
   /**
    * The hash a generated file's bytes had when last read, while its stat is still what it was then: looking costs a
-   * stat, never a read. Undefined when the file has to be read to be known.
+   * stat, never a read, and nothing when the path's containment check just saw the file (`looked`, from
+   * safeJoinLooking). Undefined when the file has to be read to be known.
    */
-  private async seenHash(abs: string): Promise<string | undefined> {
+  private async seenHash(abs: string, looked?: Looked): Promise<string | undefined> {
     const seen = this.seenOnDisk.get(abs);
     if (!seen) return undefined;
-    perf.count('files.stats');
-    const st = await fs.stat(abs, { bigint: true }).catch(() => null);
+    let st = looked;
+    if (st === undefined) {
+      perf.count('files.stats');
+      st = await fs.stat(abs, { bigint: true }).catch(() => null);
+    }
     return st && stampOf(st) === seen.stamp ? seen.hash : undefined;
   }
 
@@ -2182,8 +2186,20 @@ export class ProjectSession extends EventEmitter {
     };
     // The theme's font files are copied from its pack beside the generated text, under the same ownership rules.
     const copies = new Map<string, string | Buffer>();
-    for (const c of packFileCopies(this.state)) {
-      if (authored.has(c.path) || clean.has(c.path)) continue;
+    const fonts = packFileCopies(this.state, this.generation).filter((c) => !authored.has(c.path) && !clean.has(c.path));
+    // Looked at together, each folder once (see the project's files below).
+    const fontPass = new FolderPass();
+    const fontLooks = fonts.map((c) => safeJoinLooking(this.dir, c.path, fontPass));
+    for (const [i, c] of fonts.entries()) {
+      // Published last time from bytes that hash to what the pack lists for it now (so the pack's validated bytes), and
+      // still those bytes on disk: nothing to write, so the pack is not read, nor its bytes hashed, again. A copy that
+      // is not in place is read from the pack as before.
+      const { abs, st } = fontLooks[i];
+      const was = this.contentHashes.get(abs);
+      if (was && was.hash === packFileInfo(c.pack, c.file)?.sha256 && (await this.seenHash(abs, st)) === was.hash) {
+        copies.set(c.path, was.content);
+        continue;
+      }
       try {
         copies.set(c.path, await readPackFile(c.pack, c.file));
       } catch (e) {
@@ -2193,6 +2209,7 @@ export class ProjectSession extends EventEmitter {
         // Only a copy that already is the pack's validated file is kept: another theme's file of the same name is not.
         // A copy that cannot be read stays claimed, so it is never removed and a missing one is still noticed.
         if (!known(c.path)) continue;
+        // Checked again on its own: the pack was being read meanwhile.
         const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
         const h = disk === null ? null : sha(disk);
         if (h === null) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
@@ -2234,11 +2251,14 @@ export class ProjectSession extends EventEmitter {
       }
     }
     next('session.publish.check');
-    // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
-    const project = [...copies, ...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
-    const seen = await inBatches(project, (f) => this.seenHash(f.abs));
+    // Looked at together, in one pass that checks each folder on the way once: a file unchanged on disk since it was
+    // last read is not read again. A file is checked again, on its own, just before it is replaced or removed.
+    const projectFiles = [...copies, ...clean].filter(([path]) => !authored.has(path));
+    const projectPass = new FolderPass();
+    const project = projectFiles.map(([path, content]) => ({ path, content, ...safeJoinLooking(this.dir, path, projectPass) }));
+    const seen = await inBatches(project, (f) => this.seenHash(f.abs, f.st));
     // Decide first which project files are someone else's now, so no editor variant shadows them in the preview.
-    const plan: Array<{ path: string; content: string | Buffer; abs: string; hash: string; stamp: string | null }> = [];
+    const plan: Array<{ path: string; content: string | Buffer; hash: string; stamp: string | null }> = [];
     const desired: Record<string, string> = {};
     // Generated the same as last time, and still the bytes it was then: nothing to decide.
     const wanted = project.map(({ abs, content }, i) => {
@@ -2272,23 +2292,27 @@ export class ProjectSession extends EventEmitter {
         this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
         continue;
       }
-      plan.push({ path, content, abs, hash: h, stamp });
+      plan.push({ path, content, hash: h, stamp });
     }
     next('session.publish.variants');
     const keptExternal = new Set(this.conflicts.filter((c) => c.kind === 'generated').map((c) => c.path));
     // Dev variants (with editor identity attributes, never part of the portable source) are written before the
     // project files, so the dev server never loads a stale instrumented file. A file kept as edited outside the
     // app has no variant: the preview shows the external version, as the exported site would.
-    const variants = [...dev].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(devRoot, path) }));
+    // Looked at together as the project's files are, each checked again on its own before it is written or removed.
+    const variantFiles = [...dev].filter(([path]) => !authored.has(path));
+    const variantPass = new FolderPass();
+    const variants = variantFiles.map(([path, content]) => ({ path, content, ...safeJoinLooking(devRoot, path, variantPass) }));
     // A variant that cannot be read is written again: only the app writes them.
-    const variantsOnDisk = await inBatches(variants, async (f) => (keptExternal.has(f.path) ? null : ((await this.seenHash(f.abs)) ?? (await this.readHash(f.abs)).hash)));
+    const variantsOnDisk = await inBatches(variants, async (f) => (keptExternal.has(f.path) ? null : ((await this.seenHash(f.abs, f.st)) ?? (await this.readHash(f.abs)).hash)));
     /** Project files whose variant this publication changed (an empty Grid arranged as a Row is named a Row there only). */
     const variantsChanged = new Set<string>();
     for (const [i, { path, content, abs }] of variants.entries()) {
       if (keptExternal.has(path)) {
+        const variant = safeJoin(devRoot, path);
         perf.count('fs.syncCalls');
-        if (existsSync(abs)) {
-          await fs.rm(abs, { force: true });
+        if (existsSync(variant)) {
+          await fs.rm(variant, { force: true });
           this.seenOnDisk.delete(abs);
           // The preview may have cached the variant; touching the real file makes it load that file instead.
           const now = new Date();
@@ -2301,7 +2325,7 @@ export class ProjectSession extends EventEmitter {
       if (variantsOnDisk[i] !== hash) {
         variantsChanged.add(path);
         this.seenOnDisk.delete(abs);
-        await atomicWrite(abs, content, { durable: false });
+        await atomicWrite(safeJoin(devRoot, path), content, { durable: false });
         // Only the app writes its preview variants, so the file now on disk is this one.
         perf.count('files.stats');
         const st = await fs.stat(abs, { bigint: true }).catch(() => null);
@@ -2318,7 +2342,7 @@ export class ProjectSession extends EventEmitter {
     if (initial) {
       // A new project's first publication, into the folder it was made in: nothing of anyone's can be in the way and
       // no preview watches it, so its files are written a few at a time, each as durably, into folders made first.
-      for (const f of plan) this.seenOnDisk.delete(f.abs);
+      for (const f of plan) this.seenOnDisk.delete(safeJoin(this.dir, f.path));
       await ensureParents(this.dir, plan.map((f) => f.path));
       await eachAtMost(WRITES_AT_ONCE, plan, (f) => atomicWrite(safeJoin(this.dir, f.path), f.content));
       for (const f of plan) {
@@ -2326,12 +2350,17 @@ export class ProjectSession extends EventEmitter {
         this.landing?.add(f.path);
       }
     }
-    for (const { path, content, abs, hash: h, stamp } of initial ? [] : plan) {
+    for (const { path, content, hash: h, stamp } of initial ? [] : plan) {
+      // Checked again on its own, just before it is replaced: the pass that found it changed only looked.
+      const abs = safeJoin(this.dir, path);
       this.seenOnDisk.delete(abs);
       let theirs = false;
       // Checked again once the new file is ready, just before it takes the path: a file that changed since it was
       // looked at (saved by an editor meanwhile, say) is decided again on what is there now.
       const replace = async () => {
+        // And once more as the new file is about to take its path: a folder swapped for a link while it was being
+        // written is refused, never written through.
+        safeJoin(this.dir, path);
         if (initial) return true;
         const now = await lookAt(abs);
         if ((now === 'missing' ? null : now === 'failed' ? UNREADABLE : stampOf(now)) === stamp) return true;

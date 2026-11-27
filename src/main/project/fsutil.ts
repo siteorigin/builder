@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { promises as fs, existsSync, lstatSync, realpathSync } from 'node:fs';
+import { promises as fs, existsSync, lstatSync, readdirSync, realpathSync, type BigIntStats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { perf } from '../perf';
@@ -57,16 +57,114 @@ export async function ensureParents(root: string, paths: readonly string[]): Pro
 
 /** Resolve a project-relative path, rejecting traversal and symlink escape. */
 export function safeJoin(root: string, rel: string): string {
+  return contain(root, rel);
+}
+
+/**
+ * What `safeJoinLooking` saw at the path itself: its own stat (never through a link) when it is a regular file reached
+ * with no link on the way, null when nothing is there, and undefined when the check cannot say (a link on the way, a
+ * folder or anything else at the path), so the caller looks for itself.
+ */
+export type Looked = BigIntStats | null | undefined;
+
+/**
+ * `safeJoin`, with what the check saw at the path itself (`Looked`): the check looks at every part of the path on its
+ * way down, the file included, so a caller that only needs to know whether a file is still as it was need not look at
+ * it again. Compared only with a stat taken by path (`fs.stat`), which for a regular file says the same.
+ *
+ * `pass` is for checking many paths together in one synchronous pass (FolderPass).
+ */
+export function safeJoinLooking(root: string, rel: string, pass?: FolderPass): { abs: string; st: Looked } {
+  const leaf: { st: Looked } = { st: undefined };
+  const abs = contain(root, rel, leaf, pass);
+  return { abs, st: leaf.st };
+}
+
+/** How many folders in one folder a pass looks at one by one before it reads that folder whole instead. */
+const READ_FOLDER_AT = 8;
+
+/**
+ * The folders on the way to many paths below one root, checked together in one synchronous pass (safeJoinLooking): a
+ * folder found to be a folder of its own (no link) on the way to one of them is not looked at again on the way to the
+ * next, and once the pass has looked at several folders in one folder, that folder is read whole, its entries saying
+ * which of the rest are folders of their own instead of each being looked at. Anything its entries do not show as a
+ * folder (a link, a file, a name written another way) is looked at as ever. Made for one pass and dropped with it: a
+ * path about to be written or removed is checked again first, on its own (safeJoin).
+ */
+export class FolderPass {
+  /** Folders found to be folders of their own. */
+  private own = new Set<string>();
+  /** Per folder: how many folders in it were looked at one by one, or the names of its entries that are folders of their own once it has been read whole. */
+  private inside = new Map<string, number | Set<string>>();
+
+  /** Whether `at`, the entry `name` of the folder `dir` (one found to be its own already), is known to be a folder of its own. */
+  isOwn(dir: string, name: string, at: string): boolean {
+    if (this.own.has(at)) return true;
+    let names = this.inside.get(dir);
+    if (names === undefined || typeof names === 'number') {
+      if ((names ?? 0) < READ_FOLDER_AT) return false;
+      names = new Set();
+      perf.count('fs.syncCalls');
+      try {
+        for (const e of readdirSync(dir, { withFileTypes: true })) if (e.isDirectory()) names.add(e.name);
+      } catch {
+        // A folder that cannot be read says nothing: each entry is looked at on its own.
+      }
+      this.inside.set(dir, names);
+    }
+    if (!names.has(name)) return false;
+    this.own.add(at);
+    return true;
+  }
+
+  /** `at`, an entry of `dir`, was looked at, and is a folder of its own. */
+  found(dir: string, at: string): void {
+    this.own.add(at);
+    const n = this.inside.get(dir);
+    if (n === undefined || typeof n === 'number') this.inside.set(dir, (n ?? 0) + 1);
+  }
+}
+
+/** Roots already found to be normalized absolute folders other than a disk's top: a part is joined to one by a separator. */
+const plainRoots = new Map<string, boolean>();
+function isPlainRoot(root: string): boolean {
+  let plain = plainRoots.get(root);
+  if (plain === undefined) {
+    plain = isAbsolute(root) && resolve(root) === root && !root.endsWith(sep);
+    if (plainRoots.size < 64) plainRoots.set(root, plain);
+  }
+  return plain;
+}
+
+/**
+ * `rel` below `root` as resolve() would give it, worked out without it, when `rel` is a plain relative path (parts
+ * joined by `/`, none of them empty, `.` or `..`; on Windows, no `\` or `:` either) and `root` is plain too: such a
+ * path's parts are the path itself, so resolving it changes nothing. Null for anything else, which is resolved.
+ */
+function plainBelow(root: string, rel: string): string | null {
+  if (!rel || !isPlainRoot(root)) return null;
+  if (sep === '\\' && (rel.includes('\\') || rel.includes(':'))) return null;
+  for (let i = 0, j; i <= rel.length; i = j + 1) {
+    j = rel.indexOf('/', i);
+    if (j < 0) j = rel.length;
+    if (j === i || (rel[i] === '.' && (j === i + 1 || (j === i + 2 && rel[i + 1] === '.')))) return null;
+  }
+  return root + sep + (sep === '/' ? rel : rel.replaceAll('/', sep));
+}
+
+function contain(root: string, rel: string, leaf?: { st: Looked }, pass?: FolderPass): string {
   if (rel.includes('\0')) throw new Error('Invalid path.');
-  const abs = resolve(root, rel);
-  const r = relative(root, abs);
+  const plain = plainBelow(root, rel);
+  const abs = plain ?? resolve(root, rel);
+  const r = plain ? plain.slice(root.length + 1) : relative(root, abs);
   if (!r || r === '..' || r.startsWith(`..${sep}`) || isAbsolute(r)) throw new Error(`Path escapes the project: ${rel}`);
   // With no link on the way down from the project's folder, the path's real location is inside the project's, wherever
   // that is: nothing more to check. Looking costs one lstat a part, where the real paths below cost one for every
   // folder from the top of the disk, and a project's files are looked up by the thousand as it opens.
   // Only for the very path returned: on Windows, relative() matches folder names whatever their case, so `r` could
   // name a sibling folder whose name differs from the project's by case alone.
-  if (join(root, r) === abs && noLinkBelow(root, r)) return abs;
+  if ((plain || join(root, r) === abs) && noLinkBelow(root, r, leaf, pass)) return abs;
+  if (leaf) leaf.st = undefined;
   // Walk up to the nearest existing ancestor and make sure its real path is inside the project.
   let probe = abs;
   for (;;) {
@@ -85,19 +183,31 @@ export function safeJoin(root: string, rel: string): string {
  * Whether each part of `rel` (relative to `root`, normalized) that is there is a folder or file of its own, not a link
  * or a junction: looked at from the top down, without following any. Once one part is not there, the parts below it
  * cannot be either. Anything else (a link, a part that cannot be looked at, a project folder that is not there) is
- * left to the full check of real paths, which then decides as it always has.
+ * left to the full check of real paths, which then decides as it always has. With `leaf`, says what is at the path
+ * itself (`Looked`), from the very look that found it no link. A folder `pass` knows to be one of its own is not
+ * looked at again; each one found is told to it.
  */
-function noLinkBelow(root: string, rel: string): boolean {
+function noLinkBelow(root: string, rel: string, leaf?: { st: Looked }, pass?: FolderPass): boolean {
   let at = root;
   const parts = rel.split(sep);
+  // Below a plain root, each part (normalized already, as `rel` is) is joined to the path so far by a separator.
+  const plain = isPlainRoot(root);
   for (let i = 0; i < parts.length; i++) {
-    at = join(at, parts[i]);
+    const dir = at;
+    at = plain ? at + sep + parts[i] : join(at, parts[i]);
+    const last = i === parts.length - 1;
+    if (!last && pass?.isOwn(dir, parts[i], at)) continue;
     perf.count('fs.syncCalls');
     try {
-      if (lstatSync(at).isSymbolicLink()) return false;
+      const st = last && leaf ? lstatSync(at, { bigint: true }) : lstatSync(at);
+      if (st.isSymbolicLink()) return false;
+      if (last && leaf) leaf.st = st.isFile() ? (st as BigIntStats) : undefined;
+      else if (!last && st.isDirectory()) pass?.found(dir, at);
     } catch (e) {
       // Below a part that is there (the project's own folder, past its first part): nothing further is.
-      return i > 0 && (e as NodeJS.ErrnoException).code === 'ENOENT';
+      const gone = i > 0 && (e as NodeJS.ErrnoException).code === 'ENOENT';
+      if (gone && leaf) leaf.st = null;
+      return gone;
     }
   }
   return true;
