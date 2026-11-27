@@ -241,8 +241,8 @@ and see that the preview appears. This covers both kinds of host, the WebSockets
 
 ### Rotating the signing key
 
-Run the command in step 3 again. The relay holds one key, so there is no period in which the old and new keys both
-work. **Rotate when no sessions are running if you can.**
+Run the command in step 3 again. Each room checks cookies against one key at a time, so no room accepts both the old
+and the new. **Rotate when no sessions are running if you can.**
 
 `wrangler secret put` deploys a new version of the Worker at once, and running rooms then change over as on any other
 deployment. By default Cloudflare [defers a Durable Object's code
@@ -255,7 +255,8 @@ while. What happens next differs from room to room:
   carry on, and an unused, unexpired ticket is redeemed with the new key. An admitted guest's old cookie stops
   verifying, so its next preview request gets `401`. In a browser, **Try again**, where the viewer shows it, takes the
   guest's place back and gets a new cookie. If part of the preview just stops loading and there is no button, reload the
-  invite page in the same tab. A guest in Builder leaves the session, joins again and is admitted again.
+  invite page in the same tab. A guest in Builder leaves the session, joins again and is admitted again; if the room is locked, the host must
+  unlock it first.
 - **The room is reset before it hibernates.** Its sockets are disconnected, and the room, which lived only in memory and
   on those sockets, is gone for good. The host must stop the session, start a new one and send the new link, and guests
   must be admitted again. Left alone, the host's Builder keeps trying to reconnect for up to 15 minutes, because it
@@ -268,7 +269,10 @@ Any `wrangler deploy` can reset rooms in the same way, so deploy between session
 someone holding the old one who also knows an admitted guest's current grant (the room and guest IDs, role, end of
 access and grant version) can sign a cookie and fetch the preview as that guest while the host is connected, even if the
 guest's own connection has dropped. To ask Cloudflare to apply the new key without the deferral, upload it as a version
-and deploy that version in immediate mode, in place of `secret put`:
+and deploy that version in immediate mode, in place of `secret put`. The new version is built on the latest *uploaded*
+one, so deploying it also ships any code uploaded but not serving (after a rollback, say). First check with
+`wrangler deployments status` and `wrangler versions list` (same `--config` and `--env` flags) that the latest upload
+is the version serving; if it is not, deploy the code you want live before these:
 
 ```sh
 openssl rand -base64 32 | npx wrangler versions secret put SESSION_SIGNING_KEY --config relay/wrangler.toml --env production
