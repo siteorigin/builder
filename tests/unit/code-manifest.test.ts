@@ -90,7 +90,7 @@ describe('checking a code component against its manifest', () => {
       cta: { type: 'object', label: 'Button', fields: { label: str('Label', 'Go'), note: str('Note', 'Soon') }, default: { label: 'Start' } },
       rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { name: str('Name', 'Untitled') }, default: [{ id: 'r1', name: 'One' }, { id: 'r2' }] },
       links: { type: 'list', label: 'Links', itemLabel: 'Link', fields: { to: { type: 'link', label: 'Link', default: { kind: 'external', url: 'https://example.com' } } }, default: [{ id: 'l1' }] }
-    } as Record<string, PropSchema>);
+    } as unknown as Record<string, PropSchema>);
     const take = (defaults: string) => `<script>\n\tlet { ${defaults} } = $props();\n</script>\n<p>{cta}{rows}{links}</p>\n`;
     expect(await messages(take(`cta = { label: 'Start', note: 'Soon' }, rows = [{ id: 'r1', name: 'One' }, { id: 'r2', name: 'Untitled' }], links = []`), manifest)).toEqual([]);
     const off = await messages(take(`cta = { label: 'Wrong', note: 'Soon' }, rows = [], links`), manifest);
@@ -168,12 +168,12 @@ describe('saving a code component holds its code to its manifest', () => {
       expect(user.ok).toBe(true);
       const defId = Object.values(session.state.components).find((d) => d.name === 'Titled')!.id;
       // A manifest-only change by the assistant to unchanged code is checked too: a property the code never takes.
-      const added = await session.apply({ operations: [{ type: 'component.setPropSchema', definitionId: defId, prop: 'lead', schema: str('Lead') }] }, { label: 'Edit', source: 'ai', codeAllowed: true });
+      const added = await session.apply({ operations: [{ type: 'component.setPropSchema', definitionId: defId, prop: 'lead', schema: { type: 'string', label: 'Lead', default: '' } }] }, { label: 'Edit', source: 'ai', codeAllowed: true });
       expect(added.ok).toBe(false);
       expect(added.error?.message).toContain('The “Lead” property arrives in lead, which the code never takes');
       expect(Object.keys(session.state.components[defId].properties)).toEqual(['title']);
       // Declaring what the code takes is saved.
-      const declared = await session.apply({ operations: [{ type: 'component.setPropSchema', definitionId: defId, prop: 'subtitle', schema: str('Subtitle') }] }, { label: 'Edit', source: 'ai', codeAllowed: true });
+      const declared = await session.apply({ operations: [{ type: 'component.setPropSchema', definitionId: defId, prop: 'subtitle', schema: { type: 'string', label: 'Subtitle', default: '' } }] }, { label: 'Edit', source: 'ai', codeAllowed: true });
       expect(declared.ok).toBe(true);
     } finally {
       await session.close();
