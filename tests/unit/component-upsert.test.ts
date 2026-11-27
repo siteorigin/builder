@@ -483,11 +483,11 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(() => applyOperations(st, [pricing({ definitionId: 'proj.nothing-abcde' })])).toThrow(/does not exist/);
     const code = applyOperations(st, [{ type: 'component.createCode', name: 'Code', source: '<p>Hi</p>' }]);
     expect(() => applyOperations(code.state, [pricing({ definitionId: code.results[0].definitionId as string })])).toThrow(/is a code component/);
-    // A design that places another component holds what the description cannot say yet.
+    // A design that places another component can be rebuilt whole (#1146).
     const made = applyOperations(st, [{ type: 'component.create', name: 'Holder' }]);
     const { definitionId, rootNodeId } = made.results[0] as { definitionId: string; rootNodeId: string };
     const nested = applyOperations(made.state, [{ type: 'node.insert', owner: { kind: 'component', id: definitionId }, parentId: rootNodeId, componentId: 'content.text' }]).state;
-    expect(() => applyOperations(nested, [pricing({ definitionId })])).toThrow(/places other components/);
+    expect(applyOperations(nested, [pricing({ definitionId })]).state.components[definitionId].tree!.nodes.root.kind).toBe('element');
     expect(() => applyOperations(st, [pricing({ definitionId, newDefinitionId: projectDefinitionId('X') })])).toThrow(/not both/);
     // A design whose buttons change its UI state, or whose elements read it.
     const own = applyOperations(st, [pricing()]);
@@ -756,5 +756,56 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(JSON.stringify((n.body as TextNode).text)).toMatch(/bold/);
     expect(errors(after.state)).toEqual([]);
     compiles(after.state, def.id);
+  });
+});
+
+describe('component.upsert: components placed in a design (#1146)', () => {
+  /** A design of one root holding the placements given, each by node ID and definition. */
+  const holder = (name: string, placed: Record<string, string>, extra: Partial<Upsert> = {}): Upsert => ({
+    type: 'component.upsert',
+    name,
+    properties: {},
+    nodes: [{ kind: 'element', id: 'root', children: Object.keys(placed) }, ...Object.entries(placed).map(([id, definitionId]) => ({ kind: 'instance' as const, id, definitionId }))],
+    ...extra
+  });
+  const made = (st: ProjectState, op: Upsert) => {
+    const r = applyOperations(st, [op]);
+    return { state: r.state, id: r.results[0].definitionId as string };
+  };
+
+  it('places installed components, theme and project alike, with their values and options checked as node.insert checks them', () => {
+    const blank = createStarterState('blank', 'Expo', false);
+    // A theme component installed by placing it on a page.
+    const st = applyOperations(blank, [{ type: 'node.insert', owner: { kind: 'page', id: blank.site.homePageId }, parentId: null, componentId: 'content.text' }]).state;
+    const theme = Object.values(st.components).find((d) => d.componentId === 'content.text')!;
+    const [prop] = Object.entries(theme.properties).find(([, p]) => p.type === 'string')!;
+    const a = made(st, holder('A', { t: theme.id }, { nodes: [{ kind: 'element', id: 'root', children: ['t'] }, { kind: 'instance', id: 't', definitionId: theme.id, props: { [prop]: 'Hello' } }] }));
+    const node = a.state.components[a.id].tree!.nodes.t as InstanceNode;
+    expect(node).toMatchObject({ kind: 'instance', definitionId: theme.id, props: { [prop]: 'Hello' } });
+    // A placement as the root of the design, as a component made from a placement has.
+    const b = made(a.state, { type: 'component.upsert', name: 'B', properties: {}, nodes: [{ kind: 'instance', id: 'root', definitionId: a.id }] });
+    expect(b.state.components[b.id].tree!.rootIds).toEqual(['root']);
+    expect(validateState(b.state).filter((d) => d.severity === 'error')).toEqual([]);
+    expect(() => applyOperations(a.state, [holder('C', { x: a.id }, { nodes: [{ kind: 'element', id: 'root', children: ['x'] }, { kind: 'instance', id: 'x', definitionId: a.id, props: { nope: 1 } }] })])).toThrow(/has no property "nope"/);
+    expect(() => applyOperations(a.state, [holder('C', { x: theme.id }, { nodes: [{ kind: 'element', id: 'root', children: ['x'] }, { kind: 'instance', id: 'x', definitionId: theme.id, variants: { nope: 'x' } }] })])).toThrow(/no variant axis "nope"/);
+    expect(() => applyOperations(a.state, [holder('C', { x: 'proj.nothing-abcde' })])).toThrow(/not an installed component/);
+    const shell = Object.values(st.components).find((d) => d.category === 'shell')!;
+    expect(() => applyOperations(a.state, [holder('C', { x: shell.id })])).toThrow(/header and footer/);
+    expect(() => applyOperations(a.state, [holder('C', { x: a.id }, { nodes: [{ kind: 'element', id: 'root', children: ['x'] }, { kind: 'instance', id: 'x', definitionId: a.id, anchor: 'here' }] })])).toThrow(/anchors can be set on/);
+  });
+
+  it('refuses a design that would place itself, directly, through one component or through two, changing nothing', () => {
+    const st = createStarterState('blank', 'Expo', false);
+    const leaf = made(st, holder('Leaf', {}, { nodes: [{ kind: 'element', id: 'root' }] }));
+    const mid = made(leaf.state, holder('Mid', { leaf: leaf.id }));
+    const top = made(mid.state, holder('Top', { mid: mid.id }));
+    const before = JSON.stringify(top.state.components);
+    expect(() => applyOperations(top.state, [holder('Leaf', { self: leaf.id }, { definitionId: leaf.id })])).toThrow(/cannot contain itself/);
+    expect(() => applyOperations(top.state, [holder('Leaf', { up: mid.id }, { definitionId: leaf.id })])).toThrow(/cannot contain itself/);
+    expect(() => applyOperations(top.state, [holder('Leaf', { up: top.id }, { definitionId: leaf.id })])).toThrow(/already places this component/);
+    // A new component's ID, named by the batch, placed in its own design.
+    const id = projectDefinitionId('New');
+    expect(() => applyOperations(top.state, [holder('New', { self: id }, { newDefinitionId: id })])).toThrow(/cannot contain itself/);
+    expect(JSON.stringify(top.state.components)).toBe(before);
   });
 });

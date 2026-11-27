@@ -10,7 +10,7 @@ import { isBackgroundImageValue } from '@shared/background-image';
 import type { Binding, ComponentDefinition, DividerNode, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListProp, NodeTree, ObjectProp, OverlayMode, PartDef, ProjectState, PropSchema, SlotDef, StateAction, StyleValue, TextNode, UiStateSchema, VariantAxis } from '@shared/types';
 import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isCollectionLoop, isAppearPreset, isBinding, isStateRef, parseStyleScopeKey } from '@shared/types';
 import type { Op } from '@shared/ops';
-import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
+import { STYLE_PROP_MAP, partStyleControls, styleSetFor } from '@shared/styles';
 import { slugify } from '@shared/routes';
 import { isArticleDate } from '@shared/articles';
 import { placementItems, repeatedPartList } from '@shared/item-styles';
@@ -20,8 +20,8 @@ import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-id
 import { isCarouselTrack } from '@generator/card-links';
 import { ICONS } from '@shared/icons';
 import { EngineError, RESERVED_ANCHORS, enclosingRepeatProp, fail, getTree, instancesOf } from './tree';
-import { clone } from './install';
-import { normalizeImage, normalizeLink, normalizeRichText } from './values';
+import { clone, makeInstance } from './install';
+import { normalizeImage, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { tagKindProblem } from './semantic-tags';
 import { slotDeclProblem } from './slots';
 import {
@@ -51,9 +51,13 @@ type OpResult = Record<string, unknown>;
 type UpsertOp = Op<'component.upsert'>;
 type DesignNode = UpsertOp['nodes'][number];
 
-/** What the operation borrows from apply.ts: node.setStyle, which checks and settles one style rule, a variant's too. */
+/**
+ * What the operation borrows from apply.ts: node.setStyle, which checks and settles one style rule, a variant's too,
+ * and whether one component renders another somewhere inside it (so placing it would put a component inside itself).
+ */
 export interface UpsertHelpers {
   setStyle: (state: ProjectState, op: Op<'node.setStyle'>) => void;
+  dependsOn: (state: ProjectState, defId: string, targetId: string) => boolean;
 }
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -72,10 +76,10 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   const name = op.name.trim();
   if (!name) fail('A component needs a name.');
   // Everything is checked as the finished component first, so nothing changes until all of it holds.
-  const tree = designTree(state, op.nodes);
+  const tree = designTree(state, op.nodes, { ownerId: op.definitionId ?? op.newDefinitionId, was, dependsOn: helpers.dependsOn });
   const rootId = tree.rootIds[0];
   const properties = normalizeProperties(op.properties, state);
-  const parts = designParts(op, tree, was);
+  const parts = designParts(state, op, tree, was);
   const slots = designSlots(op, tree);
   const variantAxes = designAxes(op, tree, was);
   const candidate: ComponentDefinition = { ...(was ?? newDefinition(state, op, name)), properties, parts, tree, slots, variantAxes };
@@ -192,7 +196,6 @@ function rebuildTarget(state: ProjectState, id: string): ComponentDefinition {
   if (def.kind !== 'managed' || !def.tree) fail(`"${def.name}" is a code component. Change its code with component.updateSource.`);
   if (def.category === 'shell') fail(`"${def.name}" is the site's shared header or footer, which is changed one element at a time.`);
   // What the description cannot say yet would be lost without a word: refused until it can.
-  if (Object.values(def.tree.nodes).some((n) => n.kind === 'instance')) fail(`"${def.name}" places other components in its design, which component.upsert cannot describe yet. Change it with the node operations instead.`);
   if (Object.values(def.tree.nodes).some((n) => isCollectionLoop(n))) fail(`"${def.name}" shows a collection's entries in its design, which component.upsert cannot describe yet. Change it with the node operations instead.`);
   return def;
 }
@@ -282,8 +285,15 @@ function metadata(op: UpsertOp, name: string): Partial<ComponentDefinition> {
 // The design
 // ---------------------------------------------------------------------------
 
+/** Who the design belongs to, for the components it places: the component (when its ID is known yet), and what it was. */
+interface DesignContext {
+  ownerId: string | undefined;
+  was: ComponentDefinition | undefined;
+  dependsOn: UpsertHelpers['dependsOn'];
+}
+
 /** The described nodes as one tree: each in one place, all inside one root that shows an element of its own. */
-function designTree(state: ProjectState, specs: DesignNode[]): NodeTree {
+function designTree(state: ProjectState, specs: DesignNode[], ctx: DesignContext): NodeTree {
   const byId = new Map<string, DesignNode>();
   for (const s of specs) {
     if (isProtoKey(s.id)) fail(`"${s.id}" cannot be a node ID.`);
@@ -324,7 +334,7 @@ function designTree(state: ProjectState, specs: DesignNode[]): NodeTree {
   const anchors = new Set<string>();
   const nodes: Record<string, GraphNode> = {};
   for (const s of specs) {
-    const n = designNode(state, s);
+    const n = designNode(state, s, ctx);
     if (n.anchor) {
       if (anchors.has(n.anchor)) fail(`Two nodes use the anchor "${n.anchor}".`);
       anchors.add(n.anchor);
@@ -335,7 +345,7 @@ function designTree(state: ProjectState, specs: DesignNode[]): NodeTree {
 }
 
 /** One described node as the design stores it: literal values checked and settled as the single-step edits settle them. */
-function designNode(state: ProjectState, s: DesignNode): GraphNode {
+function designNode(state: ProjectState, s: DesignNode, ctx: DesignContext): GraphNode {
   const label = s.name?.trim() || s.id;
   const refuse = (message: string): never => fail(`${quoted(label)}: ${message}`);
   const base: Partial<GraphNode> = { id: s.id };
@@ -344,7 +354,7 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
   if (s.unless !== undefined) base.unless = clone(s.unless);
   if (s.anchor !== undefined) {
     const a = s.anchor.replace(/^#/, '');
-    if (s.kind === 'repeat' || s.kind === 'slot') refuse('anchors can be set on elements, text, images, buttons, icons and dividers.');
+    if (s.kind === 'repeat' || s.kind === 'slot' || s.kind === 'instance') refuse('anchors can be set on elements, text, images, buttons, icons and dividers.');
     if (a && !ANCHOR_RE.test(a)) refuse('anchors start with a letter and use letters, numbers, - and _.');
     if (RESERVED_ANCHORS.has(a)) refuse(`"${a}" is used by the site itself. Choose another anchor.`);
     if (a) base.anchor = a;
@@ -459,7 +469,50 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
       } as GraphNode;
     case 'slot':
       return { ...base, kind: 'slot', slot: s.slot, ...(s.children?.length ? { children: [...s.children] } : {}) } as GraphNode;
+    case 'instance':
+      return placedComponent(state, s, base, ctx, bound, refuse);
   }
+}
+
+/**
+ * A component the design places, as node.insert places one: an installed component other than the shared header or
+ * footer, which never renders the design it is placed in. Its values are checked against its properties and its
+ * options against its axes; bindings to the design's own properties are checked with the finished component. A rebuild
+ * that names a placement again, of the same component, keeps what the description cannot say about it (its parts'
+ * styles, its single-item styles, its entrance, its list connections) and the values it leaves out.
+ */
+function placedComponent(state: ProjectState, s: Extract<DesignNode, { kind: 'instance' }>, base: Partial<GraphNode>, ctx: DesignContext, bound: (v: unknown) => v is Binding, refuse: (message: string) => never): InstanceNode {
+  const childId = s.definitionId;
+  if (ctx.ownerId !== undefined && (childId === ctx.ownerId || (Object.hasOwn(state.components, childId) && ctx.dependsOn(state, childId, ctx.ownerId))))
+    refuse(`a component cannot contain itself, and "${own(state.components, childId)?.name ?? childId}" ${childId === ctx.ownerId ? 'is this component' : 'already places this component inside it'}.`);
+  const def = own(state.components, childId) ?? refuse(`"${childId}" is not an installed component. Use a definitionId from read_project or read_component.`);
+  if (def.category === 'shell') refuse('the shared header and footer are on every page already, so they cannot be placed in a component.');
+  const prev = own(ctx.was?.tree?.nodes, s.id);
+  const kept = prev?.kind === 'instance' && prev.definitionId === childId ? clone(prev) : undefined;
+  if (kept) {
+    // Content placed in its slots lives in the design around it, which the description replaces whole.
+    const filled = Object.entries(kept.slots ?? {}).find(([, ids]) => Array.isArray(ids) && ids.length);
+    if (filled) refuse(`it holds content in the "${filled[0]}" slot of ${quoted(def.name)}, which component.upsert cannot describe yet. Change the design with the node operations instead.`);
+    // Its own styles are the description's, as every node's are; its parts' styles are what it cannot say.
+    if (kept.overrides) {
+      delete kept.overrides.root;
+      if (!Object.keys(kept.overrides).length) delete kept.overrides;
+    }
+    for (const k of ['name', 'when', 'unless'] as const) delete kept[k];
+  }
+  const node: InstanceNode = { ...(kept ?? makeInstance(def)), ...base, kind: 'instance', definitionId: childId } as InstanceNode;
+  for (const [prop, v] of Object.entries(s.props ?? {})) {
+    if (isProtoKey(prop)) refuse(`"${prop}" cannot be a property name.`);
+    const schema = own(def.properties, prop) ?? refuse(`${quoted(def.name)} has no property "${prop}". Properties: ${Object.keys(def.properties).join(', ') || 'none'}.`);
+    node.props[prop] = bound(v) ? clone(v) : normalizeProp(schema, v, state, `${def.name} → ${schema.label}`, own(kept?.props, prop));
+  }
+  for (const [axis, option] of Object.entries(s.variants ?? {})) {
+    if (isProtoKey(axis)) refuse(`"${axis}" cannot be a variant axis.`);
+    const found = findVariant(def, option, axis);
+    if ('error' in found) refuse(found.error);
+    (node.variants ??= {})[found.axis] = found.id;
+  }
+  return node;
 }
 
 /** A literal tag of the node's kind. */
@@ -470,7 +523,7 @@ function tagged(node: GraphNode, tag: unknown, refuse: (message: string) => neve
 }
 
 /** The parts placements can style: `root` is always the root node, and each other part one element of its own. */
-function designParts(op: UpsertOp, tree: NodeTree, was: ComponentDefinition | undefined): Record<string, PartDef> {
+function designParts(state: ProjectState, op: UpsertOp, tree: NodeTree, was: ComponentDefinition | undefined): Record<string, PartDef> {
   const rootId = tree.rootIds[0];
   const given = Object.entries(op.parts ?? {});
   const root = given.find(([pid]) => pid === 'root')?.[1] ?? { nodeId: rootId, label: own(was?.parts, 'root')?.label ?? 'Root' };
@@ -494,7 +547,9 @@ function designParts(op: UpsertOp, tree: NodeTree, was: ComponentDefinition | un
     } else {
       // The controls it offered stay while it is the same element; another element offers what its kind takes.
       const same = prev && prev.nodeId === p.nodeId && own(was?.tree?.nodes, prev.nodeId)?.kind === node.kind;
-      controls = same ? prev.styleControls : styleSetFor(node);
+      // A placed component offers what its own root offers, as a component made from a placement does.
+      const placed = node.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+      controls = same ? prev.styleControls : placed ? partStyleControls(placed, 'root') : styleSetFor(node);
     }
     out[pid] = { nodeId: p.nodeId, label, ...(controls ? { styleControls: controls } : {}) };
   }
