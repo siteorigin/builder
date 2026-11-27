@@ -29,13 +29,13 @@ describe('the guest cap', () => {
     await wait(200);
 
     const ninth = await relay.socket(`/s/${room.roomId}/ws`);
-    ninth.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Ninth' });
+    ninth.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Ninth' });
     expect((await ninth.next('protocol:error')).code).toBe('ROOM_FULL');
     expect((await ninth.closed()).code).toBe(LIVE_CLOSE_CODES.REFUSED);
 
     // The guest that dropped can still take its place back in a full room.
     const back = await relay.socket(`/s/${room.roomId}/ws`);
-    back.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Guest 2', resumeToken: guests[1].resumeToken });
+    back.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Guest 2', resumeToken: guests[1].resumeToken });
     expect(await back.next('guest:status')).toMatchObject({ status: 'pending', guestId: guests[1].guestId });
 
     room.host.send('host-to-relay', { type: 'guest:kick', guestId: guests[7].guestId });
@@ -97,7 +97,7 @@ describe('frame sizes', () => {
 
     // A join request padded past the limit is refused before it is read.
     const padded = await relay.socket(`/s/${room.roomId}/ws`);
-    padded.sendRaw(`${JSON.stringify({ type: 'guest:join', version: 1, displayName: 'Pad' })}${' '.repeat(frameLimit('guest-to-relay'))}`);
+    padded.sendRaw(`${JSON.stringify({ type: 'guest:join', version: 2, displayName: 'Pad' })}${' '.repeat(frameLimit('guest-to-relay'))}`);
     expect((await padded.next('protocol:error')).code).toBe('TOO_LARGE');
     expect((await padded.closed()).code).toBe(LIVE_CLOSE_CODES.TOO_LARGE);
     room.host.close();

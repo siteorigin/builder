@@ -20,8 +20,8 @@ const target = { owner: { kind: 'page' as const, id: 'pg_home' }, instancePath: 
 const spotlight = { previewPath: '/about/?ref=nav', target, x: 0.25, y: 1 };
 const VALID: { [D in Direction]: FrameOf<D>[] } = {
   'host-to-relay': [
-    { type: 'room:create', version: 1, publicKey, duration: '2h', projectName: 'Acme Bakery' },
-    { type: 'host:reconnect', version: 1, roomId },
+    { type: 'room:create', version: 2, publicKey, duration: '2h', projectName: 'Acme Bakery' },
+    { type: 'host:reconnect', version: 2, roomId },
     { type: 'host:proof', roomId, nonce, signature },
     { type: 'guest:admit', guestId, role: 'viewer', guestExpiresAt: null },
     { type: 'guest:admit', guestId, role: 'collaborator', guestExpiresAt: T + HOUR },
@@ -49,7 +49,7 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'activity:edit', guestId, target: null }
   ],
   'relay-to-host': [
-    { type: 'room:ready', version: 1, roomId, startedAt: T, expiresAt: T + 2 * HOUR, locked: false, now: T },
+    { type: 'room:ready', version: 2, roomId, startedAt: T, expiresAt: T + 2 * HOUR, locked: false, now: T },
     { type: 'host:challenge', roomId, nonce },
     { type: 'room:state', startedAt: T, expiresAt: T + 4 * HOUR, locked: true, now: T + HOUR },
     {
@@ -69,8 +69,8 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'protocol:error', code: 'INVALID_FRAME', message: 'Bad frame.', requestId }
   ],
   'guest-to-relay': [
-    { type: 'guest:join', version: 1, displayName: 'Sam Lee' },
-    { type: 'guest:join', version: 1, displayName: 'Sam Lee', resumeToken: 'rsm_0123456789abcdefghijk' },
+    { type: 'guest:join', version: 2, displayName: 'Sam Lee' },
+    { type: 'guest:join', version: 2, displayName: 'Sam Lee', resumeToken: 'rsm_0123456789abcdefghijk' },
     { type: 'guest:leave' },
     { type: 'rpc:request', requestId, method: 'project.snapshot', args: [] },
     { type: 'presence:update', presence },
@@ -171,7 +171,7 @@ describe('refused frames', () => {
 
   it('name a type this direction carries', () => {
     expect(refused('guest-to-relay', { type: 'guest:explode' })).toMatchObject({ code: 'UNKNOWN_TYPE', path: 'type' });
-    expect(refused('guest-to-relay', { version: 1, displayName: 'Sam' })).toMatchObject({ code: 'UNKNOWN_TYPE' });
+    expect(refused('guest-to-relay', { version: 2, displayName: 'Sam' })).toMatchObject({ code: 'UNKNOWN_TYPE' });
     expect(refused('guest-to-relay', { type: 'toString' })).toMatchObject({ code: 'UNKNOWN_TYPE' });
     // Host commands from a guest, and relay frames sent the wrong way, are refused by type.
     expect(refused('guest-to-relay', { type: 'guest:admit', guestId, role: 'collaborator', guestExpiresAt: null })).toMatchObject({ code: 'UNKNOWN_TYPE' });
@@ -183,8 +183,8 @@ describe('refused frames', () => {
   it('carry exactly the fields of their type', () => {
     // A guest claiming another guest's identity, or a host command hidden in a guest frame.
     expect(refused('guest-to-relay', { type: 'rpc:request', guestId: 'g_other', requestId, method: 'project.apply', args: [] })).toMatchObject({ code: 'INVALID' });
-    expect(refused('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Sam', role: 'collaborator' })).toMatchObject({ code: 'INVALID' });
-    expect(refused('host-to-relay', { type: 'room:create', version: 1, duration: '2h', projectName: 'Acme' })).toMatchObject({ code: 'INVALID', path: 'publicKey' });
+    expect(refused('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Sam', role: 'collaborator' })).toMatchObject({ code: 'INVALID' });
+    expect(refused('host-to-relay', { type: 'room:create', version: 2, duration: '2h', projectName: 'Acme' })).toMatchObject({ code: 'INVALID', path: 'publicKey' });
     // An admitted status missing only its session's end.
     expect(refused('relay-to-guest', { type: 'guest:status', status: 'admitted', guestId, role: 'viewer', guestExpiresAt: null, projectName: 'Acme', now: T })).toMatchObject({ code: 'INVALID', path: 'sessionExpiresAt' });
     expect(refused('relay-to-guest', { type: 'guest:status', status: 'pending', guestId })).toMatchObject({ code: 'INVALID', path: 'resumeToken' });
@@ -199,7 +199,7 @@ describe('refused frames', () => {
     const admitted = many.map((p, i) => ({ ...p, status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: i % 8, connected: true }));
     expect(refused('relay-to-guest', { type: 'room:roster', participants: admitted })).toMatchObject({ code: 'INVALID', path: 'participants' });
     expect(parseFrame('relay-to-guest', json({ type: 'room:roster', participants: admitted.slice(0, 8) }))).toMatchObject({ ok: true });
-    expect(refused('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Sam', resumeToken: 'short' })).toMatchObject({ code: 'INVALID', path: 'resumeToken' });
+    expect(refused('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Sam', resumeToken: 'short' })).toMatchObject({ code: 'INVALID', path: 'resumeToken' });
   });
 
   it('give each admitted guest one palette place of eight, and say whether it is connected (#768)', () => {
@@ -237,7 +237,7 @@ describe('refused frames', () => {
 
   it('take a usable Ed25519 key only', () => {
     const identity = toBase64Url(new Uint8Array(32).map((_, i) => (i === 0 ? 1 : 0)));
-    expect(refused('host-to-relay', { type: 'room:create', version: 1, publicKey: identity, duration: '2h', projectName: 'Acme' })).toMatchObject({ path: 'publicKey' });
+    expect(refused('host-to-relay', { type: 'room:create', version: 2, publicKey: identity, duration: '2h', projectName: 'Acme' })).toMatchObject({ path: 'publicKey' });
   });
 
   it('carry any method a guest names, but pass on and answer only those a guest may call', () => {
@@ -253,33 +253,33 @@ describe('refused frames', () => {
   });
 
   it('use the current protocol version, valid IDs and real times', () => {
-    expect(refused('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Sam' })).toMatchObject({ code: 'INVALID', path: 'version' });
-    expect(refused('host-to-relay', { type: 'host:reconnect', version: 1, roomId: roomId.toUpperCase() })).toMatchObject({ path: 'roomId' });
+    expect(refused('guest-to-relay', { type: 'guest:join', version: 3, displayName: 'Sam' })).toMatchObject({ code: 'INVALID', path: 'version' });
+    expect(refused('host-to-relay', { type: 'host:reconnect', version: 2, roomId: roomId.toUpperCase() })).toMatchObject({ path: 'roomId' });
     expect(refused('host-to-relay', { type: 'guest:kick', guestId: 'g 1' })).toMatchObject({ path: 'guestId' });
     expect(refused('guest-to-relay', { type: 'rpc:request', requestId: 'r'.repeat(65), method: 'project.snapshot', args: [] })).toMatchObject({ path: 'requestId' });
     expect(refused('guest-to-relay', { type: 'rpc:request', requestId, method: 'project', args: [] })).toMatchObject({ path: 'method' });
     expect(refused('guest-to-relay', { type: 'rpc:request', requestId, method: 'project.snapshot', args: Array(9).fill(0) })).toMatchObject({ path: 'args' });
     expect(refused('host-to-relay', { type: 'room:set-expiry', expiresAt: T + 0.5 })).toMatchObject({ path: 'expiresAt' });
-    expect(refused('host-to-relay', { type: 'room:create', version: 1, publicKey, duration: '24h', projectName: 'Acme' })).toMatchObject({ path: 'duration' });
+    expect(refused('host-to-relay', { type: 'room:create', version: 2, publicKey, duration: '24h', projectName: 'Acme' })).toMatchObject({ path: 'duration' });
     expect(refused('host-to-relay', { type: 'guest:admit', guestId, role: 'host', guestExpiresAt: null })).toMatchObject({ path: 'role' });
   });
 
   it('hold keys, nonces and signatures in their one canonical spelling', () => {
     const last = publicKey.at(-1)!;
     const sameBytesOtherSpelling = publicKey.slice(0, -1) + String.fromCharCode(last.charCodeAt(0) + 1);
-    expect(refused('host-to-relay', { type: 'room:create', version: 1, publicKey: sameBytesOtherSpelling, duration: '2h', projectName: 'Acme' })).toMatchObject({ path: 'publicKey' });
+    expect(refused('host-to-relay', { type: 'room:create', version: 2, publicKey: sameBytesOtherSpelling, duration: '2h', projectName: 'Acme' })).toMatchObject({ path: 'publicKey' });
     expect(refused('host-to-relay', { type: 'host:proof', roomId, nonce, signature: signature.slice(2) })).toMatchObject({ path: 'signature' });
     expect(refused('relay-to-host', { type: 'host:challenge', roomId, nonce: `${nonce}=` })).toMatchObject({ path: 'nonce' });
   });
 
   it('refuse names that are blank, too long, untrimmed or disguised', () => {
     for (const displayName of ['', ' Sam', 'Sam ', 'Sam  Lee', 'x'.repeat(41), '\u2800', '\u3164', 'Sam\u202eeL', 'Sa\u200bm', 'Sam\nLee', 'Sam\u0007', 'Sam\u061c', '\u200d', '\u0301'])
-      expect(refused('guest-to-relay', { type: 'guest:join', version: 1, displayName })).toMatchObject({ code: 'INVALID', path: 'displayName' });
+      expect(refused('guest-to-relay', { type: 'guest:join', version: 2, displayName })).toMatchObject({ code: 'INVALID', path: 'displayName' });
   });
 
   it('are refused by their size in UTF-8 bytes, before any parsing', () => {
     // Fits in JavaScript string length, but not in bytes.
-    const euros = json({ type: 'guest:join', version: 1, displayName: '€'.repeat(300_000) });
+    const euros = json({ type: 'guest:join', version: 2, displayName: '€'.repeat(300_000) });
     expect(euros.length).toBeLessThan(MAX_FRAME_BYTES);
     expect(refused('guest-to-relay', euros)).toMatchObject({ code: 'TOO_LARGE' });
     expect(refused('host-to-relay', `{${' '.repeat(MAX_FRAME_BYTES)}`)).toMatchObject({ code: 'TOO_LARGE' });
@@ -289,7 +289,7 @@ describe('refused frames', () => {
   });
 
   it('are never encoded: an invalid frame, or one too large to send', () => {
-    expect(encodeFrame('guest-to-relay', { type: 'guest:join', version: 1, displayName: ' x ' })).toMatchObject({ ok: false, error: { code: 'INVALID' } });
+    expect(encodeFrame('guest-to-relay', { type: 'guest:join', version: 2, displayName: ' x ' })).toMatchObject({ ok: false, error: { code: 'INVALID' } });
     const huge = { type: 'rpc:response', guestId, requestId, method: 'project.snapshot', ok: true, result: 'x'.repeat(MAX_FRAME_BYTES) } as const;
     expect(encodeFrame('host-to-relay', huge)).toMatchObject({ ok: false, error: { code: 'TOO_LARGE' } });
   });

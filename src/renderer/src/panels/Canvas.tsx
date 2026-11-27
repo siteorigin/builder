@@ -38,6 +38,7 @@ import { richTextToMarkdown } from '@shared/richtext';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { marksAnnouncement, marksNow, PeerMarks, SpotlightPrompts, trackedMarks, useCanvasMarks } from './CanvasMarks';
+import { presenceOf } from '../lib/live-host';
 import { boundaryOf, codeTextTarget, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc, type CodeTextTarget } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
@@ -384,7 +385,8 @@ export function Canvas() {
   const slotRectsSeen = useRef('[]');
   /** The others in a live session on this page (#768), and each one's box as the page last measured it, by key. */
   const peerMarks = useCanvasMarks();
-  const peerMarksKey = peerMarks.marks.map((m) => m.key).join('\n');
+  // What the page is asked to measure, so the page is asked again whenever any of it changes.
+  const peerMarksKey = JSON.stringify(peerMarks.marks.map((m) => [m.key, m.ref, m.point]));
   const [markBoxes, setMarkBoxes] = useState<Record<string, Rect>>({});
   const markBoxesSeen = useRef('{}');
   /**
@@ -1456,6 +1458,16 @@ export function Canvas() {
     const was = getOverlay().hover;
     if (was && sameRef(was, canvasHover.current)) setOverlay({ hover: null });
     canvasHover.current = null;
+  }
+
+  /**
+   * Whether the frame shows the place the others' marks are for (#768): the editor's page, not another the frame has
+   * gone on to (a link followed in Preview, a page not found), whose boxes would put them on something else.
+   */
+  function marksOnFrame(): boolean {
+    const at = presenceOf(getState()).previewPath;
+    const shown = frameAt.current;
+    return !at || !shown || samePath(at.split('?', 1)[0], shown.split('?', 1)[0]);
   }
 
   function syncTrack() {
@@ -3495,7 +3507,7 @@ export function Canvas() {
             <div className="overlay-layer">
               <div className="overlay-clip">
                 {/* The others in a live session, under everything of the editor's own. */}
-                {!staleFrame && peerMarks.marks.length > 0 && <PeerMarks marks={peerMarks.marks} boxes={markBoxes} toBox={toBox} height={frameH * z} />}
+                {!staleFrame && peerMarks.marks.length > 0 && marksOnFrame() && <PeerMarks marks={peerMarks.marks} boxes={markBoxes} toBox={toBox} width={frameW} height={frameH * z} />}
                 {hovering &&
                   hovBoxes.map((b, i) => {
                     // A tall container carries its name inside its top-left corner (kept in view when its top has

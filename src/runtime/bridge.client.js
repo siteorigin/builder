@@ -439,7 +439,7 @@ function marksOf(list) {
   const share = (n) => typeof n === 'number' && n >= 0 && n <= 1;
   return list
     .flatMap((m) => {
-      if (!m || typeof m.key !== 'string' || m.key.length > 400) return [];
+      if (!m || typeof m.key !== 'string' || m.key.length > 8192) return [];
       const desc = m.desc && typeof m.desc.ctx === 'string' && typeof m.desc.node === 'string' ? m.desc : null;
       const point = m.point && share(m.point.x) && share(m.point.y) ? { x: m.point.x, y: m.point.y } : null;
       return desc || point ? [{ key: m.key, desc, point }] : [];

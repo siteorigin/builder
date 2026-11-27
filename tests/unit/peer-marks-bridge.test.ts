@@ -54,7 +54,7 @@ describe.skipIf(!browserInstalled)('the others’ marks the preview reports (#76
       slots: [],
       marks: [
         { key: 'ann', desc: desc('two'), point: null },
-        { key: 'bea', desc: null, point: { x: 0.5, y: 0.5 } },
+        { key: 'bea', desc: null, point: { x: 0.25, y: 0.5 } },
         { key: 'gone', desc: desc('nope'), point: null },
         // An element that shows nowhere falls back to its point.
         { key: 'cid', desc: desc('nope'), point: { x: 0, y: 0 } },
@@ -70,12 +70,12 @@ describe.skipIf(!browserInstalled)('the others’ marks the preview reports (#76
 
   it('reports a box for each mark that shows, under its key: an element’s, or a point’s as a box of no size', async () => {
     // The page is 700 wide and 1500 tall: two sections, then the 300px scrolling list.
-    await expect.poll(marks).toEqual({ ann: [0, 600, 700, 600], bea: [350, 750, 0, 0], cid: [0, 0, 0, 0], inner: [0, 1400, 700, 200] });
+    await expect.poll(marks).toEqual({ ann: [0, 600, 700, 600], bea: [175, 750, 0, 0], cid: [0, 0, 0, 0], inner: [0, 1400, 700, 200] });
   });
 
   it('keeps them where they are as the page scrolls, and as a box inside it scrolls', async () => {
     await frame.evaluate(`window.scrollTo(0, 500)`);
-    await expect.poll(marks).toEqual({ ann: [0, 100, 700, 600], bea: [350, 250, 0, 0], cid: [0, -500, 0, 0], inner: [0, 900, 700, 200] });
+    await expect.poll(marks).toEqual({ ann: [0, 100, 700, 600], bea: [175, 250, 0, 0], cid: [0, -500, 0, 0], inner: [0, 900, 700, 200] });
     await frame.evaluate(`document.getElementById('scroller').scrollTop = 150`);
     await expect.poll(async () => (await marks())?.inner).toEqual([0, 750, 700, 200]);
     await frame.evaluate(`document.getElementById('scroller').scrollTop = 0; window.scrollTo(0, 0)`);

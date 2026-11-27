@@ -157,7 +157,7 @@ describe('a guest that drops', () => {
     expect((await room.host.next('room:roster', 5000)).participants).toEqual([expect.objectContaining({ guestId: ann.guestId, connected: false })]);
     expect((await room.host.next('room:roster', 5000)).participants).toEqual([]);
     const back = await relay.socket(`/s/${room.roomId}/ws`);
-    back.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Ann', resumeToken: ann.resumeToken });
+    back.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Ann', resumeToken: ann.resumeToken });
     expect((await back.next('protocol:error')).code).toBe('AUTH_FAILED');
     room.host.close();
   }, 15_000);
@@ -175,9 +175,9 @@ describe('handshakes', () => {
     expect((await silentGuest.next('protocol:error', 5000)).code).toBe('WRONG_STATE');
     expect((await silentHost.next('protocol:error', 5000)).code).toBe('WRONG_STATE');
 
-    silentGuest.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Late' });
+    silentGuest.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Late' });
     const keys = await generateHostKeyPair();
-    silentHost.send('host-to-relay', { type: 'room:create', version: 1, publicKey: keys.publicKey, duration: '2h', projectName: 'Late' });
+    silentHost.send('host-to-relay', { type: 'room:create', version: 2, publicKey: keys.publicKey, duration: '2h', projectName: 'Late' });
     await wait(300);
     expect(silentGuest.has('guest:status')).toBe(false);
     expect(silentHost.has('room:ready')).toBe(false);

@@ -165,7 +165,7 @@ describe('joining', () => {
     await until(() => g.sockets.length, 'the socket');
     expect(g.socket().url).toBe(`ws://relay.localhost:8787/s/${ROOM}/ws`);
     g.socket().open();
-    expect(g.socket().sent[0]).toEqual({ type: 'guest:join', version: 1, displayName: 'Sarah Lee' });
+    expect(g.socket().sent[0]).toEqual({ type: 'guest:join', version: 2, displayName: 'Sarah Lee' });
     g.socket().receive(pending);
     const result = await joined;
     expect(result.ok && result.state.phase).toBe('waiting');
@@ -263,7 +263,7 @@ describe('keeping its place', () => {
     expect(g.manager.state).toMatchObject({ phase: 'admitted', reconnecting: true });
     await until(() => g.sockets.length === 2, 'the reconnect');
     g.sockets[1].open();
-    expect(g.sockets[1].sent[0]).toEqual({ type: 'guest:join', version: 1, displayName: 'Sarah Lee', resumeToken: 'resume-token-0123456789abcd' });
+    expect(g.sockets[1].sent[0]).toEqual({ type: 'guest:join', version: 2, displayName: 'Sarah Lee', resumeToken: 'resume-token-0123456789abcd' });
     g.sockets[1].receive(admitted({ previewTicket: 'ticket-after-the-drop-01' }));
     expect(g.manager.state).toMatchObject({ phase: 'admitted', reconnecting: false });
     expect(g.sockets[1].last('rpc:request')).toMatchObject({ method: 'project.snapshot' });
@@ -613,7 +613,20 @@ describe('who is where, in color (#768)', () => {
     expect(g.presence.length).toBe(shown);
     g.socket().receive({ type: 'activity:edited', guestId: 'g-2', target: null });
     expect(g.presence.at(-1)).toEqual({ joinId, host: null, guests: {}, activity: { 'g-2': { seq: expect.any(Number), target: null } } });
-    await until(() => Object.keys(g.presence.at(-1)!.activity).length === 0 && g.presence.at(-1), 'the edit’s cue to go');
+    await until(() => Object.keys((g.presence.at(-1) as { activity: object }).activity).length === 0 && g.presence.at(-1), 'the edit’s cue to go');
+  });
+
+  it('shows a viewer nobody’s edits: none once it is made one, and none that arrive after', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    g.socket().receive({ type: 'room:roster', participants: [me, tom()] });
+    g.socket().receive({ type: 'activity:edited', guestId: 'g-2', target });
+    expect(g.presence.at(-1)).toMatchObject({ activity: { 'g-2': { target } } });
+    g.socket().receive(admitted({ role: 'viewer' }));
+    expect(g.presence.at(-1)).toEqual({ joinId, host: null, guests: {}, activity: {} });
+    const shown = g.presence.length;
+    g.socket().receive({ type: 'activity:edited', guestId: 'g-2', target });
+    expect(g.presence.length).toBe(shown);
   });
 
   it('tells someone who arrives or comes back where this collaborator is, and the host on its return', async () => {
@@ -639,6 +652,9 @@ describe('who is where, in color (#768)', () => {
     g.socket().receive({ type: 'host:availability', connected: false });
     g.socket().receive({ type: 'host:availability', connected: true });
     await until(() => sent() === before + 3, 'the presence again for the host');
+    // The host takes over from a connection that never dropped as far as this guest knew: told again too.
+    g.socket().receive({ type: 'host:availability', connected: true });
+    await until(() => sent() === before + 4, 'the presence again for the host’s new connection');
   });
 });
 

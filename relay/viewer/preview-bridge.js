@@ -66,37 +66,56 @@
     pointing = true;
     if (!cursor) {
       cursor = document.createElement('style');
-      cursor.textContent = 'html[data-siteorigin-pointing], html[data-siteorigin-pointing] * { cursor: crosshair !important; }';
+      // An embed (a video player, a map) would take the click itself, out of the bridge's reach: it points at its box instead.
+      cursor.textContent = 'html[data-siteorigin-pointing], html[data-siteorigin-pointing] * { cursor: crosshair !important; } html[data-siteorigin-pointing] :is(iframe, embed, object) { pointer-events: none !important; }';
       (document.head || document.documentElement).append(cursor);
     }
     document.documentElement.setAttribute('data-siteorigin-pointing', '');
   };
-  // Captured before the page's own handlers, so the click points and does nothing else: no link followed, no button pressed.
+  // Captured before the page's own handlers, so the click points and does nothing else: no link followed, no button
+  // pressed, no form sent, whether by mouse, touch or a key.
   const swallow = (event) => {
     if (!pointing) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
-  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'auxclick', 'dblclick']) window.addEventListener(type, swallow, true);
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'auxclick', 'dblclick', 'touchstart', 'submit']) window.addEventListener(type, swallow, { capture: true, passive: false });
+  /** Point at what is at (x, y) in the page's window, for the host, and stop pointing. */
+  const pointAt = (target, x, y) => {
+    stopPointing();
+    const root = document.documentElement;
+    const width = Math.max(root.scrollWidth, document.body?.scrollWidth ?? 0, 1);
+    const height = Math.max(root.scrollHeight, document.body?.scrollHeight ?? 0, 1);
+    window.parent.postMessage({ type: 'siteorigin-live:pointed', path: path(), target: targetOf(target), x: share((x + window.scrollX) / width), y: share((y + window.scrollY) / height) }, viewer);
+  };
   window.addEventListener(
     'click',
     (event) => {
       if (!pointing) return;
       swallow(event);
-      stopPointing();
-      const root = document.documentElement;
-      const width = Math.max(root.scrollWidth, document.body?.scrollWidth ?? 0, 1);
-      const height = Math.max(root.scrollHeight, document.body?.scrollHeight ?? 0, 1);
       const [first] = event.composedPath();
-      window.parent.postMessage({ type: 'siteorigin-live:pointed', path: path(), target: targetOf(first ?? event.target), x: share((event.clientX + window.scrollX) / width), y: share((event.clientY + window.scrollY) / height) }, viewer);
+      pointAt(first ?? event.target, event.clientX, event.clientY);
     },
     true
+  );
+  // A tap points where it lands, before the page's own touch handlers, and no click follows it.
+  window.addEventListener(
+    'touchend',
+    (event) => {
+      if (!pointing) return;
+      swallow(event);
+      const touch = event.changedTouches[0];
+      if (touch) pointAt(document.elementFromPoint(touch.clientX, touch.clientY) ?? event.target, touch.clientX, touch.clientY);
+    },
+    { capture: true, passive: false }
   );
   window.addEventListener(
     'keydown',
     (event) => {
-      if (!pointing || event.key !== 'Escape') return;
+      if (!pointing) return;
+      // While pointing, the page takes no keys either: Escape stops pointing, and nothing else reaches the site.
       swallow(event);
+      if (event.key !== 'Escape') return;
       stopPointing();
       window.parent.postMessage({ type: 'siteorigin-live:point-cancelled' }, viewer);
     },

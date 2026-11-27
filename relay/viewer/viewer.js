@@ -127,6 +127,8 @@ let frameShownFallback;
 let framePath = '/';
 /** Whether the guest's next click on the site points at what it lands on, for the host (#768). */
 let pointing = false;
+/** Whether the page in the frame has said its bridge is there, so pointing can work on it: a page without one cannot point. */
+let bridgeReady = false;
 /** When this page last sent a spotlight (performance.now()), so the next waits POINT_GAP_MS. */
 let pointedAt = -Infinity;
 /** @type {string | null} */
@@ -537,6 +539,7 @@ function mountFrame() {
   iframe.referrerPolicy = 'no-referrer';
   iframe.setAttribute('sandbox', FRAME_SANDBOX);
   framePath = start;
+  bridgeReady = false;
   frameShown = false;
   frameSlow = false;
   // The site counts as on screen once its first page has loaded, or once the page's bridge says it is ready (a page
@@ -566,6 +569,7 @@ function frameReady() {
 function unmountFrame() {
   if (!iframe) return;
   setPointing(false);
+  bridgeReady = false;
   iframe.remove();
   iframe = null;
   clearTimeout(reloadFallback);
@@ -579,6 +583,10 @@ function unmountFrame() {
 function navigate(path) {
   if (!iframe || !isFramePath(path)) return;
   framePath = path;
+  // The next page's bridge says when it is there; until then nothing can point at it.
+  bridgeReady = false;
+  setPointing(false);
+  render();
   iframe.src = `${config.previewOrigin}${path}`;
 }
 
@@ -614,7 +622,13 @@ window.addEventListener('message', (event) => {
   if (!iframe || event.source !== iframe.contentWindow || event.origin !== config.previewOrigin) return;
   const data = event.data;
   if (!data || typeof data !== 'object') return;
-  if (data.type === BRIDGE_MESSAGES.reloading) clearTimeout(reloadFallback);
+  if (data.type === BRIDGE_MESSAGES.reloading) {
+    clearTimeout(reloadFallback);
+    // The page is going: pointing stops with it, and waits for the bridge of the page that replaces it.
+    bridgeReady = false;
+    setPointing(false);
+    render();
+  }
   else if (data.type === BRIDGE_MESSAGES.refused) {
     // The relay turned the frame's page away: the preview is not open, whatever the frame loaded. Try again takes the
     // guest's place back for a fresh ticket. A refusal of a page asked for under an older grant, while a newer one is
@@ -630,9 +644,12 @@ window.addEventListener('message', (event) => {
   }
   else if (data.type === BRIDGE_MESSAGES.ready && isFramePath(data.path)) {
     framePath = data.path;
+    const first = !bridgeReady;
+    bridgeReady = true;
     frameReady();
-    // A new page in the frame has a bridge of its own: still pointing, it is told so.
+    // A page the site's own router moved to keeps its bridge: still pointing, it is told so again.
     if (pointing) iframe.contentWindow?.postMessage({ type: BRIDGE_MESSAGES.point, on: true }, config.previewOrigin);
+    else if (first) render();
   }
   else if (data.type === BRIDGE_MESSAGES.pointed && pointing) {
     setPointing(false);
@@ -675,7 +692,7 @@ function targetOf(t) {
 
 /** Whether the guest can point now: let in, the site on screen, and the host there to see it. */
 function canPoint() {
-  return phase === 'admitted' && !!iframe && roomState() === 'live';
+  return phase === 'admitted' && !!iframe && bridgeReady && roomState() === 'live';
 }
 
 /** Start or stop pointing, and tell the frame's bridge. Only pointing the guest can do now is started. */

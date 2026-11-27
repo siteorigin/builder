@@ -137,7 +137,9 @@ export function editTarget(batch: unknown): ElementTarget | null {
   const operations = (batch as { operations?: unknown } | null)?.operations;
   if (!Array.isArray(operations) || !operations.length) return null;
   let target: ElementTarget | null = null;
-  for (const op of operations as Array<{ owner?: { kind?: unknown; id?: unknown }; nodeId?: unknown }>) {
+  for (const op of operations as Array<{ type?: unknown; owner?: { kind?: unknown; id?: unknown }; nodeId?: unknown; toOwner?: unknown }>) {
+    // A copy or a duplicate names the element it was made from, which it leaves as it was.
+    if (!op || typeof op !== 'object' || op.toOwner !== undefined || (typeof op.type === 'string' && /\.(copy|duplicate)$/.test(op.type))) return null;
     const kind = op?.owner?.kind;
     const id = op?.owner?.id;
     const nodeId = op?.nodeId;
@@ -1315,6 +1317,9 @@ export class LiveHostManager {
     if (!encoded.ok) return { ok: false, message: 'That is not a place in the editor guests can follow.' };
     // What was checked, as it was checked: never the caller's own object.
     const next = (JSON.parse(encoded.frame) as { presence: Presence }).presence;
+    // The editor says where it is whenever it starts following a session, a reloaded one too: it hears in return where
+    // everyone else is, rather than only once someone next moves.
+    this.publishPresence(run);
     if (run.hostPresence && encoded.frame === JSON.stringify({ type: 'presence:update', presence: run.hostPresence })) return { ok: true };
     run.hostPresence = next;
     const conn = run.conn;

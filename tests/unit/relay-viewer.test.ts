@@ -28,7 +28,7 @@ describe('the invite link’s page', () => {
     expect(html).toContain(`data-preview-origin="${preview}"`);
     expect(html).toContain(`data-invite-link="${ORIGIN}/s/${ROOM}"`);
     expect(html).toContain(`data-name-max="${DISPLAY_NAME_MAX}"`);
-    expect(html).toContain('data-protocol-version="1"');
+    expect(html).toContain('data-protocol-version="2"');
     expect(html).toContain('<form id="join"');
     // Nothing of the site is in the page until the guest is let in: the frame is made by the script only then.
     expect(html).not.toContain('<iframe');
@@ -84,7 +84,7 @@ describe('the viewer’s files', () => {
   it('send a spotlight only with an address and an element the contract takes (#768)', () => {
     expect(viewerShared.MAX_ID_LENGTH).toBe(MAX_ID_LENGTH);
     expect(viewerShared.MAX_SELECTION_DEPTH).toBe(MAX_SELECTION_DEPTH);
-    for (const previewPath of ['/', '/about/', '/caf%C3%A9/?tab=1', "/search/o'neil/?filters[tag]=news|all", '', 'about/', '//other.test/', '/a b/', '/a{b', '/a`b', '/a"b', '/a#b', '/caf\u00e9/']) {
+    for (const previewPath of ['/', '/about/', '/caf%C3%A9/?tab=1', "/search/o'neil/?filters[tag]=news|all", '', 'about/', '//other.test/', '/a b/', '/a{b', '/a`b', '/a"b', '/a#b', '/caf\u00e9/', '/%ZZ', '/a/..', '/x/%2F/', '/__open-in-editor', '/__data.json', '/blog/__inspect']) {
       const contract = parseFrame('guest-to-relay', JSON.stringify({ type: 'spotlight:point', spotlight: { previewPath, target: null, x: 0, y: 0 } })).ok;
       expect(viewerShared.isSpotlightPath(previewPath), previewPath).toBe(contract);
     }
@@ -194,9 +194,11 @@ describe('what guests are told about the host', () => {
     const { host } = await reconnectHost(relay, room.roomId, room.keys);
     for (const guest of [ann, bob, cat]) expect(await guest.guest.next('host:availability')).toEqual({ type: 'host:availability', connected: true });
 
-    // A host taking over from a live connection was never away: nobody is told it went.
+    // A host taking over from a live connection was never away: nobody is told it went, but each is told it is here,
+    // since what they sent the connection it replaced may never have reached it (#768).
     const again = await reconnectHost(relay, room.roomId, room.keys);
     expect((await host.closed()).code).toBe(LIVE_CLOSE_CODES.REPLACED);
+    for (const guest of [ann, bob, cat]) expect(await guest.guest.next('host:availability')).toEqual({ type: 'host:availability', connected: true });
     await wait(200);
     for (const guest of [ann, bob, cat]) expect(guest.guest.has('host:availability')).toBe(false);
     again.host.close();
@@ -221,7 +223,7 @@ describe('what guests are told about the host', () => {
     ann.guest.close();
     await wait(100);
     const back = await relay.socket(`/s/${room.roomId}/ws`);
-    back.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Ann', resumeToken: ann.resumeToken });
+    back.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Ann', resumeToken: ann.resumeToken });
     expect((await back.next('guest:status')).status).toBe('admitted');
     expect(await back.next('host:availability')).toEqual({ type: 'host:availability', connected: true });
     expect(await back.next('presence:changed')).toEqual({ type: 'presence:changed', participant: { kind: 'host' }, presence: { pageId: 'pg_home', viewportWidth: 390, selection: null, previewPath: '/' } });

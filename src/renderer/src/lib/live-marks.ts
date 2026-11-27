@@ -85,8 +85,10 @@ export interface CanvasMark {
   ref: ElementRef | null;
   /** Where a spotlight landed, as shares of the page's whole width and height. */
   point: { x: number; y: number } | null;
-  /** A selection whose collaborator has just edited what it selected. */
+  /** A selection whose collaborator has just made an edit: of what it selected, or of more than one element. */
   editing: boolean;
+  /** The spotlight's or the edit's number (0 for a selection not being edited): a new one is drawn from its start. */
+  seq: number;
   /** What is outlined, in words: for a screen reader, and the outline's title. */
   label: string;
 }
@@ -97,6 +99,7 @@ export interface SpotlightAway {
   peer: string;
   who: string;
   color: PeerColor;
+  seq: number;
   /** The page it is on, to go to; null when the address is no page of the project. */
   pageId: string | null;
   /** The place, in words: the page's title, or its address. */
@@ -122,17 +125,32 @@ const labelOf = (state: ProjectState, ref: ElementRef) => {
   }
 };
 
-/** The page whose address in the preview is `path`, if any: by own pages only. */
+/** An address without its query: the same page, whatever a search or a link added to it. */
+const pathOf = (address: string) => address.split('?', 1)[0];
+
+/** Each project's pages by their address in the preview, worked out once for each state of the project. */
+const pagesByPath = new WeakMap<ProjectState, Map<string, string>>();
+
+/** The page whose address in the preview is `path` (its query aside), if any: by own pages only. */
 export function pageAtPath(state: ProjectState, path: string): string | null {
-  for (const [id, page] of Object.entries(state.pages)) if (typeof page.route === 'string' && previewPathOf(page.route) === path) return id;
-  return null;
+  let byPath = pagesByPath.get(state);
+  if (!byPath) {
+    byPath = new Map();
+    for (const [id, page] of Object.entries(state.pages)) {
+      const at = typeof page.route === 'string' ? previewPathOf(page.route) : null;
+      if (at && !byPath.has(pathOf(at))) byPath.set(pathOf(at), id);
+    }
+    pagesByPath.set(state, byPath);
+  }
+  return byPath.get(pathOf(path)) ?? null;
 }
 
 /**
  * What the canvas shows of the others, where it is: each collaborator's selection on this page (or its header or
  * footer, while they are on this page too), the element each just edited here, and each spotlight on this place; and,
- * apart, each spotlight on another place, for a prompt to go there. A selection just edited says so on its own
- * outline; an edit of something else shows as its own brief outline.
+ * apart, each spotlight on another place, for a prompt to go there. A selection just edited, or whose collaborator
+ * just changed several elements at once, says so on its own outline; an edit of one other element shows as its own
+ * brief outline. A place is its page: the query a search or a link added says nothing about which page it is.
  */
 export function canvasMarks(state: ProjectState, here: Here, peers: Peer[]): { marks: CanvasMark[]; away: SpotlightAway[] } {
   const marks: CanvasMark[] = [];
@@ -140,21 +158,22 @@ export function canvasMarks(state: ProjectState, here: Here, peers: Peer[]): { m
   for (const peer of peers) {
     const base = { peer: peer.key, who: peer.who, color: peer.color };
     const selection = peer.presence?.pageId && peer.presence.pageId === here.pageId && outlinable(state, peer.presence.selection, here.pageId) ? peer.presence.selection : null;
-    const edited = peer.activity && outlinable(state, peer.activity.target, here.pageId) ? peer.activity.target : null;
+    const activity = peer.activity;
+    const edited = activity && outlinable(state, activity.target, here.pageId) ? activity.target : null;
     if (selection) {
-      const editing = !!edited && refKey(edited) === refKey(selection);
-      marks.push({ ...base, key: `sel:${peer.key}:${refKey(selection)}`, kind: 'selection', ref: selection, point: null, editing, label: `${peer.who}: ${labelOf(state, selection)}${editing ? ', editing' : ''}` });
+      const editing = !!activity && (activity.target === null || (!!edited && refKey(edited) === refKey(selection)));
+      marks.push({ ...base, key: `sel:${peer.key}:${JSON.stringify(selection)}`, kind: 'selection', ref: selection, point: null, editing, seq: editing ? activity!.seq : 0, label: `${peer.who}: ${labelOf(state, selection)}${editing ? ', editing' : ''}` });
     }
-    if (edited && (!selection || refKey(edited) !== refKey(selection))) marks.push({ ...base, key: `edit:${peer.key}:${peer.activity!.seq}`, kind: 'edit', ref: edited, point: null, editing: true, label: `${peer.who} edited ${labelOf(state, edited)}` });
+    if (edited && (!selection || refKey(edited) !== refKey(selection))) marks.push({ ...base, key: `edit:${peer.key}:${activity!.seq}`, kind: 'edit', ref: edited, point: null, editing: true, seq: activity!.seq, label: `${peer.who} edited ${labelOf(state, edited)}` });
     const spot = peer.spotlight;
     if (!spot) continue;
     const { previewPath, target, x, y } = spot.spotlight;
-    if (here.previewPath !== null && previewPath === here.previewPath) {
+    if (here.previewPath !== null && pathOf(previewPath) === pathOf(here.previewPath)) {
       const ref = outlinable(state, target, here.pageId) ? target : null;
-      marks.push({ ...base, key: `spot:${peer.key}:${spot.seq}`, kind: 'spotlight', ref, point: { x, y }, editing: false, label: `${peer.who} pointed at ${ref ? labelOf(state, ref) : 'this spot'}` });
+      marks.push({ ...base, key: `spot:${peer.key}:${spot.seq}`, kind: 'spotlight', ref, point: { x, y }, editing: false, seq: spot.seq, label: `${peer.who} pointed at ${ref ? labelOf(state, ref) : 'this spot'}` });
     } else {
       const pageId = pageAtPath(state, previewPath);
-      away.push({ ...base, key: `away:${peer.key}:${spot.seq}`, pageId, place: pageId ? state.pages[pageId].title : previewPath });
+      away.push({ ...base, key: `away:${peer.key}:${spot.seq}`, seq: spot.seq, pageId, place: pageId ? state.pages[pageId].title : previewPath });
     }
   }
   return { marks, away };
@@ -162,6 +181,3 @@ export function canvasMarks(state: ProjectState, here: Here, peers: Peer[]): { m
 
 /** The CSS color a participant is shown in. */
 export const peerColor = (color: PeerColor) => (color === 'host' ? 'var(--peer-host)' : `var(--peer-${color % 8})`);
-
-/** Whether two lists of marks would be drawn the same: the canvas keeps the one it has otherwise. */
-export const sameMarks = (a: CanvasMark[], b: CanvasMark[]) => a.length === b.length && a.every((m, i) => m.key === b[i].key && m.editing === b[i].editing && m.label === b[i].label);

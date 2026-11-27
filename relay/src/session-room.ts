@@ -306,8 +306,9 @@ export class SessionRoom extends DurableObject<Env> {
     }
     this.changed();
     this.sendRoomReady(ws, now);
-    // A host taking over from a live connection was never away; one coming back from its grace was.
-    if (previous === null) this.sendHostAvailability();
+    // Guests are told the host is here whether it was away or took over from a connection still open: what they sent
+    // that connection may never have reached it, so they tell it again where they are.
+    this.sendHostAvailability();
     this.scheduleAlarm();
   }
 
@@ -332,9 +333,16 @@ export class SessionRoom extends DurableObject<Env> {
       if (guest.status === 'pending') this.send(ws, 'relay-to-guest', { type: 'guest:status', status: 'pending', guestId: guest.guestId, resumeToken: guest.resumeToken });
       else {
         this.sendAdmitted(guest, now);
-        // Everyone is told it is back (the roster says who is connected), and the returning guest hears who is here.
-        if (previous === null) this.sendRosters();
-        else this.send(ws, 'relay-to-guest', { type: 'room:roster', participants: guestRoster(room) });
+        // A guest taking its place over from a connection still open (one that dropped without the relay hearing yet)
+        // is announced as gone and then back, as one that dropped is: the others let go of whatever its old connection
+        // showed them, and tell the new one where they are.
+        if (previous !== null && previous !== attachment.connectionId) {
+          guest.connectionId = null;
+          this.sendRosters();
+          guest.connectionId = attachment.connectionId;
+        }
+        // Everyone is told it is back (the roster says who is connected), the returning guest too.
+        this.sendRosters();
         this.sendHostPage(guest);
       }
       this.sendHostAvailability(ws);

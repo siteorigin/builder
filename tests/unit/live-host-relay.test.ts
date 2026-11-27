@@ -184,7 +184,7 @@ describe('the waiting room and guests', () => {
     expect(h.manager.setLocked(run, true)).toEqual({ ok: true });
     await until(() => active(h.manager)?.locked, 'the room locked');
     const carol = await relay.socket<'relay-to-guest', 'guest-to-relay'>(`/s/${state.roomId}/ws`);
-    carol.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Carol' });
+    carol.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Carol' });
     expect(await carol.next('guest:status')).toEqual({ type: 'guest:status', status: 'locked' });
     // Unlocked again, the next guest waits as usual.
     expect(h.manager.setLocked(run, false)).toEqual({ ok: true });

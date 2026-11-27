@@ -159,7 +159,7 @@ try {
   await eventually(async () => assert.equal(await dialog.getByRole('switch', { name: 'Lock session' }).getAttribute('aria-checked'), 'true'));
   const late = await relay.socket(`/s/${roomId}/ws`);
   guests.push(late);
-  late.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Dee' });
+  late.send('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Dee' });
   assert.equal((await late.next('guest:status')).status, 'locked', 'a locked room turns a new guest away');
   await dialog.getByRole('switch', { name: 'Lock session' }).click();
   assert.equal((await ann.guest.next('room:state')).locked, false);

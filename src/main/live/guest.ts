@@ -461,7 +461,10 @@ export class LiveGuestManager {
         if (back && join.phase === 'admitted') {
           void this.fetchSnapshot(join);
           this.reload(join);
-          // Nor did it hear where this app is: told again, as it is now.
+        }
+        // A host back, or on a connection that replaced one still open, may not have heard where this app is: told
+        // again, as it is now.
+        if (frame.connected && join.phase === 'admitted') {
           join.presenceSent = null;
           this.schedulePresence(join);
         }
@@ -506,7 +509,7 @@ export class LiveGuestManager {
       case 'activity:edited': {
         // Another collaborator's edit, shown for a moment while the roster lists them connected.
         const editor = join.participants.find((p) => p.guestId === frame.guestId);
-        if (frame.guestId === join.guestId || editor?.role !== 'collaborator' || !editor.connected) return;
+        if (frame.guestId === join.guestId || join.role !== 'collaborator' || editor?.role !== 'collaborator' || !editor.connected) return;
         join.activity.set(frame.guestId, { seq: ++activitySeq, target: frame.target, until: performance.now() + this.timings.activityMs });
         this.publishPresence(join);
         return this.armActivity(join);
@@ -548,8 +551,14 @@ export class LiveGuestManager {
         join.sessionExpiresAt = frame.sessionExpiresAt;
         this.readClock(join, frame.now);
         if (frame.previewTicket) this.queueTicket(join, frame.previewTicket);
-        if (demoted) this.clearOwnPresence(join);
-        else this.schedulePresence(join);
+        if (demoted) {
+          this.clearOwnPresence(join);
+          // A viewer is shown nobody's edits.
+          if (join.activity.size) {
+            join.activity.clear();
+            this.publishPresence(join);
+          }
+        } else this.schedulePresence(join);
         // On first admission, and on taking the place back after a drop (changes may have been missed), the host's
         // project is asked for; a role or deadline changing on a live connection needs no new copy.
         if (!returning || back || !join.latest) void this.fetchSnapshot(join);
