@@ -175,28 +175,84 @@
   .insp-group .insp-group { padding: 8px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: none; }
   .insp-group .insp-group > .insp-group-title { font-weight: 500; color: var(--text-2); }
   .insp-group-title { float: left; width: 100%; margin: 0; padding: 0; font-size: 12px; font-weight: 600; color: var(--text); }
-  /* A link reads top to bottom: its kind, where it goes (the full width, so it can be read), the section, a new tab. */
-  .insp-link { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  /* The header menu's order, over its links. */
+  .list-editor-order { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  /* A link reads top to bottom, each control named beside it: its type, where it goes (the rest of the width, so it can
+     be read), the section, then a new tab and what search engines are told. A narrow panel puts the names above. */
+  .insp-link { display: flex; flex-direction: column; gap: 6px; min-width: 0; container-type: inline-size; }
+  .insp-link-grid { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 6px 8px; align-items: start; min-width: 0; }
+  .insp-link-sub { font-size: 12px; font-weight: 500; line-height: 26px; color: var(--text-2); }
+  /* Empty until a page change lets a section go: out of the layout, but kept for screen readers so the note is announced. */
+  .insp-link-status:empty { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .insp-link .field-hint { overflow-wrap: anywhere; }
+  .insp-link-control { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .insp-link .select { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .insp-link > .select, .insp-link > .insp-link-typing { flex: none; }
+  @container (max-width: 239px) {
+    .insp-link-grid { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
+    .insp-link-sub { line-height: 1.4; }
+    .insp-link-sub:not(:first-child) { margin-top: 4px; }
+  }
+  /* A select with a button beside it (the page list's add row, a link's section). The post writer leaves a gone section
+     marked inside one out of its count of fields that can't be saved. */
   .insp-link-row { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
   .insp-link-row .select.grow { min-width: 0; }
   .insp-link-row > .btn { flex: none; }
-  /* The header menu's order, over its links. */
-  .list-editor-order { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .insp-link-sub { flex: none; font-size: 12px; line-height: 26px; color: var(--text-2); }
+  .insp-link-row > .insp-link-pair { flex: 1 1 auto; }
+  /* A list and the button beside it that types an ID instead. */
+  .insp-link-pair { display: flex; align-items: flex-start; gap: 4px; min-width: 0; }
+  .insp-link-pair > .select { flex: 1 1 auto; min-width: 0; }
+  .btn.insp-link-id { flex: none; width: 26px; height: 26px; padding: 0; justify-content: center; color: var(--text-2); }
+  .insp-link-id svg { width: 14px; height: 14px; }
+  .insp-link-aside { flex: none; align-self: flex-start; gap: 4px; margin-left: -6px; padding-inline: 6px; color: var(--text-2); }
+  .insp-link-aside svg { width: 14px; height: 14px; }
   .insp-link-import { align-self: flex-start; }
-  /* A destination that goes nowhere is marked on the control itself, as well as said under it. */
-  .insp-link :is(.select, .input)[aria-invalid='true'] { border-color: var(--red); }
+  /* A web address or an email wraps rather than hiding its end, and stays one line when it fits. */
+  .input.sm.insp-link-address { display: block; height: auto; min-height: 26px; padding: 4px 9px; font: inherit; font-size: 12px; line-height: 16px; resize: none; overflow: hidden; field-sizing: content; overflow-wrap: anywhere; }
   .insp-link-file { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; }
-  .insp-link-fixed { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+  .insp-link-fixed { font-size: 12px; line-height: 26px; color: var(--text-2); overflow-wrap: anywhere; }
   .insp-link-typing { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  /* What a link to another site tells search engines: a quiet list of ticks under where it goes. */
-  .link-rels { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
+  /* The page: its title and address apart, the address quieter and never the first thing a long title pushes out. */
+  .insp-page-picker { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .insp-page-btn { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; text-align: left; cursor: pointer; }
+  .insp-page-btn .insp-page-title { flex: 0 1 auto; min-width: 2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .insp-page-btn .insp-page-route { flex: 0 1 auto; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
+  .insp-page-pick { gap: 4px; padding: 6px; }
+  .insp-page-search-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .insp-page-search { position: relative; }
+  .insp-page-search svg { position: absolute; left: 8px; top: 6px; width: 14px; height: 14px; color: var(--text-3); pointer-events: none; }
+  .insp-page-search .input { width: 100%; padding-left: 28px; }
+  .insp-page-list:not([hidden]) { position: relative; display: flex; flex-direction: column; gap: 1px; max-height: 231px; overflow: auto; margin: 0 -2px; padding: 0 2px; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  .insp-page-option { position: relative; display: flex; flex-direction: column; gap: 1px; padding: 4px 26px 4px 8px; border-radius: var(--r-sm); font-size: 12px; line-height: 16px; color: var(--text); cursor: pointer; }
+  .insp-page-option .insp-page-title { overflow-wrap: anywhere; }
+  .insp-page-option .insp-page-route { color: var(--text-3); overflow-wrap: anywhere; }
+  .insp-page-option.active { background: var(--hover); }
+  /* The linked page takes the house's selected face; the highlighted one (pointer or arrow keys) the hover fill. */
+  .insp-page-option.current { background: var(--raised); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+  .insp-page-option.current .insp-page-route { font-weight: 400; }
+  /* Typing keeps the field's blue focus: the highlighted page takes a neutral edge, so only one thing reads as focused. */
+  .insp-page-option:not(.current).active { box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .insp-page-option.current.active { box-shadow: inset 0 0 0 1px var(--text-3), var(--shadow-sm); }
+  .insp-page-check { position: absolute; right: 8px; top: 6px; width: 14px; height: 14px; color: var(--text-2); }
+  /* What search engines are told: one quiet line that says what is ticked, opening to the ticks. */
+  .insp-link-more > summary { display: flex; align-items: flex-start; gap: 6px; min-height: 24px; margin-left: -6px; padding: 0 6px; border-radius: var(--r-xs); font-size: 12px; color: var(--text); list-style: none; cursor: pointer; }
+  .insp-link-more > summary::-webkit-details-marker { display: none; }
+  .insp-link-more > summary:hover { background: var(--hover); }
+  .insp-link-more > summary .chev { flex: none; width: 14px; height: 14px; color: var(--text-3); transition: transform 120ms; }
+  .insp-link-more[open] > summary .chev { transform: rotate(90deg); }
+  .insp-link-more > summary > span:first-of-type { flex: none; white-space: nowrap; }
+  /* What is ticked, after the name, wrapping rather than cut when both don't fit on one line. */
+  .insp-link-more > summary > * { padding-block: 4px; line-height: 16px; }
+  .insp-link-more > summary > .chev { padding: 0; margin-top: 5px; }
+  .insp-link-more-state { flex: 1 1 auto; min-width: 0; text-align: right; color: var(--text-3); }
+  .insp-link-more .link-rels { padding: 4px 0 0 14px; }
+  /* The summary already names the group on screen; the legend stays for the fieldset's name. */
+  .insp-link-more .link-rels legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* What a link to another site tells search engines: a quiet list of ticks, each row a 24px target, the app's checkbox. */
+  .link-rels { display: flex; flex-direction: column; gap: 0; min-width: 0; margin: 0; padding: 0; border: 0; }
   .link-rels legend { margin: 0 0 2px; padding: 0; font-size: 12px; color: var(--text-2); }
-  .link-rel { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text); }
-  .link-rel input { flex: none; margin: 0; }
-  .link-rel span { min-width: 0; color: var(--text-2); }
+  .link-rel { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 24px; font-size: 12px; color: var(--text); }
+  .link-rel input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+  .link-rel-term { color: var(--text-2); }
   .insp-image { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
   .insp-group .insp-image { padding: 0; border: 0; background: none; }
   .insp-image-top { display: flex; align-items: center; gap: 10px; }

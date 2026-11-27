@@ -34,7 +34,6 @@
   .rich-link-feedback { min-height: calc(2 * 1.4 * 12px); line-height: 1.4; }
   .rich-link-notice { color: var(--text); }
   .rich-link .link-rels { margin-top: 2px; }
-  .rich-link .link-rel { min-height: 24px; }
   .rich-link-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
   .rich-link-remove { margin-right: auto; padding-left: 6px; }
   .rich-link-remove svg { width: 14px; height: 14px; }

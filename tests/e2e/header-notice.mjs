@@ -47,6 +47,14 @@ await selectHeader();
 const scope = inspector().locator('.insp-scope.shared');
 await eventually(async () => assert.match(await scope.innerText(), /Changes show on all 3 pages that use it: Home, About and Contact\./, 'the scope line names every page'));
 const notice = inspector().getByRole('group', { name: 'Notice', exact: true });
+const contactRoute = s0.pages[contact].route;
+// The page is chosen from the link's page list, searched by its address.
+async function choosePage(route) {
+  await notice.getByRole('button', { name: /^Notice page/ }).click();
+  const search = notice.getByRole('combobox', { name: 'Search pages', exact: true });
+  await search.fill(route);
+  await search.press('Enter');
+}
 const text = notice.getByRole('textbox', { name: 'Text', exact: true });
 const label = notice.getByRole('textbox', { name: 'Link label', exact: true });
 await text.waitFor();
@@ -62,11 +70,11 @@ await label.fill('Get directions');
 await label.press('Enter');
 // The destination is chosen in the Inspector's own link picker.
 await notice.getByRole('combobox', { name: 'Notice link type', exact: true }).selectOption('page');
-await notice.getByRole('combobox', { name: 'Notice page', exact: true }).selectOption(contact);
+await choosePage(contactRoute);
 await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'page', target: contact }, 'the notice links to Contact'));
 // The project has the link before the editor hears of it: the Inspector shows it once it has, and a link type chosen
 // before then would be put back by the news of this one.
-await eventually(async () => assert.equal(await notice.getByRole('combobox', { name: 'Notice page', exact: true }).inputValue(), contact, 'the Inspector shows the link to Contact'));
+await eventually(async () => assert.equal(await notice.getByRole('button', { name: `Notice page: Contact, ${contactRoute}`, exact: true }).count(), 1, 'the Inspector shows the link to Contact'));
 
 step('a web address the project cannot store is explained beside the field, which keeps it');
 const linkType = notice.getByRole('combobox', { name: 'Notice link type', exact: true });
@@ -91,7 +99,7 @@ await address.press('Enter');
 await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'url', target: 'https://example.com' }, 'the corrected address is stored'));
 assert.equal(await problem.count(), 0, 'the message goes once the address is good');
 await linkType.selectOption('page');
-await notice.getByRole('combobox', { name: 'Notice page', exact: true }).selectOption(contact);
+await choosePage(contactRoute);
 await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'page', target: contact }, 'the notice links to Contact again'));
 const headerId = s0.site.shell.header.rootIds[0];
 const bar = frame.locator('header.so-header .so-header__notice');

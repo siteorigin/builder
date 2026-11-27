@@ -1,7 +1,7 @@
 import './PropEditors.css';
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Hash, Image as ImageIcon, ImageOff, ImagePlus, Images, List, Plus, Search, Trash2, TriangleAlert } from 'lucide-react';
+import type { ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkRel, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isEntryBinding, refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
@@ -27,8 +27,8 @@ import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
 import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
-import { LinkRelControls } from '../components/LinkRelControls';
-import { withRels } from '@shared/link-rel';
+import { LINK_REL_LABELS, LinkRelControls } from '../components/LinkRelControls';
+import { canonicalRels, withRels } from '@shared/link-rel';
 import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
@@ -54,14 +54,13 @@ export { groupFields };
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
-const OTHER_SECTION = '\u0000other';
-
 /**
  * Which section of a page a link jumps to: the page's sections by their headings (a section without an ID gets one
- * from its heading when it is chosen), the shared header and footer's IDs, or any ID typed in. `top` offers the top
- * of the page (no section); without it an empty value asks for a choice.
+ * from its heading when it is chosen), the shared header and footer's IDs, or any ID typed in, which a button beside
+ * the list offers (a command is never an option in it). `top` offers the top of the page (no section); without it an
+ * empty value asks for a choice.
  */
-function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, invalid, describedBy, onTyping }: { state: ProjectState; pageId: string | null | undefined; value: string; onPick: (anchor: string, edit?: PendingEdit) => void; label: string; top?: boolean; shared?: ShellPart; id?: string; invalid?: boolean; describedBy?: string; onTyping?: (typing: boolean) => void }) {
+function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, invalid, describedBy, onTyping, note, always }: { state: ProjectState; pageId: string | null | undefined; value: string; onPick: (anchor: string, edit?: PendingEdit) => void; label: string; top?: boolean; shared?: ShellPart; id?: string; invalid?: boolean; describedBy?: string; onTyping?: (typing: boolean) => void; /** What the saved link does, said under an ID that can't be used, and while typing with `always`. */ note?: string; always?: boolean }) {
   const [typing, setTypingState] = useState(false);
   const setTyping = (on: boolean) => {
     setTypingState(on);
@@ -79,6 +78,7 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, i
   const [problem, setProblem] = useState('');
   const escaping = useRef(false);
   const hintId = useId();
+  const noteId = useId();
   const problemId = useId();
   const revision = useStore((s) => s.snapshot?.revision);
   const page = pageId ? state.pages[pageId] : undefined;
@@ -100,7 +100,8 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, i
     if (!a) return top ? '' : 'Enter a section ID, or press Esc to choose from the list.';
     if (!/^[A-Za-z]/.test(a)) return 'An ID has to start with a letter.';
     if (a.length > 61) return 'That ID is too long: use 61 characters or fewer.';
-    return /^[A-Za-z][\w-]*$/.test(a) ? '' : 'That ID has a character an ID can’t use.';
+    const bad = a.match(/[^\w-]/)?.[0];
+    return !bad ? '' : bad === ' ' ? 'An ID can’t have spaces: use hyphens between words.' : `An ID can’t use “${bad}”: use letters, numbers, hyphens or underscores.`;
   };
   if (typing)
     return (
@@ -120,11 +121,11 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, i
             // Enter stays in the field to fix it, with the reason under it.
             setProblem(why);
             requestAnimationFrame(() => box.current?.querySelector('input')?.focus());
-          } else if (why) {
-            // A click or Tab elsewhere goes there: an ID that couldn't be used is dropped, and the reason said.
-            if (typed.trim()) toast(`That section ID wasn’t used. ${why}`, 'error');
-            backToList(false);
-          } else backToList(enter);
+          } else if (why && typed.trim()) {
+            // A click or Tab elsewhere goes there: an ID that can't be used stays in its field with the reason under
+            // it, as a typed address does, until it is fixed or abandoned with Esc.
+            setProblem(why);
+          } else backToList(enter && !why);
         }}
         onKeyDownCapture={(e) => {
           if (isImeComposing(e)) return;
@@ -140,10 +141,15 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, i
           id={id}
           value={value}
           ariaLabel={label}
-          aria-describedby={[problem ? problemId : '', hintId, describedBy ?? ''].filter(Boolean).join(' ')}
+          aria-describedby={[problem ? problemId : '', problem ? '' : hintId, note && (problem || always) ? noteId : '', describedBy ?? ''].filter(Boolean).join(' ')}
           aria-invalid={!!problem || undefined}
-          placeholder={top ? 'Top of page, or a section ID' : 'A section ID, such as pricing'}
+          placeholder={top ? 'Empty for the top of the page' : 'pricing'}
           autoFocus
+          check={(t) => {
+            const why = idProblem(t);
+            return why && t.trim() ? { message: why } : null;
+          }}
+          onProblem={(p) => setProblem(p?.message ?? '')}
           onLive={() => problem && setProblem('')}
           onCommit={(t) => {
             // An ID that can't be used is left in the field: the blur that follows says why and keeps it open.
@@ -152,43 +158,57 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, i
             if (a !== value) onPick(a);
           }}
         />
-        {problem && (
-          <span className="field-error" id={problemId}>
+        {/* An ID that can't be used: the reason, then what the saved link does meanwhile, in place of the rule it broke. */}
+        {problem ? (
+          <span className="field-error" id={problemId} role="alert">
             {problem}
           </span>
+        ) : (
+          <span className="field-hint" id={hintId}>
+            The name after # in the section’s address. Start with a letter, then use letters, numbers, hyphens or underscores.
+          </span>
         )}
-        <span className="field-hint" id={hintId}>
-          Start with a letter, then use letters, numbers, hyphens or underscores. Esc goes back to the list.
-        </span>
+        {note && (problem || always) && (
+          <span className="field-hint" id={noteId}>
+            {note}
+          </span>
+        )}
+        <button type="button" className="btn btn-sm btn-ghost insp-link-aside" onClick={() => backToList(true)}>
+          <List aria-hidden="true" /> Choose from the list
+        </button>
       </span>
     );
   return (
-    <select
-      ref={picker}
-      id={id}
-      className="select sm grow"
-      value={value ? `#${value}` : ''}
-      title={value ? options.find((o) => o.value === `#${value}`)?.text : undefined}
-      aria-label={label}
-      aria-invalid={invalid || undefined}
-      aria-describedby={describedBy}
-      onChange={(e) => {
-        const v = e.target.value;
-        if (v === OTHER_SECTION) return setTyping(true);
-        // A pick from the list holds only for the project it was shown from: an undo in flight could remove the ID.
-        if (!v.startsWith(SECTION_NODE)) return onPick(v.replace(/^#/, ''), v ? { operations: [], expectedRevision: revision } : undefined);
-        const plan = page ? planSectionPick(state, page.id, v.slice(SECTION_NODE.length)) : null;
-        if (plan) onPick(plan.anchor, { operations: plan.operations, expectedRevision: revision });
-      }}
-    >
-      {top ? <option value="">Top of page</option> : !value && <option value="" disabled>Choose a section…</option>}
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.text}
-        </option>
-      ))}
-      <option value={OTHER_SECTION}>Another section ID…</option>
-    </select>
+    <span className="insp-link-pair">
+      <select
+        ref={picker}
+        id={id}
+        className="select sm grow"
+        value={value ? `#${value}` : ''}
+        title={value ? options.find((o) => o.value === `#${value}`)?.text : undefined}
+        aria-label={label}
+        aria-invalid={invalid || undefined}
+        aria-describedby={describedBy}
+        onChange={(e) => {
+          const v = e.target.value;
+          // A pick from the list holds only for the project it was shown from: an undo in flight could remove the ID.
+          if (!v.startsWith(SECTION_NODE)) return onPick(v.replace(/^#/, ''), v ? { operations: [], expectedRevision: revision } : undefined);
+          const plan = page ? planSectionPick(state, page.id, v.slice(SECTION_NODE.length)) : null;
+          if (plan) onPick(plan.anchor, { operations: plan.operations, expectedRevision: revision });
+        }}
+      >
+        {top ? <option value="">Top of page</option> : !value && <option value="" disabled>Choose a section…</option>}
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.text}
+          </option>
+        ))}
+      </select>
+      {/* A rare way in, so it takes a glyph's width and leaves the section's name the room to be read. */}
+      <button type="button" className="btn btn-sm insp-link-id" aria-label={`Type an ID for ${label.toLowerCase()}`} title="Type a section ID" onClick={() => setTyping(true)}>
+        <Hash aria-hidden="true" />
+      </button>
+    </span>
   );
 }
 
@@ -201,7 +221,7 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, i
  * A link's document: one from the library, or one imported here, which the link then goes to. An import that
  * finishes after the link moved on (another selection, an undo, another project) changes nothing.
  */
-function DocumentPicker({ state, value, label, importFor, onPick, details, invalid, describedBy }: { state: ProjectState; value: string; label: string; importFor: string; onPick: (id: string) => void; details?: ReactNode; invalid?: boolean; describedBy?: string }) {
+function DocumentPicker({ state, value, label, importFor, onPick, details, invalid, describedBy, id }: { state: ProjectState; value: string; label: string; importFor: string; onPick: (id: string) => void; details?: ReactNode; invalid?: boolean; describedBy?: string; id?: string }) {
   const docs = libraryDocuments(state);
   const labels = documentLabels(docs);
   const [importing, setImporting] = useState(false);
@@ -232,6 +252,7 @@ function DocumentPicker({ state, value, label, importFor, onPick, details, inval
   return (
     <>
       <select
+        id={id}
         className="select sm"
         value={chosen ? value : ''}
         aria-label={label}
@@ -257,9 +278,11 @@ function DocumentPicker({ state, value, label, importFor, onPick, details, inval
         ))}
       </select>
       {details}
-      <button type="button" className="btn btn-sm insp-link-import" disabled={importing} aria-label={`Import a document for ${importFor}`} title="Import a document (PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP)" onClick={() => void importOne()}>
+      {!docs.length && !value && <p className="insp-link-file">Import a PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP file for visitors to download.</p>}
+      {/* Importing links the new document here as well as adding it to Assets, and the button says so. */}
+      <button type="button" className="btn btn-sm insp-link-import" disabled={importing} aria-label={`Import and link a document for ${importFor}`} onClick={() => void importOne()}>
         <FilePlus />
-        {importing ? 'Importing…' : 'Import…'}
+        {importing ? 'Importing…' : 'Import and link…'}
       </button>
     </>
   );
@@ -288,6 +311,11 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
   const problemId = useId();
   const valueKey = JSON.stringify(value ?? null);
   useEffect(() => setPending(null), [valueKey]);
+  // The note about a section a page change let go lasts only while the link is still that page's top.
+  useEffect(() => {
+    const d = dropped.current;
+    if (d && !(value?.type === 'page' && value.target === d.page && !value.anchor)) dropped.current = null;
+  }, [valueKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const type = pending ?? v.type;
   // Another kind of link is another field (keyed by type): what the last one kept goes with it.
   useEffect(() => setProblem(null), [type]);
@@ -305,6 +333,8 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
   };
   // The page a link last pointed at, so a trip through another link type comes back to it.
   const lastPage = useRef<string | null>(null);
+  // The section a page change let go, and the page it was let go for.
+  const dropped = useRef<{ page: string; section: string } | null>(null);
   if (v.type === 'page' && state.pages[v.target]) lastPage.current = v.target;
   // The collections whose index a link can go to, and the one it last went to.
   const indexes = useMemo(() => linkableIndexes(state), [state]);
@@ -343,125 +373,355 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
       : shared
         ? `“#${sectionValue}” isn’t on every page with this ${shared}, so the link does nothing there. Choose another section.`
         : `“#${sectionValue}” isn’t on this page any more, so the link does nothing. Choose another section.`;
+  // What visitors get while the field shows something else: a kind still waiting for its destination, or typed text
+  // the project would refuse. Said once, after the reason, so the author knows the saved link still works.
+  const saved = savedDestination(v, state, savedSectionGone, shared);
+  const still = pending && v.type !== 'none' ? `Until you choose where it goes, the link still ${saved}.` : problem && v.type === type && v.target ? `Until it’s corrected, the link still ${saved}.` : null;
+  const kindId = `${pendingId}-kind`;
+  const destId = `${pendingId}-dest`;
+  const destLabel = type === 'page' ? 'Page' : type === 'collection' ? 'Collection' : type === 'document' ? 'Document' : type === 'anchor' ? 'Section' : type === 'tel' ? 'Number' : 'Address';
+  const destMissing = !pending && v.type === 'collection' && !indexes.some((x) => x.id === v.target);
+  // A section the newly chosen page doesn't have was let go: said once, quietly, while the link still opens that page's top.
+  const droppedNote = dropped.current && v.type === 'page' && v.target === dropped.current.page && !v.anchor && !pageIds(state, v.target).has(dropped.current.section) ? `${state.pages[v.target]?.title ?? 'That page'} has no “#${dropped.current.section}” section, so the link opens at its top.` : null;
   return (
     <div className="insp-link">
-      <select className="select sm" value={type} aria-label={named('Link type')} aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={(e) => pickType(e.target.value as LinkValue['type'])}>
-        <option value="none">No link</option>
-        <option value="page">Page</option>
-        {(indexes.length > 0 || type === 'collection' || v.type === 'collection') && <option value="collection">Collection index</option>}
-        <option value="url">Web address</option>
-        <option value="document">Document</option>
-        <option value="email">Email</option>
-        <option value="tel">Phone</option>
-        {(!everywhere || type === 'anchor') && <option value="anchor">On this page</option>}
-      </select>
-      {/* The destination gets the panel's full width, so where the link goes can be read without opening it. */}
-      {type === 'page' ? (
-        <select className="select sm" value={v.target} title={state.pages[v.target] ? `${state.pages[v.target].title} (${state.pages[v.target].route})` : undefined} aria-label={named('Page')} onChange={(e) => onChange(withAnchor({ ...v, target: e.target.value }, e.target.value === v.target ? v.anchor : undefined))}>
-          {state.site.pageOrder.map((id) => (
-            <option key={id} value={id}>
-              {state.pages[id].title} ({state.pages[id].route})
-            </option>
-          ))}
+      {/* Each control has its name beside it (stacked when the panel is narrow), and what is wrong with a control is
+          said under that control, once. */}
+      <div className="insp-link-grid">
+        <label className="insp-link-sub" htmlFor={kindId}>
+          Type
+        </label>
+        <select id={kindId} className="select sm" value={type} aria-label={named('Link type')} aria-invalid={(invalid && !pending) || undefined} aria-describedby={describedBy} onChange={(e) => pickType(e.target.value as LinkValue['type'])}>
+          <option value="none">No link</option>
+          <optgroup label="On this site">
+            <option value="page">Page</option>
+            {(!everywhere || type === 'anchor') && <option value="anchor">Section on this page</option>}
+            {(indexes.length > 0 || type === 'collection' || v.type === 'collection') && <option value="collection">Collection index</option>}
+            <option value="document">Document</option>
+          </optgroup>
+          <optgroup label="Elsewhere">
+            <option value="url">Web address</option>
+            <option value="email">Email</option>
+            <option value="tel">Phone</option>
+          </optgroup>
         </select>
-      ) : type === 'collection' ? (
-        <select
-          className="select sm"
-          value={indexes.some((x) => x.id === v.target) ? v.target : ''}
-          aria-label={named('Collection')}
-          aria-invalid={!indexes.some((x) => x.id === v.target) || undefined}
-          aria-describedby={indexes.some((x) => x.id === v.target) ? undefined : missingId}
-          onChange={(e) => e.target.value && onChange({ type: 'collection', target: e.target.value, ...(v.newTab ? { newTab: true } : {}) })}
-        >
-          {!indexes.some((x) => x.id === v.target) && (
-            <option value="" disabled>
-              {indexName(state, v.target) ?? 'Missing collection'}
-            </option>
-          )}
-          {indexes.map((x) => (
-            <option key={x.id} value={x.id}>
-              {x.name} ({x.route})
-            </option>
-          ))}
-        </select>
-      ) : type === 'document' ? (
-        <DocumentPicker
-          state={state}
-          value={target}
-          label={named('Document')}
-          importFor={base && base.toLowerCase() !== 'link' ? base.toLowerCase() : 'this link'}
-          invalid={!pending && !linkedDocument && !!v.target}
-          describedBy={!pending && !linkedDocument && v.target ? missingId : pending && v.type !== 'none' ? pendingId : undefined}
-          onPick={(id) => onChange({ type: 'document', target: id })}
-          details={
-            pending ? null : linkedDocument ? (
-              <p className="insp-link-file">{documentDetails(linkedDocument)}. Visitors download it.</p>
-            ) : v.target ? (
-              <div className="field-error" id={missingId}>
-                This document is no longer in Assets, so the link goes nowhere. Choose another, or import it again.
+        {type !== 'none' && (
+          <>
+            <label className="insp-link-sub" htmlFor={destId}>
+              {destLabel}
+            </label>
+            <div className="insp-link-control">
+              {type === 'page' ? (
+                <PagePicker
+                  state={state}
+                  id={destId}
+                  value={v.target}
+                  label={named('Page')}
+                  // A section the new page also has goes with the link; one it lacks is dropped, so it opens at the top.
+                  onPick={(id) => {
+                    const keep = !!v.anchor && (id === v.target || pageIds(state, id).has(v.anchor));
+                    dropped.current = v.anchor && !keep ? { page: id, section: v.anchor } : null;
+                    onChange(withAnchor({ ...v, target: id }, keep ? v.anchor : undefined));
+                  }}
+                />
+              ) : type === 'collection' ? (
+                <select
+                  id={destId}
+                  className="select sm"
+                  value={indexes.some((x) => x.id === v.target) ? v.target : ''}
+                  aria-label={named('Collection')}
+                  aria-invalid={destMissing || undefined}
+                  aria-describedby={destMissing ? missingId : undefined}
+                  onChange={(e) => e.target.value && onChange({ type: 'collection', target: e.target.value, ...(v.newTab ? { newTab: true } : {}) })}
+                >
+                  {!indexes.some((x) => x.id === v.target) && (
+                    <option value="" disabled>
+                      {indexName(state, v.target) ?? 'Missing collection'}
+                    </option>
+                  )}
+                  {indexes.map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.name} ({x.route})
+                    </option>
+                  ))}
+                </select>
+              ) : type === 'document' ? (
+                <DocumentPicker
+                  state={state}
+                  id={destId}
+                  value={target}
+                  label={named('Document')}
+                  importFor={base && base.toLowerCase() !== 'link' ? base.toLowerCase() : 'this link'}
+                  invalid={!pending && !linkedDocument && !!v.target}
+                  describedBy={!pending && !linkedDocument && v.target ? missingId : still ? pendingId : undefined}
+                  onPick={(id) => onChange({ type: 'document', target: id })}
+                  details={
+                    pending ? null : linkedDocument ? (
+                      <p className="insp-link-file">{documentDetails(linkedDocument)}. Visitors download it.</p>
+                    ) : v.target ? (
+                      <div className="field-error" id={missingId}>
+                        This document is no longer in Assets, so the link goes nowhere. Choose another, or import it again.
+                      </div>
+                    ) : null
+                  }
+                />
+              ) : type === 'anchor' && everywhere ? (
+                // A design's section "on this page" is one every page placing it must have: shown, not re-picked here.
+                <span className="insp-link-fixed" id={destId}>
+                  #{target}
+                </span>
+              ) : type === 'anchor' ? (
+                <SectionPicker state={state} id={destId} pageId={currentPageId} value={target} label={named('Section')} shared={shared} invalid={missing} describedBy={missing ? missingId : still ? pendingId : undefined} onTyping={setTypingSection} note={still ?? (v.type === 'none' ? undefined : `Until it’s corrected, the link still ${saved}.`)} always={!!still} onPick={(a, edit) => a && onChange({ type: 'anchor', target: a }, edit)} />
+              ) : (
+                <DraftInput
+                  key={type}
+                  id={destId}
+                  className={`input sm${type === 'tel' ? '' : ' insp-link-address'}`}
+                  // A long address wraps, so the part that tells two links on one site apart is never hidden.
+                  wrap={type !== 'tel'}
+                  value={target}
+                  autoFocus={!!pending}
+                  aria-describedby={[problem ? problemId : '', still ? pendingId : '', describedBy ?? ''].filter(Boolean).join(' ') || undefined}
+                  aria-invalid={problem ? true : undefined}
+                  check={(t) => {
+                    const wrong = linkFieldProblem(type, t, state);
+                    return wrong ? { message: wrong } : null;
+                  }}
+                  onProblem={(p) => setProblem(p?.message ?? null)}
+                  ariaLabel={named(type === 'url' ? 'Web address' : type === 'email' ? 'Email address' : 'Phone number')}
+                  placeholder={type === 'url' ? 'https://example.com' : type === 'email' ? 'hello@example.com' : '+1 555 0100'}
+                  onCommit={(t) => {
+                    if (!t.trim()) return;
+                    // A web address typed over another keeps what the author said about the site; any other kind has none.
+                    onChange(withRels({ type, target: t.trim(), newTab: type === 'url' ? v.newTab : undefined }, v.type === type ? v.rel : undefined));
+                  }}
+                />
+              )}
+              {/* Mounted with a page link, so the note a page change leaves is announced. */}
+              {type === 'page' && (
+                <div className="field-hint insp-link-status" role="status">
+                  {droppedNote}
+                </div>
+              )}
+              {problem && (
+                <div className="field-error" id={problemId} role="alert">
+                  {problem}
+                </div>
+              )}
+              {type === 'anchor' && missingText && (
+                <div className="field-error" id={missingId}>
+                  {missingText}
+                </div>
+              )}
+              {destMissing && (
+                <div className="field-error" id={missingId}>
+                  {indexName(state, v.target) ? `${indexName(state, v.target)} has no index on the website, so the link shows its words alone. Turn on its index, or choose another destination.` : 'This collection is no longer in the project, so the link goes nowhere. Choose another destination.'}
+                </div>
+              )}
+              {/* A kind of link that still needs its destination, or text that can't be saved: the saved link is the one visitors get. */}
+              {still && !(type === 'anchor' && typingSection) && (
+                <div className="field-hint" id={pendingId}>
+                  {still}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+        {type === 'page' && (
+          <>
+            <label className="insp-link-sub" htmlFor={sectionId}>
+              Section
+            </label>
+            <div className="insp-link-control">
+              <div className="insp-link-row">
+                <SectionPicker state={state} pageId={v.target} value={v.anchor ?? ''} label={named('Section on the page')} top id={sectionId} invalid={missing} describedBy={missing ? missingId : undefined} onTyping={setTypingSection} note={`Until it’s corrected, the link still ${saved}.`}
+                  onPick={(a, edit) => {
+                    dropped.current = null;
+                    onChange(withAnchor(v, a || undefined), edit);
+                  }}
+                />
               </div>
-            ) : null
-          }
-        />
-      ) : type === 'anchor' && everywhere ? (
-        // A design's section "on this page" is one every page placing it must have: shown, not re-picked here.
-        <span className="insp-link-fixed">#{target}</span>
-      ) : type === 'anchor' ? (
-        <SectionPicker state={state} pageId={currentPageId} value={target} label={named('Section')} shared={shared} invalid={missing} describedBy={missing ? missingId : pending && v.type !== 'none' ? pendingId : undefined} onTyping={setTypingSection} onPick={(a, edit) => a && onChange({ type: 'anchor', target: a }, edit)} />
-      ) : type !== 'none' ? (
-        <DraftInput
-          key={type}
-          className="input sm"
-          value={target}
-          autoFocus={!!pending}
-          aria-describedby={[problem ? problemId : '', pending && v.type !== 'none' ? pendingId : '', describedBy ?? ''].filter(Boolean).join(' ') || undefined}
-          aria-invalid={problem ? true : undefined}
-          check={(t) => {
-            const wrong = linkFieldProblem(type, t, state);
-            return wrong ? { message: wrong } : null;
-          }}
-          onProblem={(p) => setProblem(p?.message ?? null)}
-          ariaLabel={named(type === 'url' ? 'Web address' : type === 'email' ? 'Email address' : 'Phone number')}
-          placeholder={type === 'url' ? 'https://example.com' : type === 'email' ? 'hello@example.com' : '+1 555 0100'}
-          onCommit={(t) => {
-            if (!t.trim()) return;
-            // A web address typed over another keeps what the author said about the site; any other kind has none.
-            onChange(withRels({ type, target: t.trim(), newTab: type === 'url' ? v.newTab : undefined }, v.type === type ? v.rel : undefined));
-          }}
-        />
-      ) : null}
-      {/* A kind of link that still needs its destination: until it has one, the saved link is the one visitors get. */}
-      {problem && (
-        <div className="field-error" id={problemId} role="alert">
-          {problem}
-        </div>
-      )}
-      {pending && v.type !== 'none' && (
-        <div className="field-hint" id={pendingId}>
-          Until you choose where it goes, the link still {savedDestination(v, state, savedSectionGone)}.
-        </div>
-      )}
-      {type === 'page' && (
-        <div className="insp-link-row">
-          <label className="insp-link-sub" htmlFor={sectionId}>
-            Section
-          </label>
-          <SectionPicker state={state} pageId={v.target} value={v.anchor ?? ''} label={named('Section on the page')} top id={sectionId} invalid={missing} describedBy={missing ? missingId : undefined} onTyping={setTypingSection} onPick={(a, edit) => onChange(withAnchor(v, a || undefined), edit)} />
-        </div>
-      )}
-      {missingText && (
-        <div className="field-error" id={missingId}>
-          {missingText}
-        </div>
-      )}
-      {!pending && v.type === 'collection' && !indexes.some((x) => x.id === v.target) && (
-        <div className="field-error" id={missingId}>
-          {indexName(state, v.target) ? `${indexName(state, v.target)} has no index on the website, so the link shows its words alone. Turn on its index, or choose another destination.` : 'This collection is no longer in the project, so the link goes nowhere. Choose another destination.'}
-        </div>
-      )}
+              {missingText && (
+                <div className="field-error" id={missingId}>
+                  {missingText}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
       {/* A new tab only means something for pages and web addresses; mail and phone links open their own apps. */}
       {!pending && (v.type === 'page' || v.type === 'url' || v.type === 'collection') && <SwitchRow checked={!!v.newTab} onChange={(n) => onChange({ ...v, newTab: n })} label="Open in a new tab" />}
-      {!pending && v.type === 'url' && <LinkRelControls value={v.rel} onChange={(rel) => onChange(withRels(v, rel))} />}
+      {!pending && v.type === 'url' && <LinkRelDisclosure value={v.rel} onChange={(rel) => onChange(withRels(v, rel))} />}
+    </div>
+  );
+}
+
+/**
+ * What a link to another site tells search engines, folded under one line that says what is ticked: a setting most
+ * links never need, so it stays out of the way until it is wanted, and says so when it is set.
+ */
+function LinkRelDisclosure({ value, onChange }: { value: readonly string[] | undefined; onChange: (rel: LinkRel[]) => void }) {
+  const on = canonicalRels(value);
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="insp-link-more" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>
+        <ChevronRight aria-hidden="true" className="chev" />
+        <span>Search engines</span>
+        <span className="insp-link-more-state">{on.length ? on.map((r) => LINK_REL_LABELS[r].label.toLowerCase()).join(', ').replace(/^./, (c) => c.toUpperCase()) : 'None'}</span>
+      </summary>
+      <LinkRelControls value={value} onChange={onChange} />
+    </details>
+  );
+}
+
+/**
+ * A link's page, chosen from a list that can be searched by title or address. Closed, it shows the page's title and
+ * its address apart, so the address is never what a long title pushes out of view. Open, it is a search field over
+ * the site's pages (the APG combobox: focus stays in the field, the arrow keys move through the pages, Enter chooses,
+ * Escape closes and changes nothing).
+ */
+function PagePicker({ state, value, label, id, onPick }: { state: ProjectState; value: string; label: string; id?: string; onPick: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [active, setActive] = useState<string | null>(null);
+  const listId = useId();
+  const btn = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  // A click between rows or on the scrollbar focuses the list, which hands focus straight back to the field.
+  const field = useRef<HTMLInputElement>(null);
+  const page = Object.hasOwn(state.pages, value) ? state.pages[value] : undefined;
+  const all = state.site.pageOrder.filter((p) => Object.hasOwn(state.pages, p));
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? all.filter((p) => state.pages[p].title.toLowerCase().includes(needle) || state.pages[p].route.toLowerCase().includes(needle)) : all;
+  // The highlighted page: the one moved to while it is still shown, else the linked one, else the first.
+  // While searching, the first match: Enter takes what was typed for, not the page already linked.
+  const current = active && shown.includes(active) ? active : !needle && shown.includes(value) ? value : (shown[0] ?? null);
+  const optionId = (p: string) => `${listId}-${p}`;
+  // The highlighted page is kept in view by scrolling the list alone, never the Inspector around it.
+  useEffect(() => {
+    const box = list.current;
+    const row = open && current ? document.getElementById(optionId(current)) : null;
+    if (!box || !row) return;
+    if (row.offsetTop < box.scrollTop) box.scrollTop = row.offsetTop;
+    else if (row.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTop = row.offsetTop + row.offsetHeight - box.clientHeight;
+  }, [open, current, needle]); // eslint-disable-line react-hooks/exhaustive-deps
+  const close = (focus: boolean) => {
+    setOpen(false);
+    setQ('');
+    setActive(null);
+    if (focus) requestAnimationFrame(() => btn.current?.focus());
+  };
+  const choose = (p: string) => {
+    if (p !== value) onPick(p);
+    close(true);
+  };
+  const keys = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposing(e)) return;
+    const at = current ? shown.indexOf(current) : -1;
+    const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : e.key === 'PageDown' ? 8 : e.key === 'PageUp' ? -8 : 0;
+    if (step && shown.length) {
+      e.preventDefault();
+      setActive(shown[Math.max(0, Math.min(shown.length - 1, at + step))]);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (current) choose(current);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close(true);
+    }
+  };
+  return (
+    <div
+      className="insp-page-picker"
+      onBlur={(e) => {
+        if (open && !e.currentTarget.contains(e.relatedTarget as Node | null)) close(false);
+      }}
+    >
+      <button
+        ref={btn}
+        type="button"
+        id={id}
+        className="select sm insp-page-btn"
+        aria-label={page ? `${label}: ${page.title}, ${page.route}` : label}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        onClick={() => (open ? close(false) : setOpen(true))}
+        onKeyDown={(e) => {
+          if (open || isImeComposing(e)) return;
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') (e.preventDefault(), setOpen(true));
+          // Typing on it, as on the selects beside it, opens the list searched for what was typed (Space stays a press).
+          else if (e.key.length === 1 && e.key !== ' ' && !e.metaKey && !e.ctrlKey && !e.altKey) (e.preventDefault(), setQ(e.key), setOpen(true));
+        }}
+      >
+        {page ? (
+          <>
+            <span className="insp-page-title">{page.title}</span>
+            <span className="insp-page-route">{page.route}</span>
+          </>
+        ) : (
+          <span className="insp-page-title faint">Choose a page…</span>
+        )}
+      </button>
+      {open && (
+        <div className="insp-pick insp-page-pick">
+          <label className="insp-page-search-label" htmlFor={`${listId}-q`}>
+            Search pages
+          </label>
+          <div className="insp-page-search">
+            <Search aria-hidden="true" />
+            <input
+              ref={field}
+              id={`${listId}-q`}
+              type="text"
+              role="combobox"
+              className="input sm"
+              placeholder="By title or address"
+              aria-expanded="true"
+              aria-controls={listId}
+              aria-autocomplete="list"
+              aria-activedescendant={current ? optionId(current) : undefined}
+              autoFocus
+              value={q}
+              onChange={(e) => (setQ(e.target.value), setActive(null))}
+              onKeyDown={keys}
+            />
+          </div>
+          {/* Mounted while open, empty or not, so the field always controls a list; never a tab stop of its own. */}
+          <div ref={list} className="insp-page-list" role="listbox" id={listId} aria-label={label} tabIndex={-1} hidden={!shown.length} onFocus={(e) => e.target === e.currentTarget && field.current?.focus()}>
+            {shown.map((p) => (
+              <div
+                key={p}
+                id={optionId(p)}
+                role="option"
+                aria-selected={p === current}
+                className={`insp-page-option${p === value ? ' current' : ''}${p === current ? ' active' : ''}`}
+                // The field keeps focus: a click chooses without the list closing first.
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseMove={() => p !== current && setActive(p)}
+                onClick={() => choose(p)}
+              >
+                <span className="insp-page-title">{state.pages[p].title}</span>
+                <span className="insp-page-route">{state.pages[p].route}</span>
+                {p === value && (
+                  <>
+                    <Check aria-hidden="true" className="insp-page-check" />
+                    <span className="sr-only">, linked now</span>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+          {!shown.length && <p className="faint insp-note">No pages match “{q.trim()}”.</p>}
+          {/* Mounted with the list, so a search's count is announced as it changes. */}
+          <span className="sr-only" role="status">
+            {needle ? (shown.length ? `${shown.length} ${shown.length === 1 ? 'page' : 'pages'}` : `No pages match “${q.trim()}”.`) : ''}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -470,11 +730,13 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
 const indexName = (state: ProjectState, id: string): string | null => (Object.hasOwn(state.collections ?? {}, id) ? state.collections[id].settings.name : null);
 
 /** Where a saved link takes visitors, as the end of "the link still …", for while another kind of link is being set up. */
-function savedDestination(v: LinkValue, state: ProjectState, sectionGone: boolean): string {
+function savedDestination(v: LinkValue, state: ProjectState, sectionGone: boolean, shellPart?: ShellPart): string {
   const page = v.type === 'page' && Object.hasOwn(state.pages, v.target) ? state.pages[v.target] : null;
   // A section by the name the picker gives it, when it has one.
   const section = (pageId: string | null | undefined, id: string) => sectionOptions(state, pageId, undefined).options.find((o) => o.value === `#${id}`)?.text ?? `#${id}`;
-  if (page) return `goes to ${sectionGone || !v.anchor ? 'the top of ' : ''}${page.title}${v.anchor && !sectionGone ? `, ${section(page.id, v.anchor)}` : ''}`;
+  // A title another page shares is told apart by its address, since the page list isn't showing while this is said.
+  const shared = page && Object.values(state.pages).some((p) => p.id !== page.id && p.title.trim().toLowerCase() === page.title.trim().toLowerCase());
+  if (page) return `goes to ${sectionGone || !v.anchor ? 'the top of ' : ''}${page.title}${shared ? ` (${page.route})` : ''}${v.anchor && !sectionGone ? `, ${section(page.id, v.anchor)}` : ''}`;
   if (v.type === 'collection') {
     const index = linkableIndexes(state).find((x) => x.id === v.target);
     return index ? `goes to the ${index.name} index` : 'goes nowhere';
@@ -482,7 +744,8 @@ function savedDestination(v: LinkValue, state: ProjectState, sectionGone: boolea
   if (v.type === 'document') return Object.hasOwn(state.assets.assets, v.target) && isLibraryDocument(state.assets.assets[v.target]) ? `downloads ${state.assets.assets[v.target].name}` : 'goes nowhere';
   if (v.type === 'email') return `emails ${v.target}`;
   if (v.type === 'tel') return `calls ${v.target}`;
-  if (v.type === 'anchor') return sectionGone ? 'does nothing' : `goes to #${v.target}`;
+  // In a shared header or footer, a section some of its pages lack still works on the ones that have it.
+  if (v.type === 'anchor') return !sectionGone ? `goes to #${v.target}` : shellPart ? `goes to #${v.target} on the pages that have it` : 'does nothing';
   if (v.type === 'url' && v.target) return `goes to ${v.target}`;
   return 'goes nowhere';
 }
