@@ -25,7 +25,7 @@ import { SiteImageField } from './PropEditors';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isImeComposing } from '../lib/ime';
 import { assetArrived, reviewImport } from '../lib/import-review';
-import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
+import { appliesLanded, registerFlush, trackApply, type ApplyOutcome } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
 import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, postAt } from '../lib/posts';
@@ -180,6 +180,8 @@ type Dialog =
       at: HTMLElement | null;
       /** A new picture goes in before `at` rather than after it: dropped above the first block. */
       before?: boolean;
+      /** Where `at` is among the text's blocks: the block in its place takes the picture once the text is drawn again. */
+      index?: number;
       /** The selection as it was, put back on Cancel. */
       caret: SavedSelection | null;
       /** Add or Update was pressed with no description and not decorative. */
@@ -258,10 +260,12 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     };
   }, []);
   /** Whether the writer is put away, and the dialog open in it, as they are now (for an import finishing later). */
-  const shownRef = useRef({ hidden, dialog });
-  shownRef.current = { hidden, dialog };
   /** The text saved elsewhere, shown to read before the author chooses it over theirs. */
   const [reviewing, setReviewing] = useState(false);
+  const shownRef = useRef({ hidden, dialog, reviewing });
+  shownRef.current = { hidden, dialog, reviewing };
+  /** Where a picture being dragged in from the desktop would go: the line drawn there, from the top of the text. */
+  const [dropLine, setDropLine] = useState<{ top: number; left: number; width: number } | null>(null);
   /**
    * Whether the text editor shows: while the collection's entries have text (#675), and while it holds text not saved
    * yet, so entry text turned off meanwhile never takes away what was typed. Turned on again, it shows the saved text.
@@ -661,6 +665,14 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
 
   /** Whether a picture can be put in the text now: it is shown, editable, and the entry is still in the project. */
   const picturesOn = () => !unreadable && draft.problem?.kind !== 'gone' && !isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection);
+  /** Where `at` is among the text's blocks, if it is one. */
+  const blockIndex = (el: HTMLElement, at: HTMLElement | null) => (at ? Array.prototype.indexOf.call(el.children, at) as number : -1);
+  /** The block a new picture goes by: the one chosen, or the one in its place once the text has been drawn again. */
+  const anchorIn = (el: HTMLElement, at: HTMLElement | null, index?: number): HTMLElement | null => {
+    if (at && el.contains(at)) return at;
+    if (index === undefined || index < 0 || !el.children.length) return null;
+    return el.children[Math.min(index, el.children.length - 1)] as HTMLElement;
+  };
   const openImage = (clicked: HTMLElement | null) => {
     const el = root.current;
     if (!el || !picturesOn()) return;
@@ -670,7 +682,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const fig = clicked ?? heldFigure(el, range);
     const at = fig ? null : blockAtCaret(el);
     const d = fig?.dataset;
-    setDialog({ kind: 'image', fig: fig && el.contains(fig) ? fig : null, at, caret: savedSelection(el), value: { assetId: d?.assetId ?? null, alt: d?.alt ?? '', ...(d?.decorative ? { decorative: true } : {}) }, caption: d?.caption ?? '' });
+    setDialog({ kind: 'image', fig: fig && el.contains(fig) ? fig : null, at, index: blockIndex(el, at), caret: savedSelection(el), value: { assetId: d?.assetId ?? null, alt: d?.alt ?? '', ...(d?.decorative ? { decorative: true } : {}) }, caption: d?.caption ?? '' });
   };
   const applyImage = (d: Extract<Dialog, { kind: 'image' }>) => {
     const el = root.current;
@@ -691,7 +703,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
         else delete d.fig.dataset.decorative;
         fillFigure(d.fig, getState().snapshot?.state ?? state, devUrl);
       } else {
-        const at = d.at && el.contains(d.at) ? d.at : null;
+        const at = anchorIn(el, d.at, d.index);
         const fig = insertFigure(el, at, figureElement(data, getState().snapshot?.state ?? state, devUrl), !!at && !!d.before);
         // On to the line after it.
         const next = fig.nextElementSibling as HTMLElement | null;
@@ -711,9 +723,22 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const opening = getState().snapshot?.workspaceKey;
     if (!el || !opening) return;
     const run = ++dropRun.current;
-    const plan = await reviewImport(paths, 'image').catch((e: Error) => (toast(`The image couldn’t be added: ${e.message}`, 'error'), null));
-    if (!plan) return;
-    const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, 'image', plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
+    const index = blockIndex(el, at);
+    // Until the files start to be copied, a drop the author has moved on from asks nothing and imports nothing.
+    const wanted = () => run === dropRun.current && mounted.current && getState().snapshot?.workspaceKey === opening;
+    const plan = await reviewImport(paths, 'image', wanted).catch((e: Error) => (toast(`The image couldn’t be added: ${e.message}`, 'error'), null));
+    if (!plan || !wanted()) return;
+    // The copying counts as a save in flight: closing the project waits for it, and the bar never says Saved before it.
+    let landed!: (o: ApplyOutcome) => void;
+    trackApply(new Promise<ApplyOutcome>((done) => (landed = done)));
+    setState({ pendingSave: getState().pendingSave + 1 });
+    let r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = { ok: false, assetIds: [], message: 'The image couldn’t be added.' };
+    try {
+      r = await api.project.importAssets(plan.paths, 'image', plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
+    } finally {
+      setState({ pendingSave: Math.max(0, getState().pendingSave - 1) });
+      landed(!r.assetIds.length && r.message ? { ok: false, message: r.message } : { ok: true });
+    }
     if (r.note) toast(r.note, 'info');
     if (r.message) toast(r.message, 'error');
     if (!r.assetIds.length) return;
@@ -724,13 +749,31 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const assets = snap.state.assets.assets;
     const asset = r.assetIds.map((id) => (Object.hasOwn(assets, id) ? assets[id] : undefined)).find((a) => a?.kind === 'image');
     if (!asset) return;
-    if (run !== dropRun.current || !mounted.current || shownRef.current.hidden || shownRef.current.dialog || getState().modal || root.current !== el || !picturesOn()) {
+    const now = shownRef.current;
+    if (!wanted() || now.hidden || now.dialog || now.reviewing || getState().modal || getState().leaving || root.current !== el || !picturesOn()) {
       toast(`“${asset.name}” was added to Assets.`, 'info');
       return;
     }
-    // The block dropped on was replaced meanwhile (Undo, or a change made somewhere else): where the caret is now.
-    const still = at && el.contains(at) ? at : null;
-    setDialog({ kind: 'image', fig: null, at: still ?? blockAtCaret(el), before: !!still && before, caret: savedSelection(el), value: { assetId: asset.id, alt: asset.altSuggestion ?? '' }, caption: '' });
+    const still = anchorIn(el, at, index);
+    setDialog({ kind: 'image', fig: null, at: still, index: blockIndex(el, still), before: !!still && before, caret: savedSelection(el), value: { assetId: asset.id, alt: asset.altSuggestion ?? '' }, caption: '' });
+  };
+  /**
+   * The line where a picture dragged in from the desktop would go, and the block it goes by. Over a picture already in
+   * the text too, which the browser would not take a file on by itself.
+   */
+  const dropPoint = (el: HTMLElement, y: number) => {
+    const hit = blockAtPoint(el, y);
+    const at = hit ?? (el.firstElementChild as HTMLElement | null);
+    // Drawn over the text's own box (its parent holds the line while it shows: see PostsPanel.css).
+    const box = el.getBoundingClientRect();
+    const frame = el.parentElement!.getBoundingClientRect();
+    let edge = box.top + 4;
+    if (at) {
+      const b = at.getBoundingClientRect();
+      const next = at.nextElementSibling?.getBoundingClientRect();
+      edge = !hit ? b.top - 6 : next ? (b.bottom + next.top) / 2 : b.bottom + 6;
+    }
+    return { at, before: !hit, line: { top: Math.round(edge - frame.top), left: Math.round(box.left - frame.left), width: Math.round(box.width) } };
   };
   const removeImage = (d: Extract<Dialog, { kind: 'image' }>) => afterDialog(null, () => void (d.fig && root.current?.contains(d.fig) && d.fig.remove()));
 
@@ -1223,22 +1266,35 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               const text = e.clipboardData.getData('text/plain');
               if (text) document.execCommand('insertText', false, text);
             }}
-            // Image files from the desktop are imported and offered in the picture dialog, to go in where they were dropped.
+            // Image files from the desktop are imported and offered in the picture dialog, to go in where they were dropped,
+            // shown by a line between the blocks as they are dragged over the text. Words dragged keep the browser's own.
+            onDragOver={(e) => {
+              const el = root.current;
+              if (!el || !e.dataTransfer.types.includes('Files') || dialog || !picturesOn()) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'copy';
+              const { line } = dropPoint(el, e.clientY);
+              setDropLine((was) => (was && was.top === line.top && was.left === line.left && was.width === line.width ? was : line));
+            }}
+            onDragLeave={(e) => {
+              if (!root.current?.contains(e.relatedTarget as Node | null)) setDropLine(null);
+            }}
             onDrop={(e) => {
               if (!e.dataTransfer.types.includes('Files')) return;
               e.preventDefault();
+              setDropLine(null);
               const el = root.current;
               const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
               if (!el || !paths.length || dialog || !picturesOn()) return;
-              // Above the first block, the picture goes before it.
-              const hit = blockAtPoint(el, e.clientY);
-              void dropImages(paths, hit ?? (el.firstElementChild as HTMLElement | null), !hit);
+              const { at, before } = dropPoint(el, e.clientY);
+              void dropImages(paths, at, before);
             }}
             onClick={(e) => {
               const fig = (e.target as HTMLElement).closest<HTMLElement>('figure.post-figure');
               if (fig && root.current?.contains(fig)) openImage(fig);
             }}
           />
+          {dropLine && <div className="post-drop-line" aria-hidden="true" data-testid="post-drop-line" style={dropLine} />}
           </>
           )}
           </fieldset>

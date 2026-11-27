@@ -38,28 +38,60 @@ const ENTRY = [
   '  set: (patch) => flushSync(() => useStore.setState(patch)),',
   // A change as it arrives from main: the whole project, new objects throughout.
   '  change: (state) => flushSync(() => { const s = useStore.getState().snapshot; useStore.setState({ snapshot: { ...s, state, assetUsage: { ...s.assetUsage }, revision: s.revision + 1 } }); }),',
-  '  toasts: () => useStore.getState().toasts.map((t) => t.text)',
+  '  toasts: () => useStore.getState().toasts.map((t) => t.text),',
+  '  assets: () => useStore.getState().snapshot.state.assets.assets',
   '};'
 ].join('\n');
 
 /**
  * The preload bridge: a dropped file's path is its name under /drops (none for a file named `nopath`), every file is
- * reviewed as one to import as it is, every edit is taken, and the import waits for the test to release it with the IDs it added.
+ * reviewed as one to import as it is, every edit is taken, and each import waits for the test to release it with the
+ * IDs it added (or a refusal). `t` is the page's side of the test: drops, the text's blocks, and what the bridge heard.
  */
 const BRIDGE = `
-  window.drop = { reviews: [], imports: [], release: null };
+  window.drop = { lookups: 0, reviews: [], imports: [], applies: 0 };
   const answers = {
-    'pathForFile': (file) => (file.name === 'nopath' ? '' : '/drops/' + file.name),
+    'pathForFile': (file) => (window.drop.lookups++, file.name === 'nopath' ? '' : '/drops/' + file.name),
     'project.reviewImport': (paths, only) => (window.drop.reviews.push({ paths, only }), Promise.resolve({ paths, rows: paths.map((path) => ({ path, action: 'import' })) })),
-    // The text saved as it changes: the project takes it.
-    'project.apply': () => Promise.resolve({ ok: true }),
-    'project.importAssets': (paths, only) => new Promise((resolve) => { window.drop.imports.push({ paths, only }); window.drop.release = (assetIds) => resolve({ ok: true, assetIds }); })
+    'project.apply': () => (window.drop.applies++, Promise.resolve({ ok: true })),
+    'project.importAssets': (paths, only, choices) => new Promise((resolve) => window.drop.imports.push({ paths, only, choices, release: (assetIds, message) => resolve({ ok: !message, assetIds, message }) }))
   };
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : key === 'platform' ? 'darwin' : any(path ? path + '.' + key : key)),
     apply: (_, __, args) => (answers[path] ? answers[path](...args) : path === 'on' ? () => {} : Promise.resolve(undefined))
   });
   window.builder = any('');
+  const text = () => document.querySelector('#writer .post-body');
+  window.t = {
+    // Files named \`names\` let go at the middle of block \`index\` of the text, or just above it ('above').
+    drop: async (names, index, edge, type = 'Files') => {
+      const root = text();
+      const box = root.children[index].getBoundingClientRect();
+      const data = new DataTransfer();
+      if (type === 'Files') for (const n of names) data.items.add(new File(['x'], n, { type: 'image/jpeg' }));
+      else data.setData('text/plain', names.join(' '));
+      const y = edge === 'above' ? box.top - 2 : box.top + box.height / 2;
+      const at = { bubbles: true, cancelable: true, clientX: box.left + 8, clientY: y, dataTransfer: data };
+      const over = new DragEvent('dragover', at);
+      (root.children[index] ?? root).dispatchEvent(over);
+      await window.t.frames(2);
+      const line = document.querySelector('[data-testid="post-drop-line"]');
+      // Where the line is drawn from the top of the text (the page here has no styles to place it by).
+      const shown = line ? parseFloat(line.style.top) - Math.round(root.getBoundingClientRect().top - root.parentElement.getBoundingClientRect().top) : null;
+      const e = new DragEvent('drop', at);
+      (root.children[index] ?? root).dispatchEvent(e);
+      await window.t.frames(2);
+      return { accepted: over.defaultPrevented, line: shown, taken: e.defaultPrevented, lineAfter: !!document.querySelector('[data-testid="post-drop-line"]') };
+    },
+    blocks: () => [...text().children].map((b) => (b.matches('figure') ? 'figure:' + b.dataset.assetId : b.textContent.trim())),
+    figure: () => { const f = text().querySelector('figure.post-figure'); return f && { alt: f.dataset.alt, caption: f.dataset.caption ?? null, figcaption: !!f.querySelector('figcaption') }; },
+    // The caret put across the words of block \`from\` to block \`to\`, made backwards (its anchor after its focus).
+    select: (from, to) => { const r = text(); r.focus(); getSelection().setBaseAndExtent(r.children[to].firstChild, 3, r.children[from].firstChild, 1); },
+    selection: () => { const s = getSelection(); const r = text(); const at = (n) => [...r.children].findIndex((b) => b.contains(n)); return [at(s.anchorNode), s.anchorOffset, at(s.focusNode), s.focusOffset]; },
+    heard: () => ({ lookups: window.drop.lookups, reviews: window.drop.reviews, imports: window.drop.imports.map(({ paths, only, choices }) => ({ paths, only, choices })), applies: window.drop.applies }),
+    release: (i, ids, message) => window.drop.imports[i].release(ids, message),
+    frames: (n) => new Promise((done) => { const next = (k) => (k ? requestAnimationFrame(() => next(k - 1)) : done()); next(n); })
+  };
 `;
 
 async function bundle(): Promise<string> {
@@ -114,32 +146,25 @@ describe.skipIf(!browserInstalled)('image files dropped on the post writer’s t
   withKiln.assets.assets[kiln.id] = kiln;
 
   const body = () => page.locator('#writer .post-body');
-  const blocks = () => page.evaluate(() => [...document.querySelectorAll('#writer .post-body > *')].map((b) => (b.matches('figure') ? `figure:${(b as HTMLElement).dataset.assetId}` : (b.textContent ?? '').trim())));
   const dialog = () => page.getByRole('dialog', { name: 'Add picture' });
-
-  /** Drop files named `names` at a point on block `index` of the text (`edge`: its top or middle), or above the first. */
-  async function drop(names: string[], index: number, edge: 'middle' | 'above' = 'middle') {
-    await page.evaluate(
-      ({ names, index, edge }) => {
-        const root = document.querySelector<HTMLElement>('#writer .post-body')!;
-        const box = (root.children[index] as HTMLElement).getBoundingClientRect();
-        const data = new DataTransfer();
-        for (const n of names) data.items.add(new File(['x'], n, { type: 'image/jpeg' }));
-        const x = box.left + 8;
-        const y = edge === 'above' ? box.top - 2 : box.top + box.height / 2;
-        root.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: data }));
-      },
-      { names, index, edge }
-    );
+  /** Runs `name` of the page's side of the test (BRIDGE's `t`). */
+  const t = <R = unknown>(name: string, ...args: unknown[]): Promise<R> => page.evaluate(([name, args]) => (globalThis as unknown as { t: Record<string, (...a: unknown[]) => unknown> }).t[name](...args), [name, args] as const) as Promise<R>;
+  const so = (name: string, arg: unknown) => page.evaluate(([name, arg]) => (globalThis as unknown as { so: Record<string, (a: unknown) => unknown> }).so[name](arg), [name, arg] as const);
+  type Dropped = { accepted: boolean; line: number | null; taken: boolean; lineAfter: boolean };
+  const drop = (names: string[], index: number, edge: 'middle' | 'above' = 'middle', type: 'Files' | 'text' = 'Files') => t<Dropped>('drop', names, index, edge, type);
+  const blocks = () => t<string[]>('blocks');
+  type Heard = { lookups: number; reviews: Array<{ paths: string[]; only: string }>; imports: Array<{ paths: string[]; only: string; choices: unknown }>; applies: number };
+  const heard = () => t<Heard>('heard');
+  const imports = async () => (await heard()).imports.length;
+  const toasts = () => page.evaluate(() => (globalThis as unknown as { so: { toasts(): string[] } }).so.toasts());
+  const images = () => page.evaluate(() => Object.values((globalThis as unknown as { so: { assets(): Record<string, { kind: string }> } }).so.assets()).filter((a) => a.kind === 'image').length);
+  /** Import `i` answers with `ids`, then the project's next change brings their records. */
+  async function land(i: number, ids: string[], state: ProjectState = withKiln) {
+    await expect.poll(imports).toBeGreaterThan(i);
+    await t('release', i, ids);
+    await so('change', state);
   }
-  /** The import answers with `ids`, and the project's next change brings their records. */
-  async function land(ids: string[], state: ProjectState = withKiln) {
-    await page.waitForFunction(() => !!(window as unknown as { drop: { release: unknown } }).drop.release);
-    await page.evaluate((ids) => (window as unknown as { drop: { release(ids: string[]): void } }).drop.release(ids), ids);
-    await page.evaluate((s) => (window as unknown as { so: { change(s: unknown): void } }).so.change(s), state as unknown);
-  }
-  const imports = () => page.evaluate(() => (window as unknown as { drop: { imports: Array<{ paths: string[]; only: string }> } }).drop.imports);
-  const toasts = () => page.evaluate(() => (window as unknown as { so: { toasts(): string[] } }).so.toasts());
+  const TEXT = BODY.map((b) => (b.type === 'p' ? b.spans[0].text : ''));
 
   beforeAll(async () => {
     [script, browser] = await Promise.all([bundle(), chromium.launch({ headless: true })]);
@@ -169,74 +194,154 @@ describe.skipIf(!browserInstalled)('image files dropped on the post writer’s t
   });
 
   it('imports the dropped photo into an empty library and puts it, described and captioned, after the block it was dropped on', async () => {
-    await drop(['kiln.jpg'], 1);
-    await expect.poll(imports).toEqual([{ paths: ['/drops/kiln.jpg'], only: 'image' }]);
-    // Nothing is asked until the photo is in Assets.
+    expect(await images()).toBe(0);
+    const dropped = await drop(['kiln.jpg'], 1);
+    // Taken, with a line shown between the block dropped on and the next, and gone once let go.
+    expect(dropped.accepted && dropped.taken).toBe(true);
+    expect(dropped.line).toBeGreaterThan(0);
+    expect(dropped.lineAfter).toBe(false);
+    await expect.poll(imports).toBe(1);
+    expect((await heard()).reviews).toEqual([{ paths: ['/drops/kiln.jpg'], only: 'image' }]);
+    expect((await heard()).imports).toEqual([{ paths: ['/drops/kiln.jpg'], only: 'image', choices: { opening: 'w', files: [] } }]);
+    // The import has answered, but the project has not yet brought the record: nothing is asked until it has.
+    await t('release', 0, [kiln.id]);
+    await t('frames', 3);
     expect(await dialog().count()).toBe(0);
-    await land([kiln.id]);
+    await so('change', withKiln);
     await dialog().waitFor();
+    expect(await blocks()).toEqual(TEXT);
     // The photo is chosen, with the description Assets suggests, ready to check and caption.
+    expect(await dialog().getByText('Chosen: kiln.jpg').count()).toBe(1);
     expect(await dialog().getByLabel('Description').inputValue()).toBe('The kiln, glowing orange');
+    expect(await dialog().getByLabel('Caption').inputValue()).toBe('');
     await dialog().getByLabel('Caption').fill('First firing of the year.');
     await dialog().getByRole('button', { name: 'Add picture' }).click();
-    await expect.poll(blocks).toEqual(['Our spring classes open for bookings this week.', 'Every student leaves with a set of bowls.', 'figure:img_kiln', 'Book early: places go fast.']);
-    const fig = body().locator('figure.post-figure');
-    expect(await fig.getAttribute('data-alt')).toBe('The kiln, glowing orange');
-    expect(await fig.getAttribute('data-caption')).toBe('First firing of the year.');
+    await expect.poll(blocks).toEqual([TEXT[0], TEXT[1], 'figure:img_kiln', TEXT[2]]);
+    expect(await t('figure')).toEqual({ alt: 'The kiln, glowing orange', caption: 'First firing of the year.', figcaption: true });
   });
 
-  it('puts a photo dropped above the first block before it, not at the end', async () => {
-    await drop(['kiln.jpg'], 0, 'above');
-    await land([kiln.id]);
+  it('puts a photo dropped above the first block before it, with no caption unless one is written', async () => {
+    const dropped = await drop(['kiln.jpg'], 0, 'above');
+    expect(dropped.line).toBeLessThan(0);
+    await land(0, [kiln.id]);
     await dialog().getByRole('button', { name: 'Add picture' }).click();
-    await expect.poll(blocks).toEqual(['figure:img_kiln', 'Our spring classes open for bookings this week.', 'Every student leaves with a set of bowls.', 'Book early: places go fast.']);
+    await expect.poll(blocks).toEqual(['figure:img_kiln', ...TEXT]);
+    expect(await t('figure')).toEqual({ alt: 'The kiln, glowing orange', caption: null, figcaption: false });
   });
 
-  it('asks for a description when Assets suggests none, and Cancel leaves the text as it was', async () => {
+  it('asks for a description when Assets suggests none; Cancel leaves the text and the caret as they were, and the photo in Assets', async () => {
     const plain = structuredClone(withKiln);
     delete plain.assets.assets[kiln.id].altSuggestion;
+    await t('select', 0, 2);
+    await t('frames', 2);
+    const before = await t<number[]>('selection');
+    expect(before).toEqual([2, 3, 0, 1]);
+    const saves = (await heard()).applies;
     await drop(['kiln.jpg'], 1);
-    await land([kiln.id], plain);
+    await land(0, [kiln.id], plain);
     await dialog().waitFor();
     expect(await dialog().getByLabel('Description').inputValue()).toBe('');
     await dialog().getByRole('button', { name: 'Add picture' }).click();
     await dialog().getByText('Describe what the picture shows, or turn on Decorative image.').waitFor();
     await dialog().getByRole('button', { name: 'Cancel' }).click();
     await expect.poll(() => dialog().count()).toBe(0);
-    expect(await blocks()).toEqual(BODY.map((b) => (b.type === 'p' ? b.spans[0].text : '')));
+    await expect.poll(() => t<number[]>('selection')).toEqual(before);
+    expect(await blocks()).toEqual(TEXT);
+    expect((await heard()).applies).toBe(saves);
+    expect(await images()).toBe(1);
   });
 
   it('opens no dialog for an import that finishes after the author has moved to another post: the photo stays in Assets', async () => {
     await drop(['kiln.jpg'], 1);
-    await expect.poll(async () => (await imports()).length).toBe(1);
-    await page.evaluate(() => (window as unknown as { so: { set(p: unknown): void } }).so.set({ post: { collectionId: 'posts', entryId: 'en_autumn' } }));
+    await expect.poll(imports).toBe(1);
+    await so('set', { post: { collectionId: 'posts', entryId: 'en_autumn' } });
     await body().getByText('Autumn is for glazing.').waitFor();
-    await land([kiln.id]);
+    await land(0, [kiln.id]);
     await expect.poll(toasts).toContain('“kiln.jpg” was added to Assets.');
     expect(await dialog().count()).toBe(0);
     expect(await body().locator('figure').count()).toBe(0);
+    // Back on the first post, its text is as it was: nothing was put in it.
+    await so('set', { post: { collectionId: 'posts', entryId: 'en_spring' } });
+    await body().getByText(TEXT[0]).waitFor();
+    expect(await blocks()).toEqual(TEXT);
   });
 
-  it('keeps only the latest of two drops: the first photo stays in Assets', async () => {
+  it('opens no dialog for an import that finishes while the writer is put away', async () => {
     await drop(['kiln.jpg'], 1);
-    await page.waitForFunction(() => !!(window as unknown as { drop: { release: unknown } }).drop.release);
-    const first = await page.evaluateHandle(() => (window as unknown as { drop: { release: unknown } }).drop.release);
-    await page.evaluate(() => ((window as unknown as { drop: { release: unknown } }).drop.release = null));
+    await expect.poll(imports).toBe(1);
+    await so('set', { leftTab: 'assets' });
+    await land(0, [kiln.id]);
+    await expect.poll(toasts).toContain('“kiln.jpg” was added to Assets.');
+    await so('set', { leftTab: 'posts' });
+    await t('frames', 2);
+    expect(await dialog().count()).toBe(0);
+  });
+
+  it('keeps only the latest of two drops: the first photo stays in Assets, the second goes where it was dropped', async () => {
+    await drop(['kiln.jpg'], 2);
+    await expect.poll(imports).toBe(1);
     await drop(['wheel.jpg'], 0);
-    await expect.poll(async () => (await imports()).length).toBe(2);
+    await expect.poll(imports).toBe(2);
+    expect((await heard()).imports.map((i) => i.paths)).toEqual([['/drops/kiln.jpg'], ['/drops/wheel.jpg']]);
+    // The first finishes while the second is still being copied: it is not offered.
+    await land(0, [kiln.id]);
+    await expect.poll(toasts).toContain('“kiln.jpg” was added to Assets.');
+    expect(await dialog().count()).toBe(0);
     const wheel = image('img_wheel', { name: 'wheel.jpg', altSuggestion: 'A potter’s wheel' });
     const both = structuredClone(withKiln);
     both.assets.assets[wheel.id] = wheel;
-    await page.evaluate((r) => (r as (ids: string[]) => void)(['img_kiln']), first);
-    await land([wheel.id], both);
+    await land(1, [wheel.id], both);
     await dialog().waitFor();
-    expect(await dialog().getByLabel('Description').inputValue()).toBe('A potter’s wheel');
-    expect(await toasts()).toContain('“kiln.jpg” was added to Assets.');
+    expect(await dialog().getByText('Chosen: wheel.jpg').count()).toBe(1);
+    await dialog().getByRole('button', { name: 'Add picture' }).click();
+    await expect.poll(blocks).toEqual([TEXT[0], 'figure:img_wheel', TEXT[1], TEXT[2]]);
   });
 
-  it('imports nothing for a drop with no file on disk', async () => {
-    await drop(['nopath'], 1);
-    await page.evaluate(() => new Promise(requestAnimationFrame));
-    expect(await imports()).toEqual([]);
+  it('offers the first of several photos dropped at once; the rest stay in Assets', async () => {
+    await drop(['kiln.jpg', 'wheel.jpg'], 1);
+    await expect.poll(imports).toBe(1);
+    expect((await heard()).imports[0].paths).toEqual(['/drops/kiln.jpg', '/drops/wheel.jpg']);
+    const wheel = image('img_wheel', { name: 'wheel.jpg' });
+    const both = structuredClone(withKiln);
+    both.assets.assets[wheel.id] = wheel;
+    await land(0, [kiln.id, wheel.id], both);
+    await dialog().waitFor();
+    expect(await dialog().getByText('Chosen: kiln.jpg').count()).toBe(1);
+  });
+
+  it('goes in by the block in the dropped one’s place when the text is drawn again while the photo is imported', async () => {
+    await drop(['kiln.jpg'], 1);
+    await expect.poll(imports).toBe(1);
+    // A change made somewhere else redraws the text: the block dropped on is a new one now.
+    const edited = structuredClone(start);
+    edited.collections.posts.entries.en_spring.body = [BODY[0], { type: 'p', spans: [{ text: 'Every student leaves with a set of cups.' }] }, BODY[2]];
+    await so('change', edited);
+    await body().getByText('Every student leaves with a set of cups.').waitFor();
+    const withBoth = structuredClone(edited);
+    withBoth.assets.assets[kiln.id] = kiln;
+    await land(0, [kiln.id], withBoth);
+    await dialog().getByRole('button', { name: 'Add picture' }).click();
+    await expect.poll(blocks).toEqual([TEXT[0], 'Every student leaves with a set of cups.', 'figure:img_kiln', TEXT[2]]);
+  });
+
+  it('says why when nothing dropped could be added, and opens no dialog', async () => {
+    await drop(['notes.txt'], 1);
+    await expect.poll(imports).toBe(1);
+    await t('release', 0, [], 'notes.txt is not an image.');
+    await expect.poll(toasts).toContain('notes.txt is not an image.');
+    expect(await dialog().count()).toBe(0);
+  });
+
+  it('imports nothing for a drop with no file on disk, or while a picture dialog is open; dragged words keep the browser’s own handling', async () => {
+    const none = await drop(['nopath'], 1);
+    expect(none.taken).toBe(true);
+    expect((await heard()).lookups).toBe(1);
+    const words = await drop(['some', 'words'], 1, 'middle', 'text');
+    expect(words.accepted || words.taken).toBe(false);
+    // The Picture button opens the dialog over the text: a drop meanwhile is not taken up.
+    await page.locator('#writer [data-tool="image"]').click();
+    await dialog().waitFor();
+    await drop(['kiln.jpg'], 1);
+    expect(await heard()).toMatchObject({ reviews: [], imports: [] });
   });
 });
