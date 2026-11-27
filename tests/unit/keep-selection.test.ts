@@ -337,7 +337,7 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     let b = await box('tall');
     expect(b.top).toBeGreaterThan(-1);
     expect(b.top).toBeLessThan(80);
-    // A pick on the page keeps the centring it always had, tall or not.
+    // A request without `show` (a new section, a page opened at its place) centres it, tall or not.
     await scrollTo(0);
     await send('scrollTo', { desc: sel('tall') });
     b = await box('tall');

@@ -902,6 +902,12 @@ function settleShown() {
   h.lastY = scrollY;
   h.still = 0;
 }
+/** Ends a smooth scroll of the page still on its way, where it is. Chromium ignores a scroll to where the page already is, so it steps off and back. */
+function endScrolling() {
+  const top = scrollY;
+  window.scrollTo({ top: top >= 1 ? top - 1 : top + 1, behavior: 'instant' });
+  window.scrollTo({ top, behavior: 'instant' });
+}
 /** The author or the editor has taken over the page: nothing scrolls it back to an element asked for earlier. */
 function stopShowing() {
   pendingScroll = null;
@@ -967,6 +973,12 @@ function retryScroll() {
  * shortcut begins) moves nothing, and with Ctrl, Alt or Command held they are the editor's shortcuts.
  */
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab']);
+// A press on a page still scrolling to an element asked for stops it where it is (issue #1109): what is under the
+// pointer stays there, so a double-click's second press lands on the word its first did. Registered ahead of the
+// listener below, which forgets the scroll.
+window.addEventListener('pointerdown', () => {
+  if (shownHold) endScrolling();
+}, { capture: true, passive: true });
 // The author's own scrolling, or a click in the page: the page stays where the author has it.
 for (const type of ['wheel', 'touchstart', 'pointerdown']) window.addEventListener(type, stopShowing, { capture: true, passive: true });
 window.addEventListener('keydown', (e) => {
@@ -1183,6 +1195,8 @@ function placeReveal(roots = revealRoots()) {
       // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
       const instant = revealScroll === 'resize' || matchMedia('(prefers-reduced-motion: reduce)').matches;
       revealScroll = false;
+      // The text being edited in it is already shown (showEdited): centring the item could put that under the header.
+      const edited = !!editing && roots.some((r) => r.contains(editing.el) || editing.el.contains(r));
       // An item in a list that scrolls sideways (a carousel's slide) is brought in there, at once, so another item
       // opened next is measured where it really is; the page then scrolls to the list, which leaves the list as it is.
       const side = sideScroller(el);
@@ -1190,7 +1204,7 @@ function placeReveal(roots = revealRoots()) {
       revealSide = side ? { list: side, at: offsetAlong(side, el) } : null;
       const target = side || el;
       const r = target.getBoundingClientRect();
-      if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
+      if (!edited && (r.top < 60 || r.bottom > innerHeight - 20)) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
     }
   } else if (reveal) {
     const el = roots.find((r) => !isSeparator(r) && rectOf(r));
@@ -1966,7 +1980,12 @@ function beginTextEdit(desc, editId, hitId) {
   el.setAttribute('spellcheck', 'true');
   el.style.outline = 'none';
   el.style.cursor = 'text';
-  el.focus();
+  // Nothing asked for before the edit moves the page under it, a scroll still on its way included.
+  stopKeeping();
+  stopShowing();
+  endScrolling();
+  // Focus alone would scroll the text under a sticky header: showEdited does the scrolling.
+  el.focus({ preventScroll: true });
   let range;
   if (node && el.contains(node)) range = wordRange(el, node, hit.at);
   else {
@@ -1977,13 +1996,76 @@ function beginTextEdit(desc, editId, hitId) {
   const s = getSelection();
   s.removeAllRanges();
   s.addRange(range);
+  showEdited(el);
   el.addEventListener('keydown', onEditKey);
+  el.addEventListener('keyup', onEditKeyUp);
+  el.addEventListener('input', onEditInput);
   el.addEventListener('blur', onEditBlur);
   el.addEventListener('input', scheduleRects);
   el.addEventListener('paste', onEditPaste);
   el.addEventListener('drop', onEditDrop);
   if (rich) openToolbar();
   send('textEditStarted', { desc });
+}
+/** Space left between the text being edited and what covers the top of the frame, or the frame's edge. */
+const EDIT_CLEAR = 8;
+/** How far down the frame the site's header reaches while it stays at the top, as it publishes it (0 when it does not). */
+function coveredTop() {
+  return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--so-header-offset')) || 0;
+}
+/** Whether scrolling the page cannot bring `el` clear: it is in the header that stays at the top, or fixed in the frame. */
+function heldInFrame(el) {
+  for (let p = el; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+    const position = getComputedStyle(p).position;
+    if (position === 'fixed' || (position === 'sticky' && p.tagName === 'HEADER')) return true;
+  }
+  return false;
+}
+/** The box of the line the caret (or the moving end of the selection) is on, or null. */
+function caretBox() {
+  const s = getSelection();
+  const node = s.focusNode;
+  if (!node) return null;
+  const at = document.createRange();
+  at.setStart(node, s.focusOffset);
+  const box = at.getClientRects()[0];
+  if (box) return box;
+  // An empty line has no box of its own: what is at that place does.
+  const near = node.childNodes[s.focusOffset] || node.childNodes[s.focusOffset - 1] || node;
+  return (near.nodeType === 1 ? near : near.parentElement).getBoundingClientRect();
+}
+/**
+ * As an edit begins, all of its text shows below the site's sticky header and inside the frame (issue #1109), scrolled
+ * no further than that takes. Text too tall for the space shows the caret's line there.
+ */
+function showEdited(el) {
+  if (heldInFrame(el)) return;
+  const min = coveredTop() + EDIT_CLEAR;
+  const max = innerHeight - EDIT_CLEAR;
+  let r = el.getBoundingClientRect();
+  if (r.height <= max - min) {
+    // Into view in whatever scrolls around it (a carousel, a box with its own scrollbar), which knows no header.
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    r = el.getBoundingClientRect();
+  } else r = caretBox() || r;
+  const by = r.top < min ? r.top - min : r.bottom > max ? Math.min(r.bottom - max, r.top - min) : 0;
+  if (by) window.scrollBy({ top: by, behavior: 'instant' });
+}
+/** The browser keeps the caret in the frame as it moves, but knows nothing of a header over the top of it. */
+function keepCaretClear() {
+  if (!editing || heldInFrame(editing.el)) return;
+  const top = coveredTop();
+  const box = top && editing.el.contains(getSelection().focusNode) ? caretBox() : null;
+  if (box && box.top < top + EDIT_CLEAR) window.scrollBy({ top: box.top - top - EDIT_CLEAR, behavior: 'instant' });
+}
+/** After the browser's own scroll to the caret, which for typing comes after the input event. */
+function onEditInput() {
+  requestAnimationFrame(keepCaretClear);
+}
+/** Only keys that move the caret: a modifier let go leaves the page where the author has scrolled it. */
+const CARET_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End']);
+function onEditKeyUp(e) {
+  if (CARET_KEYS.has(e.key)) requestAnimationFrame(keepCaretClear);
 }
 function onEditKey(e) {
   e.stopPropagation();
@@ -2812,6 +2894,8 @@ function endEdit() {
   // Listeners go first: the element stops taking typing below, which blurs it, and that blur must not commit the
   // edit a second time.
   el.removeEventListener('keydown', onEditKey);
+  el.removeEventListener('keyup', onEditKeyUp);
+  el.removeEventListener('input', onEditInput);
   el.removeEventListener('blur', onEditBlur);
   el.removeEventListener('input', scheduleRects);
   el.removeEventListener('paste', onEditPaste);
