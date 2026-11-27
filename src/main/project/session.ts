@@ -55,6 +55,7 @@ import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytes
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, shareUnchanged, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
+import { checkHeld, readFields, sameValue } from '../../renderer/src/lib/held';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
 
 export { statTrusted };
@@ -425,6 +426,15 @@ interface HistoryFile {
 type DroppedRun = 'applied' | 'undone';
 
 /**
+ * `sessions/active-run.json`: what an AI run has changed, file by file, so a crash restores its checkpoint. `before` and
+ * `after` name stored versions; `written` every version the run has put in the file.
+ */
+interface RunMarker {
+  id: string;
+  paths: Record<string, { before: string | null; after: string | null; written: Array<string | null> }>;
+}
+
+/**
  * The publication journal: everything one change does, written durably before any of it is. Recovery rolls it
  * forward, so a crash leaves the whole change or none of it. Besides the documents it carries the history the change
  * leaves (so the undo position moves with the documents) and, for a finishing AI run, the run it finishes.
@@ -439,6 +449,12 @@ interface Journal {
   revision?: number;
   /** The AI run this change completes: its marker goes once the change is done. */
   finishRun?: string;
+  /**
+   * The marker of the AI run this change was saved into the checkpoint of (an edit saved while the run waits for an
+   * answer, #1281): it replaces the run's marker once the change is done, so stopping the run, or a crash, restores a
+   * checkpoint that holds the change.
+   */
+  runMarker?: RunMarker;
   /**
    * The versions (by hash) the change's writes and History name that were not stored when it was journaled: they are
    * stored after its documents, and from here by a recovery that comes first.
@@ -461,8 +477,28 @@ interface GeneratedManifest {
 /** Whether a value names a collection's layout template (or archive layout) as an owner, at most a few levels in (`target.owner`). */
 const namesTemplate = (v: unknown, depth = 0): boolean =>
   !!v && typeof v === 'object' && depth < 4 && ((v as { kind?: unknown }).kind === 'template' || (v as { kind?: unknown }).kind === 'archive' || Object.values(v as Record<string, unknown>).some((x) => namesTemplate(x, depth + 1)));
+/** Why an edit saved while the AI waits (#1281) waits for the request to end after all, said first. */
+const EARLY_SAVE_WAITS = 'Your edit can be saved once the AI request ends.';
+
+/**
+ * Why the author's held edit (`ops`, made where each field it writes held `base`) cannot be saved while the AI waits
+ * for their answer, or null when it can: every field must hold what they saw both in the project (`state`) and in the
+ * checkpoint stopping the request restores (`start`). `details.held` says which: changed, gone, or differs.
+ */
+function heldRefusal(state: ProjectState, start: ProjectState, ops: EditOperation[], base: unknown[]): ToolError | null {
+  if (!Array.isArray(base) || base.length !== ops.length || !readFields(state, ops))
+    return { code: 'INVALID_ARGUMENT', message: 'Only a typed edit can be saved while the AI waits for your answer.', recoverable: false };
+  const now = checkHeld(state, ops, base);
+  if (now.kind === 'gone') return { code: 'CONFLICT', message: `The ${now.what} this edit was for no longer exists.`, recoverable: true, details: { held: 'gone' } };
+  if (now.kind === 'changed') return { code: 'CONFLICT', message: 'This changed while you were typing.', recoverable: true, details: { held: 'changed' } };
+  const there = checkHeld(start, ops, base);
+  if (there.kind === 'gone') return { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} The AI made the ${there.what} it is for in this request.`, recoverable: true, details: { held: 'differs' } };
+  if (there.kind === 'changed') return { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} The AI changed this in this request.`, recoverable: true, details: { held: 'differs' } };
+  return null;
+}
+
 /** An edit of a collection, of its entries, or of its layout template. */
-const isCollectionOperation = (o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.') || namesTemplate(o);
+const isCollectionOperation =(o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.') || namesTemplate(o);
 
 /**
  * A change checked against files it does not write: a collection removal guards the links other entries and pages
@@ -553,6 +589,20 @@ export interface CommitOptions {
    */
   guard?: (next: ProjectState | null) => ToolError | null;
 }
+
+/** How a change is saved (ProjectSession.persist). */
+type PersistOptions = CommitOptions & {
+  runId?: string;
+  cursor?: number;
+  wholeProject?: boolean;
+  amendHistory?: boolean;
+  /**
+   * The active run's checkpoint with this change made to it too (#1281): an author's edit saved while the run waits for
+   * an answer. Its History step goes from the checkpoint to this, and the run's checkpoint becomes this in the same
+   * journaled step, so stopping the run, or a crash, keeps the edit, and the run's own step never holds it.
+   */
+  rebaseRun?: ProjectState;
+};
 
 /** A change its guard refused at the last moment (CommitOptions.guard): nothing of it was written. */
 class GuardRefusal extends Error {
@@ -2066,6 +2116,10 @@ export class ProjectSession extends EventEmitter {
     if (Number.isInteger(journal.revision)) await this.writeRevision(journal.revision!);
     const finished = typeof journal.finishRun === 'string';
     if (finished) await removeDurable(marker);
+    // An edit saved into a waiting run's checkpoint (#1281) leaves the run's marker naming that checkpoint: installed
+    // over the marker of the same run, before the journal goes, so the run's recovery after this restores the edit
+    // with the rest of the checkpoint. Never one for another run, nor in place of a marker already cleared.
+    else if (journal.runMarker && markerText !== null && (await this.rebasedMarker(journal.runMarker, markerText))) await atomicWrite(marker, toJson(journal.runMarker));
     await removeDurable(this.local('journal.json'));
     this.recoveryNotes.push(
       conflicts
@@ -2076,6 +2130,27 @@ export class ProjectSession extends EventEmitter {
             : 'Finished saving an AI change that was interrupted. It was saved before the app was updated, so it cannot be undone.'
           : `Finished an interrupted save (${journal.writes.length + journal.deletes.length} file(s)).`
     );
+  }
+
+  /**
+   * Whether `m`, the marker an interrupted save carries (Journal.runMarker), may replace the marker on disk
+   * (`markerText`): one of the same run, naming only project documents, each checkpoint version it names stored.
+   */
+  private async rebasedMarker(m: unknown, markerText: string): Promise<boolean> {
+    let onDisk: { id?: unknown } | null;
+    try {
+      onDisk = JSON.parse(markerText);
+    } catch {
+      return false;
+    }
+    const marker = m as Partial<RunMarker> | null;
+    if (!marker || typeof marker !== 'object' || typeof marker.id !== 'string' || marker.id !== onDisk?.id || !marker.paths || typeof marker.paths !== 'object') return false;
+    const hash = (h: unknown) => h === null || (typeof h === 'string' && /^[a-f0-9]{64}$/.test(h));
+    for (const [path, d] of Object.entries(marker.paths)) {
+      if (!isCanonicalPath(path) || !d || typeof d !== 'object' || !hash(d.before) || !hash(d.after) || !Array.isArray(d.written) || !d.written.every(hash)) return false;
+      if (d.before !== null && !(await this.getBlob(d.before).then(() => true, () => false))) return false;
+    }
+    return true;
   }
 
   /**
@@ -2180,7 +2255,7 @@ export class ProjectSession extends EventEmitter {
    * instead of recording a new step (undo and redo). A save that fails is kept for the editor to show until a later one
    * succeeds; one stopped cleanly by a file saved outside the app is a conflict instead, which Project health lists.
    */
-  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; amendHistory?: boolean }): Promise<SessionEvent> {
+  private async persist(next: ProjectState, opts: PersistOptions): Promise<SessionEvent> {
     try {
       return await this.writeState(next, opts);
     } catch (e) {
@@ -2193,7 +2268,7 @@ export class ProjectSession extends EventEmitter {
     }
   }
 
-  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; amendHistory?: boolean }): Promise<SessionEvent> {
+  private async writeState(next: ProjectState, opts: PersistOptions): Promise<SessionEvent> {
     // Frozen now, as it will be once it is the project: generated and serialized as it will stay.
     frozen(next);
     // A state whose theme is not available here would be generated from the wrong pack.
@@ -2233,6 +2308,18 @@ export class ProjectSession extends EventEmitter {
       changed[path] = { before: blobOf(prev), after: null };
       deletes.push({ path, before: changed[path].before! });
     }
+    // An edit saved into a waiting run's checkpoint (#1281) is the author's step from that checkpoint: what the run
+    // changed before it is the run's own, recorded when the run finishes, from the checkpoint the edit leaves.
+    const run = opts.rebaseRun ? this.activeRun : null;
+    if (opts.rebaseRun && !run) throw new Error('That AI request is no longer running.');
+    const rebased = opts.rebaseRun ? stateToDocs(frozen(opts.rebaseRun)) : null;
+    const step: HistoryEntry['docs'] = {};
+    if (run && rebased)
+      for (const path of new Set([...run.before.keys(), ...rebased.keys()])) {
+        const b = run.before.get(path);
+        const a = rebased.get(path);
+        if (b !== a) step[path] = { before: b === undefined ? null : blobOf(b), after: a === undefined ? null : blobOf(a) };
+      }
     // Authored sources go before the definitions that name them, so a component's definition is never missing
     // beside its source part way through a delete: recovery can then tell that from a definition deleted outside.
     // Entries go before their collection's settings for the same reason: an entry is never left without the collection
@@ -2268,12 +2355,18 @@ export class ProjectSession extends EventEmitter {
     if (this.activeRun) {
       await this.storeBlobs(blobs);
       blobs.clear();
-      await this.writeRunMarker(nextDocs);
+      // The marker an edit saved into the checkpoint leaves goes with its journal instead: until that is on disk, a crash
+      // restores the checkpoint without it, and the files without it are still the run's own.
+      if (!rebased) await this.writeRunMarker(nextDocs);
     }
+    const runMarker = run && rebased ? await this.runMarker(rebased, nextDocs) : undefined;
     // The undo position is part of the change: planned now, journaled with the documents, installed with them. A change
     // folded into History (amendHistory) is journaled with the History it leaves too.
-    const planned =
-      opts.history !== false && Object.keys(changed).length
+    const planned = rebased
+      ? Object.keys(step).length
+        ? this.planHistory(step, opts, this.revision + 1)
+        : null
+      : opts.history !== false && Object.keys(changed).length
         ? this.planHistory(changed, opts, this.revision + 1)
         : opts.cursor !== undefined
           ? { history: { ...this.history, cursor: opts.cursor }, pruned: false, entryId: undefined }
@@ -2311,7 +2404,7 @@ export class ProjectSession extends EventEmitter {
       }
       if (journaled)
         await this.placeJournal(
-          { writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1, ...(blobs.size ? { versions: Object.fromEntries(blobs) } : {}) },
+          { writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1, ...(runMarker ? { runMarker } : {}), ...(blobs.size ? { versions: Object.fromEntries(blobs) } : {}) },
           async () => {
             journalPlaced = true;
             return stillAllowed();
@@ -2341,6 +2434,11 @@ export class ProjectSession extends EventEmitter {
           this.carryChecks(this.state, next, Object.keys(changed));
           this.state = next;
           this.docs = nextDocs;
+          // The run's checkpoint holds the edit from now on, as its marker will once the journal is done.
+          if (run && rebased) {
+            run.before = rebased;
+            run.beforeState = opts.rebaseRun!;
+          }
           if (planned) this.history = planned.history;
           this.revision++;
           return this.publishGenerated(false, generated);
@@ -2365,6 +2463,7 @@ export class ProjectSession extends EventEmitter {
         await this.finishSave(staged, [
           ...this.blobWrites(blobs),
           ...(planned ? [{ path: this.local('history', 'history.json'), data: toJson(planned.history) }] : []),
+          ...(runMarker ? [{ path: this.local('sessions', 'active-run.json'), data: toJson(runMarker) }] : []),
           { path: this.local('state.json'), data: toJson({ revision: this.revision }) }
         ]);
         if (!journaled) announce();
@@ -2376,8 +2475,9 @@ export class ProjectSession extends EventEmitter {
       // Turned away by its guard before its journal took its place: nothing of it reached the project.
       if (e instanceof GuardRefusal) throw e;
       // Stopped by a file saved outside the app before anything was replaced: nothing of this change is on disk, so
-      // its journal goes and the project carries on (an AI request's own recovery marker is left to its rollback).
-      if (journaled && installed === 0 && !this.activeRun && e instanceof DiskConflictError) {
+      // its journal goes and the project carries on (an AI request's own recovery marker is left to its rollback). An
+      // edit saved into a run's checkpoint left the run's marker as it was, so that goes on too.
+      if (journaled && installed === 0 && (!this.activeRun || !!runMarker) && e instanceof DiskConflictError) {
         const cleared = await removeDurable(this.local('journal.json')).then(
           () => true,
           () => false
@@ -3164,7 +3264,23 @@ export class ProjectSession extends EventEmitter {
    */
   apply(
     batch: EditBatch,
-    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; formRouting?: FormRoutingGrant; stillWanted?: () => boolean }
+    opts: CommitOptions & {
+      runId?: string;
+      idempotencyKey?: string;
+      codeAllowed?: boolean;
+      componentImport?: ComponentImport;
+      collectionWrite?: CollectionWriteGrant;
+      sourceWrite?: SourceWriteGrant;
+      sourceSync?: SourceSyncGrant;
+      formRouting?: FormRoutingGrant;
+      stillWanted?: () => boolean;
+      /**
+       * The author's held edit, saved while AI run `runId` waits for their answer (#1281), with what each field it writes
+       * held when they made it (`base`): it lands only while every one still holds that both in the project and in the
+       * run's checkpoint, which it is saved into too.
+       */
+      asking?: { runId: string; base: unknown[] };
+    }
   ): Promise<ApplyResult> {
     // A form routing grant is good for one call at most, whichever way it goes, even one that never gets its turn.
     const routingGrant = opts.formRouting ? this.routingGrants.take(opts.formRouting) : null;
@@ -3180,7 +3296,10 @@ export class ProjectSession extends EventEmitter {
       }
       if (opts.runId && this.activeRun?.id !== opts.runId)
         return { ok: false, revision: this.revision, error: { code: 'CANCELLED', message: 'That AI request is no longer running.', recoverable: false } };
-      if (this.activeRun && opts.runId !== this.activeRun.id)
+      const asking = opts.asking && !opts.runId && opts.source !== 'ai' ? opts.asking : null;
+      if (opts.asking && (!asking || this.activeRun?.id !== asking.runId))
+        return { ok: false, revision: this.revision, error: { code: 'CANCELLED', message: 'The AI request is no longer waiting for your answer.', recoverable: true } };
+      if (this.activeRun && opts.runId !== this.activeRun.id && !asking)
         return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
       if (batch.expectedRevision !== undefined && batch.expectedRevision !== this.revision)
         return { ok: false, revision: this.revision, error: { code: 'STALE_REVISION', message: `Expected revision ${batch.expectedRevision} but the project is at ${this.revision}. Read the latest state and try again.`, recoverable: true } };
@@ -3197,6 +3316,12 @@ export class ProjectSession extends EventEmitter {
         ops.push(v.op);
       }
       decoding();
+      // Saved while the AI waits: only a typed edit of fields that hold, in the project and in the run's checkpoint, what
+      // the author saw. One the run changed, or on something the run made, waits for the request to end.
+      if (asking) {
+        const refusal = heldRefusal(this.state, this.activeRun!.beforeState, ops, asking.base);
+        if (refusal) return { ok: false, revision: this.revision, error: refusal };
+      }
       // Checked here, in turn with every other edit and with the editor's clipboard, so what it copies is what lands.
       const importing = ops.some((o) => o.type === 'component.import');
       // A package is read and checked by the editor's import, which is the only way one reaches a project.
@@ -3439,11 +3564,36 @@ export class ProjectSession extends EventEmitter {
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The site could not be saved first, so the theme was not changed. ${(e as Error).message}`, recoverable: true } };
         }
       }
+      // The same edit made to the run's checkpoint, which stopping the run or a crash restores: it must land there as it
+      // lands in the project, and leave the checkpoint as valid as it was.
+      let rebaseRun: ProjectState | undefined;
+      if (asking) {
+        const start = this.activeRun!.beforeState;
+        let made: ProjectState;
+        try {
+          made = applyOperations(start, ops, context).state;
+        } catch (e) {
+          return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} ${(e as Error).message}`, recoverable: true, details: { held: 'differs' } } };
+        }
+        const wrote = (state: ProjectState) => (readFields(state, ops) ?? []).map((r) => (r.found ? r.value : undefined));
+        const there = wrote(made);
+        const here = wrote(next);
+        const problem = themePinProblem(made) ?? (here.length !== there.length || here.some((v, i) => !sameValue(v, there[i])) ? 'It would not land the same way where the request started.' : null);
+        const introducedThere = problem ? [] : introducedDiagnostics(this.savingProblems(start), this.savingProblems(made));
+        if (problem || introducedThere.length)
+          return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} ${problem ?? introducedThere.map((d) => d.message).join(' ')}`, recoverable: true, details: { held: 'differs' } } };
+        rebaseRun = made;
+      }
       let ev: SessionEvent;
       const persisting = perf.span('session.persist');
       try {
-        // A sync is planned from the whole collection, its source's settings and every link to its entries.
-        ev = await this.persist(next, { ...opts, wholeProject: !!opts.sourceSync || ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
+        // A sync is planned from the whole collection, its source's settings and every link to its entries. An edit saved
+        // while the AI waits is a step of its own, never joined to one before the request.
+        ev = await this.persist(next, {
+          ...opts,
+          ...(rebaseRun ? { rebaseRun, coalesceKey: undefined } : {}),
+          wholeProject: !!opts.sourceSync || ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state))
+        });
       } catch (e) {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
         if (e instanceof GuardRefusal) return { ok: false, revision: this.revision, error: e.refusal };
@@ -5425,12 +5575,21 @@ export class ProjectSession extends EventEmitter {
    */
   private async writeRunMarker(docs: Map<string, string> = this.docs) {
     if (!this.activeRun) return;
+    const marker = await this.runMarker(this.activeRun.before, docs);
+    await atomicWrite(this.local('sessions', 'active-run.json'), toJson(marker));
+  }
+
+  /**
+   * The active run's marker, were its checkpoint `before` and its documents `docs`. The checkpoint's versions are
+   * stored before this returns, as a marker naming them may be written.
+   */
+  private async runMarker(before: Map<string, string>, docs: Map<string, string>): Promise<RunMarker> {
     const marking = perf.span('session.runMarker');
-    const run = this.activeRun;
-    const paths: Record<string, { before: string | null; after: string | null; written: Array<string | null> }> = {};
-    const all = new Set([...run.before.keys(), ...docs.keys(), ...run.written.keys()]);
+    const run = this.activeRun!;
+    const paths: RunMarker['paths'] = {};
+    const all = new Set([...before.keys(), ...docs.keys(), ...run.written.keys()]);
     for (const path of all) {
-      const b = run.before.get(path);
+      const b = before.get(path);
       const a = docs.get(path);
       const written = run.written.get(path) ?? new Set<string | null>();
       // A document the run has not changed, nor written before, is not in the marker: it needs no hash.
@@ -5442,7 +5601,7 @@ export class ProjectSession extends EventEmitter {
     }
     // Building the marker: every document hashed, the run's versions stored. Its write is not in the span.
     marking({ paths: Object.keys(paths).length });
-    await atomicWrite(this.local('sessions', 'active-run.json'), toJson({ id: run.id, paths }));
+    return { id: run.id, paths };
   }
 
   /** `text`'s SHA-256, worked out again only when the document at `path` holds other text than the run last hashed. */
