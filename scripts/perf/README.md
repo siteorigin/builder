@@ -367,7 +367,14 @@ an edit elsewhere (the home hero's Heading, through the editor's API) with it sh
 top to its end, 400 px a notch, one every 16 ms. Checks: the library holds that many images with no files missing, the
 grid starts with the first image in its order and its end shows the last, the edit is in the project, and the keyboard
 walks the whole grid as before (End focuses the last image, Home the first, ArrowRight the next, ArrowDown the one a row
-down, Enter opens that image and Back returns the focus to it). Per library (`assets.<at>.*`): `showMs` (the rail
+down, Enter opens that image and Back returns the focus to it); walked from its top to its end half a view at a time
+(untimed), the tiles in the page at every stop are in the library's order, none twice, those in view one unbroken run
+of it (and some), and between them every image in view, so a grid that puts only the rows in view in the page passes and
+one that skips, reorders or shows no image fails. Then,
+with Assets still shown, the Inspector's two pickers of library images, each opened from a section of the home page
+chosen on the canvas: the image picker (`imagePicker`, the hero's Image, Choose image…) and the gallery picker (`galleryPicker`, the gallery's Choose images…). Each opens at its top with the library's
+first image first in view and, scrolled (untimed) to its end, shows the last there; it is closed and the selection and the right
+panel's view put back. Per library (`assets.<at>.*`): `showMs` (the rail
 button's click to the first frame with the grid's tiles in view) and `picturesMs` (to the first with every tile in view
 showing its picture), from a watch the scenario runs in the editor's page that reads only the tiles down to the view's
 bottom; `tiles` (tiles in the page once shown) and `tilesInView`; per window (`show`, `edit`, `scroll`) `renders` (every
@@ -375,8 +382,9 @@ component React rendered), `assetsRenders` and `assetsRenderMs` (the Assets pane
 `rendererCommits`; for the edit `commitMs` (the snapshot received to the commit showing it); for the show and the scroll
 the frame watch's `frames`, `droppedFrames`, `longestFrameMs`, `longTasks` and `longTaskMs`; for the scroll `ms` and
 `notches` (the grid's height in notches); and at the grid's end `picturesHeld` (pictures in the grid's page loaded) and
-`pictureBytes` (their decoded size, width × height × 4 bytes each). The image pickers in the Inspector are not
-measured.
+`pictureBytes` (their decoded size, width × height × 4 bytes each); and per picker (`<picker>.*`), from the press to it open
+with every option in its view showing its picture, `renders`, `rendererCommits` and `tiles` (its options in the page),
+and at its end `picturesHeld` and `pictureBytes`.
 
 **`memory`** (after `launch`, and only on its own: see Memory below): the memory of every process of the app at rest on
 a fresh Welcome (`welcome`); the fixture opened from its card as `open` opens it, untimed, sampled throughout for its

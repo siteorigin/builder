@@ -1,9 +1,10 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import { ArrowDown, ArrowUp, ImageOff, TriangleAlert, X } from 'lucide-react';
 import type { ListItem, ListProp, ProjectState } from '@shared/types';
 import { setState, useStore } from '../store';
 import { SwitchRow } from '../components/ui';
 import { AssetImage } from '../components/AssetImage';
+import { WindowedGrid, type WindowedGridApi } from '../components/WindowedGrid';
 import { fitFor } from '../components/AssetPicture';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
@@ -32,6 +33,25 @@ export function pickGridKeys(e: ReactKeyboardEvent<HTMLDivElement>, onMove?: (to
   if (onMove) onMove(to);
   else tiles.forEach((t, k) => (t.tabIndex = k === to ? 0 : -1));
   tiles[to].focus();
+}
+
+/**
+ * As pickGridKeys, for a picker grid that draws only the rows near its view (WindowedGrid, #973): the option focused is
+ * found by its place in the list (its aria-posinset), and the one moved to is put in the page first when it is out of
+ * view. Up and Down move `down` options (a row; 1 where the options are read one at a time). `modifiers`: a key held
+ * with Alt, Command or Control is left alone.
+ */
+export function windowedPickKeys(e: ReactKeyboardEvent<HTMLDivElement>, count: number, down: number, api: RefObject<WindowedGridApi | null>, onMove?: (to: number) => void, modifiers = false) {
+  const at = document.activeElement;
+  const i = at instanceof HTMLElement && at.matches('[role="option"]') && e.currentTarget.contains(at) ? Number(at.getAttribute('aria-posinset')) - 1 : -1;
+  if (!(i >= 0) || (modifiers && (e.altKey || e.metaKey || e.ctrlKey))) return;
+  const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: down, ArrowUp: -down }[e.key];
+  const to = e.key === 'Home' ? 0 : e.key === 'End' ? count - 1 : step !== undefined ? Math.max(0, Math.min(count - 1, i + step)) : -1;
+  if (to < 0) return;
+  e.preventDefault();
+  onMove?.(to);
+  api.current?.reveal(to);
+  e.currentTarget.querySelector<HTMLElement>(`[role="option"][aria-posinset="${to + 1}"]`)?.focus();
 }
 
 /**
@@ -103,6 +123,8 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
   // The grid's one Tab stop: the tile used last, while it is still shown.
   const [activeTile, setActiveTile] = useState<string | null>(null);
   const roving = shown.some((a) => a.id === activeTile) ? activeTile : (shown[0]?.id ?? null);
+  // The grid draws only the rows in and near its view (#973), and always the Tab stop's.
+  const gridApi = useRef<WindowedGridApi | null>(null);
   // Images that left Assets stay in the raw choice, in their places, until Add has said so.
   const choose = (next: string[]) => {
     if (busy) return;
@@ -222,26 +244,20 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
           {(images.length > 6 || !!series.key) && <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />}
           {shown.length > 0 ? (
             // Drawn afresh for each search, series and order, so the first image shown is the grid's tab stop again.
-            <div
+            <WindowedGrid
               key={JSON.stringify([needle, series.key, assetSort])}
+              api={gridApi}
               className="insp-pick-grid"
               role="listbox"
               aria-multiselectable="true"
               aria-label="Your images"
               aria-describedby={over ? overId : undefined}
-              onKeyDown={(e) => {
-                // A listbox moves one option at a time, Up and Left back, Down and Right on, in the order the names are read.
-                const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('.insp-pick-tile')];
-                const i = tiles.indexOf(document.activeElement as HTMLElement);
-                const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-                const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? Math.max(0, Math.min(tiles.length - 1, i + step)) : -1;
-                if (i < 0 || to < 0 || e.altKey || e.metaKey || e.ctrlKey) return;
-                e.preventDefault();
-                setActiveTile(shown[to]?.id ?? null);
-                tiles[to].focus();
-              }}
-            >
-              {shown.map((a) => {
+              // A listbox moves one option at a time, Up and Left back, Down and Right on, in the order the names are read.
+              onKeyDown={(e) => windowedPickKeys(e, shown.length, 1, gridApi, (to) => setActiveTile(shown[to]?.id ?? null), true)}
+              count={shown.length}
+              keep={[shown.findIndex((a) => a.id === roving)]}
+              tile={(i) => {
+                const a = shown[i];
                 const at = chosen.indexOf(a.id);
                 // A file can go missing after it was chosen: the tile keeps saying so, and Add stops for it.
                 const missing = lost(a.id);
@@ -259,6 +275,8 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
                     aria-selected={at >= 0}
                     aria-disabled={blocked || busy ? true : undefined}
                     aria-label={`${label}${at >= 0 ? `, number ${at + 1}` : ''}${why ? `: ${why}` : ''}`}
+                    aria-posinset={i + 1}
+                    aria-setsize={shown.length}
                     tabIndex={a.id === roving ? 0 : -1}
                     onFocus={() => setActiveTile(a.id)}
                     className={`insp-pick-tile${at >= 0 ? ' current' : ''}${missing ? ' missing' : ''}`}
@@ -292,8 +310,8 @@ export function ImagesPicker({ schema, items, state, onAdd, onClose }: { schema:
                     )}
                   </button>
                 );
-              })}
-            </div>
+              }}
+            />
           ) : (
             <div className="insp-pick-nomatch">
               <p className="faint insp-note">{`No images ${series.key ? `in ${series.label} ` : ''}match “${q.trim()}”.`}</p>

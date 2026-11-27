@@ -3258,6 +3258,124 @@ async function picturesHeld(win: Page): Promise<{ pictures: number; pictureBytes
   }, ASSET_BODY);
 }
 
+/**
+ * The grid walked from its top to its end half a view at a time, untimed: at every stop, the tiles in the page are in
+ * the library's order (`ids`), none twice, those in view are one unbroken run of it (and there are some), and between
+ * them the stops show every image in view. A grid that puts only some of its tiles in the page passes as one that puts
+ * them all there does; one that skips, repeats or reorders an image, or shows none, does not.
+ */
+async function walkGrid(win: Page, ids: string[]): Promise<{ seen: number; stops: number; broken: string | null; unseen: string | null }> {
+  return (await win.evaluate(`(${WALK_GRID})(${JSON.stringify(ASSET_BODY)}, ${JSON.stringify(ids)})`)) as { seen: number; stops: number; broken: string | null; unseen: string | null };
+}
+/** The walk, run in the editor's page. Source text, as the frame watch is. */
+const WALK_GRID = `async (sel, order) => {
+  const body = document.querySelector(sel);
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+  const tiles = () => [...body.querySelectorAll('.asset-grid [data-asset]')];
+  const at = new Map(order.map((id, i) => [id, i]));
+  const seen = new Set();
+  let broken = null;
+  let stops = 0;
+  const step = Math.max(40, Math.floor(body.clientHeight / 2));
+  for (let top = 0; ; top += step) {
+    body.scrollTop = Math.min(top, body.scrollHeight - body.clientHeight);
+    // Until a tile is drawn across the view (a grid that draws its tiles as it scrolls has done so), and a frame more.
+    const box = body.getBoundingClientRect();
+    for (let i = 0; i < 30; i++) {
+      await frame();
+      if (tiles().some((t) => t.getBoundingClientRect().bottom > box.top && t.getBoundingClientRect().top < box.bottom)) break;
+    }
+    await frame();
+    stops++;
+    const all = tiles();
+    const run = all.map((t) => t.getAttribute('data-asset') || '');
+    // Every tile in the page in the library's order, none twice; those in view one unbroken run of it.
+    const where = 'at ' + Math.round(body.scrollTop) + 'px the grid shows ';
+    const bad = run.findIndex((id, k) => !at.has(id) || (k > 0 && at.get(id) <= at.get(run[k - 1])));
+    if (bad >= 0 && !broken) broken = where + (run[bad] || 'a tile without an image') + (bad ? ' after ' + run[bad - 1] : '') + ', out of the library’s order';
+    const shown = all.filter((t) => t.getBoundingClientRect().bottom > box.top && t.getBoundingClientRect().top < box.bottom).map((t) => at.get(t.getAttribute('data-asset')));
+    const gap = shown.findIndex((i, k) => k > 0 && i !== shown[k - 1] + 1);
+    if (gap >= 0 && !broken) broken = where + order[shown[gap]] + ' in view right after ' + order[shown[gap - 1]] + ', skipping ' + (shown[gap] - shown[gap - 1] - 1) + ' images';
+    if (!shown.length && !broken) broken = where + 'no image in view';
+    // Seen only once in view: a tile in the page but out of view (drawn ahead, or kept) is not shown.
+    for (const i of shown) seen.add(order[i]);
+    if (body.scrollTop >= body.scrollHeight - body.clientHeight - 1) break;
+  }
+  return { seen: seen.size, stops, broken, unseen: order.find((id) => !seen.has(id)) || null };
+}`;
+
+/**
+ * The Inspector's pickers of library images `assets` opens: the image picker beside an image field, a popover, and the
+ * gallery picker in a gallery's list. Each is opened from the home page, by `button` once its section is chosen.
+ */
+export const ASSET_PICKERS = [
+  { key: 'imagePicker', label: 'image picker', button: 'Choose image…', root: '.insp-image-pop' },
+  { key: 'galleryPicker', label: 'gallery picker', button: 'Choose images…', root: '.insp-pick-many' }
+] as const;
+/** The Business starter's gallery on the home page, by its heading. */
+const GALLERY_HEADING = 'Recent projects';
+/** The canvas's toolbar for the section chosen, whichever it is. */
+const SELECTION_CHIP = '[role="toolbar"][aria-label$=" actions"]';
+
+/** The pictures an open picker (`root`) holds loaded, and their decoded size (width × height × 4 bytes each). */
+async function pickerPicturesHeld(win: Page, root: string): Promise<{ pictures: number; pictureBytes: number }> {
+  return win.evaluate((sel) => {
+    let pictures = 0;
+    let pictureBytes = 0;
+    type Img = { complete: boolean; naturalWidth: number; naturalHeight: number };
+    for (const img of (globalThis as unknown as { document: { querySelectorAll(s: string): Iterable<Img> } }).document.querySelectorAll(`${sel} .insp-pick-grid img`)) {
+      if (!img.complete || !img.naturalWidth) continue;
+      pictures++;
+      pictureBytes += img.naturalWidth * img.naturalHeight * 4;
+    }
+    return { pictures, pictureBytes };
+  }, root);
+}
+
+/**
+ * Whether every option of an open picker (`sel`) that is in its grid's view shows its picture, loaded (and some are in
+ * view): an option showing the glyph for a picture that will not load is not pictured. A function
+ * with no functions inside it, not source text: the page's content security policy refuses a string to evaluate, which
+ * a wait that polls would evaluate again on every frame.
+ */
+const pickerPictured = (sel: string): boolean => {
+  type Box = { top: number; bottom: number; height: number };
+  type El = { getBoundingClientRect(): Box; querySelector(s: string): (El & { complete?: boolean; naturalWidth?: number }) | null; querySelectorAll(s: string): Iterable<El> };
+  const grid = (globalThis as unknown as { document: { querySelector(s: string): El | null } }).document.querySelector(`${sel} .insp-pick-grid`);
+  if (!grid) return false;
+  const box = grid.getBoundingClientRect();
+  let seen = 0;
+  for (const tile of grid.querySelectorAll('[role="option"]')) {
+    const r = tile.getBoundingClientRect();
+    if (r.top >= box.bottom) break;
+    if (r.bottom <= box.top || r.height === 0) continue;
+    seen++;
+    const img = tile.querySelector('img');
+    if (!img || !(img.complete && (img.naturalWidth ?? 0) > 0)) return false;
+  }
+  return seen > 0;
+};
+
+/**
+ * What an open picker (`sel`) shows: its first and last option in its grid's view (their titles), and whether the grid
+ * is scrolled to its top and to its end. A function with no functions inside it (see pickerPictured).
+ */
+const pickerView = (sel: string): { first: string | null; last: string | null; top: boolean; end: boolean; scrollTop: number } => {
+  type El = { scrollTop: number; scrollHeight: number; clientHeight: number; getBoundingClientRect(): { top: number; bottom: number }; getAttribute(n: string): string | null; querySelectorAll(s: string): Iterable<El> };
+  const grid = (globalThis as unknown as { document: { querySelector(s: string): El | null } }).document.querySelector(`${sel} .insp-pick-grid`);
+  if (!grid) return { first: null, last: null, top: false, end: false, scrollTop: -1 };
+  const box = grid.getBoundingClientRect();
+  let first: string | null = null;
+  let last: string | null = null;
+  for (const o of grid.querySelectorAll('[role="option"]')) {
+    const r = o.getBoundingClientRect();
+    if (r.bottom <= box.top || r.top >= box.bottom) continue;
+    first ??= o.getAttribute('title');
+    last = o.getAttribute('title');
+  }
+  return { first, last, top: grid.scrollTop <= 1, end: grid.scrollTop >= grid.scrollHeight - grid.clientHeight - 1, scrollTop: Math.round(grid.scrollTop) };
+};
+
 /** The grid's scroll position and how far it can go. */
 const gridScroll = (win: Page) =>
   win.locator(ASSET_BODY).first().evaluate((el) => {
@@ -3333,8 +3451,6 @@ export const assets: Scenario = {
       const shown = (await win.evaluate('globalThis.__perfShow.stop()')) as { clickAt: number | null; laidOutAt: number | null; picturedAt: number | null; inView: number };
       await ctx.mark('assets.window', { scenario: 'assets', at, window: 'show', edge: 'end', ...(await framesSeen(win, periodMs)), showMs: shown.clickAt !== null && shown.laidOutAt !== null ? shown.laidOutAt - shown.clickAt : -1, picturesMs: shown.clickAt !== null && shown.picturedAt !== null ? shown.picturedAt - shown.clickAt : -1, inView: shown.inView, tiles: await win.locator(ASSET_TILES).count() });
       expect(shown.inView > 0, 'the grid showed no tiles in view');
-      const tiles = await win.locator(ASSET_TILES).count();
-      expect(tiles === lib.images, `the grid shows ${tiles} tiles for the library's ${lib.images} images`);
       expect((await win.locator(ASSET_TILES).first().getAttribute('data-asset')) === order[0], 'the grid does not start with the first image in its order');
 
       // An edit elsewhere with the grid shown: the project the editor receives is drawn again.
@@ -3384,6 +3500,11 @@ export const assets: Scenario = {
       await ctx.mark('assets.held', { scenario: 'assets', at, ...held });
       expect(held.pictures > 0, 'the grid holds no pictures at its end');
 
+      // Not timed: the grid shows the whole library, in its order, from its top to its end.
+      const walked = await walkGrid(win, order);
+      expect(!walked.broken, `walking the grid: ${walked.broken}`);
+      expect(walked.seen === lib.images && !walked.unseen, `walking the grid in ${walked.stops} stops showed ${walked.seen} of the library's ${lib.images} images (not ${walked.unseen})`);
+
       // Not timed: the keyboard walks the whole grid (End, Home, arrows) and Enter opens the image focused.
       await win.locator(ASSET_BODY).first().evaluate((el) => ((el as unknown as { scrollTop: number }).scrollTop = 0));
       await sleep(300);
@@ -3406,6 +3527,58 @@ export const assets: Scenario = {
       await win.locator('#editor-sidebar .asset-detail .asset-back').click();
       await win.locator(ASSET_TILES).first().waitFor({ timeout: 15_000 });
       expect((await focusedTile(win)) === order[1 + cols], 'Back did not return the focus to the image it opened');
+
+      // The Inspector's two pickers of library images, with Assets still shown: the image picker on the home hero's
+      // Image (Choose image…: the fixture's hero has none) and the gallery picker on its gallery's images (Choose images…). From the press to the picker
+      // open with every option in its view showing its picture, then (untimed) scrolled to its end. The section is
+      // chosen on the canvas, and put back afterwards (nothing selected, the right panel's view as it was), so the next
+      // picker and the next library start as this one did.
+      const hero = findHeading((await snap())!.state.pages[ctx.fixture.homePageId], ctx.fixture.heroId)?.heading ?? heading;
+      const names = order.map((id) => (now.state.assets.assets[id] as { name: string }).name);
+      for (const pk of ASSET_PICKERS) {
+        const tiles = `${pk.root} .insp-pick-grid [role="option"]`;
+        const dockTab = await win.locator('#editor-dock [role="tab"][aria-selected="true"]').first().getAttribute('id');
+        // In the middle of the page's view, clear of the shared header that stays on top of it.
+        const section = preview(win).getByRole('heading', { name: pk.key === 'imagePicker' ? hero : GALLERY_HEADING, exact: true, level: pk.key === 'imagePicker' ? 1 : 2 }).first();
+        await section.evaluate((h) => (h as unknown as { scrollIntoView(o: object): void }).scrollIntoView({ block: 'center', behavior: 'instant' }));
+        // Clicked where it now is: the click's own scroll would put it back under the header.
+        const where = await section.boundingBox();
+        expect(where, `the ${pk.label}'s section heading has no box on the page`);
+        await win.mouse.click(where.x + Math.min(where.width / 2, 40), where.y + where.height / 2);
+        await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+        const open = win.locator('#dock-panel-inspect').getByRole('button', { name: pk.button, exact: true }).first();
+        await open.waitFor({ timeout: 15_000 });
+        await open.scrollIntoViewIfNeeded();
+        await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+        await ctx.mark('assets.window', { scenario: 'assets', at, window: pk.key, edge: 'start' });
+        await open.click();
+        await win.locator(tiles).first().waitFor({ timeout: 15_000 });
+        await win.waitForFunction(pickerPictured, pk.root, { timeout: 30_000, polling: 'raf' });
+        await ctx.mark('assets.window', { scenario: 'assets', at, window: pk.key, edge: 'end', tiles: await win.locator(tiles).count() });
+        const atTop = await win.evaluate(pickerView, pk.root);
+        expect(atTop.top && (atTop.first ?? '').startsWith(names[0]), `the ${pk.label} opens on “${atTop.first}” at ${atTop.scrollTop}px, not ${names[0]} at its top`);
+        const grid = win.locator(`${pk.root} .insp-pick-grid`).first();
+        for (let i = 0; i < ASSET_NOTCHES_MAX; i++) {
+          const end = await grid.evaluate((el) => {
+            const g = el as unknown as { scrollTop: number; scrollHeight: number; clientHeight: number };
+            g.scrollTop = Math.min(g.scrollTop + g.clientHeight, g.scrollHeight - g.clientHeight);
+            return g.scrollTop >= g.scrollHeight - g.clientHeight - 1;
+          });
+          await sleep(STEP_MS * 2);
+          if (end) break;
+        }
+        await sleep(1000);
+        await win.waitForFunction(pickerPictured, pk.root, { timeout: 30_000, polling: 'raf' });
+        const atEnd = await win.evaluate(pickerView, pk.root);
+        expect(atEnd.end && (atEnd.last ?? '').startsWith(names[names.length - 1]), `the ${pk.label} ends with “${atEnd.last}” at ${atEnd.scrollTop}px, not ${names[names.length - 1]} at its end`);
+        await ctx.mark('assets.pickerHeld', { scenario: 'assets', at, picker: pk.key, ...(await pickerPicturesHeld(win, pk.root)) });
+        await win.locator(tiles).last().focus();
+        await win.keyboard.press('Escape');
+        await win.locator(`${pk.root} .insp-pick-grid`).first().waitFor({ state: 'detached', timeout: 15_000 });
+        if (dockTab) await win.locator(`#${dockTab}`).click();
+        for (let i = 0; i < 4 && (await win.locator(SELECTION_CHIP).count()); i++) await win.keyboard.press('Escape');
+        expect(!(await win.locator(SELECTION_CHIP).count()), `a section stayed selected after the ${pk.label}`);
+      }
     }
     await ctx.mark('scenario.end', { scenario: 'assets' });
     await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('assets', 'renderer')) && !!t.first('scenario.end', forScenario('assets', 'main')));
@@ -3463,6 +3636,23 @@ export const assets: Scenario = {
       if (held) {
         m.count(`${p}.picturesHeld`, Number(held.attrs?.pictures));
         m.count(`${p}.pictureBytes`, Number(held.attrs?.pictureBytes), 'bytes');
+      }
+      // The Inspector's pickers: what opening each rendered and put in the page, and the pictures it holds at its end.
+      for (const { key: pk } of ASSET_PICKERS) {
+        const q = `${p}.${pk}`;
+        const start = edge(pk, 'start');
+        const end = edge(pk, 'end');
+        if (start && end) {
+          if (trackless(start) || trackless(end)) m.need(`${q}.renders (the editor did not count component renders)`, undefined);
+          else m.count(`${q}.renders`, gained(start, end, 'react.renders'));
+          commits(m, trace, `${q}.rendererCommits`, start, end);
+          m.count(`${q}.tiles`, Number(end.attrs?.tiles));
+        }
+        const held = m.need(`assets.pickerHeld ${at} ${pk}`, trace.first('assets.pickerHeld', (r) => r.proc === 'renderer' && r.attrs?.scenario === 'assets' && r.attrs?.at === at && r.attrs?.picker === pk));
+        if (held) {
+          m.count(`${q}.picturesHeld`, Number(held.attrs?.pictures));
+          m.count(`${q}.pictureBytes`, Number(held.attrs?.pictureBytes), 'bytes');
+        }
       }
     }
     return m;
