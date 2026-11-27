@@ -27,7 +27,7 @@ import { isImeComposing } from '../lib/ime';
 import { assetArrived, reviewImport } from '../lib/import-review';
 import { appliesLanded, registerFlush, trackApply, type ApplyOutcome } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
-import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
+import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, pastedArticle, pasteArticle, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
@@ -1263,10 +1263,17 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             onBlur={() => void draft.flush()}
             onKeyDown={onKeyDown}
             onPaste={(e) => {
-              // Words only: formatting comes from the toolbar, pictures from the library.
+              // Formatting the text can hold comes in with the words (headings, quotes, lists, bold, italic, links);
+              // anything else keeps only its words, and pictures come from the library. One undo step, either way.
               e.preventDefault();
+              const now = getState().snapshot?.state ?? state;
+              const pasted = pastedArticle(e.clipboardData.getData('text/html'), now, devUrl);
               const text = e.clipboardData.getData('text/plain');
-              if (text) document.execCommand('insertText', false, text);
+              if (!pasted.length && !text) return;
+              command(() => {
+                if (pasted.length && root.current && pasteArticle(root.current, pasted, now, devUrl, text)) return;
+                if (text) document.execCommand('insertText', false, text);
+              });
             }}
             // Image files from the desktop are imported and offered in the picture dialog, to go in where they were dropped,
             // shown by a line between the blocks as they are dragged over the text. Words dragged keep the browser's own.
