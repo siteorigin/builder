@@ -51,7 +51,7 @@ function serve(host: () => HostPeer, site: Site) {
         asked.push(request.target);
         const html = site.get(request.target.split('?')[0]);
         if (html === undefined) answerPreview(host(), request.requestId, { status: 404, headers: [['content-type', 'text/plain']], body: enc('Not found') });
-        else answerPreview(host(), request.requestId, { headers: [['content-type', 'text/html; charset=utf-8']], body: enc(html) });
+        else answerPreview(host(), request.requestId, { headers: [['content-type', request.target.endsWith('.txt') ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8']], body: enc(html) });
       }
       await wait(10);
     }
@@ -403,7 +403,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
   it('points at what the guest clicks, for the host alone, without the click doing anything else, and stops on Escape (#768)', async () => {
     // The editor's preview marks each element with where it is in the project (src/generator, idAttrs).
     const marked = `<!doctype html><html><head><title>Home</title></head><body style="margin:0"><h1>Home</h1><div style="height:1200px"></div><section data-so-ctx="page:pg_home|n_card" data-so-node="n_title" data-so-items="it%2C1,it_2"><a id="go" href="/about/" style="display:block;height:40px">About</a></section><div style="height:1200px"></div></body></html>`;
-    const s = await scene({ site: new Map([['/', marked], ['/about/', page('About')]]) });
+    const s = await scene({ site: new Map([['/', marked], ['/about/', page('About', '<a id="notes" href="/notes.txt">Notes</a>')], ['/notes.txt', 'Plain notes']]) });
     try {
       const guestId = await ask(s);
       const frame = await admit(s, guestId);
@@ -440,6 +440,11 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await frame.waitForURL(/\/about\/$/);
       await wait(200);
       expect(s.host.has('spotlight:pointed')).toBe(false);
+
+      // A page the site goes on to that has no bridge (a plain file) cannot be pointed at: Point waits for one that has.
+      await s.tab.waitForSelector('#point:not([disabled])');
+      await frame.click('#notes');
+      await s.tab.waitForSelector('#point[disabled]');
     } finally {
       await s.done();
     }

@@ -1467,7 +1467,16 @@ export function Canvas() {
   function marksOnFrame(): boolean {
     const at = presenceOf(getState()).previewPath;
     const shown = frameAt.current;
-    return !at || !shown || samePath(at.split('?', 1)[0], shown.split('?', 1)[0]);
+    // The page reports its path decoded (readablePath in the bridge), the editor's place is URL-encoded: both are read decoded.
+    const plain = (path: string) => {
+      const bare = path.split('?', 1)[0];
+      try {
+        return decodeURI(bare);
+      } catch {
+        return bare;
+      }
+    };
+    return !at || !shown || samePath(plain(at), plain(shown));
   }
 
   function syncTrack() {

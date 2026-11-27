@@ -79,7 +79,19 @@
     event.preventDefault();
     event.stopImmediatePropagation();
   };
-  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'auxclick', 'dblclick', 'touchstart', 'submit']) window.addEventListener(type, swallow, { capture: true, passive: false });
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'auxclick', 'dblclick', 'submit']) window.addEventListener(type, swallow, { capture: true, passive: false });
+  // A touch starting is kept from the page's own handlers, but not from scrolling: a swipe moves the page, a tap points.
+  let touchFrom = null;
+  window.addEventListener(
+    'touchstart',
+    (event) => {
+      if (!pointing) return;
+      event.stopImmediatePropagation();
+      const touch = event.changedTouches[0];
+      touchFrom = touch ? { x: touch.clientX, y: touch.clientY } : null;
+    },
+    { capture: true, passive: true }
+  );
   /** Point at what is at (x, y) in the page's window, for the host, and stop pointing. */
   const pointAt = (target, x, y) => {
     stopPointing();
@@ -105,7 +117,11 @@
       if (!pointing) return;
       swallow(event);
       const touch = event.changedTouches[0];
-      if (touch) pointAt(document.elementFromPoint(touch.clientX, touch.clientY) ?? event.target, touch.clientX, touch.clientY);
+      const from = touchFrom;
+      touchFrom = null;
+      // A swipe scrolled the page: still pointing, for the tap that follows.
+      if (!touch || (from && Math.hypot(touch.clientX - from.x, touch.clientY - from.y) > 10)) return;
+      pointAt(document.elementFromPoint(touch.clientX, touch.clientY) ?? event.target, touch.clientX, touch.clientY);
     },
     { capture: true, passive: false }
   );
@@ -121,7 +137,12 @@
     },
     true
   );
-  window.addEventListener('pagehide', stopPointing);
+  for (const type of ['keyup', 'keypress']) window.addEventListener(type, swallow, true);
+  // The page is going (a link the site followed, a reload): the viewer stops pointing until the next page's bridge is there.
+  window.addEventListener('pagehide', () => {
+    stopPointing();
+    window.parent.postMessage({ type: 'siteorigin-live:leaving' }, viewer);
+  });
 
   window.addEventListener('message', (event) => {
     if (event.source !== window.parent || event.origin !== viewer || !event.data) return;

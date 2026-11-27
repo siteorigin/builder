@@ -619,9 +619,17 @@ function reloadPreview() {
 }
 
 window.addEventListener('message', (event) => {
-  if (!iframe || event.source !== iframe.contentWindow || event.origin !== config.previewOrigin) return;
+  if (!iframe || event.origin !== config.previewOrigin || !event.data || typeof event.data !== 'object') return;
+  // A page saying it is going posts as it unloads, when its window is no longer the frame's: it is taken from the
+  // preview's origin alone, since all it can do is stop pointing until the next page's bridge is there.
+  if (event.data.type === BRIDGE_MESSAGES.leaving) {
+    bridgeReady = false;
+    setPointing(false);
+    render();
+    return;
+  }
+  if (event.source !== iframe.contentWindow) return;
   const data = event.data;
-  if (!data || typeof data !== 'object') return;
   if (data.type === BRIDGE_MESSAGES.reloading) {
     clearTimeout(reloadFallback);
     // The page is going: pointing stops with it, and waits for the bridge of the page that replaces it.

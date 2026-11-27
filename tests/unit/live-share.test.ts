@@ -523,6 +523,11 @@ describe('the others on the canvas (#768)', () => {
     const now = canvas.marksNow(store.getState());
     expect(now.marks.map((m: { key: string }) => m.key)).toEqual([`sel:g1:${JSON.stringify(heading(homeId))}`]);
     expect(canvas.trackedMarks(state, now.marks)).toEqual([{ key: now.marks[0].key, desc: expect.objectContaining({ ctx: expect.stringMatching(new RegExp(`^page:${homeId}(\\||$)`)) }), point: null }]);
-    store.setState({ livePresence: null });
+    // Under a workspace that covers the canvas (SEO), a spotlight on the page beneath is somewhere to go to.
+    store.setState({ livePresence: presence({ spotlights: { g1: pointAt('/') } }), leftTab: 'seo' });
+    const covered = canvas.marksNow(store.getState());
+    expect(covered.marks).toEqual([]);
+    expect(covered.away).toEqual([expect.objectContaining({ who: 'Ann', pageId: homeId })]);
+    store.setState({ livePresence: null, leftTab: 'pages' });
   });
 });

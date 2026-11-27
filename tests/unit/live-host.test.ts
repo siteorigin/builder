@@ -1001,6 +1001,16 @@ describe('spotlights, edits and connections in the editor (#768)', () => {
     await until(() => Object.keys(last(h).activity).length === 0, 'the edit’s cue to go');
   });
 
+  it('shows no edit for a copy, whose operations name what it was copied from', async () => {
+    const h = editor();
+    const { socket } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [{ operations: [{ type: 'node.duplicate', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title' }] }]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: true });
+    expect(h.presence.some((p) => Object.keys(p.activity).length)).toBe(false);
+    expect(socket.sent.some((f) => f.type === 'activity:edit')).toBe(false);
+  });
+
   it('shows nothing for an edit that was not made', async () => {
     const h = editor();
     const { socket, run } = await letIn(h);
@@ -1022,9 +1032,10 @@ describe('spotlights, edits and connections in the editor (#768)', () => {
     expect(editTarget({ operations: [op(home, 'n1'), op({ kind: 'page', id: 'pg_about' }, 'n1')] })).toBeNull();
     expect(editTarget({ operations: [op({ kind: 'component', id: 'c_card' }, 'n1')] })).toBeNull();
     expect(editTarget({ operations: [{ type: 'site.setName', name: 'Acme' }] })).toBeNull();
-    // A copy or a duplicate leaves the element it names as it was.
-    expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.copy', toOwner: { kind: 'page', id: 'pg_about' } }] })).toBeNull();
-    expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeNull();
+    // A copy or a duplicate leaves the element it names as it was: no edit is shown for it at all.
+    expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.copy', toOwner: { kind: 'page', id: 'pg_about' } }] })).toBeUndefined();
+    expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
+    expect(editTarget({ operations: [op(home, 'n1'), { ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
     expect(editTarget({ operations: [op({ kind: 'page', id: 'p'.repeat(129) }, 'n1')] })).toBeNull();
     expect(editTarget({ operations: [op(home, 'n'.repeat(129))] })).toBeNull();
     expect(editTarget({ operations: [] })).toBeNull();

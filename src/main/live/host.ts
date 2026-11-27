@@ -131,15 +131,17 @@ let markSeq = 0;
 
 /**
  * The one element a guest's batch of edits changed, when every operation in it names the same node of a page or its
- * header or footer; null for anything else (several elements, a component everywhere, the site's settings).
+ * header or footer; null for anything else (several elements, a component everywhere, the site's settings); undefined
+ * for a batch that copies or duplicates, whose operations name the element it leaves as it was: no edit is shown for it.
  */
-export function editTarget(batch: unknown): ElementTarget | null {
+export function editTarget(batch: unknown): ElementTarget | null | undefined {
   const operations = (batch as { operations?: unknown } | null)?.operations;
   if (!Array.isArray(operations) || !operations.length) return null;
   let target: ElementTarget | null = null;
   for (const op of operations as Array<{ type?: unknown; owner?: { kind?: unknown; id?: unknown }; nodeId?: unknown; toOwner?: unknown }>) {
+    if (!op || typeof op !== 'object') return null;
     // A copy or a duplicate names the element it was made from, which it leaves as it was.
-    if (!op || typeof op !== 'object' || op.toOwner !== undefined || (typeof op.type === 'string' && /\.(copy|duplicate)$/.test(op.type))) return null;
+    if (op.toOwner !== undefined || (typeof op.type === 'string' && /\.(copy|duplicate)$/.test(op.type))) return undefined;
     const kind = op?.owner?.kind;
     const id = op?.owner?.id;
     const nodeId = op?.nodeId;
@@ -1129,6 +1131,7 @@ export class LiveHostManager {
   private edited(run: Run, conn: Connection, guestId: string, batch: unknown): void {
     if (this.run !== run || run.phase !== 'active' || run.conn !== conn || !this.collaborator(run, guestId) || !this.connected(run, guestId)) return;
     const target = editTarget(batch);
+    if (target === undefined) return;
     run.activity.set(guestId, { seq: ++markSeq, target, until: performance.now() + this.timings.activityMs });
     this.publishPresence(run);
     this.armMarks(run);

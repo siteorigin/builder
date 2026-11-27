@@ -24,7 +24,8 @@ export function marksNow(s: State): { marks: CanvasMark[]; away: SpotlightAway[]
   if (!state) return NONE;
   const peers = livePeers(s);
   if (!peers.length) return NONE;
-  const at = presenceOf(s);
+  // A workspace over the canvas (the post writer, SEO) hides the page: whatever is pointed at is somewhere to go to.
+  const at = canvasCovered(activeWorkspace(s)) ? { pageId: null, previewPath: null } : presenceOf(s);
   return canvasMarks(state, { pageId: at.pageId, previewPath: at.previewPath }, peers);
 }
 
@@ -84,8 +85,9 @@ export function PeerMarks({ marks, boxes, toBox, width, height }: { marks: Canva
       {[...rows.entries()].map(([at, { edge, items }]) => {
         const { b } = items[0];
         const point = !b.width && !b.height;
-        const top = edge === 'top' ? 4 : edge === 'bottom' ? height - 24 : edge ? Math.min(Math.max(4, b.top), height - 24) : point ? b.top + 16 : b.top >= 24 ? b.top - 23 : b.top + b.height + 3;
-        const place = edge === 'left' ? { left: 4 } : edge === 'right' ? { right: 4 } : edge ? {} : { left: Math.min(Math.max(0, point ? b.left - 8 : b.left), Math.max(0, width - 120)) };
+        // The bottom edge's row grows upwards as it wraps, so every name in it stays in view.
+        const top = edge === 'bottom' ? undefined : edge === 'top' ? 4 : edge ? Math.min(Math.max(4, b.top), height - 24) : point ? b.top + 16 : b.top >= 24 ? b.top - 23 : b.top + b.height + 3;
+        const place = edge === 'bottom' ? { bottom: 4 } : edge === 'left' ? { left: 4 } : edge === 'right' ? { right: 4 } : edge ? {} : { left: Math.min(Math.max(0, point ? b.left - 8 : b.left), Math.max(0, width - 120)) };
         return (
           <span key={at} className={`ov-peer-tags${edge ? ` edge ${edge}` : ''}`} style={{ ...place, top }}>
             {items.map(({ m }) => (
@@ -126,7 +128,7 @@ export function SpotlightPrompts({ away }: { away: SpotlightAway[] }) {
                 const now = marksNow(getState()).away.find((x) => x.key === a.key);
                 if (!now?.pageId || !Object.hasOwn(getState().snapshot?.state.pages ?? {}, now.pageId)) return;
                 // There, the prompt gives way to the ring: focus goes to the canvas rather than with the button.
-                const canvasEl = e.currentTarget.closest<HTMLElement>('.canvas');
+                const canvasEl = e.currentTarget.closest<HTMLElement>('.canvas') ?? document.querySelector<HTMLElement>('main.canvas');
                 selectPage(now.pageId);
                 canvasEl?.focus({ preventScroll: true });
               }}

@@ -50,7 +50,8 @@ export const BRIDGE_MESSAGES = Object.freeze({
   refused: 'siteorigin-live:refused',
   point: 'siteorigin-live:point',
   pointed: 'siteorigin-live:pointed',
-  pointCancelled: 'siteorigin-live:point-cancelled'
+  pointCancelled: 'siteorigin-live:point-cancelled',
+  leaving: 'siteorigin-live:leaving'
 });
 
 /** As in src/shared/live/limits.ts: the longest ID a spotlight's element names, and how deep its path may reach. */
