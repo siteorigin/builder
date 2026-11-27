@@ -4,10 +4,11 @@ import { Annotation, Compartment, EditorState, RangeSetBuilder } from '@codemirr
 import { Decoration, EditorView, ViewPlugin, closeHoverTooltips, hasHoverTooltips, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab, simplifySelection } from '@codemirror/commands';
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from '@codemirror/language';
-import { linter, lintGutter, type Diagnostic } from '@codemirror/lint';
+import { forceLinting, linter, lintGutter, type Diagnostic } from '@codemirror/lint';
 import { svelte } from '@replit/codemirror-lang-svelte';
 import { tags as t } from '@lezer/highlight';
 import { CircleAlert, CircleCheck, Lock, TriangleAlert, WrapText } from 'lucide-react';
+import type { SourceManifest } from '@shared/api';
 import { api } from '../store';
 import { Spinner } from './ui';
 
@@ -203,6 +204,7 @@ export function CodeEditor({
   onErrorCount,
   onChecking,
   problemsShown,
+  manifest,
   handle
 }: {
   value: string;
@@ -220,8 +222,13 @@ export function CodeEditor({
   onChecking?: (pending: boolean) => void;
   /** A list of the problems is on screen below the editor, so the strip keeps to the count. */
   problemsShown?: boolean;
+  /** The manifest the code is checked against, as edited: a change checks the code again. */
+  manifest?: SourceManifest;
   handle?: MutableRefObject<CodeEditorHandle | null>;
 }) {
+  const held = useRef(manifest);
+  held.current = manifest;
+  const manifestKey = manifest ? JSON.stringify(manifest) : '';
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const lockSlot = useRef(new Compartment());
@@ -290,7 +297,7 @@ export function CodeEditor({
         const doc = v.state.doc;
         let found: Awaited<ReturnType<typeof api.project.validateSource>>['diagnostics'] = [];
         try {
-          found = (await api.project.validateSource(doc.toString())).diagnostics;
+          found = (await api.project.validateSource(doc.toString(), held.current)).diagnostics;
         } catch {
           // The check itself failed: say nothing about the code rather than leave "Checking" on screen.
           if (doc.eq(v.state.doc)) {
@@ -446,6 +453,14 @@ export function CodeEditor({
   useEffect(() => {
     view.current?.dispatch({ effects: lockSlot.current.reconfigure(EditorState.readOnly.of(!!readOnly || !!locked)) });
   }, [readOnly, locked]);
+
+  // A property added, renamed or removed changes what the code is held to: check it again.
+  const linted = useRef(manifestKey);
+  useEffect(() => {
+    if (linted.current === manifestKey) return;
+    linted.current = manifestKey;
+    if (view.current && !readOnly) forceLinting(view.current);
+  }, [manifestKey, readOnly]);
 
   const toggleWrap = () => {
     const next = !wrap;

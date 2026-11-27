@@ -45,17 +45,17 @@ function formSource(kind: 'section' | 'block'): string {
 	import { visitorText } from '../runtime/visitor-text.js';
 
 	let {
-		eyebrow = '',
-		heading = '',
-		lead = '',
+		eyebrow,
+		heading,
+		lead,
 		provider = 'endpoint',
 		endpoint = '',
 		accessKey = '',
-		formName = 'contact',
+		formName = '${block ? 'newsletter' : 'contact'}',
 		fields = [],
-		submitLabel = '',
-		successMessage = '',
-		errorMessage = '',
+		submitLabel,
+		successMessage,
+		errorMessage,
 		variant = 'default',
 		class: className = ''
 	} = $props();

@@ -7,7 +7,7 @@ import { mkdir } from 'node:fs/promises';
 // First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
 import { perf } from './perf';
 import { PERF_ARG, PERF_GLOBAL } from '@shared/perf';
-import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceSettingsDraft } from '@shared/api';
+import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceManifest, SourceSettingsDraft } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
@@ -749,12 +749,18 @@ function registerIpc() {
   handle('project:restoreSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.restoreSavedCopy(id) : { ok: false, message: 'That saved copy can’t be put back on the list.' }));
   handle('project:unlock', () => controller.unlock());
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
-  handle('project:validateSource', async (source: string) => {
+  handle('project:validateSource', async (source: string, manifest?: unknown) => {
     // The slots and parts the code declares by itself, as saving it declares them, so a slot it shows is checked.
     const contract: Pick<ComponentDefinition, 'kind' | 'parts' | 'slots'> = { kind: 'code', parts: { root: { nodeId: 'root', label: 'Root' } } };
     const names = await codeContractNames(String(source));
     if (names) declareCodeNames(contract, names);
-    const problems = await checkSvelteSource(String(source), { contract });
+    // The properties being edited (or the component's own) and its axes, which a user's code is warned against.
+    const given = manifest && typeof manifest === 'object' ? (manifest as SourceManifest) : {};
+    const components = controller.session?.state.components;
+    const def = typeof given.definitionId === 'string' && components && Object.hasOwn(components, given.definitionId) ? components[given.definitionId] : undefined;
+    const properties = given.properties && typeof given.properties === 'object' && !Array.isArray(given.properties) ? given.properties : def?.properties;
+    const held = properties && !def?.generatedFrom ? { manifest: { properties, variantAxes: def?.variantAxes } } : {};
+    const problems = await checkSvelteSource(String(source), { contract, ...held });
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
   });

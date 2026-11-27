@@ -1,5 +1,5 @@
 import type { ApplyResult, EditBatch, Op } from './ops';
-import type { ElementRef, OwnerRef, ProjectState } from './types';
+import type { ElementRef, OwnerRef, ProjectState, PropSchema } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
 import type { ShortcutSettings } from './shortcuts';
@@ -1143,6 +1143,14 @@ export type SourceSyncResult =
   | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number }
   | { ok: false; message: string; code?: string };
 
+/** The manifest a code component's source is checked against in the code editor (see BuilderApi.project.validateSource). */
+export interface SourceManifest {
+  /** The component being edited, for its variant axes and, without `properties`, its stored properties. */
+  definitionId?: string;
+  /** The properties as edited, not yet saved. */
+  properties?: Record<string, PropSchema>;
+}
+
 export interface BuilderApi {
   platform: string;
   app: {
@@ -1373,7 +1381,11 @@ export interface BuilderApi {
     unlock(): Promise<{ ok: boolean; message?: string }>;
     /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
     saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;
-    validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
+    /**
+     * Checks a code component's source as saving it would. With `manifest`, the props the code takes are held to the
+     * properties given (the editor's draft), or else those of the component `definitionId` names, and to its axes.
+     */
+    validateSource(source: string, manifest?: SourceManifest): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
     /** Resolves once the writes queued for the project have finished: whether they all reached the disk, in the
      *  opening given (its snapshot's workspaceKey). */
     flush(opening?: string): Promise<boolean>;

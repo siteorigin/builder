@@ -13,8 +13,10 @@ import { posix } from 'node:path';
 import type { ComponentDefinition } from '@shared/types';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { CODE_TEXT_ATTR, CODE_TEXT_HOOK, codeTextField, parseCodeTextPath } from '@shared/code-text';
-import { slotIdent } from '@generator/index';
+import { codeTakesBlocks, slotIdent } from '@generator/index';
 import { axesOf } from '@shared/variants';
+import { richTextToParagraphs, toRichText } from '@shared/richtext';
+import { tokenVar } from '@shared/styles';
 
 export interface CodeProblem {
   severity: 'error' | 'warning';
@@ -122,7 +124,15 @@ export interface CheckOptions {
    * every text marker (`data-so-text`) is written through the placement's hook and names text the component declares.
    */
   contract?: CodeContract;
+  /**
+   * The component's manifest, when the props its code takes from $props() are checked against the properties it
+   * declares (see manifestProblems): errors under the strict policy, warnings otherwise.
+   */
+  manifest?: CodeManifest;
 }
+
+/** What of a code component's manifest its code is held to: the properties placements pass, and its axes' props. */
+export type CodeManifest = Pick<ComponentDefinition, 'properties' | 'variantAxes'>;
 
 /** A code component's contract as the code check holds its code to it (see contractProblems). */
 export interface CodeContract {
@@ -485,6 +495,7 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
   visit(ast.instance, 0, null, 'instance', []);
   visit(ast.fragment, 0, null, 'fragment', []);
   if (opts.contract) for (const p of contractProblems(ast, opts.contract)) add(p.severity, p.message, p.node);
+  if (opts.manifest) for (const p of manifestProblems(ast, opts.manifest, strict)) add(p.severity, p.message, p.node);
   return { problems, sinks };
 }
 
@@ -625,6 +636,171 @@ export async function codeAxisPropProblems(source: string, variantAxes: Componen
   } catch {
     return null;
   }
+}
+
+/**
+ * The props a placement passes a code component besides its declared properties (see the generator's emitInstance):
+ * its part classes and root class, its anchor, its content, and what the site's entrances, page lists and forms hand
+ * on, and in the editor's preview the hook its marked text is edited through. Its slots arrive as `slot_<name>` and
+ * its axes in the props they name.
+ */
+const EDITOR_PROPS = new Set(['class', 'children', 'so_o', 'so_oi', 'so_id', 'so_webmcp', 'so_appear', 'so_stagger', 'so_pages', 'so_eager', CODE_TEXT_HOOK]);
+
+/** Each prop the script destructures from $props() by name, with the default written for it, if any. */
+function propsTaken(ast: Node): Map<string, { node: Node; right?: Node }> {
+  const out = new Map<string, { node: Node; right?: Node }>();
+  walkAst(ast.instance, (n) => {
+    if (n.type !== 'VariableDeclarator' || (n.init as Node | null)?.type !== 'CallExpression') return;
+    const callee = (n.init as Node).callee as Node;
+    if (callee?.type !== 'Identifier' || callee.name !== '$props' || (n.id as Node)?.type !== 'ObjectPattern') return;
+    for (const prop of ((n.id as Node).properties as Node[]) ?? []) {
+      if (prop.type !== 'Property' || prop.computed) continue;
+      const key = prop.key as Node;
+      const name = key.type === 'Identifier' ? String(key.name) : key.type === 'Literal' ? String(key.value) : null;
+      const value = prop.value as Node;
+      if (name !== null) out.set(name, { node: prop, ...(value?.type === 'AssignmentPattern' ? { right: value.right as Node } : {}) });
+    }
+  });
+  return out;
+}
+
+/** A default written as a literal (a string, number, boolean, or an array or object of them); undefined otherwise. */
+function literalValue(n: Node | undefined, depth = 0): { value: unknown } | undefined {
+  if (!n || depth > 8) return undefined;
+  if (n.type === 'Literal' && (typeof n.value === 'string' || typeof n.value === 'number' || typeof n.value === 'boolean' || n.value === null) && !n.regex) return { value: n.value };
+  const text = literalText(n);
+  if (text !== null) return { value: text };
+  if (n.type === 'UnaryExpression' && n.operator === '-' && (n.argument as Node)?.type === 'Literal' && typeof (n.argument as Node).value === 'number') return { value: -((n.argument as Node).value as number) };
+  if (n.type === 'ArrayExpression') {
+    const items = ((n.elements as Array<Node | null>) ?? []).map((e) => (e ? literalValue(e, depth + 1) : undefined));
+    return items.every((i) => i) ? { value: items.map((i) => i!.value) } : undefined;
+  }
+  if (n.type === 'ObjectExpression') {
+    const out: Record<string, unknown> = {};
+    for (const p of (n.properties as Node[]) ?? []) {
+      if (p.type !== 'Property' || p.computed || p.kind !== 'init' || p.method) return undefined;
+      const k = p.key as Node;
+      const key = k.type === 'Identifier' ? String(k.name) : k.type === 'Literal' ? String(k.value) : null;
+      const v = literalValue(p.value as Node, depth + 1);
+      if (key === null || !v) return undefined;
+      out[key] = v.value;
+    }
+    return { value: out };
+  }
+  return undefined;
+}
+
+/**
+ * A property's default as its code receives it, or undefined when that depends on the site it is placed in (a link
+ * or picture resolved against the project, a list or object of them, a copyright line that reads the year).
+ */
+function codeDefault(schema: ComponentDefinition['properties'][string]): { value: unknown } | undefined {
+  switch (schema.type) {
+    case 'string':
+    case 'enum':
+    case 'icon':
+      return typeof schema.default === 'string' && !schema.default.includes('{year}') ? { value: schema.default } : undefined;
+    case 'number':
+    case 'boolean':
+    case 'choices':
+    case 'table':
+      return { value: schema.default };
+    case 'richtext':
+      return codeTakesBlocks(schema) ? undefined : { value: richTextToParagraphs(toRichText(schema.default, schema.plainAs)) };
+    case 'token':
+      return typeof schema.default?.token === 'string' ? { value: `var(${tokenVar(schema.default.token)})` } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** Whether two literal values are the same, whatever order an object's keys are written in. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => sameValue(v, b[i]));
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && sameValue((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
+const short = (v: unknown) => {
+  const s = JSON.stringify(v);
+  return s.length > 60 ? `${s.slice(0, 57)}…` : s;
+};
+
+/**
+ * Where a code component's code and its manifest disagree about its properties: a declared property the code never
+ * takes from $props() (what placements set there never shows), a prop the code takes that no property declares (no
+ * placement can set it), and a default written in the code that is not the manifest's (the inspector shows one, the
+ * code the other). A prop counts as taken by name in the destructuring, under a rename (`title: heading`) too, or read
+ * by name from the whole props object or the rest of them (`rest.title`). The editor's own props, the slots' and the
+ * axes' are never properties. When the code hands the props object or the rest on (to an element's attributes, a
+ * helper), a declared property may be read there, which the check cannot follow, so it only warns.
+ */
+function manifestProblems(ast: Node, manifest: CodeManifest, strict: boolean): Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> {
+  const out: Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> = [];
+  const severity: CodeProblem['severity'] = strict ? 'error' : 'warning';
+  const properties = manifest.properties && typeof manifest.properties === 'object' ? manifest.properties : {};
+  const declared = (name: string) => Object.hasOwn(properties, name) && !!properties[name] && typeof properties[name] === 'object';
+  const taken = propsTaken(ast);
+  const whole = wholePropsReads(ast);
+  const axisProps = new Set(axesOf(manifest).flatMap(([, a]) => (typeof a.prop === 'string' ? [a.prop] : [])));
+  const editors = (name: string) => EDITOR_PROPS.has(name) || name.startsWith('slot_') || axisProps.has(name);
+  for (const name of Object.keys(properties)) {
+    if (!declared(name) || taken.has(name) || whole.read.has(name) || axisProps.has(name)) continue;
+    const label = typeof properties[name].label === 'string' && properties[name].label.trim() ? properties[name].label.trim() : name;
+    out.push(
+      whole.handed
+        ? { severity: 'warning', message: `The “${label}” property arrives in ${name}, which the code does not take from $props() by name: take it (let { ${name} } = $props()) so the check can see the code reads it.` }
+        : { severity, message: `The “${label}” property arrives in ${name}, which the code never takes from $props(): take it (let { ${name} } = $props()), or remove the property, as what placements set there will not show.` }
+    );
+  }
+  const undeclared = (name: string, node?: Node) =>
+    out.push({ severity, message: `The code takes ${name} from $props(), which is not one of the component's properties: declare it, or stop reading it, as no placement can set it.`, ...(node ? { node } : {}) });
+  for (const [name, { node }] of taken) if (!declared(name) && !editors(name)) undeclared(name, node);
+  for (const name of whole.read) if (!taken.has(name) && !declared(name) && !editors(name)) undeclared(name);
+  for (const [name, { right }] of taken) {
+    if (!right || !declared(name)) continue;
+    const written = literalValue(right);
+    // No default, or one the code works out, says nothing against the manifest's.
+    if (!written || written.value === null) continue;
+    const expected = codeDefault(properties[name]);
+    if (!expected || sameValue(written.value, expected.value)) continue;
+    const label = typeof properties[name].label === 'string' && properties[name].label.trim() ? properties[name].label.trim() : name;
+    out.push({ severity, message: `The code's default for ${name} (${short(written.value)}) is not the “${label}” property's default (${short(expected.value)}): write the manifest's default, or none.`, node: right });
+  }
+  return out;
+}
+
+/**
+ * Where a code component's code and its manifest's properties disagree (see manifestProblems), for a check of the
+ * manifest alone: code that is unchanged passed every other check when it was saved. Null when the code cannot be
+ * parsed.
+ */
+export async function codeManifestProblems(source: string, manifest: CodeManifest, strict = false): Promise<CodeProblem[] | null> {
+  const { parse } = await import('svelte/compiler');
+  let ast: Node;
+  try {
+    ast = parse(source, { modern: true }) as unknown as Node;
+  } catch {
+    return null;
+  }
+  return manifestProblems(ast, manifest, strict).map((p) => ({ severity: p.severity, message: p.message, ...(typeof p.node?.start === 'number' ? { line: source.slice(0, p.node.start).split('\n').length } : {}) }));
+}
+
+/**
+ * A pack's code components whose code and manifest disagree (see manifestProblems), held to the strict policy as the
+ * assistant's code is: one message for each, naming its problems. Code that cannot be parsed is one of them.
+ */
+export async function packManifestProblems(components: readonly ComponentDefinition[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const def of components) {
+    if (def.kind !== 'code' || typeof def.source !== 'string') continue;
+    const problems = await codeManifestProblems(def.source, def, true);
+    const errors = problems === null ? [{ message: 'its code cannot be parsed.' } as CodeProblem] : problems.filter((p) => p.severity === 'error');
+    if (errors.length) out.push(`Component ${def.componentId}: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`);
+  }
+  return out;
 }
 
 /** The part a node of the markup gives its class to through the placement's hook (so_o?.total, so_o["total"]), if any. */

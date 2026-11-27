@@ -43,7 +43,7 @@ import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, codeAxisPropProblems, codeContractNames, componentSources } from '../codecheck';
+import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, componentSources } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
@@ -84,6 +84,8 @@ export interface OpenOptions {
 export const SOURCE_DRAFTS = 'ai-runs';
 /** Which property each variant axis of a definition arrives in, comparable between two versions of it. */
 const axisPropsKey = (def: ComponentDefinition) => JSON.stringify(axesOf(def).map(([axis, a]) => [axis, a.prop]).sort(([a], [b]) => String(a).localeCompare(String(b))));
+/** What a code component's code is held to of its manifest (see codeManifestProblems): its axes' props and its properties. */
+const manifestKey = (def: ComponentDefinition) => `${axisPropsKey(def)}|${JSON.stringify(def.properties ?? {})}`;
 /** A run's ID as the orchestrator makes it (newId): safe to name a folder with. */
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -3203,15 +3205,19 @@ export class ProjectSession extends EventEmitter {
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined) continue;
         const was = this.state.components[def.id];
-        // The props its axes arrive in, checked alone against code that passed its other checks: unchanged code (a
-        // theme refresh among them), or code the app ships.
+        // The props its axes arrive in and its properties, checked alone against code that passed its other checks:
+        // unchanged code (a theme refresh among them), or code the app ships. A design's edited file takes what the
+        // design's file took (see the generator's designCalled), so only its axes are held to its manifest.
         const axesOnly = async () => {
-          const errors = ((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []).filter((p) => p.severity === 'error');
-          return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
+          const errors = [
+            ...((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []),
+            ...((def.generatedFrom ? [] : await codeManifestProblems(def.source!, def, opts.source === 'ai' || importing)) ?? [])
+          ].filter((p) => p.severity === 'error');
+          return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
         };
         if (was?.source === def.source) {
-          // Unchanged code passed its checks when it was saved: only a change of the props its axes arrive in is checked.
-          if (axisPropsKey(was) === axisPropsKey(def)) continue;
+          // Unchanged code passed its checks when it was saved: only a change of what it is held to of its manifest is.
+          if (manifestKey(was) === manifestKey(def)) continue;
           const refused = await axesOnly();
           if (refused) return refused;
           continue;
@@ -3223,7 +3229,7 @@ export class ProjectSession extends EventEmitter {
         const shipped = (c: ComponentDefinition) => c.kind === 'code' && c.source === def.source && (def.owner === 'theme' || (importing && JSON.stringify(c.properties) === JSON.stringify(def.properties)));
         const shippedAs = (def.owner === 'theme' || importing) && listThemes().flatMap((t) => (t.source !== 'user' ? t.components.filter(shipped) : []));
         if (shippedAs && shippedAs.length) {
-          if (shippedAs.some((c) => axisPropsKey(c) === axisPropsKey(def))) continue;
+          if (shippedAs.some((c) => manifestKey(c) === manifestKey(def))) continue;
           const refused = await axesOnly();
           if (refused) return refused;
           continue;
@@ -3237,6 +3243,8 @@ export class ProjectSession extends EventEmitter {
             filename: def.sourcePath,
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
             ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties } } : {}),
+            // Its code takes what its properties hold, and nothing they do not (a design's edited file takes the design's).
+            ...(def.generatedFrom ? {} : { manifest: def }),
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }
