@@ -32,7 +32,8 @@ export function FormRoutingHost() {
         const still = routingQuestion(waitingQuestion(s.conversation, s.activeRunId, s.runStatus));
         if (still && routingKey(still) === routingKey(asking)) toast('Your answer could not be sent. Choose Review changes to answer again.', 'error');
       },
-      sent: (answer) => setSaid(`${answer}: answer sent. The AI is continuing.`)
+      // The same words twice in a row are still heard: they alternate a trailing no-break space.
+      sent: (answer) => setSaid((prev) => (prev === `${answer}: answer sent. The AI is continuing.` ? `${prev}\u00a0` : `${answer}: answer sent. The AI is continuing.`))
     });
     // Keyed by the question, not the object: the same question rendered again is not asked again.
   }, [key, asked]); // eslint-disable-line react-hooks/exhaustive-deps

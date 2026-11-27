@@ -545,7 +545,8 @@ describe('the app’s dialog for an AI change to where forms send (#1130)', () =
         { label: 'Design', before: 'Sales band', after: 'Support band' },
         { label: 'Form service', before: ENDPOINT, after: ENDPOINT },
         { label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: `${SUPPORT} (Form endpoint URL)` }
-      ]
+      ],
+      note: '“Support band” takes the place of “Sales band”, and its own code decides how the form sends. The addresses above are what its settings say.'
     });
   });
 
@@ -567,6 +568,29 @@ describe('the app’s dialog for an AI change to where forms send (#1130)', () =
         { label: 'Sends to', before: `${SUPPORT} (Form endpoint URL)`, after: 'enquiries (Netlify form name)' }
       ]
     });
+  });
+
+  it('names a field a binding reads, and says why no address can be shown when none can', () => {
+    const recipients = { $prop: 'recipients', field: 'sales' };
+    const [f] = formRoutingPrompt([
+      {
+        kind: 'setting',
+        definitionId: 'project.band',
+        name: 'Band',
+        where: 'on “Home”',
+        prop: 'recipients',
+        label: 'Recipients',
+        value: { sales: EVIL },
+        was: { sales: SALES },
+        placement: 'page:p:n_1',
+        sends: { was: [{ service: ENDPOINT, setting: 'Form endpoint URL', value: recipients }], is: [{ service: 'Decided by its code', unknown: 'Decided by its code' }] },
+        key: 'k'
+      }
+    ]).forms;
+    expect(f.rows.slice(0, 2)).toEqual([
+      { label: 'Form service', before: ENDPOINT, after: 'Decided by its code' },
+      { label: 'Sends to', before: 'Its design’s “recipients” setting, its “sales” field (Form endpoint URL)', after: 'Decided by its code' }
+    ]);
   });
 
   it('says that code decides where it sends, as no address can be shown', () => {

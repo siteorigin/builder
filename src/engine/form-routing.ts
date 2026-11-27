@@ -65,6 +65,8 @@ export interface FormSends {
   prop?: string;
   setting?: string;
   value?: unknown;
+  /** Why no address can be shown: its code decides it, or the form is set too deep inside designs to follow. */
+  unknown?: string;
 }
 
 /**
@@ -133,6 +135,14 @@ function repeatAround(tree: NodeTree, nodeId: string): string {
     id = parents.get(id);
   }
   return '';
+}
+
+/** A value that reads a design's own setting, or one field of it: `{ $prop }` or `{ $prop, field }`. */
+function propBinding(v: unknown): { $prop: string; field?: string } | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const b = v as { $prop?: unknown; field?: unknown };
+  if (typeof b.$prop !== 'string' || Object.keys(b).some((k) => k !== '$prop' && k !== 'field') || (b.field !== undefined && typeof b.field !== 'string')) return null;
+  return b as { $prop: string; field?: string };
 }
 
 /** An `$item` binding with the list it repeats in (`$list`, as repeatAround gives it), so the dialog can name it. */
@@ -239,7 +249,9 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
    */
   const sendsOf = (state: ProjectState, n: Instance, tree?: NodeTree, read: (v: unknown) => unknown = (v) => v, depth = 0): FormSends[] => {
     const d = def(state, n.definitionId);
-    if (!d || depth > 4) return [];
+    // Only a form, or a design that places one, is followed: the rest send nothing.
+    if (!d || !(sendsFormMessages(d) || bears().before.has(d.id) || bears().after.has(d.id))) return [];
+    if (depth > 4) return [{ service: 'Set deep inside its design', unknown: 'Set deep inside its design' }];
     const value = (p: string) => withList(read(resolved(state, n, p)), tree, n.id);
     if (sendsFormMessages(d)) {
       const provider = value('provider') ?? 'endpoint';
@@ -252,9 +264,17 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       const label = (d.properties[prop] as { label?: unknown } | undefined)?.label;
       return [{ service, ...(depth ? {} : { prop }), setting: typeof label === 'string' && label ? label : prop, value: value(prop) }];
     }
-    if (d.kind === 'code') return bears().before.has(d.id) || bears().after.has(d.id) ? [{ service: 'Decided by its code' }] : [];
-    // A design's own setting, bound inside it, reads the placement's value for it.
-    const inner = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { $prop?: unknown }).$prop === 'string' && Object.keys(v).length === 1 ? read(resolved(state, n, (v as { $prop: string }).$prop)) : v);
+    if (d.kind === 'code') return [{ service: 'Decided by its code', unknown: 'Decided by its code' }];
+    // A design's own setting (or one field of it), bound inside it, reads the placement's value for it.
+    const inner = (v: unknown) => {
+      const b = propBinding(v);
+      if (!b) return v;
+      const whole = read(resolved(state, n, b.$prop));
+      if (b.field === undefined) return whole;
+      // Still a binding (to the design around this one): it reads that field there.
+      if (propBinding(whole)) return { ...(whole as object), field: b.field };
+      return whole && typeof whole === 'object' && !Array.isArray(whole) ? (whole as Record<string, unknown>)[b.field] : undefined;
+    };
     return Object.values(d.tree?.nodes ?? {}).flatMap((m) => (m.kind === 'instance' ? sendsOf(state, m, d.tree, inner, depth + 1) : []));
   };
   // The designs that place a form at all, a setting of their own or not, worked out only if something needs them.
@@ -345,10 +365,13 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       const placement = prior ? `${scope}:${n.id}` : `${scope}:\u0001new:${added++}`;
       // Named, for a grant, without its list items' IDs: the batch sent again gives new items new IDs.
       // Where the placement sends on each side, as the dialog shows it: worked out only for a placement that changes.
+      // Worked out once for the placement, however many of its settings change.
+      let where_: { sends?: { was?: FormSends[]; is?: FormSends[] } } | undefined;
       const sends = () => {
+        if (where_) return where_;
         const was = prior ? sendsOf(before, prior, had!.tree) : [];
         const is = sendsOf(after, n, tree);
-        return was.length || is.length ? { sends: { ...(was.length ? { was } : {}), ...(is.length ? { is } : {}) } } : {};
+        return (where_ = was.length || is.length ? { sends: { ...(was.length ? { was } : {}), ...(is.length ? { is } : {}) } } : {});
       };
       const report = (p: string) => {
         // What it sent with before: the placement's value then, where it was there and its design had the setting.
@@ -387,16 +410,20 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
     const now = def(after, id);
     if (!now || isShipped(now)) continue;
     const prev = def(before, id);
+    // Where a fresh placement of the design would send, before and after, worked out once if a default changes.
+    let fresh: { sends?: { was?: FormSends[]; is?: FormSends[] } } | undefined;
+    const freshSends = () => {
+      if (fresh) return fresh;
+      const placed = { kind: 'instance', id: '', definitionId: id, props: {} } as unknown as Instance;
+      const then = prev ? sendsOf(before, placed) : [];
+      const now_ = sendsOf(after, placed);
+      return (fresh = then.length || now_.length ? { sends: { ...(then.length ? { was: then } : {}), ...(now_.length ? { is: now_ } : {}) } } : {});
+    };
     for (const p of props(id)) {
       const value = defaultOf(now, p);
       const text = routingText(unlisted(value));
       if (prev ? text === routingText(unlisted(defaultOf(prev, p))) : EMPTY_ROUTING.has(text) || p === VARIANTS) continue;
-      // Where a fresh placement of the design would send, before and after.
-      const fresh = { kind: 'instance', id: '', definitionId: id, props: {} } as unknown as Instance;
-      const then = prev ? sendsOf(before, fresh) : [];
-      const now_ = sendsOf(after, fresh);
-      const sends = then.length || now_.length ? { sends: { ...(then.length ? { was: then } : {}), ...(now_.length ? { is: now_ } : {}) } } : {};
-      add({ kind: 'default', definitionId: id, name: now.name, prop: p, label: labelOf(id, p), value, ...(prev ? { was: defaultOf(prev, p) } : { added: true }), ...sends }, text);
+      add({ kind: 'default', definitionId: id, name: now.name, prop: p, label: labelOf(id, p), value, ...(prev ? { was: defaultOf(prev, p) } : { added: true }), ...freshSends() }, text);
     }
   }
 
@@ -449,7 +476,8 @@ function display(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const v = value as { $prop?: unknown; $item?: unknown; $list?: unknown };
-    if (typeof v.$prop === 'string' && Object.keys(v).length === 1) return `Its design’s “${v.$prop}” setting`;
+    const b = propBinding(value);
+    if (b) return `Its design’s “${b.$prop}” setting${b.field === undefined ? '' : `, its “${b.field}” field`}`;
     if (typeof v.$item === 'string' && Object.keys(v).length <= 2) return `Each item’s “${v.$item}”${typeof v.$list === 'string' ? ` in the ${listName(v.$list)} list` : ''}`;
   }
   return JSON.stringify(value);
@@ -470,7 +498,7 @@ export function formRoutingPrompt(changes: readonly FormRoutingChange[]): FormRo
   }
   type Row = FormRoutingPrompt['forms'][number]['rows'][number];
   const service = (s: FormSends[] | undefined) => (s?.length ? [...new Set(s.map((f) => f.service))].join('; ') : 'Not a contact form');
-  const to = (s: FormSends[] | undefined) => (s?.length ? s.map((f) => (f.setting ? `${display(f.value)} (${f.setting})` : f.service === 'Decided by its code' ? 'Decided by its code' : 'Depends on its service')).join('; ') : 'Not a contact form');
+  const to = (s: FormSends[] | undefined) => (s?.length ? s.map((f) => (f.setting ? `${display(f.value)} (${f.setting})` : (f.unknown ?? 'Depends on its service'))).join('; ') : 'Not a contact form');
   const forms: FormRoutingPrompt['forms'] = [];
   for (const cs of groups.values()) {
     const first = cs[0];
@@ -500,7 +528,8 @@ export function formRoutingPrompt(changes: readonly FormRoutingChange[]): FormRo
       rows.push(row.before === row.after ? { ...row, after: `${row.after}, read from a different place` } : row);
     }
     const title = isDefault ? `The “${first.name}” design: what new placements start with` : `“${first.name}” ${first.where ?? ''}`.trim();
-    forms.push({ title, rows });
+    // Another design's code now does the sending: what its settings say is all the app can show.
+    forms.push({ title, rows, ...(swap ? { note: `“${first.name}” takes the place of “${String(swap.value)}”, and its own code decides how the form sends. The addresses above are what its settings say.` } : {}) });
   }
   // Forms with the same name in the same place are told apart by their order there.
   const titles = new Map<string, number>();
