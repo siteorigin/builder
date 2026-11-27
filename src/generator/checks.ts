@@ -660,9 +660,18 @@ export function firstSectionImages(
  * placement's values), from the theme's FAQ and Contact details and project copies of them whose design still has
  * those nodes; what is hidden at every size is left out, as visitors never see it.
  */
+/**
+ * What the shared header and footer show as structured data, each worked out by a function of its own: one made inside
+ * structuredContent would share its scope (the state and the page it was asked about), which the cache keeps.
+ */
+const SHELL_STRUCTURED: Record<ShellPart, (state: ProjectState) => StructuredContent> = {
+  header: (s) => structuredIn(s, [s.site.shell.header]),
+  footer: (s) => structuredIn(s, [s.site.shell.footer])
+};
+
 export function structuredContent(state: ProjectState, page: PageDoc): StructuredContent {
   // The shared header and footer are read once per run, and a page depends on what they show, not on every edit to them.
-  const shell = (part: ShellPart): StructuredContent => (showsPart(page, part) ? derived(state, `structured:${part}`, (s) => structuredIn(s, [s.site.shell[part]])) : { faq: [], businesses: [] });
+  const shell = (part: ShellPart): StructuredContent => (showsPart(page, part) ? derived(state, `structured:${part}`, SHELL_STRUCTURED[part]) : { faq: [], businesses: [] });
   const parts = [shell('header'), structuredIn(state, [page]), shell('footer')];
   return { faq: parts.flatMap((p) => p.faq), businesses: parts.flatMap((p) => p.businesses) };
 }
