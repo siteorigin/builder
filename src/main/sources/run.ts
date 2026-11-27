@@ -1,9 +1,13 @@
 /**
  * One sync, as the sync worker runs it: read every record of the source with its kind's reader, check each, and fetch
- * the pictures of the records that changed since they were last synced. The reply is all or nothing: a reader that
+ * the pictures of the records that changed since they were last synced, each written to the spool the main process
+ * named as it arrives (or, with none, sent in the reply). The reply is all or nothing: a reader that
  * fails part way, a record that cannot be an entry or a picture that will not load fails the whole sync, so no entry
  * is ever drafted for a record that was only not read. Kept apart from the process so it can be tested.
  */
+import { promises as fs } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
+import { join } from 'node:path';
 import { redactSecrets } from './redact';
 import { effectiveMapping, graphqlReadProblem, holdsSecretValue } from '@shared/sources';
 import { fillSecrets, fillSecretsJson } from '@shared/source-paths';
@@ -22,6 +26,7 @@ import {
   MAX_RECORDS,
   MAX_RECORDS_BYTES,
   SAMPLE_SIZE,
+  spoolFile,
   recordImages,
   recordProblem,
   type NormalizedRecord,
@@ -32,8 +37,28 @@ import {
   type SyncRequest
 } from './protocol';
 
-/** A picture's bytes and type, fetched from its address (see worker.ts's fetchImage). */
-export type ImageFetcher = (url: string, maxBytes: number, signal: AbortSignal, check: (url: string) => string | null) => Promise<{ bytes: Uint8Array; mime: string }>;
+/**
+ * A picture's type and bytes, fetched from its address (see fetch-image.ts): with a `sink`, its bytes are handed to it
+ * piece by piece as they arrive, and only their count comes back.
+ */
+export type ImageFetcher = (
+  url: string,
+  maxBytes: number,
+  signal: AbortSignal,
+  check: (url: string) => string | null,
+  sink?: (chunk: Uint8Array) => Promise<void>
+) => Promise<{ mime: string; bytes?: Uint8Array; size?: number }>;
+
+/** A new file of a sync's spool, for the picture at `index` of the reply: never one already there (a link put in its place, say). */
+const openSpoolFile = (spool: string, index: number): Promise<FileHandle> => fs.open(join(spool, spoolFile(index)), 'wx', 0o600);
+
+/** Why a picture fetched into a spool is not there: its file could not be made, written or closed. */
+const KEEP_FAILED = 'a picture could not be kept while it was fetched';
+
+/** Write all of `chunk` at the end of what `file` holds so far. */
+async function writeAll(file: FileHandle, chunk: Uint8Array): Promise<void> {
+  for (let at = 0; at < chunk.byteLength; ) at += (await file.write(chunk, at, chunk.byteLength - at)).bytesWritten;
+}
 
 export interface RunDeps {
   adapters: Readonly<Record<string, SourceAdapter>>;
@@ -248,23 +273,52 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
     if (Object.hasOwn(req.known ?? {}, r.externalId) && req.known[r.externalId] === recordHash(r)) continue;
     for (const img of recordImages(r)) if (!wanted.has(imageKey(img))) wanted.set(imageKey(img), img);
   }
+  // With a spool, each picture is written to its file as it arrives and is never held: only its size is sent.
+  const spool = req.spool;
   const images: SyncImage[] = [];
   let total = 0;
   for (const [key, img] of wanted) {
     const refused = checkAddress(img.url);
     if (refused) return failed('image', refused);
-    let got: { bytes: Uint8Array; mime: string };
+    const max = Math.min(MAX_IMAGE_BYTES, MAX_IMAGES_BYTES - total);
+    let got: Awaited<ReturnType<ImageFetcher>>;
+    let file: FileHandle | null = null;
+    let written = 0;
+    const keep = async (chunk: Uint8Array) => {
+      written += chunk.byteLength;
+      if (written > max) throw new AdapterError('too-large', 'its pictures are too large to sync');
+      await writeAll(file!, chunk).catch(() => {
+        throw new AdapterError('failed', KEEP_FAILED);
+      });
+    };
     try {
-      got = await deps.fetchImage(img.url, Math.min(MAX_IMAGE_BYTES, MAX_IMAGES_BYTES - total), signal, checkAddress);
+      if (spool !== undefined) file = await openSpoolFile(spool, images.length).catch(() => {
+        throw new AdapterError('failed', KEEP_FAILED);
+      });
+      got = await deps.fetchImage(img.url, max, signal, checkAddress, file ? keep : undefined);
+      // A fetcher that answers with the bytes all at once has them written as one piece.
+      if (file && got.bytes) await keep(got.bytes);
+      // Closed before it is said to be there: a write the system reports only on closing fails the sync too.
+      if (file) {
+        const kept = file;
+        file = null;
+        await kept.close().catch(() => {
+          throw new AdapterError('failed', KEEP_FAILED);
+        });
+      }
     } catch (e) {
       return failed(e instanceof AdapterError ? e.code : 'image', e instanceof AdapterError ? e.detail : undefined);
+    } finally {
+      await file?.close().catch(() => undefined);
     }
+    const size = spool !== undefined ? written : got.bytes?.byteLength;
+    if (size === undefined) return failed('image');
     const mime = got.mime.split(';')[0].trim().toLowerCase();
     const ext = Object.hasOwn(IMAGE_EXTENSIONS, mime) ? IMAGE_EXTENSIONS[mime] : undefined;
     if (!ext) return failed('image', 'a picture is not a JPEG, PNG, WebP, GIF or AVIF image');
-    total += got.bytes.byteLength;
-    if (got.bytes.byteLength > MAX_IMAGE_BYTES || total > MAX_IMAGES_BYTES) return failed('too-large', 'its pictures are too large to sync');
-    images.push({ key, mime, ext, bytes: got.bytes });
+    total += size;
+    if (size > MAX_IMAGE_BYTES || total > MAX_IMAGES_BYTES) return failed('too-large', 'its pictures are too large to sync');
+    images.push(spool !== undefined ? { key, mime, ext, size } : { key, mime, ext, size, bytes: got.bytes });
   }
   return { id: req.id, ok: true, records, images };
 }

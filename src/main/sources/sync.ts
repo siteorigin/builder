@@ -18,7 +18,8 @@ import type { SourceSyncGrant } from '@engine/sources';
 import { SyncError, syncFailureMessage, type SyncRunner } from './client';
 import type { SecretStore } from './secrets';
 import type { ApprovalStore } from './approvals';
-import { SAMPLE_SIZE, type FieldKinds, type NormalizedRecord, type SyncImage } from './protocol';
+import { SAMPLE_SIZE, type FieldKinds, type NormalizedRecord } from './protocol';
+import { openSpool, type Spool } from './spool';
 import { knownHashes, planIsEmpty, planSourceSync, SyncPlanError, syncOperations, type SyncPlan } from './reconcile';
 import { redactSecrets } from './redact';
 import { pngTextValues } from '../project/photo-metadata';
@@ -39,7 +40,9 @@ export interface SyncDeps {
   /** The settings the user approved (by saving them here) to sign in with their secrets. */
   approvals: Pick<ApprovalStore, 'approved'>;
   /** Bring a fetched picture into the library: its record, and whether the library had it already (the same bytes). */
-  importImage(image: SyncImage & { name: string }, known: AssetRecord[], createdAt: string): Promise<{ record: AssetRecord; existing: boolean }>;
+  importImage(image: { name: string; mime: string; ext: string; bytes: Buffer }, known: AssetRecord[], createdAt: string): Promise<{ record: AssetRecord; existing: boolean }>;
+  /** Where a sync's pictures wait, each in a file, between the worker fetching them and the library taking them (spool.ts). */
+  spoolRoot: string;
   /** Whether the project the sync began in is still the one open, and wanted. */
   current(): boolean;
   signal?: AbortSignal;
@@ -331,9 +334,31 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   } catch (e) {
     return { ok: false, code: 'secrets', message: syncFailureMessage(source.name, 'failed', (e as Error).message.replace(/\.$/, '')) };
   }
+  // The pictures wait in a folder of their own, one file each, never all in memory; it goes when the sync ends.
+  let spool: Spool;
+  try {
+    spool = await openSpool(deps.spoolRoot);
+  } catch {
+    return { ok: false, message: syncFailureMessage(source.name, 'failed', 'its pictures have nowhere to wait while they are fetched') };
+  }
+  try {
+    return await syncWithSpool(deps, { source, state, revision, secrets, values, closed, stale }, spool);
+  } finally {
+    await spool.release();
+  }
+}
+
+/** syncSource's work once its secrets are known, its pictures fetched into `spool`. */
+async function syncWithSpool(
+  deps: SyncDeps,
+  sync: { source: SourceDoc; state: ProjectState; revision: number; secrets: Record<string, string>; values: string[]; closed: SourceSyncResult; stale: SourceSyncResult },
+  spool: Spool
+): Promise<SourceSyncResult> {
+  const { session } = deps;
+  const { source, state, revision, secrets, values, closed, stale } = sync;
   let result;
   try {
-    result = await deps.runner.run(source.name, { ...sourceRequest(state, source), secrets, known: knownHashes(state, source) }, { signal: deps.signal });
+    result = await deps.runner.run(source.name, { ...sourceRequest(state, source), secrets, known: knownHashes(state, source), spool: spool.dir }, { signal: deps.signal });
   } catch (e) {
     if (e instanceof SyncError) return { ok: false, code: e.code, message: redactSecrets(e.message, values) };
     return { ok: false, message: syncFailureMessage(source.name, 'failed') };
@@ -360,7 +385,14 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   if (refused) return { ok: false, code: 'invalid', message: `“${source.name}” was not synced: ${redactSecrets(refused, values)}` };
   const grant: SourceSyncGrant = { sourceId: source.id, collectionId: plan.collectionId, provenance: plan.provenance };
   const label = `Sync “${source.name}”`;
-  const fetched = new Map(result.images.map((img) => [img.key, img]));
+  // Each picture by its identity, with its place in the spool.
+  const fetched = new Map(result.images.map((img, index) => [img.key, { img, index }]));
+  // Every picture the sync brings is there whole before the first is imported: one the worker never fetched, or whose
+  // file is missing or not the size it was fetched at, stops the sync with nothing imported.
+  for (const key of plan.images.keys()) {
+    const at = fetched.get(key);
+    if (!at || !(await spool.holds(at.index, at.img.size))) return { ok: false, message: syncFailureMessage(source.name, 'image') };
+  }
   return session.withImport(async (): Promise<SourceSyncResult> => {
     const known = Object.values(session.state.assets.assets);
     const createdAt = now.toISOString();
@@ -369,15 +401,23 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
     for (const [key, wanted] of plan.images) {
       if (!deps.current()) return closed;
       if (session.revision !== revision) return stale;
-      const img = fetched.get(key);
-      if (!img) return { ok: false, message: syncFailureMessage(source.name, 'image') };
+      const at = fetched.get(key);
+      if (!at) return { ok: false, message: syncFailureMessage(source.name, 'image') };
       const name = pictureName(wanted.name, wanted.url);
+      // Read from its file only now, one picture at a time: the bytes the worker fetched, of the size it said.
+      let bytes: Buffer;
+      try {
+        bytes = await spool.read(at.index, at.img.size);
+      } catch {
+        return { ok: false, message: syncFailureMessage(source.name, 'image') };
+      }
+      if (!deps.current()) return closed;
+      if (session.revision !== revision) return stale;
       // Nor in what a picture brings: its name, as an address may carry it, or its bytes (a text chunk), which the
       // library keeps as they are.
-      const bytes = Buffer.from(img.bytes);
       if (holdsSecret(name, values) || pictureHoldsSecret(bytes, values)) return leaked;
       try {
-        const { record, existing } = await deps.importImage({ ...img, name }, known, createdAt);
+        const { record, existing } = await deps.importImage({ name, mime: at.img.mime, ext: at.img.ext, bytes }, known, createdAt);
         // The file name the library made of it ("Arts & Crafts" is arts-and-crafts): never one that holds a secret.
         if (holdsSecret(record.file, values)) return leaked;
         if (!existing) {

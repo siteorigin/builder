@@ -91,7 +91,7 @@ describe('source test hosts', () => {
     const signal = new AbortController().signal;
     asked.length = 0;
     const got = await fetchImage('http://pictures.benchmark.example/photos/a.jpg?v=2', 1000, signal, check);
-    expect([Buffer.from(got.bytes).equals(PICTURE), got.mime]).toEqual([true, 'image/jpeg']);
+    expect([Buffer.from(got.bytes!).equals(PICTURE), got.mime]).toEqual([true, 'image/jpeg']);
     expect(asked).toEqual([{ url: '/photos/a.jpg?v=2' }]);
     // The address as written is still checked, and its limits still hold.
     await expect(fetchImage('http://pictures.benchmark.example/photos/a.jpg?v=2', 4, signal, check)).rejects.toMatchObject({ code: 'too-large' });

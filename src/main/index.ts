@@ -38,7 +38,7 @@ import { setToolsCheck } from './runtime/manager';
 import { stopToolsChecks, toolsChecker } from './runtime/tools-process';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
-import { stopSourceSyncs } from './sources/process';
+import { sourceSpoolRoot, stopSourceSyncs } from './sources/process';
 import { gitClient, gitRuntime, stopGitWorker } from './git/process';
 import { useVersionsGit } from './project/versions-git';
 import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navigationAllowed, sameOrigin } from './player-frames';
@@ -47,6 +47,7 @@ import { createThumbCapturer } from './thumb-capture';
 import { createReviewShooter } from './review-capture';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
 import { installSourceTestHosts } from './sources/test-hosts';
+import { sweepSpools } from './sources/spool';
 import { installAiJournal } from './ai-journal';
 import { aboutIcon, windowIcon } from './window-icon';
 import { createEditorCodeCache, type V8CachePolicy } from './code-cache';
@@ -1447,6 +1448,8 @@ app.whenReady().then(async () => {
   buildMenu();
   markStarted();
   startedUp = true;
+  // Pictures a sync was fetching when the app last stopped, never checked or imported (sources/spool.ts).
+  void sweepSpools(sourceSpoolRoot());
   // Registered once, not per window: macOS brings up a new window after the last one closes.
   // With Appearance on System, the window's backing color follows this computer's setting (the editor follows it itself).
   nativeTheme.on('updated', () => {

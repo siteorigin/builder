@@ -22,6 +22,9 @@ export const sourceSyncRunner = createSyncRunner(() =>
   utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'source-sync-worker.js'), [], { serviceName: 'SiteOrigin source sync', env: workerEnv(), stdio: 'ignore' })
 );
 
+/** Where syncs' pictures wait between the worker fetching them and the library taking them (spool.ts). */
+export const sourceSpoolRoot = () => join(app.getPath('userData'), 'source-sync');
+
 /** End every sync in progress (the project closed, or the app is quitting). */
 export const stopSourceSyncs = () => sourceSyncRunner.stop();
 

@@ -5,10 +5,32 @@
  * What the worker says is put in the app's own words here: a server's reply never reaches the author as it is.
  */
 import { redactSecrets } from './redact';
-import { MAX_DETAIL, MAX_IMAGE_BYTES, MAX_RECORDS, recordProblem, SAMPLE_SIZE, type NormalizedRecord, type SyncFailure, type SyncImage, type SyncReply, type SyncRequest } from './protocol';
+import { MAX_DETAIL, MAX_IMAGE_BYTES, MAX_IMAGES_BYTES, MAX_RECORDS, recordProblem, SAMPLE_SIZE, type NormalizedRecord, type SyncFailure, type SyncImage, type SyncReply, type SyncRequest } from './protocol';
 
-const isSyncImage = (i: unknown): i is SyncImage =>
-  !!i && typeof (i as SyncImage).key === 'string' && typeof (i as SyncImage).mime === 'string' && typeof (i as SyncImage).ext === 'string' && (i as SyncImage).bytes instanceof Uint8Array && (i as SyncImage).bytes.byteLength <= MAX_IMAGE_BYTES;
+/**
+ * A picture as a reply may give it: its size within a picture's limit and, for a sync with a spool, no bytes (its file
+ * holds them), or else its bytes, of that size.
+ */
+const isSyncImage = (i: unknown, spooled: boolean): i is SyncImage => {
+  const img = i as SyncImage;
+  if (!img || typeof img.key !== 'string' || typeof img.mime !== 'string' || typeof img.ext !== 'string') return false;
+  if (!Number.isSafeInteger(img.size) || img.size < 0 || img.size > MAX_IMAGE_BYTES) return false;
+  return spooled ? img.bytes === undefined : img.bytes instanceof Uint8Array && img.bytes.byteLength === img.size;
+};
+
+/** A reply's pictures: every place in the list a picture, each named once, and no more bytes than one sync brings. */
+const areSyncImages = (images: unknown[], spooled: boolean): images is SyncImage[] => {
+  const keys = new Set<string>();
+  let total = 0;
+  // By index, so a list with a hole in it is refused rather than passed over.
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+    if (!isSyncImage(img, spooled) || keys.has(img.key)) return false;
+    keys.add(img.key);
+    total += img.size;
+  }
+  return total <= MAX_IMAGES_BYTES;
+};
 
 /** Why a sync failed: the worker's reasons, and the client's own. */
 export type SyncErrorCode = SyncFailure | 'timeout' | 'crashed' | 'stopped' | 'not-started';
@@ -53,6 +75,7 @@ export interface SyncHandle {
 
 export interface SyncResult {
   records: NormalizedRecord[];
+  /** The pictures fetched; with a spool, the file at each one's place in the list holds its bytes (protocol.ts spoolFile). */
   images: SyncImage[];
   /** For a sample: the first few records as the source sent them. */
   raw?: unknown[];
@@ -128,7 +151,7 @@ export function createSyncRunner(spawn: () => SyncHandle, opts: { timeoutMs?: nu
             if (
               m.records.length > MAX_RECORDS ||
               !m.records.every((r) => recordProblem(r) === null) ||
-              !m.images.every(isSyncImage) ||
+              !areSyncImages(m.images, request.spool !== undefined) ||
               (m.raw !== undefined && (!Array.isArray(m.raw) || m.raw.length > SAMPLE_SIZE)) ||
               // An inspection is only ever the records as sent and how many there are: never one that reads as a sync of none.
               (inspected && (m.records.length || m.images.length || !Array.isArray(m.raw) || !Number.isSafeInteger(m.total) || (m.total as number) < m.raw.length)) ||
