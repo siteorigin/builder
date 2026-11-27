@@ -144,7 +144,7 @@ export function liveGuestPlugin() {
 }
 
 export function previewFsPolicy(dir: string) {
-  return { strict: true, allow: [dir], deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#', '**/siteorigin/sources/**', '**/*source-secrets.json*', '**/*api-keys.json*'] };
+  return { strict: true, allow: [dir], deny: ['.env', '.env.*', '.dev.vars', '.dev.vars.*', '**/.wrangler/**', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#', '**/siteorigin/sources/**', '**/*source-secrets.json*', '**/*api-keys.json*'] };
 }
 
 type HeaderValue = string | number | readonly string[];

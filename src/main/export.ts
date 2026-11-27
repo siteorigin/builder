@@ -263,6 +263,9 @@ function sourcePathKept(root: string, p: string): boolean {
   // The editor's own data (history, which holds every version of the brief) by any spelling: on a case-insensitive
   // disk, `.SiteOrigin` is the same folder.
   if (EXCLUDE_TOP.has(top) || top.toLowerCase() === '.siteorigin' || /\.tmp$/.test(p)) return false;
+  // Wrangler's local state (#1126), beside any Worker or Pages Function in the project: its local databases and
+  // bundles hold what `.dev.vars` gave them.
+  if (rel.split(sep).some((part) => part.toLowerCase() === '.wrangler')) return false;
   return !isPrivateFileName(basename(p));
 }
 
