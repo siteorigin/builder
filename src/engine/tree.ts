@@ -291,6 +291,50 @@ export function instancesOf(state: ProjectState, definitionId: string): Array<{ 
   return out;
 }
 
+/** A placement of a component: the tree it is in, and its node there. */
+export interface PlacementRef {
+  owner: OwnerRef;
+  nodeId: string;
+}
+
+/** Whether a value reads from somewhere else (an enclosing design's property, a list item, a collection entry), at any depth. */
+function readsElsewhere(v: unknown): boolean {
+  if (isBinding(v)) return true;
+  if (Array.isArray(v)) return v.some(readsElsewhere);
+  return !!v && typeof v === 'object' && Object.values(v).some(readsElsewhere);
+}
+
+/** A placement's own content: its property values, the lists it connects to a collection, and the page it is on. */
+export interface PlacementContent {
+  props: Record<string, unknown>;
+  listSources?: InstanceNode['listSources'];
+  /** The page it is on, which computed lists (news, an article's header) are worked out for. */
+  pageId?: string;
+}
+
+/**
+ * The content a placement of `definitionId` holds of its own, as it is saved: each property the definition still
+ * declares, except one bound to something (an enclosing design's property, a collection entry's field), which is known
+ * only where that design or entry is shown; with the lists it connects to a collection and the page it is on. Null
+ * when the node (or the tree it was in) is gone, or is no longer a placement of it.
+ */
+export function placementContent(state: ProjectState, definitionId: string, ref: PlacementRef): PlacementContent | null {
+  let tree: NodeTree;
+  try {
+    tree = getTree(state, ref.owner);
+  } catch {
+    return null;
+  }
+  const node = tree?.nodes && Object.hasOwn(tree.nodes, ref.nodeId) ? tree.nodes[ref.nodeId] : undefined;
+  const def = Object.hasOwn(state.components, definitionId) ? state.components[definitionId] : undefined;
+  if (!node || node.kind !== 'instance' || node.definitionId !== definitionId || !def) return null;
+  const out: Record<string, unknown> = {};
+  const props = node.props && typeof node.props === 'object' ? node.props : {};
+  for (const [name, value] of Object.entries(props)) if (Object.hasOwn(def.properties, name) && value !== undefined && !readsElsewhere(value)) out[name] = value;
+  const sources = node.listSources && typeof node.listSources === 'object' && !Array.isArray(node.listSources) ? node.listSources : undefined;
+  return { props: out, ...(sources && Object.keys(sources).length ? { listSources: sources } : {}), ...(ref.owner.kind === 'page' ? { pageId: ref.owner.id } : {}) };
+}
+
 /** How many times each definition is placed, counted the way `instancesOf` counts, in one pass over the project. */
 export function placementCounts(state: ProjectState): Record<string, number> {
   // No prototype, so a definition ID such as "constructor" counts from zero like any other.

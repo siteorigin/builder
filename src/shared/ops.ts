@@ -80,7 +80,7 @@ export const MODEL_BINDING = z
 export const LAYOUT_BINDING = z
   .union([...contentBinding, z.object({ $state: z.string() }).strict(), z.object({ $entry: z.string().max(80) }).strict()])
   .nullable()
-  .describe('{"$entry": field} shows the entry the page is for: "title", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>" or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
+  .describe('{"$entry": field} shows the entry the page is for: "title", "slug", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>" or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
 /** What a button does to its component's UI state (see `StateAction` in shared/types). */
 const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),

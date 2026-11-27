@@ -568,3 +568,22 @@ describe('the guardrails as diagnostics', () => {
       }
   });
 });
+
+describe('a grid child starting where its columns run out (#1136)', () => {
+  const at = (styles: ResponsiveStyles) =>
+    guardrails(page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 3 } }, ['n_card']), el('n_card', 'Card', styles)]), SPAN).map((d) => d.message.replace(/^[^:]+: /, ''));
+
+  it('is a warning when its start and span pass the last column, and not when they end on it', () => {
+    expect(at({ desktop: { columnStart: '3', columnSpan: '2' } })).toEqual([
+      'on desktops, “Card” starts on line 3 and spans 2 columns, but its grid has only 3 columns, so the grid adds a column of its own to fit it, squeezing the others. Lower its Column start or Column span, or give the grid more columns.'
+    ]);
+    expect(at({ desktop: { columnStart: '2', columnSpan: '2' } })).toEqual([]);
+    expect(at({ desktop: { columnStart: '3' } })).toEqual([]);
+    expect(at({ desktop: { columnStart: '5' } })[0]).toContain('starts on line 5 and spans 1 column, but its grid has only 3 columns, so the grid adds 2 columns');
+  });
+
+  it('leaves out Auto, and Full width, which always starts on line 1', () => {
+    expect(at({ desktop: { columnStart: 'auto', columnSpan: '3' } })).toEqual([]);
+    expect(at({ desktop: { columnStart: '5', columnSpan: 'full' } })).toEqual([]);
+  });
+});

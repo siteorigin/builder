@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
@@ -44,7 +44,7 @@ export type RightTab = 'chat' | 'inspect' | 'styles' | 'project';
 export const RIGHT_TABS: readonly RightTab[] = ['chat', 'inspect', 'styles', 'project'];
 /** The view remembered from an earlier opening, or the AI when there is none or it names a view this version does not have. */
 export const restoreRightTab = (saved: unknown): RightTab => RIGHT_TABS.find((t) => t === saved) ?? 'chat';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'repeat-as-list'; ref: ElementRef; workspaceKey?: string } | { kind: 'turn-into-slot'; ref: ElementRef; workspaceKey?: string } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'swap-component'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'duplicate-component'; definitionId: string; workspaceKey?: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions'; review?: boolean; opening?: string } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string } | { kind: 'removal-review'; opening: string; definitionId: string; slot?: string };
+export type Modal = null | { kind: 'settings'; tab?: string; provider?: ProviderId } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'repeat-as-list'; ref: ElementRef; workspaceKey?: string } | { kind: 'turn-into-slot'; ref: ElementRef; workspaceKey?: string } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'swap-component'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'duplicate-component'; definitionId: string; workspaceKey?: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions'; review?: boolean; opening?: string } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string } | { kind: 'removal-review'; opening: string; definitionId: string; slot?: string };
 
 export interface Rect {
   x: number;
@@ -159,6 +159,8 @@ export interface State {
   snapshot: ProjectSnapshot | null;
   runtime: RuntimeState;
   settings: AppSettings | null;
+  /** Settings changes still being saved. A message sent meanwhile would name the model from before (#954). */
+  settingsSaving: number;
   providers: ProviderStatus[];
   pageId: string | null;
   /** The post open in the Posts workspace (shown while the Posts panel is), kept while other panels are. */
@@ -381,6 +383,7 @@ const live = create<State>((set) => ({
   snapshot: null,
   runtime: { state: 'idle' },
   settings: null,
+  settingsSaving: 0,
   providers: [],
   pageId: null,
   post: null,
@@ -1454,6 +1457,30 @@ let providersRequest = 0;
  * Read the providers' status again (what is set up, and what the local server last showed). Only the latest
  * request's answer is kept, whichever part of the app asked; a failure leaves the status as it was.
  */
+/**
+ * Save a settings change and show what main kept. While it is being saved the composer sends nothing, since the message
+ * would name the provider and model from before it and main would refuse it as moved (#954). Main can take a change in
+ * memory and then fail to write it to disk, so after a failure the settings are read back from main.
+ */
+export async function saveSettings(patch: SettingsPatch): Promise<AppSettings> {
+  setState({ settingsSaving: getState().settingsSaving + 1 });
+  try {
+    const settings = await api.app.setSettings(patch);
+    setState({ settings });
+    return settings;
+  } catch (e) {
+    // Only the provider and model are taken from it, which the composer names to main; the rest shows what is saved.
+    const held = await api.app.getSettings().catch(() => null);
+    const shown = getState().settings;
+    if (held && shown) setState({ settings: { ...shown, ai: { ...shown.ai, provider: held.ai.provider, models: held.ai.models } } });
+    throw e;
+  } finally {
+    setState({ settingsSaving: getState().settingsSaving - 1 });
+    // Each change can change what Chat shows (the provider, the local server, its model or its last check).
+    void refreshProviders();
+  }
+}
+
 /** Providers' status as an answer just gave it: kept, and any older read still under way is dropped. */
 export function setProviders(providers: ProviderStatus[]) {
   providersRequest++;

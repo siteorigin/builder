@@ -64,6 +64,7 @@ import {
   linkOf,
   resolveVisibility,
   styleDeclOrder,
+  COLUMN_START_DECL,
   styleFallbackCss,
   styleReducedMotionCss,
   styleToCss,
@@ -97,7 +98,7 @@ import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToPara
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, codeAxisProps, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
-import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
+import { itemOverrideClass, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
 import { feedLimit, isArticleDate, pageArticle } from '@shared/articles';
@@ -891,6 +892,8 @@ function addBackgroundImage(rules: RuleSet, selector: string, value: StyleValue,
 const lastCopies = (decls: string[]) => decls.filter((d, i) => decls.lastIndexOf(d) === i);
 /** Both shift axes write the same translate: once is enough. Nothing else is touched, so no value can shift onto another. */
 const oneTranslate = (decls: string[]) => decls.filter((d, i) => d !== TRANSLATE_DECL || decls.lastIndexOf(d) === i);
+/** A rule that sets both a column start and a span composes the start line once. */
+const oneStartLine = (decls: string[]) => decls.filter((d, i) => d !== COLUMN_START_DECL || decls.lastIndexOf(d) === i);
 
 function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefined, opts: RuleOpts = {}) {
   if (!input) return;
@@ -940,7 +943,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       reduced.push(...styleReducedMotionCss(k, props[k]).filter(safeDecl));
     }
     if (fallback.length) rules[scope].push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
-    if (decls.length) rules[scope].push(rule(oneTranslate(decls)));
+    if (decls.length) rules[scope].push(rule(oneStartLine(oneTranslate(decls))));
     // The hide right after the rule it came from, per size, so it keeps its place in the cascade.
     if (gated && scope === 'base') for (const size of ['phone', 'tablet', 'desktop'] as const) rules.base.push(`@media ${MEDIA_QUERIES[size]} {\n\t${wrap(shownGate(raw, size, opts.gateHides!))} {\n\t\tdisplay: none;\n\t}\n}`);
     else if (gated && scope !== 'base') rules[scope].push(`${wrap(shownGate(raw, scope, opts.gateHides!))} {\n\tdisplay: none;\n}`);
@@ -955,7 +958,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       }
     // Custom CSS has the last word in the wide range too, where these values land after the base rule.
     if (wide.length && props.customCss !== undefined) wide.push(...styleToCss('customCss', props.customCss).filter(safeDecl));
-    if (wide.length) rules.wide.push(rule(wide));
+    if (wide.length) rules.wide.push(rule(oneStartLine(wide)));
   }
   addContainerRules(rules, raw, styles, input, opts);
   addStateRules(rules, raw, input, opts);
@@ -1001,7 +1004,7 @@ function addContainerRules(rules: RuleSet, raw: string, styles: ResponsiveStyles
     }
     const list = rules.container[scope];
     if (fallback.length) list.push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
-    if (decls.length) list.push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
+    if (decls.length) list.push(`${selector} {\n${oneStartLine(oneTranslate(decls)).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
     if (reduced.length) rules.reduced.push(`${opts.important ? selector : quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
     if (decls.some((d) => /^display\s*:/i.test(d))) {
       // Hidden at a screen size by this layer's own rules there: hidden in every container too. A stronger layer's
@@ -1570,11 +1573,16 @@ export function generateSiteCss(state: ProjectState): string {
           addRules(rules, sel, n.overrides![partId], { ...overrideOpts(state, def, n, partId), grouped: partInInteractionGroup(def, partId, placed, lookups) });
         }
         for (const partId of Object.keys(n.itemOverrides ?? {}).sort()) {
+          // A part the code converted from a design added is its code's own (see calledFor).
+          const def = placedDef ? calledFor(placedDef, design, partId) : undefined;
           const entry = liveItemStyles(def, n, partId);
           if (!entry) continue;
-          const target = def!.tree!.nodes[def!.parts[partId].nodeId];
+          // A code component's list connected to a collection shows its entries, which take no item classes.
+          if (def!.kind === 'code' && Object.hasOwn(n.listSources ?? {}, entry.list)) continue;
+          // A code component has no tree: its part is an element of its own markup.
+          const target = def!.tree?.nodes[def!.parts[partId].nodeId];
           // One class more than the part's shared override, so an item's own value wins over it at every size.
-          const times = target?.kind === 'instance' ? 5 : 3;
+          const times = target?.kind === 'instance' ? 5 : def!.kind === 'code' ? 4 : 3;
           for (const itemId of Object.keys(entry.items).sort()) {
             const cls = itemOverrideClass(n.id, partId, itemId);
             const own = entry.items[itemId];
@@ -2955,6 +2963,7 @@ function sizingBoxes(walk: SizingWalk, tree: NodeTree, nodeId: string, placement
 function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRange): number {
   const raw = item ? boxStyle(item, 'columnSpan', range) : undefined;
   const spanValue = typeof raw === 'string' ? raw.trim() : raw;
+  const start = Number(item ? boxStyle(item, 'columnStart', range) : undefined) || 1;
   const span = (tracks: number[]): number => {
     // Shares are read against their own total, even below one: gaps and implicit columns other items add can
     // widen a share past its part of the whole, so this stays the upper estimate.
@@ -2962,8 +2971,8 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
     if (!(total > 0) || spanValue === 'full') return 1;
     const count = typeof spanValue === 'number' || typeof spanValue === 'string' ? Number(spanValue) : NaN;
     const k = Math.max(1, Math.floor(count) || 1);
-    // Spanning past the last column adds implicit ones, which can stretch into whatever the shares leave.
-    if (k >= tracks.length) return 1;
+    // Spanning (or starting) past the last column adds implicit ones, which can stretch into whatever the shares leave.
+    if (k >= tracks.length || start - 1 + k > tracks.length) return 1;
     let widest = 0;
     for (let i = 0; i + k <= tracks.length; i++) widest = Math.max(widest, tracks.slice(i, i + k).reduce((a, b) => a + b, 0));
     return widest / total;
@@ -2986,7 +2995,7 @@ const PAINT_ONLY_CSS = /^(filter|backdrop-filter|opacity|color|background(-[a-z]
 /** The styles of an image that decide how much of its picture a crop needs. */
 const CROP_PROPS = ['height', 'minHeight', 'maxHeight', 'aspectRatio', 'objectFit'];
 /** The styles that decide how wide an element, or the elements inside it, can be. */
-const SIZING_PROPS = ['layout', 'columns', 'gridTemplate', 'columnSpan', 'width', 'minWidth', 'maxWidth', 'flexGrow', 'position', 'inset', 'marginInlineStart', 'marginInlineEnd', 'customCss'];
+const SIZING_PROPS = ['layout', 'columns', 'gridTemplate', 'columnStart', 'columnSpan', 'width', 'minWidth', 'maxWidth', 'flexGrow', 'position', 'inset', 'marginInlineStart', 'marginInlineEnd', 'customCss'];
 
 /**
  * A realistic `sizes` hint for an image: in each range, its share of the grids around it (through the
@@ -3561,16 +3570,28 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // where the placement's own properties are what the page edits. The website is given none, so it carries no marker.
   if (ctx.instrument && !ctx.def && def.kind === 'code' && !Object.hasOwn(def.properties, CODE_TEXT_HOOK) && new RegExp(`\\b${CODE_TEXT_HOOK}\\b`).test(def.source ?? '')) attrs.push(`${CODE_TEXT_HOOK}={${CODE_TEXT_HOOK_JS}}`);
   // Styles of single list items: each item's parts get a class of their own, looked up by the item's ID.
-  if (!ctx.def && node.itemOverrides) {
+  /** In the editor's preview, the item each class names for a code placement's repeated parts (see codeItemMarks). */
+  let partItems: Record<string, [string, string]> | undefined;
+  if (!ctx.def && (node.itemOverrides || (ctx.instrument && def.kind === 'code'))) {
     const byItem: Record<string, Record<string, string>> = {};
-    for (const partId of Object.keys(node.itemOverrides).sort()) {
-      const entry = liveItemStyles(design ?? def, node, partId);
+    const give = (partId: string, itemId: string) => {
+      // Own keys only: an item ID can be any word, "toString" included.
+      if (!Object.hasOwn(byItem, itemId)) byItem[itemId] = {};
+      byItem[itemId][partId] = itemOverrideClass(node.id, partId, itemId);
+    };
+    for (const partId of Object.keys(node.itemOverrides ?? {}).sort()) {
+      const owner = calledFor(def, design, partId);
+      const entry = liveItemStyles(owner, node, partId);
+      // A code placement's list connected to a collection shows its entries, not the items these were set for.
+      if (owner.kind === 'code' && entry && Object.hasOwn(node.listSources ?? {}, entry.list)) continue;
       for (const itemId of Object.keys(entry?.items ?? {}).sort()) {
         if (!entry!.items[itemId] || typeof entry!.items[itemId] !== 'object') continue;
-        // Own keys only: an item ID can be any word, "toString" included.
-        if (!Object.hasOwn(byItem, itemId)) byItem[itemId] = {};
-        byItem[itemId][partId] = itemOverrideClass(node.id, partId, itemId);
+        give(partId, itemId);
       }
+    }
+    if (ctx.instrument && def.kind === 'code') {
+      partItems = codeItemMarks(def, node, design);
+      for (const [partId, itemId] of Object.values(partItems)) give(partId, itemId);
     }
     if (Object.keys(byItem).length) attrs.push(`so_oi={${js(byItem)}}`);
   }
@@ -3648,9 +3669,29 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   let markup = [...beside, slotContent ? `${open}>\n${slotContent}\n${p}</${name}>` : `${open}/>`].join('\n');
   if (ctx.instrument && def.kind === 'code') {
     const c = ctx.def ? '{__so}' : attrJs(ctx.ctxExpr);
-    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
+    // Which item of which repeated part each item class names, so the canvas picks one card (see codeItemMarks).
+    const marks = partItems && Object.keys(partItems).length ? ` data-so-part-items=${attrJs(JSON.stringify(partItems))}` : '';
+    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
   }
   return markup;
+}
+
+/**
+ * The editor's preview gives every item of a code placement's repeated parts its item class (`so_oi`), styled or not,
+ * so the canvas can tell one card from the next by the class alone: the class each item's part takes, with the part
+ * and the item it names. The classes are the ones the item's own styles use, so they follow the item when the list
+ * is reordered. A list connected to a collection shows entries, not its own items, and takes none.
+ */
+function codeItemMarks(def: ComponentDefinition, node: InstanceNode, design?: ComponentDefinition): Record<string, [string, string]> {
+  const out: Record<string, [string, string]> = {};
+  // Code converted from a design's file shows the design's own parts as the design did; only its code's own are marked.
+  for (const partId of Object.keys(def.parts).sort()) {
+    if (calledFor(def, design, partId) !== def) continue;
+    const list = repeatedPartList(def, partId);
+    if (!list || Object.hasOwn(node.listSources ?? {}, list)) continue;
+    for (const item of placementItems(def, node, list)) out[itemOverrideClass(node.id, partId, item.id)] = [partId, item.id];
+  }
+  return out;
 }
 
 /** Whether a managed design shows content of its own in a slot a placement leaves empty. */
@@ -4272,9 +4313,10 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
  * One instance on its own, as the editor's isolated preview shows it: a Svelte module at `file` that renders the
  * instance inside a <main> of its own, as a page renders its first section, with no header or footer. Its props,
  * variants and identity attributes are emitted as a page placement's are, under the identity context `ctx`.
- * Editor-only: generateProject never makes one.
+ * Editor-only: generateProject never makes one. Its computed lists (news, an article's header) are worked out for
+ * `pageId` when it shows a placement of that page.
  */
-export function generateIsolatedInstance(state: ProjectState, file: string, node: InstanceNode, ctx: string): string {
+export function generateIsolatedInstance(state: ProjectState, file: string, node: InstanceNode, ctx: string, pageId?: string): string {
   const ectx: EmitCtx = {
     state,
     file,
@@ -4284,7 +4326,7 @@ export function generateIsolatedInstance(state: ProjectState, file: string, node
     tree: { rootIds: [node.id], nodes: { [node.id]: node } },
     ctxExpr: ctx,
     items: [],
-    rctx: { state },
+    rctx: pageId ? { state, pageId } : { state },
     indent: 1,
     locals: new Map(),
     firstSection: true,

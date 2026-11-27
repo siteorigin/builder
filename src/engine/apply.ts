@@ -171,7 +171,7 @@ export interface ApplyContext {
    * A theme switch reads it for the code components of both themes too (`shown`: the slot props the code renders or
    * hands on), to report content a placement holds in a slot the new code would not show; without it, code is not judged.
    */
-  codeNames?: (source: string) => { parts: readonly string[]; slots: readonly string[]; shown: readonly string[] } | null | undefined;
+  codeNames?: (source: string) => { parts: readonly string[]; slots: readonly string[]; shown: readonly string[]; lists?: Readonly<Record<string, string>> } | null | undefined;
   /**
    * The addresses visitors reached each collection entry at when the batch began, lowercased, with that entry's ID
    * (see entryAddressesInUse): an entry keeps an old address working only when it was one of these. An entry removed
@@ -2317,17 +2317,19 @@ function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, var
 
 /**
  * The placement and part one repeated item is styled on (`itemId`): a part inside exactly one repeat of a managed
- * definition, placed on a page or in the shared header or footer, and an item its list shows now.
+ * definition, or one a code component declares repeats over a list, placed on a page or in the shared header or
+ * footer, and an item its list shows now.
  */
 function itemStyleTarget(state: ProjectState, owner: OwnerRef, node: GraphNode, partId: string | undefined, itemId: string): { node: InstanceNode; partId: string; list: string; itemId: string } {
   if (node.kind !== 'instance') fail('"itemId" styles one item of a repeated part of a component; this node is not a component.');
   if (owner.kind === 'component') fail('Only a placement on a page or in the shared header or footer can style one item on its own.');
   const def = own(state.components, node.definitionId) ?? fail(`Component definition "${node.definitionId}" is missing.`);
   if (partId === undefined) fail('"itemId" needs a "partId": name the repeated part to style, such as the card.');
-  if (def.kind !== 'managed') fail(`"${def.name}" is a code component, so its items are styled together. Leave out itemId.`);
   if (!own(def.parts, partId)) fail(`"${def.name}" has no part "${partId}". Parts: ${Object.keys(def.parts).join(', ')}.`);
   const list = repeatedPartList(def, partId);
   if (!list) fail(`"${def.parts[partId].label}" in "${def.name}" is not shown once per list item, so it has no single item to style. Leave out itemId to style it everywhere.`);
+  // A code placement's list connected to a collection shows its entries, which take no item classes of their own.
+  if (def.kind === 'code' && Object.hasOwn(node.listSources ?? {}, list)) fail(`${def.properties[list].label} shows a collection's entries here, so its items are styled together. Leave out itemId, or disconnect the list first.`);
   const items = placementItems(def, node, list);
   // An item copied from the definition's defaults is found by the default's ID too (see placedItemIndex).
   const at = placedItemIndex(items, owner, node.id, itemId);

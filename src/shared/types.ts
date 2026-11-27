@@ -725,6 +725,12 @@ export interface PartDef {
   label: string;
   /** Style properties offered for this part in the inspector. */
   styleControls?: string[];
+  /**
+   * Code components only: the list property this part is rendered once per item of (`{#each plans as plan (plan.id)}`),
+   * so one item's part can be styled on its own. The code places that item's class, `so_oi?.[plan.id]?.card`, beside
+   * the part's shared one. A managed component's repeated parts are read from its tree instead.
+   */
+  list?: string;
 }
 
 export interface VariantDef {
