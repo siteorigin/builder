@@ -2714,6 +2714,30 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     // The model really was a small one: an ordinary site request on it gets no apply_operations.
     expect(toolsForRun({ state: env.session.state, selection: null, capabilities: env.adapter.capabilities(), codeEnabled: false, definitionOps: true }).tools.map((t) => t.name)).not.toContain('apply_operations');
   });
+
+  it('states the runes contract once a widened request offers a small model component.createCode (#1113)', async () => {
+    const seen: Array<{ code: boolean; contract: boolean }> = [];
+    const note = (req: CanonicalModelRequest) => seen.push({ code: offeredOps(req).includes('component.createCode'), contract: req.system.includes('Svelte 5 runes mode') });
+    const env = await setup(
+      [
+        (req) => {
+          note(req);
+          return [call('w1', 'request_clarification', { question: 'This needs a new code component. Go ahead?', widenScope: true })];
+        },
+        (req) => {
+          note(req);
+          return finish('Done.');
+        }
+      ],
+      { codeEnabled: true, capabilities: { toolCalling: 'constrained-json' } }
+    );
+    const def = await editEverywhere(env.session);
+    const r = await env.orch.send('Add a countdown as a code component', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
+    const q = await waitForQuestion(env.events);
+    expect(env.orch.answer(r.runId!, q.id!, q.choices[0])).toBe(true);
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect(seen).toEqual([{ code: false, contract: false }, { code: true, contract: true }]);
+  });
 });
 
 describe('building a new component from Create component (#172)', () => {
