@@ -406,6 +406,12 @@ export async function isTrusted(dir: string, configHash: string): Promise<boolea
   return s.trusted[dir] === configHash;
 }
 
+/** Whether `dir` was trusted before, with setup files it no longer has: asked about again as a change. */
+export async function wasTrusted(dir: string): Promise<boolean> {
+  const s = await loadSettings();
+  return dir in s.trusted;
+}
+
 export async function trust(dir: string, configHash: string) {
   const s = await loadSettings();
   s.trusted[dir] = configHash;

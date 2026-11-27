@@ -1,5 +1,6 @@
 import './Editor.css';
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import type { TrustRequest } from '@shared/api';
 import { Check, Component, NotebookPen, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
@@ -467,7 +468,7 @@ export function Editor() {
   const leaving = useStore((s) => s.leaving);
   // New project, or a project to trust, chosen from here: asked over this project, which stays open until the new
   // one has opened (#80).
-  const [switching, setSwitching] = useState<null | { kind: 'new' } | { kind: 'duplicate' } | { kind: 'trust'; dir: string; name: string }>(null);
+  const [switching, setSwitching] = useState<null | { kind: 'new' } | { kind: 'duplicate' } | ({ kind: 'trust' } & TrustRequest)>(null);
   // A project being opened from here takes no second Open or New project until it has answered: its reply (a
   // trust prompt, the switch itself) must not land over a dialog started meanwhile.
   const openingProject = useRef(false);

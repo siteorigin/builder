@@ -413,8 +413,25 @@ export interface DuplicateProjectOptions {
   opening: string;
 }
 
-/** Where a refused Duplicate belongs in its dialog: beside the name, beside the folder, or for the whole form. */
+/**
+ * Where a refused Duplicate belongs in its dialog: beside the name (none given, too long, or a folder by that name
+ * already there, which another name or folder answers), beside the folder (one that cannot be used, which only
+ * another folder answers), or for the whole form.
+ */
 export type DuplicateProjectResult = { ok: true; dir: string; name: string } | { ok: false; field: 'name' | 'location' | 'form'; message: string };
+
+/**
+ * A project to ask about before its website tools run, and why it is asked: Builder has never trusted it in this folder
+ * (`new`), trusted it here before its setup files changed (`changed`), or has just unpacked it from a ZIP file into a
+ * new folder (`unpacked`).
+ */
+export type TrustRequest = { dir: string; name: string; reason: 'new' | 'changed' | 'unpacked' };
+
+/**
+ * A project ZIP file being unpacked: into a new folder in `dir`, named `folder` unless that name is taken (then a
+ * number follows it), with `done` of its `total` files written so far.
+ */
+export type Unpacking = { name: string; dir: string; folder: string; done: number; total: number };
 
 /**
  * What creating a project does about its website tools: install them from copies already on this computer, download
@@ -1160,7 +1177,7 @@ export interface BuilderApi {
      * Linux). `replaces` is a missing recent entry's folder: once the chosen project opens, the entry is dropped if it
      * listed the same project (#217). Pass it on to trustAndOpen when the project asks for trust first.
      */
-    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }>;
+    open(dir?: string, opts?: { folder?: boolean; replaces?: string }): Promise<{ ok: boolean; message?: string; needsTrust?: TrustRequest }>;
     /** Call off a project ZIP file being unpacked: the open then answers { ok: false } and nothing is left behind. */
     cancelOpen(): Promise<void>;
     trustAndOpen(dir: string, opts?: { replaces?: string }): Promise<{ ok: boolean; message?: string }>;
@@ -1442,8 +1459,8 @@ export interface BuilderApi {
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
   on(channel: 'project:closed', cb: () => void): () => void;
   on(channel: 'create:progress', cb: (p: ProgressEvent) => void): () => void;
-  /** A project ZIP file is being unpacked into a new folder in `dir` (null: it finished, failed or was called off). */
-  on(channel: 'projects:unpacking', cb: (u: { name: string; dir: string } | null) => void): () => void;
+  /** A project ZIP file is being unpacked, sent as it starts and as its files are written (null: it finished, failed or was called off). */
+  on(channel: 'projects:unpacking', cb: (u: Unpacking | null) => void): () => void;
   on(channel: 'runtime:status', cb: (s: RuntimeState) => void): () => void;
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
   /** The editor's Appearance, when Settings saves a new one. */

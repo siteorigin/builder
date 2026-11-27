@@ -97,7 +97,7 @@ describe('opening a received project', () => {
     const dir = tmp('so-healthy-');
     writeFileSync(join(dir, 'siteorigin.project.json'), JSON.stringify({ name: 'Cafe' }));
     const r = await new Controller(() => null).open(dir);
-    expect(r.needsTrust).toEqual({ dir, name: 'Cafe' });
+    expect(r.needsTrust).toEqual({ dir, name: 'Cafe', reason: 'new' });
   });
 });
 
@@ -171,7 +171,7 @@ describe('opening a project ZIP file (#263)', () => {
     chooseFolder(parent);
     const c = new Controller(() => null);
     const r = await c.open(zip);
-    expect(r).toEqual({ ok: false, needsTrust: { dir: join(parent, 'cafe'), name: 'Cafe' } });
+    expect(r).toEqual({ ok: false, needsTrust: { dir: join(parent, 'cafe'), name: 'Cafe', reason: 'unpacked' } });
     // The project is at the top of its folder, with its pages and media as exported, and nothing else is left beside it.
     expect(readdirSync(parent)).toEqual(['cafe']);
     expect(JSON.parse(readFileSync(join(parent, 'cafe', 'siteorigin.project.json'), 'utf8')).name).toBe('Cafe');
@@ -182,7 +182,7 @@ describe('opening a project ZIP file (#263)', () => {
     expect((await loadSettings()).recents.some((x) => x.dir.startsWith(parent))).toBe(false);
     expect(hash(zip)).toBe(before);
     // Cancelling the trust prompt keeps the working copy; opening it later asks again.
-    expect((await c.open(join(parent, 'cafe'))).needsTrust).toEqual({ dir: join(parent, 'cafe'), name: 'Cafe' });
+    expect((await c.open(join(parent, 'cafe'))).needsTrust).toEqual({ dir: join(parent, 'cafe'), name: 'Cafe', reason: 'new' });
   });
 
   it('opens the same ZIP file twice into two working copies, never overwriting the first', async () => {
@@ -211,7 +211,11 @@ describe('opening a project ZIP file (#263)', () => {
     chooseFolder(parent);
     const [a, b] = await Promise.all([c.open(zip), c.open(zip)]);
     expect([a.needsTrust?.dir, b.needsTrust?.dir].sort()).toEqual([join(parent, 'cafe'), join(parent, 'cafe-2')]);
-    expect(events).toEqual([{ name: 'Cafe', dir: parent }, null, { name: 'Cafe', dir: parent }, null]);
+    // Each one starts at none of its files written, and may count them as it goes, before it ends.
+    const starts = events.filter((e) => e === null || (e as { done: number }).done === 0);
+    // The second is told the folder it will get, the first's name being taken by then.
+    const start = (folder: string) => ({ name: 'Cafe', dir: parent, folder, done: 0, total: expect.any(Number) });
+    expect(starts).toEqual([start('cafe'), null, start('cafe-2'), null]);
   });
 
   it('takes a ZIP file chosen in the Open project picker, and the picker now offers ZIP files', async () => {
@@ -270,7 +274,7 @@ describe('opening a project ZIP file (#263)', () => {
     const dir = join(tmp('so-parent-'), 'studio.zip');
     mkdirSync(dir);
     writeFileSync(join(dir, 'siteorigin.project.json'), JSON.stringify({ name: 'Studio' }));
-    expect((await new Controller(() => null).open(dir)).needsTrust).toEqual({ dir, name: 'Studio' });
+    expect((await new Controller(() => null).open(dir)).needsTrust).toEqual({ dir, name: 'Studio', reason: 'new' });
   });
 
   it('leaves nothing behind when the recipient cancels choosing a folder', async () => {

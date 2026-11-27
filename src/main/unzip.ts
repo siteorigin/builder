@@ -8,7 +8,7 @@
  * Nothing here depends on Electron, so it is unit tested directly.
  */
 import { promises as fs } from 'node:fs';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -358,20 +358,26 @@ export async function readEntryText(file: string, e: ZipEntry, limit = MAX_MANIF
   }
 }
 
+/** Whether an entry under `root` is one extraction writes (a folder or a file), rather than one it passes over. */
+const extracted = (e: ZipEntry, root: string) => !e.special && !isSystemClutter(e.path) && e.path.startsWith(root) && e.path.length > root.length;
+
+/** How many files extracting `entries` under `root` writes, so the count of those written can be shown against it. */
+export const filesToWrite = (entries: ZipEntry[], root: string) => entries.filter((e) => !e.directory && extracted(e, root)).length;
+
 /**
  * Write the files and folders under `root` in the archive into the folder `dest` (which must exist and be empty),
  * without `root` itself. Links and the systems' clutter are left out. Every file's size and CRC-32 are checked; a file
  * that fails, or a signal that aborts, stops the extraction with what was written left for the caller to remove.
+ * `onFile` hears the count of files written after each one.
  */
-export async function extractEntries(file: string, entries: ZipEntry[], root: string, dest: string, signal?: AbortSignal): Promise<number> {
+export async function extractEntries(file: string, entries: ZipEntry[], root: string, dest: string, signal?: AbortSignal, onFile?: (written: number) => void): Promise<number> {
   const fh = await fs.open(file, 'r');
   let written = 0;
   try {
     for (const e of entries) {
       signal?.throwIfAborted();
-      if (e.special || isSystemClutter(e.path) || !e.path.startsWith(root)) continue;
+      if (!extracted(e, root)) continue;
       const rel = e.path.slice(root.length);
-      if (!rel) continue;
       const target = join(dest, ...rel.split('/'));
       if (e.directory) {
         await fs.mkdir(target, { recursive: true });
@@ -380,6 +386,7 @@ export async function extractEntries(file: string, entries: ZipEntry[], root: st
       await fs.mkdir(dirname(target), { recursive: true });
       await copyEntry(fh, e, rel, () => createWriteStream(target, { flags: 'wx', mode: e.executable ? 0o755 : 0o644 }), signal);
       written++;
+      onFile?.(written);
     }
     signal?.throwIfAborted();
     return written;
@@ -431,6 +438,23 @@ async function occupied(path: string): Promise<boolean> {
   );
 }
 
+/** The folder name an unpacked project is given: a name Windows reserves for a device (a project called "Con") gets a suffix. */
+const folderBase = (name: string) => (WINDOWS_RESERVED.test(name) ? `${name}-site` : name);
+
+/**
+ * The folder `unpackProject` would make for `name` in `parent` as things stand: the name, or the first numbered one
+ * that is free. Another folder can still take it before the project is in place, and then the next one is used.
+ */
+export function expectedFolder(parent: string, name: string): string {
+  const base = folderBase(name);
+  for (let i = 1; i <= MAX_NAMES; i++) {
+    const folder = i === 1 ? base : `${base}-${i}`;
+    // Anything by that name counts, a link to nothing included, as it does when the folder is claimed.
+    if (!lstatSync(join(parent, folder), { throwIfNoEntry: false })) return folder;
+  }
+  return base;
+}
+
 /**
  * Extract the project in `file` into a new folder in `parent`, named `name` (or `name-2`, `name-3`, … when that is
  * taken), and return its path. The files go to a private folder beside it first; the name is claimed only once every
@@ -443,14 +467,14 @@ export async function unpackProject(
   project: { root: string; entries: ZipEntry[] },
   parent: string,
   name: string,
-  opts: { signal?: AbortSignal; beforePublish?: (dir: string) => Promise<void> } = {}
+  opts: { signal?: AbortSignal; beforePublish?: (dir: string) => Promise<void>; onProgress?: (done: number, total: number) => void } = {}
 ): Promise<string> {
-  const { signal, beforePublish } = opts;
-  // A name Windows reserves for a device (a project called "Con") gets a suffix.
-  const base = WINDOWS_RESERVED.test(name) ? `${name}-site` : name;
+  const { signal, beforePublish, onProgress } = opts;
+  const total = filesToWrite(project.entries, project.root);
+  const base = folderBase(name);
   const tmp = await fs.mkdtemp(join(parent, '.siteorigin-open-'));
   try {
-    await extractEntries(file, project.entries, project.root, tmp, signal);
+    await extractEntries(file, project.entries, project.root, tmp, signal, onProgress && ((done) => onProgress(done, total)));
     for (let i = 1; i <= MAX_NAMES; i++) {
       signal?.throwIfAborted();
       const dest = join(parent, i === 1 ? base : `${base}-${i}`);

@@ -188,7 +188,7 @@ describe('a duplicated project (#176)', () => {
     writeFileSync(join(sites, 'fall-campaign', 'notes.txt'), 'mine');
     expect(await c.duplicate({ name: 'Fall Campaign', parentDir: sites, opening })).toEqual({
       ok: false,
-      field: 'location',
+      field: 'name',
       message: 'A folder named “fall-campaign” is already there. Choose another name or folder.'
     });
     expect(readdirSync(join(sites, 'fall-campaign'))).toEqual(['notes.txt']);
@@ -196,7 +196,7 @@ describe('a duplicated project (#176)', () => {
     expect(await c.duplicate({ name: 'x'.repeat(MAX_COPY_NAME + 1), parentDir: sites, opening })).toMatchObject({ ok: false, field: 'name' });
     // An empty folder is someone's too (another copy's or an export's, claimed and still being filled).
     mkdirSync(join(sites, 'spring'));
-    expect(await c.duplicate({ name: 'Spring', parentDir: sites, opening })).toMatchObject({ ok: false, field: 'location', message: expect.stringMatching(/“spring” is already there/) });
+    expect(await c.duplicate({ name: 'Spring', parentDir: sites, opening })).toMatchObject({ ok: false, field: 'name', message: expect.stringMatching(/“spring” is already there/) });
     expect(readdirSync(join(sites, 'spring'))).toEqual([]);
     // A folder renamed or removed since it was chosen is not made again under its old name.
     expect(await c.duplicate({ name: 'Copy', parentDir: join(sites, 'gone'), opening })).toMatchObject({ ok: false, field: 'location', message: expect.stringMatching(/no longer there/) });
@@ -259,7 +259,7 @@ describe('a duplicated project (#176)', () => {
     const opts = { name: 'Fall Campaign', parentDir: sites, opening: c.openingKey! };
     const results = await Promise.all([c.duplicate(opts), c.duplicate(opts)]);
     expect(results.filter((r) => r.ok)).toHaveLength(1);
-    expect(results.find((r) => !r.ok)).toMatchObject({ field: 'location', message: expect.stringMatching(/is already there/) });
+    expect(results.find((r) => !r.ok)).toMatchObject({ field: 'name', message: expect.stringMatching(/is already there/) });
     expect(readdirSync(sites).sort()).toEqual(['fall-campaign', 'storefront']);
     expect(read(join(sites, 'fall-campaign'), 'siteorigin.project.json').workingCopyName).toBe('Fall Campaign');
   });

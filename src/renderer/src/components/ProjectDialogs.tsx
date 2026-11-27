@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Check, CircleAlert, CloudAlert, CloudDownload, Copy, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
-import type { DuplicateProjectResult, ProgressEvent, WebsiteTools } from '@shared/api';
+import { Check, CircleAlert, CloudAlert, CloudDownload, Copy, CopyCheck, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
+import type { DuplicateProjectResult, ProgressEvent, TrustRequest, Unpacking, WebsiteTools } from '@shared/api';
 import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
 import { defaultTheme, getTheme, listThemes } from '@catalogue/index';
 import { starterProblem } from '@catalogue/starters';
@@ -14,9 +14,9 @@ import { perfMark, perfMarkAtCommit } from '../lib/perf';
 import './ProjectDialogs.css';
 
 /*
- * New project and Trust this project, shown over Welcome or over the open project. Either way the project behind
- * stays open (its page and selection as they were) until the new one has opened: cancelling, or a new project that
- * cannot be made or opened, leaves the author where they were (#80).
+ * New project, Duplicate project and Trust this project, shown over Welcome or over the open project. Either way the
+ * project behind stays open (its page and selection as they were) until the new one has opened: cancelling, or a new
+ * project that cannot be made or opened, leaves the author where they were (#80).
  */
 
 /** npm's own output is for the log. Lines written for people start with a capital and don't name it. */
@@ -216,15 +216,30 @@ function StarterArt({ starter, siteName, themeId }: { starter: StarterId; siteNa
 
 // ---------- Trust ----------
 
-/** Ask before running a project's own website tools; Trust and open records the trust, then opens it. */
-/** `project.replaces`: the missing recent entry the project was chosen for, which it takes over once open (#217). */
-export function TrustProjectModal({ project, onClose }: { project: { dir: string; name: string; replaces?: string }; onClose: () => void }) {
-  const [trusting, setTrusting] = useState(false);
+/**
+ * Why the project is asked about, which is what differs from one prompt to the next, so it is worth reading. A change
+ * to a project trusted here before is the reason to pause, so the warning itself says it, and nothing is repeated here.
+ */
+const TRUST_REASON: Record<TrustRequest['reason'], string> = {
+  new: 'Builder hasn’t opened this project from this folder before. It may have come from another computer, or been moved or copied here.',
+  changed: '',
+  unpacked: 'It was just unpacked from a ZIP file into a new folder, so Builder asks before running anything in it.'
+};
+
+/**
+ * Ask before running a project's own website tools; Trust and open records the trust, then opens it. What trusting
+ * allows comes first, with the safe choice beside it, then exactly which project, then why it is asked now.
+ * `project.replaces`: the missing recent entry the project was chosen for, which it takes over once open (#217).
+ */
+export function TrustProjectModal({ project, onClose }: { project: TrustRequest & { replaces?: string }; onClose: () => void }) {
+  const [since, setSince] = useState<number | null>(null);
+  const trusting = since !== null;
+  const elapsed = useElapsed(since);
   return (
     <Modal
       title="Trust this project?"
       describedBy="trust-body"
-      icon={<ShieldAlert style={{ color: 'var(--amber)' }} />}
+      icon={<ShieldAlert />}
       onClose={onClose}
       busy={trusting}
       footer={
@@ -235,6 +250,11 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
               <>
                 <Spinner decorative />
                 <span className="ellipsis">Opening {project.name}…</span>
+                {elapsed && (
+                  <span className="elapsed" aria-hidden="true">
+                    {elapsed}
+                  </span>
+                )}
               </>
             ) : null}
           </span>
@@ -246,7 +266,7 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
             disabled={trusting}
             onClick={async (e) => {
               keepFocusInDialog(e.currentTarget);
-              setTrusting(true);
+              setSince(Date.now());
               try {
                 const r = await api.projects.trustAndOpen(project.dir, project.replaces ? { replaces: project.replaces } : undefined);
                 if (!r.ok) {
@@ -258,7 +278,7 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
                 endEditingHold();
                 toast(`Could not open the project: ${errorText(e)}`, 'error');
               } finally {
-                setTrusting(false);
+                setSince(null);
                 onClose();
               }
             }}
@@ -268,12 +288,16 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
         </>
       }
     >
-      {/* What trusting allows comes first, then exactly which project, then why it is being asked. */}
       <div id="trust-body" className="trust-body">
         <div className="trust-risk">
           <TriangleAlert aria-hidden="true" />
           <p>
-            <strong>Trust and open lets this project run code on your computer</strong> to show its preview. Continue only if you trust its source and any setup changes.
+            <strong>Trust and open lets this project run code on your computer</strong> to build its preview.{' '}
+            {project.reason === 'changed'
+              ? 'The files that build its preview have changed since you last trusted this folder. If you weren’t expecting that, choose Cancel: nothing is opened or changed.'
+              : project.reason === 'unpacked'
+                ? 'If you’re not sure where it came from, choose Cancel: nothing runs, and the unpacked folder stays where it is.'
+                : 'If you’re not sure where it came from, choose Cancel: nothing is opened or changed.'}
           </p>
         </div>
         <div className="trust-project">
@@ -282,7 +306,9 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
           <span className="sr-only">Project folder:</span>
           <PathReadout path={project.dir} className="trust-path" />
         </div>
-        <p className="trust-why">Builder has no record of trusting it in this folder with these setup files. It may have been made on another computer, moved or copied here, or its setup files changed since you last opened it. If you’re unsure, choose Cancel: the project stays closed and nothing is changed.</p>
+        <p className="trust-why">
+          {TRUST_REASON[project.reason] && `${TRUST_REASON[project.reason]} `}If you trust it, Builder won’t ask again for this folder unless its setup files change.
+        </p>
       </div>
     </Modal>
   );
@@ -301,26 +327,44 @@ function parentFolder(path: string): string {
 }
 
 /**
+ * The suggested name for a copy: "Storefront copy", unless the length limit would cut " copy" off or its folder would be
+ * the original's own, when the words that tell it apart go first ("Copy of Storefront…").
+ */
+function copyName(name: string, dir: string): string {
+  const suffixed = `${name} copy`;
+  // Folder names are compared as most disks do, ignoring case.
+  const own = dir.split(isWindowsPath(dir) ? '\\' : '/').filter(Boolean).pop()?.toLowerCase();
+  if (suffixed.length <= MAX_COPY_NAME && projectFolderName(suffixed).toLowerCase() !== own) return suffixed;
+  return `Copy of ${name}`.slice(0, MAX_COPY_NAME).trim();
+}
+
+/**
  * Duplicate project (#176), over the open project: the copy's own name, which Recent projects and the toolbar show in
- * place of the site's (the site's visitor-facing name is copied as it is), and the folder it is made in. A destination
- * that cannot be used is explained beside the folder, with the form kept to correct it. Once made, the copy is
- * offered to open; until then, and unless it is opened, every change stays in the project open now.
+ * place of the site's (the site's visitor-facing name is copied as it is), and the folder it is made in. A problem is
+ * explained beneath the two, with the form kept to correct it and focus on what fixes it: the name when a folder by
+ * that name is already there, Choose… when the folder cannot be used, Duplicate when the copy itself failed. Once
+ * made, the copy is offered to open; until then, and unless it is opened, every change stays in the project open now.
  */
 export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void; onOpen: (dir: string) => void }) {
   const snap = useStore((s) => s.snapshot);
   // The project as it was when Duplicate was chosen: the copy is of that opening, and of no other.
   const [source] = useState(() => (snap ? { opening: snap.workspaceKey, name: projectDisplayName(snap.state), site: snap.state.site.name, dir: snap.dir } : null));
-  const [name, setName] = useState(() => (source ? `${source.name} copy`.slice(0, MAX_COPY_NAME) : ''));
+  const [name, setName] = useState(() => (source ? copyName(source.name, source.dir) : ''));
   const [parent, setParent] = useState(() => (source ? parentFolder(source.dir) : ''));
-  const [problem, setProblem] = useState<{ field: 'name' | 'location' | 'form'; text: string; target: string } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<{ field: 'name' | 'location' | 'form'; text: string; target: string; parent: string } | null>(null);
+  const [since, setSince] = useState<number | null>(null);
+  const busy = since !== null;
+  const elapsed = useElapsed(since);
   const [done, setDone] = useState<{ dir: string; name: string } | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const openRef = useRef<HTMLButtonElement>(null);
   const chooseRef = useRef<HTMLButtonElement>(null);
+  const duplicateRef = useRef<HTMLButtonElement>(null);
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
+    // The suggested name is there to be typed over.
+    nameRef.current?.select();
     return () => {
       live.current = false;
     };
@@ -328,24 +372,26 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
   useEffect(() => {
     if (done) openRef.current?.focus();
   }, [done]);
-  // Back on the form with a problem: focus goes to what can fix it, which reads the problem out.
+  // Back on the form with a problem: focus goes to what fixes it, which reads the problem out.
   useEffect(() => {
     if (problem?.field === 'location') chooseRef.current?.focus();
+    else if (problem?.field === 'form') duplicateRef.current?.focus();
     else if (problem) nameRef.current?.focus();
   }, [problem]);
 
   const trimmed = name.replace(/\s+/g, ' ').trim();
   const sep = isWindowsPath(parent) ? '\\' : '/';
   const target = parent && trimmed ? `${parent.endsWith(sep) ? parent : parent + sep}${projectFolderName(trimmed)}` : parent;
-  // A problem with the destination stays while the name and folder still lead to it; one with the copy itself stays
-  // until the next try.
-  const shown = problem && problem.field !== 'form' && problem.target !== target ? null : problem;
-  const canDuplicate = !!source && !!trimmed && !!parent && !busy && shown?.field !== 'location';
+  // A folder by the copy's name stays the problem while the name and folder still lead to it; a folder that cannot be
+  // used, while it is the one chosen (another name does not answer it); a problem with the copy itself, until the next
+  // try. Neither of the first two is offered again.
+  const shown = !problem ? null : problem.field === 'name' ? (problem.target === target ? problem : null) : problem.field === 'location' ? (problem.parent === parent ? problem : null) : problem;
+  const canDuplicate = !!source && !!trimmed && !!parent && !busy && (!shown || shown.field === 'form');
 
   const duplicate = async () => {
     if (!source || !canDuplicate) return;
     keepFocusInDialog(nameRef.current);
-    setBusy(true);
+    setSince(Date.now());
     setProblem(null);
     let r: DuplicateProjectResult;
     try {
@@ -359,16 +405,16 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
       else toast(r.message, 'error');
       return;
     }
-    setBusy(false);
+    setSince(null);
     if (r.ok) setDone({ dir: r.dir, name: r.name });
-    else setProblem({ field: r.field, text: r.message, target });
+    else setProblem({ field: r.field, text: r.message, target, parent });
   };
 
   if (done && source)
     return (
       <Modal
         title="Copy created"
-        icon={<Copy />}
+        icon={<CopyCheck />}
         onClose={onClose}
         describedBy="duplicate-done"
         footer={
@@ -376,7 +422,8 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
             <button className="btn" onClick={onClose}>
               Keep editing here
             </button>
-            <button ref={openRef} className="btn btn-primary" onClick={() => onOpen(done.dir)}>
+            {/* Focus lands here as the form gives way, so it reads out what was made. */}
+            <button ref={openRef} className="btn btn-primary" aria-describedby="duplicate-done" onClick={() => onOpen(done.dir)}>
               Open copy
             </button>
           </>
@@ -384,20 +431,17 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
       >
         <div className="duplicate-form">
           <p id="duplicate-done" className="duplicate-note">
-            <strong>{done.name}</strong> is ready, in its own folder. You’re still editing <strong>{source.name}</strong>: changes made here stay in this project until you open the copy.
+            <strong>{done.name}</strong> is ready in its own folder. You’re still editing <strong>{source.name}</strong>, and from here on each project keeps its own changes.
           </p>
-          <div className="field">
-            <div className="field-label" id="duplicate-done-path-label">
-              Copy’s folder
-            </div>
-            <PathReadout id="duplicate-done-path" path={done.dir} />
+          <div className="path-group">
+            <div className="field-label">Copy’s folder</div>
+            <PathReadout path={done.dir} />
           </div>
         </div>
       </Modal>
     );
 
-  const onName = shown?.field === 'name';
-  const onLocation = shown?.field === 'location';
+  const invalid = shown?.field === 'name' || shown?.field === 'location';
   return (
     <Modal
       title="Duplicate project"
@@ -409,21 +453,35 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
           <span className="foot-note" role="status">
             {busy ? (
               <>
-                <Spinner decorative /> Copying {source?.name}…
+                <Spinner decorative />
+                <span className="ellipsis">Copying the project… The original is not changed.</span>
+                {elapsed && (
+                  <span className="elapsed" aria-hidden="true">
+                    {elapsed}
+                  </span>
+                )}
               </>
             ) : null}
           </span>
           <button className="btn" disabled={busy} onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn-primary" disabled={!canDuplicate} onClick={() => void duplicate()}>
+          <button ref={duplicateRef} className="btn btn-primary" disabled={!canDuplicate} aria-describedby={shown?.field === 'form' ? 'duplicate-error' : undefined} onClick={() => void duplicate()}>
             Duplicate
           </button>
         </>
       }
     >
       <div className="duplicate-form">
-        <Field label="Copy name" controlId="duplicate-name">
+        <Field
+          label="Copy name"
+          controlId="duplicate-name"
+          hint={
+            <>
+              Shown in Recent projects and the toolbar, so you can tell the copy from {source?.name ?? 'the original'}. Visitors still see the site name{source ? <> “{source.site}”</> : null}.
+            </>
+          }
+        >
           <input
             ref={nameRef}
             id="duplicate-name"
@@ -432,32 +490,29 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
             maxLength={MAX_COPY_NAME}
             value={name}
             disabled={busy}
-            aria-invalid={onName ? true : undefined}
-            aria-describedby={shown && shown.field !== 'location' ? 'duplicate-name-hint duplicate-error' : 'duplicate-name-hint'}
+            aria-invalid={shown?.field === 'name' ? true : undefined}
+            aria-describedby={shown?.field === 'name' ? 'duplicate-error' : undefined}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void duplicate()}
           />
         </Field>
-        <p id="duplicate-name-hint" className="duplicate-note muted">
-          Shown in Recent projects and the toolbar, so you can tell the copy from {source?.name ?? 'the original'}. Visitors still see the site name{source ? <> “{source.site}”</> : null}.
-        </p>
         <div className="field">
           <div className="field-label" id="duplicate-path-label">
             Copy’s folder
           </div>
           <div className="np-path-row">
-            <PathReadout id="duplicate-path" path={target} pending={trimmed ? undefined : 'copy-name'} className={onLocation ? 'invalid' : ''} />
+            <PathReadout id="duplicate-path" path={target} pending={trimmed ? undefined : 'copy-name'} className={invalid ? 'invalid' : ''} />
             <button
               ref={chooseRef}
               className="btn"
               disabled={busy}
-              aria-describedby={onLocation ? 'duplicate-path-label duplicate-path duplicate-error' : 'duplicate-path-label duplicate-path'}
+              aria-describedby={invalid ? 'duplicate-path-label duplicate-path duplicate-error' : 'duplicate-path-label duplicate-path'}
               onClick={async () => {
                 const d = await api.dialogs.chooseFolder('Choose where to put the copy', parent || undefined);
                 if (d && live.current) {
                   setParent(d);
-                  // Choosing a folder again asks afresh, in case it was emptied meanwhile.
-                  if (problem?.field === 'location') setProblem(null);
+                  // Choosing a folder again asks afresh, in case it was emptied or its permissions changed meanwhile.
+                  if (problem?.field === 'location' || problem?.field === 'name') setProblem(null);
                 }
               }}
             >
@@ -480,23 +535,39 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
 
 /**
  * A project ZIP file being unpacked into a new folder (#263), over Welcome or the open project, from the moment its
- * folder is chosen until the copy is ready (then Trust this project follows) or has gone. Cancel, or Esc, calls it
- * off: nothing it wrote is left, and the ZIP file was only read.
+ * folder is chosen until the copy is ready (then Trust this project follows) or has gone. It counts the files written
+ * against the ZIP file's total, so a long unpacking reads as one rather than as a hang. Cancel, or Esc, calls it off:
+ * nothing it wrote is left, and the ZIP file was only read. A failure closes it and is told as a notice.
  */
 export function UnpackingModal() {
-  const [unpacking, setUnpacking] = useState<{ name: string; dir: string } | null>(null);
+  const [unpacking, setUnpacking] = useState<Unpacking | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [since, setSince] = useState<number | null>(null);
+  // The unpacking the dialog is showing: progress on it keeps the dialog as it is, a new one starts it afresh.
+  const current = useRef<string | null>(null);
   useEffect(
     () =>
       api.on('projects:unpacking', (u) => {
+        const key = u ? `${u.dir}\n${u.folder}` : null;
+        if (key !== current.current) {
+          current.current = key;
+          setCancelling(false);
+          setSince(u ? Date.now() : null);
+        }
         setUnpacking(u);
-        setCancelling(false);
-        setSince(u ? Date.now() : null);
       }),
     []
   );
   const elapsed = useElapsed(since);
+  const done = unpacking?.done ?? 0;
+  const total = unpacking?.total ?? 0;
+  const count = total > 0 ? `${done.toLocaleString()} of ${total.toLocaleString()} ${total === 1 ? 'file' : 'files'}` : null;
+  // A long wait is told as it starts to show (the count so far), then once per quarter of the way, so it is heard to be
+  // moving without a running commentary; a short one stays quiet.
+  const quarter = total > 0 ? Math.floor((done / total) * 4) : 0;
+  const told = useRef<{ quarter: number; text: string } | null>(null);
+  if (!elapsed || !count || cancelling) told.current = null;
+  else if (!told.current || told.current.quarter !== quarter) told.current = { quarter, text: `${count} unpacked.` };
   if (!unpacking) return null;
   const cancel = () => {
     keepFocusInDialog(document.activeElement);
@@ -506,7 +577,7 @@ export function UnpackingModal() {
   return (
     <Modal
       title={`Unpacking ${unpacking.name}`}
-      describedBy="unpack-body"
+      describedBy="unpack-status"
       icon={<FileArchive />}
       onClose={cancel}
       busy={cancelling}
@@ -517,19 +588,34 @@ export function UnpackingModal() {
         </button>
       }
     >
-      <div id="unpack-body" className="unpack-body">
-        <div className="unpack-status">
-          <Spinner decorative />
-          <span role="status">{cancelling ? 'Canceling. Anything unpacked so far is being removed.' : 'Making a working copy from the ZIP file. The ZIP file is not changed.'}</span>
-          {elapsed && !cancelling && (
-            <span className="elapsed" aria-hidden="true">
-              {elapsed}
-            </span>
+      <div className="unpack-body">
+        <p id="unpack-status" className="unpack-status" role="status">
+          {cancelling ? 'Nothing unpacked is kept, and the ZIP file is unchanged.' : 'Making a working copy of the project. The ZIP file is only read, and Cancel removes the unfinished copy.'}
+        </p>
+        <div className="sr-only" role="status">
+          {told.current?.text ?? ''}
+        </div>
+        <div className="unpack-progress">
+          {/* Its place is kept while the unfinished copy is removed, so nothing moves, but it no longer measures anything. */}
+          {cancelling ? (
+            <div className="unpack-bar retired" aria-hidden="true" />
+          ) : count ? (
+            <div className="unpack-bar" role="progressbar" aria-label="Files unpacked" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} aria-valuetext={count}>
+              <span style={{ width: `${Math.min(100, (done / total) * 100)}%` }} />
+            </div>
+          ) : (
+            <div className="unpack-bar" aria-hidden="true" />
           )}
+          <div className="unpack-count" aria-hidden="true">
+            <Spinner decorative />
+            <span>{cancelling ? 'Removing the unfinished copy…' : (count ?? 'Starting…')}</span>
+            {elapsed && !cancelling && <span className="elapsed">{elapsed}</span>}
+          </div>
         </div>
         <div className="path-group">
-          <div className="field-label">Working copy</div>
-          <PathReadout path={unpacking.dir} className="trust-path" />
+          <div className="field-label">New folder</div>
+          {/* The folder it goes in and its own name, which gains a number only if that name is taken by then. */}
+          <PathReadout path={`${unpacking.dir.replace(/[\\/]$/, '')}${isWindowsPath(unpacking.dir) ? '\\' : '/'}${unpacking.folder}`} />
         </div>
       </div>
     </Modal>

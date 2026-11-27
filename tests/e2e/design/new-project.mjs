@@ -37,8 +37,8 @@ const RECENTS = [
   { name: 'Tide & Timber', dir: `${home}/tide-and-timber`, openedAt: new Date(Date.now() - 26 * 3600000).toISOString() }
 ];
 const LONG_NAME = 'Kōwhai Garden Supplies & Landscaping Co-operative';
-const TRUST = { name: 'Harbour Lane Studio', dir: '/Users/alex/Downloads/harbour-lane-studio' };
-const TRUST_LONG = { name: 'Kōwhai Garden Supplies & Landscaping Co-operative of the Greater Wellington Region', dir: '/Users/alex/Downloads/from-client/2026/final-handover/kowhai-garden-supplies-and-landscaping-co-operative-of-the-greater-wellington-region' };
+const TRUST = { name: 'Harbour Lane Studio', dir: '/Users/alex/Downloads/harbour-lane-studio', reason: 'new' };
+const TRUST_LONG = { name: 'Kōwhai Garden Supplies & Landscaping Co-operative of the Greater Wellington Region', dir: '/Users/alex/Downloads/from-client/2026/final-handover/kowhai-garden-supplies-and-landscaping-co-operative-of-the-greater-wellington-region', reason: 'unpacked' };
 // The main process's own messages for these failures (src/main/controller.ts).
 const CREATE_ERROR = '/Users/alex/Websites/harbour-lane-studio already exists and is not empty. Choose another name or folder.';
 const NO_PERMISSION = 'SiteOrigin Builder does not have permission to write to that folder. Choose a folder in your Documents and try again.';
@@ -300,8 +300,8 @@ if (process.env.DESIGN_CAPTURE_ONLY !== 'new') {
 
   // ---- Unpacking a project ZIP file ----
   await fresh({ recents: RECENTS });
-  await send('projects:unpacking', { name: 'Harbour Lane Studio', dir: '/Users/alex/Websites/harbour-lane-studio' });
-  await win.waitForSelector('.modal .trust-path');
+  await send('projects:unpacking', { name: 'Harbour Lane Studio', dir: '/Users/alex/Websites', folder: 'harbour-lane-studio', done: 112, total: 486 });
+  await win.waitForSelector('.modal .unpack-body');
   await pause(150);
   await shot('unpacking', '.modal', { text: 'Unpacking' });
   await win.locator('.modal').getByRole('button', { name: 'Cancel' }).click();

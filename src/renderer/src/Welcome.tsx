@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, Users, X } from 'lucide-react';
-import type { RecentProject } from '@shared/api';
+import type { RecentProject, TrustRequest } from '@shared/api';
 import { api, errorText, setState, toast, useStore, whenThemesReady } from './store';
 import { openDialogs, Spinner } from './components/ui';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
@@ -123,7 +123,7 @@ export function Welcome() {
   const refusedPacks = useStore((st) => st.packs.refused);
   const [creating, setCreating] = useState(false);
   // A project to trust before it opens, with the missing entry it was chosen for (Find folder…), if any.
-  const [trust, setTrust] = useState<{ dir: string; name: string; replaces?: string } | null>(null);
+  const [trust, setTrust] = useState<(TrustRequest & { replaces?: string }) | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const filterInput = useRef<HTMLInputElement>(null);
