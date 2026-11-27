@@ -1074,6 +1074,8 @@ async function createWindow() {
     }
   });
   perf.mark('launch.windowCreated', { window: win.id });
+  // A preview stopped while no window was open starts again now, while the editor loads (#1036).
+  controller.windowOpened();
   // A frame inside the editor (the canvas's preview, a page being measured) means the editor's own code has run here.
   if (v8CacheOptions !== 'code') {
     const contents = win.webContents;
@@ -1238,7 +1240,13 @@ async function createWindow() {
     leaveGate.editorGone();
     controller.cancelOpen();
     // Nobody is left to see the host's project: this app's place in another computer's live session is given up (#766).
-    if (win === null) controller.remote.leave();
+    // The project stays open (macOS), its lock held and its folder watched; its preview stops until a window shows it
+    // again, unless a live session's guests are being shown it (#1036).
+    if (win === null) {
+      controller.remote.leave();
+      // Elsewhere the last window closing quits, which closes the project.
+      if (process.platform === 'darwin') controller.windowClosed();
+    }
   });
   // A first load the page crashed during (or that the crash's reload took over) is taken up by the crash's own question,
   // not reported as an error here. Any other failure to load the editor is reported in the app's own words: as a
