@@ -1,11 +1,13 @@
 // Starter content (#15): a new site publishes nothing its author did not write. The Business starter's sample contact
 // details are reviewed in the Export dialog before the website goes out (opened where they are, replaced everywhere
 // at once, or kept on purpose) without ever stopping the export. The Blank starter's Home starts empty: the canvas
-// says how to begin, in the editor only, and neither the live preview nor the exported website shows any of it.
+// says how to begin, in the editor only, and neither the live preview nor the exported website shows any of it. The
+// Component showcase (#1020), made through the New project dialog with the sample photos, places every component the
+// theme ships and exports whole.
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { answerChoosers, createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('starter-content');
 const { app, win, errors } = await launch(WORK);
@@ -186,6 +188,45 @@ try {
   const index = readFileSync(join(blank, 'index.html'), 'utf8');
   for (const t of leftovers) assert.ok(!index.includes(t), `the exported Home does not include “${t}”`);
   assert.ok(index.includes('Second Shelf'), 'the exported Home has the site’s header and footer');
+  await closeDialog(exportDialog);
+
+  step('Component showcase: New project makes a page for each kind of component, with the sample photos');
+  await win.evaluate(() => window.builder.projects.close());
+  await win.waitForSelector('.welcome');
+  await answerChoosers(app, [{ dialog: 'open', title: 'Choose where to create the project', paths: [join(WORK, 'sites')] }]);
+  await win.locator('.welcome-action', { hasText: 'New project' }).click();
+  const form = win.getByRole('dialog', { name: 'New project' });
+  await form.waitFor();
+  await eventually(async () => assert.match((await form.locator('#new-project-path .path-text').textContent()) ?? '', /[/\\]/, 'the form shows its default folder'));
+  await form.getByLabel('Project name').fill('Every Part');
+  await form.getByRole('radio', { name: 'Component showcase' }).click();
+  await form.getByRole('button', { name: 'Choose…' }).click();
+  assert.equal(await form.getByRole('switch', { name: 'Include sample images' }).getAttribute('aria-checked'), 'true', 'the showcase takes the sample photos');
+  await win.screenshot({ path: join(SHOTS, 'showcase-new-project.png') });
+  await form.getByRole('button', { name: 'Create project' }).click();
+  await win.waitForSelector('.editor', { timeout: 180000 });
+  await win.frameLocator('.frame-box iframe').locator('h1').first().waitFor({ timeout: 90000 });
+  const made = (await snapshot()).state;
+  const titles = made.site.pageOrder.map((id) => made.pages[id].title);
+  assert.deepEqual(titles.slice(0, 10), ['Home', 'Heroes', 'Features', 'Content', 'Media', 'Proof', 'Pricing', 'Contact', 'Blog', 'Blocks']);
+  const placedIds = new Set(
+    [...Object.values(made.pages), made.site.shell.header, made.site.shell.footer].flatMap((t) => Object.values(t.nodes)).filter((n) => n.kind === 'instance').map((n) => made.components[n.definitionId].componentId)
+  );
+  assert.ok(placedIds.size >= 39, `every component is placed: ${[...placedIds].join(', ')}`);
+  assert.ok(Object.keys(made.assets.assets).length >= 9, 'the sample photos are in the library');
+  await win.screenshot({ path: join(SHOTS, 'showcase-editor.png') });
+
+  step('the exported showcase has every kind page, its posts and its photos');
+  await openExport();
+  const showcase = await exportWebsite('showcase');
+  for (const route of ['heroes', 'features', 'content', 'media', 'proof', 'pricing', 'contact', 'blog', 'blocks'])
+    assert.ok(existsSync(join(showcase, route, 'index.html')), `the export has /${route}/`);
+  const blog = readFileSync(join(showcase, 'blog', 'index.html'), 'utf8');
+  assert.match(blog, /Notes from the studio/, 'the Blog page lists the sample posts');
+  const media = readFileSync(join(showcase, 'media', 'index.html'), 'utf8');
+  const photo = media.match(/src="\/?(assets\/[^"?]+\.(?:jpg|webp|avif))/)?.[1];
+  assert.ok(photo && existsSync(join(showcase, photo)), `the Media page shows a sample photo the export holds: ${photo}`);
+  await closeDialog(exportDialog);
 
   assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 } finally {

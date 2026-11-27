@@ -396,7 +396,7 @@ export interface LocalWorkspaceState {
 export interface CreateProjectOptions {
   name: string;
   parentDir: string;
-  starter: 'business' | 'blank';
+  starter: 'business' | 'blank' | 'showcase';
   sampleImages: boolean;
   /** The theme the site starts with; without one, the default theme. It can be changed any time in Site styles. */
   themeId?: string;

@@ -6,13 +6,19 @@ import { defaultTheme, findTheme, getTheme, themeLockEntry } from './index';
 import { canonicalRich } from './dsl';
 import { contractConflicts } from '@engine/theme-updates';
 import { TEMPLATE_VERSION } from './fonts';
+import { buildShowcase } from './showcase';
 
-export type StarterId = 'business' | 'blank';
+export type StarterId = 'business' | 'blank' | 'showcase';
 
 export const STARTERS: Array<{ id: StarterId; name: string; description: string }> = [
   { id: 'business', name: 'Business starter', description: 'Home, About and Contact pages with shared navigation, ready to make your own.' },
-  { id: 'blank', name: 'Blank site', description: 'A single empty Home page with the shared header and footer, ready for its first section.' }
+  { id: 'blank', name: 'Blank site', description: 'A single empty Home page with the shared header and footer, ready for its first section.' },
+  // Offered in every build while the product is internal: a site for trying every component the theme ships.
+  { id: 'showcase', name: 'Component showcase', description: 'Every component the theme ships, with its defaults: a page for each kind, linked from the shared header and footer.' }
 ];
+
+/** Whether a starter fills its images with the bundled sample photos, when the author asks for them. */
+export const starterTakesSamples = (starter: StarterId): boolean => starter === 'business' || starter === 'showcase';
 
 export interface StarterAsset {
   id: string;
@@ -103,6 +109,8 @@ export function starterProblem(starter: StarterId, themeId?: string): string | n
   } catch (e) {
     return problem((e as Error).message);
   }
+  // The showcase is made from whatever this theme ships, so nothing in it comes from another theme's contracts.
+  if (starter === 'showcase') return null;
   // The starters are written for Foundation's contracts: each section they place must take what they set in it, as a
   // switch from Foundation to this theme would require (the properties, lists and variant options they fill in).
   const reference = findTheme('foundation') ?? defaultTheme();
@@ -149,6 +157,25 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
     s.site.pageOrder = [home];
     s.site.shell.header = tree(inst(s, 'shell.header', { siteName, links: [{ id: 'i1', label: 'Home', link: pageLink(home) }] }));
     s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, tagline: '', links: [{ id: 'i1', label: 'Home', link: pageLink(home) }], contact: [], copyright: `© {year} ${siteName}.` }));
+    return s;
+  }
+
+  if (starter === 'showcase') {
+    s.site.description = `${siteName} shows every component of the ${getTheme(s.site.themeId).name} theme with its defaults, a page for each kind.`;
+    const site = buildShowcase(s, home, withSampleImages ? STARTER_ASSETS : null);
+    s.pages[home] = page(home, 'Home', '/', site.homeNodes, { description: s.site.description });
+    for (const p of site.pages) s.pages[p.id] = p;
+    s.site.homePageId = home;
+    s.site.pageOrder = [home, ...site.pages.map((p) => p.id)];
+    const header = s.components[installComponent(s, 'shell.header')];
+    const footer = s.components[installComponent(s, 'shell.footer')];
+    const links = (def: typeof header) => {
+      const schema = def.properties.links;
+      const max = schema?.type === 'list' ? (schema.max ?? Infinity) : 0;
+      return site.nav.slice(0, max).map((n, i) => ({ id: `i${i + 1}`, label: n.label, link: pageLink(n.pageId) }));
+    };
+    s.site.shell.header = tree(inst(s, 'shell.header', { siteName, links: links(header) }));
+    s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, links: links(footer), copyright: `© {year} ${siteName}.` }));
     return s;
   }
 

@@ -45,8 +45,9 @@
   .np-theme-about { min-height: calc(2 * 18px + 6px); margin: 0 0 0 4px; font-size: 13px; line-height: 18px; color: var(--text-2); text-wrap: pretty; }
   /* Kept whole: a shorter description puts it on the second line rather than leaving its last words there. */
   .np-theme-later { color: var(--text-3); white-space: nowrap; }
-  /* Business draws three pages and gets the room for them; a blank site is one page at the same scale. */
-  .starter-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; }
+  /* Business draws three pages and gets the room for them; a blank site is one page at the same scale, and the
+     showcase its Home beside two of its pages. */
+  .starter-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) minmax(0, 2fr); gap: 12px; }
   .starter-card { position: relative; display: flex; flex-direction: column; min-width: 0; padding: 0; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); color: var(--text); text-align: left; overflow: hidden; transition: border-color 120ms, box-shadow 120ms; }
   /* Hover keeps the control edge and lifts the surface, and the empty ring firms up. */
   .starter-card:hover:not([aria-checked='true']) { background: var(--panel-2); }
