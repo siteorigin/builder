@@ -6111,7 +6111,8 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
   /** The table's code with a note under it, from a new property. */
   const withNote = (src: string) => {
     expect(src.split('</section>')).toHaveLength(2);
-    return src.replace("caption = '',", "caption = '',\n\t\tnote = '',").replace('</section>', '\t{#if note}<p class="so-table__note">{note}</p>{/if}\n</section>');
+    expect(src.split('rowHeaders = false,')).toHaveLength(2);
+    return src.replace('rowHeaders = false,', "rowHeaders = false,\n\t\tnote = '',").replace('</section>', '\t{#if note}<p class="so-table__note">{note}</p>{/if}\n</section>');
   };
   const NOTE = { type: 'string', label: 'Note', default: '' };
   type Read = { revision: number; hash: string; editable: boolean; source: string; properties: Record<string, unknown>; propertiesHash: string };
@@ -6458,7 +6459,8 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
       // The rename with the code that reads the new name: every placement keeps its heading as its title.
       () => {
         const { heading, ...rest } = last().properties;
-        return [call('p4', 'apply_source_patch', patch(fork, last(), { source: last().source.replace("heading = '',", "title: heading = '',"), properties: { ...rest, title: heading }, renames: [{ from: 'heading', to: 'title' }] }))];
+        expect(last().source).toContain('\t\theading,\n');
+        return [call('p4', 'apply_source_patch', patch(fork, last(), { source: last().source.replace('\t\theading,\n', '\t\ttitle: heading,\n'), properties: { ...rest, title: heading }, renames: [{ from: 'heading', to: 'title' }] }))];
       },
       () => [call('r2', 'read_source', { definitionId: fork })],
       (req) => {
@@ -6471,7 +6473,7 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
     expect((await session.apply({ operations: [{ type: 'instance.setProp', owner: pageOwner(placed.home), nodeId: placed.homeTables[0], prop: 'heading', value: 'Spring timetable' }] }, { label: 'Heading', source: 'user' })).ok).toBe(true);
     await env.run('Call the table heading a title');
     expect(resultOf(env.adapter.requests[3]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/“note” is not/) });
-    expect(resultOf(env.adapter.requests[4]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/still takes “heading” from \$props\(\)/) });
+    expect(resultOf(env.adapter.requests[4]).error).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringMatching(/takes heading from \$props\(\), which is not one of the component's properties/) });
     expect(resultOf(env.adapter.requests[5]).error).toMatchObject({ code: 'STALE_REVISION', message: expect.stringMatching(/properties changed/) });
     expect(resultOf(env.adapter.requests[6])).toMatchObject({ ok: true });
     const node = session.state.pages[placed.home].nodes[placed.homeTables[0]] as InstanceNode;
