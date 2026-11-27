@@ -564,7 +564,7 @@ describe('exporting a project whose entries would decide where a contact form se
     const refused = [await c.buildStaticTo(site), await c.exportSourceTo(handoff)];
     for (const r of refused) {
       expect(r.ok).toBe(false);
-      expect(r.message).toMatch(/^Posts layout: .* takes where it sends what visitors write from the entry's “Excerpt”; a form's destination is set on the form, never read from an entry\. Change that before exporting/);
+      expect(r.message).toBe("Posts layout: Contact form takes where it sends what visitors write (“Form endpoint URL”) from the entry's “Excerpt”; a form's destination is set on the form, never read from an entry. Change that before exporting: Project health lists it.");
     }
     expect(existsSync(site)).toBe(false);
     expect(existsSync(handoff)).toBe(false);
@@ -573,5 +573,6 @@ describe('exporting a project whose entries would decide where a contact form se
     const undo = await c.apply({ operations: [{ type: 'node.setBinding', owner: { kind: 'template', id: 'posts' }, nodeId: formId, field: 'prop', prop: 'endpoint', binding: null }] });
     expect(undo.ok).toBe(true);
     expect((await c.exportSourceTo(handoff)).ok).toBe(true);
+    expect((await c.buildStaticTo(site)).ok).toBe(true);
   }, 30_000);
 });

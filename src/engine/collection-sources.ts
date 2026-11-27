@@ -35,6 +35,9 @@ export interface SourceProblem {
 /** What follows a problem's own words when an entry would decide where a form sends: why it cannot. */
 const NEVER_FROM_ENTRY = "a form's destination is set on the form, never read from an entry.";
 
+/** A placed component's property by its label, quoted, for a message. */
+const propLabel = (state: ProjectState, n: InstanceNode, prop: string) => `“${own(own(state.components, n.definitionId)?.properties, prop)?.label ?? prop}”`;
+
 /** The fields a query filters and sorts by that are not an entry's (see shared/collection-query.ts). */
 const QUERY_ONLY = new Set(['id', 'slug']);
 /** A row's fields no query reads: a link to the entry's page is the row's, not a value to filter or sort by. */
@@ -179,6 +182,13 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
       out.push(`shows "${String(field).slice(0, 60)}", which entries of ${collection.settings.name} do not have.`);
       continue;
     }
+    // Where a form sends what visitors write is the site's own, never an entry's: its service, its setting, or a
+    // design's property that passes one of them on. Said before anything else about the field (a choice field damaged
+    // by hand still hands the entry's value on), so the export always sees it.
+    if (slot.field === 'prop' && n.kind === 'instance' && slot.prop !== undefined && destination(n.definitionId, slot.prop)) {
+      out.push(`takes where it sends what visitors write (${propLabel(state, n, slot.prop)}) from “${schema.label}”; ${NEVER_FROM_ENTRY}`, true);
+      continue;
+    }
     if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) continue;
     if (!ENTRY_CONTENT_FIELDS.has(slot.field)) {
       out.push(`takes its ${slot.field} from “${schema.label}”; that is the list's own, the same for every entry. Only content can show an entry's field.`);
@@ -191,12 +201,6 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
     const nested = slot.field === 'prop' && n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
     if (slot.field === 'prop' && !(nested && slot.prop !== undefined && Object.hasOwn(nested, slot.prop))) {
       out.push(`shows “${schema.label}” in "${slot.prop}", which the placed component does not have.`);
-      continue;
-    }
-    // Where a form sends what visitors write is the site's own, never an entry's: its service, its setting, or a
-    // design's property that passes one of them on.
-    if (slot.field === 'prop' && n.kind === 'instance' && destination(n.definitionId, slot.prop!)) {
-      out.push(`takes where it sends what visitors write from “${schema.label}”; ${NEVER_FROM_ENTRY}`, true);
       continue;
     }
     const ok = acceptedTypes(n, slot.field, nested?.[slot.prop!]);
@@ -233,8 +237,9 @@ export function listDestinationProblem(state: ProjectState, node: InstanceNode, 
   const connected = !!node.listSources && Object.hasOwn(node.listSources, prop);
   // Asked last: a list filled by hand never needs the walk over the project's designs.
   if ((!connected && !schema.feed) || !destination(def.id, prop)) return null;
-  const from = connected ? "a collection's entries" : `the site's ${schema.feed === 'entries' ? 'entries' : 'pages'}`;
-  return `fills where it sends what visitors write (“${schema.label}”) from ${from}; ${NEVER_FROM_ENTRY}`;
+  const pages = !connected && schema.feed !== 'entries';
+  const from = connected ? "a collection's entries" : `the site's ${pages ? 'pages' : 'entries'}`;
+  return `fills where it sends what visitors write (“${schema.label}”) from ${from}; ${pages ? "a form's destination is set on the form, never read from a page." : NEVER_FROM_ENTRY}`;
 }
 
 /**
@@ -249,7 +254,7 @@ function destinationProblems(state: ProjectState, owner: OwnerRef, n: GraphNode,
   const collection = owner.kind === 'template' ? own(state.collections, owner.id) : undefined;
   if (collection && n.props && typeof n.props === 'object')
     for (const [prop, v] of Object.entries(n.props))
-      if (isEntryBinding(v) && destination(n.definitionId, prop)) out.push({ place: `entry:${prop}`, message: `takes where it sends what visitors write from the entry's “${entryFieldLabel(collection, String(v.$entry))}”; ${NEVER_FROM_ENTRY}` });
+      if (isEntryBinding(v) && destination(n.definitionId, prop)) out.push({ place: `entry:${prop}`, message: `takes where it sends what visitors write (${propLabel(state, n, prop)}) from the entry's “${entryFieldLabel(collection, String(v.$entry))}”; ${NEVER_FROM_ENTRY}` });
   const def = own(state.components, n.definitionId);
   for (const prop of Object.keys(def?.properties ?? {})) {
     const problem = listDestinationProblem(state, n, prop, destination);
@@ -279,17 +284,20 @@ export function collectionSourceProblems(state: ProjectState): SourceProblem[] {
   const destination = formDestinationLookup(state);
   for (const { owner, tree, label } of allTrees(state)) {
     const def: ComponentDefinition | undefined = owner.kind === 'component' ? state.components[owner.id] : undefined;
-    if (def?.owner === 'theme' || !tree?.nodes || typeof tree.nodes !== 'object') continue;
+    if (!tree?.nodes || typeof tree.nodes !== 'object') continue;
+    // A theme's design is fixed theme data, checked when the theme is built, but read from the project's files like any
+    // other: whether an entry decides where its form sends is still checked, since the website shows what it says.
+    const themed = def?.owner === 'theme';
     const loops = enclosingLoops(tree);
     let parents: Map<string, GraphNode> | undefined;
     for (const n of Object.values(tree.nodes)) {
       if (!n || typeof n !== 'object') continue;
-      if (n.kind === 'instance' && n.listSources && typeof n.listSources === 'object')
+      if (!themed && n.kind === 'instance' && n.listSources && typeof n.listSources === 'object')
         for (const [prop, raw] of Object.entries(n.listSources)) {
           const problem = connectionProblem(state, owner, n, prop, raw);
           if (problem) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:list:${prop}`, message: problem });
         }
-      if (isCollectionLoop(n) && n.kind === 'repeat') {
+      if (!themed && isCollectionLoop(n) && n.kind === 'repeat') {
         const problem = loopProblem(state, owner, tree, n, (parents ??= parentNodes(tree)));
         if (problem) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:loop`, message: problem });
       }
@@ -297,7 +305,8 @@ export function collectionSourceProblems(state: ProjectState): SourceProblem[] {
       const collection = loop ? loopCollection(state, owner, loop) : undefined;
       if (collection)
         for (const problem of loopBindingProblems(state, collection, n, destination))
-          out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:item:${problem.place}${problem.destination ? ':destination' : ''}`, message: problem.message, ...(problem.destination ? { destination: true as const } : {}) });
+          if (!themed || problem.destination)
+            out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:item:${problem.place}${problem.destination ? ':destination' : ''}`, message: problem.message, ...(problem.destination ? { destination: true as const } : {}) });
       for (const problem of destinationProblems(state, owner, n, destination)) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:destination:${problem.place}`, message: problem.message, destination: true });
     }
   }

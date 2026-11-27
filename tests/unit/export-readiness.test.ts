@@ -119,18 +119,22 @@ describe('the website’s contact forms visitors cannot send', () => {
   });
 
   it('lets a layout’s connected form show each entry’s own words, and judges it by the layout’s settings', () => {
+    // Each entry's Invitation, which nothing else on its page shows, is its form's heading.
     const s = apply(fresh(), [
       { type: 'collection.create', collectionId: 'posts' },
-      { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open studio', draft: false },
-      { type: 'entry.create', collectionId: 'posts', entryId: 'en_blank', title: 'Coming soon', draft: false }
+      { type: 'collection.update', collectionId: 'posts', fields: { invite: { type: 'string', label: 'Invitation' } } },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open studio', draft: false, values: { invite: 'Book a studio visit' } },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_blank', title: 'Coming soon', draft: false, values: { invite: 'Ask about the launch' } }
     ]);
     const node = place(s, s.collections.posts.settings.template!, { provider: 'endpoint', endpoint: 'https://formspree.io/f/abcd1234' });
-    const bound = apply(s, [{ type: 'node.setBinding', owner: { kind: 'template', id: 'posts' }, nodeId: node.id, field: 'prop', prop: 'heading', binding: { $entry: 'title' } }]);
+    const bound = apply(s, [{ type: 'node.setBinding', owner: { kind: 'template', id: 'posts' }, nodeId: node.id, field: 'prop', prop: 'heading', binding: { $entry: 'field.invite' } }]);
     expect(validateState(bound).filter((d) => d.nodeId === node.id && (d.severity === 'error' || d.code === 'FORM_UNCONNECTED'))).toEqual([]);
     expect(websiteFormProblems(bound)).toEqual([]);
-    const pages = [...generateProject(bound).entries()].filter(([path]) => /open-studio|coming-soon/.test(path) && path.endsWith('.svelte')).map(([, text]) => String(text));
-    expect(pages.some((p) => p.includes('Open studio') && p.includes('https://formspree.io/f/abcd1234'))).toBe(true);
-    expect(pages.some((p) => p.includes('Coming soon') && p.includes('https://formspree.io/f/abcd1234'))).toBe(true);
+    const page = (slug: string) => String([...generateProject(bound).entries()].find(([path]) => path.includes(slug) && path.endsWith('.svelte'))?.[1]);
+    for (const [slug, invite] of [['open-studio', 'Book a studio visit'], ['coming-soon', 'Ask about the launch']]) {
+      expect(page(slug)).toContain(invite);
+      expect(page(slug)).toContain('https://formspree.io/f/abcd1234');
+    }
   });
 
   it('never stops Project health over a setting written by hand that cannot be read', () => {

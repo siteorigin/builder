@@ -15,12 +15,14 @@ import { EngineError } from '@engine/tree';
 import { makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
 import { formDestinationProblems } from '@engine/collection-sources';
-import { generateProject, publishedState } from '@generator/index';
+import { generateProject, pageFile, publishedState } from '@generator/index';
 
 const FORM = 'foundation.contact.form';
 const LAYOUT: OwnerRef = { kind: 'template', id: 'posts' };
 const ROUTING = ['provider', 'endpoint', 'accessKey', 'formName'] as const;
 const EVIL = 'https://evil.example/f';
+/** Words only the entry's Tagline field has: shown anywhere, they were read from the entry for the form. */
+const TAGLINE = 'Write to the studio';
 
 const run = (s: ProjectState, ops: EditOperation[]) => applyOperations(s, ops);
 const errors = (s: ProjectState) => validateState(s).filter((d) => d.severity === 'error');
@@ -37,8 +39,8 @@ function refusal(s: ProjectState, ops: EditOperation[]): string {
 }
 
 /**
- * A Posts collection with a published entry (its excerpt an address, and a "Service" choice field whose options are a
- * form's services, so every setting has a field that fits it) and its layout holding a contact form, and "Contact
+ * A Posts collection with a published entry (its excerpt an address, a "Service" choice field whose options are a
+ * form's services, so every setting has a field that fits it, and a Tagline nothing else shows) and its layout holding a contact form, and "Contact
  * band": a design around a form that passes its own `recipient` on as the form's endpoint, placed in the layout too.
  */
 function posts() {
@@ -47,9 +49,12 @@ function posts() {
     {
       type: 'collection.update',
       collectionId: 'posts',
-      fields: { service: { type: 'enum', label: 'Service', options: [{ value: 'endpoint', label: 'Endpoint' }, { value: 'web3forms', label: 'Web3Forms' }, { value: 'netlify', label: 'Netlify' }], default: 'endpoint' } }
+      fields: {
+        service: { type: 'enum', label: 'Service', options: [{ value: 'endpoint', label: 'Endpoint' }, { value: 'web3forms', label: 'Web3Forms' }, { value: 'netlify', label: 'Netlify' }], default: 'endpoint' },
+        tagline: { type: 'string', label: 'Tagline' }
+      }
     },
-    { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open studio', draft: false, excerpt: EVIL, values: { service: 'endpoint' } }
+    { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open studio', draft: false, excerpt: EVIL, values: { service: 'endpoint', tagline: TAGLINE } }
   ] as EditOperation[]).state;
   const step = (ops: EditOperation[]) => {
     const r = run(state, ops);
@@ -106,7 +111,8 @@ describe("a collection layout's contact form", () => {
     (layout.nodes[wrapped] as InstanceNode).props.recipient = { $entry: 'excerpt' };
     const found = errors(hand).filter((d) => d.owner?.kind === 'template');
     expect(found.map((d) => d.nodeId).sort()).toEqual([form, wrapped].sort());
-    for (const d of found) expect(d.message).toMatch(/takes where it sends what visitors write from the entry's “Excerpt”/);
+    expect(found.find((d) => d.nodeId === form)?.message).toMatch(/takes where it sends what visitors write \(“Form endpoint URL”\) from the entry's “Excerpt”/);
+    expect(found.find((d) => d.nodeId === wrapped)?.message).toMatch(/takes where it sends what visitors write \(“Recipient”\) from the entry's “Excerpt”/);
     // What the export refuses (src/main/controller.ts exportBlocked).
     expect(formDestinationProblems(hand).map((p) => p.nodeId).sort()).toEqual([form, wrapped].sort());
     expect(formDestinationProblems(state)).toEqual([]);
@@ -119,12 +125,11 @@ describe("a collection layout's contact form", () => {
 
   it('still shows an entry’s own words as its heading, and sends where the layout says', () => {
     const { state, form } = posts();
-    const s = run(state, [bind(LAYOUT, form, 'heading', { $entry: 'excerpt' })]).state;
+    const s = run(state, [bind(LAYOUT, form, 'heading', { $entry: 'field.tagline' })]).state;
     expect(errors(s)).toEqual([]);
-    expect((s.collections.posts.settings.template!.nodes[form] as InstanceNode).props.heading).toEqual({ $entry: 'excerpt' });
-    const page = [...generateProject(publishedState(s)).entries()].find(([path]) => path.includes('open-studio'))?.[1];
-    expect(typeof page === 'string' && page.includes(EVIL)).toBe(true);
-    expect(typeof page === 'string' && page.includes('https://forms.example.com/posts')).toBe(true);
+    const page = String([...generateProject(publishedState(s)).entries()].find(([path]) => path.includes('open-studio'))?.[1]);
+    expect(page).toContain(TAGLINE);
+    expect(page).toContain('https://forms.example.com/posts');
   });
 });
 
@@ -152,13 +157,25 @@ describe('a contact form inside a collection loop', () => {
     expect(refusal(s, [bind(home, wrapped, 'recipient', { $item: 'excerpt' })])).toMatch(/destination is set on the form/);
     const hand = structuredClone(s);
     (hand.pages[home.id].nodes[form] as InstanceNode).props.formName = { $item: 'title' };
-    expect(errors(hand).filter((d) => d.nodeId === form).map((d) => d.message)).toEqual([expect.stringMatching(/takes where it sends what visitors write from “Title”/)]);
+    (hand.pages[home.id].nodes[wrapped] as InstanceNode).props.recipient = { $item: 'excerpt' };
+    expect(errors(hand).filter((d) => d.nodeId === form).map((d) => d.message)).toEqual([expect.stringMatching(/takes where it sends what visitors write \(“[^”]+”\) from “Title”/)]);
+    expect(errors(hand).filter((d) => d.nodeId === wrapped).map((d) => d.message)).toEqual([expect.stringMatching(/takes where it sends what visitors write \(“Recipient”\) from “Excerpt”/)]);
+    expect(formDestinationProblems(hand).map((p) => p.nodeId).sort()).toEqual([form, wrapped].sort());
+  });
+
+  it('is reported even when the field it reads is a choice damaged by hand', () => {
+    const { s, home, form } = looped();
+    const hand = structuredClone(s);
+    (hand.pages[home.id].nodes[form] as InstanceNode).props.provider = { $item: 'field.service' };
+    delete (hand.collections.posts.settings.fields!.service as { options?: unknown }).options;
     expect(formDestinationProblems(hand).map((p) => p.nodeId)).toEqual([form]);
   });
 
   it('still shows a row’s own words as its heading', () => {
     const { s, home, form } = looped();
-    expect(errors(run(s, [bind(home, form, 'heading', { $item: 'title' })]).state)).toEqual([]);
+    const after = run(s, [bind(home, form, 'heading', { $item: 'field.tagline' })]).state;
+    expect(errors(after)).toEqual([]);
+    expect(String(generateProject(publishedState(after)).get(pageFile(after.pages[home.id])))).toContain(TAGLINE);
   });
 });
 
@@ -167,7 +184,7 @@ describe('a list that passes its items on to a contact form', () => {
    * "Office forms": a design whose `offices` list repeats a contact form per office, each sending to the office's
    * inbox under the office's name. With `feed`, the list fills itself from the site's entries.
    */
-  function offices(feed?: 'entries') {
+  function offices(feed?: 'entries' | 'articles') {
     const { state, home } = posts();
     const s = structuredClone(state);
     const form = makeInstance(s.components[FORM], { provider: 'endpoint', endpoint: { $item: 'excerpt' }, heading: { $item: 'title' } });
@@ -203,9 +220,36 @@ describe('a list that passes its items on to a contact form', () => {
     expect(formDestinationProblems(hand).map((p) => p.nodeId)).toEqual([node]);
   });
 
-  it('never fills itself from the site’s entries', () => {
+  it('never fills itself from the site’s entries or pages', () => {
     const { s, home } = offices('entries');
-    expect(refusal(s, [{ type: 'node.insert', owner: home, parentId: null, definitionId: 'project.offices' } as EditOperation])).toMatch(/fills where it sends what visitors write \(“Offices”\) from the site's entries/);
+    expect(refusal(s, [{ type: 'node.insert', owner: home, parentId: null, definitionId: 'project.offices' } as EditOperation])).toMatch(/fills where it sends what visitors write \(“Offices”\) from the site's entries; .*never read from an entry/);
+    const { s: pages, home: pagesHome } = offices('articles');
+    expect(refusal(pages, [{ type: 'node.insert', owner: pagesHome, parentId: null, definitionId: 'project.offices' } as EditOperation])).toMatch(/fills where it sends what visitors write \(“Offices”\) from the site's pages; .*never read from a page/);
+  });
+
+  it('is found in a theme’s design too, which the website shows as it is', () => {
+    // A design of the theme's, as read from the project's files: a loop over Posts whose form sends to each excerpt.
+    const { state, home } = posts();
+    const s = structuredClone(state);
+    const form = makeInstance(s.components[FORM], { provider: 'endpoint', endpoint: { $item: 'excerpt' } });
+    const loop = { id: 'n_themlp01', kind: 'repeat', list: { $query: { collectionId: 'posts' } }, children: [form.id] };
+    s.components['theme.mailroom'] = {
+      schemaVersion: 1,
+      id: 'theme.mailroom',
+      componentId: 'theme.mailroom',
+      contractVersion: 1,
+      kind: 'managed',
+      owner: 'theme',
+      name: 'Mailroom',
+      description: '',
+      category: 'custom',
+      tags: [],
+      properties: {},
+      parts: { root: { nodeId: loop.id, label: 'Root' } },
+      tree: { rootIds: [loop.id], nodes: { [loop.id]: loop, [form.id]: form } }
+    } as unknown as ComponentDefinition;
+    expect(formDestinationProblems(s).map((p) => [p.owner.kind, p.owner.id, p.nodeId])).toEqual([['component', 'theme.mailroom', form.id]]);
+    expect(home.kind).toBe('page');
   });
 
   it('is an ordinary list while its items are its own', () => {
