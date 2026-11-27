@@ -12,6 +12,17 @@ import { build, type Rolldown } from 'vite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const browserInstalled = existsSync(chromium.executablePath());
+
+/** The page's own globals, as the scripts handed to page.evaluate see them (this file compiles without the DOM). */
+type Node = { textContent: string | null; isConnected: boolean; inert?: boolean; offsetParent: unknown; focus(): void; click(): void; closest(s: string): Node | null };
+type Dom = {
+  document: { querySelector(s: string): Node | null; querySelectorAll(s: string): Iterable<Node>; activeElement: Node | null };
+  requestAnimationFrame(cb: () => void): void;
+  calls: unknown[];
+  main: { send(c: string, p: unknown): void; answerOpen(r: unknown): void };
+  so: Record<string, (...x: unknown[]) => unknown>;
+  region: Node | null;
+};
 const SITE = 'http://open-outline.test';
 const renderer = (path: string) => JSON.stringify(resolve('src/renderer/src', path));
 
@@ -151,28 +162,29 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     expect(errors).toEqual([]);
   });
 
-  const calls = () => page.evaluate(() => (window as unknown as { calls: unknown[] }).calls);
+  const calls = () => page.evaluate(() => (globalThis as unknown as Dom).calls);
   const opens = async () => (await calls()).filter((c) => Array.isArray(c) && c[0] === 'open');
-  const send = (channel: string, payload: unknown) => page.evaluate(([c, p]) => (window as unknown as { main: { send(c: string, p: unknown): void } }).main.send(c as string, p), [channel, payload] as const);
-  const answerOpen = (r: unknown) => page.evaluate((a) => (window as unknown as { main: { answerOpen(r: unknown): void } }).main.answerOpen(a), r);
-  const so = <T>(fn: string, ...args: unknown[]) => page.evaluate(([f, a]) => (window as unknown as { so: Record<string, (...x: unknown[]) => T> }).so[f as string](...(a as unknown[])), [fn, args] as const);
+  const send = (channel: string, payload: unknown) => page.evaluate(([c, p]) => (globalThis as unknown as Dom).main.send(c as string, p), [channel, payload] as const);
+  const answerOpen = (r: unknown) => page.evaluate((a) => (globalThis as unknown as Dom).main.answerOpen(a), r);
+  const so = <T>(fn: string, ...args: unknown[]) => page.evaluate(([f, a]) => (globalThis as unknown as Dom).so[f as string](...(a as unknown[])) as T, [fn, args] as const);
   /** Click a card, and say what the next frame to be painted shows. */
   const clickAndLook = (name: string) =>
     page.evaluate(
       (n) =>
         new Promise<{ outline: boolean; welcome: boolean; canvas: boolean }>((done) => {
-          const card = [...document.querySelectorAll<HTMLElement>('.recent-card')].find((c) => c.textContent?.includes(n));
+          const g = globalThis as unknown as Dom;
+          const card = [...g.document.querySelectorAll('.recent-card')].find((c) => c.textContent?.includes(n));
           card!.focus();
           card!.click();
-          const shown = (el: Element | null) => !!el && (el as HTMLElement).offsetParent !== null;
-          requestAnimationFrame(() => done({ outline: shown(document.querySelector('.editor-skeleton')), welcome: shown(document.querySelector('.welcome')), canvas: shown(document.querySelector('.canvas-skeleton')) }));
+          const shown = (el: Node | null) => !!el && el.offsetParent !== null;
+          g.requestAnimationFrame(() => done({ outline: shown(g.document.querySelector('.editor-skeleton')), welcome: shown(g.document.querySelector('.welcome')), canvas: shown(g.document.querySelector('.canvas-skeleton')) }));
         }),
       name
     );
   const visible = (sel: string) => page.locator(sel).first().isVisible();
   const count = (sel: string) => page.locator(sel).count();
   const text = (sel: string) => page.locator(sel).first().textContent();
-  const statusText = () => page.evaluate(() => [...document.querySelectorAll('[role="status"]')].map((s) => s.textContent?.trim()).filter(Boolean));
+  const statusText = () => page.evaluate(() => [...(globalThis as unknown as Dom).document.querySelectorAll('[role="status"]')].map((s) => s.textContent?.trim()).filter(Boolean));
 
   it('shows the outline in the frame the card is clicked, before the project is asked for, and announces it once', async () => {
     // The themes are still being verified, so the main process has not been asked yet: the outline is the click's.
@@ -182,7 +194,7 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     await expect.poll(() => text('.sk-loading')).toBe('Opening Acme Bakery…');
     // Nothing in the outline is reachable or read out, and Welcome is kept, not drawn.
     expect(await page.locator('.editor-skeleton').getAttribute('aria-hidden')).toBe('true');
-    expect(await page.locator('.editor-skeleton').evaluate((e) => (e as HTMLElement).inert)).toBe(true);
+    expect(await page.locator('.editor-skeleton').evaluate((e) => (e as unknown as Node).inert)).toBe(true);
     await expect.poll(() => count('.welcome')).toBeGreaterThan(0);
     await expect.poll(() => visible('.welcome')).toBe(false);
 
@@ -224,7 +236,7 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
     await expect.poll(() => visible('.welcome')).toBe(true);
     await expect.poll(() => count('.editor-skeleton')).toBe(0);
     await expect.poll(() => page.getByText('The project folder could not be read.').first().isVisible()).toBe(true);
-    await expect.poll(() => page.evaluate(() => document.activeElement?.closest('.recent-card')?.textContent ?? '')).toContain('Acme Bakery');
+    await expect.poll(() => page.evaluate(() => (globalThis as unknown as Dom).document.activeElement?.closest('.recent-card')?.textContent ?? '')).toContain('Acme Bakery');
     await expect.poll(async () => (await calls()).filter((c) => c === 'menuReady').length).toBeGreaterThan(ready);
   });
 
@@ -279,11 +291,15 @@ describe.skipIf(!browserInstalled)('opening a recent project shows one loading s
 
   it('keeps the slow-start announcer as the same region when the card takes over from the outline', async () => {
     await so('status', { runtime: { state: 'starting' }, outlined: true, slow: false });
-    await page.evaluate(() => ((window as unknown as { region: Element | null }).region = document.querySelector('#status [role="status"]')));
+    await page.evaluate(() => {
+      const g = globalThis as unknown as Dom;
+      g.region = g.document.querySelector('#status [role="status"]');
+    });
     await so('status', { runtime: { state: 'starting' }, outlined: true, slow: true });
     expect(await page.evaluate(() => {
-      const region = (window as unknown as { region: Element | null }).region;
-      return !!region?.isConnected && region === document.querySelector('#status [role="status"]') && region.textContent;
+      const g = globalThis as unknown as Dom;
+      const region = g.region;
+      return !!region?.isConnected && region === g.document.querySelector('#status [role="status"]') && region.textContent;
     })).toBe('Starting the preview is taking longer than usual.');
   });
 });
