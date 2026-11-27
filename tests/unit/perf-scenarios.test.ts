@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -1915,6 +1915,36 @@ describe('memory', () => {
     expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.close'))).toBe(false);
     // A reading at rest named like the peak is not the peak.
     expect(memory.measure(new Trace([]), facts, all.map((r) => (r.label === 'open' ? { ...r, kind: 'rest' as const } : r))).missing).toEqual(['memory reading open']);
+  });
+
+  it('memoryPanels: report both readings, their growth and the snapshots the editor still held at each', () => {
+    const held = (label: string, snapshots: number, states: number, proc: 'renderer' | 'main' = 'renderer') => m('editor.held', 0, { proc, pid: proc === 'renderer' ? 2 : 1, attrs: { scenario: 'memoryPanels', label, snapshots, states } });
+    const readings = [reading('edit0', 200, 'rest', { editor: 300 }), reading(`edit${PANEL_EDITS}`, 210, 'rest', { editor: 360 })];
+    readings[1] = { ...readings[1], heap: { main: 10 * MiB, editor: 45 * MiB } };
+    // The main process's copy of the mark carries no counts; a decoy from another scenario neither.
+    // The last count for a reading stands (one made again because a snapshot arrived meanwhile).
+    const trace = new Trace([held('edit0', 99, 99, 'main'), held('edit0', 2, 2), { ...held(`edit${PANEL_EDITS}`, 50, 50), attrs: { scenario: 'other', label: `edit${PANEL_EDITS}`, snapshots: 50, states: 50 } }, held(`edit${PANEL_EDITS}`, 12, 10), held(`edit${PANEL_EDITS}`, 11, 9)]);
+    const got = memoryPanels.measure(trace, facts, readings);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.edit0.heap.editor'), v(`memory.edit${PANEL_EDITS}.heap.editor`), v('memory.panelEdits.growth.heap.editor'), v('memory.panelEdits.growth.mem.editor'), v('memory.panelEdits.growth.total')]).toEqual([20, 45, 25, 60, 70]);
+    expect([v('held.edit0.snapshots'), v('held.edit0.states'), v(`held.edit${PANEL_EDITS}.snapshots`), v(`held.edit${PANEL_EDITS}.states`)]).toEqual([2, 2, 11, 9]);
+    // A reading not taken, or an editor that never said what it held (or was never asked to follow), is missing, never a zero.
+    const untracked = m('editor.held', 0, { proc: 'renderer', pid: 2, attrs: { scenario: 'memoryPanels', label: 'edit0', untracked: true } });
+    const lacking = memoryPanels.measure(new Trace([untracked]), facts, readings.slice(0, 1));
+    expect(lacking.missing).toEqual(['editor.held edit0', `memory reading edit${PANEL_EDITS}`, `editor.held edit${PANEL_EDITS}`]);
+    expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.panelEdits'))).toBe(false);
+  });
+
+  it('memoryPanels: 30 edits, the sidebar views that leave the canvas uncovered and every dock view besides the Inspector shown in turn between them', () => {
+    expect([PANEL_EDITS, PANEL_SIDE_VIEWS.length, PANEL_DOCK_VIEWS.length]).toEqual([30, 6, 3]);
+    expect(PANEL_SIDE_TURNS).toEqual(['pages', 'layers', 'insert', 'assets']);
+    expect(PANEL_DOCK_VIEWS).not.toContain('inspect');
+    expect([memoryPanels.memory, memoryPanels.after]).toEqual([true, 'launch']);
+    expect(chainFor(['memoryPanels']).map((s) => s.name)).toEqual(['launch', 'memoryPanels']);
+    expect(() => chainFor(['memoryPanels', 'panels'])).toThrow('are run on their own');
+    // Each opens the fixture as the warm-up left it: two in one launch would find it changed by the first.
+    expect(() => chainFor(['memory', 'memoryPanels'])).toThrow('Memory scenarios (memory, memoryPanels) are run one at a time');
   });
 
   it('make 50 edits and give itself longer than a timing scenario, as a memory scenario', () => {
