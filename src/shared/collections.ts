@@ -149,7 +149,8 @@ export function orderedEntries(collection: Collection): EntryDoc[] {
   const byDate = all.sort((a, b) => (a.publishedAt !== b.publishedAt ? (a.publishedAt < b.publishedAt ? 1 : -1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const order = collection.settings.entryOrder;
   if (!Array.isArray(order)) return byDate;
-  const listed = order.filter((id) => Object.hasOwn(collection.entries, id)).map((id) => collection.entries[id]);
+  // Each entry once, where the order first lists it (a hand-edited order may repeat one).
+  const listed = [...new Set(order)].filter((id) => Object.hasOwn(collection.entries, id)).map((id) => collection.entries[id]);
   const seen = new Set(listed);
   return [...listed, ...byDate.filter((e) => !seen.has(e))];
 }

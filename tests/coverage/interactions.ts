@@ -1529,7 +1529,7 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Let a code component take content and expose parts to style',
     start: 'Blank site, a code component that marks a part and shows a slot',
     routes: ['canvas:click the marked part', 'canvas:+ inside the slot'],
-    outcome: 'Both are declared when it is created; content inserted on the canvas goes into the slot; a background set in the Inspector reaches the marked element; the website’s build carries no marker while the editable project keeps them',
+    outcome: 'Both are declared when it is created; content inserted on the canvas goes into the slot; a background set in the Inspector reaches the marked element; neither the website’s build nor the source export carries a marker while the editable project keeps them',
     scenario: 'Blank starter · none',
     proof: [
       { test: 'tests/e2e/code-slots.mjs', kind: 'e2e', step: 'a Stack and a Button inserted on the canvas go into the code component’s slot' },
@@ -1653,6 +1653,21 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/find-content.test.ts', kind: 'unit' }
     ],
     gaps: [{ missing: 'Find and replace is reached only from the Export dialog’s sample review; no e2e opens it with Shift+Cmd/Ctrl+F or from the command menu', owner: 'find' }]
+  },
+  {
+    id: 'find.entries',
+    area: 'find',
+    intent: 'Rename a term across the pages and the collection entries’ titles and excerpts',
+    start: 'Site with a blog and a collection synced from an external source',
+    routes: ['key:f', 'command:find', 'dialog:Find and replace › Replace'],
+    outcome: 'Local entries’ titles and excerpts change with the pages in one step that undoes as one; a synced collection’s matches are listed as read-only and left as they are',
+    scenario: 'unit fixtures · none',
+    proof: [
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'replaces in pages and entries in one batch, with one edit per entry, and finds none left' },
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'lists a synced collection’s entries as read-only results, and never changes them' },
+      { test: 'tests/unit/find-content.test.ts', kind: 'unit', step: 'changes a page and several entries in one step that undoes and redoes as one' }
+    ],
+    gaps: [{ missing: 'No e2e script replaces in an entry from the dialog or opens an entry match in the writer', owner: 'find' }]
   },
   {
     id: 'find.command',

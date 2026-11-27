@@ -13,8 +13,11 @@ import { posix } from 'node:path';
 import type { ComponentDefinition } from '@shared/types';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { CODE_TEXT_ATTR, CODE_TEXT_HOOK, codeTextField, parseCodeTextPath } from '@shared/code-text';
-import { slotIdent } from '@generator/index';
+import { codeTakesBlocks, propKey, slotIdent } from '@generator/index';
 import { axesOf } from '@shared/variants';
+import { richTextToParagraphs, toRichText } from '@shared/richtext';
+import { tokenVar } from '@shared/styles';
+import { COPYRIGHT_PROP, copyrightYearParts } from '@shared/site-name';
 
 export interface CodeProblem {
   severity: 'error' | 'warning';
@@ -122,7 +125,20 @@ export interface CheckOptions {
    * every text marker (`data-so-text`) is written through the placement's hook and names text the component declares.
    */
   contract?: CodeContract;
+  /**
+   * The component's manifest, when the props its code takes from $props() are checked against the properties it
+   * declares (see manifestProblems): errors under the strict policy, warnings otherwise.
+   */
+  manifest?: CodeManifest;
 }
+
+/**
+ * What of a code component's manifest its code is held to: the properties placements pass, and its axes' props.
+ * `designFile` is for a design's generated file edited outside the app and converted (`generatedFrom`): its placements
+ * pass each property under the key the design's file took it by (see the generator's propKey), with the props a
+ * design's file takes for itself, so only a declared property the code no longer takes is reported.
+ */
+export type CodeManifest = Pick<ComponentDefinition, 'properties' | 'variantAxes'> & { designFile?: boolean };
 
 /** A code component's contract as the code check holds its code to it (see contractProblems). */
 export interface CodeContract {
@@ -485,6 +501,7 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
   visit(ast.instance, 0, null, 'instance', []);
   visit(ast.fragment, 0, null, 'fragment', []);
   if (opts.contract) for (const p of contractProblems(ast, opts.contract)) add(p.severity, p.message, p.node);
+  if (opts.manifest) for (const p of manifestProblems(ast, opts.manifest, strict)) add(p.severity, p.message, p.node);
   return { problems, sinks };
 }
 
@@ -627,12 +644,343 @@ export async function codeAxisPropProblems(source: string, variantAxes: Componen
   }
 }
 
+/**
+ * The props a placement passes a code component besides its declared properties (see the generator's emitInstance):
+ * its part classes and root class, its anchor, its content, and what the site's page lists, eager images and forms
+ * hand on, and in the editor's preview the hook its marked text is edited through. Its slots arrive as `slot_<name>` and
+ * its axes in the props they name.
+ */
+const EDITOR_PROPS = new Set(['class', 'children', 'so_o', 'so_oi', 'so_id', 'so_webmcp', 'so_pages', 'so_eager', CODE_TEXT_HOOK]);
+
+/** Each prop the script destructures from $props() by name, with the default written for it, if any. */
+function propsTaken(ast: Node): Map<string, { node: Node; right?: Node }> {
+  const out = new Map<string, { node: Node; right?: Node }>();
+  walkAst(ast.instance, (n) => {
+    if (n.type !== 'VariableDeclarator' || (n.init as Node | null)?.type !== 'CallExpression') return;
+    const callee = (n.init as Node).callee as Node;
+    if (callee?.type !== 'Identifier' || callee.name !== '$props' || (n.id as Node)?.type !== 'ObjectPattern') return;
+    for (const prop of ((n.id as Node).properties as Node[]) ?? []) {
+      if (prop.type !== 'Property' || prop.computed) continue;
+      const key = prop.key as Node;
+      const name = key.type === 'Identifier' ? String(key.name) : key.type === 'Literal' ? String(key.value) : null;
+      const value = prop.value as Node;
+      if (name !== null) out.set(name, { node: prop, ...(value?.type === 'AssignmentPattern' ? { right: value.right as Node } : {}) });
+    }
+  });
+  return out;
+}
+
+/** A default written as a literal (a string, number, boolean, or an array or object of them); undefined otherwise. */
+function literalValue(n: Node | undefined, depth = 0): { value: unknown } | undefined {
+  if (!n || depth > 8) return undefined;
+  if (n.type === 'Literal' && (typeof n.value === 'string' || typeof n.value === 'number' || typeof n.value === 'boolean' || n.value === null) && !n.regex) return { value: n.value };
+  const text = literalText(n);
+  if (text !== null) return { value: text };
+  if (n.type === 'UnaryExpression' && n.operator === '-' && (n.argument as Node)?.type === 'Literal' && typeof (n.argument as Node).value === 'number') return { value: -((n.argument as Node).value as number) };
+  if (n.type === 'ArrayExpression') {
+    const items = ((n.elements as Array<Node | null>) ?? []).map((e) => (e ? literalValue(e, depth + 1) : undefined));
+    return items.every((i) => i) ? { value: items.map((i) => i!.value) } : undefined;
+  }
+  if (n.type === 'ObjectExpression') {
+    const out: Record<string, unknown> = {};
+    for (const p of (n.properties as Node[]) ?? []) {
+      if (p.type !== 'Property' || p.computed || p.kind !== 'init' || p.method) return undefined;
+      const k = p.key as Node;
+      const key = k.type === 'Identifier' ? String(k.name) : k.type === 'Literal' ? String(k.value) : null;
+      const v = literalValue(p.value as Node, depth + 1);
+      if (key === null || !v) return undefined;
+      out[key] = v.value;
+    }
+    return { value: out };
+  }
+  return undefined;
+}
+
+type PropDef = ComponentDefinition['properties'][string];
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * A property's value as its code receives it (see the generator's resolveValue for code), or undefined when that
+ * depends on the site it is placed in: a link or picture resolved against the project, a list worked out from its
+ * pages or filled from the pages it links to, or a list or object holding any of those.
+ */
+function codeValue(schema: PropDef, value: unknown, depth = 0): { value: unknown } | undefined {
+  if (!isRecord(schema) || value === undefined || depth > 4) return undefined;
+  switch (schema.type) {
+    case 'string':
+    case 'enum':
+    case 'icon':
+    case 'choices':
+    case 'table':
+      return { value };
+    case 'number':
+      return typeof value === 'number' ? { value } : undefined;
+    case 'boolean':
+      return typeof value === 'boolean' ? { value } : undefined;
+    case 'richtext':
+      return codeTakesBlocks(schema) ? undefined : { value: richTextToParagraphs(toRichText(value, schema.plainAs)) };
+    case 'token':
+      return isRecord(value) && typeof value.token === 'string' ? { value: `var(${tokenVar(value.token)})` } : undefined;
+    case 'object': {
+      if (!isRecord(value) || !isRecord(schema.fields)) return undefined;
+      const out: Record<string, unknown> = {};
+      for (const [k, f] of Object.entries(schema.fields)) {
+        const v = codeValue(f, Object.hasOwn(value, k) ? value[k] : f?.default, depth + 1);
+        if (!v) return undefined;
+        out[k] = v.value;
+      }
+      return { value: out };
+    }
+    case 'list': {
+      if (schema.feed || schema.pageTeaser || !Array.isArray(value) || !isRecord(schema.fields)) return undefined;
+      const items: unknown[] = [];
+      for (const item of value) {
+        if (!isRecord(item)) return undefined;
+        const out: Record<string, unknown> = { id: item.id };
+        for (const [k, f] of Object.entries(schema.fields)) {
+          const v = codeValue(f, item[k] ?? f?.default, depth + 1);
+          if (!v) return undefined;
+          out[k] = v.value;
+        }
+        items.push(out);
+      }
+      return { value: items };
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** A property's default as its code receives it (see codeValue); a copyright line that reads the year has none. */
+function codeDefault(name: string, schema: PropDef): { value: unknown } | undefined {
+  if (name === COPYRIGHT_PROP && typeof schema.default === 'string' && copyrightYearParts(schema.default)) return undefined;
+  return codeValue(schema, schema.default);
+}
+
+/** Whether two literal values are the same, whatever order an object's keys are written in. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => sameValue(v, b[i]));
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && sameValue((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
+const short = (v: unknown) => {
+  const s = JSON.stringify(v) ?? String(v);
+  return s.length > 60 ? `${s.slice(0, 57)}…` : s;
+};
+
+/**
+ * Where a code component's code and its manifest disagree about its properties: a declared property the code never
+ * takes from $props() (what placements set there never shows), a prop the code takes that no property declares (no
+ * placement can set it), and a default written in the code that is not the manifest's (the inspector shows one, the
+ * code the other). A prop counts as taken by name in the destructuring, under a rename (`title: heading`) too, or read
+ * by name from the whole props object or the rest of them (`rest.title`). The editor's own props, the slots' and the
+ * axes' are never properties. When the code hands the props object or the rest on (to an element's attributes, a
+ * helper), a declared property may be read there, which the check cannot follow, so it only warns.
+ */
+function manifestProblems(ast: Node, manifest: CodeManifest, strict: boolean): Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> {
+  const out: Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> = [];
+  const severity: CodeProblem['severity'] = strict ? 'error' : 'warning';
+  const properties = isRecord(manifest.properties) ? (manifest.properties as ComponentDefinition['properties']) : {};
+  const declared = (name: string) => Object.hasOwn(properties, name) && isRecord(properties[name]) && typeof properties[name].type === 'string';
+  const labelOf = (name: string) => (typeof properties[name].label === 'string' && properties[name].label.trim() ? properties[name].label.trim() : name);
+  const taken = propsTaken(ast);
+  const whole = wholePropsReads(ast);
+  const axisProps = new Set(axesOf(manifest).flatMap(([, a]) => (typeof a.prop === 'string' ? [a.prop] : [])));
+  const editors = (name: string) => EDITOR_PROPS.has(name) || name.startsWith('slot_') || axisProps.has(name);
+  // A design's file takes each property by the key the design's file was given it under.
+  const keyOf = (name: string) => (manifest.designFile ? propKey({ kind: 'managed', properties } as ComponentDefinition, name) : name);
+  for (const name of Object.keys(properties)) {
+    const key = keyOf(name);
+    if (!declared(name) || taken.has(key) || whole.read.has(key) || (!manifest.designFile && axisProps.has(name))) continue;
+    out.push(
+      whole.handed
+        ? { severity: 'warning', message: `The “${labelOf(name)}” property arrives in ${key}, which the code does not take from $props() by name: take it (let { ${key} } = $props()) so the check can see the code reads it.` }
+        : { severity, message: `The “${labelOf(name)}” property arrives in ${key}, which the code never takes from $props(): take it (let { ${key} } = $props()), or remove the property, as what placements set there will not show.` }
+    );
+  }
+  if (manifest.designFile) return out;
+  const undeclared = (name: string, node?: Node) =>
+    out.push({ severity, message: `The code takes ${name} from $props(), which is not one of the component's properties: declare it, or stop reading it, as no placement can set it.`, ...(node ? { node } : {}) });
+  for (const [name, { node }] of taken) if (!declared(name) && !editors(name)) undeclared(name, node);
+  for (const name of whole.read) if (!taken.has(name) && !declared(name) && !editors(name)) undeclared(name);
+  for (const [name, { right }] of taken) {
+    if (!right || !declared(name)) continue;
+    // No default, or one the code works out, says nothing against the manifest's; null is a default like any other.
+    const written = literalValue(right);
+    if (!written) continue;
+    let expected: { value: unknown } | undefined;
+    try {
+      expected = codeDefault(name, properties[name]);
+    } catch {
+      // A default the code could not be given (a draft the editor has not finished) is not compared.
+      expected = undefined;
+    }
+    if (!expected || sameValue(written.value, expected.value)) continue;
+    out.push({ severity, message: `The code's default for ${name} (${short(written.value)}) is not the “${labelOf(name)}” property's default (${short(expected.value)}): write the manifest's default, or none.`, node: right });
+  }
+  return out;
+}
+
+/**
+ * Where a code component's code and its manifest's properties disagree (see manifestProblems), for a check of the
+ * manifest alone: code that is unchanged passed every other check when it was saved. Null when the code cannot be
+ * parsed.
+ */
+export async function codeManifestProblems(source: string, manifest: CodeManifest, strict = false): Promise<CodeProblem[] | null> {
+  const { parse } = await import('svelte/compiler');
+  let ast: Node;
+  try {
+    ast = parse(source, { modern: true }) as unknown as Node;
+  } catch {
+    return null;
+  }
+  return manifestProblems(ast, manifest, strict).map((p) => ({ severity: p.severity, message: p.message, ...(typeof p.node?.start === 'number' ? { line: source.slice(0, p.node.start).split('\n').length } : {}) }));
+}
+
+/**
+ * A pack's code components whose code and manifest disagree (see manifestProblems), held to the strict policy as the
+ * assistant's code is: one message for each, naming its problems. Code that cannot be parsed is one of them.
+ */
+export async function packManifestProblems(components: readonly ComponentDefinition[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const def of components) {
+    if (def.kind !== 'code' || typeof def.source !== 'string') continue;
+    const problems = await codeManifestProblems(def.source, def, true);
+    const errors = problems === null ? [{ message: 'its code cannot be parsed.' } as CodeProblem] : problems.filter((p) => p.severity === 'error');
+    if (errors.length) out.push(`Component ${def.componentId}: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`);
+  }
+  return out;
+}
+
 /** The part a node of the markup gives its class to through the placement's hook (so_o?.total, so_o["total"]), if any. */
 function hookedPart(n: Node): string | null {
   if (n.type !== 'MemberExpression' || (n.object as Node)?.type !== 'Identifier' || (n.object as Node).name !== 'so_o') return null;
   const p = n.property as Node;
   if (!n.computed) return p?.type === 'Identifier' ? String(p.name) : null;
   return p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
+}
+
+/**
+ * The part an item hook names, the expression it reads the item's ID from, and whether it is read so that a missing
+ * class reads as none (so_oi?.[plan.id]?.card): the website is given item classes only for the items styled on their
+ * own, and none at all while none is.
+ */
+function itemHookOf(n: Node): { part: string; key: Node; guarded: boolean } | null {
+  if (n.type !== 'MemberExpression') return null;
+  const inner = n.object as Node;
+  if (inner?.type !== 'MemberExpression' || !inner.computed || (inner.object as Node)?.type !== 'Identifier' || (inner.object as Node).name !== 'so_oi') return null;
+  const p = n.property as Node;
+  const part = !n.computed ? (p?.type === 'Identifier' ? String(p.name) : null) : p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
+  return part === null ? null : { part, key: inner.property as Node, guarded: !!inner.optional && !!n.optional };
+}
+
+/** The variable `expr` reads the `id` of (`plan.id`, `plan["id"]`), or null. */
+function idOf(expr: Node | undefined): string | null {
+  if (expr?.type !== 'MemberExpression' || (expr.object as Node)?.type !== 'Identifier') return null;
+  const p = expr.property as Node;
+  const named = !expr.computed ? p?.type === 'Identifier' && p.name === 'id' : p?.type === 'Literal' && p.value === 'id';
+  return named ? String((expr.object as Node).name) : null;
+}
+
+/** The names a binding pattern binds: `a`, `{ key: a, b = 1 }`, `[a, ...rest]` (never a key, or a default's value). */
+function boundNames(pattern: Node | undefined, out = new Set<string>()): Set<string> {
+  if (!pattern) return out;
+  if (pattern.type === 'Identifier') out.add(String(pattern.name));
+  else if (pattern.type === 'AssignmentPattern') boundNames(pattern.left as Node, out);
+  else if (pattern.type === 'RestElement') boundNames(pattern.argument as Node, out);
+  else if (pattern.type === 'ArrayPattern') for (const e of (pattern.elements as Node[]) ?? []) boundNames(e ?? undefined, out);
+  else if (pattern.type === 'ObjectPattern') for (const p of (pattern.properties as Node[]) ?? []) boundNames(p.type === 'Property' ? (p.value as Node) : p, out);
+  return out;
+}
+
+/** The names a markup fragment's own {@const} tags declare. */
+function constNames(fragment: Node): Set<string> {
+  const out = new Set<string>();
+  for (const c of ((fragment.nodes as Node[]) ?? []).filter((x) => x.type === 'ConstTag')) for (const d of (((c.declaration as Node)?.declarations as Node[]) ?? [])) boundNames(d.id as Node, out);
+  return out;
+}
+
+/** Markup that renders its content elsewhere, or as often as it is called: a snippet, or content given to a component. */
+const ELSEWHERE = new Set(['SnippetBlock', 'Component', 'SvelteComponent', 'SvelteSelf']);
+
+type ItemHook = { part: string; list: string | null; node: Node; host?: Node; problem?: 'unguarded' | 'unplaced' };
+
+/**
+ * Every item hook in the class of an element of a code component's markup (so_oi?.[plan.id]?.card), with the list
+ * property it repeats the part over, or null when it says none the editor can rely on. It names one when the element
+ * is inside `{#each plans as plan (plan.id)}` (or `plans ?? []`), where `plans` is a property the code takes from
+ * $props() and `plan` is the row whose ID it reads, keyed by that ID; inside no other list, no snippet and no content
+ * given to a component, between the list and the hook or around them, and with neither name declared again on the way
+ * ({@const}): each item of that list then shows the part once, so one item's class lands on one element and moves
+ * with it when the list is reordered. A hook anywhere but a class gives no element its class, and says nothing.
+ */
+function itemHooks(ast: Node): ItemHook[] {
+  const locals = propsLocals(ast);
+  const propOf = new Map([...locals].map(([prop, { local }]) => [local, prop]));
+  const taken = locals.get('so_oi')?.local === 'so_oi';
+  const out: ItemHook[] = [];
+  walkAst(ast.fragment, (n, around) => {
+    const hook = itemHookOf(n);
+    if (!hook) return;
+    const attr = around.findLastIndex((a) => a.type === 'Attribute');
+    if (attr < 0 || around[attr].name !== 'class') return;
+    const host = around[attr - 1];
+    // A plain read fails the website's build for the items not styled on their own (see unguardedItemReads).
+    if (!hook.guarded) return void out.push({ part: hook.part, list: null, node: n, host, problem: 'unguarded' });
+    const row = idOf(hook.key);
+    // The nearest list around the hook that names its row, the hook inside its body (not its key or its fallback).
+    const at = row === null ? -1 : around.findLastIndex((a, i) => a.type === 'EachBlock' && (a.context as Node)?.type === 'Identifier' && (a.context as Node).name === row && around[i + 1] === a.body);
+    const each = at >= 0 ? around[at] : undefined;
+    let source = each?.expression as Node | undefined;
+    if (source?.type === 'LogicalExpression' && (source.operator === '??' || source.operator === '||')) source = source.left as Node;
+    const local = source?.type === 'Identifier' ? String(source.name) : undefined;
+    const prop = local !== undefined ? propOf.get(local) : undefined;
+    const keyed = !!each && idOf(each.key as Node) === row;
+    const once = at >= 0 && around.every((a, i) => i === at || (a.type !== 'EachBlock' && !ELSEWHERE.has(String(a.type))));
+    // A name declared again on the way reads something else: the list around the loop, the row or the item classes
+    // inside it, and the item classes anywhere.
+    const shadowed = around.some((a, i) => a.type === 'Fragment' && [...constNames(a)].some((name) => name === 'so_oi' || (i < at ? name === local : name === row)));
+    const list = taken && prop && keyed && once && !shadowed && !/^(so|slot)_/.test(prop) ? prop : null;
+    out.push({ part: hook.part, list, node: n, host, ...(list ? {} : { problem: 'unplaced' as const }) });
+  });
+  return out;
+}
+
+/**
+ * Reads of the placement's item classes (so_oi, taken from $props(), under any name) that fail when a class is
+ * missing: the website is given item classes only for the items styled on their own, and none at all while none is,
+ * so every step of a read must be optional (so_oi?.[plan.id]?.card, and anything read from that), wherever in the
+ * markup it is. Only a list's row or a snippet's parameter of the same name stands for something else there; any other
+ * read is held to it, a guarded one too (write it with ?. instead).
+ */
+function unguardedItemReads(ast: Node): Node[] {
+  const map = propsLocals(ast).get('so_oi')?.local;
+  if (!map) return [];
+  const unwrap = (n: Node | undefined) => (n?.type === 'ChainExpression' ? (n.expression as Node) : n);
+  /** The variable a chain of reads starts from. */
+  const rootOf = (n: Node | undefined): Node | undefined => {
+    for (let at = unwrap(n); at; at = unwrap(at.object as Node)) if (at.type !== 'MemberExpression') return at;
+    return undefined;
+  };
+  const rebinds = (a: Node) =>
+    (a.type === 'EachBlock' && (boundNames(a.context as Node).has(map) || a.index === map)) || (a.type === 'SnippetBlock' && ((a.parameters as Node[]) ?? []).some((p) => boundNames(p).has(map)));
+  const out: Node[] = [];
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'MemberExpression' || n.optional) return;
+    const r = rootOf(n.object as Node);
+    if (r?.type === 'Identifier' && r.name === map && !around.some(rebinds)) out.push(n);
+  });
+  return out;
+}
+
+/** The list each part is repeated over, by its item hooks: none for a part whose hooks disagree or name none. */
+function hookLists(hooks: ItemHook[]): Record<string, string> {
+  const seen = new Map<string, string | null>();
+  for (const h of hooks) seen.set(h.part, seen.has(h.part) && seen.get(h.part) !== h.list ? null : h.list);
+  return Object.fromEntries([...seen].filter((e): e is [string, string] => e[1] !== null));
 }
 
 /** A part marker's name when it is written out (data-so-part="total"), or null for one an expression gives. */
@@ -644,13 +992,15 @@ function markerName(attr: Node): string | null {
 
 /**
  * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
- * written-out data-so-part or gives its class through so_o, and each slot_<name> its script takes from $props().
+/**
+ * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
+ * written-out data-so-part or gives its class through so_o (or one item's class through so_oi), and each slot_<name>
+ * its script takes from $props(); and the list each part repeated once per item is shown over (see itemHooks).
  * `shown` is the slot props (slot_content, as the generator names each slot's snippet) it takes and its markup renders
  * or hands on, so content placed there can reach the page: a slot only taken, or only tested ({#if slot_content}),
- * shows nothing. Comments, strings and a script's own logic declare
- * nothing. Null when the code cannot be parsed.
+ * shows nothing. Comments, strings and a script's own logic declare nothing. Null when the code cannot be parsed.
  */
-export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[] } | null> {
+export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[]; lists: Record<string, string> } | null> {
   const { parse } = await import('svelte/compiler');
   let ast: Node;
   try {
@@ -667,13 +1017,16 @@ export async function codeContractNames(source: string): Promise<{ parts: string
     const id = hookedPart(n);
     if (id !== null) parts.add(id);
   });
+  // A part given one item's class is one of the parts the code shows, repeated over the list that item is in.
+  const hooks = itemHooks(ast);
+  for (const h of hooks) parts.add(h.part);
   const locals = propsLocals(ast);
   const slots = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
   const rendered = new Set(snippetRenders(ast).map((r) => r.name));
   const handed = handedNames(ast);
   // Any slot prop counts here, not only the camelCase names saving declares: a theme's slot may be named related_links.
   const shown = [...locals].flatMap(([prop, { local }]) => (prop.startsWith('slot_') && (rendered.has(local) || handed.has(local)) ? [prop] : []));
-  return { parts: [...parts], slots, shown };
+  return { parts: [...parts], slots, shown, lists: hookLists(hooks) };
 }
 
 /**
@@ -780,6 +1133,29 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
   const parts = contract.parts ?? {};
   const marked = new Set<string>();
   walkAst(ast.fragment, (n) => void (hookedPart(n) !== null && marked.add(hookedPart(n)!)));
+  // One item's class reaches the part only for the list it is shown once per item of, read where the code repeats it.
+  const hooks = itemHooks(ast);
+  const lists = hookLists(hooks);
+  for (const n of unguardedItemReads(ast))
+    out.push({ severity: 'error', message: 'Read item classes as so_oi?.[plan.id]?.card, optional at every step: the website is given item classes only for the items styled on their own, so a plain read fails for the rest.', node: n });
+  for (const h of hooks) {
+    marked.add(h.part);
+    if (h.problem === 'unguarded') continue;
+    if (h.list === null)
+      out.push({
+        severity: 'warning',
+        message: `Give the “${h.part}” part one item's class inside the list it repeats over, keyed by the item's ID ({#each plans as plan (plan.id)} … class={so_oi?.[plan.id]?.${h.part}}), with the list taken from $props() and inside no other list, snippet or component: otherwise its items are styled together.`,
+        node: h.node
+      });
+    else if (!Object.hasOwn(lists, h.part)) out.push({ severity: 'warning', message: `The “${h.part}” part takes item classes from more than one list, so its items are styled together. Give each list's element a part of its own.`, node: h.node });
+    else {
+      // The part's shared class names it on the page, so a card can be picked, and carries what every card shares.
+      const cls = ((h.host?.attributes as Node[]) ?? []).find((a) => a.type === 'Attribute' && a.name === 'class');
+      const shared = new Set<string>();
+      if (cls && cls.value !== true) walkAst(cls.value, (v) => void (hookedPart(v) !== null && shared.add(hookedPart(v)!)));
+      if (!shared.has(h.part)) out.push({ severity: 'warning', message: `Give the element with the “${h.part}” item class the part's shared class too (class={[so_o?.${h.part}, so_oi?.[…]?.${h.part}]}), so a single item can be picked on the page and every item can be styled together.`, node: h.node });
+    }
+  }
   // A marker in a spread is set by the code as it runs, where the website's build cannot take it out.
   walkAst(ast.fragment, (n) => {
     const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' ? (((n.expression as Node).properties as Node[]) ?? []) : [];

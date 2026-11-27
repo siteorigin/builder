@@ -57,15 +57,16 @@ const needsReview = (r: ImportReviewRow) => r.action === 'convert' || r.action =
  * Choose files (the chooser, unless `paths` are given) and say what each will become. When any is a HEIC photo, a
  * large photo or a file that can't be added, the author confirms in the import review first; ordinary files go
  * straight through. Null when nothing is to be imported (the chooser or the review was closed, or the project
- * changed meanwhile).
+ * changed meanwhile). `wanted` says whether whoever asked still wants the files once they have been read: when it
+ * no longer does (the author moved on), no review is shown and nothing is to be imported.
  */
-export async function reviewImport(paths: string[] | undefined, only?: 'image' | 'font' | 'document'): Promise<ReviewedImport | null> {
+export async function reviewImport(paths: string[] | undefined, only?: 'image' | 'font' | 'document', wanted?: () => boolean): Promise<ReviewedImport | null> {
   const opening = getState().snapshot?.workspaceKey;
   if (!opening || getState().leaving) return null;
   const request = ++requests;
   const review = await api.project.reviewImport(paths, only);
   const current = () => getState().snapshot?.workspaceKey === opening && !getState().leaving;
-  if (!review || !current()) return null;
+  if (!review || !current() || (wanted && !wanted())) return null;
   const rows = review.rows;
   const reviewed = rows.some(needsReview);
   // Only one review is shown at a time: one for a later import, already on screen, wins over this one.

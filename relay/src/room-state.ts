@@ -61,6 +61,8 @@ export interface AdmittedGuest extends GuestBase {
   /** The single-use ticket the guest redeems for its preview cookie, while it is unused and not yet expired. */
   ticket: string | null;
   ticketUntil: number | null;
+  /** The guest's place in the palette (0 to MAX_GUESTS - 1): the lowest no other admitted guest held when it was let in. */
+  colorSlot: number;
 }
 
 export type GuestRecord = PendingGuest | AdmittedGuest;
@@ -163,16 +165,31 @@ export function holdUntil(room: RoomSnapshot | null, hasLiveSockets: boolean): n
   return Math.min(room.hostGraceUntil, room.expiresAt);
 }
 
+type AdmittedParticipant = Extract<Participant, { status: 'admitted' }>;
+const admittedParticipant = (guest: AdmittedGuest): AdmittedParticipant => ({
+  guestId: guest.guestId,
+  displayName: guest.displayName,
+  status: 'admitted',
+  role: guest.role,
+  guestExpiresAt: guest.guestExpiresAt,
+  colorSlot: guest.colorSlot,
+  connected: guest.connectionId !== null
+});
+
 /** Everyone in the room as the host sees it: those waiting too. */
 export function hostRoster(room: RoomSnapshot): Participant[] {
-  return room.guests.map((guest) =>
-    guest.status === 'pending'
-      ? { guestId: guest.guestId, displayName: guest.displayName, status: 'pending' as const }
-      : { guestId: guest.guestId, displayName: guest.displayName, status: 'admitted' as const, role: guest.role, guestExpiresAt: guest.guestExpiresAt }
-  );
+  return room.guests.map((guest) => (guest.status === 'pending' ? { guestId: guest.guestId, displayName: guest.displayName, status: 'pending' as const } : admittedParticipant(guest)));
 }
 
 /** The room as admitted guests see it: the admitted only. */
-export function guestRoster(room: RoomSnapshot): Array<Extract<Participant, { status: 'admitted' }>> {
-  return room.guests.flatMap((guest) => (guest.status === 'admitted' ? [{ guestId: guest.guestId, displayName: guest.displayName, status: 'admitted' as const, role: guest.role, guestExpiresAt: guest.guestExpiresAt }] : []));
+export function guestRoster(room: RoomSnapshot): AdmittedParticipant[] {
+  return room.guests.flatMap((guest) => (guest.status === 'admitted' ? [admittedParticipant(guest)] : []));
+}
+
+/** The palette place a guest let in now is given: the lowest no admitted guest holds. A room never holds more guests than places. */
+export function freeColorSlot(room: RoomSnapshot): number {
+  const taken = new Set(room.guests.flatMap((g) => (g.status === 'admitted' ? [g.colorSlot] : [])));
+  let slot = 0;
+  while (taken.has(slot)) slot++;
+  return slot;
 }

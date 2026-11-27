@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import type { RemoteEnding, RemoteJoinResult, RemoteParticipant, RemotePresence, RemoteState, RuntimeState } from '@shared/api';
+import type { LiveActivity, RemoteEnding, RemoteJoinResult, RemoteParticipant, RemotePresence, RemoteState, RuntimeState } from '@shared/api';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { LIVE_PROTOCOL_VERSION, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type FrameOf, type GuestToRelay, type Presence, type RpcError } from '@shared/live/messages';
@@ -47,6 +47,8 @@ export interface LiveGuestTimings {
   presenceMs: number;
   /** How long a snapshot the host was too busy to send waits before it is asked for again. */
   busyRetryMs: number;
+  /** How long another collaborator's edit shows it as editing (#768). */
+  activityMs: number;
 }
 
 export const LIVE_GUEST_TIMINGS: LiveGuestTimings = {
@@ -56,7 +58,8 @@ export const LIVE_GUEST_TIMINGS: LiveGuestTimings = {
   backoffMaxMs: 10_000,
   reconnectForMs: 150_000,
   presenceMs: 150,
-  busyRetryMs: 1_000
+  busyRetryMs: 1_000,
+  activityMs: 3_000
 };
 
 /** What the guest manager needs that tests replace: the socket, the preview server and ticket redemption. */
@@ -82,6 +85,8 @@ export interface RemotePreviewAccess {
 const OPEN = 1;
 /** How long an `ended` status waits for the close after it, which may say the host stayed away too long. */
 const ENDING_CLOSE_WAIT_MS = 1_000;
+/** Numbers each edit shown, so the editor tells a new one from one it already shows. */
+let activitySeq = 0;
 /** The code the guest closes a connection it gives up on with (one of the codes a client may send). */
 const ABANDONED = 4000;
 
@@ -143,6 +148,11 @@ interface Join {
   ownPresence: Presence | null;
   presenceSent: string | null;
   presenceTimer: ReturnType<typeof setTimeout> | null;
+  /** The others connected when this app's presence was last sent with them listed, so one who arrives or comes back is sent it. */
+  presentedTo: Set<string>;
+  /** Each other collaborator's latest edit (#768), until it is no longer shown, and the one timer that takes them off. */
+  activity: Map<string, LiveActivity & { until: number }>;
+  activityTimer: ReturnType<typeof setTimeout> | null;
   /** The host's project as last received, and the snapshot being asked for. */
   latest: LiveProjectSnapshot | null;
   /**
@@ -309,6 +319,9 @@ export class LiveGuestManager {
       ownPresence: null,
       presenceSent: null,
       presenceTimer: null,
+      presentedTo: new Set(),
+      activity: new Map(),
+      activityTimer: null,
       latest: null,
       opened: false,
       fetchFailed: false,
@@ -449,16 +462,29 @@ export class LiveGuestManager {
           void this.fetchSnapshot(join);
           this.reload(join);
         }
+        // A host back, or on a connection that replaced one still open, may not have heard where this app is: told
+        // again, as it is now.
+        if (frame.connected && join.phase === 'admitted') {
+          join.presenceSent = null;
+          this.schedulePresence(join);
+        }
         return this.publish();
       }
       case 'room:roster': {
-        join.participants = frame.participants.map((p) => ({ guestId: p.guestId, displayName: p.displayName, role: p.role }));
-        // Only collaborators share where they are: anyone gone, or made a viewer, is no longer shown anywhere.
+        join.participants = frame.participants.map((p) => ({ guestId: p.guestId, displayName: p.displayName, role: p.role, colorSlot: p.colorSlot, connected: p.connected }));
+        // Only collaborators share where they are, and only while connected: anyone gone, away, or made a viewer, is no
+        // longer shown anywhere.
+        const shown = (id: string) => join.participants.some((p) => p.guestId === id && p.role === 'collaborator' && p.connected);
         let dropped = false;
-        for (const id of [...join.guestPresence.keys()]) {
-          if (!join.participants.some((p) => p.guestId === id && p.role === 'collaborator')) dropped = join.guestPresence.delete(id) || dropped;
-        }
+        for (const marks of [join.guestPresence, join.activity]) for (const id of [...marks.keys()]) if (!shown(id)) dropped = marks.delete(id) || dropped;
         if (dropped) this.publishPresence(join);
+        // Someone who has just arrived, or come back, has heard nothing of where this app is: told once, as it is now.
+        const others = join.participants.filter((p) => p.guestId !== join.guestId && p.connected).map((p) => p.guestId);
+        if (others.some((id) => !join.presentedTo.has(id))) {
+          join.presenceSent = null;
+          this.schedulePresence(join);
+        }
+        join.presentedTo = new Set(others);
         return this.publish();
       }
       case 'preview:reload':
@@ -479,6 +505,14 @@ export class LiveGuestManager {
         if (frame.participant.kind === 'host') join.hostPresence = frame.presence;
         else if (frame.participant.guestId !== join.guestId) join.guestPresence.set(frame.participant.guestId, frame.presence);
         return this.publishPresence(join);
+      }
+      case 'activity:edited': {
+        // Another collaborator's edit, shown for a moment while the roster lists them connected.
+        const editor = join.participants.find((p) => p.guestId === frame.guestId);
+        if (frame.guestId === join.guestId || join.role !== 'collaborator' || editor?.role !== 'collaborator' || !editor.connected) return;
+        join.activity.set(frame.guestId, { seq: ++activitySeq, target: frame.target, until: performance.now() + this.timings.activityMs });
+        this.publishPresence(join);
+        return this.armActivity(join);
       }
       case 'protocol:error': {
         if (frame.code === 'AUTH_FAILED' && join.resumeToken) join.refusal = 'resume';
@@ -517,8 +551,14 @@ export class LiveGuestManager {
         join.sessionExpiresAt = frame.sessionExpiresAt;
         this.readClock(join, frame.now);
         if (frame.previewTicket) this.queueTicket(join, frame.previewTicket);
-        if (demoted) this.clearOwnPresence(join);
-        else this.schedulePresence(join);
+        if (demoted) {
+          this.clearOwnPresence(join);
+          // A viewer is shown nobody's edits.
+          if (join.activity.size) {
+            join.activity.clear();
+            this.publishPresence(join);
+          }
+        } else this.schedulePresence(join);
         // On first admission, and on taking the place back after a drop (changes may have been missed), the host's
         // project is asked for; a role or deadline changing on a live connection needs no new copy.
         if (!returning || back || !join.latest) void this.fetchSnapshot(join);
@@ -738,7 +778,25 @@ export class LiveGuestManager {
 
   private publishPresence(join: Join): void {
     if (this.current !== join) return;
-    this.ctx.emit('remote:presence', { joinId: join.joinId, host: join.hostPresence, guests: Object.fromEntries(join.guestPresence) });
+    const activity = Object.fromEntries([...join.activity].map(([guestId, { until: _until, ...shown }]) => [guestId, shown]));
+    this.ctx.emit('remote:presence', { joinId: join.joinId, host: join.hostPresence, guests: Object.fromEntries(join.guestPresence), activity });
+  }
+
+  /** Take edits off once their time is up: one timer, for the soonest. */
+  private armActivity(join: Join): void {
+    if (join.activityTimer) clearTimeout(join.activityTimer);
+    join.activityTimer = null;
+    const due = Math.min(...[...join.activity.values()].map((a) => a.until));
+    if (!Number.isFinite(due)) return;
+    join.activityTimer = setTimeout(() => {
+      join.activityTimer = null;
+      if (join.ended) return;
+      const now = performance.now();
+      let changed = false;
+      for (const [id, a] of join.activity) if (a.until <= now) changed = join.activity.delete(id) || changed;
+      if (changed) this.publishPresence(join);
+      this.armActivity(join);
+    }, Math.max(0, due - performance.now()));
   }
 
   // -------------------------------------------------------------------------
@@ -872,8 +930,8 @@ export class LiveGuestManager {
     if (join.ended) return;
     join.ended = true;
     this.closeSocket(join);
-    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer]) if (timer) clearTimeout(timer);
-    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = null;
+    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer, join.activityTimer]) if (timer) clearTimeout(timer);
+    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = join.activityTimer = null;
     this.failCalls(join, reason === 'left' ? 'You left the live session.' : ENDING_MESSAGES[reason]);
     join.preview.abort?.abort();
     join.preview.queued = null;

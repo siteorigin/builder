@@ -18,7 +18,7 @@ describe('opening a room', () => {
     const before = Date.now();
     const { ready, host } = await openRoom(relay, { duration: '30m' });
     expect(ready.roomId).toMatch(ROOM_ID_RE);
-    expect(ready.version).toBe(1);
+    expect(ready.version).toBe(2);
     expect(ready.locked).toBe(false);
     expect(ready.expiresAt - ready.startedAt).toBe(SESSION_DURATIONS['30m']);
     expect(ready.startedAt).toBeGreaterThanOrEqual(before - 1000);
@@ -48,7 +48,7 @@ describe('opening a room', () => {
   it('refuses another protocol version', async () => {
     const keys = await generateHostKeyPair();
     const host = await relay.socket<'relay-to-host', 'host-to-relay'>('/ws/host');
-    host.sendRaw(JSON.stringify({ type: 'room:create', version: 2, publicKey: keys.publicKey, duration: '2h', projectName: 'Site' }));
+    host.sendRaw(JSON.stringify({ type: 'room:create', version: 3, publicKey: keys.publicKey, duration: '2h', projectName: 'Site' }));
     expect((await host.next('protocol:error')).code).toBe('UNSUPPORTED_VERSION');
     await host.closed();
   });
@@ -86,7 +86,7 @@ describe('the host proving itself again', () => {
     const stranger = await generateHostKeyPair();
     for (const forge of ['wrong key', 'tampered'] as const) {
       const claimant = await relay.socket<'relay-to-host', 'host-to-relay'>(`/s/${room.roomId}/ws`);
-      claimant.send('host-to-relay', { type: 'host:reconnect', version: 1, roomId: room.roomId });
+      claimant.send('host-to-relay', { type: 'host:reconnect', version: 2, roomId: room.roomId });
       const challenge = await claimant.next('host:challenge');
       const signature = await signHostChallenge(forge === 'wrong key' ? stranger.privateKey : room.keys.privateKey, challenge);
       claimant.send('host-to-relay', { type: 'host:proof', roomId: room.roomId, nonce: challenge.nonce, signature: forge === 'tampered' ? `${signature[0] === 'A' ? 'Q' : 'A'}${signature.slice(1)}` : signature });
@@ -110,14 +110,14 @@ describe('the host proving itself again', () => {
     const stranger = await generateHostKeyPair();
 
     const wrongKey = await relay.socket<'relay-to-host', 'host-to-relay'>(`/s/${room.roomId}/ws`);
-    wrongKey.send('host-to-relay', { type: 'host:reconnect', version: 1, roomId: room.roomId });
+    wrongKey.send('host-to-relay', { type: 'host:reconnect', version: 2, roomId: room.roomId });
     const challenge = await wrongKey.next('host:challenge');
     wrongKey.send('host-to-relay', { type: 'host:proof', roomId: room.roomId, nonce: challenge.nonce, signature: await signHostChallenge(stranger.privateKey, challenge) });
     expect((await wrongKey.next('protocol:error')).code).toBe('AUTH_FAILED');
     expect((await wrongKey.closed()).code).toBe(LIVE_CLOSE_CODES.POLICY);
 
     const tampered = await relay.socket<'relay-to-host', 'host-to-relay'>(`/s/${room.roomId}/ws`);
-    tampered.send('host-to-relay', { type: 'host:reconnect', version: 1, roomId: room.roomId });
+    tampered.send('host-to-relay', { type: 'host:reconnect', version: 2, roomId: room.roomId });
     const second = await tampered.next('host:challenge');
     const signature = await signHostChallenge(room.keys.privateKey, second);
     // The first character carries six whole bits of the signature, so changing it always changes a byte.
@@ -128,10 +128,10 @@ describe('the host proving itself again', () => {
 
     // A nonce is good only on the socket it was sent to.
     const asker = await relay.socket<'relay-to-host', 'host-to-relay'>(`/s/${room.roomId}/ws`);
-    asker.send('host-to-relay', { type: 'host:reconnect', version: 1, roomId: room.roomId });
+    asker.send('host-to-relay', { type: 'host:reconnect', version: 2, roomId: room.roomId });
     const third = await asker.next('host:challenge');
     const thief = await relay.socket<'relay-to-host', 'host-to-relay'>(`/s/${room.roomId}/ws`);
-    thief.send('host-to-relay', { type: 'host:reconnect', version: 1, roomId: room.roomId });
+    thief.send('host-to-relay', { type: 'host:reconnect', version: 2, roomId: room.roomId });
     await thief.next('host:challenge');
     thief.send('host-to-relay', { type: 'host:proof', roomId: room.roomId, nonce: third.nonce, signature: await signHostChallenge(room.keys.privateKey, third) });
     expect((await thief.next('protocol:error')).code).toBe('AUTH_FAILED');
@@ -150,7 +150,7 @@ describe('the host proving itself again', () => {
     room.host.close();
     await wait(50);
     const host = await relay.socket<'relay-to-host', 'host-to-relay'>(`/s/${room.roomId}/ws`);
-    host.send('host-to-relay', { type: 'host:reconnect', version: 1, roomId: room.roomId });
+    host.send('host-to-relay', { type: 'host:reconnect', version: 2, roomId: room.roomId });
     const challenge = await host.next('host:challenge');
     await relay.hibernate(room.roomId);
     host.send('host-to-relay', { type: 'host:proof', roomId: room.roomId, nonce: challenge.nonce, signature: await signHostChallenge(room.keys.privateKey, challenge) });

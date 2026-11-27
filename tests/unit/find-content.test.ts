@@ -6,7 +6,7 @@ import type { GraphNode, InstanceNode, LinkValue, ListItem, ProjectState, RichTe
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { missingSectionLinks, renderedContent } from '@generator/checks';
-import { contentFields, contentTarget, findContent, placedSections, planReplace, sampleContactMatches, sectionMatches, type ContentMatch } from '../../src/renderer/src/lib/find-content';
+import { contentFields, contentTarget, entryTarget, findContent, placedSections, planReplace, sampleContactMatches, sectionMatches, type ContentMatch } from '../../src/renderer/src/lib/find-content';
 import { ProjectSession } from '../../src/main/project/session';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -721,6 +721,165 @@ describe('the starter’s sample contact details (#15)', () => {
   });
 });
 
+/** The business starter with a Posts collection (a published post and a draft) and a Work collection of one record. */
+function withEntries(): ProjectState {
+  return applyOperations(fresh(), [
+    { type: 'collection.create', collectionId: 'posts', name: 'Posts' },
+    { type: 'entry.create', collectionId: 'posts', entryId: 'en_launch', title: 'Launching Acme Kilns', excerpt: 'Acme Kilns opens its doors.', draft: false, publishedAt: '2026-01-02' },
+    { type: 'entry.create', collectionId: 'posts', entryId: 'en_plans', title: 'Plans for Acme', publishedAt: '2026-01-01' },
+    { type: 'collection.create', collectionId: 'work', name: 'Archive of work', kind: 'structured' },
+    { type: 'entry.create', collectionId: 'work', entryId: 'en_vase', title: 'A vase', excerpt: 'Thrown for Acme.', draft: false }
+  ]).state;
+}
+
+/** The same, with the Work collection synced from an external source. */
+function withSyncedWork(): ProjectState {
+  const s = structuredClone(withEntries());
+  s.collections.work.settings.sourceId = 'airtable';
+  s.collections.work.entries.en_vase.title = 'An Acme vase';
+  return s;
+}
+
+describe('collection entries (#1121)', () => {
+  it('finds entry titles and excerpts after the pages, drafts too, each labelled by its entry and collection', () => {
+    const s = withEntries();
+    const page = pageAt(s, '/about/');
+    page.nodes.n_acme = { id: 'n_acme', kind: 'text', tag: 'p', text: 'Acme makes kilns.' };
+    page.rootIds.push('n_acme');
+    const ms = findContent(s, 'acme');
+    expect(ms[0].field.where).toBe(page.title);
+    const entries = ms.filter((m) => m.field.entry);
+    expect(entries.map((m) => [m.field.where, m.field.section, m.field.label, m.match])).toEqual([
+      ['A vase', 'Archive of work', 'Excerpt', 'Acme'],
+      ['Launching Acme Kilns', 'Posts', 'Title', 'Acme'],
+      ['Launching Acme Kilns', 'Posts', 'Excerpt', 'Acme'],
+      ['Plans for Acme', 'Posts', 'Title', 'Acme']
+    ]);
+    // Reading order: every page and shared part first, then the entries, collection by collection by name.
+    expect(ms.slice(-entries.length)).toEqual(entries);
+    expect(entries.every((m) => !m.blocked)).toBe(true);
+    expect(entries.find((m) => m.field.where === 'Plans for Acme')!.field.entry).toMatchObject({ draft: true, synced: false });
+    expect(entries.find((m) => m.field.where === 'Launching Acme Kilns')!.field.entry).toMatchObject({ draft: false });
+    // An entry with no excerpt has only its title to search.
+    expect(contentFields(s).filter((f) => f.entry?.entryId === 'en_plans').map((f) => f.label)).toEqual(['Title']);
+  });
+
+  it('replaces in pages and entries in one batch, with one edit per entry, and finds none left', () => {
+    const s = withEntries();
+    const page = pageAt(s, '/about/');
+    const node: GraphNode = { id: 'n_acme', kind: 'text', tag: 'p', text: 'Acme makes kilns.' };
+    page.nodes[node.id] = node;
+    page.rootIds.push(node.id);
+    const { plan, after } = apply(s, findContent(s, 'acme'), 'Birch');
+    const edits = plan.operations.filter((o) => o.type === 'entry.update');
+    expect(edits).toEqual([
+      { type: 'entry.update', collectionId: 'work', entryId: 'en_vase', excerpt: 'Thrown for Birch.' },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_launch', title: 'Launching Birch Kilns', excerpt: 'Birch Kilns opens its doors.' },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_plans', title: 'Plans for Birch' }
+    ]);
+    expect(plan.operations.some((o) => o.type === 'node.setContent' && o.nodeId === 'n_acme')).toBe(true);
+    expect(plan.changes.filter((c) => c.field.entry && !c.knockOn).map((c) => [c.before, c.after])).toEqual([
+      ['Thrown for Acme.', 'Thrown for Birch.'],
+      ['Launching Acme Kilns', 'Launching Birch Kilns'],
+      ['Acme Kilns opens its doors.', 'Birch Kilns opens its doors.'],
+      ['Plans for Acme', 'Plans for Birch']
+    ]);
+    expect(findContent(after, 'acme')).toEqual([]);
+    expect(after.collections.posts.entries.en_launch).toMatchObject({ title: 'Launching Birch Kilns', excerpt: 'Birch Kilns opens its doors.', draft: false });
+    expect(after.pages[page.id].nodes.n_acme).toMatchObject({ text: 'Birch makes kilns.' });
+  });
+
+  it('lists a synced collection’s entries as read-only results, and never changes them', () => {
+    const s = withSyncedWork();
+    const ms = findContent(s, 'acme');
+    const synced = ms.filter((m) => m.field.entry?.collectionId === 'work');
+    expect(synced.map((m) => m.field.label)).toEqual(['Title', 'Excerpt']);
+    for (const m of synced) {
+      expect(m.field.entry).toMatchObject({ synced: true });
+      expect(m.blocked).toMatch(/Archive of work collection is synced from an external source, so its entries are read-only here/);
+    }
+    expect(ms.filter((m) => m.field.entry?.collectionId === 'posts').every((m) => !m.blocked)).toBe(true);
+    const { plan, after } = apply(s, ms, 'Birch');
+    expect(plan.skipped).toBe(2);
+    expect(plan.operations.filter((o) => o.type === 'entry.update').map((o) => (o as { collectionId: string }).collectionId)).toEqual(['posts', 'posts']);
+    expect(after.collections.work.entries.en_vase).toEqual(s.collections.work.entries.en_vase);
+    // Chosen alone, they change nothing.
+    expect(planReplace(s, synced, 'Birch')).toMatchObject({ operations: [], skipped: 2 });
+  });
+
+  it('reports a replacement that would leave an entry without a title before anything changes', () => {
+    const s = withEntries();
+    const page = pageAt(s, '/about/');
+    page.nodes.n_vase = { id: 'n_vase', kind: 'text', tag: 'p', text: 'A vase for sale.' };
+    page.rootIds.push('n_vase');
+    const ms = findContent(s, 'a vase');
+    expect(ms.map((m) => m.field.label)).toContain('Title');
+    for (const replacement of ['', '   ']) {
+      const plan = planReplace(s, ms, replacement);
+      expect(plan).toMatchObject({ operations: [], changes: [], error: 'Replacing would leave “A vase” without a title. Use other words, or leave that match out.' });
+    }
+    // Leaving the title out, the rest still changes.
+    expect(apply(s, ms.filter((m) => !m.field.entry), '').plan.operations).toHaveLength(1);
+    // Emptying an excerpt removes it, and the review says it is no longer shown.
+    const excerpt = findContent(s, 'thrown for acme.').find((m) => m.field.label === 'Excerpt')!;
+    const cleared = apply(s, [excerpt], '  ');
+    expect(cleared.plan.operations).toEqual([{ type: 'entry.update', collectionId: 'work', entryId: 'en_vase', excerpt: null }]);
+    expect(cleared.after.collections.work.entries.en_vase.excerpt).toBeUndefined();
+    expect(cleared.plan.changes.find((c) => c.field.entry && !c.knockOn)).toMatchObject({ before: 'Thrown for Acme.', after: 'Not shown' });
+  });
+
+  it('reports a title or excerpt the replacement makes too long, before anything changes', () => {
+    const s = withEntries();
+    const [title] = findContent(s, 'a vase');
+    expect(planReplace(s, [title], 'v'.repeat(200)).error).toBeUndefined();
+    expect(planReplace(s, [title], 'v'.repeat(201))).toMatchObject({ operations: [], error: expect.stringMatching(/title of “A vase” longer than 200 characters/) });
+    // Measured as it is stored, without the spaces around it.
+    expect(planReplace(s, [title], ` ${'v'.repeat(200)} `)).toMatchObject({ operations: [{ type: 'entry.update', title: 'v'.repeat(200) }] });
+    const excerpt = findContent(s, 'thrown').find((m) => m.field.entry)!;
+    const fill = 'x'.repeat(320 - 'Thrown for Acme.'.length + 'Thrown'.length);
+    expect(planReplace(s, [excerpt], fill).error).toBeUndefined();
+    expect(planReplace(s, [excerpt], `${fill}x`)).toMatchObject({ operations: [], error: expect.stringMatching(/excerpt of “A vase” longer than 320 characters/) });
+  });
+
+  it('changes nothing for a replacement that reads as the entry already stores it', () => {
+    const s = withEntries();
+    const title = findContent(s, 'a vase').find((m) => m.field.label === 'Title')!;
+    expect(planReplace(s, [title], ' A vase ')).toMatchObject({ operations: [], changes: [] });
+    // Two matches in one title change it in one edit.
+    const twice = applyOperations(s, [{ type: 'entry.update', collectionId: 'work', entryId: 'en_vase', title: 'Acme and Acme' }]).state;
+    const both = findContent(twice, 'acme').filter((m) => m.field.entry?.entryId === 'en_vase' && m.field.label === 'Title');
+    expect(both).toHaveLength(2);
+    expect(planReplace(twice, both, 'Birch').operations).toEqual([{ type: 'entry.update', collectionId: 'work', entryId: 'en_vase', title: 'Birch and Birch' }]);
+  });
+
+  it('lists each entry once, in the collection’s chosen order', () => {
+    const s = structuredClone(withEntries());
+    // A hand-edited order may name an entry twice.
+    s.collections.posts.settings.entryOrder = ['en_plans', 'en_launch', 'en_plans'];
+    const titles = findContent(s, 'acme').filter((m) => m.field.entry?.collectionId === 'posts' && m.field.label === 'Title');
+    expect(titles.map((m) => m.field.where)).toEqual(['Plans for Acme', 'Launching Acme Kilns']);
+    expect(planReplace(s, titles, 'Birch').operations.map((o) => (o as { title?: string }).title)).toEqual(['Plans for Birch', 'Launching Birch Kilns']);
+  });
+
+  it('keeps entries out of the review of the starter’s sample contact details', () => {
+    const s = applyOperations(withEntries(), [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_launch', title: 'Mail hello@example.com', excerpt: 'Write to hello@example.com.' }]).state;
+    expect(findContent(s, 'hello@example.com').some((m) => m.field.entry)).toBe(true);
+    const email = sampleContactMatches(s).find((g) => g.kind === 'email')!;
+    expect(email.matches.some((m) => m.field.entry)).toBe(false);
+  });
+
+  it('opens an entry’s title or excerpt in the writer, not the inspector, while the entry is there', () => {
+    const s = withEntries();
+    const m = findContent(s, 'thrown').find((x) => x.field.entry)!;
+    expect(contentTarget(s, m.field, null)).toBeNull();
+    expect(entryTarget(s, m.field)).toEqual({ collectionId: 'work', entryId: 'en_vase', field: 'excerpt' });
+    const title = findContent(s, 'plans for').find((x) => x.field.entry)!;
+    expect(entryTarget(s, title.field)).toEqual({ collectionId: 'posts', entryId: 'en_plans', field: 'title' });
+    const gone = applyOperations(s, [{ type: 'entry.remove', collectionId: 'work', entryId: 'en_vase' }]).state;
+    expect(entryTarget(gone, m.field)).toBeNull();
+  });
+});
+
 describe('replacing in a session', () => {
   const dirs: string[] = [];
   afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -738,6 +897,31 @@ describe('replacing in a session', () => {
     expect(r.ok).toBe(true);
     expect(findContent(session.state, 'hello@example.com')).toEqual([]);
     expect(findContent(session.state, 'books@example.org').map((m) => m.field.where)).toEqual(['Contact', 'Contact', 'Contact', 'Footer', 'Footer']);
+    const done = keep(session.state);
+    await session.undo();
+    expect(keep(session.state)).toEqual(before);
+    await session.redo();
+    expect(keep(session.state)).toEqual(done);
+  });
+
+  it('changes a page and several entries in one step that undoes and redoes as one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-find-'));
+    dirs.push(dir);
+    const seeded = withSyncedWork();
+    const page = pageAt(seeded, '/about/');
+    const node: GraphNode = { id: 'n_acme', kind: 'text', tag: 'p', text: 'Acme makes kilns.' };
+    page.nodes[node.id] = node;
+    page.rootIds.push(node.id);
+    const session = await ProjectSession.create(dir, seeded);
+    const keep = (st: ProjectState) => JSON.parse(JSON.stringify({ pages: st.pages, collections: st.collections }));
+    const before = keep(session.state);
+    const plan = planReplace(session.state, findContent(session.state, 'acme'), 'Birch');
+    expect(plan.error).toBeUndefined();
+    expect(plan.operations.map((o) => o.type)).toEqual(['node.setContent', 'entry.update', 'entry.update']);
+    const r = await session.apply({ operations: plan.operations, expectedRevision: session.revision }, { label: 'Replace “Acme”' });
+    expect(r.ok).toBe(true);
+    // Only the synced entry's matches are left, as they were.
+    expect(findContent(session.state, 'acme').map((m) => m.field.entry?.collectionId)).toEqual(['work', 'work']);
     const done = keep(session.state);
     await session.undo();
     expect(keep(session.state)).toEqual(before);

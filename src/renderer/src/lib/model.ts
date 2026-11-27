@@ -31,6 +31,11 @@ export interface BridgeDesc {
    */
   part?: string;
   /**
+   * The one item (encoded as `items` is) of the list a code placement's part repeats over that the part was picked in
+   * or is looked for in; `items` still names the items the placement itself is shown for.
+   */
+  partItem?: string;
+  /**
    * One slot of a placement, by the box the page shows while it is empty (#652): the rest of the descriptor names the
    * placement, in the context it is placed in (never through its definition's root, as the placement itself is).
    */
@@ -84,9 +89,12 @@ export function ctxOf(ref: ElementRef): string {
 /** Descriptor the bridge uses to find the DOM element(s) for a reference. */
 export function descOf(state: ProjectState, ref: ElementRef): BridgeDesc {
   // A declared part of a code placement is found by its author's marker inside that placement.
+  // One item's part is found by the item it is shown for (see codeItemMarks in the generator).
   if (isCodePart(state, ref)) {
     const placement = ref.instancePath[ref.instancePath.length - 1];
-    return { ctx: ctxOf({ ...ref, instancePath: ref.instancePath.slice(0, -1) }), node: placement, items: '', part: ref.partId };
+    const desc: BridgeDesc = { ctx: ctxOf({ ...ref, instancePath: ref.instancePath.slice(0, -1) }), node: placement, items: '', part: ref.partId };
+    if (ref.itemPath?.length) desc.partItem = ref.itemPath.map(encodeItemId).join(',');
+    return desc;
   }
   const items = (ref.itemPath ?? []).map(encodeItemId).join(',');
   // A slot of a placement is found by its empty box, which names the placement where it is placed, whatever renders it.
@@ -206,7 +214,7 @@ function decodeItemId(segment: string): string {
 function refFromDesc(state: ProjectState, d: BridgeDesc): ElementRef | null {
   const p = parseCtx(d.ctx);
   if (!p) return null;
-  if (d.part !== undefined) return codePartRef(state, p.owner, p.path, d.node, d.part);
+  if (d.part !== undefined) return codePartRef(state, p.owner, p.path, d.node, d.part, d.partItem ? d.partItem.split(',').map(decodeItemId) : []);
   const ref: ElementRef = { owner: p.owner, instancePath: p.path, nodeId: d.node };
   if (d.items) ref.itemPath = d.items.split(',').map(decodeItemId);
   if (d.slot !== undefined) {
@@ -269,15 +277,20 @@ export function withoutSlot(ref: ElementRef): ElementRef {
 
 /**
  * A part a code component's author marked, as the editor names it: the part its contract declares under that ID, on
- * a code placement in the owner's own tree. Null for anything else: a part it does not declare, its root (the
- * placement itself), or a code component placed inside another component's design, whose parts that placement styles.
+ * a code placement in the owner's own tree, and for a part it shows once per item of a list, the one item it was
+ * picked in. Null for anything else: a part it does not declare, its root (the placement itself), a code component
+ * placed inside another component's design, whose parts that placement styles, or an item its list no longer shows.
  */
-function codePartRef(state: ProjectState, owner: OwnerRef, path: string[], placementId: string, partId: string): ElementRef | null {
+function codePartRef(state: ProjectState, owner: OwnerRef, path: string[], placementId: string, partId: string, items: string[] = []): ElementRef | null {
   if (path.length || partId === 'root') return null;
   const placement = own(treeFor(state, owner)?.nodes ?? {}, placementId);
   const def = placement?.kind === 'instance' ? own(state.components, placement.definitionId) : undefined;
   const part = def?.kind === 'code' ? own(def.parts, partId) : undefined;
-  return part && typeof part.nodeId === 'string' ? { owner, instancePath: [placementId], nodeId: part.nodeId, partId } : null;
+  if (!part || typeof part.nodeId !== 'string') return null;
+  const ref: ElementRef = { owner, instancePath: [placementId], nodeId: part.nodeId, partId };
+  if (!items.length) return ref;
+  ref.itemPath = items;
+  return isCodePart(state, ref) ? ref : null;
 }
 
 /**
@@ -348,12 +361,22 @@ export function codeTextDesc(t: CodeTextTarget): BridgeDesc {
 
 /**
  * Whether a reference is a declared part of a code placement in its owner's own tree (see codePartRef). A code
- * component has no tree of its own, so such a part is named by its contract alone, never one item of a list.
+ * component has no tree of its own, so such a part is named by its contract alone: all of its items, or one item of
+ * the list it declares it repeats over (PartDef.list) that the placement shows now.
  */
 export function isCodePart(state: ProjectState, ref: ElementRef | null | undefined): ref is ElementRef & { partId: string } {
-  if (!ref || ref.instancePath.length !== 1 || !ref.partId || ref.partId === 'root' || ref.itemPath?.length) return false;
+  if (!ref || ref.instancePath.length !== 1 || !ref.partId || ref.partId === 'root') return false;
   const r = resolveRef(state, ref);
-  return !r.node && !!r.instance && r.def?.kind === 'code' && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId;
+  if (r.node || !r.instance || r.def?.kind !== 'code' || own(r.def.parts, ref.partId)?.nodeId !== ref.nodeId) return false;
+  return !ref.itemPath?.length || codeItemShown(r.def, r.instance, ref.partId, ref.itemPath);
+}
+
+/** Whether a code placement's part is shown for the one item `itemPath` names: the part repeats over a list that has it. */
+function codeItemShown(def: ComponentDefinition, inst: InstanceNode, partId: string, itemPath: string[]): boolean {
+  const list = itemPath.length === 1 ? repeatedPartList(def, partId) : undefined;
+  // A list connected to a collection shows entries, not its own items (the preview marks none of them).
+  if (!list || Object.hasOwn(inst.listSources ?? {}, list)) return false;
+  return placementItems(def, inst, list).some((i) => i.id === itemPath[0]);
 }
 
 /**
@@ -669,8 +692,9 @@ export function refExists(state: ProjectState, ref: ElementRef): boolean {
   // A slot holds while its placement is there and still declares it, whatever is put in it or taken out.
   if (ref.slot !== undefined && !placedSlot(state, ref)) return false;
   const r = resolveRef(state, ref);
-  // A code component has no tree: its parts are the ones its contract declares, never one item of a list.
-  if (!r.node) return !!r.instance && r.def?.kind === 'code' && !!ref.partId && !ref.itemPath?.length && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId;
+  // A code component has no tree: its parts are the ones its contract declares, and one item of a list it declares a
+  // part repeats over.
+  if (!r.node) return !!r.instance && r.def?.kind === 'code' && !!ref.partId && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId && (!ref.itemPath?.length || codeItemShown(r.def, r.instance, ref.partId, ref.itemPath));
   if (r.node.kind === 'instance' && !own(state.components, r.node.definitionId)) return false;
   // A part is named by the component it belongs to: the one placed, or the one edited everywhere.
   const partOf = ref.instancePath.length ? r.def : ref.owner.kind === 'component' ? own(state.components, ref.owner.id) : undefined;
@@ -1114,6 +1138,11 @@ export function placementsOn(state: ProjectState, definitionId: string, pageId: 
 /** The list property a repeated part's content comes from: the enclosing repeat's list, which tells apart two
  *  lists whose items have fields of the same name (a footer's Links and Contact). */
 export function listPropFor(def: ComponentDefinition, nodeId: string): string | undefined {
+  // A code component's part names the list it repeats over itself.
+  if (def.kind === 'code') {
+    const partId = Object.keys(def.parts).find((pid) => pid !== 'root' && def.parts[pid]?.nodeId === nodeId);
+    return partId ? repeatedPartList(def, partId) : undefined;
+  }
   const prop = enclosingRepeatProp(def, nodeId);
   return prop && own(def.properties, prop)?.type === 'list' ? prop : undefined;
 }

@@ -6,7 +6,7 @@ import type { GuestRole } from '../../src/shared/live/limits';
 import type { FrameOf, Participant, Presence } from '../../src/shared/live/messages';
 import type { LiveApplyResult, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { resolveRelayUrl, type ResolvedRelayUrl } from '../../src/shared/live/relay-url';
-import { GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostTimings } from '../../src/main/live/host';
+import { editTarget, GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostTimings } from '../../src/main/live/host';
 
 /**
  * The host's live session manager against sockets the test drives frame by frame, for the orderings a real relay
@@ -52,7 +52,7 @@ class FakeSocket extends EventTarget {
 }
 
 const RELAY = 'http://relay.localhost:8787';
-const ANN: Participant = { guestId: 'g1', displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null };
+const ANN: Participant = { guestId: 'g1', displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true };
 const managers: LiveHostManager[] = [];
 afterEach(async () => {
   // No relay answers a test's last room:end: each is let go at a short deadline.
@@ -111,7 +111,7 @@ function tracked<T>(promise: Promise<T>) {
 }
 
 const sentOf = <T extends FrameOf<'host-to-relay'>['type']>(socket: FakeSocket, type: T) => socket.sent.find((f) => f.type === type) as Extract<FrameOf<'host-to-relay'>, { type: T }> | undefined;
-const ready = (roomId: string, now = Date.now(), extra: Partial<{ expiresAt: number; locked: boolean }> = {}): FrameOf<'relay-to-host'> => ({ type: 'room:ready', version: 1, roomId, startedAt: now, expiresAt: extra.expiresAt ?? now + 2 * 3600_000, locked: extra.locked ?? false, now });
+const ready = (roomId: string, now = Date.now(), extra: Partial<{ expiresAt: number; locked: boolean }> = {}): FrameOf<'relay-to-host'> => ({ type: 'room:ready', version: 2, roomId, startedAt: now, expiresAt: extra.expiresAt ?? now + 2 * 3600_000, locked: extra.locked ?? false, now });
 
 /** Answer the room:create the manager sends on its first socket, as the relay would. */
 async function opened(h: ReturnType<typeof host>, participants: Participant[] = [ANN]) {
@@ -134,7 +134,7 @@ async function opened(h: ReturnType<typeof host>, participants: Participant[] = 
 /** Prove the host on a reconnect socket, as the relay would, checking its signature against the room's key. */
 async function reclaimed(socket: FakeSocket, roomId: string, publicKey: string, extra: Partial<{ expiresAt: number; locked: boolean }> = {}) {
   socket.open();
-  expect(sentOf(socket, 'host:reconnect')).toEqual({ type: 'host:reconnect', version: 1, roomId });
+  expect(sentOf(socket, 'host:reconnect')).toEqual({ type: 'host:reconnect', version: 2, roomId });
   const nonce = newNonce();
   socket.receive({ type: 'host:challenge', roomId, nonce });
   const proof = await until(() => sentOf(socket, 'host:proof'), 'the proof');
@@ -572,7 +572,7 @@ async function letIn(h: ReturnType<typeof editor>, role: GuestRole = 'collaborat
   return o;
 }
 
-const admittedAs = (guestId: string, displayName: string, role: GuestRole, guestExpiresAt: number | null = null): Participant => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt });
+const admittedAs = (guestId: string, displayName: string, role: GuestRole, guestExpiresAt: number | null = null, connected = true): Participant => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt, colorSlot: 0, connected });
 const roster = (role: GuestRole, guestExpiresAt: number | null = null): FrameOf<'relay-to-host'> => ({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', role, guestExpiresAt)] });
 const call = (socket: FakeSocket, requestId: string, method: 'project.snapshot' | 'project.apply', args: unknown[] = []) => socket.receive({ type: 'rpc:request', guestId: 'g1', requestId, method, args });
 const answerTo = (socket: FakeSocket, requestId: string) => until(() => socket.sent.find((f) => f.type === 'rpc:response' && f.requestId === requestId) as Extract<FrameOf<'host-to-relay'>, { type: 'rpc:response' }> | undefined, `the answer to ${requestId}`);
@@ -771,10 +771,10 @@ describe('guests’ editor calls', () => {
     const h = editor();
     const { socket, run } = await letIn(h);
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
-    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE } });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE }, spotlights: {}, activity: {} });
     // Made a viewer: gone from the editor at once, and what a viewer sends is not shown.
     h.manager.setRole(run, 'g1', 'viewer');
-    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {} });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {}, spotlights: {}, activity: {} });
     const shown = h.presence.length;
     socket.receive(roster('viewer'));
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
@@ -891,5 +891,155 @@ describe('guests’ editor calls', () => {
     next.receive({ type: 'room:roster', participants: [{ guestId: 'g1', displayName: 'Ann', status: 'pending' }] });
     expect(next.sent.filter((f) => f.type === 'guest:kick')).toEqual([{ type: 'guest:kick', guestId: 'g1' }]);
     void publicKey;
+  });
+});
+
+describe('spotlights, edits and connections in the editor (#768)', () => {
+  const spotlight = { previewPath: '/about/', target: { owner: { kind: 'page' as const, id: 'pg_home' }, instancePath: [], nodeId: 'n_title' }, x: 0.5, y: 0.25 };
+  const pointed = (guestId = 'g1'): FrameOf<'relay-to-host'> => ({ type: 'spotlight:pointed', guestId, spotlight });
+  const last = (h: { presence: LivePresence[] }) => h.presence.at(-1)!;
+
+  it('shows a spotlight from a guest let in, a viewer too, for a while, then takes it off', async () => {
+    const h = editor({ timings: { spotlightMs: 60 } });
+    const { socket, run } = await letIn(h, 'viewer');
+    socket.receive(pointed());
+    expect(last(h)).toMatchObject({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {}, spotlights: { g1: { seq: expect.any(Number), spotlight } }, activity: {} });
+    // A newer one replaces it, under a new number, so the editor draws it from its start.
+    const first = last(h).spotlights.g1.seq;
+    socket.receive(pointed());
+    expect(last(h).spotlights.g1.seq).toBeGreaterThan(first);
+    await until(() => Object.keys(last(h).spotlights).length === 0, 'the spotlight to go');
+    // Nobody the relay does not list as let in is shown.
+    const shown = h.presence.length;
+    socket.receive(pointed('g9'));
+    expect(h.presence.length).toBe(shown);
+  });
+
+  it('takes a guest’s spotlight and presence off at once when it is removed', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    socket.receive(pointed());
+    expect(Object.keys(last(h).spotlights)).toEqual(['g1']);
+    h.manager.kick(run, 'g1');
+    expect(last(h)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {}, spotlights: {}, activity: {} });
+    // What arrives from it before the relay has removed it is not shown.
+    const shown = h.presence.length;
+    socket.receive(pointed());
+    expect(h.presence.length).toBe(shown);
+  });
+
+  it('keeps a demoted guest’s spotlight but not where it was, nor its edit', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    await answerTo(socket, 'q1');
+    socket.receive(pointed());
+    expect(Object.keys(last(h).activity)).toEqual(['g1']);
+    h.manager.setRole(run, 'g1', 'viewer');
+    expect(last(h).guests).toEqual({});
+    expect(last(h).activity).toEqual({});
+    expect(Object.keys(last(h).spotlights)).toEqual(['g1']);
+  });
+
+  it('takes each spotlight and edit off at its own time, one after another', async () => {
+    const h = editor({ timings: { spotlightMs: 400, activityMs: 40 } });
+    const { socket } = await letIn(h);
+    socket.receive(pointed());
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    await answerTo(socket, 'q1');
+    expect(Object.keys(last(h).activity)).toEqual(['g1']);
+    await until(() => Object.keys(last(h).activity).length === 0, 'the edit’s cue to go');
+    // The spotlight, due later, is still shown, and goes at its own time.
+    expect(Object.keys(last(h).spotlights)).toEqual(['g1']);
+    await until(() => Object.keys(last(h).spotlights).length === 0, 'the spotlight to go');
+  });
+
+  it('tells an editor that starts following the session, a reloaded one too, where everyone is', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    h.manager.setPresence(run, HERE);
+    const shown = h.presence.length;
+    // The same place again, as a reloaded editor says it.
+    expect(h.manager.setPresence(run, HERE)).toEqual({ ok: true });
+    expect(h.presence.length).toBe(shown + 1);
+    expect(last(h).guests).toEqual({ g1: HERE });
+  });
+
+  it('stops showing a guest whose connection dropped, until it is back and says where it is again', async () => {
+    const h = editor();
+    const { socket } = await letIn(h);
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    socket.receive(pointed());
+    socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'collaborator', null, false)] });
+    expect(last(h)).toEqual(expect.objectContaining({ guests: {}, spotlights: {}, activity: {} }));
+    const shown = h.presence.length;
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    socket.receive(pointed());
+    expect(h.presence.length).toBe(shown);
+    socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'collaborator', null, true)] });
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+    expect(last(h).guests).toEqual({ g1: HERE });
+  });
+
+  it('shows a collaborator editing what its edit changed once the edit is made, and tells the other collaborators', async () => {
+    const h = editor({ timings: { activityMs: 60 } });
+    const { socket } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    const edit = await until(() => h.edits[0], 'the edit');
+    // Nothing is shown while the edit waits its turn.
+    expect(h.presence.some((p) => Object.keys(p.activity).length)).toBe(false);
+    edit.release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: true });
+    const target = { owner: { kind: 'page', id: 'pg_home' }, instancePath: [], nodeId: 'n_title' };
+    expect(last(h).activity).toEqual({ g1: { seq: expect.any(Number), target } });
+    expect(socket.sent.filter((f) => f.type === 'activity:edit')).toEqual([{ type: 'activity:edit', guestId: 'g1', target }]);
+    await until(() => Object.keys(last(h).activity).length === 0, 'the edit’s cue to go');
+  });
+
+  it('shows no edit for a copy, whose operations name what it was copied from', async () => {
+    const h = editor();
+    const { socket } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [{ operations: [{ type: 'node.duplicate', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title' }] }]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: true });
+    expect(h.presence.some((p) => Object.keys(p.activity).length)).toBe(false);
+    expect(socket.sent.some((f) => f.type === 'activity:edit')).toBe(false);
+  });
+
+  it('shows nothing for an edit that was not made', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    const edit = await until(() => h.edits[0], 'the edit');
+    h.manager.setRole(run, 'g1', 'viewer');
+    edit.release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false });
+    expect(h.presence.some((p) => Object.keys(p.activity).length)).toBe(false);
+    expect(socket.sent.some((f) => f.type === 'activity:edit')).toBe(false);
+  });
+
+  it('names the one element a batch changed, and nothing for any other batch', () => {
+    const op = (owner: { kind: string; id: string }, nodeId: string) => ({ type: 'node.setContent', owner, nodeId, field: 'text', value: 'x' });
+    const home = { kind: 'page', id: 'pg_home' };
+    expect(editTarget({ operations: [op(home, 'n1'), op(home, 'n1')] })).toEqual({ owner: home, instancePath: [], nodeId: 'n1' });
+    expect(editTarget({ operations: [op({ kind: 'shell', id: 'header' }, 'n_logo')] })).toEqual({ owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: 'n_logo' });
+    expect(editTarget({ operations: [op(home, 'n1'), op(home, 'n2')] })).toBeNull();
+    expect(editTarget({ operations: [op(home, 'n1'), op({ kind: 'page', id: 'pg_about' }, 'n1')] })).toBeNull();
+    expect(editTarget({ operations: [op({ kind: 'component', id: 'c_card' }, 'n1')] })).toBeNull();
+    expect(editTarget({ operations: [{ type: 'site.setName', name: 'Acme' }] })).toBeNull();
+    // A copy or a duplicate leaves the element it names as it was: no edit is shown for it at all.
+    expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.copy', toOwner: { kind: 'page', id: 'pg_about' } }] })).toBeUndefined();
+    expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
+    expect(editTarget({ operations: [op(home, 'n1'), { ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
+    expect(editTarget({ operations: [{ type: 'page.update', pageId: 'pg_home', title: 'Home' }, { ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
+    expect(editTarget({ operations: [op({ kind: 'page', id: 'p'.repeat(129) }, 'n1')] })).toBeNull();
+    expect(editTarget({ operations: [op(home, 'n'.repeat(129))] })).toBeNull();
+    expect(editTarget({ operations: [] })).toBeNull();
+    expect(editTarget(null)).toBeNull();
   });
 });

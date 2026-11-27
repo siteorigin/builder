@@ -19,6 +19,7 @@ import { boundSchema } from '@engine/schema';
 import { defKey, designHasMedia, slotIdent } from '@generator/index';
 import { MAX_UI_STATES, dividerProblem, overlayProblem, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from '@engine/schema';
 import { sha } from '../project/fsutil';
+import { packManifestProblems } from '../codecheck';
 import { readRegularFile, type PackFileSource } from './files';
 import type { PackRefusal } from '@shared/api';
 import { perf } from '../perf';
@@ -326,6 +327,12 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
       // Code runs in the preview's Node process, which no policy check can sandbox. An installed pack may reuse code
       // the app itself ships, exactly as it ships it, and otherwise brings data only: its components are managed.
       if (source === 'user' && !reviewed.has(def.source!)) refuse(`${where} has code of its own, which an installed pack may not bring. Make it a managed component, or reuse a code component SiteOrigin Builder ships, unchanged.`);
+      // Reused code under a manifest of the pack's own must take exactly what that manifest declares (a bundled pack's
+      // code is held to its manifest when the pack is built).
+      if (source === 'user') {
+        const disagree = await packManifestProblems([def]);
+        if (disagree.length) refuse(disagree[0]);
+      }
     }
   }
   // A component that places another of the pack's components keeps to the slot contracts of the one it places.

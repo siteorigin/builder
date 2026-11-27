@@ -1,3 +1,4 @@
+import type { ReviewPage } from './review-edition';
 import type { ApplyResult, EditBatch, Op } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
@@ -13,7 +14,7 @@ import type { Recipient, TurnModel } from './turn-model';
 import type { EarlierSummary } from './earlier-summary';
 import type { SessionDuration } from './live/expiry';
 import type { GuestRole } from './live/limits';
-import type { Participant, Presence } from './live/messages';
+import type { ElementTarget, Participant, Presence, Spotlight } from './live/messages';
 import type { LiveEditBatch } from './live/capabilities';
 import type { LiveApplyResult, LiveProjectSnapshot } from './live/snapshot';
 
@@ -396,7 +397,7 @@ export interface LocalWorkspaceState {
 export interface CreateProjectOptions {
   name: string;
   parentDir: string;
-  starter: 'business' | 'blank';
+  starter: 'business' | 'blank' | 'showcase';
   sampleImages: boolean;
   /** The theme the site starts with; without one, the default theme. It can be changed any time in Site styles. */
   themeId?: string;
@@ -533,6 +534,8 @@ export interface ExportResult {
   assetId?: string;
   /** A review build's base path (the site's subfolder, or ''), from the snapshot it was built from: where to serve it. */
   basePath?: string;
+  /** A review build's pages, with their titles, from the snapshot it was built from: what a review edition can capture. */
+  pages?: ReviewPage[];
 }
 
 /** An export the open project made since it was opened, so the author can find and compare what they handed off. */
@@ -1046,12 +1049,27 @@ export type LiveHostState =
   | (LiveRun & { phase: 'starting' | 'stopping' })
   | (LiveRun & LiveRoom & { phase: 'active' | 'reconnecting'; previewReady: boolean; lastError: string | null });
 
+/** Where a guest just pointed (#768). `seq` tells a new spotlight from one already shown. */
+export interface LiveSpotlight {
+  seq: number;
+  spotlight: Spotlight;
+}
+
+/** A collaborator's edit just made (#768): the one element it changed, or null for more or other than one. */
+export interface LiveActivity {
+  seq: number;
+  target: ElementTarget | null;
+}
+
 /**
- * Where the live session's collaborators are in the project, as each last said, by guest ID (`live:presence`): sent
- * whenever one moves, and when one leaves or stops being a collaborator.
+ * Where the live session's collaborators are in the project, as each last said, by guest ID (`live:presence`), with
+ * each guest's latest spotlight and each collaborator's latest edit while they are shown: sent whenever any of them
+ * changes, and when a guest leaves, drops its connection, or stops being a collaborator.
  */
 export interface LivePresence extends LiveRun {
   guests: Record<string, Presence>;
+  spotlights: Record<string, LiveSpotlight>;
+  activity: Record<string, LiveActivity>;
 }
 
 /** A guest asking to join, sent once when it starts waiting (`live:request`). */
@@ -1067,11 +1085,16 @@ export interface LiveJoinRequest extends LiveRun {
  */
 export type RemoteEnding = 'left' | 'declined' | 'kicked' | 'expired-guest' | 'expired-session' | 'ended' | 'host-gone' | 'locked' | 'full' | 'replaced' | 'lost' | 'unavailable' | 'refused';
 
-/** Someone admitted to the live session this app is a guest in, as the relay lists them. */
+/**
+ * Someone admitted to the live session this app is a guest in, as the relay lists them: with their place in the
+ * session's palette, and whether their connection is up now.
+ */
 export interface RemoteParticipant {
   guestId: string;
   displayName: string;
   role: GuestRole;
+  colorSlot: number;
+  connected: boolean;
 }
 
 /** One join of a live session, so a late event from an earlier join never reaches the next. */
@@ -1117,11 +1140,15 @@ export type RemoteState =
       participants: RemoteParticipant[];
     });
 
-/** Where the others in the live session are, as each last said (`remote:presence`): the host, and collaborators by guest ID. */
+/**
+ * Where the others in the live session are, as each last said (`remote:presence`): the host, and collaborators by guest
+ * ID, with each other collaborator's latest edit while it is shown (#768).
+ */
 export interface RemotePresence {
   joinId: string;
   host: Presence | null;
   guests: Record<string, Presence>;
+  activity: Record<string, LiveActivity>;
 }
 
 export type RemoteJoinResult = { ok: true; state: RemoteState } | { ok: false; message: string };
@@ -1142,6 +1169,14 @@ export type SourceSampleResult =
 export type SourceSyncResult =
   | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number }
   | { ok: false; message: string; code?: string };
+
+/** The manifest a code component's source is checked against in the code editor (see BuilderApi.project.validateSource). */
+export interface SourceManifest {
+  /** The component being edited, for its variant axes and, without `properties`, its stored properties. */
+  definitionId?: string;
+  /** The properties as edited, not yet saved (the editor's draft, which may not be complete). */
+  properties?: Record<string, unknown>;
+}
 
 export interface BuilderApi {
   platform: string;
@@ -1373,7 +1408,11 @@ export interface BuilderApi {
     unlock(): Promise<{ ok: boolean; message?: string }>;
     /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
     saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;
-    validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
+    /**
+     * Checks a code component's source as saving it would. With `manifest`, the props the code takes are held to the
+     * properties given (the editor's draft), or else those of the component `definitionId` names, and to its axes.
+     */
+    validateSource(source: string, manifest?: SourceManifest): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
     /** Resolves once the writes queued for the project have finished: whether they all reached the disk, in the
      *  opening given (its snapshot's workspaceKey). */
     flush(opening?: string): Promise<boolean>;

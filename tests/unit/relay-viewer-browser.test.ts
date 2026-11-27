@@ -51,7 +51,7 @@ function serve(host: () => HostPeer, site: Site) {
         asked.push(request.target);
         const html = site.get(request.target.split('?')[0]);
         if (html === undefined) answerPreview(host(), request.requestId, { status: 404, headers: [['content-type', 'text/plain']], body: enc('Not found') });
-        else answerPreview(host(), request.requestId, { headers: [['content-type', 'text/html; charset=utf-8']], body: enc(html) });
+        else answerPreview(host(), request.requestId, { headers: [['content-type', request.target.endsWith('.txt') ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8']], body: enc(html) });
       }
       await wait(10);
     }
@@ -395,6 +395,56 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await s.tab.waitForSelector('[data-phase="declined"]');
       await s.tab.click('#screen-action');
       expect(await s.tab.inputValue('#name')).toBe('Ann');
+    } finally {
+      await s.done();
+    }
+  });
+
+  it('points at what the guest clicks, for the host alone, without the click doing anything else, and stops on Escape (#768)', async () => {
+    // The editor's preview marks each element with where it is in the project (src/generator, idAttrs).
+    const marked = `<!doctype html><html><head><title>Home</title></head><body style="margin:0"><h1>Home</h1><div style="height:1200px"></div><section data-so-ctx="page:pg_home|n_card" data-so-node="n_title" data-so-items="it%2C1,it_2"><a id="go" href="/about/" style="display:block;height:40px">About</a></section><div style="height:1200px"></div></body></html>`;
+    const s = await scene({ site: new Map([['/', marked], ['/about/', page('About', '<a id="notes" href="/notes.txt">Notes</a>')], ['/notes.txt', 'Plain notes']]) });
+    try {
+      const guestId = await ask(s);
+      const frame = await admit(s, guestId);
+      expect(await s.tab.isDisabled('#point')).toBe(false);
+      await s.tab.click('#point');
+      expect(await s.tab.getAttribute('#point', 'aria-pressed')).toBe('true');
+      expect(await s.tab.isVisible('#point-hint')).toBe(true);
+      await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'attached' });
+      await frame.click('#go');
+      const pointed = await s.host.next('spotlight:pointed');
+      expect(pointed).toMatchObject({ guestId, spotlight: { previewPath: '/', target: { owner: { kind: 'page', id: 'pg_home' }, instancePath: ['n_card'], nodeId: 'n_title', itemPath: ['it,1', 'it_2'] } } });
+      // The point is where the click landed, as shares of the whole page.
+      const expected = (await frame.evaluate(`(() => { const r = document.getElementById('go').getBoundingClientRect(); const d = document.documentElement; return { x: (r.left + r.width / 2 + scrollX) / d.scrollWidth, y: (r.top + r.height / 2 + scrollY) / d.scrollHeight }; })()`)) as { x: number; y: number };
+      expect(pointed.spotlight.x).toBeCloseTo(expected.x, 2);
+      expect(pointed.spotlight.y).toBeCloseTo(expected.y, 2);
+      // One click: the link was not followed, and pointing is over.
+      expect(new URL(frame.url()).pathname).toBe('/');
+      expect(await s.tab.getAttribute('#point', 'aria-pressed')).toBe('false');
+      expect(await frame.$('html[data-siteorigin-pointing]')).toBeNull();
+
+      // Somewhere the page names nothing is pointed at as a point alone.
+      await wait(600);
+      await s.tab.click('#point');
+      await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'attached' });
+      await frame.click('h1');
+      expect((await s.host.next('spotlight:pointed')).spotlight).toMatchObject({ previewPath: '/', target: null });
+
+      // Escape stops pointing, and the next click is the site's own again.
+      await s.tab.click('#point');
+      await frame.waitForSelector('html[data-siteorigin-pointing]', { state: 'attached' });
+      await s.tab.keyboard.press('Escape');
+      await s.tab.waitForSelector('#point[aria-pressed="false"]');
+      await frame.click('#go');
+      await frame.waitForURL(/\/about\/$/);
+      await wait(200);
+      expect(s.host.has('spotlight:pointed')).toBe(false);
+
+      // A page the site goes on to that has no bridge (a plain file) cannot be pointed at: Point waits for one that has.
+      await s.tab.waitForSelector('#point:not([disabled])');
+      await frame.click('#notes');
+      await s.tab.waitForSelector('#point[disabled]');
     } finally {
       await s.done();
     }

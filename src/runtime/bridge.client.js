@@ -16,6 +16,12 @@ let selected = null; // descriptor
 let hovered = null;
 // The empty slots of the selected placement the editor draws Add buttons in (#657): measured with each outline.
 let trackedSlots = [];
+/**
+ * What the others in a live session are on (#768), for the editor to outline in their colors: each an element (`desc`)
+ * or a point on the page as shares of its whole width and height (`point`), under the editor's own key. Measured with
+ * the selection, and reported with it as `marks`: one box each, for those that show.
+ */
+let trackedMarks = [];
 /** The innermost element under the pointer, as last reported to the editor. */
 let pointerAt = null;
 /** The element `pointerAt` describes. */
@@ -120,7 +126,7 @@ function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
 function sameDesc(a, b) {
-  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && (a.partItem || '') === (b.partItem || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
 }
 /**
  * The slot an empty slot's placeholder stands for, as the editor names it: its placement's descriptor and the slot's
@@ -196,12 +202,54 @@ function marksText(el, desc) {
   const owner = partOwner(el);
   return !!owner && sameDesc(descOf(owner), { ctx: desc.ctx, node: desc.node, items: desc.items });
 }
-/** A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. */
+/** The class prefix an item's own styles take, which the preview gives every item of a code placement's repeated parts. */
+const ITEM_CLASS = 'so-oi-';
+const partItemMaps = new WeakMap();
+/**
+ * Which item of which repeated part each item class names, in a code placement (`data-so-part-items`, written by the
+ * generator): read once per value of the attribute, since the pointer reads it on every move.
+ */
+function partItemsOf(owner) {
+  const raw = owner.getAttribute('data-so-part-items') || '';
+  const cached = partItemMaps.get(owner);
+  if (cached && cached.raw === raw) return cached.map;
+  let map = null;
+  try {
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) map = parsed;
+  } catch {
+    map = null;
+  }
+  partItemMaps.set(owner, { raw, map });
+  return map;
+}
+/** An item ID as the editor's item paths write it: "%" and "," escaped, so one ID stays one item. */
+function encodeItem(id) {
+  return String(id).replaceAll('%', '%25').replaceAll(',', '%2C');
+}
+/** The item (encoded) a code placement's repeated part is shown for, by the item class it carries; '' for none. */
+function partItemOf(el, owner, part) {
+  const map = partItemsOf(owner);
+  if (!map) return '';
+  for (const c of el.classList || []) {
+    if (!c.startsWith(ITEM_CLASS) || !Object.hasOwn(map, c)) continue;
+    const entry = map[c];
+    if (Array.isArray(entry) && entry[0] === part && typeof entry[1] === 'string') return encodeItem(entry[1]);
+  }
+  return '';
+}
+/**
+ * A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. A part
+ * shown once per item of a list names its item (`partItem`, apart from the items the placement itself is shown for),
+ * so one card is picked rather than all of them.
+ */
 function partDesc(el) {
   if (el.hasAttribute('data-so-node')) return null;
   const part = partIdOf(el);
   const owner = part ? partOwner(el) : null;
-  return owner ? { ...descOf(owner), part } : null;
+  if (!owner) return null;
+  const item = partItemOf(el, owner, part);
+  return { ...descOf(owner), part, ...(item ? { partItem: item } : {}) };
 }
 /**
  * What the pointer is on, as the editor names it: the innermost marked part of a code placement or editor element
@@ -250,13 +298,18 @@ function findAll(desc) {
   }
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   const els = [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
+  const part = typeof desc.part === 'string' && desc.part ? desc.part : '';
   // Text a code placement's author marked: every element of its own markup carrying that marker.
   if (typeof desc.bind === 'string' && desc.bind) return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(`[${TEXT_ATTR}="${cssEscape(desc.bind)}"]`)].filter((t) => partOwner(t) === el));
-  if (typeof desc.part !== 'string' || !desc.part) return els;
+  if (!part) return els;
+  const item = typeof desc.partItem === 'string' ? desc.partItem : '';
   // A marked part of a code placement: every element of that placement's own markup carrying the marker (the
-  // author's code can show one more than once), never one in another placement or in content placed in a slot.
-  const marked = `[data-so-part="${cssEscape(desc.part)}"], .${cssEscape(PART_CLASS + desc.part)}`;
-  return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === desc.part && partOwner(p) === el));
+  // author's code can show one more than once), never one in another placement or in content placed in a slot. One
+  // item's part is the elements of it shown for that item.
+  const marked = `[data-so-part="${cssEscape(part)}"], .${cssEscape(PART_CLASS + part)}`;
+  return els
+    .filter((el) => el.hasAttribute('data-so-code'))
+    .flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === part && partOwner(p) === el && (!item || partItemOf(p, el, part) === item)));
 }
 /** The box an element is laid out as (with display: contents, its first child that shows), and whether its container
  *  lays its items out by CSS order: only a flex or grid container does. */
@@ -373,6 +426,27 @@ let rectsPosted = '';
  */
 let timeRects = false;
 let measuringMs = 0;
+/** Where a point given as shares of the page's whole width and height is in the frame now: a box of no size. */
+function pointBox(point) {
+  const root = document.documentElement;
+  const width = Math.max(root.scrollWidth, document.body?.scrollWidth ?? 0);
+  const height = Math.max(root.scrollHeight, document.body?.scrollHeight ?? 0);
+  return { x: point.x * width - scrollX, y: point.y * height - scrollY, width: 0, height: 0 };
+}
+/** The marks a `track` names, as far as they are well formed: at most 32, each keyed, an element or a point. */
+function marksOf(list) {
+  if (!Array.isArray(list)) return [];
+  const share = (n) => typeof n === 'number' && n >= 0 && n <= 1;
+  return list
+    .flatMap((m) => {
+      if (!m || typeof m.key !== 'string' || m.key.length > 8192) return [];
+      const desc = m.desc && typeof m.desc.ctx === 'string' && typeof m.desc.node === 'string' ? m.desc : null;
+      const point = m.point && share(m.point.x) && share(m.point.y) ? { x: m.point.x, y: m.point.y } : null;
+      return desc || point ? [{ key: m.key, desc, point }] : [];
+    })
+    .slice(0, 32);
+}
+const sameMarks = (a, b) => a.length === b.length && a.every((m, i) => m.key === b[i].key && sameDesc(m.desc, b[i].desc) && m.point?.x === b[i].point?.x && m.point?.y === b[i].point?.y);
 function isSeparator(el) {
   return el.tagName === 'HR' || el.classList.contains('so-band') || el.classList.contains('so-band-icon');
 }
@@ -398,7 +472,12 @@ function sendRects() {
   const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   // Each tracked slot's placeholder where it first shows, with what it was measured for.
   const slots = mode === 'edit' ? trackedSlots.flatMap((desc) => { const box = findAll(desc).map(rectOf).find(Boolean); return box ? [{ desc, box }] : []; }) : [];
-  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
+  const marks = trackedMarks.flatMap((m) => {
+    // An element that shows nowhere at this width (a spotlight on a copy hidden here) falls back to its point.
+    const box = (m.desc ? findAll(m.desc).map(rectOf).find((r) => r && (r.width || r.height)) : null) ?? (m.point ? pointBox(m.point) : null);
+    return box ? [{ key: m.key, box }] : [];
+  });
+  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, marks, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
   const seen = JSON.stringify([navigationId, revision, report]);
   if (timeRects) measuringMs += performance.now() - t0;
   if (seen === rectsPosted) return;
@@ -5114,6 +5193,8 @@ window.addEventListener('message', async (e) => {
       if (shownHold && !sameDesc(shownHold.desc, selected)) shownHold = null;
       if (m.payload.hovered !== undefined) hovered = m.payload.hovered;
       trackedSlots = Array.isArray(m.payload.slots) ? m.payload.slots.filter((d) => d && typeof d.slot === 'string').slice(0, 50) : [];
+      const marksWere = trackedMarks;
+      trackedMarks = marksOf(m.payload.marks);
       timeRects = m.payload.timed === true;
       rectsPosted = '';
       // Only what is hovered changed, and the next frame has nothing to do before it measures (a reveal to put in place, a
@@ -5121,7 +5202,7 @@ window.addEventListener('message', async (e) => {
       // outline in its next frame, not the one after, and it keeps up with the pointer. The next frame measures again
       // either way, after what the page itself does in it (a component moving what the pointer reached), and reports
       // only what that changed.
-      const hoverOnly = !sameDesc(was.hovered, hovered) && sameDesc(was.selected, selected) && was.slots.length === trackedSlots.length && was.slots.every((d, i) => sameDesc(d, trackedSlots[i]));
+      const hoverOnly = !sameDesc(was.hovered, hovered) && sameDesc(was.selected, selected) && was.slots.length === trackedSlots.length && was.slots.every((d, i) => sameDesc(d, trackedSlots[i])) && sameMarks(marksWere, trackedMarks);
       if (hoverOnly && !revealDirty && !revealPlace && !pendingScroll && !shownHold && !keepHold) sendRects();
       scheduleRects();
       break;
@@ -5388,7 +5469,7 @@ window.addEventListener('message', async (e) => {
 window.addEventListener(
   'scroll',
   (e) => {
-    if (e.target === document || selected || reveal || (hovered && mode === 'edit')) scheduleRects();
+    if (e.target === document || selected || reveal || trackedMarks.length || (hovered && mode === 'edit')) scheduleRects();
   },
   { passive: true, capture: true }
 );
@@ -5431,7 +5512,7 @@ new MutationObserver(() => {
   // Outlines are measured again only while there is one to keep in place, or an element a scroll waits for. With
   // nothing selected, hovered while editing or revealed, the editor already has none, so a change to the page is
   // neither measured nor reported.
-  if (revealDirty || selected || pendingScroll || emptySpace || (hovered && mode === 'edit')) scheduleRects();
+  if (revealDirty || selected || pendingScroll || emptySpace || trackedMarks.length || (hovered && mode === 'edit')) scheduleRects();
   // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
   if (forced) markForced();
   // A text marker changing in place is watched too: the row being typed in may now show another list item.

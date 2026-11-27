@@ -26,6 +26,7 @@ import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
 import { syncedEntryChange } from '@engine/collections';
 import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
+import { formRoutingChanges, formRoutingGranted, formRoutingRefusal, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { adviceValidation, blocksSaving, coreValidation, diagnosticKey, introducedDiagnostics, joinValidation, validateState, type CoreValidation, type Diagnostic } from '@engine/validate';
@@ -34,7 +35,7 @@ import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { HISTORY_LIMIT } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
+import { defFile, designCalled, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile, type PackFileCopy } from '@generator/index';
 import type { ComponentImport } from '@engine/component-package';
 import { sendsFormMessages } from '@shared/form-contract';
 import { GenerationCache } from '@generator/cache';
@@ -43,7 +44,7 @@ import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, codeAxisPropProblems, codeContractNames, componentSources } from '../codecheck';
+import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, componentSources } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
@@ -84,6 +85,8 @@ export interface OpenOptions {
 export const SOURCE_DRAFTS = 'ai-runs';
 /** Which property each variant axis of a definition arrives in, comparable between two versions of it. */
 const axisPropsKey = (def: ComponentDefinition) => JSON.stringify(axesOf(def).map(([axis, a]) => [axis, a.prop]).sort(([a], [b]) => String(a).localeCompare(String(b))));
+/** What a code component's code is held to of its manifest (see codeManifestProblems): its axes' props and its properties. */
+const manifestKey = (def: ComponentDefinition) => `${axisPropsKey(def)}|${JSON.stringify(def.properties ?? {})}`;
 /** A run's ID as the orchestrator makes it (newId): safe to name a folder with. */
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -1509,6 +1512,8 @@ export class ProjectSession extends EventEmitter {
       await checkSvelteSource(def.source, {
         filename: def.sourcePath,
         contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties },
+        // The design's properties, which the converted file must still take under the keys its design's file did.
+        manifest: { ...def, designFile: true },
         resolve,
         modules: exists
       })
@@ -3065,11 +3070,12 @@ export class ProjectSession extends EventEmitter {
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
    * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant), and
    * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts).
+   * `formRouting` is what the user allowed of an AI batch that changes where a contact form sends (engine/form-routing).
    * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
    */
   apply(
     batch: EditBatch,
-    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
+    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; formRouting?: FormRoutingGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
     // An edit's own work, once it is its turn (src/shared/perf.ts): the wait for that is the rest of controller.apply.
     return this.serialize(timed('session.apply', async (): Promise<ApplyResult> => {
@@ -3203,15 +3209,17 @@ export class ProjectSession extends EventEmitter {
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined) continue;
         const was = this.state.components[def.id];
-        // The props its axes arrive in, checked alone against code that passed its other checks: unchanged code (a
+        // What its code is held to of its manifest (a design's edited file takes what the design's file took: see
+        // the generator's designCalled), checked alone against code that passed its other checks: unchanged code (a
         // theme refresh among them), or code the app ships.
+        const manifest = designCalled(next, def) ? { ...def, designFile: true } : def;
         const axesOnly = async () => {
-          const errors = ((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []).filter((p) => p.severity === 'error');
-          return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
+          const errors = [...((await codeAxisPropProblems(def.source!, def.variantAxes)) ?? []), ...((await codeManifestProblems(def.source!, manifest, opts.source === 'ai' || importing)) ?? [])].filter((p) => p.severity === 'error');
+          return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
         };
         if (was?.source === def.source) {
-          // Unchanged code passed its checks when it was saved: only a change of the props its axes arrive in is checked.
-          if (axisPropsKey(was) === axisPropsKey(def)) continue;
+          // Unchanged code passed its checks when it was saved: only a change of what it is held to of its manifest is.
+          if (manifestKey(was) === manifestKey(def)) continue;
           const refused = await axesOnly();
           if (refused) return refused;
           continue;
@@ -3223,7 +3231,7 @@ export class ProjectSession extends EventEmitter {
         const shipped = (c: ComponentDefinition) => c.kind === 'code' && c.source === def.source && (def.owner === 'theme' || (importing && JSON.stringify(c.properties) === JSON.stringify(def.properties)));
         const shippedAs = (def.owner === 'theme' || importing) && listThemes().flatMap((t) => (t.source !== 'user' ? t.components.filter(shipped) : []));
         if (shippedAs && shippedAs.length) {
-          if (shippedAs.some((c) => axisPropsKey(c) === axisPropsKey(def))) continue;
+          if (shippedAs.some((c) => manifestKey(c) === manifestKey(def))) continue;
           const refused = await axesOnly();
           if (refused) return refused;
           continue;
@@ -3237,6 +3245,8 @@ export class ProjectSession extends EventEmitter {
             filename: def.sourcePath,
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
             ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties } } : {}),
+            // Its code takes what its properties hold, and nothing they do not.
+            manifest,
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }
@@ -3280,6 +3290,16 @@ export class ProjectSession extends EventEmitter {
       validating({ introduced: introduced.length });
       if (introduced.length)
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
+      // Where a contact form sends visitors' messages is the user's to change (#1128), however a batch of the assistant's
+      // gets there: it lands only with the user's say for exactly the changes it makes, given when the app asked them
+      // (agent/orchestrator.ts). Asked last, so the user is never asked about a batch that could not land anyway.
+      if (ai) {
+        const routing = formRoutingChanges(this.state, next);
+        if (!formRoutingGranted(routing, fingerprint, opts.formRouting)) {
+          const review: FormRoutingReview = { operations: fingerprint, changes: routing };
+          return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: formRoutingRefusal(routing), recoverable: true, details: { formRouting: review } } };
+        }
+      }
       let ev: SessionEvent;
       const persisting = perf.span('session.persist');
       try {
