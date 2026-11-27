@@ -289,6 +289,168 @@ describe('collection tools for every model', () => {
   });
 });
 
+describe('one block of an entry’s text (#1120)', () => {
+  type Row = { block: number; start: number; end: number; hash?: string; picture?: true };
+  type Part = { revision: number; text: string; offset: number; next: number | null; length: number; blocks: Row[] };
+  const tail = Array.from({ length: 80 }, (_, i) => `Later paragraph ${i + 1} runs on about the studio and its kiln, at some length, so the text needs several parts.`);
+  /** Two identical paragraphs, a captioned picture beside them, a list, and a tail long enough that the first part is all a model reads. */
+  function article(): ProjectState {
+    return applyOperations(blog(), [
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['Doors open at ten.', 'Doors open at ten.', { type: 'image', assetId: PHOTO.id, alt: 'The kiln', caption: 'Our kiln, fired' }, '- Clay', '- Glass', ...tail] }
+    ] as EditOperation[]).state;
+  }
+  const read = async (h: ToolHost, offset?: number, entryId = 'en_winter') => (await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId, ...(offset !== undefined ? { offset } : {}) })).content as unknown as Part;
+  const edit = (h: ToolHost, blockEdit: Record<string, unknown>, more: Record<string, unknown> = {}, entryId = 'en_winter') => tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId, ...more, blockEdit });
+
+  it('locates every block a part shows, with a hash for each block of text, in parts that still join up exactly', async () => {
+    const s = article();
+    const { h } = host(s);
+    const parts: Part[] = [];
+    for (let offset: number | null = 0, n = 0; offset !== null && n < 50; n++) {
+      const p = await read(h, offset);
+      expect(JSON.stringify(p.text).length - 2 + JSON.stringify(p.blocks).length).toBeLessThanOrEqual(ENTRY_PART_CHARS);
+      parts.push(p);
+      offset = p.next;
+    }
+    const whole = parts.map((p) => p.text).join('');
+    expect(parts.length).toBeGreaterThan(1);
+    expect(whole).toBe(richTextToMarkdown(entry(s, 'en_winter').body, s.pages));
+    const body = entry(s, 'en_winter').body;
+    const rows = new Map<number, Row>();
+    for (const p of parts)
+      for (const r of p.blocks) {
+        // Each row lies in the part it is listed with, and a block shown by two parts has the same row in both.
+        expect(r.start < p.offset + p.text.length && r.end >= p.offset).toBe(true);
+        if (rows.has(r.block)) expect(rows.get(r.block)).toEqual(r);
+        rows.set(r.block, r);
+      }
+    expect([...rows.keys()].sort((a, b) => a - b)).toEqual(body.map((_, i) => i));
+    for (const [i, r] of rows) expect(whole.slice(r.start, r.end)).toBe(richTextToMarkdown([body[i]], s.pages));
+    // The picture is marked, and has no hash; the two identical paragraphs have hashes of their own.
+    expect(rows.get(2)).toEqual({ block: 2, start: expect.any(Number), end: expect.any(Number), picture: true });
+    expect(rows.get(0)!.hash).toMatch(/^[0-9a-f]{12}$/);
+    expect(rows.get(0)!.hash).not.toBe(rows.get(1)!.hash);
+    // The same block of another entry hashes differently too.
+    const spring = await read(h, 0, 'en_spring');
+    expect(spring.blocks.map((r) => r.hash ?? 'picture')).not.toContain(rows.get(0)!.hash);
+  });
+
+  it('reads a text of many tiny paragraphs in parts its rows fit in, always moving on', async () => {
+    const s = applyOperations(blog(), [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: Array.from({ length: 300 }, (_, i) => `${i % 10}`) }] as EditOperation[]).state;
+    const { h } = host(s);
+    const texts: string[] = [];
+    let seen = 0;
+    for (let offset: number | null = 0, n = 0; offset !== null && n < 200; n++) {
+      const p = await read(h, offset);
+      expect(JSON.stringify(p.text).length - 2 + JSON.stringify(p.blocks).length).toBeLessThanOrEqual(ENTRY_PART_CHARS);
+      if (p.next !== null) expect(p.next).toBeGreaterThan(p.offset);
+      texts.push(p.text);
+      seen = Math.max(seen, ...p.blocks.map((r) => r.block));
+      offset = p.next;
+    }
+    expect(texts.join('')).toBe(richTextToMarkdown(entry(s, 'en_winter').body, s.pages));
+    expect(seen).toBe(299);
+  });
+
+  it('replaces the second of two identical paragraphs alone, keeping the first, the captioned picture beside it and the unread rest', async () => {
+    const s = article();
+    const { h, grants, now } = host(s);
+    const first = await read(h);
+    expect(first.next).not.toBeNull();
+    const second = first.blocks.find((r) => r.block === 1)!;
+    const r = await edit(h, { block: 1, hash: second.hash, revision: first.revision, text: 'Doors open at **eleven**.' });
+    expect(r).toMatchObject({ ok: true, mutated: true, content: { ok: true, collectionId: 'posts', entryId: 'en_winter', block: { block: 1, hash: expect.stringMatching(/^[0-9a-f]{12}$/) } } });
+    const before = entry(s, 'en_winter').body;
+    const after = entry(now(), 'en_winter').body;
+    expect(after).toEqual([before[0], { type: 'p', spans: [{ text: 'Doors open at ' }, { text: 'eleven', strong: true }, { text: '.' }] }, ...before.slice(2)]);
+    expect(after[2]).toEqual({ type: 'image', assetId: PHOTO.id, alt: 'The kiln', caption: 'Our kiln, fired' });
+    // One entry.update through the grant for this entry, with nothing else of the post or the project changed.
+    expect(r.ops!.map((o) => o.type)).toEqual(['entry.update']);
+    expect(grants).toEqual([{ collectionWrite: { kind: 'entry', collectionId: 'posts', entryId: 'en_winter' } }]);
+    expect({ ...entry(now(), 'en_winter'), body: undefined }).toEqual({ ...entry(s, 'en_winter'), body: undefined });
+    expect(entry(now(), 'en_spring')).toEqual(entry(s, 'en_spring'));
+    // The result's hash and revision are what a read gives now, and the other blocks keep theirs: the next edit goes on from them.
+    const again = await read(h);
+    const content = r.content as unknown as { revision: number; block: { hash: string } };
+    expect(again.revision).toBe(content.revision);
+    expect(again.blocks.find((b) => b.block === 1)!.hash).toBe(content.block.hash);
+    const grew = 'Doors open at **eleven**.'.length - 'Doors open at ten.'.length;
+    expect(again.blocks.filter((b) => b.block !== 1)).toEqual(first.blocks.filter((b) => b.block !== 1).map((b) => (b.start > second.start ? { ...b, start: b.start + grew, end: b.end + grew } : b)));
+    const list = first.blocks.find((b) => b.block === 3)!;
+    expect((await edit(h, { block: 3, hash: list.hash, revision: content.revision, text: '- Clay\n- Glass\n- Wood' }, { title: 'Winter hours, revised' })).ok).toBe(true);
+    expect(entry(now(), 'en_winter').body[3]).toEqual({ type: 'ul', items: [[{ text: 'Clay' }], [{ text: 'Glass' }], [{ text: 'Wood' }]] });
+    expect(entry(now(), 'en_winter').title).toBe('Winter hours, revised');
+    expect(entry(now(), 'en_winter').body.slice(4)).toEqual(before.slice(4));
+  });
+
+  it('refuses a stale hash or revision, the first duplicate’s hash for the second, and a paragraph added since, applying nothing', async () => {
+    const s = article();
+    const { h, grants, now } = host(s);
+    const p = await read(h);
+    const [a, b] = p.blocks;
+    const flipped = `${b.hash!.slice(0, -1)}${b.hash!.endsWith('0') ? '1' : '0'}`;
+    for (const blockEdit of [
+      { block: 1, hash: flipped, revision: p.revision, text: 'Changed.' },
+      { block: 1, hash: a.hash, revision: p.revision, text: 'Changed.' },
+      { block: 1, hash: b.hash, revision: p.revision - 1, text: 'Changed.' }
+    ]) {
+      const r = await edit(h, blockEdit, { title: 'Not this', categories: ['Not this either'] });
+      expect(r.content, JSON.stringify(blockEdit)).toMatchObject({ revision: p.revision, error: { code: 'STALE_REVISION', recoverable: true, message: expect.stringMatching(/block 1 of posts\/en_winter.*Nothing was applied\. Read that part of the entry again/) } });
+    }
+    expect(grants).toEqual([]);
+    expect(now()).toEqual(s);
+    // The author adds the same paragraph ahead of it: block 1 holds the same words still, but the read is out of date.
+    await h.apply([{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['Doors open at ten.', ...entry(s, 'en_winter').body] } as EditOperation], p.revision, 'Author', 'author', { collectionWrite: { kind: 'entry', collectionId: 'posts', entryId: 'en_winter' } });
+    const moved = structuredClone(now());
+    expect((await edit(h, { block: 1, hash: b.hash, revision: p.revision, text: 'Changed.' })).content).toMatchObject({ error: { code: 'STALE_REVISION' } });
+    expect(now()).toEqual(moved);
+  });
+
+  it('changes only a block of text: never the picture, a picture line, two blocks or a list joining its neighbour', async () => {
+    const s = applyOperations(article(), [
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['- Clay', 'Between the lists.', '- Glass', { type: 'image', assetId: PHOTO.id, alt: 'Kiln', caption: 'Fired' }] }
+    ] as EditOperation[]).state;
+    const { h, grants, now } = host(s);
+    const p = await read(h);
+    const at = (i: number) => p.blocks.find((r) => r.block === i)!;
+    const refused = async (blockEdit: Record<string, unknown>, pattern: RegExp, more: Record<string, unknown> = {}, entryId?: string) =>
+      expect((await edit(h, { revision: p.revision, ...blockEdit }, more, entryId)).content, JSON.stringify(blockEdit)).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(pattern) } });
+    await refused({ block: 2, hash: 'whatever', text: 'A new caption' }, /blockEdit\.block: block 2 of posts\/en_winter is a picture/);
+    await refused({ block: 1, hash: at(1).hash, text: '![The kiln](asset:a_kiln "Our kiln, fired")' }, /blockEdit\.text: a picture is placed by the author/);
+    await refused({ block: 1, hash: at(1).hash, text: 'One paragraph.\n\nAnd another.' }, /makes 2 blocks, and blockEdit changes one/);
+    await refused({ block: 1, hash: at(1).hash, text: '   ' }, /blockEdit\.text: the block is empty/);
+    await refused({ block: 1, hash: at(1).hash, text: 'See [the shop](/no-such-page/).' }, /blockEdit\.text: the block: no page or entry has the route/);
+    await refused({ block: 99, hash: at(1).hash, text: 'Changed.' }, /blockEdit\.block: the entry's text has 84 blocks \(0 to 83\)/);
+    await refused({ block: 1, hash: at(1).hash, text: 'Changed.' }, /send blockEdit or body, not both/, { body: [] });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', title: 'New', blockEdit: { block: 0, hash: 'whatever', revision: p.revision, text: 'Changed.' } })).content).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/a block edit changes a block of an entry that exists/) } });
+    // A list sent between two lists would make them one.
+    const spring = await read(h, 0, 'en_spring');
+    const mid = spring.blocks.find((r) => r.block === 1)!;
+    await refused({ block: 1, hash: mid.hash, revision: spring.revision, text: '- Wood' }, /would join or change the block next to it/, {}, 'en_spring');
+    expect(grants).toEqual([]);
+    expect(now()).toEqual(s);
+    // A heading in its place is one block, and the lists and the picture stay.
+    expect((await edit(h, { block: 1, hash: mid.hash, revision: spring.revision, text: '### Between' }, {}, 'en_spring')).ok).toBe(true);
+    expect(entry(now(), 'en_spring').body).toEqual([entry(s, 'en_spring').body[0], { type: 'h3', spans: [{ text: 'Between' }] }, ...entry(s, 'en_spring').body.slice(2)]);
+  });
+
+  it('refuses a block edit of another post in a run limited to one, before reading anything of it', async () => {
+    const s = article();
+    const { h, grants, now } = host(s, requestAuthority({ pageId: 'pg_any', pageTitle: 'Home', selection: null, selectionLabel: null, post: { collectionId: 'posts', entryId: 'en_spring', title: 'Spring' } }, s));
+    const other = await read(host(s).h);
+    for (const hash of [other.blocks[0].hash, 'not-a-hash'])
+      expect((await edit(h, { block: 0, hash, revision: other.revision, text: 'Changed.' })).content).toMatchObject({ error: { code: 'SCOPE_MISMATCH', message: 'entryId: this request is about the post “Spring open studio” (posts/en_spring) alone, so only it can be changed. Nothing was applied.' } });
+    expect(grants).toEqual([]);
+    expect(now()).toEqual(s);
+    // Its own post's blocks it may change.
+    const own = await read(h, 0, 'en_spring');
+    const p = own.blocks.find((r) => r.block === 1)!;
+    expect((await edit(h, { block: 1, hash: p.hash, revision: own.revision, text: 'Twenty new makers join us this year.' }, {}, 'en_spring')).ok).toBe(true);
+    expect(entry(now(), 'en_spring').body.map((b) => b.type)).toEqual(['h2', 'p', 'image', 'ul']);
+    expect(entry(now(), 'en_winter')).toEqual(entry(s, 'en_winter'));
+  });
+});
+
 describe('a request about one post', () => {
   const postCtx = { pageId: 'pg_any', pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, post: { collectionId: 'posts', entryId: 'en_spring', title: 'Old title' } } as ChatContext;
 
