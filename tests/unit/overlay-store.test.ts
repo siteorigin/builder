@@ -27,7 +27,7 @@ beforeAll(async () => {
 });
 
 const box = (x: number, y: number, width: number, height: number): Box => ({ x, y, width, height });
-const rects = (selected: Box[]): Rects => ({ selected, hovered: [box(0, 0, 10, 10)], revealed: [] });
+const rects = (selected: Box[]): Rects => ({ selected, hovered: [box(0, 0, 10, 10)], revealed: [], headers: [] });
 const hero: ElementRef = { owner: { kind: 'page', id: 'home' }, instancePath: [], nodeId: 'hero' };
 
 describe('the canvas overlay’s state', () => {
@@ -51,7 +51,7 @@ describe('the canvas overlay’s state', () => {
       expect(getOverlay()).toBe(drawn);
     } finally {
       off();
-      setOverlay({ hover: null, rects: { selected: [], hovered: [], revealed: [] } });
+      setOverlay({ hover: null, rects: { selected: [], hovered: [], revealed: [], headers: [] } });
     }
   });
 

@@ -463,10 +463,11 @@ const live = create<State>((set) => ({
 export interface OverlayState {
   /** What the pointer is over on the page, or a Layers row is. */
   hover: ElementRef | null;
-  /** `revealed`: the list item open in the inspector, outlined on the page (see revealedItem). */
-  rects: { selected: Rect[]; hovered: Rect[]; revealed: Rect[] };
+  /** `revealed`: the list item open in the inspector, outlined on the page (see revealedItem). `headers`: the shared
+   *  header, which the canvas's Add buttons keep off. */
+  rects: { selected: Rect[]; hovered: Rect[]; revealed: Rect[]; headers: Rect[] };
 }
-const overlay = create<OverlayState>(() => ({ hover: null, rects: { selected: [], hovered: [], revealed: [] } }));
+const overlay = create<OverlayState>(() => ({ hover: null, rects: { selected: [], hovered: [], revealed: [], headers: [] } }));
 export const getOverlay = overlay.getState;
 export const setOverlay = (p: Partial<OverlayState>) => overlay.setState(p);
 /** The shape of the selection's first box on the canvas (its width over its height), or null with none to measure: what

@@ -48,7 +48,7 @@ const ENTRY = [
   '}',
   "flushSync(() => useStore.setState({ leftTab: 'insert', zoom: 1, pageId: 'p1', snapshot: { workspaceKey: 'w1' } }));",
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Editor)));",
-  'window.so = { set: (patch) => flushSync(() => useStore.setState(patch)), box: (b) => flushSync(() => setOverlay({ rects: { selected: [b], hovered: [], revealed: [] } })) };'
+  'window.so = { set: (patch) => flushSync(() => useStore.setState(patch)), box: (b) => flushSync(() => setOverlay({ rects: { selected: [b], hovered: [], revealed: [], headers: [] } })) };'
 ].join('\n');
 
 /** The preload bridge: every call answers nothing. */

@@ -300,6 +300,13 @@ function emptyArea() {
   return { key: emptySpace.key, top: r.top, height: r.height, headerBottom: Math.max(0, ...headers.map((h) => h.y + h.height)) };
 }
 
+/** The shared header's boxes, one for each thing it holds at its top level: the editor keeps its Add buttons off them. */
+function headerBoxes() {
+  if (mode !== 'edit') return [];
+  const shell = '[data-so-ctx="shell:header"], [data-so-ctx^="shell:header|"]';
+  return [...document.querySelectorAll(shell)].filter((el) => !el.parentElement?.closest(shell)).map(rectOf).filter((r) => r && r.width && r.height);
+}
+
 let raf = 0;
 function scheduleRects() {
   if (raf) return;
@@ -353,7 +360,7 @@ function sendRects() {
   const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   // Each tracked slot's placeholder where it first shows, with what it was measured for.
   const slots = mode === 'edit' ? trackedSlots.flatMap((desc) => { const box = findAll(desc).map(rectOf).find(Boolean); return box ? [{ desc, box }] : []; }) : [];
-  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
+  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), headers: headerBoxes(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
   const seen = JSON.stringify([navigationId, revision, report]);
   if (timeRects) measuringMs += performance.now() - t0;
   if (seen === rectsPosted) return;
