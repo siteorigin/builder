@@ -2173,7 +2173,7 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Answer the assistant’s questions, and keep working while it runs',
     start: 'A project, the AI tab open, an interview request sent',
     routes: ['chat:Question › choice', 'chat:Message', 'chat:Conversations', 'panel:right panel tabs'],
-    outcome: 'Each question waits above the composer, which becomes the answer box; an empty answer sends nothing; a choice or Enter answers and every exchange stays after reopening; while it reads or waits, the editor says who must act and editing goes on; switching threads mid-run is refused',
+    outcome: 'Each question waits above the composer, which becomes the answer box; an empty answer sends nothing; a choice or Enter answers and every exchange stays after reopening; while it reads or waits, the editor says who must act and editing goes on; another thread opens mid-run while the run goes on in its own',
     scenario: 'Blank starter · scripted model server; business-v1 · scripted',
     proof: [
       { test: 'tests/e2e/ai-questions.mjs', kind: 'e2e', step: 'the first question waits above the composer, which becomes the answer box' },
@@ -2183,7 +2183,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/chat-questions.test.ts', kind: 'unit' },
       { test: 'tests/e2e/ai-ask.mjs', kind: 'e2e', step: 'while the AI reads, the editor says so and the author keeps editing' },
       { test: 'tests/e2e/ai-questions.mjs', kind: 'e2e', step: 'while it waits, the editor says who must act and nothing keeps moving (issue #267)' },
-      { test: 'tests/e2e/assistant.mjs', kind: 'driver', step: 'mid-run: switching threads is refused, the dock switches away and back' }
+      { test: 'tests/e2e/assistant.mjs', kind: 'driver', step: 'mid-run: another thread opens while the run goes on in its own, the dock switches away and back, and the held run’s wait is its own' }
     ]
   },
   {
