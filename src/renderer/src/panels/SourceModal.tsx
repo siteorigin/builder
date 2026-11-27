@@ -9,6 +9,7 @@ import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor, type CodeEditorHandle } from '../components/CodeEditor';
 import { PropSchemaEditor, hiddenEdits, propertiesFromRows, renamesFromRows, rowsFromProperties, schemaProblems, type SchemaRow } from './PropSchemaEditor';
 import { propertiesHash } from '@shared/ops';
+import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */

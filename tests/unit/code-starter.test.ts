@@ -4,7 +4,9 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { createElement, type ReactNode } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { compile } from 'svelte/compiler';
 import { render } from 'svelte/server';
 import type { Component } from 'svelte';
@@ -16,6 +18,12 @@ import { applyOperations } from '@engine/apply';
 import { codeTakesOverrides } from '@engine/tree';
 import { generateProject, pageFile } from '@generator/index';
 import { checkSvelteSource, codeContractNames, withoutCodeMarkers } from '../../src/main/codecheck';
+
+// The dialog's frame is a portal, which a server render cannot hold: its content is rendered in place.
+vi.mock('../../src/renderer/src/components/ui', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  Modal: ({ children, footer }: { children: ReactNode; footer?: ReactNode }) => createElement('div', null, children, footer)
+}));
 
 const roots: string[] = [];
 afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -88,6 +96,18 @@ async function renderHome(state: ProjectState, instrument: boolean) {
 }
 
 describe('the New code component starter', () => {
+  it('is what the New code component dialog opens with', async () => {
+    // The renderer reads `window` as it loads, and sits outside the Node type-check project: loaded by path.
+    vi.stubGlobal('window', { addEventListener: () => undefined, removeEventListener: () => undefined, matchMedia: () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }), builder: { platform: 'test' } });
+    try {
+      const path = '../../src/renderer/src/panels/SourceModal';
+      const dialog = (await import(/* @vite-ignore */ path)) as { NewCodeComponentModal: () => ReactNode };
+      expect(renderToStaticMarkup(createElement(dialog.NewCodeComponentModal))).toContain('Create and insert');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('declares a heading part, takes placement styles, and passes the code check with nothing to say', async () => {
     const { state, definitionId } = await placedTwice();
     const def = state.components[definitionId];
@@ -103,6 +123,8 @@ describe('the New code component starter', () => {
     ])('shows each placement’s own spacing and heading colour in %s', async (_, instrument) => {
       const { state } = await placedTwice();
       const page = await renderHome(state, instrument);
+      // The part's marker is the editor's: the website is built without it.
+      expect(page.body.includes('data-so-part="heading"')).toBe(instrument);
       const browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
       try {
         const tab = await browser.newPage({ viewport: { width: 1200, height: 800 } });
