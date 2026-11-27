@@ -1834,7 +1834,7 @@ export function SiteStyles() {
         </div>
         <nav className="insp-jump" aria-label="Jump to section">
           {JUMPS.map((j, i) => (
-            <button key={j.id} aria-current={here === i ? 'location' : undefined} onClick={() => (openSection(j.id), jump(i))}>
+            <button key={j.id} aria-current={here === i ? 'location' : undefined} onClick={() => jump(i, j.id)}>
               {j.label}
             </button>
           ))}

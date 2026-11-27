@@ -11,10 +11,22 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { nextMark, sectionAtLine, startMark, type JumpEvent, type JumpMark } from '../../src/renderer/src/lib/jump-mark';
 
 const COUNT = 6;
-// Six sections; Yours (4) and Site (5) are short and sit at the end, so no scroll brings Yours to the line at 300.
-const tops = (scroll: number) => [0, 400, 900, 1500, 1600, 1700].map((t) => t - scroll);
-const scrollTo = (scroll: number, atEnd = false): JumpEvent => ({ type: 'scroll', tops: tops(scroll), line: 300, atEnd, count: COUNT });
+// Six sections in a view 900 tall with its reading line at 300; Yours (4) is short and sits near the end, so no scroll
+// brings it to the line: at the end of the scroll (1250) Layout owns the line and the end marks Site.
+const TOPS = [0, 400, 900, 1500, 1600, 1700];
+const BOTTOMS = [400, 900, 1500, 1600, 1700, 2150];
+const scrollTo = (scroll: number, atEnd = false): JumpEvent => ({
+  type: 'scroll',
+  tops: TOPS.map((t) => t - scroll),
+  bottoms: BOTTOMS.map((b) => b - scroll),
+  line: 300,
+  viewTop: 0,
+  viewBottom: 900,
+  atEnd,
+  count: COUNT
+});
 const run = (events: JumpEvent[], from: JumpMark = startMark) => events.reduce(nextMark, from);
+const tops = (scroll: number) => TOPS.map((t) => t - scroll);
 
 describe('the jump links mark', () => {
   it('the section that owns the reading line, from the moment its top reaches it, and the last one at the end', () => {
@@ -26,10 +38,18 @@ describe('the jump links mark', () => {
     expect(sectionAtLine([], 300, false, 0)).toBe(0);
   });
 
-  it('the clicked section through the scroll it starts and after, even where the scroll alone would mark another', () => {
-    // Yours clicked: the smooth scroll passes through Colors and Text and comes to rest at the end, with Layout on the line.
-    const mark = run([scrollTo(0), { type: 'jump', index: 4 }, scrollTo(300), scrollTo(800), scrollTo(1250, true)]);
-    expect(mark).toEqual({ here: 4, held: true });
+  it('the clicked section on its way there and while it is in view, where the scroll alone would mark another', () => {
+    // Yours clicked: the smooth scroll passes Colors and Text, brings Yours into view and comes to rest at the end.
+    const steps = [scrollTo(300), scrollTo(800), scrollTo(1250, true)];
+    let mark = run([scrollTo(0), { type: 'jump', index: 4 }]);
+    expect(steps.map((e) => (mark = nextMark(mark, e)).here)).toEqual([4, 4, 4]);
+  });
+
+  it('by position again once something moves the clicked section out of view after it showed', () => {
+    const landed = run([{ type: 'jump', index: 4 }, scrollTo(1250, true)]);
+    expect(run([scrollTo(0)], landed)).toEqual({ here: 0, target: null, seen: false });
+    // Not yet in view, it stays marked however far the scroll still has to go.
+    expect(run([{ type: 'jump', index: 1 }, scrollTo(1250, true)]).here).toBe(1);
   });
 
   it('by position again the moment the author scrolls on their own, whichever link held the mark', () => {
@@ -42,8 +62,8 @@ describe('the jump links mark', () => {
   });
 
   it('a later click over an earlier one, held as the first was', () => {
-    const mark = run([{ type: 'jump', index: 4 }, scrollTo(1250), { type: 'jump', index: 1 }, scrollTo(800)]);
-    expect(mark).toMatchObject({ here: 1, held: true });
+    const mark = run([{ type: 'jump', index: 4 }, scrollTo(1250), { type: 'jump', index: 2 }, scrollTo(800), scrollTo(1250, true)]);
+    expect(mark).toMatchObject({ here: 2, target: 2, seen: true });
   });
 
   it('every section a plain scroll passes, when no link was clicked', () => {
@@ -75,7 +95,7 @@ const ENTRY = [
   "  const { here, jump, panel } = useJumpMark(JUMPS.length, '.ss-head');",
   '  return h("div", { className: "panel-body ss", id: "box", style: { height: "400px", overflow: "auto" }, ...panel },',
   '    h("div", { className: "insp-head ss-head", style: { position: "sticky", top: 0, zIndex: 2, padding: "12px 14px", background: "white" } },',
-  '      h("nav", { className: "insp-jump" }, JUMPS.map((j, i) => h("button", { key: j.id, id: "j" + i, "aria-current": here === i ? "location" : undefined, onClick: () => (openSection(j.id), jump(i)) }, j.label)))),',
+  '      h("nav", { className: "insp-jump" }, JUMPS.map((j, i) => h("button", { key: j.id, id: "j" + i, "aria-current": here === i ? "location" : undefined, onClick: () => jump(i, j.id) }, j.label)))),',
   '    JUMPS.map((j, i) => h(Section, { key: j.id, id: j.id, title: j.label, remember: false }, h("div", { style: { height: HEIGHTS[i] + "px" } }, h("input", { id: "f" + i, "aria-label": j.label })))));',
   '}',
   "createRoot(document.getElementById('root')).render(h(Panel));",
@@ -174,14 +194,13 @@ describe.skipIf(!browserInstalled)('the jump links in a browser', { timeout: 30_
     expect(await marked()).toEqual(['Yours']);
   });
 
-  it('marks by position again once the author scrolls on their own', async () => {
+  it('marks by position again once the author scrolls on their own, though the section is still in view', async () => {
     await page.click('#j4');
     await settled();
     const box = await page.locator('#box').boundingBox();
     await page.mouse.move(box!.x + 100, box!.y + 200);
-    await page.mouse.wheel(0, -900);
+    await page.mouse.wheel(0, -60);
     await settled();
-    expect(await scrollTop()).toBeLessThan(1400);
     const [only] = await marked();
     expect(only).not.toBe('Yours');
     expect(await marked()).toHaveLength(1);
@@ -206,6 +225,21 @@ describe.skipIf(!browserInstalled)('the jump links in a browser', { timeout: 30_
     expect(await marked()).toEqual(['Site']);
   });
 
+  it('marks by position again when the panel is moved some other way after the jump, away from its section', async () => {
+    await page.click('#j2');
+    await settled();
+    expect(await marked()).toEqual(['Text']);
+    await page.evaluate(`document.getElementById('box').scrollTop = 0`);
+    await settled();
+    expect(await marked()).toEqual(['Basics']);
+    // Focus moved in from outside the panel (Shift+Tab from the status bar) scrolls it with no key event of its own.
+    await page.click('#j1');
+    await settled();
+    await page.evaluate(`document.getElementById('f5').focus()`);
+    await settled();
+    expect(await marked()).toEqual(['Site']);
+  });
+
   it('marks only the clicked section when motion is reduced and the jump lands at once', async () => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.click('#j4');
@@ -214,21 +248,29 @@ describe.skipIf(!browserInstalled)('the jump links in a browser', { timeout: 30_
   });
 
   it('marks by position again when the author scrolls by key from the heading the jump focused', async () => {
-    await page.click('#j1');
+    await page.click('#j4');
     await settled();
-    expect(await marked()).toEqual(['Colors']);
     // The jump put focus on the section's heading, a button.
     expect(await page.evaluate(`document.activeElement.className`)).toContain('section-head');
-    await page.keyboard.press('End');
+    await page.keyboard.press('ArrowUp');
     await settled();
-    expect(await marked()).toEqual(['Site']);
+    const [only] = await marked();
+    expect(only).not.toBe('Yours');
+    expect(await marked()).toHaveLength(1);
   });
 
-  it('keeps its mark through a reveal while it is hidden behind another tab', async () => {
-    await page.evaluate(`document.getElementById('box').style.display = 'none'; openSection('layout')`);
-    await page.evaluate(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r))))`);
+  it('keeps its mark through a reveal in another tab while it is hidden, and after it shows again', async () => {
+    await page.click('#j4');
+    await settled();
+    const frames = `new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r))))`;
+    await page.evaluate(`document.getElementById('box').style.display = 'none'; openSection('elsewhere')`);
+    await page.evaluate(frames);
     await page.evaluate(`document.getElementById('box').style.display = ''`);
-    expect(await marked()).toEqual(['Basics']);
+    await page.evaluate(frames);
+    expect(await marked()).toEqual(['Yours']);
+    // Shown again, a measure (a resize, a stray scroll event) still finds the jump's section held.
+    await page.evaluate(`document.getElementById('box').dispatchEvent(new Event('scroll'))`);
+    expect(await marked()).toEqual(['Yours']);
   });
 
   const look = (id: string) =>
