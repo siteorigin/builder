@@ -1134,15 +1134,17 @@ const COLUMN_FULL_VAR = '--_so-full-start';
 export const COLUMN_START_DECL = `grid-column-start: var(${COLUMN_FULL_VAR}, var(${COLUMN_LINE_VAR}, auto))`;
 
 /**
- * One property's declarations in the form custom CSS can hold: literal values, for a rule written again after a
- * weaker custom shorthand.
+ * One property's declarations in the form custom CSS can hold, for a rule written again after a weaker custom
+ * shorthand. A grid item's start line is written as the start and span that won at that size compose it.
  */
-function literalCss(prop: string, value: StyleValue): string[] {
+function literalCss(prop: string, value: StyleValue, won: { columnStart?: StyleValue; columnSpan?: StyleValue }): string[] {
   const out = styleToCss(prop, value);
   if (!out.length || (prop !== 'columnStart' && prop !== 'columnSpan')) return out;
-  const v = String(value).trim();
-  if (prop === 'columnStart') return [`grid-column-start: ${v}`];
-  return [v === 'full' ? 'grid-column: 1 / -1' : `grid-column: span ${Number(v)} / span ${Number(v)}`];
+  const read = (v: StyleValue | undefined) => String(v ?? '').trim();
+  const span = read(won.columnSpan);
+  const line = Number(read(won.columnStart)) || undefined;
+  if (prop === 'columnStart') return [`grid-column-start: ${span === 'full' ? 1 : (line ?? 'auto')}`];
+  return [span === 'full' ? 'grid-column: 1 / -1' : `grid-column: ${line ?? `span ${Number(span)}`} / span ${Number(span)}`];
 }
 
 /**
@@ -1697,6 +1699,7 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
     best.delete('customCss');
     best.delete('hidden');
     const named = [...best.values()];
+    const wonAt = new Map(named.map((d) => [d.prop, d.value]));
     // A layer with a value kept off phones writes its custom CSS again in that tablet-and-up rule, after it.
     const wideAgain = (d: CascadeDecl): CascadeDecl =>
       size !== 'phone' && d.bucket === 'base' && decls.some((x) => x.index === d.index && x.bucket === 'wide' && styleToCss(x.prop, x.value).length) ? { ...d, bucket: 'wide' } : d;
@@ -1717,7 +1720,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
         const under = stronger.filter((n) => names(n).some((q) => covers(p, q))).sort((a, b) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop));
         // A background image cannot be written in custom CSS: it keeps its picture, and the shorthand over it goes.
         if (under.some((n) => n.prop === 'backgroundImage')) continue;
-        const replayed = under.flatMap((n) => literalCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display'));
+        const won = { columnStart: wonAt.get('columnStart'), columnSpan: wonAt.get('columnSpan') };
+        const replayed = under.flatMap((n) => literalCss(n.prop, n.value, won)).filter((d) => !d.startsWith('--') && !d.startsWith('display'));
         const again = replayed.filter((d) => !parseCustomCss(d).error);
         // What the stronger property writes cannot go in custom CSS: it keeps its value, and the shorthand goes.
         if (again.length < replayed.length) continue;

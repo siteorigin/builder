@@ -615,9 +615,10 @@ describe('the uneven layout starters come with their empty cells, in one change 
     // Spans only on desktop: a phone or tablet keeps one column, with no tracks grown to fit a span.
     expect(rule(grid.id, null)).toContain('grid-template-columns: repeat(1, minmax(0, 1fr))');
     expect(rule(grid.id, DESKTOP)).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))');
+    expect(rule(featured.id, DESKTOP)).toContain('grid-column-start: var(--_so-full-start, var(--_so-column-line, auto));');
     expect(rule(featured.id, DESKTOP)).toContain('grid-column-end: span 2;');
     expect(rule(tall.id, DESKTOP)).toContain('grid-row: span 2 / span 2');
-    for (const media of [null, PHONE, TABLET_UP, TABLET]) for (const c of cells) expect(rule(c.id, media)).not.toMatch(/grid-(column|row):/);
+    for (const media of [null, PHONE, TABLET_UP, TABLET]) for (const c of cells) expect(rule(c.id, media)).not.toMatch(/grid-(column(-start|-end)?|row):/);
     // Tablets keep the one column: nothing for the grid between phone and desktop.
     for (const media of [TABLET_UP, TABLET]) expect(rule(grid.id, media)).toBe('');
   });

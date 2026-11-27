@@ -409,6 +409,7 @@ describe('the Inspector’s style rows for a grid item', () => {
       expect(plan.rows.filter((r) => /^(column|row)(Start|Span)$/.test(r.property)).map((r) => [r.property, r.status]).sort()).toEqual([['columnSpan', 'change'], ['columnStart', 'change'], ['rowSpan', 'change']]);
       expect(plan.operations).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: target, partId: 'root', scope: 'desktop', property: 'rowSpan', value: '3' })]));
     }
+    expect(planStylePaste(s.state, copy, s.ref(nested), 'every').operations).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: nested, partId: 'root', scope: 'desktop', property: 'columnStart', value: '3' })]));
     expect(planStylePaste(s.state, copy, s.ref(nested), 'desktop').operations.map((o) => (o as { property: string }).property).sort()).toEqual(['columnStart', 'rowSpan']);
   });
 });

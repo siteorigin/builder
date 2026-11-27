@@ -57,7 +57,7 @@ describe.skipIf(!installed)('where the browser puts a grid item', () => {
       const out: string[] = [];
       for (const size of SIZES) {
         await page.setViewportSize({ width: VIEWPORT_PRESETS[size], height: 800 });
-        out.push(await page.$eval('#item', (el) => `${getComputedStyle(el).gridColumnStart} | ${getComputedStyle(el).gridColumnEnd}`));
+        out.push(await page.evaluate<string>(`(({ gridColumnStart, gridColumnEnd }) => gridColumnStart + ' | ' + gridColumnEnd)(getComputedStyle(document.querySelector('#item')))`));
       }
       return out;
     } finally {
@@ -95,6 +95,9 @@ describe.skipIf(!installed)('where the browser puts a grid item', () => {
     expect((await placed(css, NESTED)).slice(1)).toEqual(['auto | span 2', 'auto | span 2']);
     const outer = pageCss({ base: { columnSpan: '2' } }, { base: { columnStart: '6', columnSpan: '2' } });
     expect((await placed(outer, NESTED)).slice(1)).toEqual(['auto | span 2', 'auto | span 2']);
+    // A start alone writes no span to clear the outer item's Full width with.
+    const started = pageCss({ base: { columnStart: '2' } }, { base: { columnSpan: 'full' } });
+    expect((await placed(started, NESTED)).slice(1)).toEqual(['2 | auto', '2 | auto']);
   });
 
   it('composes the same inside a managed component: its design, a look and a placement’s change', async () => {
@@ -136,5 +139,25 @@ describe.skipIf(!installed)('where the browser puts a grid item', () => {
     ];
     // On phones the line for all sizes does not apply, so the custom CSS places it alone.
     expect(await folded(layers)).toEqual(['2 | 5', '3 | 5', '3 | 5']);
+  });
+
+  const custom: StyleLayer = { styles: { base: { customCss: 'grid-column: 2 / 5' } }, strength: 1 };
+
+  it('keeps Full width on line 1 when folding it with a start over a weaker custom grid-column', async () => {
+    const layers: StyleLayer[] = [custom, { styles: { desktop: { columnStart: '3' } }, strength: 2 }, { styles: { desktop: { columnSpan: 'full' } }, strength: 3 }];
+    expect(await folded(layers)).toEqual(['2 | 5', '2 | 5', '1 | -1']);
+    // A Full width under the custom CSS still claims line 1 from the start above it.
+    const under: StyleLayer[] = [{ styles: { base: { columnSpan: 'full' } }, strength: 1 }, { ...custom, strength: 2 }, { styles: { desktop: { columnStart: '3' } }, strength: 3 }];
+    expect(await folded(under)).toEqual(['2 | 5', '2 | 5', '1 | 5']);
+  });
+
+  it('keeps a weaker start under a stronger span written again over a custom grid-column', async () => {
+    const layers: StyleLayer[] = [{ styles: { desktop: { columnStart: '3' } }, strength: 1 }, { ...custom, strength: 2 }, { styles: { desktop: { columnSpan: '2' } }, strength: 3 }];
+    expect(await folded(layers)).toEqual(['2 | 5', '2 | 5', '3 | span 2']);
+  });
+
+  it('leaves a start beneath the fold where it is, under a weaker span of the result', () => {
+    const layers: StyleLayer[] = [{ styles: { desktop: { columnStart: '3' } }, strength: 2 }, { styles: { desktop: { columnSpan: '2' } }, strength: 1 }];
+    expect(flattenStyles(layers, { beneath: 1 })).toEqual({ desktop: { columnSpan: '2' } });
   });
 });

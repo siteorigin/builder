@@ -4,7 +4,7 @@ import { validateOperation, type EditOperation } from '@shared/ops';
 import { tokenUsageCounts } from '@engine/tokens';
 import { validateState } from '@engine/validate';
 import { MIGRATIONS } from '@shared/migrations';
-import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, parseRowSize, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
+import { COLUMN_START_DECL, STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, parseRowSize, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
@@ -230,7 +230,7 @@ describe('grid tracks and row spans (#352)', () => {
     const item = `.so-n-${itemId}`;
     expect(ruleOf(section(text, WIDE), grid)).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr))');
     expect(ruleOf(section(text, WIDE), item)).toContain('grid-row: span 2 / span 2');
-    expect(ruleOf(section(text, WIDE), item)).toContain('grid-column-end: span 2;');
+    expect(ruleOf(section(text, WIDE), item)).toContain(`${COLUMN_START_DECL};\n\t\tgrid-column-end: span 2;`);
     expect(section(text, null)).not.toContain('18rem');
     expect(section(text, null)).not.toContain('grid-row');
     expect(section(text, null)).not.toContain('grid-column');
