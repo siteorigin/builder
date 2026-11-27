@@ -422,8 +422,8 @@ describe('what ships', () => {
       ['dark-error', 'color.error-on-inverse', 'color.inverse', 4.5, 'dark-error'],
       ['dark-error-edge', 'color.error-on-inverse', 'color.inverse', 3, 'dark-error-edge']
     ]);
-    // Signal and Editorial draw the same forms, so they check the same pairs.
-    for (const id of ['signal', 'editorial']) expect((getTheme(id).contrastPairs ?? []).filter((p) => p.fg.startsWith('color.error')).map((p) => p.id), id).toEqual(errorPairs.map(([pid]) => pid));
+    // The development fixture draws the same forms, so it checks the same pairs.
+    for (const id of ['foundation-alt']) expect((getTheme(id).contrastPairs ?? []).filter((p) => p.fg.startsWith('color.error')).map((p) => p.id), id).toEqual(errorPairs.map(([pid]) => pid));
   });
 
   it('measures error messages at 4.5:1 and the edges of fields to put right at 3:1, on the light grounds and in dark sections (#1016)', () => {
