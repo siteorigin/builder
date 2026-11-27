@@ -116,12 +116,13 @@ type SourceSnapshot = { ok: true; revision: number; state: ProjectState; milesto
 const FINGERPRINTED = new Set(['src', 'static', 'siteorigin']);
 
 /**
- * Whether the files of the project `dir` that a milestone in Git holds by their hashes (`files`, its documents too) and the export
- * fingerprints don't cover (its setup files) were copied into `dest` as the milestone holds them, before anything
+ * Whether the files of the project `dir` that a milestone in Git holds from disk by their hashes (`files`) and the
+ * export fingerprints don't cover (its setup files) were copied into `dest` as the milestone holds them, before anything
  * rewrote the copy: each with those very bytes, none removed from the project meanwhile (one the copy leaves out by
- * rule is still in the project), and no file at the project's top that a snapshot takes added since.
+ * rule is still in the project), and no file at the project's top that a snapshot takes added since, but for the
+ * milestone's documents (`docs`), which it holds as the app has them, checked to be the folder's before it was saved.
  */
-async function copiedAsCaptured(dir: string, dest: string, files: Map<string, string>): Promise<boolean> {
+async function copiedAsCaptured(dir: string, dest: string, files: Map<string, string>, docs: Set<string>): Promise<boolean> {
   const covered = (rel: string) => FINGERPRINTED.has(rel.split('/')[0]) || rel === VERCEL_CONFIG_FILE;
   const read = (abs: string) => fs.readFile(abs).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' || e.code === 'EISDIR' ? null : Promise.reject(e)));
   for (const [rel, hash] of files) {
@@ -129,7 +130,7 @@ async function copiedAsCaptured(dir: string, dest: string, files: Map<string, st
     const bytes = await read(join(dest, rel));
     if (bytes ? sha(bytes) !== hash : !existsSync(join(dir, rel))) return false;
   }
-  for (const e of await fs.readdir(dest, { withFileTypes: true })) if (e.isFile() && !covered(e.name) && !files.has(e.name) && snapshotPlace(e.name).kind === 'tree') return false;
+  for (const e of await fs.readdir(dest, { withFileTypes: true })) if (e.isFile() && !covered(e.name) && !files.has(e.name) && !docs.has(e.name) && snapshotPlace(e.name).kind === 'tree') return false;
   return true;
 }
 
@@ -4171,28 +4172,24 @@ export class Controller {
       const sources = opts.forBuild ? null : await this.sourcesCopyProblem(s);
       if (sources) return stop(sources);
       // The export's milestone (#1156): the project as this export copies it, listed once it is delivered. One that
-      // can't be saved stops the export before anything is delivered, unless the list of versions itself can't be used
-      // (unreadable, or from a newer app), which must never keep the site from being exported: the export says so.
+      // can't be saved (the list of versions unusable, the disk full, a file too large for a Git snapshot) never keeps
+      // the site from being exported: the export says so. A document changed outside the app and not loaded yet stops
+      // it, since the export would carry the folder's copy and the milestone the app's.
       let milestone: ExportedVersion | undefined;
       let unsaved: string | undefined;
       if (opts.milestone && opts.held) {
-        const unusable = s.versionsInfo().problem;
-        if (unusable) unsaved = `This export couldn’t be saved in Saved versions as “${opts.milestone}”: ${unusable}`;
-        else {
-          let captured: Awaited<ReturnType<ProjectSession['captureExported']>>;
-          try {
-            captured = await timed('export.milestone', () => s.captureExported(opts.milestone!))();
-          } catch (e) {
-            return stop(`The site couldn’t be saved in Saved versions as “${opts.milestone}”, so nothing was exported. ${(e as Error).message}`);
-          }
+        try {
+          const captured = await timed('export.milestone', () => s.captureExported(opts.milestone!))();
           if ('changed' in captured) return stop(`${captured.changed} changed outside the app. Export again in a moment.`);
           milestone = captured;
           opts.held.push(milestone.release);
+        } catch (e) {
+          unsaved = `This export couldn’t be saved in Saved versions as “${opts.milestone}”: ${(e as Error).message}`;
         }
       }
       await timed('export.copySource', () => copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) }))();
       // The files the fingerprints don't cover (the project's own setup files) are copied as the milestone holds them.
-      if (milestone?.version.git && !(await copiedAsCaptured(s.dir, dest, new Map([...milestone.files, ...Object.entries(milestone.version.docs)])))) return stop('The project changed on disk while it was being exported. Export again.');
+      if (milestone?.version.git && !(await copiedAsCaptured(s.dir, dest, milestone.files, new Set(Object.keys(milestone.version.docs))))) return stop('The project changed on disk while it was being exported. Export again.');
       await writeExportedSources(dest, s.state, { keep: !opts.forBuild });
       // The icons go out with the favicon they were made from: one replaced since would go out beside icons of the
       // picture it replaced. Only while icons cannot be made at all do those the project has go out as they are.

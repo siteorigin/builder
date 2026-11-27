@@ -4395,10 +4395,10 @@ export class ProjectSession extends EventEmitter {
    * one by that name): that one stands for it. Gives back the row that does. Run in turn with every other command.
    */
   private async listAuto(v: SavedVersion, name?: string): Promise<SavedVersion> {
-    // Capturing takes a while: another app may have taken the project over meanwhile, which a version kept as it is
-    // must not hide from what follows (a theme switch's save).
-    if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? LOCK_UNCHECKED);
     const kept = await this.versions.sameAs(v, name);
+    // Capturing (and reading a version's commit back) takes a while: another app may have taken the project over
+    // meanwhile, which a version kept as it is must not hide from what follows (a theme switch's save).
+    if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? LOCK_UNCHECKED);
     if (kept) return kept;
     const row = await this.versions.add(v);
     this.emit('history');
@@ -4429,7 +4429,7 @@ export class ProjectSession extends EventEmitter {
         const v = await this.captureAuto(STARTING_VERSION, { stop: () => this.leaving, signal: this.leavingAbort.signal });
         if (this.leaving) return false;
         const late = await this.unloadedEdit(new Set());
-        if (late) return false;
+        if (late || this.leaving) return false;
         await this.listAuto(v);
         return true;
       } catch (e) {
