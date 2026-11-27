@@ -32,6 +32,7 @@ import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
 import { electronSource, growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
 import { GALLERY_COUNT, galleryPhotos, type GalleryPhoto, PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos, SYNC_PHOTO_COUNT, syncPhotoName, syncPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
+import { ATTACHED_PX, readFrame, summarizeOffsets, type FrameReading, type Pixels, type ReadingGeometry } from './outline';
 import { displayName } from '../../src/engine/tree';
 
 /** The feature did not do its job: the iteration fails, whatever its timings. */
@@ -4050,6 +4051,255 @@ export const canvas: Scenario = {
 };
 
 // ---------------------------------------------------------------------------
+// outlineScroll
+// ---------------------------------------------------------------------------
+
+/** `outlineScroll`: the wheel scrolls the home page this many events of this many of the editor's pixels down and as
+ *  many back up, one every STEP_MS, with the hero selected: about a frame apart, as a trackpad sends them (#1307). */
+export const OUTLINE_SCROLL_STEPS = 24;
+export const OUTLINE_SCROLL_STEP = 12;
+/**
+ * The markers the scenario puts in the page below the hero's bottom edge, which scroll as the page does: each 8 × 30
+ * of the page's pixels, at a share of the page's width, starting this many of its pixels below the edge. Far enough
+ * apart that an overlay crossing one (an outline, a hover's hairline or name) cannot hide the first rows of all three.
+ * Left of the hover's name and the selection's spacing handle and Add button.
+ */
+const OUTLINE_MARKERS = [
+  { x: 0.14, below: 0 },
+  { x: 0.2, below: 40 },
+  { x: 0.26, below: 80 }
+];
+/** The column the outline's bottom edge is read in, a share of the page's width: clear of the markers, the spacing
+ *  handle in the middle of the edge and the Add button three quarters across. */
+const OUTLINE_COLUMN = 0.4;
+const MARKERS_ID = 'so-perf-outline-markers';
+
+/** The record of one attempt of `outlineScroll`'s window (any attempt without one). */
+const atOutline =
+  (edge: string, attempt?: number) =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.scenario === 'outlineScroll' && r.attrs?.edge === edge && (attempt === undefined || r.attrs?.attempt === attempt);
+
+/** The frames of the editor's window as Chromium composited them, from a CDP screencast, until `stop`. */
+async function screencast(win: Page) {
+  const cdp = await win.context().newCDPSession(win);
+  const shots: Array<{ data: string; t: number }> = [];
+  cdp.on('Page.screencastFrame', (f: { data: string; sessionId: number; metadata: { timestamp?: number } }) => {
+    shots.push({ data: f.data, t: (f.metadata.timestamp ?? NaN) * 1000 });
+    void cdp.send('Page.screencastFrameAck', { sessionId: f.sessionId }).catch(() => undefined);
+  });
+  await cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 });
+  return {
+    shots,
+    stop: async () => {
+      await cdp.send('Page.stopScreencast').catch(() => undefined);
+      await cdp.detach().catch(() => undefined);
+    }
+  };
+}
+
+/** A screencast frame's pixels. */
+async function pixelsOf(png: string): Promise<Pixels> {
+  const { default: sharp } = await import('sharp');
+  const { data, info } = await sharp(Buffer.from(png, 'base64')).raw().toBuffer({ resolveWithObject: true });
+  return { width: info.width, height: info.height, channels: info.channels, data };
+}
+
+export const outlineScroll: Scenario = {
+  name: 'outlineScroll',
+  after: 'open',
+  description: 'With the home hero selected, scroll the home page down and back with the wheel, and read off the frames Chromium drew how far the selection outline is from the hero while the page moves.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    expect(before, 'no project is open');
+    const shownHeading = findHeading(before.state.pages[fixture.homePageId], fixture.heroId)?.heading ?? fixture.heading;
+    const frame = preview(win);
+    // Not timed: the hero selected by a click on it, from nothing selected, as the selection toolbar shows.
+    await settledAgain(ctx);
+    await undisturbed(ctx, 'selecting the hero', async () => {
+      for (let i = 0; i < 4 && (await heroChip(win).count()); i++) await win.keyboard.press('Escape');
+      await frame.getByRole('heading', { name: shownHeading, exact: true, level: 1 }).first().click({ timeout: 15_000 });
+      await heroChip(win).waitFor({ timeout: 15_000 });
+    });
+    const box = await win.locator('.frame-box iframe').boundingBox();
+    expect(box, 'the preview frame has no box');
+    const view = await frame.locator('html').evaluate(() => {
+      const g = globalThis as unknown as { innerWidth: number; innerHeight: number };
+      return { width: g.innerWidth, height: g.innerHeight };
+    });
+    const z = box.width / view.width;
+    const editor = await win.evaluate(() => {
+      const g = globalThis as unknown as { innerHeight: number; devicePixelRatio: number };
+      return { height: g.innerHeight, dpr: g.devicePixelRatio };
+    });
+    const shownHeight = Math.min(box.height, editor.height - box.y);
+    // The pointer rests over the page a third of the way across, as `canvas`' does: clear of the selection's spacing
+    // handle and Add button, which take the wheel when they pass under it.
+    await win.mouse.move(box.x + box.width * 0.3, box.y + shownHeight / 2);
+    const periodMs = await framePeriod(win);
+    expect(Number.isFinite(periodMs) && periodMs > 0, 'the editor drew no frames at rest');
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await settledAgain(ctx);
+    await ctx.mark('scenario.start', { scenario: 'outlineScroll', periodMs });
+
+    const travel = OUTLINE_SCROLL_STEPS * OUTLINE_SCROLL_STEP;
+    let heroBox: { x: number; y: number; width: number; height: number } | null = null;
+    await undisturbed(ctx, 'the scroll', async (attempt) => {
+      // From the page's top every time: a page loaded again can come back where it was scrolled to.
+      await frame.locator('html').evaluate(() => (globalThis as unknown as { scrollTo(o: object): void }).scrollTo({ top: 0, behavior: 'instant' }));
+      expect((await settledScroll(frame)) === 0, 'the page would not go back to its top before the scroll');
+      // The hero's box as the page lays it out, and the markers put in the page below its bottom edge.
+      const hero = await frame.locator('html').evaluate(
+        (_html, a) => {
+          type Rect = { x: number; y: number; width: number; height: number; top: number; bottom: number };
+          type El = { getBoundingClientRect(): Rect; style: { cssText: string; top: string }; appendChild(c: El): void; remove(): void; id: string; firstElementChild: El | null; children: Iterable<El> };
+          const g = globalThis as unknown as { innerWidth: number; scrollX: number; scrollY: number; getComputedStyle(e: El): { display: string }; document: { querySelectorAll(s: string): Iterable<El>; getElementById(id: string): El | null; createElement(t: string): El; documentElement: El } };
+          const d = g.document;
+          // As the bridge measures what it outlines (rectOf): an element laid out as its children is their box. A
+          // loop, not a named helper: the scripts' compiler wraps those in a function the page does not have.
+          const found = [...d.querySelectorAll(`[data-so-node="${a.id}"]`)]
+            .map((e) => {
+              const b = { x: Infinity, y: Infinity, right: -Infinity, bottom: -Infinity };
+              for (const stack = [e]; stack.length; ) {
+                const c = stack.pop()!;
+                if (g.getComputedStyle(c).display === 'contents') {
+                  stack.push(...c.children);
+                  continue;
+                }
+                const r = c.getBoundingClientRect();
+                if (!r.width && !r.height) continue;
+                b.x = Math.min(b.x, r.x);
+                b.y = Math.min(b.y, r.y);
+                b.right = Math.max(b.right, r.x + r.width);
+                b.bottom = Math.max(b.bottom, r.y + r.height);
+              }
+              return b;
+            })
+            .find((b) => b.bottom > b.y);
+          if (!found) return null;
+          const r = { x: found.x, y: found.y, width: found.right - found.x, height: found.bottom - found.y, bottom: found.bottom };
+          d.getElementById(a.host)?.remove();
+          const host = d.createElement('div');
+          host.id = a.host;
+          host.style.cssText = 'all: initial; position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 2147483647; pointer-events: none;';
+          for (const m of a.markers) {
+            const mark = d.createElement('div');
+            mark.style.cssText = `all: initial; position: absolute; left: ${m.x * g.innerWidth - 4 + g.scrollX}px; top: ${r.bottom + m.below + g.scrollY}px; width: 8px; height: 30px; background: rgb(255, 0, 255);`;
+            host.appendChild(mark);
+          }
+          d.documentElement.appendChild(host);
+          // Placed against the page's own top, wherever its containing block is.
+          const first = host.firstElementChild!.getBoundingClientRect();
+          host.style.top = `${r.bottom - first.top}px`;
+          return r;
+        },
+        { id: fixture.heroId, host: MARKERS_ID, markers: OUTLINE_MARKERS }
+      );
+      expect(hero, `the ${HERO_NAME} has no box in the page`);
+      heroBox = hero;
+      try {
+        // The hero's bottom edge stays in view the whole way, with the markers below it.
+        const edge = hero.bottom * z;
+        expect(edge - travel >= 12 && edge + (Math.max(...OUTLINE_MARKERS.map((m) => m.below)) + 30) * z <= shownHeight, `the ${HERO_NAME}'s bottom edge, ${Math.round(edge)}px down the frame, does not stay in view through a ${travel}px scroll`);
+        const inHero = (share: number) => hero.x <= share * view.width && share * view.width <= hero.x + hero.width;
+        expect(inHero(OUTLINE_COLUMN) && OUTLINE_MARKERS.every((m) => inHero(m.x)), `the ${HERO_NAME} does not span the columns the outline and markers are read in`);
+        const geo: ReadingGeometry = {
+          dpr: editor.dpr,
+          outlineX: box.x + OUTLINE_COLUMN * box.width,
+          markers: OUTLINE_MARKERS.map((m) => ({ x: box.x + m.x * box.width, below: m.below * z })),
+          top: box.y,
+          bottom: box.y + shownHeight
+        };
+        const cast = await screencast(win);
+        let readings: FrameReading[];
+        try {
+          // A frame at rest first: the screencast sends one at once, then one for each frame drawn.
+          for (const until = Date.now() + 5000; !cast.shots.length; await sleep(20)) expect(Date.now() < until, 'the screencast sent no frame');
+          await sleep(300);
+          const from = cast.shots.length - 1;
+          await ctx.mark('outlineScroll.window', { scenario: 'outlineScroll', edge: 'start', attempt });
+          for (let i = 0; i < OUTLINE_SCROLL_STEPS; i++) {
+            await input(win.mouse.wheel(0, OUTLINE_SCROLL_STEP), 'a wheel notch');
+            await sleep(STEP_MS);
+          }
+          const down = await settledScroll(frame);
+          for (let i = 0; i < OUTLINE_SCROLL_STEPS; i++) {
+            await input(win.mouse.wheel(0, -OUTLINE_SCROLL_STEP), 'a wheel notch');
+            await sleep(STEP_MS);
+          }
+          const up = await settledScroll(frame);
+          // An outline still catching up once the page stopped is in the window.
+          await sleep(500);
+          await ctx.mark('outlineScroll.window', { scenario: 'outlineScroll', edge: 'end', attempt });
+          const pageTravel = travel / z;
+          expect(down >= pageTravel * 0.75, `the wheel scrolled the page from its top to ${down}px, short of the ${Math.round(pageTravel)}px its notches go`);
+          expect(down - up >= pageTravel * 0.75, `the wheel brought the page back from ${down}px only to ${up}px`);
+          // In the order drawn, which the screencast's delivery need not keep.
+          const shots = cast.shots.slice(from).sort((a, b) => a.t - b.t);
+          readings = [];
+          for (const s of shots) readings.push(readFrame(await pixelsOf(s.data), geo, s.t));
+        } finally {
+          await cast.stop();
+        }
+        const read = summarizeOffsets(readings, periodMs);
+        // Every frame shows the outline and the hero's edge: an outline hidden while the page moves trails nothing,
+        // and is not an outline that kept up.
+        expect(read.unread === 0, `in ${read.unread} of the ${read.frames} frames drawn the outline or the ${HERO_NAME}'s edge could not be found`);
+        expect(read.moving >= 10, `only ${read.moving} of the ${read.frames} frames drawn showed the page moving`);
+        expect(Math.abs(read.restBefore) <= ATTACHED_PX, `before the scroll the outline is ${read.restBefore.toFixed(1)}px from the ${HERO_NAME}'s edge`);
+        expect(Math.abs(read.restAfter) <= ATTACHED_PX, `once the scroll stopped the outline is ${read.restAfter.toFixed(1)}px from the ${HERO_NAME}'s edge`);
+        await ctx.mark('outlineScroll.read', { scenario: 'outlineScroll', edge: 'read', attempt, ...read });
+      } finally {
+        await frame
+          .locator('html')
+          .evaluate((_html, id) => (globalThis as unknown as { document: { getElementById(id: string): { remove(): void } | null } }).document.getElementById(id)?.remove(), MARKERS_ID)
+          .catch(() => undefined);
+      }
+    });
+    // At rest the selection's outline, Add buttons and spacing handles are where they were: on the hero.
+    expect(await heroChip(win).count(), `the ${HERO_NAME} is no longer selected after the scroll`);
+    const selected = await win.locator('.ov-selected').first().boundingBox();
+    expect(selected && heroBox && outlines(selected, [heroBox], box, z), `the selection’s outline (${JSON.stringify(selected)}) is not on the ${HERO_NAME} (${JSON.stringify(heroBox)}) after the scroll`);
+    expect(await win.locator('[data-testid="canvas-add"]').count(), 'the selection has no Add buttons after the scroll');
+    await ctx.mark('scenario.end', { scenario: 'outlineScroll' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('outlineScroll', 'renderer')) && !!t.first('scenario.end', forScenario('outlineScroll', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('outlineScroll', 'renderer')));
+    const period = begin?.attrs?.periodMs;
+    if (typeof period === 'number') m.ms('outlineScroll.framePeriodMs', period);
+    else m.need('scenario.start (renderer, with the frame period)', undefined);
+    // The last attempt: any before it had a reload during it, and was done again.
+    const starts = trace.all('outlineScroll.window', atOutline('start'));
+    const attempt = Math.max(...starts.map((r) => (typeof r.attrs?.attempt === 'number' ? r.attrs.attempt : 0)));
+    const start = m.need('outlineScroll.window start', starts.find((r) => r.attrs?.attempt === attempt));
+    const end = m.need('outlineScroll.window end', start && trace.first('outlineScroll.window', atOutline('end', attempt)));
+    const read = m.need('outlineScroll.read', start && trace.first('outlineScroll.read', atOutline('read', attempt)));
+    if (start && end) {
+      const gained = (name: string) => counter(end, name) - counter(start, name);
+      m.since('outlineScroll.ms', start, end);
+      m.count('outlineScroll.rectReports', gained('canvas.rectReports'));
+      m.count('outlineScroll.canvasRenders', gained('canvas.renders'));
+      commits(m, trace, 'outlineScroll.rendererCommits', start, end);
+    }
+    const a = read?.attrs;
+    if (a) {
+      const num = (k: string) => (typeof a[k] === 'number' ? (a[k] as number) : NaN);
+      m.px('outlineScroll.offsetPx', num('offsetPx'));
+      m.ms('outlineScroll.lagMs', num('lagFrames') * (typeof period === 'number' ? period : NaN));
+      m.px('outlineScroll.speedPx', num('speedPx'));
+      m.px('outlineScroll.restAfterPx', num('restAfter'));
+      m.count('outlineScroll.trailingFrames', num('trailing'));
+      m.count('outlineScroll.movingFrames', num('moving'));
+      m.count('outlineScroll.frames', num('frames'));
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // import
 // ---------------------------------------------------------------------------
 
@@ -7118,7 +7368,7 @@ export const sourceSync: Scenario = {
 /** The scenarios that show every panel, Insert among them, before `thumbs` could run in the same launch. */
 const PANEL_TOURS = ['firstShow', 'panels', 'panelsInUse'] as const;
 
-export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync, exportMemory];
+export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, outlineScroll, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync, exportMemory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
