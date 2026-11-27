@@ -14,11 +14,6 @@
   /* Who else is here: the host's people count, a glyph and a number in the pill's quiet ink. */
   .toolbar .remote-pill .remote-count { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: 2px; color: var(--text-2); font-size: 12px; }
   .toolbar .remote-pill .remote-count svg { width: 12px; height: 12px; }
-  /* Its menu: the project's name, then how this guest is connected, read as the answer rather than as a group label. */
-  .menu[aria-label='Live session'] > .menu-label:nth-child(2) { padding-top: 0; font-weight: 400; color: var(--text); white-space: normal; }
-  /* Someone present with nothing to go to (a viewer, a page not known yet) is information, not an unavailable command. */
-  .menu[aria-label='Live session'] .menu-item[aria-disabled='true'],
-  .menu[aria-label='Live session'] .menu-item[aria-disabled='true'] .hint { color: var(--text-2); }
   .toolbar .remote-leave { gap: 5px; flex: none; }
   .toolbar .remote-leave svg { width: 14px; height: 14px; }
   .toolbar .remote-leave.icon-only { width: 28px; padding: 0; justify-content: center; }

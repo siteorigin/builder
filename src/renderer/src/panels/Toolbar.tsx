@@ -53,6 +53,10 @@ export function Toolbar() {
   const stoppingForEdit = useStore((s) => s.heldEdits.some((h) => h.phase === 'applying' && !!h.stopping));
   const held = useStore((s) => s.heldEdits.some((h) => h.phase !== 'applying'));
   const menu = useMenu();
+  const projectRows = useRef<MenuItem[]>([]);
+  const moreRows = useRef<MenuItem[]>([]);
+  const zoomRows = useRef<MenuItem[]>([]);
+  const schemeRows = useRef<MenuItem[]>([]);
   // Screen readers hear settled changes only. When the AI finishes they hear how it really ended, and what
   // became of an edit held meanwhile.
   const settled: SaveStatus = settledState({ failed: !!saveFailure, conflict: hasConflict, runStatus, stopping: stoppingForEdit, handoff, held, drafting, pending: pending > 0 });
@@ -240,6 +244,37 @@ export function Toolbar() {
     }
   };
 
+  // So are Zoom, Preview colors and More, whose choices follow the project and whether the canvas is covered.
+  zoomRows.current = zoomItems;
+  schemeRows.current = schemeItems;
+  moreRows.current = [{ heading: 'Zoom' }, ...(covered ? [{ info: true, label: seo ? 'The SEO view covers the canvas. Close it (Esc) to zoom or preview other colors.' : 'The post writer covers the canvas. Preview in site shows the post at this zoom.' }] : []), ...zoomItems, ...(dualPalette ? [{ heading: 'Preview colors' }, ...schemeItems] : []), { separator: true }, { label: 'Settings…', icon: <Settings />, onSelect: openSettings }];
+  // The project menu is read again while it is open, so a page added, renamed or removed meanwhile shows as it is.
+  projectRows.current = [
+    { heading: 'Pages' },
+    ...pageChoices(state).map((p): MenuItem => ({
+      id: p.id,
+      label: p.title,
+      checked: seo ? false : shown ? p.id === shownPage?.id : !definitionMode && p.id === pageId,
+      hint: p.home ? 'Home page · /' : p.address,
+      onSelect: () => selectPage(p.id)
+    })),
+    { separator: true },
+    // The host's project is the host's: it alone opens, reveals, copies, versions and closes it.
+    ...(remoteShell
+      ? [{ label: 'Leave live session…', icon: <LogOut />, onSelect: () => void confirmLeaveLive() }]
+      : [
+          { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
+          { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
+          { separator: true },
+          { label: 'Show project folder', icon: <FolderSearch />, onSelect: () => void api.projects.reveal() },
+          { label: 'Duplicate project…', icon: <Copy />, onSelect: () => sendCommand('duplicate-project') },
+          { label: 'History…', icon: <History />, onSelect: () => setState({ modal: { kind: 'history' } }) },
+          { label: 'Save version…', icon: <BookmarkPlus />, onSelect: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
+          { separator: true },
+          { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void closeProject() }
+        ])
+  ];
+
   return (
     <header ref={header} className={`toolbar drag${isMac ? ' mac' : ''}`} data-tier={tier} onFocus={(e) => e.currentTarget.contains(e.target) && (focused.current = e.target)}>
       <div className="toolbar-start">
@@ -261,39 +296,9 @@ export function Toolbar() {
           </button>
           <button
             className="project-title"
-            aria-haspopup="menu"
-            aria-expanded={false}
+            {...menu.triggerProps('project')}
             title={defName ? `Editing ${defName} everywhere, in ${named}: switch page, or open project options` : `${named} / ${placeName}: switch page, or open project options`}
-            onClick={(e) =>
-              menu.openAt(
-                e.currentTarget,
-                [
-                  { heading: 'Pages' },
-                  ...pageChoices(state).map((p) => ({
-                    label: p.title,
-                    checked: seo ? false : shown ? p.id === shownPage?.id : !definitionMode && p.id === pageId,
-                    hint: p.home ? 'Home page · /' : p.address,
-                    onSelect: () => selectPage(p.id)
-                  })),
-                  { separator: true },
-                  // The host's project is the host's: it alone opens, reveals, copies, versions and closes it.
-                  ...(remoteShell
-                    ? [{ label: 'Leave live session…', icon: <LogOut />, onSelect: () => void confirmLeaveLive() }]
-                    : [
-                        { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
-                        { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
-                        { separator: true },
-                        { label: 'Show project folder', icon: <FolderSearch />, onSelect: () => void api.projects.reveal() },
-                        { label: 'Duplicate project…', icon: <Copy />, onSelect: () => sendCommand('duplicate-project') },
-                        { label: 'History…', icon: <History />, onSelect: () => setState({ modal: { kind: 'history' } }) },
-                        { label: 'Save version…', icon: <BookmarkPlus />, onSelect: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
-                        { separator: true },
-                        { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void closeProject() }
-                      ])
-                ],
-                projectName
-              )
-            }
+            onClick={(e) => menu.openAt(e.currentTarget, () => projectRows.current, projectName)}
           >
             <strong className="site ellipsis">{projectName}</strong>
             {/* A working copy shows its site's name too, so two copies of different sites never read alike. */}
@@ -411,12 +416,11 @@ export function Toolbar() {
         {dualPalette && tier !== 'overflow' && (
           <button
             className="icon-btn scheme-btn"
-            aria-haspopup="menu"
-            aria-expanded={false}
+            {...menu.triggerProps('scheme')}
             disabled={seo}
             title={seo ? 'The SEO view covers the canvas. Close the SEO view (Esc) to preview the page in other colors.' : `Preview colors: ${schemeLabel.toLowerCase()}`}
             aria-label={`Preview colors: ${schemeLabel.toLowerCase()}`}
-            onClick={(e) => menu.openAt(e.currentTarget, schemeItems, 'Preview colors')}
+            onClick={(e) => menu.openAt(e.currentTarget, () => schemeRows.current, 'Preview colors')}
           >
             {SCHEMES.find(([id]) => id === previewScheme)![2]}
           </button>
@@ -424,12 +428,11 @@ export function Toolbar() {
         {tier !== 'overflow' && (
           <button
             className="btn btn-sm btn-ghost zoom-btn"
-            aria-haspopup="menu"
-            aria-expanded={false}
+            {...menu.triggerProps('zoom')}
             disabled={covered}
             title={covered ? widthCovered : 'Zoom'}
             aria-label={`Zoom: ${zoom === 'fit' ? 'fit to window' : `${Math.round(zoom * 100)}%`}`}
-            onClick={(e) => menu.openAt(e.currentTarget, zoomItems, 'Zoom')}
+            onClick={(e) => menu.openAt(e.currentTarget, () => zoomRows.current, 'Zoom')}
           >
             <span>{zoom === 'fit' ? 'Fit' : `${Math.round(zoom * 100)}%`}</span>
             <ChevronDown size={12} aria-hidden="true" />
@@ -465,11 +468,10 @@ export function Toolbar() {
           <button
             key="more"
             className="icon-btn toolbar-more"
-            aria-haspopup="menu"
-            aria-expanded={false}
+            {...menu.triggerProps('more')}
             title={`More: zoom (${zoom === 'fit' ? 'fit to window' : `${Math.round(zoom * 100)}%`}) and settings`}
             aria-label="More"
-            onClick={(e) => menu.openAt(e.currentTarget, [{ heading: 'Zoom' }, ...zoomItems, ...(dualPalette ? [{ heading: 'Preview colors' }, ...schemeItems] : []), { separator: true }, { label: 'Settings…', icon: <Settings />, onSelect: openSettings }], 'More')}
+            onClick={(e) => menu.openAt(e.currentTarget, () => moreRows.current, 'More')}
           >
             <Ellipsis />
           </button>

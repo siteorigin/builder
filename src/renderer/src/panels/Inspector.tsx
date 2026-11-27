@@ -949,7 +949,7 @@ function PartsButton({ title, parts }: { title: string; parts: Array<{ label: st
   const menu = useMenu();
   return (
     <>
-      <button className="insp-mini" aria-haspopup="menu" aria-expanded={menu.isOpen} title={`Select a part of ${title}`} onClick={(e) => menu.openAt(e.currentTarget, parts.map((p) => ({ label: p.label, onSelect: p.select, ...(p.current !== undefined ? { checked: p.current } : {}) })), `Parts of ${title}`)}>
+      <button className="insp-mini" {...menu.triggerProps()} title={`Select a part of ${title}`} onClick={(e) => menu.openAt(e.currentTarget, parts.map((p) => ({ label: p.label, onSelect: p.select, ...(p.current !== undefined ? { checked: p.current } : {}) })), `Parts of ${title}`)}>
         Parts <ChevronDown aria-hidden="true" />
       </button>
       {menu.node}
@@ -978,8 +978,7 @@ function SelectionActions({ title, selection, items, group, ask = true }: { titl
       {items.length > 0 && (
         <button
           className="icon-btn"
-          aria-haspopup="menu"
-          aria-expanded={menu.isOpen}
+          {...menu.triggerProps()}
           aria-label={group ? `More actions for ${title} and the ${group} selected` : `More actions for ${title}`}
           title="More actions"
           onClick={(e) => menu.openAt(e.currentTarget, items, group ? `Actions for ${title} and the ${group} selected` : `Actions for ${title}`)}

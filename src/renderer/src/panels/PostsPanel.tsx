@@ -807,7 +807,7 @@ export function PostsPanel() {
   };
 
   const importButton = canImport && (
-    <button className="btn btn-sm btn-ghost posts-head-menu" aria-haspopup="menu" aria-expanded="false" data-testid="posts-import" aria-label="Import posts" title="Import posts" disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
+    <button className="btn btn-sm btn-ghost posts-head-menu" {...menu.triggerProps('import')} data-testid="posts-import" aria-label="Import posts" title="Import posts" disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
       <FileDown aria-hidden="true" /> <span className="posts-head-label">{reading ? 'Reading…' : 'Import…'}</span>
     </button>
   );
@@ -838,7 +838,7 @@ export function PostsPanel() {
       <div className="panel-head">
         <div className="posts-head-title">
           {collections.length > 1 ? (
-            <button className="posts-switch" aria-haspopup="menu" aria-expanded="false" title="Show another collection" onClick={(e) => openSwitcher(e.currentTarget)}>
+            <button className="posts-switch" {...menu.triggerProps('switch')} title="Show another collection" onClick={(e) => openSwitcher(e.currentTarget)}>
               <span className="ellipsis">{heading}</span>
               <ChevronDown aria-hidden="true" />
             </button>
@@ -861,7 +861,7 @@ export function PostsPanel() {
             <Plus aria-hidden="true" /> <span className="posts-head-label">{resumes ? 'Continue draft' : `New ${noun}`}</span>
           </button>
         )}
-        <button ref={headOptions} className="icon-btn sm posts-head-options" aria-label={`${heading} options`} title="Sort, import and collection settings" aria-haspopup="menu" aria-expanded="false" data-testid={`collection-options-${collection.settings.id}`} onClick={(e) => openOptions(e.currentTarget)}>
+        <button ref={headOptions} className="icon-btn sm posts-head-options" aria-label={`${heading} options`} title="Sort, import and collection settings" {...menu.triggerProps('options')} data-testid={`collection-options-${collection.settings.id}`} onClick={(e) => openOptions(e.currentTarget)}>
           <MoreHorizontal />
         </button>
         {menu.node}
@@ -983,7 +983,7 @@ export function PostsPanel() {
               </button>
             )}
             {canImport && !readOnly && (
-              <button className="btn btn-sm" aria-haspopup="menu" aria-expanded="false" disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
+              <button className="btn btn-sm" {...menu.triggerProps('import-empty')} disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
                 <FileDown aria-hidden="true" /> Import posts…
               </button>
             )}

@@ -286,9 +286,9 @@ function Seam({ side, width, max, at, restore }: { side: PanelSide; width: numbe
     const preferred = side === 'left' ? getState().leftWidth : getState().rightWidth;
     return [
       { heading: `Width: ${w} px` },
-      { label: 'Narrower', onSelect: () => step(w - 40), disabled: w <= PANEL_LIMITS[side].min },
-      { label: 'Wider', onSelect: () => step(w + 40), disabled: w >= max },
-      { label: 'Default width', hint: `${PANEL_DEFAULTS[side]} px`, onSelect: reset, disabled: preferred === PANEL_DEFAULTS[side] },
+      { label: 'Narrower', onSelect: () => step(w - 40), disabled: w <= PANEL_LIMITS[side].min, description: w <= PANEL_LIMITS[side].min ? 'This is as narrow as it goes.' : undefined },
+      { label: 'Wider', onSelect: () => step(w + 40), disabled: w >= max, description: w >= max ? 'This is as wide as the window allows.' : undefined },
+      { label: 'Default width', hint: `${PANEL_DEFAULTS[side]} px`, onSelect: reset, disabled: preferred === PANEL_DEFAULTS[side], description: preferred === PANEL_DEFAULTS[side] ? 'It is at the default width now.' : undefined },
       { separator: true },
       { label: SPLIT[side].hide, shortcut: shortcutKeys(side === 'left' ? '⌘\\' : '⇧⌘\\'), onSelect: hide }
     ];
