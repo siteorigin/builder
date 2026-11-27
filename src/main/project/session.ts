@@ -5832,7 +5832,8 @@ async function readText(abs: string): Promise<FileText> {
   return textOf(read.bytes);
 }
 
-function sameContent(path: string, disk: string | null, expected: string | null): boolean {
+/** Whether a document on disk says what the project holds: the same text, or for JSON the same value however it is laid out. */
+export function sameContent(path: string, disk: string | null, expected: string | null): boolean {
   if (disk === expected) return true;
   if (path.endsWith('.json')) {
     if (disk === null) return expected === null || path === 'siteorigin/theme-lock.json';

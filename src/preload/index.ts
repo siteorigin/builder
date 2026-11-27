@@ -171,6 +171,8 @@ if (process.argv.includes(PERF_ARG)) contextBridge.exposeInMainWorld('builderPer
 contextBridge.exposeInMainWorld('builderTest', {
   exportStatic: invoke('test:exportStatic'),
   exportSource: invoke('test:exportSource'),
+  preparePublication: invoke('test:preparePublication'),
+  publicationStatus: invoke('test:publicationStatus'),
   previewComponent: invoke('test:previewComponent'),
   thumbCaptures: invoke('test:thumbCaptures'),
   inspectLayout: invoke('test:inspectLayout'),

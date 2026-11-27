@@ -463,6 +463,32 @@ async function readStoredKeys(): Promise<Partial<Record<ProviderId, string>>> {
   }
 }
 
+/**
+ * Every provider key the app holds (stored, and a development build's from the environment), for a publication to be
+ * searched for (#1154): never shown, logged or sent. A key file that is there but cannot be read rejects, rather than
+ * passing as one with no keys.
+ */
+export async function keyValues(): Promise<string[]> {
+  let text: string | null = null;
+  try {
+    text = await fs.readFile(credFile(), 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Your API keys could not be read, so the website could not be checked for them.', { cause: e });
+  }
+  let stored: unknown = {};
+  try {
+    stored = text === null ? {} : JSON.parse(text);
+  } catch {
+    throw new Error('Your API keys file is damaged, so the website could not be checked for them. Save your keys again in Settings.');
+  }
+  const values = stored && typeof stored === 'object' ? Object.values(stored as Record<string, unknown>).filter((v): v is string => typeof v === 'string' && v !== '') : [];
+  for (const provider of Object.keys(ENV_KEYS) as ProviderId[]) {
+    const env = envKey(provider);
+    if (env) values.push(env);
+  }
+  return values;
+}
+
 export async function setKey(provider: ProviderId, key: string | null) {
   // Checked before anything is read or written, so a refused key leaves the saved one as it was.
   const problem = provider === 'local' && key ? localKeyProblem(key) : null;

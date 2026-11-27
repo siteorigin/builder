@@ -84,7 +84,11 @@ function ownBytes(op: GitOp): GitOp {
     return {
       ...op,
       files: op.files.map((f) => ({
-        ...('bytes' in f ? { path: f.path, bytes: owned(f.bytes) } : { path: f.path, source: f.source, ...(f.sha256 !== undefined ? { sha256: f.sha256 } : {}) }),
+        ...('bytes' in f
+          ? { path: f.path, bytes: owned(f.bytes) }
+          : 'oid' in f
+            ? { path: f.path, oid: f.oid }
+            : { path: f.path, source: f.source, ...(f.sha256 !== undefined ? { sha256: f.sha256 } : {}) }),
         ...(f.mode !== undefined ? { mode: f.mode } : {})
       }))
     };

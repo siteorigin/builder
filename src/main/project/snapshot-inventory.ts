@@ -60,7 +60,8 @@ export type SnapshotPlace =
   | { kind: 'excluded'; reason: SnapshotExclusion };
 
 /** The files at the project's top a snapshot holds: its manifest, the starter's configuration and lockfile, and the files the app writes there. */
-const ROOT_FILES = new Set([MANIFEST_FILE, 'package.json', 'package-lock.json', 'jsconfig.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'vercel.json', '.gitignore', 'README.md', 'NOTICE.md']);
+export const SNAPSHOT_ROOT_FILES: readonly string[] = [MANIFEST_FILE, 'package.json', 'package-lock.json', 'jsconfig.json', 'vite.config.js', 'vite.config.ts', 'svelte.config.js', 'vercel.json', '.gitignore', 'README.md', 'NOTICE.md'];
+const ROOT_FILES = new Set(SNAPSHOT_ROOT_FILES);
 /** The folders at the project's top a snapshot looks in. */
 const ROOT_FOLDERS = new Set(['src', 'static', 'siteorigin', 'scripts']);
 /** The generator's record of what it wrote, beside the canonical documents. */
