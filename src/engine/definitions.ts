@@ -540,9 +540,11 @@ export function setVariant(state: ProjectState, op: Op<'component.setVariant'>):
   if (op.prop !== undefined && def.kind !== 'code') fail(`"${def.name}" is a design, which takes every variant itself: only a code component takes one through a property.`);
   const problemKey = (p: { axis: string; kind: string }) => `${p.axis}:${p.kind}`;
   const wrong = new Set(codeAxisProblems(def).map(problemKey));
-  // Code that places this component passes each axis under the prop it has now, written into its source.
+  // Code that places this component passes each axis under the prop it has now, written into its source: while any
+  // such code still names that prop, the axis stays on it (a batch that changes that code first may move it).
   const moving = def.kind === 'code' && op.prop !== undefined && had?.prop !== undefined && op.prop !== had.prop;
-  const caller = moving ? Object.values(state.components).find((d) => codeImports(state, d, def.id)) : undefined;
+  const named = moving ? new RegExp(`\\b${had!.prop!.replace(/[^A-Za-z0-9_]/g, '')}\\b`) : null;
+  const caller = named ? Object.values(state.components).find((d) => codeImports(state, d, def.id) && named.test(d.source ?? '')) : undefined;
   if (caller) fail(`"${caller.name}" places "${def.name}" in its code and passes its ${had!.label || axisId} as ${had!.prop}, which would no longer reach it. Keep the axis on ${had!.prop}.`);
   def.variantAxes ??= {};
   // A new axis starts with a plain base option as its default, so placements keep the look they had and can choose the

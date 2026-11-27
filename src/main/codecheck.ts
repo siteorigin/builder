@@ -549,8 +549,8 @@ function propsLocals(ast: Node): Map<string, { local: string; defaulted: boolean
 /**
  * What the script reads of $props() taken as a whole object (`let props = $props()`) or of the rest of them
  * (`let { title, ...rest } = $props()`): the props it reads from that object by name (`props.tone`, `rest['tone']`),
- * and whether it also hands the object on (to a helper, a component) or reads it by a computed name, where any prop
- * may be read. Spread onto a plain element, the rest only become its attributes.
+ * and whether it also hands the object on (to a helper, a component, an element's attributes, which styles can match)
+ * or reads it by a computed name, where any prop may be read.
  */
 function wholePropsReads(ast: Node): { read: Set<string>; handed: boolean } {
   const whole = new Set<string>();
@@ -572,7 +572,6 @@ function wholePropsReads(ast: Node): { read: Set<string>; handed: boolean } {
     const parent = around[around.length - 1];
     if (parent?.type === 'VariableDeclarator' && parent.id === n) return;
     if (parent?.type === 'RestElement') return;
-    if (rests.has(String(n.name)) && parent?.type === 'SpreadAttribute' && around[around.length - 2]?.type === 'RegularElement') return;
     if (parent?.type === 'MemberExpression' && parent.object === n) {
       const p = parent.property as Node;
       const name = !parent.computed && p?.type === 'Identifier' ? String(p.name) : parent.computed && p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
@@ -590,8 +589,8 @@ function wholePropsReads(ast: Node): { read: Set<string>; handed: boolean } {
 /**
  * Each variant axis whose property (`prop`) the code does not take from $props(): what placements choose there never
  * reaches the code. Taken by name in the destructuring, or read by name from the whole props object or the rest of
- * them, it is taken; rest spread onto an element only become its attributes. When the code hands the object on (to a
- * helper, say), it may be read there, which the check cannot follow, so it only warns.
+ * them, it is taken. When the code hands the object on (to a helper, say), it may be read there, which the check
+ * cannot follow, so it only warns; rest taken and never used pass nothing on.
  */
 function axisProblems(ast: Node, variantAxes: ComponentDefinition['variantAxes']): Array<{ severity: CodeProblem['severity']; message: string }> {
   const out: Array<{ severity: CodeProblem['severity']; message: string }> = [];

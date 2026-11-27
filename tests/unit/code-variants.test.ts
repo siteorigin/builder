@@ -127,6 +127,13 @@ describe('adding an axis to a code component declares its prop', () => {
     expect(() => setVariant(made.state, defId, { axis: 'tone', variant: 'dark', label: 'Dark', prop: 'mood' })).toThrow('"Parent" places "Two axes" in its code and passes its Tone as palette');
     // Repeating the prop it has is no move.
     expect(setVariant(made.state, defId, { axis: 'tone', variant: 'dark', label: 'Dark', prop: 'palette' }).components[defId].variantAxes!.tone.prop).toBe('palette');
+    // Once that code passes the new prop, in the same batch, the axis moves with it.
+    const parentId = made.results[0].definitionId as string;
+    const together = applyOperations(made.state, [
+      { type: 'component.updateSource', definitionId: parentId, source: made.state.components[parentId].source!.replace('palette="dark"', 'mood="dark"') },
+      { type: 'component.setVariant', definitionId: defId, axis: 'tone', variant: 'dark', label: 'Dark', prop: 'mood' }
+    ]);
+    expect(together.state.components[defId].variantAxes!.tone.prop).toBe('mood');
   });
 
   it('refuses a prop a placement passes itself, one of the component’s properties, another axis’s, or no name at all', () => {
@@ -183,10 +190,13 @@ describe('the code check holds code to the props its axes declare', () => {
     expect(await said(handed, contract(s, defId))).toEqual([expect.stringMatching(/^warning: The “Layout” variant arrives in arrangement/), expect.stringMatching(/^warning: The “Tone” variant arrives in palette/)]);
   });
 
-  it('refuses a prop left to the rest of the props, which only passes it on unread', async () => {
+  it('refuses a prop left to rest props the code never uses, and only warns where it hands them on', async () => {
     const { s, defId } = placed();
-    const rest = SOURCE.replace("palette = 'light', ", '').replace("class: className = ''", "class: className = '', ...others").replace('<p class', '<p {...others} class');
-    expect(await said(rest, contract(s, defId))).toEqual([expect.stringMatching(/^error: The “Tone” variant arrives in palette/)]);
+    const unused = SOURCE.replace("palette = 'light', ", '').replace("class: className = ''", "class: className = '', ...others");
+    expect(await said(unused, contract(s, defId))).toEqual([expect.stringMatching(/^error: The “Tone” variant arrives in palette/)]);
+    // Spread onto an element they become its attributes, which its styles can match.
+    const rest = unused.replace('<p class', '<p {...others} class');
+    expect(await said(rest, contract(s, defId))).toEqual([expect.stringMatching(/^warning: The “Tone” variant arrives in palette/)]);
     // Read from the rest by name, it is taken; handed on to a helper, it may be.
     expect(await said(rest.replace('<p {...others} class={[className, layout, palette]}', '<p class={[className, layout, others.palette]}'), contract(s, defId))).toEqual([]);
     expect(await said(rest.replace('<p {...others} class={[className, layout, palette]}', '<p class={[className, layout, String(others)]}'), contract(s, defId))).toEqual([expect.stringMatching(/^warning: The “Tone” variant arrives in palette/)]);
