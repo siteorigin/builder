@@ -2466,8 +2466,8 @@ export const INTERACTIONS: Interaction[] = [
     area: 'settings',
     intent: 'Connect an AI provider with my API key',
     start: 'A project open, Settings closed',
-    routes: ['toolbar:Settings', 'command:settings', 'item:Toolbar:Settings…', 'dialog:Settings › AI assistant › API key'],
-    outcome: 'The key is stored in a user-only local file and never in the OS keychain; once typed, it never comes back in an observation, a screenshot or a run record; in a zoomed-in interface Settings… is in the More menu',
+    routes: ['toolbar:Settings', 'command:settings', 'item:Toolbar:Settings…', 'item:Chat:Manage providers and keys…', 'dialog:Settings › AI assistant › API key'],
+    outcome: 'The key is stored in a user-only local file and never in the OS keychain; once typed, it never comes back in an observation, a screenshot or a run record; in a zoomed-in interface Settings… is in the More menu; Manage providers and keys… in the composer’s model menu opens Settings on AI assistant',
     scenario: 'Business starter · none',
     proof: [
       { test: 'tests/e2e/smoke.mjs', kind: 'e2e', step: 'API keys are stored in a user-only local file, never the OS keychain' },
@@ -2476,7 +2476,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'a credential entered through the actions never comes back, nor does a screenshot while it is known' },
       { test: 'tests/e2e/mcp.mjs', kind: 'driver', step: 'once a credential is known, no screenshot comes back, not even one taken before' },
       { test: 'tests/e2e/layout.mjs', kind: 'e2e', step: 'a zoomed-in interface moves Zoom and Settings into a labelled More menu' },
-      { test: 'tests/unit/local-key-storage.test.ts', kind: 'unit' }
+      { test: 'tests/unit/local-key-storage.test.ts', kind: 'unit' },
+      { test: 'tests/unit/chat-model-menu-browser.test.ts', kind: 'unit', step: 'ends with Manage providers and keys, which opens the AI assistant settings' }
     ],
     gaps: [{ missing: 'Settings… from the command menu is never chosen by a test', owner: 'settings' }]
   },
