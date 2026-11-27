@@ -775,6 +775,10 @@ export class Orchestrator {
     const session = this.deps.session();
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
+    // The request running as the list is asked for: one that ends while it is read has its save queued after the read,
+    // so its thread (a new one has no file before that save) is listed as it is in memory.
+    const { opening } = this;
+    const asked = this.run && this.run.transcript.opening === opening ? this.run.transcript.conv : null;
     // Read in turn with the changes queued before it (a rename or delete already asked for is in the list), and
     // before any asked for after it.
     const list = await this.queueFileChange(async () => {
@@ -797,9 +801,14 @@ export class Orchestrator {
     });
     this.sameSession(session);
     const kept = list.filter((c) => !this.deleted.has(c.id) && !this.removing.has(c.id));
-    // The open conversation is newer than its file (a name just given, a request still being saved): listed as it is.
+    // The open conversation is newer than its file (a name just given, a request still being saved), and so is a
+    // running request's, which may have none yet (a new conversation is saved when its first request ends): each is
+    // listed as it is in memory.
     const open = this.conversation;
-    const summaries = kept.map((c) => summarize(open?.id === c.id ? open : c)).sort(byRecentActivity);
+    const running = (this.run && this.run.transcript.opening === this.opening ? this.run.transcript.conv : null) ?? (opening === this.opening ? asked : null);
+    const live = (c: Conversation) => (open?.id === c.id ? open : running?.id === c.id ? running : c);
+    if (running && !kept.some((c) => c.id === running.id) && !this.gone(running.id)) kept.push(running);
+    const summaries = kept.map((c) => summarize(live(c))).sort(byRecentActivity);
     // Listing never replaces the open conversation: a new one is not on disk until its first message, and one
     // mid-run is saved only when the run ends. Swapping it would send the next message to another thread.
     // With none open yet, the one continued most recently opens.
@@ -807,9 +816,29 @@ export class Orchestrator {
     return { active: this.conversation, list: summaries };
   }
 
-  /** A request adds to, and then saves, the open conversation: switching away mid-run would misfile its messages. */
-  private notRunning(doing = 'switching conversations') {
+  /** Clear history removes every conversation, the running request's among them, which saves itself when it ends. */
+  private notRunning(doing: string) {
     if (this.run) throw new Error(`Wait for the AI to finish before ${doing}.`);
+  }
+
+  /**
+   * The running request's conversation `id`, as it is in memory: newer than its file, which the request writes only
+   * when it ends (a new conversation has none before that). Its own object, so opening it again sends the next
+   * message to the very thread the request adds to.
+   */
+  private runThread(id: string): Conversation | null {
+    const run = this.run;
+    return run && run.transcript.opening === this.opening && run.transcript.conv.id === id ? run.transcript.conv : null;
+  }
+
+  /**
+   * A request whose thread is never saved (a question in a project read-only here) keeps its thread open until it
+   * ends: once switched away from, its answer could not be read again. Opening that thread itself is always allowed.
+   */
+  private notUnsaved(id?: string) {
+    const run = this.run;
+    if (run && run.transcript.opening === this.opening && run.transcript.session.readOnly && run.transcript.conv.id !== id)
+      throw new Error('Wait for the AI to answer before switching conversations: this project is read-only here, so the answer is not saved.');
   }
 
   /** A read that finished after its project closed must not set the next project's conversation. */
@@ -835,8 +864,9 @@ export class Orchestrator {
     return { id: newId('c'), title: NEW_CONVERSATION, createdAt: new Date().toISOString(), messages: [] };
   }
 
+  /** A request running in the open conversation goes on in the background: it adds to, and saves, its own thread. */
   async newConversation(): Promise<Conversation> {
-    this.notRunning();
+    this.notUnsaved();
     this.conversation = this.freshConversation();
     return this.conversation;
   }
@@ -846,16 +876,22 @@ export class Orchestrator {
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
     if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id) || this.gone(id)) throw new Error('Unknown conversation.');
-    // The open conversation is newer than its file, which a finished request may still be writing.
+    // The open conversation is newer than its file, which a finished request may still be writing; a running
+    // request's is newer still (see runThread). A request elsewhere goes on in the background: it saves only its own.
     if (this.conversation?.id === id) return this.conversation;
-    // Read in turn with the writes, renames and deletes queued before it, so it reads what they left.
+    const running = this.runThread(id);
+    if (running) return (this.conversation = running);
+    this.notUnsaved(id);
+    // Read in turn with the writes, renames and deletes queued before it, so it reads what they left (a request that
+    // ended meanwhile queued its save ahead of this read).
     const c = await this.queueFileChange(() => this.readStoredConversation(dir, id));
     this.sameSession(session);
-    // Checked after the read too: a request may have started, or a delete been asked for, while it was loading.
-    this.notRunning();
+    // Checked after the read too: a delete may have been asked for, or the request in it started, while it was loading.
     if (this.gone(id)) throw new Error('That conversation was deleted.');
-    this.conversation = c;
-    return c;
+    const now = this.runThread(id);
+    if (!now) this.notUnsaved(id);
+    this.conversation = now ?? c;
+    return this.conversation;
   }
 
   /**
@@ -880,19 +916,21 @@ export class Orchestrator {
     if (changed()) throw new Error('The project changed while its conversation was loading.');
     if (this.gone(id)) throw new Error('That conversation was deleted.');
     // A request may have been filed in it, or it opened, while the file was read: that copy is newer.
-    return this.liveConversation(id) ?? { conversation: c, run: null };
+    return this.liveConversation(id) ?? { conversation: c, run: this.runGoing() };
   }
 
   /** Conversation `id` as this opening holds it in memory, copied: a request's thread, or the open one. */
   private liveConversation(id: string): ConversationState | null {
+    const conv = this.runThread(id) ?? (this.conversation?.id === id ? this.conversation : null);
+    return conv ? { conversation: structuredClone(conv), run: this.runGoing() } : null;
+  }
+
+  /** The request still going in this opening, and the conversation it was filed in, whichever is open. */
+  private runGoing(): ConversationState['run'] {
     const run = this.run;
-    if (run && run.transcript.opening === this.opening && run.transcript.conv.id === id) {
-      // Ended once its turn has a result, whatever the status says until the run is let go.
-      const going = !run.message.result;
-      return { conversation: structuredClone(run.transcript.conv), run: going ? { runId: run.id, status: run.status, mode: run.mode } : null };
-    }
-    if (this.conversation?.id === id) return { conversation: structuredClone(this.conversation), run: null };
-    return null;
+    // Ended once its turn has a result, whatever the status says until the run is let go.
+    if (!run || run.transcript.opening !== this.opening || run.message.result) return null;
+    return { runId: run.id, status: run.status, mode: run.mode, conversationId: run.transcript.conv.id };
   }
 
   /**
@@ -990,7 +1028,7 @@ export class Orchestrator {
 
   async clearHistory(): Promise<Conversation> {
     if (this.deps.session()?.readOnly) return (await this.loadConversations()).active;
-    this.notRunning();
+    this.notRunning('clearing the history');
     const session = this.deps.session();
     const dir = this.chatDir();
     // No request may start while the files are going: it would add to a conversation that is being removed.
