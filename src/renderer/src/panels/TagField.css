@@ -1,0 +1,16 @@
+@layer components {
+  /* The Tag field (TagField.tsx): the select, its note, and the fold saying why some tags can't be chosen, as one
+     field in the section's rhythm. */
+  .tag-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  /* The fold, as the app's other local folds draw it (PreviewStatus.css): a chevron that turns, label ink, no marker. */
+  .tag-why > summary { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; padding-right: 4px; list-style: none; color: var(--text-2); font-size: 12px; font-weight: 500; border-radius: var(--r-xs); cursor: default; }
+  .tag-why > summary::-webkit-details-marker { display: none; }
+  .tag-why > summary:hover { color: var(--text); }
+  .tag-why > summary svg { width: 14px; height: 14px; flex: none; transition: transform 120ms; }
+  .tag-why[open] > summary svg { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .tag-why > summary svg { transition: none; } }
+  /* One rule per line: the tags it rules out, then where they go. Set in from the chevron, under the label's words. */
+  .tag-why > ul { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 4px 18px; padding: 0; list-style: none; font-size: 12px; line-height: 1.45; }
+  .tag-why-names { display: block; color: var(--text-2); font-weight: 500; }
+  .tag-why-reason { display: block; color: var(--text-3); }
+}
