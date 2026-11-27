@@ -48,9 +48,9 @@ function bytesUnder(dir: string): number {
  */
 async function prepare(fixture: Fixture, dir: string): Promise<{ files: FileInput[]; inputBytes: number }> {
   const { FIXTURES, ROOT, fixtureState } = await import('./fixtures');
-  const { registerBuiltinPacks } = await import('../../src/main/packs/build');
+  const { loadBundledPacks } = await import('../../src/main/packs/installed');
   const { stateToDocs } = await import('../../src/main/project/documents');
-  registerBuiltinPacks(ROOT);
+  await loadBundledPacks(ROOT);
   const { state, files: media } = fixtureState(fixture === 'starter' ? FIXTURES.small : FIXTURES.large);
   if (fixture === 'media') {
     for (let i = 0; i < 16; i++) media.set(`static/assets/photo-${i}.jpg`, randomBytes(4 * 1024 * 1024));

@@ -8,6 +8,8 @@ import { build } from 'esbuild';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ThemePack } from '@catalogue/pack';
+import { loadPacks } from '../src/main/packs/loader';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -17,6 +19,20 @@ export const SYNC_CLI_BANNER = [
   "// Syncs this project's external sources into siteorigin/collections/ and static/assets/: npm run sync.",
   '// SiteOrigin Builder is licensed under the Apache License 2.0. The notices of the packages bundled in it are at the end.'
 ].join('\n');
+
+/**
+ * The themes the script checks a sync against (registerSyncPacks in standalone.ts): the releases the app ships, loaded
+ * as the app loads them, with what a check reads of them (tokens, components, which fonts they have) and none of their
+ * files, which the exported project does not have.
+ */
+export async function syncPacks(): Promise<ThemePack[]> {
+  const { packs, refused } = await loadPacks([{ dir: resolve(root, 'resources', 'packs'), source: 'bundled' }]);
+  if (refused.length || !packs.length) throw new Error(`The sync script needs the shipped theme releases: ${refused.map((r) => r.reason).join(' ') || 'there are none'}.`);
+  return packs.map(({ pack: { previews: _previews, fonts, ...pack } }) => {
+    void _previews;
+    return { ...pack, fonts: fonts.map((f) => ({ ...f, notice: '', faces: [] })) };
+  });
+}
 
 /** The script's text. */
 export async function buildSyncCli(): Promise<string> {
@@ -30,7 +46,7 @@ export async function buildSyncCli(): Promise<string> {
     write: false,
     tsconfig: resolve(root, 'tsconfig.node.json'),
     // Nothing of the app's own build is read by the sync: a commit stamp, say, is never there.
-    define: { __BUILD_COMMIT__: '""', __BUILD_DATE__: '""' },
+    define: { __BUILD_COMMIT__: '""', __BUILD_DATE__: '""', __SYNC_PACKS__: JSON.stringify(await syncPacks()) },
     banner: { js: SYNC_CLI_BANNER },
     legalComments: 'none',
     metafile: true,

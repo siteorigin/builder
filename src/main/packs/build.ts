@@ -1,17 +1,16 @@
 /**
  * Building a pack: an authored pack (TypeScript) becomes the data and files of a release. The fonts' faces are
  * read from the stylesheets the pack names; the files themselves are copied as they are. Used by
- * `npm run build:packs` and, without previews, by tests and scripts that need the packs in memory.
+ * `npm run build:packs` (through siteorigin/builder-components, which authors the themes) and by tests that author a
+ * pack of their own.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { SCHEMA_VERSION } from '@shared/types';
-import { registerPacks } from '@catalogue/index';
-import { BUILTIN_PACKS } from '@catalogue/builtin';
 import { PACK_FILE_RE, PACK_FORMAT, PACK_MANIFEST, type AuthoredPack, type ComponentPreviews, type PackFont, type PackFontFace, type PackFontSource, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { sha } from '../project/fsutil';
 import { themeTokenVars, unknownTokenProblems } from '../codecheck';
-import { registerPackFiles, type PackFileSource } from './files';
+import type { PackFileSource } from './files';
 
 /** One @font-face rule of a font stylesheet, as written. */
 interface CssFace {
@@ -116,17 +115,6 @@ export function packTokenProblems(pack: Pick<ThemePack, 'tokens' | 'baseCss' | '
 export function fileSource(abs: string): PackFileSource {
   const bytes = readFileSync(abs);
   return { abs, size: bytes.length, sha256: sha(bytes) };
-}
-
-/**
- * Register the packs authored in this repository straight from their sources, as tests and scripts use them
- * (the app itself loads their built releases).
- */
-export function registerBuiltinPacks(root = process.cwd()): ThemePack[] {
-  const built = BUILTIN_PACKS.map((a) => buildPack(a, root));
-  registerPacks(built.map((b) => b.pack));
-  for (const { pack, files } of built) registerPackFiles(pack.id, new Map([...files].map(([k, abs]) => [k, fileSource(abs)])));
-  return built.map((b) => b.pack);
 }
 
 /** The manifest of a release, serialized; its SHA-256 is the release's digest. */

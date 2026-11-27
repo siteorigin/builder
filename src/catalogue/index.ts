@@ -5,7 +5,7 @@ export type { ThemePack } from './pack';
 
 /**
  * The packs this app has loaded. Main loads and validates the installed releases once at startup, the editor
- * receives the same list before it first renders, and tests register the authored packs directly; every lookup
+ * receives the same list before it first renders, and tests load the same committed releases; every lookup
  * below then stays synchronous.
  */
 let registry: ThemePack[] = [];

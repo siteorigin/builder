@@ -1,4 +1,5 @@
 import { promises as fsp } from 'node:fs';
+import { resolve } from 'node:path';
 
 /**
  * Unit tests check what reaches the disk and in which order, never whether the disk itself kept it, so flushing to
@@ -13,6 +14,7 @@ FileHandle.sync = async function () {
   if (this.fd < 0) throw Object.assign(new Error('EBADF: bad file descriptor, fsync'), { code: 'EBADF' });
 };
 
-// The authored theme packs, registered as the app registers their built releases at startup.
-const { registerBuiltinPacks } = await import('../../src/main/packs/build');
-registerBuiltinPacks();
+// The theme releases committed in resources/ (Foundation and its development fixture), loaded and registered as the
+// app loads them at startup. Before any test module runs, since some read the themes as they load.
+const { loadBundledPacks } = await import('../../src/main/packs/installed');
+await loadBundledPacks(resolve(import.meta.dirname, '..', '..'));

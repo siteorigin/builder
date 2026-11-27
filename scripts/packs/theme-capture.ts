@@ -21,12 +21,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import type { GraphNode, NodeTree, PageDoc, ProjectState } from '@shared/types';
-import { BUILTIN_PACKS } from '@catalogue/builtin';
-import { registerPacks } from '@catalogue/index';
+import { findTheme, registerPacks } from '@catalogue/index';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { STYLES_DIR, generateProject, pageFile } from '@generator/index';
 import { makeInstance } from '@engine/install';
-import { buildPack } from '../../src/main/packs/build';
+import { loadBundledPacks } from '../../src/main/packs/installed';
+import { readPackFile } from '../../src/main/packs/files';
 import { bundlePages, previewHtml, previewProject } from './previews';
 
 if (process.env.DESIGN_CAPTURE !== '1') {
@@ -97,11 +97,13 @@ const browser = await chromium.launch();
 const written: string[] = [];
 try {
   for (const themeId of THEMES) {
-    const authored = BUILTIN_PACKS.find((p) => p.id === themeId);
-    if (!authored) throw new Error(`No built-in theme "${themeId}".`);
-    const { pack, files } = buildPack(authored, root);
+    await loadBundledPacks(root);
+    const pack = findTheme(themeId);
+    if (!pack) throw new Error(`No built-in theme "${themeId}".`);
+    // Only this theme, so the starter and every section on it are this theme's.
     registerPacks([pack]);
-    const fonts = new Map([...files].filter(([rel]) => rel.startsWith('fonts/')).map(([rel, abs]) => [rel.slice('fonts/'.length), readFileSync(abs)]));
+    const faces = pack.fonts.flatMap((f) => f.faces.map((face) => face.file));
+    const fonts = new Map(await Promise.all(faces.map(async (file) => [file.slice('fonts/'.length), await readPackFile(pack.id, file)] as const)));
 
     const shots: Shot[] = [];
     const starter = await starterState(themeId);

@@ -4,10 +4,10 @@
  * person's `userData/packs` folder. Adding, changing or removing a pack takes effect at the next start.
  */
 import { join } from 'node:path';
-import { registerPacks } from '@catalogue/index';
+import { registerPacks, type ThemePack } from '@catalogue/index';
 import type { PackCatalogue } from '@shared/api';
 import { clearPackFiles, packFileInfo, readPackFile, registerPackFiles } from './files';
-import { loadPacks, type PackRoot } from './loader';
+import { loadPacks, type LoadedPack, type PackRoot } from './loader';
 
 let catalogue: PackCatalogue = { packs: [], refused: [], userDir: '' };
 
@@ -16,11 +16,22 @@ let catalogue: PackCatalogue = { packs: [], refused: [], userDir: '' };
  * project switched to one in development stays editable; they are only offered in development builds.
  */
 export function packRoots(resources: string, userData: string): PackRoot[] {
+  return [...bundledPackRoots(resources), { dir: join(userData, 'packs'), source: 'user' }];
+}
+
+/** The folders of the packs the app ships: Foundation's release, then the development fixtures'. */
+export function bundledPackRoots(resources: string): PackRoot[] {
   return [
     { dir: join(resources, 'resources', 'packs'), source: 'bundled' },
-    { dir: join(resources, 'resources', 'packs-dev'), source: 'bundled' },
-    { dir: join(userData, 'packs'), source: 'user' }
+    { dir: join(resources, 'resources', 'packs-dev'), source: 'bundled' }
   ];
+}
+
+/** Make these the packs every lookup reads, with their files. */
+function register(packs: LoadedPack[]): void {
+  clearPackFiles();
+  registerPacks(packs.map((p) => p.pack));
+  for (const p of packs) registerPackFiles(p.pack.id, p.files);
 }
 
 /** Load and register every valid pack under these folders. */
@@ -32,11 +43,23 @@ export async function loadInstalledPacks(roots: PackRoot[]): Promise<PackCatalog
   for (const r of refused) console.warn(`Theme pack refused (${r.dir}): ${r.reason}`);
   // A development checkout has Foundation committed, checked by a script; a person reinstalls instead (StartupFailure.tsx says so).
   if (builtInMissing) console.warn('Run "npm run build:packs -- --committed" to check the committed Foundation release against resources/packs.lock.json.');
-  clearPackFiles();
-  registerPacks(packs.map((p) => p.pack));
-  for (const p of packs) registerPackFiles(p.pack.id, p.files);
+  register(packs);
   catalogue = { packs: packs.map((p) => p.pack), refused, userDir };
   return catalogue;
+}
+
+/**
+ * Load and register the packs the app ships, from the releases under `resources` (a checkout, or a packaged app's
+ * resources), as the app loads them at startup but without anyone's own packs: what tests and scripts use the themes
+ * through. A release that does not load is an error here, never a theme quietly missing.
+ */
+export async function loadBundledPacks(resources: string): Promise<ThemePack[]> {
+  const { packs, refused } = await loadPacks(bundledPackRoots(resources));
+  if (refused.length) throw new Error(`The bundled theme packs do not load: ${refused.map((r) => `${r.dir}: ${r.reason}`).join(' ')}`);
+  if (!packs.some((p) => !p.pack.devOnly)) throw new Error(`No bundled theme pack is under ${join(resources, 'resources', 'packs')}.`);
+  register(packs);
+  catalogue = { packs: packs.map((p) => p.pack), refused: [], userDir: '' };
+  return packs.map((p) => p.pack);
 }
 
 /** The loaded packs, for the editor window. */

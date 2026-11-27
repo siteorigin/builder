@@ -17,7 +17,7 @@ import { buildIdentity, launchApp, sessionEnv } from '../../tests/driver/session
 import { killTree, ownedEntries, processTable, type ProcessEntry } from '../../tests/driver/processes';
 import { PERF_ENV, PERF_GLOBAL, type PerfAttrs } from '../../src/shared/perf';
 import type { BuilderApi } from '../../src/shared/api';
-import { registerBuiltinPacks } from '../../src/main/packs/build';
+import { loadBundledPacks } from '../../src/main/packs/installed';
 import { FIXTURES, ROOT, fixtureHash, fixtureState, templateHash, writeFixture, type FixtureName } from './fixtures';
 import { caseTable, summarizeCase, Trace, withAbsentRoles, type CaseResult, type Iteration, type RunResult } from './results';
 import { electronSource, MEMORY_PROTOCOL, MemoryProbe, memorySource } from './memory';
@@ -251,7 +251,7 @@ async function main() {
   const ours = electronVersion(ROOT);
   const theirs = electronVersion(opts.app);
   if (theirs !== ours) throw new Error(`${opts.app} uses Electron ${theirs ?? '(not installed: run npm ci there)'}, but this checkout launches ${ours}: measure it with its own harness, or install the same Electron.`);
-  registerBuiltinPacks(ROOT);
+  await loadBundledPacks(ROOT);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runDir = join(PERF_DIR, 'runs', stamp);
   mkdirSync(runDir, { recursive: true });
