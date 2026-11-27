@@ -20,6 +20,11 @@ export const VERSIONS_BRANCH = 'refs/heads/siteorigin-versions';
  * history's `siteorigin-publish` later). No other ref is ever read or moved.
  */
 export const BRANCH_RE = /^refs\/heads\/siteorigin-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+/**
+ * The publication's history (#1154): a branch of its own, never one with a saved version in it, and the one branch a
+ * push sends to a host (#1157), there under the same name.
+ */
+export const PUBLISH_BRANCH = 'refs/heads/siteorigin-publish';
 
 /**
  * Who made a commit and when: `timestamp` in seconds since 1970, `timezoneOffset` in minutes as JavaScript's
@@ -122,14 +127,40 @@ export const GIT_LIMITS: GitLimits = {
  * - `cancelled`, `timeout`: stopped before it finished; a branch was not moved.
  * - `outcome-unknown`: the worker stopped while it was moving a branch, which may or may not have moved: read it again.
  * - `crashed`, `stopped`, `busy`, `failed`: the worker went down, the app is quitting, too much is waiting, or anything else.
+ *
+ * And of a push to a host (#1157), none of which moved its branch, except `outcome-unknown`, which may have:
+ * - `auth-rejected`: the host asked to be signed in to and refused the credential (or there was none to give).
+ * - `redirect-refused`: the host answered with a redirect, which is never followed; nothing was sent there.
+ * - `diverged`: the host's branch holds a commit the publication does not follow (`actual` says which).
+ * - `rejected`: the host refused the update for a reason of its own (a hook, a protected branch).
+ * - `unreachable`: the host could not be reached, or answered as no Git host does, before anything was sent.
  */
-export type GitErrorCode = 'not-found' | 'invalid' | 'too-large' | 'changed' | 'conflict' | 'locked' | 'corrupt' | 'cancelled' | 'timeout' | 'outcome-unknown' | 'crashed' | 'stopped' | 'busy' | 'failed';
+export type GitErrorCode =
+  | 'not-found'
+  | 'invalid'
+  | 'too-large'
+  | 'changed'
+  | 'conflict'
+  | 'locked'
+  | 'corrupt'
+  | 'cancelled'
+  | 'timeout'
+  | 'outcome-unknown'
+  | 'crashed'
+  | 'stopped'
+  | 'busy'
+  | 'failed'
+  | 'auth-rejected'
+  | 'redirect-refused'
+  | 'diverged'
+  | 'rejected'
+  | 'unreachable';
 
 export class GitError extends Error {
   constructor(
     public readonly code: GitErrorCode,
     message: string,
-    /** For a conflict: the commit the branch is at, or null when it does not exist. */
+    /** For a conflict or a divergence: the commit the branch is at, or null when it does not exist. */
     public readonly actual?: Oid | null
   ) {
     super(message);
@@ -183,7 +214,9 @@ export type GitOp =
   | { op: 'readCommit'; root: string; oid: Oid }
   | { op: 'listCommits'; root: string; ref: string; limit: number }
   | { op: 'resolveRef'; root: string; ref: string }
-  | { op: 'advanceRef'; root: string; ref: string; next: Oid; expected: Oid | null };
+  | { op: 'advanceRef'; root: string; ref: string; next: Oid; expected: Oid | null }
+  | { op: 'push'; root: string; target: RemoteTarget; commit: Oid }
+  | { op: 'remoteTip'; target: RemoteTarget };
 
 export type GitRequest = ({ id: number } & GitOp) | { id: number; op: 'cancel'; target: number };
 export type GitReply = { id: number; ok: true; value: unknown } | { id: number; ok: false; code: GitErrorCode; message: string; actual?: Oid | null };
@@ -193,4 +226,68 @@ export function inlineBytes(op: GitOp): number {
   if (op.op === 'writeBlob') return 'bytes' in op.input ? op.input.bytes.byteLength : 0;
   if (op.op === 'writeFiles') return op.files.reduce((n, f) => n + ('bytes' in f ? f.bytes.byteLength : 0), 0);
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Pushing a publication to a host (#1157)
+// ---------------------------------------------------------------------------
+
+/** What a host is signed in to with: a username and an access token, sent only as Basic authentication. */
+export interface RemoteAuth {
+  username: string;
+  password: string;
+}
+
+/**
+ * Where a push goes: an approved repository address (approveEndpoint), the one branch a publication is pushed to, and
+ * the credential to answer the host with, if it asks. The worker gives the credential only to that address, only once
+ * the host has asked for one, and never puts it in a URL, a file or a message.
+ */
+export interface RemoteTarget {
+  url: string;
+  ref: typeof PUBLISH_BRANCH;
+  auth: RemoteAuth | null;
+}
+
+/** What a push did: the commit the host's branch was at before (null: it had none), and whether anything was sent. */
+export interface PushReply {
+  previous: Oid | null;
+  /** False when the host already held the commit there, so nothing was sent. */
+  uploaded: boolean;
+}
+
+/** The longest repository address taken. */
+const MAX_URL_LENGTH = 2048;
+
+/**
+ * The repository address `url` as a push may use it, or throws `invalid`: HTTPS only; no username or password in it,
+ * since a credential is never part of an address; no query or fragment, which Git's smart HTTP has no use for; a host
+ * named; and the address as written, without a trailing slash, so `/site.git` and `/site.git/` are one repository.
+ */
+export function approveEndpoint(url: unknown): string {
+  if (typeof url !== 'string' || !url || url.length > MAX_URL_LENGTH) throw new GitError('invalid', 'A repository address is needed to publish to.');
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new GitError('invalid', 'That is not a web address.');
+  }
+  if (u.protocol !== 'https:') throw new GitError('invalid', 'A website is only published to an https:// address.');
+  if (u.username || u.password) throw new GitError('invalid', 'A repository address cannot carry a username or password: sign in with them instead.');
+  if (u.search || u.hash || url.includes('?') || url.includes('#')) throw new GitError('invalid', 'A repository address has no ? or # part.');
+  if (!u.hostname) throw new GitError('invalid', 'A repository address names a host.');
+  const path = u.pathname.replace(/\/+$/, '');
+  return `${u.origin}${path}`;
+}
+
+/** The longest username and token a credential holds. */
+export const MAX_REMOTE_USERNAME = 256;
+export const MAX_REMOTE_TOKEN = 16_384;
+
+/** Whether `auth` is a credential the worker can send: a username Basic authentication can carry (no colon), and a token. */
+export function remoteAuthOk(auth: unknown): auth is RemoteAuth {
+  const a = auth as RemoteAuth;
+  // eslint-disable-next-line no-control-regex
+  const plain = (s: unknown, max: number) => typeof s === 'string' && s.length > 0 && s.length <= max && !/[\u0000-\u001f\u007f]/.test(s);
+  return !!a && typeof a === 'object' && plain(a.username, MAX_REMOTE_USERNAME) && !a.username.includes(':') && plain(a.password, MAX_REMOTE_TOKEN);
 }

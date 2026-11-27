@@ -30,7 +30,7 @@ import { constants as fsConstants, promises as fs, type BigIntStats } from 'node
 import type { FileHandle } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { converterPathOf, isCanonicalPath, MANIFEST_FILE, sourcePathOf } from './documents';
-import { isPrivateFileName } from './private-files';
+import { CREDENTIAL_STEMS, isPrivateFileName } from './private-files';
 import { isMissing, stampOf, statTrusted } from './stable-read';
 
 /** Why a path is no part of a snapshot. */
@@ -105,6 +105,8 @@ function partExcluded(part: string, i: number): SnapshotExclusion | null {
 
 /** What an editor or a sync tool adds to a file's name for its copy: a backup, a swap file, an autosave. */
 const EDITOR_SUFFIX = /(~|#|\.(bak|old|orig|swp|swo|tmp|sav))+$/;
+/** Any JSON file named after one of the app's own credential files, whatever was added to the name. */
+const NAMED_AFTER_CREDENTIALS = new RegExp(`(${CREDENTIAL_STEMS.join('|')}).*\\.json([~#]|\\.(bak|old|orig|swp|swo|tmp|sav))*$`);
 
 /**
  * Whether a file named `folded` (folded) is a copy of a private file: what an editor leaves of one (`client.pem~`,
@@ -116,7 +118,7 @@ const EDITOR_SUFFIX = /(~|#|\.(bak|old|orig|swp|swo|tmp|sav))+$/;
 function copyOfPrivate(folded: string): boolean {
   const bare = folded.replace(EDITOR_SUFFIX, '').replace(/^\.?#/, '');
   if (bare && bare !== folded && isPrivateFileName(bare)) return true;
-  return /(source-secrets|api-keys).*\.json([~#]|\.(bak|old|orig|swp|swo|tmp|sav))*$/.test(folded);
+  return NAMED_AFTER_CREDENTIALS.test(folded);
 }
 
 /**

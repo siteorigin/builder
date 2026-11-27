@@ -9,7 +9,7 @@
  * next one starts, so two never write at once. A request lost with a worker while it was moving a branch is
  * `outcome-unknown`, never retried: the branch may have moved.
  */
-import { GIT_LIMITS, GitError, inlineBytes, type CallOptions, type GitErrorCode, type GitOp, type GitReply, type GitRepository, type GitRequest } from './protocol';
+import { GIT_LIMITS, GitError, inlineBytes, type CallOptions, type GitErrorCode, type GitOp, type GitReply, type GitRepository, type GitRequest, type Oid, type PushReply, type RemoteTarget } from './protocol';
 
 /** The worker process as the client uses it: Electron's UtilityProcess, or a stand-in in tests. */
 export interface GitWorkerHandle {
@@ -39,6 +39,13 @@ export interface GitClient {
   repository(root: string): GitRepository;
   /** The bundled Git's version, from the worker: proof that it starts. */
   version(opts?: CallOptions): Promise<string>;
+  /**
+   * Push `commit`, the publication branch's commit in the versions repository of the project at `root`, to the host
+   * (#1157): see remote.ts. Lost with the worker once it was sent to it, the push is `outcome-unknown`.
+   */
+  push(root: string, target: RemoteTarget, commit: Oid, opts?: CallOptions): Promise<PushReply>;
+  /** The commit the host's publication branch is at, or null when it has none. */
+  remoteTip(target: RemoteTarget, opts?: CallOptions): Promise<Oid | null>;
   /** Stop the worker for good (the app is quitting): every request waiting or in progress is refused. */
   stop(): void;
 }
@@ -57,7 +64,12 @@ const MESSAGES: Record<GitErrorCode, string> = {
   crashed: 'The versions repository stopped unexpectedly.',
   stopped: 'The versions repository was stopped as the app quit.',
   busy: 'Too much is waiting for the versions repository.',
-  failed: 'The versions repository could not be used.'
+  failed: 'The versions repository could not be used.',
+  'auth-rejected': 'The host refused the credential, so nothing was published.',
+  'redirect-refused': 'The host answered with a redirect, which is never followed, so nothing was sent there.',
+  diverged: 'The host’s publication branch holds a commit this publication does not follow, so it was left as it is.',
+  rejected: 'The host refused the update to its publication branch.',
+  unreachable: 'The host could not be reached, so nothing was sent.'
 };
 const fail = (code: GitErrorCode, message = MESSAGES[code], actual?: string | null) => new GitError(code, message, actual);
 
@@ -114,8 +126,8 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
   let ids = 0;
   let stopped = false;
 
-  /** What a request lost with its worker says: a branch move may have happened. */
-  const lost = (job: Job, code: GitErrorCode) => (job.op.op === 'advanceRef' ? fail('outcome-unknown') : fail(code));
+  /** What a request lost with its worker says: a branch move, here or at a host, may have happened. */
+  const lost = (job: Job, code: GitErrorCode) => (job.op.op === 'advanceRef' || job.op.op === 'push' ? fail('outcome-unknown') : fail(code));
 
   const settle = (job: Job, outcome: { value: unknown } | { error: GitError }) => {
     if (job.done) return;
@@ -261,6 +273,8 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
       };
     },
     version: (call) => submit({ op: 'version' }, call) as Promise<string>,
+    push: (root, target, commit, call) => submit({ op: 'push', root, target, commit }, call) as Promise<PushReply>,
+    remoteTip: (target, call) => submit({ op: 'remoteTip', target }, call) as Promise<Oid | null>,
     stop() {
       if (stopped) return;
       stopped = true;
