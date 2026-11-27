@@ -7,6 +7,7 @@
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -515,6 +516,16 @@ describe('saving a review edition as its offline sheet (#1134)', () => {
     expect(readFileSync(join(out, 'confirmed.html'), 'utf8')).toBe('<!doctype html>');
     // No temporary file is left behind.
     expect(readdirSync(out).sort()).toEqual(['confirmed.html', 'taken.html']);
+    // A drive that gives no file a second name: the name, still free, is taken by moving the finished file there.
+    const link = vi.spyOn(fsp, 'link').mockRejectedValueOnce(Object.assign(new Error('not permitted'), { code: 'EPERM' }));
+    try {
+      expect(await writeReviewSheet(join(out, 'usb.html'), sheet(), { fresh: true, stillOpen: () => true })).toBe('written');
+      expect(link).toHaveBeenCalledTimes(1);
+    } finally {
+      link.mockRestore();
+    }
+    expect(readFileSync(join(out, 'usb.html'), 'utf8')).toBe('<!doctype html>');
+    expect(readdirSync(out).sort()).toEqual(['confirmed.html', 'taken.html', 'usb.html']);
   });
 
   it('writes nothing when the chooser is closed, for an edition that is not there, or into the project', async () => {

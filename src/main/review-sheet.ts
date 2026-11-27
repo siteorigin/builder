@@ -145,7 +145,10 @@ export async function writeReviewSheet(file: string, chunks: AsyncIterable<strin
         await fs.link(tmp, file);
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code === 'EEXIST') return 'taken';
-        throw e;
+        // A drive with no second names for a file (FAT, exFAT, some shares): the name is looked at once more, then taken.
+        if (await fs.lstat(file).then(() => true, () => false)) return 'taken';
+        if (!opts.stillOpen()) return 'closed';
+        await fs.rename(tmp, file);
       }
     } else {
       const closed = new Error('closed');
