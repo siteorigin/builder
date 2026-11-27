@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -2010,6 +2010,66 @@ describe('memory', () => {
     expect((await runChain([slow], ctx, async () => new Trace([]), 60_000))[0].error?.message).toBe('m did not finish within 0s');
     const patient = { ...scenario('m', () => new Promise((r) => setTimeout(r, 30)), []), deadlineMs: 60_000 };
     expect((await runChain([patient], ctx, async () => new Trace([]), 10))[0].ok).toBe(true);
+  });
+});
+
+describe('noWindow', () => {
+  const MiB = 2 ** 20;
+  const reading = (label: string, roles: Record<string, number>, editorHeap = true): MemoryReading => {
+    const r = Object.fromEntries(Object.entries(roles).map(([k, v]) => [k, { processes: 1, bytes: v * MiB }]));
+    return { label, kind: 'rest', at: 0, processes: [], roles: r, total: Object.values(r).reduce((n, x) => n + x.bytes, 0), count: Object.keys(r).length, heap: editorHeap ? { main: 10 * MiB, editor: 20 * MiB } : { main: 12 * MiB }, how: {} as MemoryReading['how'] };
+  };
+  const all = [reading('welcome', { main: 60, editor: 40, gpu: 50 }), reading('canvas', { main: 70, editor: 100, gpu: 130, preview: 70, devServer: 240 }), reading('noWindow', { main: 70, gpu: 35, devServer: 130 }, false), reading('reopened', { main: 75, editor: 90, gpu: 110, preview: 75, devServer: 140 })];
+  const at = { scenario: 'noWindow' };
+  const ready = (t: number, revision: number, extra: Record<string, unknown> = {}) => r('canvas.ready', t, { pid: 3, attrs: { mode: 'edit', studio: false, path: '/', revision, ...extra } });
+
+  it('run on its own after launch, as a memory scenario, never in a chain with another', () => {
+    expect(chainFor(['noWindow']).map((s) => s.name)).toEqual(['launch', 'noWindow']);
+    expect(() => chainFor(['noWindow', 'open'])).toThrow('are run on their own');
+    expect(() => chainFor(['memory', 'noWindow'])).toThrow('Memory scenarios (memory, noWindow) are run one at a time');
+    expect(chainFor(['noWindow', 'noWindow']).map((s) => s.name)).toEqual(['launch', 'noWindow']);
+    expect([noWindow.memory, noWindow.after]).toEqual([true, 'launch']);
+  });
+
+  it('report each reading, what closing the window let go of, and the time back to the canvas in the new window', () => {
+    const trace = new Trace([
+      // The first window's canvas, before the window closed: never the one brought up again.
+      ready(900, 4, { path: '/about/' }),
+      m('noWindow.reopen', 1000, { attrs: { ...at, revision: 4, route: '/about/' } }),
+      m('launch.windowCreated', 1012),
+      r('renderer.commit', 1120, { pid: 3, attrs: { screen: 'editor' } }),
+      m('runtime.forked', 1130),
+      m('runtime.ready', 1600),
+      // Another page, and the page at another revision, are not the canvas the window came back to.
+      ready(1700, 4),
+      ready(1750, 3, { path: '/about/' }),
+      ready(1800, 4, { path: '/about/' }),
+      m('noWindow.shown', 2500, { attrs: at }),
+      m('noWindow.outsideTaken', 9000, { attrs: { ...at, saves: 1, withoutWindow: true } })
+    ]);
+    const got = noWindow.measure(trace, facts, all);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.welcome.total'), v('memory.canvas.total'), v('memory.noWindow.total'), v('memory.noWindow.processes'), v('memory.reopened.mem.devServer')]).toEqual([150, 610, 235, 3, 140]);
+    // With no window there is no editor, and no editor heap.
+    expect(got.metrics['memory.noWindow.heap.editor']).toBeUndefined();
+    expect([v('memory.windowClosed.growth.total'), v('memory.windowClosed.growth.mem.editor'), v('memory.windowClosed.growth.processes'), v('memory.restWithoutWindow.growth.total')]).toEqual([-375, -100, -2, 85]);
+    expect([v('memory.project.growth.total'), v('memory.windowBack.growth.mem.devServer')]).toEqual([460, -100]);
+    expect([v('noWindow.reopen.windowCreated'), v('noWindow.reopen.editorShown'), v('noWindow.reopen.canvasReady'), v('noWindow.reopen.runtimeReady'), v('noWindow.reopen.previewStarts'), v('noWindow.outside.saves'), v('noWindow.outside.takenWithoutWindow')]).toEqual([12, 120, 800, 600, 1, 1, 1]);
+  });
+
+  it('report a reading not taken, or a window that never came back to the canvas, as missing', () => {
+    const lacking = noWindow.measure(new Trace([m('noWindow.reopen', 1000, { attrs: { ...at, revision: 4, route: '/about/' } }), m('noWindow.shown', 2500, { attrs: at })]), facts, all.slice(0, 2));
+    expect(lacking.missing).toEqual(['memory reading noWindow', 'memory reading reopened', 'canvas.ready (window brought up again)', 'launch.windowCreated (window brought up again)', 'renderer.commit (editor, window brought up again)', 'noWindow.outsideTaken']);
+    expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.windowClosed'))).toBe(false);
+    // A window brought back to a preview already running starts none.
+    const warm = noWindow.measure(new Trace([m('noWindow.reopen', 1000, { attrs: { ...at, revision: 4, route: '/about/' } }), m('launch.windowCreated', 1010), r('renderer.commit', 1100, { pid: 3, attrs: { screen: 'editor' } }), ready(1300, 4, { path: '/about/' }), m('noWindow.shown', 2500, { attrs: at }), m('noWindow.outsideTaken', 9000, { attrs: { ...at, saves: 2 } })]), facts, all);
+    expect(warm.missing).toEqual([]);
+    // Taken only once the window was back: counted as such.
+    expect([warm.metrics['noWindow.reopen.previewStarts'].value, warm.metrics['noWindow.reopen.runtimeReady'], warm.metrics['noWindow.outside.saves'].value, warm.metrics['noWindow.outside.takenWithoutWindow'].value]).toEqual([0, undefined, 2, 0]);
+    // A reopen mark that does not say which page the window was left on cannot be timed.
+    const unnamed = noWindow.measure(new Trace([m('noWindow.reopen', 1000, { attrs: { ...at, revision: 4 } }), m('launch.windowCreated', 1010), r('renderer.commit', 1100, { pid: 3, attrs: { screen: 'editor' } }), ready(1300, 4), m('noWindow.shown', 2500, { attrs: at }), m('noWindow.outsideTaken', 9000, { attrs: { ...at, saves: 1 } })]), facts, all);
+    expect(unnamed.missing).toEqual(['noWindow.reopen (with the page it was left on)', 'canvas.ready (window brought up again)']);
   });
 });
 

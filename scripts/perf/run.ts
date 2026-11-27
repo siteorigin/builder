@@ -200,30 +200,32 @@ async function poll(file: string, done: (t: Trace) => boolean, timeoutMs: number
 
 async function mark(app: ElectronApplication, win: Page, name: string, attrs?: PerfAttrs) {
   await app.evaluate((_electron, a) => (globalThis as Record<symbol, { mark(n: string, at?: PerfAttrs): void } | undefined>)[Symbol.for(a.key)]?.mark(a.name, a.attrs), { key: PERF_GLOBAL, name, attrs });
-  await win.evaluate((a) => (globalThis as unknown as EditorPage).__siteoriginPerf?.mark(a.name, a.attrs), { name, attrs });
+  // With the editor's window closed (`noWindow` closes it, the project still open), only the main process marks.
+  if (!win.isClosed()) await win.evaluate((a) => (globalThis as unknown as EditorPage).__siteoriginPerf?.mark(a.name, a.attrs), { name, attrs });
 }
 
 /** One iteration: a launch with marks on and the chain run in it. */
 async function iterate(opts: Options, c: { dir: string; profile: string; project: string; other: string | null; facts: FixtureFacts; restoredAt: number }, index: number, trace: string): Promise<ChainOutcome[]> {
   rmSync(trace, { force: true });
   const { app, win, pid, root } = await start(opts.app, join(c.dir, 'launch'), c.profile, trace);
+  const ctx: ScenarioContext = {
+    app,
+    win,
+    fixture: c.facts,
+    projectDir: c.project,
+    otherProjectDir: c.other,
+    iteration: index,
+    settleMs: opts.settleMs,
+    restoredAt: c.restoredAt,
+    // The editor's window as it is now: a scenario that closes it and brings up another sets `win` to the new one.
+    mark: (name, attrs) => mark(app, ctx.win, name, attrs),
+    waitTrace: (done, timeoutMs = 10_000) => poll(trace, done, timeoutMs)
+  };
   // Only a chain with a memory scenario reads memory; the probe is closed before the app is quit, so a scenario that
   // ran past its deadline leaves no sampling behind.
-  const probe = opts.chain.some((s) => s.memory) ? new MemoryProbe(electronSource(app, win)) : undefined;
+  const probe = opts.chain.some((s) => s.memory) ? new MemoryProbe(electronSource(app, () => ctx.win)) : undefined;
+  if (probe) ctx.memory = probe;
   try {
-    const ctx: ScenarioContext = {
-      app,
-      win,
-      fixture: c.facts,
-      projectDir: c.project,
-      otherProjectDir: c.other,
-      iteration: index,
-      settleMs: opts.settleMs,
-      restoredAt: c.restoredAt,
-      mark: (name, attrs) => mark(app, win, name, attrs),
-      waitTrace: (done, timeoutMs = 10_000) => poll(trace, done, timeoutMs),
-      ...(probe ? { memory: probe } : {})
-    };
     return await runChain(opts.chain, ctx, () => poll(trace, () => false, 0), SCENARIO_MS);
   } finally {
     await probe?.dispose();

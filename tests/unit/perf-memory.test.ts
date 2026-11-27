@@ -170,13 +170,14 @@ describe('process roles', () => {
       }
     };
     const win = {
+      isClosed: () => false,
       url: () => 'app://editor/index.html',
       evaluate: async () => (calls.push('frame name'), 'so-1'),
       frames: () => [],
       mainFrame: () => null,
       context: () => ({ newCDPSession: async () => (calls.push('cdp'), { send: async () => ({}), detach: async () => undefined }) })
     };
-    const source = electronSource(app as never, win as never);
+    const source = electronSource(app as never, () => win as never);
     const stop = new AbortController();
     const collecting = source.collect(2, stop.signal);
     stop.abort();
@@ -193,6 +194,41 @@ describe('process roles', () => {
     win.context = () => ({ newCDPSession: async () => (heap.abort(), calls.push('cdp'), { send: async () => (calls.push('send'), {}), detach: async () => void calls.push('detach') }) });
     await expect(source.heap(heap.signal)).rejects.toThrow('the memory probe was closed');
     expect(calls).toEqual(['frame name', 'evaluate', 'cdp', 'detach']);
+  });
+
+  it('read the main process alone while the editor has no window, and the editor again in the window that replaces it', async () => {
+    const calls: string[] = [];
+    const app = {
+      evaluate: async (_fn: unknown, arg?: unknown) => {
+        if (typeof arg === 'number') return void calls.push('main gc');
+        if (arg && typeof arg === 'object') return (calls.push(`facts for ${(arg as { editorUrl: string }).editorUrl || 'no editor'}`), { main: 1, editor: null, preview: null, windows: [], processes: [] });
+        return (calls.push('main heap'), 40);
+      }
+    };
+    const page = (closed: boolean) => ({
+      isClosed: () => closed,
+      url: () => 'app://editor/index.html#/',
+      evaluate: async () => (calls.push('frame name'), null),
+      frames: () => [],
+      mainFrame: () => null,
+      context: () => ({ newCDPSession: async () => (calls.push('cdp'), { send: async () => ({ usedSize: 30 }), detach: async () => undefined }) })
+    });
+    let win = page(false);
+    const source = electronSource(app as never, () => win as never);
+    await source.facts();
+    // Closed: no call reaches its page, and the main process is still asked about the editor at the address it had.
+    win = page(true);
+    calls.length = 0;
+    await source.facts();
+    expect(await source.collect(2)).toEqual(['main']);
+    expect(await source.heap()).toEqual({ main: 40 });
+    expect(calls).toEqual(['facts for app://editor/index.html', 'main gc', 'main gc', 'main heap']);
+    // A window brought up again is the editor, collected and read as before.
+    win = page(false);
+    calls.length = 0;
+    expect(await source.collect(1)).toEqual(['main', 'editor']);
+    expect(await source.heap()).toEqual({ main: 40, editor: 30 });
+    expect(calls).toEqual(['main gc', 'cdp', 'frame name', 'main heap', 'cdp']);
   });
 
   it('never give a process the role of an earlier one that had its pid', () => {
@@ -247,6 +283,12 @@ describe('memory metrics', () => {
       'memory.open.peak.processes.media': '2 count'
     });
     expect(m.missing).toEqual(['memory reading closed']);
+    // With no editor window there is no editor heap: the reading has the main process's alone, and so does growth to it.
+    const none = new Collector();
+    const noWindow = { ...reading('noWindow', { main: [1, 200] }), heap: { main: 32 * MiB } };
+    readingMetrics(none, 'noWindow', noWindow);
+    growthMetrics(none, 'hidden', reading('canvas', { main: [1, 190] }, [30, 20]), noWindow);
+    expect(Object.keys(values(none)).filter((k) => k.includes('.heap.'))).toEqual(['memory.noWindow.heap.main', 'memory.hidden.growth.heap.main']);
   });
 
   it('report growth as the signed difference of two readings, a role in one only counting as none in the other', () => {
@@ -308,6 +350,18 @@ const REST = { settleMs: 3000, stableGapMs: 500, stableMaxMs: 15_000, gcPasses: 
 const welcomeRows = [row(1, 0, 190, APP), row(2, 1, 150), row(4, 1, 100), row(5, 1, 40)];
 
 describe('a reading at rest', () => {
+  it('fail a reading taken with the window in the other state than it expects', async () => {
+    // With the editor's window: a reading that expects one is taken, one that expects none fails.
+    const withEditor = fakeSource(() => welcomeRows, fakeClock());
+    await expect(new MemoryProbe(withEditor.src, fakeClock(), REST).rest('noWindow', { window: false })).rejects.toThrow("memory reading noWindow: the editor's window is open");
+    // Without it (the heap has no editor's): the reverse, so a window that closed by mistake never reads as a smaller app.
+    const without = fakeSource(() => welcomeRows, fakeClock());
+    without.src.heap = async () => ({ main: 31 * MiB });
+    await expect(new MemoryProbe(without.src, fakeClock(), REST).rest('closed')).rejects.toThrow("memory reading closed: the editor's window is not open");
+    const r = await new MemoryProbe(without.src, fakeClock(), REST).rest('noWindow', { window: false });
+    expect(r.heap).toEqual({ main: 31 * MiB });
+  });
+
   it('wait for the settle time and a settled set, collect garbage, read the heaps, then sample once', async () => {
     const clock = fakeClock();
     const { src, calls } = fakeSource(() => welcomeRows, clock);
