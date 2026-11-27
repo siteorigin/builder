@@ -3,13 +3,15 @@
  * entries (blog posts) counted by their collection, so a published post is seen to go out and a draft post to stay.
  */
 import { describe, expect, it } from 'vitest';
+import type { Diagnostic } from '@shared/api';
 import type { PageDoc, ProjectState } from '@shared/types';
+import type { SeoFinding } from '@shared/seo';
 import type { EditOperation } from '@shared/ops';
 import { siteEntries, type SiteEntry } from '@shared/collections';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { publicationPlan } from '@generator/checks';
-import { dialogFixes, draftEntriesSentence, entryCounts, exportedCounts, nothingToFix, pagesSummaryText, publishedEntriesSentence } from '../../src/renderer/src/lib/export-summary';
+import { dialogFixes, draftEntriesSentence, entryCounts, exportedCounts, healthNotes, healthNotesText, nothingToFix, pagesSummaryText, publishedEntriesSentence, sampleContactsLine } from '../../src/renderer/src/lib/export-summary';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const entry = (collectionId: string, id: string, draft: boolean): EditOperation => ({ type: 'entry.create', collectionId, entryId: id, title: `Entry ${id}`, publishedAt: '2026-01-12', draft });
@@ -105,6 +107,12 @@ describe('the words of the summary', () => {
     expect(pagesSummaryText({ published: [page('Shop', '/shop/'), page('Home')], drafts: [page('Shop', '/shop-two/')], ...none }).published.rest).toBe(' Shop (/shop/) and Home.');
   });
 
+  it('counts a few pages whose names run long once alike titles are told apart by address (#1288)', () => {
+    // Short titles, but the summary would add each long address: it is counted, and the lists are one click away.
+    const alike = Array.from({ length: 6 }, (_, i) => page('Shop', `/shop-for-handmade-ceramics-and-kitchenware-${i}/`));
+    expect(pagesSummaryText({ published: alike, drafts: [], ...none })).toEqual({ long: true, published: { lead: 'The website publishes 6 pages.', rest: '' }, drafts: null });
+  });
+
   it('counts many pages, and says the same of the entries', () => {
     const many = pages('Home', 'About', 'Contact', 'Services', 'Projects', 'Team', 'News');
     expect(pagesSummaryText({ published: many, drafts: [], ...none })).toEqual({ long: true, published: { lead: 'The website publishes 7 pages.', rest: '' }, drafts: null });
@@ -145,19 +153,78 @@ describe('the export result in the dialog’s words (#884)', () => {
     expect(exportedCounts(2, plan.publishedEntries.slice(0, 1))).toBe('2 pages and 1 entry from Posts');
   });
 
-  it('lists what the dialog still had to fix, in its headings’ words', () => {
-    expect(dialogFixes({ samples: 0, seo: 0 })).toEqual([]);
-    expect(dialogFixes({ samples: 3, seo: 2 })).toEqual(['3 sample contact details from the starter are still on the website.', '2 things keep the website from being found or shared well.']);
-    expect(dialogFixes({ samples: 1, seo: 1 })).toEqual(['A sample contact detail from the starter is still on the website.', 'One thing keeps the website from being found or shared well.']);
+  it('lists what the dialog still had to fix, in its own words', () => {
+    expect(dialogFixes({ samples: [], seo: 0 })).toEqual([]);
+    expect(dialogFixes({ samples: ['hello@example.com', '+1 555 0134'], seo: 2 })).toEqual(['hello@example.com and +1 555 0134 are sample details from the starter.', '2 search and sharing suggestions are in Project health.']);
+    expect(dialogFixes({ samples: ['hello@example.com'], seo: 1 })).toEqual(['hello@example.com is a sample detail from the starter.', '1 search and sharing suggestion is in Project health.']);
+    // The project's own problems and warnings the line counted are said too; its suggestions are not.
+    expect(dialogFixes({ samples: [], seo: 0, other: 1 })).toEqual(['1 note to check is in Project health.']);
+    expect(dialogFixes({ samples: [], seo: 2, other: 3 })).toEqual(['2 search and sharing suggestions are in Project health.', '3 notes to check are in Project health.']);
+    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: [], seo: 0, other: 1 }) })).toBe(false);
   });
 
   it('says nothing is left to fix only when neither the export nor the dialog found anything', () => {
     expect(nothingToFix({ ok: true, warnings: [], fixesListed: [] })).toBe(true);
     expect(nothingToFix({ ok: true, warnings: [] })).toBe(true);
-    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: 3, seo: 2 }) })).toBe(false);
+    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: ['a', 'b', 'c'], seo: 2 }) })).toBe(false);
     expect(nothingToFix({ ok: true, warnings: ['One image has not been chosen yet and shows a placeholder.'] })).toBe(false);
     expect(nothingToFix({ ok: false, warnings: [] })).toBe(false);
-    expect(dialogFixes({ samples: 2, seo: 0 })).toEqual(['2 sample contact details from the starter are still on the website.']);
-    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: 1, seo: 0 }) })).toBe(false);
+    expect(dialogFixes({ samples: ['a', 'b'], seo: 0 })).toEqual(['a and b are sample details from the starter.']);
+    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: ['a'], seo: 0 }) })).toBe(false);
+  });
+});
+
+describe('what keeps visitors from reaching the author (#1288)', () => {
+  it('names the sample contact details on one line while they are few and short, and counts them otherwise', () => {
+    expect(sampleContactsLine(['hello@example.com'])).toBe('hello@example.com is a sample detail from the starter.');
+    expect(sampleContactsLine(['hello@example.com', '+1 555 0134'])).toBe('hello@example.com and +1 555 0134 are sample details from the starter.');
+    expect(sampleContactsLine(['hello@example.com', '+1 555 0134', '12 Harbor Lane, Millbrook'])).toBe('hello@example.com, +1 555 0134 and 12 Harbor Lane, Millbrook are sample details from the starter.');
+    expect(sampleContactsLine(['a', 'b', 'c', 'd'])).toBe('4 sample contact details from the starter are on the website.');
+    expect(sampleContactsLine(['x'.repeat(40), 'y'.repeat(40)])).toBe('2 sample contact details from the starter are on the website.');
+    // Named up to 72 characters in all, counted past it.
+    expect(sampleContactsLine(['x'.repeat(36), 'y'.repeat(36)])).toBe(`${'x'.repeat(36)} and ${'y'.repeat(36)} are sample details from the starter.`);
+    expect(sampleContactsLine(['x'.repeat(36), 'y'.repeat(37)])).toBe('2 sample contact details from the starter are on the website.');
+    expect(sampleContactsLine(['a', 'b', 'c', 'd', 'e'])).toBe('5 sample contact details from the starter are on the website.');
+  });
+});
+
+describe('the rest of Project health, as one counted line (#1288)', () => {
+  const finding = (code: string, severity: SeoFinding['severity'], extra: Partial<SeoFinding> = {}): SeoFinding => ({ code, severity, message: `${code}.`, pillar: 'technical', explanation: '', aiFixable: false, ...extra });
+  const diag = (code: string, severity: Diagnostic['severity'], extra: Partial<Diagnostic> = {}): Diagnostic => ({ code, severity, message: `${code}.`, ...extra });
+  const form = (id: string, message = `${id}: the contact form is not connected.`) => diag('FORM_UNCONNECTED', 'warning', { owner: { kind: 'page', id }, nodeId: 'n1', message });
+
+  it('counts the search and sharing findings to fix apart from the suggestions and the project’s other notes', () => {
+    const notes = healthNotes({ seo: [finding('SEO_BASE_URL_MISSING', 'warning'), finding('SEO_PUBLISHER', 'error'), finding('SEO_TIP', 'info')], diagnostics: [diag('HEADINGS', 'warning'), diag('IMAGE_ALT', 'info')], shown: [] });
+    expect(notes).toEqual({ seo: 2, other: 3, otherDue: 1, atSeo: true });
+    expect(healthNotesText(notes)).toBe('2 search and sharing suggestions and 3 more notes.');
+  });
+
+  it('counts each finding once: a diagnostic the audit also lists, a form the dialog names, and never a conflict', () => {
+    const shared = finding('ENTRY_IMAGE_ALT', 'warning', { owner: { kind: 'entry', id: 'en_1' } });
+    // The same form, named as the published site names its page: still the one the dialog shows.
+    const notes = healthNotes({ seo: [shared], diagnostics: [{ ...shared }, form('pg_a', 'Lookbook: the contact form is not connected.'), diag('CONFLICT', 'error')], shown: [form('pg_a', 'Lookbook (published): the contact form is not connected.')] });
+    expect(notes).toEqual({ seo: 1, other: 0, otherDue: 0, atSeo: true });
+    // A form the dialog doesn't name (on a draft page, say), or another warning about a named form, still counts.
+    expect(healthNotes({ seo: [], diagnostics: [form('pg_draft'), diag('FORM_FIELD_KEYS', 'warning', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n1' })], shown: [form('pg_a')] })).toEqual({ seo: 0, other: 2, otherDue: 2, atSeo: false });
+    // Two forms on one page, one of them named: the other still counts.
+    expect(healthNotes({ seo: [], diagnostics: [form('pg_a'), { ...form('pg_a'), nodeId: 'n2' }], shown: [form('pg_a')] }).other).toBe(1);
+    // A project error that is not a conflict counts, and so does each finding that shares a code.
+    expect(healthNotes({ seo: [finding('SEO_DESC', 'warning', { owner: { kind: 'page', id: 'a' } }), finding('SEO_DESC', 'warning', { owner: { kind: 'page', id: 'b' } }), finding('SEO_TIP', 'info'), finding('SEO_TIP', 'info', { site: 'favicon' })], diagnostics: [diag('ASSET_MISSING', 'error')], shown: [] })).toEqual({ seo: 2, other: 3, otherDue: 1, atSeo: false });
+  });
+
+  it('opens Project health at Search & AI readiness when the line leads with it, or it is all there is', () => {
+    expect(healthNotes({ seo: [finding('SEO_TIP', 'info')], diagnostics: [], shown: [] })).toEqual({ seo: 0, other: 1, otherDue: 0, atSeo: true });
+    expect(healthNotes({ seo: [finding('SEO_TIP', 'info')], diagnostics: [diag('HEADINGS', 'warning')], shown: [] })).toEqual({ seo: 0, other: 2, otherDue: 1, atSeo: false });
+    expect(healthNotes({ seo: [finding('SEO_BASE_URL_MISSING', 'warning')], diagnostics: [diag('HEADINGS', 'info')], shown: [] }).atSeo).toBe(true);
+    // A problem of the project's own (a missing file the website uses) is above it, in the summary: Project health opens there.
+    expect(healthNotes({ seo: [finding('SEO_BASE_URL_MISSING', 'warning')], diagnostics: [diag('ASSET_MISSING', 'error')], shown: [] }).atSeo).toBe(false);
+  });
+
+  it('says whichever counts there are, and nothing on a clean site', () => {
+    expect(healthNotesText({ seo: 0, other: 0 })).toBe('');
+    expect(healthNotesText({ seo: 1, other: 0 })).toBe('1 search and sharing suggestion.');
+    expect(healthNotesText({ seo: 0, other: 1 })).toBe('1 note.');
+    expect(healthNotesText({ seo: 0, other: 4 })).toBe('4 notes.');
+    expect(healthNotesText({ seo: 1, other: 1 })).toBe('1 search and sharing suggestion and 1 more note.');
   });
 });

@@ -94,7 +94,8 @@ await pause(1200);
 // ---- Choosing what to export ----
 await openDialog();
 await shot('rest', '.modal [data-testid="export-pages"]');
-// The starter's sample contact details, one opened to show where it appears.
+// The starter's sample contact details, opened from their one line, one of them to show where it appears.
+await modal.getByTestId('export-sample-contacts').getByRole('button', { name: 'Review', exact: true }).click();
 await modal.getByTestId('export-sample-email').getByRole('button', { name: 'Show where' }).click();
 await shot('samples-where', '.modal [data-testid="export-sample-email"] li', LIGHT);
 await modal.getByTestId('export-sample-email').getByRole('button', { name: 'Show where' }).click();
@@ -278,6 +279,7 @@ await pause(300);
 
 // ---- Every sample detail kept on purpose: the review settles to one line ----
 await openDialog();
+await modal.getByTestId('export-sample-contacts').getByRole('button', { name: 'Review', exact: true }).click();
 for (let left = await modal.getByRole('button', { name: 'Keep it' }).count(); left > 0; left--) {
   await modal.getByRole('button', { name: 'Keep it' }).first().click();
   await pause(200);

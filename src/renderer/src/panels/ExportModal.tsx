@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
-import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, Info, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
+import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FolderCode, Globe, Info, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
 import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } from '@generator/checks';
 import type { PageDoc, ProjectState } from '@shared/types';
 import type { SiteEntry } from '@shared/collections';
-import type { ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
+import type { Diagnostic, ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
 import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout } from '../lib/actions';
@@ -12,14 +12,12 @@ import { settleEdits } from '../lib/leave';
 import { afterEditsSettle } from '../lib/pending';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
 import { openContentMatch } from './FindReplace';
-import { diagnosticKey, websiteFormNotes, websiteTrees } from '@engine/validate';
+import { websiteFormNotes, websiteFormProblems, websiteTrees } from '@engine/validate';
 import { publishedState } from '@generator/index';
 import { destinationLabel, noteState } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
-import { dialogFixes, nothingToFix, pagesSummaryText, sampleContactsHeading, seoPreflightHeading } from '../lib/export-summary';
-import { auditForHealth, seoCountsText, seoPreflight, type SeoAuditResult } from '../lib/seo-health';
-import { findingHandoff } from '../lib/seoHandoff';
-import { AiHandoffButton } from '../components/AiHandoff';
+import { dialogFixes, healthNotes, healthNotesText, nothingToFix, pagesSummaryText, sampleContactsLine, type HealthNotes } from '../lib/export-summary';
+import { auditForHealth } from '../lib/seo-health';
 import { BlockedNote, aiAwaiting, aiChanging, readOnlyBlock } from '../components/BlockedNote';
 import { ClientReview, type ReviewBusy } from './ClientReview';
 import './ExportModal.css';
@@ -132,37 +130,22 @@ function PageList({ title, pages }: { title: string; pages: PageDoc[] }) {
   );
 }
 
-/** What the website export publishes and leaves out: pages named when the list is short, counted when it is long, and the collection entries counted. */
-function PagesSummary({ published, drafts, publishedEntries, draftEntries }: { published: PageDoc[]; drafts: PageDoc[]; publishedEntries: SiteEntry[]; draftEntries: SiteEntry[] }) {
+/**
+ * Every page the website publishes and leaves out, one click away, for a site whose pages the website card counts
+ * rather than names: the lists can't go in the card, which is itself the button that starts the export.
+ */
+function PageLists({ published, drafts }: { published: PageDoc[]; drafts: PageDoc[] }) {
   const listId = useId();
   const [open, setOpen] = useState(false);
-  const text = pagesSummaryText({ published, drafts, publishedEntries, draftEntries });
-  const { long } = text;
   return (
-    <div className="export-pages" data-testid="export-pages">
-      <p>
-        <Globe size={14} aria-hidden /> <span>
-          <strong>{text.published.lead}</strong>{text.published.rest}
-        </span>
-      </p>
-      {text.drafts && (
-        <p data-testid="export-drafts">
-          <FilePen size={14} aria-hidden /> <span>
-            <strong>{text.drafts.lead}</strong>{text.drafts.rest}
-          </span>
-        </p>
-      )}
-      {long && (
-        <>
-          <button type="button" className="btn btn-sm btn-ghost export-pages-toggle" aria-expanded={open} aria-controls={listId} onClick={() => setOpen(!open)}>
-            <ChevronRight size={14} /> Review all pages
-          </button>
-          <div id={listId} className="export-pages-all" hidden={!open}>
-            <PageList title="Published" pages={published} />
-            {drafts.length > 0 && <PageList title="Left out as drafts" pages={drafts} />}
-          </div>
-        </>
-      )}
+    <div className="export-pages" data-testid="export-page-lists">
+      <button type="button" className="btn btn-sm btn-ghost export-pages-toggle" aria-expanded={open} aria-controls={listId} onClick={() => setOpen(!open)}>
+        <ChevronRight size={14} /> Review all pages
+      </button>
+      <div id={listId} className="export-pages-all" hidden={!open}>
+        <PageList title="Published" pages={published} />
+        {drafts.length > 0 && <PageList title="Left out as drafts" pages={drafts} />}
+      </div>
     </div>
   );
 }
@@ -182,22 +165,23 @@ function keepSamples(values: string[], keep: boolean) {
 }
 
 /**
- * The starter's sample contact details the website would still publish. Visitors who use them reach no one, so they
- * are reviewed before the website goes out, but never stop it: an author may mean to publish one. Each detail can be
- * opened where it is, replaced everywhere at once, or kept, which this project remembers.
+ * What keeps visitors from reaching the author, in one box: each form on the website that visitors cannot send (in
+ * Project health's words, which name its page) with the way to its settings, and the starter's sample contact details
+ * still on it, on one line. Neither stops the export: a work in progress can still go out on purpose. Review on the
+ * sample details opens each one, to see where it is, replace it everywhere at once, or keep it, which this project
+ * remembers.
  */
-function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettle }: { groups: SampleContactGroup[]; kept: SampleContactGroup[]; disabled: boolean; readOnly: boolean; folded: boolean; onSettle: () => void }) {
+function VisitorReview({ forms, groups, kept, disabled, readOnly, onSettle }: { forms: ExportNote[]; groups: SampleContactGroup[]; kept: SampleContactGroup[]; disabled: boolean; readOnly: boolean; onSettle: () => void }) {
   const baseId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState<string | null>(null);
-  // Folded to its counted heading while something more urgent needs the room; the rows are one click away.
-  const [listOpen, setListOpen] = useState(false);
-  const listHidden = folded && !listOpen;
-  // A job that starts folds the rows away again: their actions wait for it.
+  // The sample details' own choices are one click away, behind Review.
+  const [samplesOpen, setSamplesOpen] = useState(false);
+  // A job that starts folds them away again: their actions wait for it.
   useEffect(() => {
-    if (disabled) setListOpen(false);
+    if (disabled) setSamplesOpen(false);
   }, [disabled]);
-  if (!groups.length && !kept.length) return null;
+  if (!forms.length && !groups.length && !kept.length) return null;
   // The control pressed goes away with its group: focus moves to what took its place, here or in the dialog.
   // Only a control that is shown and usable can take focus.
   const usable = (selector: string) => [...(rootRef.current?.querySelectorAll<HTMLElement>(selector) ?? [])].filter((c) => c.offsetParent !== null && !(c as HTMLButtonElement).disabled);
@@ -208,10 +192,10 @@ function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettl
       if (el) el.focus();
       else onSettle();
     });
-  // A kept row goes away: focus moves to the same decision on the row that took its place, else the one above it,
+  // A kept detail goes away: focus moves to the same decision on the detail that took its place, else the one above it,
   // else the way to review the kept details again.
   const keepAt = (i: number) => {
-    const keeps = usable('.export-review-list > li .export-review-keep');
+    const keeps = usable('.export-samples-list > li .export-review-keep');
     return keeps[i] ?? keeps[i - 1] ?? usable('.export-samples-kept button')[0];
   };
   const keptLine = kept.length > 0 && (
@@ -219,81 +203,108 @@ function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettl
       <CircleCheck aria-hidden />
       <span>
         {kept.length === 1 ? `${kept[0].value} is kept as you chose.` : `${kept.length} sample contact details are kept as you chose.`}{' '}
-        <button className="link-btn" disabled={disabled || readOnly} onClick={() => (keepSamples(kept.map((g) => g.value), false), setListOpen(true), settle(() => usable('.export-review-actions .btn')[0]))}>
+        <button className="link-btn" disabled={disabled || readOnly} onClick={() => (keepSamples(kept.map((g) => g.value), false), setSamplesOpen(true), settle(() => usable(`.export-samples-list > [data-testid="export-sample-${kept[0].kind}"] .export-review-actions .btn`)[0] ?? usable('.export-samples-list .btn')[0]))}>
           Review {kept.length === 1 ? 'it' : 'them'} again
         </button>
       </span>
     </p>
   );
   const headId = `${baseId}-head`;
-  const rowsId = `${baseId}-rows`;
+  const samplesId = `${baseId}-samples`;
+  const samplesLineId = `${samplesId}-line`;
   return (
-    <div ref={rootRef} className="export-samples-review">
-      {groups.length > 0 && (
-        <section className="export-review" data-testid="export-sample-contacts" aria-labelledby={headId}>
+    <div ref={rootRef} className="export-visitors">
+      {(forms.length > 0 || groups.length > 0) && (
+        <section className="export-review" data-testid="export-visitor-review" aria-labelledby={headId}>
           <div className="export-review-head">
             <TriangleAlert aria-hidden />
-            <div className="grow">
-              <strong id={headId}>{sampleContactsHeading(groups.length)}</strong>
-              <span>Visitors who use {groups.length === 1 ? 'it' : 'them'} won’t reach you. This won’t stop the export.</span>
-            </div>
-            {/* While a job runs the rows' actions wait, so there is nothing to open. */}
-            {folded && !disabled && (
-              <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
-                <ChevronRight size={14} aria-hidden />
-                {listOpen ? 'Hide' : 'Review'}
-              </button>
-            )}
+            <strong className="grow" id={headId}>
+              Visitors can’t reach you yet
+            </strong>
           </div>
-          <ul className="export-review-list" id={rowsId} hidden={listHidden}>
-            {groups.map((g, row) => {
-              const listId = `${baseId}-${g.kind}`;
-              const nameId = `${listId}-name`;
-              const shown = open === g.kind;
-              return (
-                <li key={g.kind} data-testid={`export-sample-${g.kind}`}>
-                  <div className="export-review-row">
-                    <div className="export-review-what">
-                      <span id={nameId}>
-                        <strong>{g.value}</strong>{' '}
-                        <span className="export-review-where">
-                          · {g.matches.length === 1 ? '1 place' : `${g.matches.length} places`} on {placesOf(g.matches.map((m) => m.field))}.
-                        </span>
-                      </span>{' '}
-                      {/* Beside the places it reveals, so the row stays one decision wide. */}
-                      <button type="button" className="export-inline-toggle" aria-expanded={shown} aria-controls={listId} aria-describedby={nameId} onClick={() => setOpen(shown ? null : g.kind)}>
-                        Show where
-                        <ChevronRight size={13} aria-hidden />
+          <ul className="export-review-list">
+            {forms.map((n, i) => (
+              <li key={n.destination?.kind === 'form' ? `${n.destination.owner.kind}:${n.destination.owner.id}:${n.destination.nodeId}` : i} data-testid="export-form-note">
+                <div className="export-review-row">
+                  <span className="export-review-what" id={`${baseId}-form-${i}`}>
+                    {n.message}
+                  </span>
+                  <div className="export-review-actions">
+                    {n.destination && (
+                      <button className="btn btn-sm" disabled={disabled} aria-describedby={`${baseId}-form-${i}`} onClick={() => openEditorDestination(n.destination!)}>
+                        {destinationLabel(n.destination)}
                       </button>
-                    </div>
-                    <div className="export-review-actions">
-                      <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
-                        Replace everywhere…
-                      </button>
-                      {/* A read-only project keeps nothing, and exports nothing either. */}
-                      <button className="btn btn-sm btn-ghost export-review-keep" disabled={disabled || readOnly} aria-describedby={nameId} onClick={() => (keepSamples([g.value], true), settle(() => keepAt(row)))}>
-                        Keep it
-                      </button>
-                    </div>
+                    )}
                   </div>
-                  <ul className="export-samples-places" id={listId} hidden={!shown}>
-                    {g.matches.map((m) => {
-                      const f = m.field;
-                      const path = f.section === f.where || f.label === f.section || f.label.startsWith(`${f.section} › `) ? f.label : `${f.section} › ${f.label}`;
-                      const name = `${f.owner.kind === 'shell' ? `Shared ${f.owner.id}` : f.where} › ${path}`;
-                      return (
-                        <li key={m.id}>
-                          <span className="grow">{name}</span>
-                          <button className="btn btn-sm btn-ghost" disabled={disabled} aria-label={`Open ${name} in the inspector`} onClick={() => openContentMatch(f)}>
-                            Open
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </li>
-              );
-            })}
+                </div>
+              </li>
+            ))}
+            {groups.length > 0 && (
+              <li data-testid="export-sample-contacts">
+                <div className="export-review-row">
+                  <span className="export-review-what" id={samplesLineId}>
+                    {sampleContactsLine(groups.map((g) => g.value))}
+                  </span>
+                  <div className="export-review-actions">
+                    {/* While a job runs the details' actions wait, so there is nothing to open. */}
+                    <button type="button" className="btn btn-sm export-review-toggle" disabled={disabled} aria-expanded={samplesOpen} aria-controls={samplesId} aria-describedby={samplesLineId} onClick={() => setSamplesOpen(!samplesOpen)}>
+                      <ChevronRight size={14} aria-hidden />
+                      {samplesOpen ? 'Hide' : 'Review'}
+                    </button>
+                  </div>
+                </div>
+                <ul className="export-samples-list" id={samplesId} hidden={!samplesOpen}>
+                  {groups.map((g, row) => {
+                    const listId = `${baseId}-${g.kind}`;
+                    const nameId = `${listId}-name`;
+                    const shown = open === g.kind;
+                    return (
+                      <li key={g.kind} data-testid={`export-sample-${g.kind}`}>
+                        <div className="export-review-row">
+                          <div className="export-review-what">
+                            <span id={nameId}>
+                              <strong>{g.value}</strong>{' '}
+                              <span className="export-review-where">
+                                · {g.matches.length === 1 ? '1 place' : `${g.matches.length} places`} on {placesOf(g.matches.map((m) => m.field))}.
+                              </span>
+                            </span>{' '}
+                            {/* Beside the places it reveals, so the row stays one decision wide. */}
+                            <button type="button" className="export-inline-toggle" aria-expanded={shown} aria-controls={listId} aria-describedby={nameId} onClick={() => setOpen(shown ? null : g.kind)}>
+                              Show where
+                              <ChevronRight size={13} aria-hidden />
+                            </button>
+                          </div>
+                          <div className="export-review-actions">
+                            <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
+                              Replace everywhere…
+                            </button>
+                            {/* A read-only project keeps nothing, and exports nothing either. */}
+                            <button className="btn btn-sm btn-ghost export-review-keep" disabled={disabled || readOnly} aria-describedby={nameId} onClick={() => (keepSamples([g.value], true), settle(() => keepAt(row)))}>
+                              Keep it
+                            </button>
+                          </div>
+                        </div>
+                        <ul className="export-samples-places" id={listId} hidden={!shown}>
+                          {g.matches.map((m) => {
+                            const f = m.field;
+                            const path = f.section === f.where || f.label === f.section || f.label.startsWith(`${f.section} › `) ? f.label : `${f.section} › ${f.label}`;
+                            const name = `${f.owner.kind === 'shell' ? `Shared ${f.owner.id}` : f.where} › ${path}`;
+                            return (
+                              <li key={m.id}>
+                                <span className="grow">{name}</span>
+                                <button className="btn btn-sm btn-ghost" disabled={disabled} aria-label={`Open ${name} in the inspector`} onClick={() => openContentMatch(f)}>
+                                  Open
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </li>
+            )}
           </ul>
         </section>
       )}
@@ -303,131 +314,22 @@ function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettl
 }
 
 /**
- * The forms (contact or signup) the website would publish that visitors cannot send, each in Project health's words (which name
- * its page) with the way to its settings. They are reviewed before the website goes out, but never stop it: a work in
- * progress can still be exported on purpose.
+ * Everything else Project health lists, as one counted line with the way there: the search and sharing findings, and
+ * the project's other notes. Each is fixed in Project health, and none of them stops the export. With nothing to count,
+ * there is no line.
  */
-function FormReview({ notes, disabled, folded }: { notes: ExportNote[]; disabled: boolean; folded: boolean }) {
-  const baseId = useId();
-  // Folded to its counted heading while something more urgent needs the room; the rows are one click away.
-  const [listOpen, setListOpen] = useState(false);
-  useEffect(() => {
-    if (disabled) setListOpen(false);
-  }, [disabled]);
-  if (!notes.length) return null;
-  const headId = `${baseId}-head`;
-  const rowsId = `${baseId}-rows`;
+function HealthSummary({ notes, disabled }: { notes: HealthNotes; disabled: boolean }) {
+  const lineId = useId();
+  const text = healthNotesText(notes);
+  if (!text) return null;
   return (
-    <section className="export-review" data-testid="export-form-review" aria-labelledby={headId}>
-      <div className="export-review-head">
-        <TriangleAlert aria-hidden />
-        <div className="grow">
-          <strong id={headId}>{notes.length === 1 ? 'A form on the website can’t send messages yet.' : `${notes.length} forms on the website can’t send messages yet.`}</strong>
-          <span>Visitors who fill {notes.length === 1 ? 'it' : 'them'} in won’t reach you. You can still export the website.</span>
-        </div>
-        {folded && !disabled && (
-          <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
-            <ChevronRight size={14} aria-hidden />
-            {listOpen ? 'Hide' : 'Review'}
-          </button>
-        )}
-      </div>
-      <ul className="export-review-list" id={rowsId} hidden={folded && !listOpen}>
-        {notes.map((n, i) => (
-          <li key={n.destination?.kind === 'form' ? `${n.destination.owner.kind}:${n.destination.owner.id}:${n.destination.nodeId}` : i}>
-            <div className="export-review-row">
-              <span className="export-review-what" id={`${baseId}-${i}`}>
-                {n.message}
-              </span>
-              <div className="export-review-actions">
-                {n.destination && (
-                  <button className="btn btn-sm" disabled={disabled} aria-describedby={`${baseId}-${i}`} onClick={() => openEditorDestination(n.destination!)}>
-                    {destinationLabel(n.destination)}
-                  </button>
-                )}
-              </div>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-/**
- * The SEO and agentic preflight: what keeps the website from being found, shared or read by search engines, link
- * previews and AI agents (the SEO audit's problems and warnings), counted, with a few of them and the way to where each
- * is fixed (and Fix with AI, when the AI can fix it), and the way to all of them in Project health. It never stops the
- * export: an author may publish before the site has a public URL, say. With nothing to fix, it is one quiet line.
- */
-function SeoPreflight({ audit, state, disabled, folded }: { audit: SeoAuditResult; state: ProjectState; disabled: boolean; folded: boolean }) {
-  const baseId = useId();
-  // Folded to its counted heading while something more urgent needs the room; the rows are one click away.
-  const [listOpen, setListOpen] = useState(false);
-  useEffect(() => {
-    if (disabled) setListOpen(false);
-  }, [disabled]);
-  // Project health says why the audit could not read the project; the export itself is not held up by it.
-  if (!audit.ok) return null;
-  const pre = seoPreflight(audit.findings);
-  const openHealth = () => setState({ modal: { kind: 'health', section: 'seo' } });
-  if (!pre.total)
-    return (
-      <p className="export-seo-ready" data-testid="export-seo-preflight">
-        <CircleCheck aria-hidden />
-        <span>
-          <strong>Ready for search and AI.</strong> {pre.notes ? `Nothing to fix; Project health has ${seoCountsText(audit.findings)} with suggestions.` : 'Nothing keeps search engines, link previews or AI agents from the website.'}{' '}
-          {pre.notes > 0 && (
-            <button type="button" className="link-btn" disabled={disabled} onClick={openHealth}>
-              Review in Project health
-            </button>
-          )}
-        </span>
-      </p>
-    );
-  const headId = `${baseId}-head`;
-  const rowsId = `${baseId}-rows`;
-  return (
-    <section className="export-review" data-testid="export-seo-preflight" aria-labelledby={headId}>
-      <div className="export-review-head">
-        <TriangleAlert aria-hidden />
-        <div className="grow">
-          <strong id={headId}>{seoPreflightHeading(pre.total)}</strong>
-          <span>Search engines, link previews and AI agents read the website as it is exported. This won’t stop the export.</span>
-        </div>
-        {folded && !disabled && (
-          <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
-            <ChevronRight size={14} aria-hidden />
-            {listOpen ? 'Hide' : 'Review'}
-          </button>
-        )}
-      </div>
-      <ul className="export-review-list" id={rowsId} hidden={folded && !listOpen}>
-        {pre.examples.map((f, i) => (
-          <li key={diagnosticKey(f)}>
-            <div className="export-review-row">
-              <span className="export-review-what" id={`${baseId}-${i}`}>
-                {f.message}
-              </span>
-              <div className="export-review-actions">
-                {f.destination && (
-                  <button className="btn btn-sm" disabled={disabled} aria-describedby={`${baseId}-${i}`} onClick={() => openEditorDestination(f.destination!)}>
-                    {destinationLabel(f.destination)}
-                  </button>
-                )}
-                {findingHandoff(state, f) && <AiHandoffButton label="Fix with AI" disabled={disabled} describedBy={`${baseId}-${i}`} request={() => findingHandoff(getState().snapshot?.state ?? state, f)} />}
-              </div>
-            </div>
-          </li>
-        ))}
-      </ul>
-      <p className="export-seo-more">
-        <span>{pre.more ? `${pre.more} more ${pre.more === 1 ? 'is' : 'are'} in Project health.` : pre.notes ? `Project health also has ${seoCountsText(audit.findings.filter((f) => f.severity === 'info'))} with suggestions.` : ''}</span>
-        <button type="button" className="link-btn" disabled={disabled} aria-describedby={headId} onClick={openHealth}>
-          View all in Project health
-        </button>
-      </p>
-    </section>
+    <p className="export-health" data-testid="export-health-summary">
+      <span id={lineId}>{text}</span>
+      <button type="button" className="link-btn export-health-go" disabled={disabled} aria-describedby={lineId} onClick={() => setState({ modal: notes.atSeo ? { kind: 'health', section: 'seo' } : { kind: 'health' } })}>
+        Review in Project health
+        <ChevronRight size={13} aria-hidden />
+      </button>
+    </p>
   );
 }
 
@@ -508,9 +410,15 @@ function BuildDetails({ text, fix }: { text: string; fix?: ReactNode }) {
  * What the dialog lists to fix besides the export's own notes: the starter's sample contact details not kept on purpose,
  * and what keeps the website from being found or shared. A result never says "Nothing to fix." over them.
  */
-function listedFixes(state: ProjectState, kept: readonly string[]): string[] {
+function listedFixes(state: ProjectState, kept: readonly string[], diagnostics: readonly Diagnostic[]): string[] {
+  const notes = healthNotesOf(state, diagnostics);
+  return dialogFixes({ samples: sampleContactMatches(state).flatMap((g) => (kept.includes(g.value) ? [] : [g.value])), seo: notes.seo, other: notes.otherDue });
+}
+
+/** What Project health lists beside what the dialog shows itself, counted once each (healthNotes). */
+function healthNotesOf(state: ProjectState, diagnostics: readonly Diagnostic[]): HealthNotes {
   const audit = auditForHealth(state);
-  return dialogFixes({ samples: sampleContactMatches(state).filter((g) => !kept.includes(g.value)).length, seo: audit.ok ? seoPreflight(audit.findings).total : 0 });
+  return healthNotes({ seo: audit.ok ? audit.findings : [], diagnostics, shown: websiteFormProblems(state) });
 }
 
 export function ExportModal() {
@@ -536,8 +444,12 @@ export function ExportModal() {
   const samplesKept = samples.filter((g) => keptValues.includes(g.value));
   // The website's contact forms visitors cannot send, as the website export would name them, and where to fix each.
   const formNotes = useMemo(() => (state ? websiteFormNotes(state) : []), [state]);
-  // What keeps the website from being found or shared, as Project health's Search & AI readiness says it.
-  const seoAudit = useMemo(() => (state ? auditForHealth(state) : null), [state]);
+  // What else Project health lists, counted once each beside the forms named here: what keeps the website from being
+  // found or shared (as its Search & AI readiness says it), its suggestions, and the project's other notes.
+  const diagnostics = useStore((s) => s.snapshot?.diagnostics);
+  const health = useMemo(() => (state ? healthNotesOf(state, diagnostics ?? []) : null), [state, diagnostics]);
+  // What the website card says it publishes: pages named when the list is short and counted when it is long.
+  const pagesText = useMemo(() => (plan ? pagesSummaryText(plan) : null), [plan]);
   // What the website shows now, read once for every note about an earlier export.
   const liveTrees = useMemo(() => (state ? websiteTrees(publishedState(state)) : []), [state]);
   const [busy, setBusy] = useState<ExportKind | null>(null);
@@ -624,7 +536,9 @@ export function ExportModal() {
     // A control that went away with its blocker, or with what a note or the form review named (fixed meanwhile), leaves
     // focus nowhere.
     if (document.activeElement === document.body) firstControl()?.focus();
-  }, [availability, longLinks, state]);
+    // The count line goes too once Project health has nothing left, which can change without the project (a missing
+    // file restored on disk).
+  }, [availability, longLinks, state, health?.seo, health?.other]);
   const resultRef = useRef<HTMLDivElement>(null);
   const buttons = useRef<Record<ExportKind, HTMLButtonElement | null>>({ static: null, source: null });
   // Where focus goes once the job ends: the result when there is one to read, else back on the button used.
@@ -660,7 +574,7 @@ export function ExportModal() {
       // read once the export returns, from the project as it is then, so an edit made while the folder was being chosen
       // or the edits were saving (which the export carries) is never contradicted.
       const now = getState();
-      if (r.message) setResult({ ...r, report: newReportId(), fixesListed: r.ok && now.snapshot ? listedFixes(now.snapshot.state, now.keptSamples) : undefined });
+      if (r.message) setResult({ ...r, report: newReportId(), fixesListed: r.ok && now.snapshot ? listedFixes(now.snapshot.state, now.keptSamples, now.snapshot.diagnostics) : undefined });
       settle.current = r.message ? 'result' : kind;
     } catch (e) {
       settle.current = 'result';
@@ -783,7 +697,22 @@ export function ExportModal() {
             <strong>Website files, ready to upload</strong>
             {cardEnd('static', blocked || draftLinks.length > 0)}
           </span>
-          <span className="export-card-line">{format === 'zip' ? 'Every published page as a finished website, in one ZIP file.' : 'Every published page as a finished website folder, for any web host.'}</span>
+          {pagesText ? (
+            <>
+              <span className="export-card-line" data-testid="export-pages">
+                {pagesText.published.lead}
+                {pagesText.published.rest}
+              </span>
+              {pagesText.drafts && (
+                <span className="export-card-line export-card-drafts" data-testid="export-drafts">
+                  {pagesText.drafts.lead}
+                  {pagesText.drafts.rest}
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="export-card-line">Every published page as a finished website, for any web host.</span>
+          )}
           <span className="export-card-line export-card-photos" data-testid="export-photo-privacy">
             <MapPinOff aria-hidden /> <span>Removes where each photo was taken and the camera details. Credits, copyright, orientation and color stay.</span>
           </span>
@@ -959,10 +888,9 @@ export function ExportModal() {
                 </div>
               </div>
             )}
-            {state && <FormReview notes={formNotes} disabled={locked} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
-            {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={locked} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
-            {seoAudit && state && <SeoPreflight audit={seoAudit} state={state} disabled={locked} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
-            {plan && <PagesSummary published={plan.published} drafts={plan.drafts} publishedEntries={plan.publishedEntries} draftEntries={plan.draftEntries} />}
+            {state && <VisitorReview forms={formNotes} groups={samplesToReview} kept={samplesKept} disabled={locked} readOnly={readOnly} onSettle={() => firstControl()?.focus()} />}
+            {health && <HealthSummary notes={health} disabled={locked} />}
+            {plan && pagesText?.long && <PageLists published={plan.published} drafts={plan.drafts} />}
             {history}
             {state && <ClientReview key={workspaceKey} state={state} workspaceKey={workspaceKey} blocked={blocked || draftLinks.length > 0} otherBusy={!!busy} busy={reviewBusy} onBusy={setReviewBusy} />}
           </>

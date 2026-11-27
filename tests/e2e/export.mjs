@@ -958,9 +958,15 @@ for (let open = 0; open < 2; open++) {
   const held = posts.length - live;
   assert.ok(live > 1 && held > 0, 'the blog has published posts and a draft');
   // Eight pages are counted, not named; the sentence on the posts follows them in the same line.
-  assert.match((await modal.getByTestId('export-pages').locator('p').first().innerText()).trim(), new RegExp(`^The website publishes ${livePages} pages\\. It also publishes ${live} entries from Posts\\.$`), 'the summary counts the published posts');
+  assert.match((await modal.locator('.export-card').getByTestId('export-pages').innerText()).trim(), new RegExp(`^The website publishes ${livePages} pages\\. It also publishes ${live} entries from Posts\\.$`), 'the summary counts the published posts');
   const heldPhrase = held === 1 ? '1 draft entry from Posts is' : `${held} draft entries from Posts are`;
-  assert.equal((await modal.getByTestId('export-drafts').innerText()).trim(), `${heldPhrase} left out. Drafts stay in the editable project.`, 'the summary says the draft posts are left out');
+  // Counted on the card, the pages themselves are one click away in the body (#1288).
+  const allPages = modal.getByTestId('export-page-lists').getByRole('button', { name: 'Review all pages' });
+  assert.equal(await allPages.getAttribute('aria-expanded'), 'false', 'the full lists start folded');
+  await allPages.click();
+  assert.equal(await modal.getByTestId('export-page-lists').getByRole('heading', { name: 'Published' }).count(), 1, 'the published pages are listed');
+  await allPages.click();
+  assert.equal((await modal.locator('.export-card').getByTestId('export-drafts').innerText()).trim(), `${heldPhrase} left out. Drafts stay in the editable project.`, 'the summary says the draft posts are left out');
   for (const [i, e] of recent.entries()) {
     const item = items.nth(i);
     const text = await item.innerText();
@@ -1130,8 +1136,9 @@ step('#817, #884: a site exports with nothing to fix only once the dialog lists 
   const dialog = win.locator('.modal');
   const outcome = dialog.locator('.export-result');
   // #884: what the dialog lists to fix before the export is said with its result, never contradicted by "Nothing to fix."
-  const listed = (await dialog.getByTestId('export-seo-preflight').locator('strong').first().innerText()).trim();
-  assert.match(listed, /^3 things keep the website from being found or shared well\.$/, `the blank site has no publisher, description or sharing image: ${listed}`);
+  const counted = (await dialog.getByTestId('export-health-summary').locator('span').first().innerText()).trim();
+  assert.match(counted, /^3 search and sharing suggestions\b/, `the blank site has no publisher, description or sharing image: ${counted}`);
+  const listed = '3 search and sharing suggestions are in Project health.';
   await intoFolder();
   await dialog.getByRole('button', { name: /Website files, ready to upload/ }).click();
   await outcome.waitFor({ timeout: 300000 });
@@ -1169,7 +1176,7 @@ step('#817, #884: a site exports with nothing to fix only once the dialog lists 
     { image: cardImport.assetIds[0], home: quietHome }
   );
   assert.equal(fixed.ok, true, `the findings are fixed: ${fixed.error?.message}`);
-  await dialog.getByText('Ready for search and AI.').waitFor({ timeout: 30000 });
+  await dialog.getByTestId('export-health-summary').filter({ hasText: 'search and sharing' }).waitFor({ state: 'detached', timeout: 30000 });
   await intoFolder();
   await dialog.getByRole('button', { name: /Website files, ready to upload/ }).click();
   await outcome.waitFor({ timeout: 300000 });

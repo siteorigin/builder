@@ -1,9 +1,12 @@
 import type { SiteEntry } from '@shared/collections';
+import type { SeoFinding } from '@shared/seo';
+import type { Diagnostic } from '@shared/api';
 import type { PageDoc } from '@shared/types';
+import { diagnosticKey } from '@engine/validate';
 
 /** More pages than this are counted, with the full lists one click away, so they never push the export choices out of view. */
 const LONG_PAGE_LIST = 6;
-/** Page titles longer than this in all are counted too, however few pages there are. */
+/** Pages whose names (titles, and the addresses that tell alike titles apart) run longer than this in all are counted too, however few there are. */
 const LONG_TITLES = 110;
 
 /** More collections than this are totalled ("12 entries from 8 collections") rather than named, so the line stays short. */
@@ -79,8 +82,9 @@ export interface PagesSummaryText {
 export function pagesSummaryText(plan: { published: PageDoc[]; drafts: PageDoc[]; publishedEntries: SiteEntry[]; draftEntries: SiteEntry[] }): PagesSummaryText {
   const { published, drafts, publishedEntries, draftEntries } = plan;
   const all = [...published, ...drafts];
-  // Counted, not named, when there are many pages or their titles would run long.
-  const long = all.length > LONG_PAGE_LIST || all.reduce((n, p) => n + p.title.length, 0) > LONG_TITLES;
+  // Counted, not named, when there are many pages or their names, as the summary would write them, would run long: the
+  // website card it is written on stays in view in the dialog's footer.
+  const long = all.length > LONG_PAGE_LIST || listTitles(published, all).length + listTitles(drafts, all).length > LONG_TITLES;
   const alsoPublished = publishedEntriesSentence(publishedEntries);
   const line: SummaryLine = {
     lead: `The website publishes ${published.length === 1 ? '1 page' : `${published.length} pages`}${long ? '.' : ':'}`,
@@ -101,23 +105,70 @@ export function pagesSummaryText(plan: { published: PageDoc[]; drafts: PageDoc[]
   return { long, published: line, drafts: draftEntries.length > 0 ? { lead: draftEntriesSentence(draftEntries, false), rest: ' Drafts stay in the editable project.' } : null };
 }
 
-/** The heading of the Export dialog's review of the starter's sample contact details still on the website. */
-export function sampleContactsHeading(count: number): string {
-  return count === 1 ? 'A sample contact detail from the starter is still on the website.' : `${count} sample contact details from the starter are still on the website.`;
+/** Sample details named longer than this in all are counted instead, so their line stays one line. */
+const MAX_SAMPLE_CHARS = 72;
+
+/**
+ * The line the Export dialog's "Visitors can't reach you yet" box gives the starter's sample contact details still on
+ * the website: named while they are few and short ("hello@example.com and +1 555 0134 are sample details from the
+ * starter."), counted otherwise.
+ */
+export function sampleContactsLine(values: string[]): string {
+  if (values.length === 1) return `${values[0]} is a sample detail from the starter.`;
+  if (values.length <= 3 && values.reduce((n, v) => n + v.length, 0) <= MAX_SAMPLE_CHARS) return `${joinAnd(values)} are sample details from the starter.`;
+  return `${values.length} sample contact details from the starter are on the website.`;
 }
 
-/** The heading of the Export dialog's search and AI preflight, for what keeps the website from being found or shared. */
-export function seoPreflightHeading(count: number): string {
-  return count === 1 ? 'One thing keeps the website from being found or shared well.' : `${count} things keep the website from being found or shared well.`;
+/** The same form problem, however its message names the form's page. */
+const formKey = (d: Diagnostic) => `${d.code}|${d.owner?.kind ?? ''}:${d.owner?.id ?? ''}|${d.nodeId ?? ''}`;
+
+/** What the Export dialog's one line counts of what Project health lists, beside the forms and sample details it shows itself. */
+export interface HealthNotes {
+  /** The search and sharing findings that keep the website from being found or shared (problems and warnings). */
+  seo: number;
+  /** Everything else Project health lists: the search audit's suggestions and the project's own diagnostics. */
+  other: number;
+  /** The project's own problems and warnings among `other`: worth checking before publishing, unlike a suggestion. */
+  otherDue: number;
+  /**
+   * Project health opens at Search & AI readiness: it holds what the line leads with, or all there is. A problem of the
+   * project's own comes first, in the summary above it.
+   */
+  atSeo: boolean;
+}
+
+/**
+ * Count what Project health lists for the Export dialog's line, each once: a diagnostic that is also a search finding
+ * is counted with the search findings, a form the dialog already names (`shown`) is not counted again, and conflicts
+ * (which stop the export, and say so) are left out.
+ */
+export function healthNotes({ seo, diagnostics, shown }: { seo: readonly SeoFinding[]; diagnostics: readonly Diagnostic[]; shown: readonly Diagnostic[] }): HealthNotes {
+  const seoKeys = new Set(seo.map(diagnosticKey));
+  const shownKeys = new Set(shown.map(formKey));
+  const rest = diagnostics.filter((d) => d.code !== 'CONFLICT' && !seoKeys.has(diagnosticKey(d)) && !shownKeys.has(formKey(d)));
+  const due = seo.filter((f) => f.severity !== 'info').length;
+  const restDue = rest.filter((d) => d.severity !== 'info');
+  return { seo: due, other: seo.length - due + rest.length, otherDue: restDue.length, atSeo: !restDue.some((d) => d.severity === 'error') && (due > 0 || rest.length === 0) };
+}
+
+const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** "2 search and sharing suggestions and 3 more notes.", or whichever of them there are; empty when there are none. */
+export function healthNotesText({ seo, other }: Pick<HealthNotes, 'seo' | 'other'>): string {
+  const lead = seo ? count(seo, 'search and sharing suggestion') : '';
+  const rest = other ? `${other} ${seo ? 'more ' : ''}${other === 1 ? 'note' : 'notes'}` : '';
+  return lead || rest ? `${joinAnd([lead, rest].filter(Boolean))}.` : '';
 }
 
 /**
  * What the Export dialog still listed to fix when an export started, beside the export's own notes, in the dialog's
- * words: the sample contact details left to review and what keeps the website from being found. An export's result
- * says "Nothing to fix." only when this is empty too.
+ * words: the sample contact details left to review, and the search and sharing findings and the project's own problems
+ * and warnings in Project health. Suggestions are not something to fix, so an export's result says "Nothing to fix."
+ * over them, and only when this is empty.
  */
-export function dialogFixes({ samples, seo }: { samples: number; seo: number }): string[] {
-  return [...(samples ? [sampleContactsHeading(samples)] : []), ...(seo ? [seoPreflightHeading(seo)] : [])];
+export function dialogFixes({ samples, seo, other = 0 }: { samples: string[]; seo: number; other?: number }): string[] {
+  const inHealth = (n: number) => (n === 1 ? 'is' : 'are') + ' in Project health.';
+  return [...(samples.length ? [sampleContactsLine(samples)] : []), ...(seo ? [`${count(seo, 'search and sharing suggestion')} ${inHealth(seo)}`] : []), ...(other ? [`${count(other, 'note')} to check ${inHealth(other)}`] : [])];
 }
 
 /** What a website export says it published: "3 pages", "3 pages and 3 entries from Posts", as the dialog counts them. */

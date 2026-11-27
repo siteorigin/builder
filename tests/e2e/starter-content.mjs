@@ -50,8 +50,12 @@ try {
   step('Business: the Export dialog reviews the sample contact details, and the export stays available');
   await createProject(win, { name: 'Kloof Interiors', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
   await openExport();
+  // One line in the dialog's "Visitors can’t reach you yet" box (#1288); Review opens each detail's own choices.
   const review = exportDialog.getByTestId('export-sample-contacts');
+  const openSamples = () => review.getByRole('button', { name: 'Review', exact: true }).click();
   await review.waitFor();
+  assert.match(await review.locator('.export-review-what').first().innerText(), /^hello@example\.com, \+1 555 0134 and 12 Harbor Lane, Millbrook are sample details from the starter\.$/);
+  await openSamples();
   const email = review.getByTestId('export-sample-email');
   const phone = review.getByTestId('export-sample-phone');
   const address = review.getByTestId('export-sample-address');
@@ -64,10 +68,12 @@ try {
   // Exported as it is, the Contact page sends enquiries to the sample address, as reported.
   const asStarted = await exportWebsite('business-as-started');
   assert.equal((readFileSync(join(asStarted, 'contact', 'index.html'), 'utf8').match(/mailto:hello@example\.com/g) ?? []).length, 3, 'the export went ahead with the details under review');
+  assert.match(await exportDialog.locator('.export-result').innerText(), /hello@example\.com, \+1 555 0134 and 12 Harbor Lane, Millbrook are sample details from the starter\./, 'the result repeats the details the dialog listed');
   await closeDialog(exportDialog);
 
   step('Keep it sets aside one detail, listed beside the ones still under review');
   await openExport();
+  await openSamples();
   await address.getByRole('button', { name: 'Keep it' }).click();
   await address.waitFor({ state: 'detached' });
   const kept = exportDialog.getByTestId('export-samples-kept');
@@ -97,10 +103,12 @@ try {
 
   step('Replace everywhere changes the email in all five places, and the number as written and as dialled');
   await openExport();
+  await openSamples();
   await email.getByRole('button', { name: 'Replace everywhere…' }).click();
   await replaceAll('studio@kloof.example', 5);
   await openExport();
   assert.equal(await email.count(), 0, 'the email is no longer reviewed');
+  await openSamples();
   await phone.getByRole('button', { name: 'Replace everywhere…' }).click();
   await replaceAll('+27 21 555 0199', 4);
 

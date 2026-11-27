@@ -23,7 +23,10 @@ const ENTRY = [
   // The project, made here with the theme packs loaded (tests/unit/setup.ts), as a snapshot brings it.
   'const state = window.__project;',
   "flushSync(() => useStore.setState({ screen: 'editor', modal: { kind: 'export' }, keptSamples: [], snapshot: { state, revision: 1, workspaceKey: 'w1', conflicts: [], recentExports: window.__recent, diagnostics: [] } }));",
-  "flushSync(() => createRoot(document.getElementById('root')).render(h(ExportModal)));"
+  "flushSync(() => createRoot(document.getElementById('root')).render(h(ExportModal)));",
+  // What the dialog hands over to, for a test to read: the dialog itself stays drawn.
+  'useStore.subscribe((s) => void (window.__modal = s.modal));'
+
 ].join('\n');
 
 /** The preload bridge: every call answers nothing. */
@@ -59,7 +62,7 @@ const REVIEW_BRIDGE = `
 `;
 
 /** The search audit with nothing to say, for the dialog alone. */
-const QUIET_SEO = "export const auditForHealth = () => ({ ok: false }); export const seoPreflight = () => ({ total: 0 }); export const seoCountsText = () => '';";
+const QUIET_SEO = 'export const auditForHealth = () => ({ ok: true, findings: [] });';
 
 async function bundle(quiet = false): Promise<{ script: string; styles: string }> {
   const out = (await build({
@@ -193,6 +196,8 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     await expect
       .poll(() => page.evaluate<boolean>(`(() => { const b = document.querySelector('.modal-foot > button'); const r = b.getBoundingClientRect(); return b.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)); })()`))
       .toBe(true);
+    // The review opened last still has focus, which focusing again would not scroll to.
+    await page.evaluate(`document.activeElement?.blur()`);
     const controls = page.locator('.modal :is(.export-review-actions button, .export-card, .modal-foot > button)');
     const count = await controls.count();
     expect(count).toBeGreaterThan(8);
@@ -203,6 +208,55 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
         `control ${i} is in view once focused`
       ).toBe(true);
     }
+  });
+
+  // The app's own window when it first opens (src/main/index.ts).
+  it('shows a site with no notes only the export choice, with its pages on the website card (#1288)', async () => {
+    await open(1480, 920, { quiet: true });
+    expect(await page.locator('.export-review, [data-testid="export-health-summary"], [data-testid="export-samples-kept"]').count()).toBe(0);
+    const pages = page.locator('.export-card:not(.secondary) [data-testid="export-pages"]');
+    expect(await pages.innerText()).toMatch(/^The website publishes \d+ pages?: /);
+    expect(await page.locator('.modal-body [data-testid="export-pages"]').count()).toBe(0);
+    expect(await inReach()).toEqual([true, true]);
+  });
+
+  it('puts what keeps visitors away in one box, and the rest of Project health on one line (#1288)', async () => {
+    await open(1480, 920);
+    // Export is in view as the dialog opens, before anything is scrolled.
+    expect(await page.evaluate<number>(`document.querySelector('.modal-body').scrollTop`)).toBe(0);
+    expect(await inReach()).toEqual([true, true]);
+    const box = page.getByTestId('export-visitor-review');
+    expect(await page.locator('.export-review').count()).toBe(1);
+    expect(await box.locator('.export-review-head').innerText()).toBe('Visitors can’t reach you yet');
+    expect(await page.locator('.modal').innerText()).not.toMatch(/won’t stop the export/);
+    // The sample details are one line with one action; their own choices wait behind it.
+    const samples = box.getByTestId('export-sample-contacts');
+    expect(await samples.locator('.export-review-what').first().innerText()).toMatch(/^hello@example\.com.* sample details from the starter\.$/);
+    const review = samples.getByRole('button', { name: 'Review' });
+    expect(await review.getAttribute('aria-expanded')).toBe('false');
+    expect(await samples.getByRole('button', { name: 'Keep it' }).count()).toBe(0);
+    await review.click();
+    expect(await samples.getByRole('button', { name: 'Keep it' }).count()).toBeGreaterThan(1);
+    expect(await samples.getByRole('button', { name: 'Replace everywhere…' }).count()).toBe(await samples.getByRole('button', { name: 'Keep it' }).count());
+    // Search and sharing are counted, and fixed in Project health.
+    const health = page.getByTestId('export-health-summary');
+    expect(await health.innerText()).toMatch(/^\d+ search and sharing suggestions?( and \d+ more notes?)?\.\s*Review in Project health$/);
+    expect(await page.getByRole('button', { name: /^Go to (Published by|sharing image)/ }).count()).toBe(0);
+    await health.getByRole('button', { name: 'Review in Project health' }).click();
+    await expect.poll(() => page.evaluate(`window.__modal`)).toEqual({ kind: 'health', section: 'seo' });
+  });
+
+  it('moves focus to Review them again once the last sample detail is kept (#1288)', async () => {
+    await open(1100, 700);
+    await page.getByTestId('export-sample-contacts').getByRole('button', { name: 'Review' }).click();
+    for (let left = await page.getByRole('button', { name: 'Keep it' }).count(); left > 0; left--) {
+      await page.getByRole('button', { name: 'Keep it' }).first().focus();
+      await page.keyboard.press('Enter');
+      await expect.poll(() => page.getByRole('button', { name: 'Keep it' }).count()).toBe(left - 1);
+    }
+    expect(await page.getByTestId('export-visitor-review').count()).toBe(0);
+    await expect.poll(() => page.evaluate<string>(`document.activeElement?.textContent?.trim() ?? ''`)).toBe('Review them again');
+    expect(await inReach()).toEqual([true, true]);
   });
 
   it('opens on the format, not on a recent export below, when there is nothing to see to', async () => {

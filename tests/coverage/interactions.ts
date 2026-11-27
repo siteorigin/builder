@@ -2083,7 +2083,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/export-readiness.mjs', kind: 'e2e', step: 'Project health: Go to form opens the form where it is, with its setting focused' },
       { test: 'tests/e2e/export-readiness.mjs', kind: 'e2e', step: 'the export dialog names the form before the export, without stopping it' },
       { test: 'tests/e2e/export-readiness.mjs', kind: 'e2e', step: 'a public URL saved since says the website needs exporting again' },
-      { test: 'tests/e2e/seo-health.mjs', kind: 'e2e', step: 'the export dialog names what to fix before the website goes out, without stopping it' },
+      { test: 'tests/e2e/seo-health.mjs', kind: 'e2e', step: 'the export dialog counts what to fix before the website goes out, without stopping it, and leads to Project health (#1288)' },
       { test: 'tests/unit/export-readiness.test.ts', kind: 'unit' }
     ]
   },
