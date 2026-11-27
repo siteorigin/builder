@@ -930,9 +930,9 @@ export class LiveGuestManager {
     if (!join.hostConnected) return { ok: false, message: 'The host is reconnecting. Try again in a moment.' };
     const answer = await this.call(join, method, args);
     if (!answer.ok) return { ok: false, message: answer.error.message };
-    if (!isLiveNotes(answer.result)) return { ok: false, message: 'The host’s answer could not be read. Look at the notes again before trying again.' };
-    if (this.current === join) this.takeNotes(join, answer.result);
-    return { ok: true, notes: answer.result };
+    // The host answers that the change was made; the notes as they are now are read again.
+    const notes = this.current === join ? await this.fetchNotes(join) : null;
+    return notes ? { ok: true, notes } : { ok: true };
   }
 
   // -------------------------------------------------------------------------

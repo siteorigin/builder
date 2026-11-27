@@ -10,7 +10,7 @@ import { checkGuestExpiry, checkSessionExpiry, guestAccessEndsAt, isExpired, isS
 import { GUEST_ID_RE, GUEST_ROLES, leastRole, LIVE_PROTOCOL_VERSION, MAX_ID_LENGTH, MAX_MESSAGE_LENGTH, narrower, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type ElementTarget, type Frame, type HostToRelay, type Participant, type Presence, type RpcError } from '@shared/live/messages';
 import { HOST_PATH_PLACEHOLDER, hostPathTail, scrubHostPaths, type LiveApplyResult, type LiveProjectChanged, type LiveProjectSnapshot } from '@shared/live/snapshot';
-import { GUEST_NOTE_BURST, GUEST_NOTE_LIMIT, GUEST_NOTE_REFILL_MS, NOTES_CHANGED, type LiveNotes, type NoteDraft } from '@shared/live/notes';
+import { GUEST_NOTE_BURST, GUEST_NOTE_LIMIT, GUEST_NOTE_REFILL_MS, NOTE_KEPT, NOTES_CHANGED, type LiveNotes, type NoteDraft } from '@shared/live/notes';
 import { formatInviteLink, HOST_SOCKET_PATH, RELAY_URL_ENV, relaySocketUrl, roomSocketPath, type ResolvedRelayUrl } from '@shared/live/relay-url';
 import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
 
@@ -1290,7 +1290,7 @@ export class LiveHostManager {
           if (n > 0) run.notesLeft.set(guestId, n);
           else run.notesLeft.delete(guestId);
         }
-        answer(result.ok ? { ok: true, result: { ...result.notes, guestNotes: run.guestNotes } } : { ok: false, error: result.error });
+        answer(result.ok ? { ok: true, result: call.method === 'notes.list' ? { ...result.notes, guestNotes: run.guestNotes } : NOTE_KEPT } : { ok: false, error: result.error });
       });
   }
 

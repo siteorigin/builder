@@ -85,8 +85,17 @@ export const NOTE_DRAFT_SCHEMA = z
   .refine((d) => (d.pageId === undefined) !== (d.previewPath === undefined), { message: 'Name the page the note is on, or its address.' });
 export type NoteDraft = z.infer<typeof NOTE_DRAFT_SCHEMA>;
 
-/** What a call that changes the notes answers: the notes as they are now, or why nothing changed. */
-export type LiveNoteResult = { ok: true; notes: LiveNotes } | { ok: false; message: string };
+/**
+ * What a call that changes the notes answers: that it was made, with the notes as they are now when they could be read
+ * as well, or why nothing changed.
+ */
+export type LiveNoteResult = { ok: true; notes?: LiveNotes } | { ok: false; message: string };
+
+/**
+ * A guest's change to the notes is answered with only this: the notes themselves can be most of a frame, and every
+ * guest is told of the change (NOTES_CHANGED) and reads them again, this one too.
+ */
+export const NOTE_KEPT = { kept: true } as const;
 
 /**
  * What guests are sent as `notes:changed` when the notes or Allow guest notes change: only that they did, so each asks

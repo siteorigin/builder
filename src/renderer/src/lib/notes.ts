@@ -35,7 +35,7 @@ function took(result: LiveNoteResult, opening: string): boolean {
     toast(result.message, 'error');
     return false;
   }
-  if (getState().snapshot?.workspaceKey === opening) setState({ notes: { ...result.notes, opening } });
+  if (result.notes && getState().snapshot?.workspaceKey === opening) setState({ notes: { ...result.notes, opening } });
   return true;
 }
 
