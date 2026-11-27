@@ -39,6 +39,8 @@ const OBJECT_RE = /^[a-f0-9]{64}$/;
 const ID_RE = /^v[a-z0-9]{6,40}$/;
 /** A record of a version that could not be recorded, set aside (VersionStore.recordPending). */
 const UNRECORDED_RE = /^unrecorded-v[a-z0-9]{6,40}\.json$/;
+/** A record that could not be read, set aside: what it names is unknown. */
+const UNREADABLE_RECORDING_RE = /^unreadable-recording-\d+\.json$/;
 /** A copy left by a save that stopped part way is removed once it is this old. */
 const LEFTOVER_MS = 10 * 60_000;
 
@@ -482,13 +484,16 @@ export class VersionStore {
     }
   }
 
-  /** The version being recorded, as written; null when there is none, 'unreadable' when it can't be used. */
-  async readPending(): Promise<PendingVersion | 'unreadable' | null> {
+  /**
+   * The version being recorded, as written; null when there is none, 'unreadable' when what is there is not one,
+   * 'failed' when it could not be read just now.
+   */
+  async readPending(): Promise<PendingVersion | 'unreadable' | 'failed' | null> {
     let text: string;
     try {
       text = await fs.readFile(this.pendingPath, 'utf8');
     } catch (e) {
-      return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'unreadable';
+      return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'failed';
     }
     try {
       const p = JSON.parse(text) as unknown;
@@ -519,6 +524,14 @@ export class VersionStore {
   async recordPending(): Promise<PendingOutcome> {
     const p = await this.readPending();
     if (p === null) return { state: 'recorded' };
+    // Left where it is, to be read again: collect() keeps everything meanwhile.
+    if (p === 'failed') return { state: 'unreadable' };
+    // A folder of the store swapped for a link may lead to another project's record: nothing there is touched.
+    try {
+      await this.checkFolders(false);
+    } catch (e) {
+      return p === 'unreadable' ? { state: 'unreadable' } : { state: 'pending', op: p.op, version: p.version, backup: p.backup, reason: (e as Error).message };
+    }
     if (p === 'unreadable') {
       // Kept, out of the way, so it is told of once and never stands in the way of the versions saved after it.
       await renameReplacing(this.pendingPath, join(this.root, `unreadable-recording-${Date.now()}.json`)).catch(() => undefined);
@@ -535,8 +548,9 @@ export class VersionStore {
         let tip = await repo.resolveRef(VERSIONS_BRANCH);
         if (tip !== target) {
           if (tip !== p.expected) return await this.setPendingAside(p);
-          // Only the commit the record names, whole and on the commit the branch is at, is put there.
-          const c = await repo.readCommit(target).catch(() => null);
+          // Only the commit the record names, whole and on the commit the branch is at, is put there. One that can't be
+          // read just now (the worker busy or gone) is tried again; only one not there, or damaged, is set aside.
+          const c = await repo.readCommit(target).catch((e: unknown) => (e instanceof GitError && (e.code === 'not-found' || e.code === 'corrupt') ? null : Promise.reject(e)));
           if (!c || c.tree !== row.git!.tree || c.parents.length !== (p.expected ? 1 : 0) || (p.expected && c.parents[0] !== p.expected)) return await this.setPendingAside(p);
           try {
             await repo.advanceRef(VERSIONS_BRANCH, target, p.expected);
@@ -547,7 +561,9 @@ export class VersionStore {
             if (tip !== target) return tip === p.expected ? pending(gitSaveProblem(e)) : await this.setPendingAside(p);
           }
         }
-        await this.publish([...this.versions, row]);
+        // In the order versions were saved, ahead of any saved meanwhile (to the plain store, with Git snapshots off).
+        const at = this.versions.findIndex((v) => v.time > row.time);
+        await this.publish(at < 0 ? [...this.versions, row] : [...this.versions.slice(0, at), row, ...this.versions.slice(at)]);
       } catch (e) {
         return pending(e instanceof GitError ? gitSaveProblem(e) : (e as Error).message);
       } finally {
@@ -557,6 +573,15 @@ export class VersionStore {
     // Listed: whatever happens to the record now, the next attempt finds the row and only removes it.
     await this.clearPending().catch(() => undefined);
     return { state: 'recorded', op: p.op };
+  }
+
+  /**
+   * Before version `id` is deleted from the list: a record of it left behind once it was listed (its removal failed)
+   * is removed first, so it can never list the version again.
+   */
+  async forgetPending(id: string): Promise<void> {
+    const p = await this.readPending();
+    if (p !== null && p !== 'unreadable' && p !== 'failed' && p.op === id) await this.clearPending();
   }
 
   /** Keep a record that can't be finished beside the list, out of the way, and say so. */
@@ -577,7 +602,14 @@ export class VersionStore {
     const keep = new Set(this.versions.flatMap((v) => [...localObjectsOf(v)]));
     // A version still being recorded, or one set aside, holds what it holds until it is listed: a record that can't be
     // read might name anything, so nothing is collected while there is one.
-    for (const name of [basename(this.pendingPath), ...(await fs.readdir(this.root).catch(() => [] as string[])).filter((n) => UNRECORDED_RE.test(n))]) {
+    let names: string[];
+    try {
+      names = await fs.readdir(this.root);
+    } catch {
+      return 0;
+    }
+    if (names.some((n) => UNREADABLE_RECORDING_RE.test(n))) return 0;
+    for (const name of [basename(this.pendingPath), ...names.filter((n) => UNRECORDED_RE.test(n))]) {
       let text: string;
       try {
         text = await fs.readFile(join(this.root, name), 'utf8');

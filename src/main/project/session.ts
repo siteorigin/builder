@@ -922,7 +922,8 @@ export class ProjectSession extends EventEmitter {
     const interrupted = await s.versions.takeRestoring().catch(() => null);
     // A restore whose version was noted is told of by what became of that version, above.
     const owed = recorded.state === 'unreadable' ? undefined : recorded.op;
-    if (!interrupted || (interrupted.op && interrupted.op === owed)) {
+    // Or listed already: only the note of the restore was left behind.
+    if (!interrupted || (interrupted.op && (interrupted.op === owed || s.versions.versions.some((v) => v.id === interrupted.op)))) {
       // Told of above, or nothing to tell.
     } else if (interrupted.settled)
       s.recoveryNotes.push(`Restoring “${interrupted.version}” finished, but the site as it left it could not be saved as a version of its own. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
@@ -4638,7 +4639,12 @@ export class ProjectSession extends EventEmitter {
       if (late) return notSaved(`${late} changed outside the app meanwhile.`);
       if (!(await this.stillOwner())) return notSaved(this.readOnly?.reason ?? LOCK_UNCHECKED);
       const expected = (await git.repository(this.dir).readCommit(row.git!.commit)).parents[0] ?? null;
-      await this.versions.writePending({ op, version: v.name, backup: backup.name, expected, row });
+      const record = { op, version: v.name, backup: backup.name, expected, row };
+      await this.versions.writePending(record).catch(async (e: unknown) => {
+        // Written whole though its folder could not be flushed: it stands, and is finished like any other.
+        const there = await this.versions.readPending().catch(() => null);
+        if (!there || typeof there === 'string' || JSON.stringify(there) !== JSON.stringify(record)) throw e;
+      });
     } catch (e) {
       // Not noted, or perhaps noted only part way (its folder could not be flushed): nothing is left to finish.
       await this.versions.clearPending().catch(() => undefined);
@@ -4695,6 +4701,7 @@ export class ProjectSession extends EventEmitter {
       const left = this.versions.versions.filter((v) => v.id !== id);
       if (left.length === this.versions.versions.length) return { ok: true, freed: 0 };
       try {
+        await this.versions.forgetPending(id);
         await this.versions.publish(left);
       } catch (e) {
         return { ok: false, message: (e as Error).message };

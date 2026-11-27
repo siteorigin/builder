@@ -200,7 +200,11 @@ describe('read-only opens leave saved versions in Git as they are (#1153)', () =
     lockByAnother(dir);
     const before = snapshotTree(dir);
     const calls = git.calls.length;
-    const session = await openReadOnly(dir);
+    // With Git snapshots on, as when the record was made: a read-only open still never reads it.
+    git.enabled = true;
+    const session = await openReadOnly(dir).finally(() => {
+      git.enabled = false;
+    });
     const listed = session.versionsInfo().list;
     expect(listed.map((v) => [v.name, v.bytes])).toEqual([
       ['Restored “First”', null],

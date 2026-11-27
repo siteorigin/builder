@@ -107,6 +107,7 @@ async function run(mode) {
     step(`[${mode}] delete a version once the author confirms`);
     await projectMenu('History…');
     await history.getByRole('tab', { name: 'Saved versions' }).click();
+    if (inGit) await history.locator('.versions-list li', { hasText: 'Restored “Approved by client”' }).locator('[aria-label="Saved automatically after a restore"]').waitFor();
     await history.getByRole('button', { name: 'Delete “Approved by client”' }).click();
     const confirm = win.getByRole('dialog', { name: 'Delete saved version?' });
     await confirm.waitFor();
