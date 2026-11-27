@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, toast, useStore, whenThemesReady } from './store';
+import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, toast, transport, useStore, whenThemesReady } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
@@ -22,7 +22,7 @@ import { followRemote, syncRemotePresence } from './lib/remote-session';
 import { JoinLiveDialog } from './components/JoinLive';
 import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
-import { perfMark, perfMarkAtCommit, perfOn, perfWork } from './lib/perf';
+import { perfMarkAtCommit, perfOn, perfWork } from './lib/perf';
 import { editorModule, loadEditor } from './lib/editor-module';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
@@ -88,8 +88,8 @@ export function App() {
     let superseded = false;
     let unmounted = false;
     const offs = [
+      // Marked as received when its message arrives (lib/transport.ts), before the editor's copy is made from it.
       api.on('project:changed', (snap) => {
-        perfMark('renderer.snapshotReceived', { revision: snap.revision });
         superseded = true;
         const s = getState();
         // Another opening (of another project, or of this one again) loads its own state, drafts included. A project
@@ -198,9 +198,10 @@ export function App() {
       syncRemotePresence()
     ];
     // A project already open (the editor reloaded, or a window opened again over it) shows the editor at once, once
-    // its code and the catalogue are here: Welcome never shows in between.
-    void api.project
-      .snapshot()
+    // its code and the catalogue are here: Welcome never shows in between. The changes that follow are made against
+    // the copy this reads.
+    void transport
+      .current()
       .then(async (snap) => {
         if (unmounted || superseded || !snap) return;
         const runtime = getState().runtime;

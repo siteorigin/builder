@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
+import { app, BrowserWindow, dialog, shell, type OpenDialogOptions, type WebContents } from 'electron';
 import { markdownMirrorRoute } from '@shared/llms';
 import { firstStepsStart } from '@shared/first-steps';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
@@ -10,6 +10,7 @@ import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImpo
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SavedCopy, SourceSettingsDraft } from '@shared/api';
+import { ProjectFeed, type ProjectChange } from '@shared/project-feed';
 import { createStarterState, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
@@ -446,6 +447,9 @@ export class Controller {
   onOpeningChange: (() => void) | null = null;
   aiBusy = () => false;
   aiRunId = (): string | null => null;
+  /** The editor is sent each change against the copy it was sent before (#967), while it is the same page's. */
+  private feed = new ProjectFeed();
+  private feedTo: WebContents | null = null;
 
   constructor(private getWindow: () => BrowserWindow | null) {}
 
@@ -460,7 +464,7 @@ export class Controller {
       const bytes = serializedSize(payload);
       perf.count('ipc.projectChanged.sends');
       if (bytes !== null) perf.count('ipc.projectChanged.bytes', bytes);
-      perf.mark('controller.snapshotSent', { revision: (payload as ProjectSnapshot).revision, bytes }, at);
+      perf.mark('controller.snapshotSent', { revision: (payload as ProjectChange).revision, bytes }, at);
     } else if (perf.on && channel === 'ai:event') {
       // The assistant's events, counted and sized the same way (scripts/perf: the chat scenario).
       const bytes = serializedSize(payload);
@@ -506,9 +510,58 @@ export class Controller {
   }
 
   broadcast() {
-    const snap = this.snapshot();
-    if (snap) this.send('project:changed', snap);
+    this.sendSnapshot();
     this.live.editorChanged();
+  }
+
+  /**
+   * Send the editor the project as it is now, as a change from the copy it was sent before (shared/project-feed.ts):
+   * whole to another window than the one last sent to, and after `forgetEditorCopy`.
+   */
+  private sendSnapshot(): boolean {
+    const snap = this.snapshot();
+    if (!snap) return false;
+    const w = this.getWindow();
+    const to = w && !w.isDestroyed() ? w.webContents : null;
+    if (this.feedTo !== to) {
+      this.feed.reset();
+      this.feedTo = to;
+    }
+    const change = this.feed.next(snap);
+    try {
+      this.send('project:changed', change);
+    } catch (e) {
+      // Never sent: the next one is whole, not a change from a copy the editor never had.
+      this.feed.reset();
+      throw e;
+    }
+    return true;
+  }
+
+  /** The editor's copy of the project is gone (its window closed, the project closed): the next one sent is whole. */
+  forgetEditorCopy() {
+    this.feed.reset();
+  }
+
+  /**
+   * The editor holds a copy a change does not fit (it missed one): send it the whole project on project:changed. False
+   * when there is none to send (no project is open).
+   */
+  resyncEditor(): boolean {
+    this.feed.reset();
+    return this.sendSnapshot();
+  }
+
+  /**
+   * The project as it is now, whole, for an editor page that has just loaded: the changes sent from here on are made
+   * against it. Null when no project is open.
+   */
+  editorFeed(): ProjectChange | null {
+    const snap = this.snapshot();
+    const w = this.getWindow();
+    this.feed.reset();
+    this.feedTo = w && !w.isDestroyed() ? w.webContents : null;
+    return snap ? this.feed.next(snap) : null;
   }
 
   /**
@@ -1148,6 +1201,8 @@ export class Controller {
     // A project of this computer's is open now: the editor shows it, not another computer's (#766).
     this.remote.leave();
     this.workspaceKey = `${session.dir}#${++this.openings}`;
+    // Another opening: the editor is sent it whole, never as a change from the project before.
+    this.forgetEditorCopy();
     this.onOpeningChange?.();
     // Another app took the project over and edits its folder now: stop the preview running there at once (and any
     // install into it), then start it again from a private copy.
@@ -1933,6 +1988,7 @@ export class Controller {
       // The next project loads its own workspace state, or starts empty.
       this.localState = {};
       this.send('project:closed');
+      this.forgetEditorCopy();
     }
   }
 

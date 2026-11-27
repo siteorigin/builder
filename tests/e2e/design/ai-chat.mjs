@@ -337,7 +337,7 @@ async function openConversation(title) {
 async function markUndoable(undoRunId) {
   const s = await win.evaluate(() => window.builder.project.snapshot());
   const history = { ...s.history, canUndo: true, entries: [...s.history.entries, { id: 'h_seedundo', label: 'AI edit', source: 'ai', time: t(59), applied: true, runId: undoRunId }] };
-  await app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', next), { ...s, history });
+  await app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', { seq: 0, base: null, revision: next.revision, snapshot: next }), { ...s, history });
   await pause(250);
 }
 

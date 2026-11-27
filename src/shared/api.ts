@@ -6,6 +6,7 @@ import type { ShortcutSettings } from './shortcuts';
 import type { FirstStepsRecord } from './first-steps';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
 import type { ComponentThumb } from './component-thumbs';
+import type { ProjectChange } from './project-feed';
 import type { ThemePack } from '@catalogue/pack';
 import type { FontCoverage } from './font-scripts';
 import type { Recipient, TurnModel } from './turn-model';
@@ -1172,6 +1173,13 @@ export interface BuilderApi {
   project: {
     snapshot(): Promise<ProjectSnapshot | null>;
     /**
+     * The project whole for an editor page that has just loaded, which the changes `project:changed` brings from then
+     * on are made against (shared/project-feed.ts); null when none is open. The editor reads it through its transport.
+     */
+    feed(): Promise<ProjectChange | null>;
+    /** The editor missed a change: the main process sends it the whole project on `project:changed`; false when none is open. */
+    resync(): Promise<boolean>;
+    /**
      * Read the project documents from disk now, as the file watcher does after a file is saved outside the app, so
      * an edit refused because its file changed on disk can be checked against what is there.
      */
@@ -1427,6 +1435,10 @@ export interface BuilderApi {
     /** Where this app is in the editor, for the others: shared while a collaborator. False when it could not be. */
     presence(joinId: string, presence: Presence): Promise<boolean>;
   };
+  /**
+   * The project as it is now. Over IPC (`window.builder`) it comes as a `ProjectChange` from the copy sent before
+   * (shared/project-feed.ts); the editor's `api` (lib/transport.ts) hands its listeners the snapshot it makes.
+   */
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
   on(channel: 'project:closed', cb: () => void): () => void;
   on(channel: 'create:progress', cb: (p: ProgressEvent) => void): () => void;

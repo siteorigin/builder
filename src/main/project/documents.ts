@@ -10,6 +10,7 @@ import { migrateProject, newestDocumentVersion, type MigrationResult } from '@sh
 import { inBatches, readIfExists, safeJoin, toJson } from './fsutil';
 import { perf } from '../perf';
 import { isFrozenThrough } from '@engine/draft';
+import { sameValue } from '@shared/same';
 
 export const MANIFEST_FILE = 'siteorigin.project.json';
 export const DOC_DIR = 'siteorigin';
@@ -181,6 +182,55 @@ export function stateToDocs(state: ProjectState): Map<string, string> {
     if (typeof doc.converter?.code === 'string') docs.set(converterDocPath(id), doc.converter.code);
   }
   return docs;
+}
+
+/**
+ * `next`, rebuilt from document texts (an undo, a redo, a change made outside the app), with each document that is
+ * the same as in `prev` taken from `prev`: the very object, as an edit keeps what it does not change, so what follows
+ * it (the editor's copy, #967) need not take every document for a new one. A document is the same when every file it
+ * is stored in reads the same (each state's `stateToDocs`, or the documents it was rebuilt from) and it is the same
+ * value field for field (`sameValue`: a text cannot tell a number too large to store from null, nor a field holding
+ * undefined from none), so the state is exactly the one rebuilt. Sources (a converter's code is a file of its own) are
+ * left as rebuilt.
+ */
+export function shareUnchanged(prev: ProjectState, prevDocs: Map<string, string>, next: ProjectState, nextDocs: Map<string, string>): ProjectState {
+  const same = (...paths: string[]) => paths.every((p) => nextDocs.has(p) && nextDocs.get(p) === prevDocs.get(p));
+  const has = <T>(rec: Record<string, T> | undefined, k: string): rec is Record<string, T> => !!rec && Object.hasOwn(rec, k);
+  /** A record of documents, each kept where it is the same, and the record itself when all are, in the same order. */
+  const record = <T>(a: Record<string, T> | undefined, b: Record<string, T>, keep: (id: string, x: T, y: T) => T): Record<string, T> => {
+    const out: Record<string, T> = {};
+    const before = a ? Object.keys(a) : [];
+    const after = Object.keys(b);
+    let all = !!a && before.length === after.length;
+    for (const id of after) {
+      const kept = has(a, id) ? keep(id, a[id], b[id]) : b[id];
+      if (!has(a, id) || kept !== a[id]) all = false;
+      out[id] = kept;
+    }
+    return all && before.every((k, i) => k === after[i]) ? a! : out;
+  };
+  /** `a` where it is `b`'s very value and its files read the same, else `b`. */
+  const keep = <T>(a: T, b: T, ...paths: string[]): T => (same(...paths) && sameValue(a, b) ? a : b);
+  const out: ProjectState = { ...next };
+  const single = <K extends 'manifest' | 'site' | 'tokens' | 'assets' | 'themeLock' | 'brief' | 'published'>(k: K, path: string) => {
+    if (next[k] !== undefined && prev[k] !== undefined) out[k] = keep(prev[k], next[k], path);
+  };
+  single('manifest', MANIFEST_FILE);
+  single('site', `${DOC_DIR}/site.json`);
+  single('tokens', `${DOC_DIR}/tokens.json`);
+  single('assets', `${DOC_DIR}/assets.json`);
+  single('themeLock', `${DOC_DIR}/theme-lock.json`);
+  single('brief', BRIEF_FILE);
+  single('published', PUBLISHED_FILE);
+  out.pages = record(prev.pages, next.pages, (id, a, b) => keep(a, b, `${DOC_DIR}/pages/${id}.json`));
+  out.components = record(prev.components, next.components, (id, a, b) => keep(a, b, componentDocPath(id), ...(b.sourcePath && b.source !== undefined ? [b.sourcePath] : [])));
+  out.collections = record(prev.collections, next.collections ?? {}, (id, a, b) => {
+    const settings = keep(a.settings, b.settings, collectionDocPath(id));
+    const entries = record(a.entries, b.entries, (eid, x, y) => keep(x, y, entryDocPath(id, eid)));
+    if (settings === a.settings && entries === a.entries && Object.keys(a).length === Object.keys(b).length) return a;
+    return { ...b, settings, entries };
+  });
+  return out;
 }
 
 /** Source files authored by the user (project code components) also belong to the canonical state. */

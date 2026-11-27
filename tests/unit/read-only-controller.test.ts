@@ -10,6 +10,7 @@ import { hostname, tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { denyAccess } from './deny-access';
+import { editorView } from './editor-feed';
 
 /** A stand-in for Electron's utility process that starts at once and exits when asked to stop. */
 class FakeWorker extends EventEmitter {
@@ -132,7 +133,8 @@ function makeNewer(dir: string) {
 function controller() {
   const c = new Controller(() => null);
   const sent: Array<[string, unknown]> = [];
-  c.send = (channel: string, payload?: unknown) => void sent.push([channel, payload]);
+  const view = editorView();
+  c.send = (channel: string, payload?: unknown) => void sent.push([channel, view(channel, payload)]);
   controllers.push(c);
   return { c, sent };
 }

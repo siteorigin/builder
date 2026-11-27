@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { denyAccess } from './deny-access';
+import { editorView } from './editor-feed';
 
 /** A stand-in for Electron's utility process that starts at once and exits when asked to stop. */
 class FakeWorker extends EventEmitter {
@@ -104,9 +105,10 @@ async function makeProject(name: string, starter: 'blank' | 'business' = 'blank'
 function controller() {
   const c = new Controller(() => null);
   const sent: Array<[string, unknown]> = [];
-  c.send = (channel: string, payload?: unknown) => void sent.push([channel, payload]);
+  const view = editorView();
+  c.send = (channel: string, payload?: unknown) => void sent.push([channel, view(channel, payload)]);
   controllers.push(c);
-  return { c, sent };
+  return { c, sent, view };
 }
 
 async function until(check: () => boolean, what: string) {
@@ -156,9 +158,10 @@ describe('opening a project that cannot be read while another is open', () => {
   it('switches once the replacement has opened: the old project closes, then the new one is shown', async () => {
     const current = await makeProject('current');
     const next = await makeProject('next');
-    const { c, sent } = controller();
+    const { c, sent, view } = controller();
     const open = await openCurrent(c, current);
     sent.splice(0);
+    const sentBefore = view.changes.length;
     expect((await c.trustAndOpen(next)).ok).toBe(true);
     expect(c.session?.dir).toBe(next);
     expect(c.session).not.toBe(open.session);
@@ -169,6 +172,9 @@ describe('opening a project that cannot be read while another is open', () => {
     const closedAt = sent.findIndex(([ch]) => ch === 'project:closed');
     const changedAt = sent.findIndex(([ch, p]) => ch === 'project:changed' && (p as { dir: string }).dir === next);
     expect(changedAt).toBeGreaterThan(closedAt);
+    // And whole, never as a change from the project before.
+    const changedBeforeClose = sent.slice(0, closedAt).filter(([ch]) => ch === 'project:changed').length;
+    expect(view.changes[sentBefore + changedBeforeClose].base).toBeNull();
     // The editor let go of the old preview before it was stopped.
     const idleAt = sent.findIndex(([ch, p]) => ch === 'runtime:status' && (p as { state: string }).state === 'idle');
     expect(idleAt).toBeGreaterThan(-1);

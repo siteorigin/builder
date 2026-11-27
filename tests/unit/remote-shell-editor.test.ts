@@ -197,7 +197,9 @@ describe('the transport', () => {
   it('delivers the shown project’s events only, and this computer’s own events always', () => {
     const listeners = new Map<string, Set<Handler>>();
     const local = { on: (ch: string, cb: Handler) => (listeners.set(ch, new Set([...(listeners.get(ch) ?? []), cb])), () => listeners.get(ch)!.delete(cb)) } as unknown as BuilderApi;
-    const fire = (ch: string, p: unknown) => listeners.get(ch)?.forEach((cb) => cb(p));
+    // This computer's project comes as the main process sends it: here, each one whole (shared/project-feed.ts).
+    let seq = 0;
+    const fire = (ch: string, p: unknown) => listeners.get(ch)?.forEach((cb) => cb(ch === 'project:changed' ? { seq: ++seq, base: null, revision: seq, snapshot: p } : p));
     const t = transports.createTransport(() => local);
     const got: unknown[] = [];
     const menus: unknown[] = [];

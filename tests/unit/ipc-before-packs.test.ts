@@ -30,7 +30,7 @@ describe('requests answered before the theme packs are verified', () => {
   it('are exactly the failure screens’ and Welcome’s, none of which reaches a pack', () => {
     const all = channels();
     expect(all.size).toBeGreaterThan(50);
-    expect([...all].filter(([, anytime]) => anytime).map(([c]) => c).sort()).toEqual(['app:buildDetails', 'app:info', 'app:openExternal', 'app:quit', 'project:snapshot', 'projects:recents']);
+    expect([...all].filter(([, anytime]) => anytime).map(([c]) => c).sort()).toEqual(['app:buildDetails', 'app:info', 'app:openExternal', 'app:quit', 'project:feed', 'project:snapshot', 'projects:recents']);
     // What reaches a pack, or opens a project that does, still waits.
     for (const channel of ['app:catalogue', 'packs:preview', 'projects:open', 'projects:create', 'projects:trustAndOpen']) expect(all.get(channel)).toBe(false);
   });

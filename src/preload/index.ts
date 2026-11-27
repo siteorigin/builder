@@ -49,6 +49,8 @@ const api: BuilderApi = {
   } as BuilderApi['projects'],
   project: {
     snapshot: invoke('project:snapshot'),
+    feed: invoke('project:feed'),
+    resync: invoke('project:resync'),
     reloadFromDisk: invoke('project:reloadFromDisk'),
     apply: invoke('project:apply'),
     copy: invoke('project:copy'),

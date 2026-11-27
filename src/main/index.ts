@@ -617,6 +617,10 @@ function registerIpc() {
   handle('remote:apply', (joinId: unknown, batch: unknown) => controller.remote.apply(joinId, batch));
   handle('remote:presence', (joinId: unknown, presence: unknown) => controller.remote.presence(joinId, presence));
   handle('project:snapshot', () => controller.snapshot(), { anytime: true });
+  // The editor's copy of the project (shared/project-feed.ts): a page that has just loaded is given it whole, and
+  // the changes that follow are made against it; one that missed a change is sent it whole on project:changed.
+  handle('project:feed', () => controller.editorFeed(), { anytime: true });
+  handle('project:resync', () => controller.resyncEditor());
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
   // One node, or several siblings copied together (the session checks they are siblings on that page).
@@ -1126,6 +1130,8 @@ async function createWindow() {
   self.on('closed', () => {
     recovery.settle();
     if (win === self) win = null;
+    // Its page held the editor's copy of the project: the next window is sent it whole.
+    controller.forgetEditorCopy();
     desktop?.windows.gone(selfId, { closed: true });
     // The thumbnails' hidden window goes with the editor: it must never keep the app running, or stand in for the
     // editor when macOS asks whether a window is left to show.

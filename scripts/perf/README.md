@@ -98,7 +98,10 @@ editor sending the edit): `apply` (the whole edit in the main process, queue inc
 (the part of both generations the generation cache spent finding which files' inputs are unchanged,
 `session.generateCheck`), `changedDocs` (every document serialized and compared with its last text to find what the
 edit changed, `session.changedDocs`), `persist`, `publish` (spans); `hmrRelease`, `changed`, `snapshotSent`, `snapshotReceived`, `rendererCommit`, `previewPublished`
-and `previewApplied` (the headline). Counts: `docsCopied` (the
+and `previewApplied` (the headline); the change reaching the editor in its stretches, `changedToSent` (`session.changed` to
+`controller.snapshotSent`: the main process putting the editor's copy together and sending it), `sentToReceived` (IPC
+carrying it to the editor's handler) and `receivedToCommit` (the editor taking it in, to React's commit showing it).
+Counts: `docsCopied` (the
 canonical documents of the new state that are not the very objects of the one before, `apply.docsCopied`),
 `docsSerialized` (`docs.serialized`), durable writes, fsyncs, file writes, synchronous filesystem calls, path
 stats and bytes hashed in the edit; the publication's files read, hashed and written, its bytes hashed, durable writes,
@@ -131,7 +134,8 @@ checks before handing the batch to the project: Developer mode's copies and the 
 `applyOperations`, `validate`, `generate`, `generateCheck`, `changedDocs`, `persist`, `publish`; `runMarker` (the run's
 recovery marker built at its start and with the batch, `session.runMarker`, its write left out) and `previewApplied`.
 Counts: `runMarkers`, `runDocsHashed` (documents the markers hashed, `run.docsHashed`), `docsCopied`,
-`docsSerialized`, durable writes and fsyncs in the apply; the longest main-process stall until the preview shows it
+`docsSerialized`, durable writes and fsyncs in the apply; `project:changed` sends and their bytes over the whole run
+(`snapshotsSent`, `snapshotBytes`: the run going busy and idle, and its change); the longest main-process stall until the preview shows it
 (the run's compile before its first model call is in it).
 
 **`edits`** (after `open`): change the home hero's Heading in the Inspector 20 times, each edit sent once the one

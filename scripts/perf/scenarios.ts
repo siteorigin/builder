@@ -599,9 +599,17 @@ function measureEdit(trace: Trace, scenario: string): Collector {
   m.since(name('hmrRelease'), req, inApply('runtime.release'));
   const changed = m.need('session.changed', trace.first('session.changed', atRevision(target), at));
   m.since(name('changed'), req, changed);
-  m.since(name('snapshotSent'), req, m.need('controller.snapshotSent', trace.first('controller.snapshotSent', atRevision(target), at)));
-  m.since(name('snapshotReceived'), req, m.need('renderer.snapshotReceived', trace.first('renderer.snapshotReceived', atRevision(target), at)));
-  m.since(name('rendererCommit'), req, m.need('renderer.commit', trace.first('renderer.commit', atRevision(target), at)));
+  const snapshotSent = m.need('controller.snapshotSent', trace.first('controller.snapshotSent', atRevision(target), at));
+  const snapshotReceived = m.need('renderer.snapshotReceived', trace.first('renderer.snapshotReceived', atRevision(target), at));
+  const rendererCommit = m.need('renderer.commit', trace.first('renderer.commit', atRevision(target), at));
+  m.since(name('snapshotSent'), req, snapshotSent);
+  m.since(name('snapshotReceived'), req, snapshotReceived);
+  m.since(name('rendererCommit'), req, rendererCommit);
+  // The change reaching the editor, stretch by stretch (#967): the main process putting the editor's copy together and
+  // sending it, IPC carrying it to the editor's handler, and the editor taking it in to React's commit that shows it.
+  m.since(name('changedToSent'), changed, snapshotSent);
+  m.since(name('sentToReceived'), snapshotSent, snapshotReceived);
+  m.since(name('receivedToCommit'), snapshotReceived, rendererCommit);
   m.since(name('previewPublished'), req, m.need('runtime.published', trace.first('runtime.published', atRevision(target), at)));
   const shown = m.need('canvas.revisionApplied', trace.first('canvas.revisionApplied', atRevision(target), at));
   m.since(name('previewApplied'), req, shown);
@@ -932,6 +940,10 @@ export const batch: Scenario = {
     const revision = typeof applied?.attrs?.revision === 'number' ? applied.attrs.revision : NaN;
     const shown = m.need('canvas.revisionApplied', trace.first('canvas.revisionApplied', atRevision(revision), from));
     m.since('batch.previewApplied', begin, shown);
+    // What the editor was sent over the whole run (#967): the run going busy and idle, and the batch's change.
+    const sent = trace.all('controller.snapshotSent', inProc('main'), from, to);
+    m.count('batch.snapshotsSent', sent.length);
+    bytesSent(m, 'batch.snapshotBytes', sent);
     m.ms('batch.mainStallMax', stallMax(trace, begin, shown));
     return m;
   }
