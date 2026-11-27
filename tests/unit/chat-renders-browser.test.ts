@@ -233,7 +233,7 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     const answer = page.getByRole('textbox', { name: 'Your answer', exact: true });
     await answer.waitFor();
     expect(await page.locator('.question-card').innerText()).toContain('Which page should it go on?');
-    await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Your answer');
+    await page.waitForFunction("document.activeElement?.getAttribute('aria-label') === 'Your answer'");
     expect(await page.locator('.run-strip.elsewhere').count()).toBe(0);
     expect(await page.evaluate("so.draft('c_other')")).toBe('Next, the footer');
     // Stop, from another thread again, stops that request by its ID and goes back to it too.
