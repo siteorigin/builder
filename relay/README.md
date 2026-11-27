@@ -105,6 +105,10 @@ cp relay/.dev.vars.example relay/.dev.vars   # a local SESSION_SIGNING_KEY
 npm run relay:dev                            # listens on 127.0.0.1:8787
 ```
 
+`npm run relay:smoke` then drives one room through it end to end: the host opens it, a guest joins and is admitted,
+a preview request is tunnelled, the host drops and re-proves itself, and the room ends (`scripts/relay-smoke.ts`; pass
+another relay's URL to test that one).
+
 Point the app at it with `SITEORIGIN_LIVE_RELAY_URL=http://relay.localhost:8787`. Not `127.0.0.1`, which has no
 subdomains, and not bare `localhost`: previews are served on `http://p-<label>.relay.localhost:8787`, and only under a
 host with a dot are the viewer and its previews the same site, which the preview cookie needs. Chrome, Firefox and
@@ -121,7 +125,14 @@ Workers types, as part of `npm run typecheck`.
 
 `wrangler.toml` holds the bindings and the tunables (reconnect graces, handshake and preview timeouts). The only
 secret is `SESSION_SIGNING_KEY`, at least 32 characters; without it the relay refuses to open rooms or serve previews.
-For a deployment, set it with `wrangler secret put SESSION_SIGNING_KEY --config relay/wrangler.toml`.
+For a deployment, set it with `wrangler secret put SESSION_SIGNING_KEY --config relay/wrangler.toml --env production`.
+
+## Deploying
+
+The deployed relay is `[env.production]` in `wrangler.toml`, the Worker `siteorigin-builder-relay`, deployed with
+`npm run relay:deploy` and checked with `npm run relay:smoke -- <its URL>`. The `release-relay` skill
+(`.agents/skills/release-relay/`) runs the whole sequence. Until the relay has its own domain it is served on workers.dev,
+where everything but the preview works: workers.dev has no names below a Worker's own for the per-room preview origins.
 
 A deployment also needs:
 

@@ -2,6 +2,6 @@
 #
 # SESSION_SIGNING_KEY signs guests' preview cookies (HMAC-SHA256) and must be at least 32 characters. The value below
 # is for running the relay on your own machine only. A deployed relay gets its own random key, never this one:
-#   openssl rand -base64 32 | npx wrangler secret put SESSION_SIGNING_KEY --config relay/wrangler.toml
+#   openssl rand -base64 48 | tr -d '\n' | npx wrangler secret put SESSION_SIGNING_KEY --config relay/wrangler.toml --env production
 # Without a usable key the relay refuses to open rooms, admit guests to the preview or serve it.
 SESSION_SIGNING_KEY=local-development-signing-key-not-for-production

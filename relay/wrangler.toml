@@ -32,7 +32,7 @@ name = "ROOM_CONNECT_LIMITER"
 namespace_id = "7611"
 simple = { limit = 30, period = 60 }
 
-# Tunables, in milliseconds. SESSION_SIGNING_KEY is a secret: `wrangler secret put SESSION_SIGNING_KEY` in production,
+# Tunables, in milliseconds. SESSION_SIGNING_KEY is a secret: `wrangler secret put SESSION_SIGNING_KEY --env production` for the deployed relay,
 # relay/.dev.vars locally (see .dev.vars.example).
 # RELAY_ORIGIN (the viewer's public origin, e.g. "https://example.live") and the routes for the apex and
 # `*.` wildcard belong in a production environment only: with routes set, `wrangler dev` rewrites the request's host,
@@ -48,3 +48,42 @@ PREVIEW_IDLE_TIMEOUT_MS = "30000"
 ip = "127.0.0.1"
 port = 8787
 local_protocol = "http"
+
+# The deployed relay, `npm run relay:deploy` (the release-relay skill, .agents/skills/release-relay/): the Worker
+# siteorigin-builder-relay, with its own rooms and its own SESSION_SIGNING_KEY secret. Bindings and vars are not
+# inherited from the top level, so they are repeated here; migrations are.
+#
+# Until the relay has its own registrable domain (README.md, Configuration) it is served on workers.dev only. There the
+# viewer, rooms and the guest's waiting room work, but previews do not: a room's preview is `p-<label>.<relay host>`,
+# and workers.dev has no names below a Worker's own. When the domain is chosen, set workers_dev = false and
+# preview_urls = false, and uncomment the routes and RELAY_ORIGIN with the domain in place of example.live.
+[env.production]
+name = "siteorigin-builder-relay"
+workers_dev = true
+preview_urls = false
+# routes = [
+#   { pattern = "example.live/*", zone_name = "example.live" },
+#   { pattern = "*.example.live/*", zone_name = "example.live" }
+# ]
+
+[env.production.vars]
+# RELAY_ORIGIN = "https://example.live"
+HOST_RECONNECT_GRACE_MS = "120000"
+GUEST_RECONNECT_GRACE_MS = "120000"
+HANDSHAKE_TIMEOUT_MS = "30000"
+PREVIEW_HEAD_TIMEOUT_MS = "30000"
+PREVIEW_IDLE_TIMEOUT_MS = "30000"
+
+[[env.production.durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SessionRoom"
+
+[[env.production.ratelimits]]
+name = "ROOM_CREATION_LIMITER"
+namespace_id = "7610"
+simple = { limit = 6, period = 60 }
+
+[[env.production.ratelimits]]
+name = "ROOM_CONNECT_LIMITER"
+namespace_id = "7611"
+simple = { limit = 30, period = 60 }
