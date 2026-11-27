@@ -27,9 +27,10 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { listReviewEditions, reviewPages, writeReviewEdition } from './review-edition';
+import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionChanged, writeReviewEdition } from './review-edition';
+import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
-import { pickReviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult } from '@shared/review-edition';
+import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -3788,6 +3789,7 @@ export class Controller {
     if (this.reviewCapture && !this.reviewCapture.signal.aborted) return { ok: false, message: 'A review edition is already being captured. Wait for it to finish.' };
     const job = new AbortController();
     this.reviewCapture = job;
+    const siteName = s.state.site.name;
     const closed = 'The project was closed before the review edition was captured.';
     const gone = () => job.signal.aborted || this.session !== s;
     try {
@@ -3812,6 +3814,7 @@ export class Controller {
             projectDir: s.dir,
             site,
             server,
+            siteName,
             basePath: base,
             revision: built.revision ?? s.revision,
             pages,
@@ -3966,6 +3969,60 @@ export class Controller {
         return publicationFailed(e);
       }
     });
+  }
+
+  /**
+   * Save review edition `editionId` of the open project as its offline sheet (#1134): one HTML file holding every
+   * picture, which opens from disk with no Builder, server or network. The chooser offers a file in Documents unless
+   * `dest` is given. Only reads the project, so it works read-only too; a picture that is gone or no longer matches
+   * the edition stops it, and nothing is written.
+   */
+  async exportReviewSheet(editionId: unknown, dest?: string): Promise<ReviewSheetResult> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'Open a project to save its review pages.' };
+    const gone = 'That review edition is no longer in this project.';
+    if (typeof editionId !== 'string' || !(await hasReviewEdition(s.dir, editionId))) return { ok: false, message: gone };
+    let file = dest;
+    // A name typed without ".html": the file is named here, never landing on one the chooser did not ask about.
+    let typed: string | null = null;
+    if (!file) {
+      const r = await dialog.showSaveDialog(this.getWindow()!, {
+        title: 'Save the review pages as one file',
+        defaultPath: join(app.getPath('documents'), `${slugify(s.state.site.name) || 'website'}-review-${editionId}.html`),
+        filters: [{ name: 'Web page', extensions: ['html'] }],
+        buttonLabel: 'Save',
+        properties: ['showOverwriteConfirmation', 'createDirectory']
+      });
+      if (r.canceled || !r.filePath) return { ok: false };
+      file = r.filePath;
+      if (!/\.html?$/i.test(file)) typed = file;
+    }
+    const closed = 'The project was closed before the review pages were saved.';
+    const open = () => this.session === s && !this.closing;
+    if (!open()) return { ok: false, message: closed };
+    // A file written into the project would be one of its own, outside its history.
+    if (isInside(s.dir, typed ? `${typed}.html` : file)) return { ok: false, message: 'Choose a location outside the project folder.' };
+    const named = (i: number) => `${typed}${i > 1 ? `-${i}` : ''}.html`;
+    const exists = (p: string) => fs.lstat(p).then(() => true, () => false);
+    try {
+      // Read after the chooser closed, a picture at a time: what is saved is the edition as it is on disk now.
+      const edition = await openReviewEdition(s.dir, editionId);
+      if (!edition.ok) return { ok: false, message: edition.message };
+      for (let i = 1; ; i++) {
+        if (typed) {
+          while (await exists(named(i))) i++;
+          file = named(i);
+        }
+        const r = await writeReviewSheet(file, reviewSheet(edition.manifest, edition.picture), { fresh: !!typed, stillOpen: open });
+        if (r === 'closed') return { ok: false, message: closed };
+        if (r === 'written') break;
+      }
+      this.exportPaths.add(file);
+      return { ok: true, path: file, message: 'Saved the review pages as one file.' };
+    } catch (e) {
+      if (e instanceof ReviewEditionChanged) return { ok: false, message: e.message };
+      return { ok: false, message: `The review pages were not saved: ${e instanceof Error ? e.message : String(e)}` };
+    }
   }
 
   /** Each open project's file hashes from its last export's fingerprints, by the stamps they stand for (projectInventory). */

@@ -1998,6 +1998,24 @@ export const INTERACTIONS: Interaction[] = [
     ]
   },
   {
+    id: 'export.review-sheet',
+    area: 'export',
+    intent: 'Show a client chosen pages as pictures at desktop and phone widths, in one file they can open from Downloads without Builder, a server or the internet',
+    start: 'Business site open, the Export dialog’s Client review pages opened',
+    routes: ['menu:File > Export…', 'dialog:Export › Client review pages', 'dialog:Export › Capture page', 'dialog:Export › Save as one file', 'dialog:Export › Client review › Show in folder'],
+    outcome:
+      'Capturing pictures each chosen page at each width and lists the new edition; saving an edition writes one HTML file holding every picture, the pages’ titles, the widths’ names and the edition ID, with a note that links, menus and forms need a live preview, and the file opens from disk with no network and asks for nothing; a changed or missing picture, a link in the edition, or a place inside the project writes nothing',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/unit/export-modal-actions-browser.test.ts', kind: 'unit', step: 'captures chosen pages and saves an earlier edition as one file from a folded Client review section (#1134)' },
+      { test: 'tests/unit/review-edition.test.ts', kind: 'unit', step: 'writes one HTML file with every picture, title, width and the edition ID, where the chooser says, and can show it' },
+      { test: 'tests/unit/review-sheet-browser.test.ts', kind: 'unit' },
+      { test: 'tests/unit/review-sheet.test.ts', kind: 'unit' },
+      { test: 'tests/unit/review-ipc.test.ts', kind: 'unit' }
+    ],
+    gaps: [{ missing: 'No e2e script captures pages in the built app and saves the sheet through the real chooser; the dialog is proven with a stand-in bridge and the controller with a stand-in for the hidden capture window', owner: 'export' }]
+  },
+  {
     id: 'export.proofs',
     area: 'export',
     intent: 'Send a client a website proof, then another, without breaking the first',

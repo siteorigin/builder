@@ -781,6 +781,15 @@ function registerIpc() {
       ? { ok: false, message: readOnlyReason(), warnings: [] }
       : controller.exportStatic(format === 'zip' ? 'zip' : 'folder', Array.isArray(published) ? published.filter((id): id is string => typeof id === 'string') : undefined)
   );
+  // Client review (#1133, #1134): capturing an edition builds the site as an export does, so it needs the writer lock;
+  // saving one as its offline sheet only reads the project.
+  handle('project:reviewEditions', () => controller.reviewEditions());
+  handle('project:captureReviewEdition', (request: unknown) => {
+    if (readOnlyReason()) return { ok: false, message: readOnlyReason() };
+    const r = request && typeof request === 'object' ? (request as { routes?: unknown; widths?: unknown }) : {};
+    return controller.captureReviewEdition({ routes: r.routes, ...(r.widths === undefined ? {} : { widths: r.widths }) });
+  });
+  handle('project:exportReviewSheet', (editionId: unknown) => controller.exportReviewSheet(editionId));
   handle('project:retryPreview', () => controller.startRuntime());
   handle('project:prepareComponentPreview', (spec: unknown) => controller.prepareComponentPreview(spec));
   handle('project:releaseComponentPreview', (key: unknown) => controller.releaseComponentPreview(key));
