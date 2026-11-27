@@ -355,6 +355,22 @@
   .ss-border > select:last-child { grid-column: 1 / -1; }
   .ss-border .ss-num { grid-template-columns: 44px auto; }
   .ss-lang { max-width: 140px; }
+  /* ---------- Site details and the Not-found page ---------- */
+  /* Site details in groups by what they describe, each field standing apart so a hint never reads as the next label's. */
+  .sd-group.ss-group { gap: 14px; }
+  .sd-group > .ss-group-label { padding-bottom: 0; }
+  .sd-lang-name { font-weight: 600; color: var(--text); }
+  /* The page as it reads with the wording above: a small page, centred like the built one, in the site's language. */
+  .nf-preview { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 0; }
+  .nf-preview > .ss-group-label { min-height: 0; padding: 0; }
+  .nf-page { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 16px 16px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--raised); text-align: center; }
+  .nf-heading { font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--text); overflow-wrap: anywhere; }
+  .nf-message { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
+  .nf-link { margin-top: 4px; font-size: 12px; font-weight: 500; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+  /* A closed site setting's summary (a public address can be long) stays on its line, cut short, beside a whole title. */
+  .ss .section-head { white-space: nowrap; }
+  .ss .section-head svg.chev { flex: none; }
+  .ss .section-head .scope { min-width: 0; padding-left: 8px; overflow: hidden; text-overflow: ellipsis; }
   /* Your styles: a card of summary rows, as Text styles is. Each row is its sample, name, kind and value, then whether it
      is used and its remove; it opens to edit, its fields on --panel-2 below. */
   .ss-custom { display: flex; flex-direction: column; gap: 12px; }

@@ -776,8 +776,8 @@ function revealInGrid(grid: HTMLElement | null) {
 export type PlainImage = 'favicon' | 'social' | 'logo' | 'featured';
 
 /** The picker for a site image: the image editor's thumbnail, search, import and keyboard grid, with None as Remove. */
-export function SiteImageField({ value, onChange, state, title, plain }: { value: string | null | undefined; onChange: (assetId: string | null) => void; state: ProjectState; title: string; plain: PlainImage }) {
-  return <ImageEditor value={{ assetId: value ?? null, alt: '' }} onChange={(v) => onChange(v.assetId ?? null)} state={state} title={title} plain={plain} />;
+export function SiteImageField({ value, onChange, state, title, plain, describedBy }: { value: string | null | undefined; onChange: (assetId: string | null) => void; state: ProjectState; title: string; plain: PlainImage; /** The ID of its guidance, read with the card's name. */ describedBy?: string }) {
+  return <ImageEditor value={{ assetId: value ?? null, alt: '' }} onChange={(v) => onChange(v.assetId ?? null)} state={state} title={title} plain={plain} describedBy={describedBy} />;
 }
 
 /** Images whose description was kept from the picture they replaced and not yet checked, by image and description:
