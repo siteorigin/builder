@@ -26,7 +26,7 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
+import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -316,10 +316,10 @@ const MAX_FONT_FILE = 32 * 1024 * 1024;
  * quotes are written &quot;, so `="` never occurs inside one).
  */
 const EDITOR_MARKUP = /<[a-zA-Z][^<>]*\sdata-so-(?:ctx|node)="|siteorigin-bridge/;
-/** Editor-only markup in a built page: the editor's own attributes and bridge, or a code component's part marker. */
-const editorMarkup = (html: string) => EDITOR_MARKUP.test(html) || carriesPartMarker(html);
-/** The same in a built script: the bridge, the editor's attributes, or a template that writes a part marker. */
-const editorScript = (js: string) => /siteorigin-bridge|data-so-ctx/.test(js) || carriesPartMarker(js);
+/** Editor-only markup in a built page: the editor's own attributes and bridge, or a code component's editor marker. */
+const editorMarkup = (html: string) => EDITOR_MARKUP.test(html) || carriesCodeMarker(html);
+/** The same in a built script: the bridge, the editor's attributes, or a template that writes a code marker. */
+const editorScript = (js: string) => /siteorigin-bridge|data-so-ctx/.test(js) || carriesCodeMarker(js);
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -3606,6 +3606,8 @@ export class Controller {
       }
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       await timed('export.leaveOutDrafts', () => leaveOutDrafts(dest, s.state))();
+      // What the editor finds in code components by their markers: neither export carries a marker, whoever owns the code.
+      await timed('export.markers', () => stripCodeMarkers(dest, s.state))();
       if (opts.forBuild) {
         if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
       } else await finishExportedSource(dest, s.state, starterNotice(), await syncCliText(s.state));
@@ -3667,8 +3669,6 @@ export class Controller {
     // Credits are read first: a page can use a responsive copy whose original is pruned.
     const credits = await timed('export.assets.credits', () => variantCredits(project, state))();
     const omitted = await timed('export.assets.prune', () => pruneWebsiteAssets(project, state))();
-    // The parts the editor finds in code components by their markers: the website carries no marker.
-    await timed('export.assets.markers', () => stripPartMarkers(project, state))();
     // What visitors download carries no location or device metadata; the project's own photos keep theirs.
     const photos = await timed('export.assets.photos', () => cleanWebsitePhotos(project, state, credits))();
     if (photos.failed.length) return { ok: false, message: uncleanablePhotosMessage(photos.failed), warnings: [] };

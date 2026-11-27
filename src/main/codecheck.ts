@@ -11,6 +11,7 @@
  */
 import { posix } from 'node:path';
 import type { ComponentDefinition } from '@shared/types';
+import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { slotIdent } from '@generator/index';
 
 export interface CodeProblem {
@@ -704,12 +705,12 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
 }
 
 /**
- * A code component's source with every part marker (`data-so-part`) taken out, as the website's build ships it. The
- * markers are the editor's, written in the code so the preview can find each part; the published site carries none.
- * Source that cannot be parsed is returned as it is: it does not build either.
+ * A code component's source with every editor marker (see shared/code-markers.ts) taken out, as both exports ship it.
+ * The markers are the editor's, written in the code so the preview can find what it edits; the published site carries
+ * none. Source that cannot be parsed is returned as it is: it does not build either.
  */
-export async function withoutPartMarkers(source: string): Promise<string> {
-  if (!source.includes('data-so-part')) return source;
+export async function withoutCodeMarkers(source: string): Promise<string> {
+  if (!mentionsCodeMarker(source)) return source;
   const { parse } = await import('svelte/compiler');
   // The parser reads past a byte order mark, so its offsets count from after it.
   const bom = source.charCodeAt(0) === 0xfeff ? 1 : 0;
@@ -720,8 +721,13 @@ export async function withoutPartMarkers(source: string): Promise<string> {
   } catch {
     return source;
   }
-  const cuts = partMarkers(ast.fragment)
-    .map(({ attr }) => {
+  const markers: Node[] = [];
+  walkAst(ast.fragment, (n, around) => {
+    const host = around[around.length - 1];
+    if (n.type === 'Attribute' && isCodeMarker(String(n.name)) && host && Array.isArray(host.attributes)) markers.push(n);
+  });
+  const cuts = markers
+    .map((attr) => {
       let start = Number(attr.start);
       const end = Number(attr.end);
       // With the space before it when the tag goes on with a space or ends there, so the tag reads as if the

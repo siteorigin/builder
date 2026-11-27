@@ -83,7 +83,8 @@ function canonicalJson(v: unknown): string {
   if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
   return JSON.stringify(v);
 }
-import { withoutPartMarkers } from './codecheck';
+import { withoutCodeMarkers } from './codecheck';
+import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
@@ -858,23 +859,36 @@ export async function leaveOutDrafts(dir: string, state: ProjectState): Promise<
 }
 
 /**
- * Take the editor's part markers (data-so-part) out of a staged copy's code components before the website is built from
- * it: the preview finds each marked part of a code component by its marker, and the published site carries none. The
- * editable project, and its export, keep them, so the parts are still found wherever the project is opened again.
+ * Take the editor's markers (see shared/code-markers.ts) out of a staged copy's code components, for both exports:
+ * the preview finds what it edits in a code component by its markers, and the published site carries none, whoever
+ * owns the component. That is every file a code component's code reaches the website through: a project component's
+ * own source, the generated file a theme's code is written to, and the copy of a contact form's code that declares
+ * its WebMCP tool. Each is cleaned as the copy holds it, after leaveOutDrafts, so what the generator added (link
+ * relationships, the form's tool) stays. A generated file is then listed in generated-manifest.json as it is cleaned,
+ * so the copy reopens without conflicts and SiteOrigin Builder writes the markers back from the canonical documents;
+ * a project component's own source is its canonical code, so the copy keeps no markers there. The editable project
+ * keeps all of them.
  */
-export async function stripPartMarkers(project: string, state: ProjectState): Promise<void> {
+export async function stripCodeMarkers(dir: string, state: ProjectState): Promise<void> {
+  let manifest: { files?: Record<string, string>; pending?: Record<string, string> } | null = null;
+  const forms = webMcpOn(state.site);
   for (const def of Object.values(state.components)) {
-    if (def.kind !== 'code' || def.owner !== 'project' || !def.sourcePath) continue;
-    // And the copy of a contact form's code that declares its WebMCP tool, made from the same code with its markers,
-    // which the website has only while it declares its tools.
-    for (const path of [def.sourcePath, ...(webMcpOn(state.site) && declaresFormTool(def) ? [webMcpFormFile(def)] : [])]) {
-      const abs = safeJoin(project, path);
+    if (def.kind !== 'code') continue;
+    for (const path of new Set([defFile(def), ...(forms && declaresFormTool(def) ? [webMcpFormFile(def)] : [])])) {
+      const abs = safeJoin(dir, path);
       const source = await readExportText(abs);
       if (source === null) continue;
-      const clean = await withoutPartMarkers(source);
-      if (clean !== source) await fs.writeFile(abs, clean);
+      const clean = await withoutCodeMarkers(source);
+      if (clean === source) continue;
+      await fs.writeFile(abs, clean);
+      manifest ??= JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
+      if (Object.hasOwn(manifest.files ?? {}, path) || Object.hasOwn(manifest.pending ?? {}, path)) {
+        manifest.files = { ...manifest.files, [path]: sha(clean) };
+        if (manifest.pending) delete manifest.pending[path];
+      }
     }
   }
+  if (manifest) await fs.writeFile(join(dir, MANIFEST_PATH), toJson({ ...manifest, files: Object.fromEntries(Object.entries(manifest.files ?? {}).sort()) }));
 }
 
 /** Why a website export stopped: published pages link to drafts, which the website leaves out. Null when none do. */
@@ -1483,13 +1497,13 @@ const START_TAG = /<[a-zA-Z][^\s/>]*((?:\s+[^\s"'=<>/]+(?:=(?:"[^"]*"|'[^']*'|[^
 const TAG_ATTRIBUTE = /\s([^\s"'=<>/]+)(?:=(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
 
 /**
- * Whether built HTML, or a built script's templates, give an element a code component's part marker (data-so-part),
- * which the website's build takes out of the code (see stripPartMarkers). Read as attributes of start tags, so words
- * that only mention the marker (a title, a page's text) are the site's own.
+ * Whether built HTML, or a built script's templates, give an element one of a code component's editor markers (see
+ * shared/code-markers.ts), which both exports take out of the code (see stripCodeMarkers). Read as attributes of start
+ * tags, so words that only mention a marker (a title, a page's text) are the site's own.
  */
-export function carriesPartMarker(text: string): boolean {
-  if (!text.includes('data-so-part')) return false;
-  for (const tag of text.matchAll(START_TAG)) for (const a of tag[1].matchAll(TAG_ATTRIBUTE)) if (a[1].toLowerCase() === 'data-so-part') return true;
+export function carriesCodeMarker(text: string): boolean {
+  if (!mentionsCodeMarker(text)) return false;
+  for (const tag of text.matchAll(START_TAG)) for (const a of tag[1].matchAll(TAG_ATTRIBUTE)) if (isCodeMarker(a[1])) return true;
   return false;
 }
 
@@ -1563,7 +1577,7 @@ export function pageRelativeAddresses(html: string): string[] {
 /** Why the built not-found page cannot be exported, or null. `html` is null when the build did not write it as a file. */
 export function notFoundPageProblem(html: string | null): string | null {
   if (html === null) return `The build is missing ${NOT_FOUND_FILE}, the page shown at addresses the site does not have.`;
-  if (EDITOR_MARKUP.test(html) || carriesPartMarker(html)) return `Editor-only markup was found in ${NOT_FOUND_FILE}. Export aborted.`;
+  if (EDITOR_MARKUP.test(html) || carriesCodeMarker(html)) return `Editor-only markup was found in ${NOT_FOUND_FILE}. Export aborted.`;
   return null;
 }
 

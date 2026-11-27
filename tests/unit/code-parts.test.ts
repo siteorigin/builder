@@ -10,9 +10,9 @@ import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generateProject } from '@generator/index';
-import { checkSvelteSource, codeContractNames, withoutPartMarkers, type CodeContract } from '../../src/main/codecheck';
+import { checkSvelteSource, codeContractNames, withoutCodeMarkers, type CodeContract } from '../../src/main/codecheck';
 import { declareCodeNames } from '@engine/definitions';
-import { carriesPartMarker } from '../../src/main/export';
+import { carriesCodeMarker } from '../../src/main/export';
 import { descOf, isCodePart, selectionFromChain } from '../../src/renderer/src/lib/model';
 
 const SOURCE = `<script>
@@ -292,23 +292,23 @@ describe('converting a design to code keeps its parts and slots', () => {
 describe('the website’s build carries no part marker', () => {
   it('takes every marker out of the code, on elements and components alike, and leaves the rest as it was', async () => {
     const src = SOURCE.replace('<div class="extras">', '<div class="extras" data-so-part={"extras"}>').replace('</section>', '\t<Thing data-so-part="thing" />\n</section>');
-    const clean = await withoutPartMarkers(src);
+    const clean = await withoutCodeMarkers(src);
     expect(clean).not.toContain('data-so-part');
     expect(clean).toBe(SOURCE.replace(' data-so-part="total"', '').replace('</section>', '\t<Thing />\n</section>'));
     // Text that only mentions a marker is the site's own words.
     const said = '<p>Mark parts with data-so-part="name".</p>\n';
-    expect(await withoutPartMarkers(said)).toBe(said);
+    expect(await withoutCodeMarkers(said)).toBe(said);
   });
 
   it('keeps a byte order mark and the space between the attributes around a marker', async () => {
-    expect(await withoutPartMarkers('﻿<p data-so-part="total" class="x">a</p>\n')).toBe('﻿<p class="x">a</p>\n');
-    expect(await withoutPartMarkers('<p data-so-part="total"class="x">a</p>\n')).toBe('<p class="x">a</p>\n');
+    expect(await withoutCodeMarkers('﻿<p data-so-part="total" class="x">a</p>\n')).toBe('﻿<p class="x">a</p>\n');
+    expect(await withoutCodeMarkers('<p data-so-part="total"class="x">a</p>\n')).toBe('<p class="x">a</p>\n');
   });
 
   it('finds a marker left in a built page or script, never words that only mention one', async () => {
-    expect(carriesPartMarker('<output class="amount" data-so-part="total">10</output>')).toBe(true);
-    expect(carriesPartMarker('const t = $.from_html(`<div data-so-part="extras"><b></b></div>`);')).toBe(true);
-    expect(carriesPartMarker('<div title="Example data-so-part=total">x</div>')).toBe(false);
-    expect(carriesPartMarker('<p>Mark a part with data-so-part="total".</p>')).toBe(false);
+    expect(carriesCodeMarker('<output class="amount" data-so-part="total">10</output>')).toBe(true);
+    expect(carriesCodeMarker('const t = $.from_html(`<div data-so-part="extras"><b></b></div>`);')).toBe(true);
+    expect(carriesCodeMarker('<div title="Example data-so-part=total">x</div>')).toBe(false);
+    expect(carriesCodeMarker('<p>Mark a part with data-so-part="total".</p>')).toBe(false);
   });
 });
