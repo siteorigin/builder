@@ -1,5 +1,6 @@
 import './PropEditors.css';
-import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { createElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Hash, Image as ImageIcon, ImageOff, ImagePlus, Images, List, Plus, Search, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChoiceOption, ChoicesProp, ElementRef, PageDoc, GraphNode, ImageValue, LinkRel, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isEntryBinding, refKey } from '@shared/types';
@@ -9,7 +10,7 @@ import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';
 import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
-import { DraftInput, Field, FieldHome, missingNote, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
+import { DraftInput, Field, FieldHome, missingNote, openMenus, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isSettling, refusedWithin, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
@@ -1106,129 +1107,519 @@ export function IconGlyph({ name, size = 18 }: { name: string; size?: number }) 
   );
 }
 
-const iconName = (k: string) => sentence(k.replace(/-/g, ' '));
+/** Names that read better than the icon's file name. */
+const ICON_LABELS: Record<string, string> = {
+  'building-2': 'Building',
+  'flower-2': 'Flower',
+  'circle-check': 'Check in a circle',
+  'badge-check': 'Verified badge',
+  'shield-check': 'Shield with a check',
+  'chart-line': 'Line chart',
+  'pen-tool': 'Pen',
+  'map-pin': 'Location pin',
+  'message-circle': 'Speech bubble',
+  'layout-grid': 'Grid',
+  'book-open': 'Open book',
+  'chevron-down': 'Chevron',
+  utensils: 'Knife and fork',
+  zap: 'Lightning',
+  x: 'Cross',
+  linkedin: 'LinkedIn',
+  youtube: 'YouTube',
+  github: 'GitHub',
+  'x-twitter': 'X (Twitter)'
+};
+const iconName = (k: string) => ICON_LABELS[k] ?? sentence(k.replace(/-/g, ' '));
+
+/** Words people search with for what an icon means, beside its name. */
+const ICON_WORDS: Record<string, string> = {
+  'arrow-right': 'next go forward continue more',
+  'arrow-up-right': 'external link visit open out',
+  check: 'tick yes done included',
+  'circle-check': 'tick yes done complete success included',
+  'badge-check': 'verified certified approved accredited qualified',
+  star: 'rating review favourite favorite featured quality',
+  heart: 'love like favourite favorite care wellbeing wedding',
+  leaf: 'eco green organic natural sustainable environment plant',
+  house: 'home residential property real estate family',
+  'building-2': 'office company commercial business apartment',
+  hammer: 'build construction builder carpentry carpenter repair renovation handyman',
+  wrench: 'repair fix maintenance service plumber plumbing mechanic tools handyman',
+  paintbrush: 'paint painter decorating decorator',
+  palette: 'colour color art design creative',
+  'pen-tool': 'design illustration graphic vector write edit pencil',
+  ruler: 'measure plan drawing architect design',
+  sparkles: 'new magic special clean cleaning shine spa beauty',
+  sun: 'summer day light weather solar',
+  moon: 'night evening sleep',
+  'shield-check': 'secure security safe safety protection insurance guarantee trust',
+  clock: 'time hours opening',
+  calendar: 'date booking appointment schedule event diary',
+  phone: 'call telephone mobile contact',
+  mail: 'email envelope message contact newsletter inbox',
+  'map-pin': 'location address place directions find map visit',
+  'message-circle': 'chat talk comment speech message support help question faq',
+  users: 'team people staff group community clients family',
+  user: 'person profile account customer',
+  briefcase: 'work job career business professional services',
+  'chart-line': 'growth graph results analytics stats finance accounting sales',
+  target: 'goal aim focus mission',
+  lightbulb: 'idea tip advice insight innovation',
+  rocket: 'launch startup fast growth',
+  compass: 'direction navigation explore planning strategy guide',
+  camera: 'photo photography photographer',
+  image: 'picture photo gallery',
+  coffee: 'cafe drink tea break cup',
+  gift: 'present voucher offer',
+  globe: 'world web website international online',
+  lock: 'secure private password privacy',
+  zap: 'fast speed quick energy power electric electrician',
+  award: 'prize winner certificate quality',
+  handshake: 'partnership deal agreement trust welcome',
+  'thumbs-up': 'like approve good recommend',
+  scissors: 'cut hair salon barber hairdresser tailor',
+  truck: 'delivery shipping transport removals moving van',
+  stethoscope: 'health medical doctor clinic care',
+  'graduation-cap': 'education school study training course learn',
+  layers: 'stack levels',
+  'layout-grid': 'apps gallery dashboard',
+  quote: 'testimonial review quotation',
+  plus: 'add more',
+  minus: 'remove less',
+  menu: 'hamburger list',
+  x: 'close cancel no',
+  'chevron-down': 'expand more down',
+  sofa: 'furniture interior living room couch',
+  trees: 'forest garden landscaping outdoors park',
+  'flower-2': 'florist garden plant spring spa beauty wedding',
+  dumbbell: 'fitness gym exercise workout training',
+  utensils: 'food restaurant dining eat menu kitchen chef cook',
+  music: 'audio song sound band',
+  'book-open': 'read learn guide library story',
+  code: 'developer software programming web',
+  'heart-handshake': 'care support charity volunteer community',
+  instagram: 'social',
+  facebook: 'social',
+  linkedin: 'social',
+  youtube: 'social video',
+  github: 'social code',
+  'x-twitter': 'social twitter tweet'
+};
+
+/** Symbols typed into the search that name an icon. */
+const ICON_SYMBOLS: Record<string, string[]> = {
+  '+': ['plus'],
+  '-': ['minus'],
+  '−': ['minus'],
+  '×': ['x'],
+  '→': ['arrow-right'],
+  '->': ['arrow-right'],
+  '↗': ['arrow-up-right'],
+  '✓': ['check', 'circle-check'],
+  '✔': ['check', 'circle-check'],
+  '*': ['star'],
+  '★': ['star'],
+  '♥': ['heart'],
+  '❤': ['heart'],
+  '@': ['mail'],
+  '"': ['quote'],
+  '“': ['quote'],
+  '<>': ['code'],
+  '</>': ['code']
+};
+
+/** The icons in browsing order, grouped by what they are for; any icon not named here is listed last. */
+const ICON_GROUPS: { name: string; icons: string[] }[] = (() => {
+  const groups = [
+    { name: 'Business', icons: ['briefcase', 'chart-line', 'target', 'lightbulb', 'rocket', 'compass', 'award', 'badge-check', 'shield-check', 'lock', 'zap', 'handshake', 'heart-handshake'] },
+    { name: 'Contact and places', icons: ['phone', 'mail', 'message-circle', 'map-pin', 'globe', 'clock', 'calendar', 'users', 'user', 'house', 'building-2'] },
+    { name: 'Trades and making', icons: ['hammer', 'wrench', 'paintbrush', 'palette', 'pen-tool', 'ruler', 'scissors', 'truck', 'sofa', 'camera', 'image'] },
+    { name: 'Life and nature', icons: ['leaf', 'trees', 'flower-2', 'sun', 'moon', 'coffee', 'utensils', 'gift', 'music', 'dumbbell', 'stethoscope', 'graduation-cap', 'book-open'] },
+    { name: 'Marks and shapes', icons: ['star', 'heart', 'thumbs-up', 'sparkles', 'quote', 'check', 'circle-check', 'arrow-right', 'arrow-up-right', 'plus', 'minus', 'x', 'chevron-down', 'menu', 'layers', 'layout-grid', 'code'] },
+    { name: 'Social', icons: ['instagram', 'facebook', 'linkedin', 'youtube', 'github', 'x-twitter'] }
+  ].map((g) => ({ ...g, icons: g.icons.filter((k) => Object.hasOwn(ICONS, k)) }));
+  const grouped = new Set(groups.flatMap((g) => g.icons));
+  const rest = Object.keys(ICONS).filter((k) => !grouped.has(k));
+  return rest.length ? [...groups, { name: 'More', icons: rest }] : groups;
+})();
+const ICON_ORDER = ICON_GROUPS.flatMap((g) => g.icons);
 
 /**
- * The icon control: a button showing the current icon, which opens a searchable grid of every icon drawn as
- * it will look. The grid is one tab stop; arrow keys move, Enter or a click chooses, Escape closes.
+ * Icons for a search: every word must start a word of the icon's name or of what it means. The icon the query names
+ * exactly comes first (Enter takes it), then other name matches, then matches by meaning.
+ */
+function searchIcons(query: string): string[] {
+  // Emoji and text presentation selectors are dropped, so a pasted ❤️ is the ❤ it shows.
+  const typed = query.replace(/[\uFE0E\uFE0F]/g, '').trim();
+  const words = typed.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (!typed) return ICON_ORDER;
+  // A symbol on its own finds the icon that draws it, and nothing else.
+  if (!words.length) return (ICON_SYMBOLS[typed] ?? []).filter((k) => Object.hasOwn(ICONS, k));
+  const whole = words.join(' ');
+  // A word is also its singular ("arrows", "boxes"), so a plural finds what the word does.
+  const forms = words.map((w) => [w, ...(w.length > 3 && w.endsWith('s') ? [w.slice(0, -1)] : []), ...(w.length > 4 && w.endsWith('es') ? [w.slice(0, -2)] : [])]);
+  const ranked: [string, number][] = [];
+  for (const k of ICON_ORDER) {
+    const label = iconName(k).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const named = [...k.split('-'), ...label];
+    const meant = (ICON_WORDS[k] ?? '').split(' ');
+    // Each word is ranked by its best match: a whole word of the name, then a whole word of the meaning, then the
+    // start of a word in either; the icon ranks by its weakest word. "care" finds care before career.
+    const rank = (f: string[]) =>
+      named.some((p) => f.includes(p)) ? 1 : meant.some((p) => f.includes(p)) ? 2 : named.some((p) => p.startsWith(f[0])) ? 3 : meant.some((p) => p.startsWith(f[0])) ? 4 : 0;
+    const ranks = forms.map(rank);
+    if (label.join(' ') === whole || k.replace(/-/g, ' ') === whole) ranked.push([k, 0]);
+    else if (ranks.every(Boolean)) ranked.push([k, Math.max(...ranks)]);
+  }
+  return ranked.sort((a, b) => a[1] - b[1]).map(([k]) => k);
+}
+
+/** The option a 2D arrow key moves to: the next or previous tile in reading order, or the nearest one in the row above or below. */
+function iconStep(tiles: HTMLElement[], from: HTMLElement, key: string): HTMLElement | null {
+  const i = tiles.indexOf(from);
+  if (key === 'ArrowRight') return tiles[i + 1] ?? null;
+  if (key === 'ArrowLeft') return tiles[i - 1] ?? null;
+  if (key === 'Home') return tiles[0] ?? null;
+  if (key === 'End') return tiles[tiles.length - 1] ?? null;
+  const down = key === 'ArrowDown';
+  const at = from.getBoundingClientRect();
+  const boxes = tiles.map((t) => [t, t.getBoundingClientRect()] as const);
+  const rows = boxes.map(([, r]) => r.top).filter((top) => (down ? top > at.top + 2 : top < at.top - 2));
+  if (!rows.length) return null;
+  const row = down ? Math.min(...rows) : Math.max(...rows);
+  const middle = at.left + at.width / 2;
+  let best: HTMLElement | null = null;
+  let gap = Infinity;
+  for (const [t, r] of boxes) {
+    const d = Math.abs(r.left + r.width / 2 - middle);
+    if (Math.abs(r.top - row) < 2 && d < gap) (best = t), (gap = d);
+  }
+  return best;
+}
+
+/**
+ * The icon control: a field showing the current icon, which opens a popover over the Inspector (so the fields under it
+ * stay where they are) with a search box and every icon drawn as it will look, grouped by what it is for. Search
+ * matches names and what icons mean ("email" finds Mail). The icons are one tab stop: arrow keys move, Enter or a
+ * click chooses, Escape closes; a press or focus anywhere else puts it away.
  */
 export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }: { value: string; onChange: (v: string) => void; label?: string; id?: string; describedBy?: string }) {
   const [open, setOpen] = useState(false);
-  const [q, setQ] = useState('');
-  // The grid's one tab stop: the tile last moved to while it is still shown, else the chosen icon, else the first.
-  const [rover, setRover] = useState<string | null>(null);
-  // The icon named under the grid: the one pointed at or moved to, else the chosen one.
-  const [peek, setPeek] = useState<string | null>(null);
-  const gridId = useId();
+  const popId = useId();
   const btn = useRef<HTMLButtonElement>(null);
-  const grid = useRef<HTMLDivElement>(null);
-  const names = Object.keys(ICONS);
-  const needle = q.trim().toLowerCase();
-  const shown = needle ? names.filter((k) => k.includes(needle.replace(/\s+/g, '-')) || iconName(k).toLowerCase().includes(needle)) : names;
-  const COLS = 6;
-  const close = (focus = true) => {
+  const close = (focus: boolean) => {
     setOpen(false);
-    setQ('');
-    setRover(null);
-    setPeek(null);
     if (focus) requestAnimationFrame(() => btn.current?.focus());
   };
-  useEffect(() => {
-    if (open) requestAnimationFrame(() => revealInGrid(grid.current));
-  }, [open]);
-  const keys = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')];
-    const i = tiles.indexOf(document.activeElement as HTMLElement);
-    if (i < 0) return;
-    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: COLS, ArrowUp: -COLS }[e.key];
-    // Up and down stay in their column: at the top or bottom row they stay put.
-    const vertical = e.key === 'ArrowUp' || e.key === 'ArrowDown';
-    const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? (vertical && (i + step < 0 || i + step >= tiles.length) ? i : Math.max(0, Math.min(tiles.length - 1, i + step))) : -1;
-    if (to < 0) return;
-    e.preventDefault();
-    setRover(shown[to] ?? null);
-    tiles[to].focus();
-  };
-  const tabStop = rover && shown.includes(rover) ? rover : shown.includes(value) ? value : shown[0];
-  const named = peek && shown.includes(peek) ? peek : shown.includes(value) ? value : (tabStop ?? null);
   return (
-    <div
-      className="insp-icon-picker"
-      onKeyDown={(e) => {
-        if (e.key === 'Escape' && open) (e.stopPropagation(), close());
-      }}
-    >
+    <div className="insp-icon-picker">
       <button
         ref={btn}
         type="button"
-        className="select insp-icon-btn"
+        className="input insp-icon-btn"
         id={id}
-        aria-describedby={[describedBy, id ? `${gridId}-cur` : undefined].filter(Boolean).join(' ') || undefined}
+        aria-describedby={[describedBy, id ? `${popId}-cur` : undefined].filter(Boolean).join(' ') || undefined}
         aria-label={id ? undefined : `${label}: ${iconName(value)}`}
+        aria-haspopup="dialog"
         aria-expanded={open}
-        aria-controls={open ? gridId : undefined}
+        aria-controls={open ? popId : undefined}
         onClick={() => (open ? close(false) : setOpen(true))}
       >
-        <IconGlyph name={value} />
-        <span className="grow ellipsis" id={`${gridId}-cur`}>
-          {iconName(value)}
+        <span className="insp-icon-swatch" aria-hidden="true">
+          <IconGlyph name={value} size={16} />
+        </span>
+        <span className="grow ellipsis" id={`${popId}-cur`}>
+          {Object.hasOwn(ICONS, value) ? iconName(value) : 'Choose an icon'}
         </span>
         <ChevronDown aria-hidden="true" className="faint" />
       </button>
       {open && (
-        <div
-          className="insp-pick"
-          id={gridId}
-        >
-          <input type="search" className="input sm" placeholder="Search icons" aria-label="Search icons" value={q} autoFocus onChange={(e) => setQ(e.target.value)} />
-          {shown.length ? (
-            <div
-              ref={grid}
-              className="insp-icon-grid"
-              role="listbox"
-              aria-label={label}
-              onKeyDown={keys}
-              onMouseLeave={() => setPeek(null)}
-              onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setPeek(null)}
-            >
-              {shown.map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  role="option"
-                  aria-selected={k === value}
-                  aria-label={iconName(k)}
-                  title={iconName(k)}
-                  tabIndex={k === tabStop ? 0 : -1}
-                  className={`insp-icon-tile${k === value ? ' current' : ''}`}
-                  onFocus={() => setPeek(k)}
-                  onMouseEnter={() => setPeek(k)}
-                  onClick={() => {
-                    if (k !== value) onChange(k);
-                    close();
-                  }}
-                >
-                  <IconGlyph name={k} size={20} />
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="faint insp-note">No icons match “{q.trim()}”.</p>
-          )}
-          {/* Mounted with the picker, so the first time a search finds nothing it is announced. */}
-          <span className="sr-only" role="status">
-            {shown.length ? '' : `No icons match “${q.trim()}”.`}
-          </span>
-          {/* Names the icon pointed at or moved to; each tile already names itself to assistive tech. */}
-          {named && (
-            <p className="insp-icon-name" aria-hidden="true">
-              {iconName(named)}
-              {named === value && <span className="faint"> · current</span>}
-            </p>
-          )}
-        </div>
+        <IconPopover
+          id={popId}
+          value={value}
+          label={label}
+          trigger={btn}
+          onClose={close}
+          onPick={(k) => {
+            if (k !== value) onChange(k);
+            close(true);
+          }}
+        />
       )}
     </div>
+  );
+}
+
+function IconPopover({ id, value, label, trigger, onPick, onClose }: { id: string; value: string; label: string; trigger: React.RefObject<HTMLButtonElement | null>; onPick: (k: string) => void; onClose: (focus: boolean) => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const [q, setQ] = useState('');
+  // The icons' one tab stop: the tile last moved to while it is still shown.
+  const [rover, setRover] = useState<string | null>(null);
+  // Pointed at and focused are kept apart, so the footer never names one while Enter would take the other.
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
+  const [inSearch, setInSearch] = useState(true);
+  // Once something has been searched, clearing it announces the whole set again.
+  const [searched, setSearched] = useState(false);
+  // More of the list past an edge: the fixed part beside that edge takes a hairline and a soft lift, as in the Share
+  // popover, so groups under the fold are not taken as missing and no icon is dimmed.
+  const [edges, setEdges] = useState({ above: false, below: false });
+  const [pos, setPos] = useState<{ left: number; top: number; width: number; maxHeight?: number } | null>(null);
+  // The popover's full height, measured while nothing caps it, and where the pointer last was.
+  const natural = useRef(0);
+  const pointer = useRef('');
+  const query = q.trim();
+  const shown = useMemo(() => searchIcons(query), [query]);
+  const tabStop = rover && shown.includes(rover) ? rover : query || !shown.includes(value) ? shown[0] : value;
+  // While searching, the first result is what Enter in the search box takes, and it is marked as such.
+  const next = query && inSearch ? shown[0] : undefined;
+  const named = hovered ?? focused ?? next ?? value;
+  // What Enter takes right now: the focused icon, or the first result from the search field.
+  const target = focused ?? next;
+
+  // The editor's own shortcuts stay out of the way while it is open, as for a menu.
+  useEffect(() => {
+    openMenus.count++;
+    return () => void openMenus.count--;
+  }, []);
+  // A press anywhere else, or focus going into the preview frame, puts it away; the trigger toggles it itself.
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const t = e.target instanceof Node ? e.target : null;
+      if (t && !box.current?.contains(t) && !trigger.current?.contains(t)) onClose(false);
+    };
+    const intoFrame = () => setTimeout(() => document.activeElement instanceof HTMLIFrameElement && onClose(false));
+    document.addEventListener('pointerdown', away, true);
+    window.addEventListener('blur', intoFrame);
+    return () => {
+      document.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('blur', intoFrame);
+    };
+  });
+  // Under the trigger, its left edge with the trigger's, or above it when it only fits there. In a window too short for
+  // either, it takes the roomier side and its list shrinks to fit, so it never covers its own trigger. It follows the
+  // trigger as the Inspector scrolls.
+  useLayoutEffect(() => {
+    const place = () => {
+      const el = box.current;
+      const a = trigger.current?.getBoundingClientRect();
+      if (!el || !a) return;
+      const width = Math.round(Math.min(Math.max(a.width, 236), 440, window.innerWidth - 16));
+      if (!el.style.maxHeight) natural.current = el.offsetHeight;
+      const h = natural.current;
+      const below = window.innerHeight - a.bottom - 14;
+      const above = a.top - 14;
+      const under = h <= below || (h > above && below >= above);
+      const room = under ? below : above;
+      const maxHeight = h > room ? Math.max(160, room) : undefined;
+      const top = under ? a.bottom + 6 : a.top - 6 - (maxHeight ?? h);
+      const left = Math.max(8, Math.min(a.left, window.innerWidth - width - 8));
+      setPos((p) => (p && p.left === left && p.top === top && p.width === width && p.maxHeight === maxHeight ? p : { left, top, width, maxHeight }));
+    };
+    // Scrolled away, or under the Inspector's sticky head, the trigger is gone from view and the popover goes with it.
+    const scrolled = (e: Event) => {
+      if (e.target instanceof Node && box.current?.contains(e.target)) return;
+      const a = trigger.current?.getBoundingClientRect();
+      const at = a && document.elementFromPoint(a.left + a.width / 2, a.top + a.height / 2);
+      if (!at || !(trigger.current?.contains(at) || box.current?.contains(at))) onClose(false);
+      else place();
+    };
+    place();
+    window.addEventListener('resize', place);
+    document.addEventListener('scroll', scrolled, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      document.removeEventListener('scroll', scrolled, true);
+    };
+  });
+  // Opens with the current icon's row in the middle of the list.
+  useLayoutEffect(() => {
+    const l = list.current;
+    const tile = l?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (l && tile) l.scrollTop = tile.offsetTop - (l.clientHeight - tile.offsetHeight) / 2;
+  }, []);
+  const measure = () => {
+    const l = list.current;
+    const above = !!l && l.scrollTop > 1;
+    const below = !!l && l.scrollTop + l.clientHeight < l.scrollHeight - 2;
+    setEdges((e) => (e.above === above && e.below === below ? e : { above, below }));
+  };
+  useLayoutEffect(measure, [query]);
+
+  const go = (tile: HTMLElement | null | undefined) => {
+    if (!tile) return;
+    // A key press is the latest thing the user did: a pointer parked over another tile no longer names it.
+    setHovered(null);
+    setRover(tile.dataset.icon ?? null);
+    tile.focus();
+    tile.scrollIntoView({ block: 'nearest' });
+  };
+  const keys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const from = e.target as HTMLElement;
+    if (from.getAttribute('role') !== 'option') return;
+    // Typing while on an icon goes on with the search.
+    if (e.key.length === 1 && e.key !== ' ' && !e.metaKey && !e.ctrlKey && !e.altKey) return search.current?.focus();
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      setQ((v) => v.slice(0, -1));
+      setRover(null);
+      setHovered(null);
+      return search.current?.focus();
+    }
+    if (!['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const to = iconStep([...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')], from, e.key);
+    if (to) go(to);
+    else if (e.key === 'ArrowUp') search.current?.focus();
+  };
+  const tile = (k: string) => (
+    <button
+      key={k}
+      type="button"
+      role="option"
+      data-icon={k}
+      aria-selected={k === value}
+      aria-label={iconName(k)}
+      tabIndex={k === tabStop ? 0 : -1}
+      className={`insp-icon-tile${k === value ? ' current' : ''}${k === (hovered ?? next) ? ' pointed' : ''}`}
+      onFocus={() => (setFocused(k), setHovered(null))}
+      onMouseMove={(e) => {
+        // Only a pointer that moved points: the move Chromium sends when a key scrolls tiles under a still pointer is not.
+        const at = `${e.clientX},${e.clientY}`;
+        if (at === pointer.current) return;
+        pointer.current = at;
+        if (hovered !== k) setHovered(k);
+      }}
+      onMouseLeave={() => setHovered(null)}
+      onClick={() => onPick(k)}
+    >
+      <IconGlyph name={k} size={20} />
+      {few && <span className="ellipsis">{iconName(k)}</span>}
+    </button>
+  );
+  const count = shown.length === 1 ? '1 icon' : `${shown.length} icons`;
+  // A search down to a few icons names each one beside its glyph, so none has to be pointed at to be told apart.
+  const few = !!query && shown.length <= 3;
+
+  return createPortal(
+    <div
+      ref={box}
+      id={id}
+      className="insp-icon-pop"
+      role="dialog"
+      aria-label={`Choose ${label === 'Icon' ? 'an icon' : label}`}
+      tabIndex={-1}
+      style={pos ?? { left: 0, top: 0, width: 300, opacity: 0 }}
+      onBlur={(e) => {
+        const to = e.relatedTarget as Node | null;
+        // Tabbing or clicking away puts it away; the trigger is part of it.
+        if (to && !e.currentTarget.contains(to) && !trigger.current?.contains(to)) onClose(false);
+      }}
+      onKeyDown={(e) => {
+        // Tab past either end goes on from the trigger, so focus continues through the form rather than from the end
+        // of the document, where the popover is drawn: forward to the next field, backward onto the trigger itself.
+        if (e.key === 'Tab') {
+          const stops = [...e.currentTarget.querySelectorAll<HTMLElement>('input, [role="option"][tabindex="0"], .insp-icon-empty button')];
+          const edge = e.shiftKey ? stops[0] : stops[stops.length - 1];
+          if (document.activeElement !== edge && document.activeElement !== e.currentTarget) return;
+          if (e.shiftKey) e.preventDefault();
+          trigger.current?.focus();
+          onClose(false);
+          return;
+        }
+        if (e.key !== 'Escape' || e.defaultPrevented || isImeComposing(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onClose(true);
+      }}
+    >
+      <div className={`insp-icon-head${edges.above ? ' lifted' : ''}`}>
+        <input
+          ref={search}
+          type="search"
+          className="input sm insp-icon-search"
+          placeholder="Search icons"
+          aria-label="Search icons"
+          value={q}
+          autoFocus
+          onFocus={() => setInSearch(true)}
+          onBlur={() => setInSearch(false)}
+          onChange={(e) => (setQ(e.target.value), setRover(null), setHovered(null), setSearched(true))}
+          onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              go(list.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]'));
+            } else if (e.key === 'Enter' && next) {
+              e.preventDefault();
+              onPick(next);
+            }
+          }}
+        />
+      </div>
+      {shown.length ? (
+        <div
+          ref={list}
+          className="insp-icon-list"
+          role="listbox"
+          aria-label={label}
+          onKeyDown={keys}
+          onScroll={measure}
+          // A wheel moves the list on purpose, so the icon then under the still pointer is pointed at.
+          onWheel={() => (pointer.current = '')}
+          onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setFocused(null)}
+        >
+          {query ? (
+            <div className={`insp-icon-grid${few ? ' few' : ''}`}>{shown.map(tile)}</div>
+          ) : (
+            ICON_GROUPS.map((g, i) => (
+              <div key={g.name} className="insp-icon-group" role="group" aria-labelledby={`${id}-g${i}`}>
+                <div className="insp-icon-group-name" id={`${id}-g${i}`}>
+                  {g.name}
+                </div>
+                <div className="insp-icon-grid">{g.icons.map(tile)}</div>
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="insp-icon-empty">
+          <p className="insp-icon-echo">No icons match “{query}”.</p>
+          <p className="faint">Try a word for what it shows, like phone, team or delivery.</p>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => {
+              setQ('');
+              setHovered(null);
+              search.current?.focus();
+            }}
+          >
+            Clear search
+          </button>
+        </div>
+      )}
+      {/* Names the icon pointed at, moved to, or that Enter would take; each tile already names itself to assistive tech. */}
+      <div className={`insp-icon-foot${edges.below && shown.length ? ' lifted' : ''}`} aria-hidden="true">
+        <IconGlyph name={named} size={16} />
+        <span className="grow ellipsis">{iconName(named)}</span>
+        {target && named !== target ? (
+          // Pointing at one icon while Enter would take another: the footer says which Enter takes.
+          <span className="insp-icon-note">Enter picks {iconName(target)}</span>
+        ) : named === value ? (
+          <span className="insp-icon-note">Current</span>
+        ) : next && named === next ? (
+          <span className="insp-icon-note">Enter to choose</span>
+        ) : null}
+      </div>
+      {/* Mounted with the popover, so each search's result, and what Enter would choose, is announced. */}
+      <span className="sr-only" role="status">
+        {query ? (shown.length ? `${count}. Enter chooses ${iconName(shown[0])}.` : `No icons match “${query}”.`) : searched ? `All ${ICON_ORDER.length} icons.` : ''}
+      </span>
+    </div>,
+    document.body
   );
 }
 

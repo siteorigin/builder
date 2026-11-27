@@ -346,17 +346,54 @@
   .insp-pick-order-thumb img, .list-editor-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
   .insp-pick-order-thumb svg { width: 14px; height: 14px; color: var(--text-3); }
   .insp-pick-open { align-self: flex-start; }
-  .insp-icon-picker { display: flex; flex-direction: column; gap: 6px; }
-  .insp-icon-btn { display: flex; align-items: center; gap: 8px; padding-right: 8px; text-align: left; background-image: none; cursor: pointer; }
-  .insp-icon-btn > svg:last-child { width: 14px; height: 14px; transition: transform 120ms; }
+  /* The icon field: the current icon on the field face, opening a popover over the Inspector so the form never moves.
+     The chosen icon takes the raised face (as the image picker's tiles do); blue is kept for keyboard focus. */
+  .insp-icon-picker { display: flex; flex-direction: column; }
+  /* A button always matches :read-only, so the field face is set here rather than receding like a read-only input. */
+  .insp-icon-btn { display: flex; align-items: center; gap: 8px; padding: 0 8px 0 3px; background: var(--raised); color: var(--text); text-align: left; user-select: none; }
+  .insp-icon-swatch { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: var(--r-xs); background: var(--panel-2); color: var(--text); }
+  .insp-icon-btn > svg:last-child { flex: none; width: 14px; height: 14px; transition: transform 120ms; }
+  .insp-icon-btn[aria-expanded='true'] { border-color: var(--text-3); }
   .insp-icon-btn[aria-expanded='true'] > svg:last-child { transform: rotate(180deg); }
-  .insp-icon-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; max-height: 220px; overflow: auto; padding: 2px; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
-  .insp-icon-tile { display: grid; place-items: center; aspect-ratio: 1; border: 0; border-radius: var(--r-sm); background: none; color: var(--text); cursor: pointer; }
-  .insp-icon-tile:hover { background: var(--hover); }
-  /* The chosen icon is a tinted tile; keyboard focus is a ring inside the tile, so the two never touch or blur together. */
-  .insp-icon-tile.current { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent); }
+  .insp-icon-pop { position: fixed; z-index: 1000; display: flex; flex-direction: column; overflow: hidden; max-width: calc(100vw - 16px); border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out; outline: none; }
+  /* Every line of content starts on one edge, 17px in: search text, group names, glyphs and the footer's name. */
+  .insp-icon-head { flex: none; position: relative; z-index: 1; padding: 8px 8px 4px; transition: box-shadow 120ms; }
+  /* More icons past an edge: the fixed part beside it takes a hairline and a soft lift (as in the Share popover), so the
+     list reads as one that scrolls without dimming any icon in it. */
+  .insp-icon-head.lifted { box-shadow: 0 1px 0 var(--border), 0 6px 8px -6px color-mix(in srgb, var(--text) 22%, transparent); }
+  /* A fixed height, so the popover keeps its size and place while a search narrows it. */
+  .insp-icon-list { position: relative; flex: 0 1 auto; height: 288px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 4px 8px 8px; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  .insp-icon-list > .insp-icon-grid { padding-top: 6px; }
+  .insp-icon-group-name { padding: 10px 9px 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .insp-icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 2px; }
+  .insp-icon-tile { position: relative; display: grid; place-items: center; aspect-ratio: 1; min-width: 0; padding: 0; border: 0; border-radius: var(--r-sm); background: none; color: var(--text); cursor: pointer; scroll-margin: 8px 0; }
+  /* Pointed at, or what Enter in the search takes: one fill, drawn from the picker's own state so a key press moves it. */
+  .insp-icon-tile.pointed { background: var(--hover); }
+  .insp-icon-tile.current { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+  .insp-icon-tile.current.pointed { background: var(--hover); }
+  /* A search down to a few icons lists each with its name. */
+  .insp-icon-grid.few { grid-template-columns: minmax(0, 1fr); }
+  .insp-icon-grid.few .insp-icon-tile { display: flex; justify-content: flex-start; gap: 10px; aspect-ratio: auto; height: 36px; padding: 0 9px; font-size: 13px; text-align: left; }
   .insp-icon-tile:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-  .insp-icon-name { margin: 0; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text); }
+  /* Focused while current: the focus ring takes the edge and the current ring steps inside it. */
+  .insp-icon-tile.current:focus-visible { box-shadow: inset 0 0 0 3px var(--raised), inset 0 0 0 4px var(--border-control); }
+  .insp-icon-empty { flex: 0 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; height: 288px; min-height: 0; padding: 0 24px 8px; text-align: center; font-size: 13px; color: var(--text); }
+  .insp-icon-empty p { margin: 0; overflow-wrap: anywhere; }
+  /* A long pasted query is shown in two lines at most, so Clear search stays in view. */
+  .insp-icon-echo { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .insp-icon-empty p.faint { font-size: 12px; }
+  .insp-icon-empty .btn { margin-top: 6px; }
+  .insp-icon-foot { position: relative; z-index: 1; flex: none; display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px 0 19px; transition: box-shadow 120ms; border-top: 1px solid var(--border); font-size: 12px; color: var(--text); }
+  .insp-icon-foot.lifted { box-shadow: 0 -6px 8px -6px color-mix(in srgb, var(--text) 22%, transparent); }
+  .insp-icon-foot > svg { flex: none; color: var(--text-2); }
+  .insp-icon-note { flex: none; color: var(--text-3); }
+  @media (prefers-reduced-motion: reduce) {
+    .insp-icon-pop { animation: fade-in 80ms ease-out; }
+    .insp-icon-btn > svg:last-child, .insp-icon-head, .insp-icon-foot { transition: none; }
+  }
+  /* Forced colours drop the raised face and its ring: the chosen icon keeps a system-colour ring 4px in, clear of the
+     focus outline at its edge. */
+  @media (forced-colors: active) { .insp-icon-tile.current::after { content: ''; position: absolute; inset: 4px; border: 1px solid CanvasText; border-radius: var(--r-xs); pointer-events: none; } }
   .list-editor-body[hidden] { display: none; }
   .insp-count { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: var(--r-sm); background: var(--active); font-size: 11px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .insp-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 24px; text-align: center; color: var(--text-2); }
