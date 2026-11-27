@@ -654,6 +654,8 @@ export class Orchestrator {
   private names = new Map<string, string>();
   /** This opening of the project, replaced when another begins: a request admitted in an earlier one saves nothing. */
   private opening: object = {};
+  /** The project is closing (see close): no request may start, or it would run on past the close unstopped. */
+  private closing = false;
   /** Settles once the current run has ended: rolled back or committed, and the app told it is idle. */
   private runEnded: Promise<void> = Promise.resolve();
   conversation: Conversation | null = null;
@@ -961,15 +963,19 @@ export class Orchestrator {
    * conversations land (its turn's save among them), waiting at most `waitMs`, before forgetting this opening.
    */
   async close(waitMs = 5000) {
+    this.closing = true;
     this.stop();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<void>((r) => (timer = setTimeout(r, waitMs)));
     try {
-      await Promise.race([this.runEnded.then(() => this.saving), deadline]);
+      // A request that ended badly still ends: the close goes on.
+      const settled = this.runEnded.catch(() => undefined).then(() => this.saving);
+      await Promise.race([settled, deadline]);
     } finally {
       clearTimeout(timer);
+      this.closing = false;
+      this.reset();
     }
-    this.reset();
   }
 
   reset() {
@@ -1025,6 +1031,7 @@ export class Orchestrator {
   /** `conversationId` is the conversation the message was written in; it is sent only if that one is still open. */
   async send(text: string, context: ChatContext, conversationId?: string, recipient?: unknown): Promise<{ ok: boolean; runId?: string; message?: string }> {
     if (this.run) return { ok: false, message: 'The AI is already working on a request.' };
+    if (this.closing) return { ok: false, message: 'The project is closing.' };
     const clearing = { ok: false, message: 'The conversation history is being cleared. Send your message again in a moment.' };
     if (this.clearing) return clearing;
     const session = this.deps.session();

@@ -709,6 +709,8 @@ describe('a run saves the conversation it was sent in (#1122)', () => {
     const closing = env.orch.close().then(() => (closed = true));
     env.adapter.release();
     await until(() => !env.orch.busy, 'the request to stop');
+    // No request starts while the close waits: it would run on past it, unstopped.
+    expect(await env.orch.send('And a contact form', env.ctx, first)).toMatchObject({ ok: false, message: 'The project is closing.' });
     await new Promise((r) => setTimeout(r, 30));
     expect(closed).toBe(false);
     release();
@@ -716,6 +718,24 @@ describe('a run saves the conversation it was sent in (#1122)', () => {
     expect(env.stored(first).messages).toHaveLength(4);
     expect(env.stored(first).messages[3]).toMatchObject({ runId: r.runId, result: { status: 'cancelled' } });
     expect(env.orch.conversation).toBeNull();
+
+    // With no request running, the close still waits for a change to the stored conversations under way...
+    let release2 = hold(env.orch);
+    closed = false;
+    const again = env.orch.close().then(() => (closed = true));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(closed).toBe(false);
+    release2();
+    await again;
+    // ...but never past its deadline, and one that ended badly never keeps the project from closing.
+    await env.orch.openConversation(first);
+    release2 = hold(env.orch);
+    const failed = Promise.reject(new Error('rollback threw'));
+    failed.catch(() => undefined);
+    (env.orch as unknown as { runEnded: Promise<void> }).runEnded = failed;
+    await env.orch.close(20);
+    expect(env.orch.conversation).toBeNull();
+    release2();
   });
 
   it('a write the project’s close overtakes is never moved into place: a request’s save is dropped, a rename refused', async () => {
@@ -723,15 +743,19 @@ describe('a run saves the conversation it was sent in (#1122)', () => {
     const first = await env.ask('Write an About page');
     const before = readFileSync(env.file(first), 'utf8');
     const real = fsPromises.writeFile.bind(fsPromises) as (...a: unknown[]) => Promise<void>;
-    // The project closes while the next write of this conversation is being written beside its file.
+    const queue = env.orch as unknown as { saving: Promise<void> };
+    // The project closes while the next write of this conversation is being written beside its file, once its bytes
+    // are down and before it is moved into place. `overtaken` is the queue that write is in.
+    let overtaken: Promise<void> | null = null;
     const write = vi.spyOn(fsPromises, 'writeFile').mockImplementation(((path: unknown, ...rest: unknown[]) => {
-      if (String(path).includes(`${first}.json.`)) env.orch.reset();
-      return real(path, ...rest);
+      if (!String(path).includes(`${first}.json.`)) return real(path, ...rest);
+      overtaken = queue.saving;
+      return real(path, ...rest).then(() => env.orch.reset());
     }) as typeof fsPromises.writeFile);
     try {
       expect((await env.orch.send('And a footer', env.ctx, first)).ok).toBe(true);
-      await until(() => !env.orch.busy, 'the request to finish');
-      await (env.orch as unknown as { saving: Promise<void> }).saving;
+      await until(() => !env.orch.busy && overtaken !== null, 'the request to finish and its save to start');
+      await overtaken;
       expect(readFileSync(env.file(first), 'utf8')).toBe(before);
       expect(readdirSync(env.chatDir)).toEqual([`${first}.json`]);
 
