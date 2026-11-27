@@ -285,13 +285,13 @@
   .canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
   .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
   .canvas-card p { margin: 0; color: var(--text-2); text-wrap: balance; }
-  .preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: 99px; background: var(--ink); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), var(--shadow-lg); font-size: 13px; font-weight: 500; }
+  .preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: var(--r-md); background: var(--ink); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), var(--shadow-lg); font-size: 13px; font-weight: 500; }
   .preview-pill svg { width: 15px; height: 15px; }
-  .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: 99px; background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
+  .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: var(--r-sm); background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
   .preview-pill button:hover { background: var(--sky-1); }
   /* Forms in Preview: what a send does, the practice reply, and a confirmed real test. Above the other bottom bars,
      which the canvas stacks by the panel's measured height. Folds to its title line so the page gets its foot back. */
-  .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 8px; padding: 8px 6px 12px 14px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); container-type: inline-size; }
+  .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 8px; padding: 8px 6px 12px 14px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); container-type: inline-size; }
   /* On a short canvas the panel scrolls inside itself rather than running off the top. */
   .form-practice { overflow-y: auto; }
   .form-practice[data-folded] { padding-bottom: 8px; }
@@ -359,40 +359,66 @@
   .preview-pill .pill-step + .pill-step { margin-left: -8px; }
   .preview-pill .pill-step:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.16); }
   .preview-pill .pill-step[aria-disabled='true'] { color: rgb(255 255 255 / 0.38); background: transparent; cursor: default; }
-  .preview-pill .pill-step:focus-visible { outline-color: #fff; outline-offset: -2px; }
   /* The address has a slot of its own, so Back to editing stays put from page to page. */
-  .preview-pill .pill-address { flex: 0 1 236px; width: 236px; min-width: 56px; padding: 3px 9px; border-radius: 99px; background: rgb(255 255 255 / 0.1); overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; color: var(--sky-1); user-select: text; }
+  .preview-pill .pill-address { flex: 0 1 236px; width: 236px; min-width: 56px; padding: 3px 9px; border-radius: var(--r-sm); background: rgb(255 255 255 / 0.1); overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; color: var(--sky-1); user-select: text; }
   .preview-pill .pill-address:empty { background: transparent; }
-  .preview-pill .pill-address:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
   .pill-address-full { display: none; position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px); padding: 6px 10px; border-radius: 8px; background: var(--ink); color: #fff; box-shadow: var(--shadow-md); font-family: var(--mono); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
   .pill-address:focus-visible + .pill-address-full { display: block; }
   /* Above the bars stacked over the pill while the full address is showing. */
   .preview-pill:has(.pill-address:focus-visible) { z-index: 7; }
-  .ai-veil { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: 10px; padding: 6px 6px 6px 14px; border-radius: 99px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; }
-  .ai-veil .spark { color: var(--accent-text); }
+  /* Canvas notices: the cards that float at the foot of the canvas, over the page (the AI at work, a page problem; the
+     Form practice panel takes the same surface and edge). One surface in the app's own theme, a --r-md card with a
+     complete --border-strong edge and a lift, so it keeps its edge over a website of any colour and over the dark
+     pasteboard; 13px words; a 16px icon slot on the first line; one trailing group of small actions. A notice hugs its
+     words up to a 560px column, never more than the canvas less 12px each side; it is one line (36px) where it fits, and
+     where it does not the words wrap, breaking between the lead and what follows, while the icon and actions keep to the
+     first line. A tone colours the edge and face: neutral for status, the accent where it waits on you, red for a
+     problem. At most one action is filled, and only the one answer it expects; the rest are quiet (ghost). Stacked
+     bottom-up from the canvas floor: the Previewing bar, the AI, a page problem, Form practice. */
+  .canvas-notice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: min(560px, calc(100% - 24px)); display: flex; align-items: flex-start; gap: 8px; min-height: 36px; padding: 4px 4px 4px 10px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); font-size: 13px; line-height: 20px; color: var(--text); }
+  .canvas-notice:not(:has(.canvas-notice-actions)) { padding-right: 12px; }
+  .canvas-notice-icon { flex: none; display: grid; place-items: center; width: 16px; height: 26px; color: var(--accent-text); }
+  .canvas-notice-icon svg { width: 16px; height: 16px; }
+  .canvas-notice-text { flex: 1 1 auto; min-width: 0; padding-block: 3px; text-wrap: pretty; }
+  .canvas-notice-text strong { font-weight: 600; }
+  /* What the lead leaves you free to do: quieter, and whole, so a wrap breaks between the two. */
+  .canvas-notice-more { color: var(--text-2); white-space: nowrap; }
+  .canvas-notice-actions { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
+  .canvas-notice-actions .btn { flex: none; }
+  .canvas-notice-actions .btn svg { width: 15px; height: 15px; }
+  /* Stop's square, at the size the chat's run strip draws it. */
+  .canvas-notice.ai-run .btn svg { width: 10px; height: 10px; }
+  /* Waiting on you: the accent's edge and a breath of its face, the problem's recipe in blue. */
+  .canvas-notice.attention { background: color-mix(in srgb, var(--accent) 6%, var(--raised)); border-color: color-mix(in srgb, var(--accent) 75%, var(--border-control)); }
+  /* Its filled answer stands 2px clear of the accent edge all round, so the focus ring reads as a ring and not as a
+     thicker edge. The card is 40px then; its height is measured, so the bars above it move with it. */
+  .canvas-notice.attention { padding: 6px 6px 6px 10px; }
+  /* Once Stop has been pressed there is nothing left to stop the motion with, so the spinner settles after about five
+     seconds (7 turns of 700ms; WCAG 2.2.2) and the words say it is still stopping. */
+  .canvas-notice.stopping .spinner { animation-iteration-count: 7; }
 
-
-  /* A page problem: a card (--r-md, a 3:1 red edge) in both modes, the words first and the actions after them as one
-     group. Where both fit they share a row; on a narrow canvas the actions wrap below the words as a row of their own,
-     trailing, so the words never shrink to a column. Its height is measured (issueH), so whatever stands on it moves. */
-  .ai-veil.issue { width: min(760px, calc(100% - 24px)); flex-wrap: wrap; row-gap: 8px; padding: 7px 7px 7px 14px; border-radius: var(--r-md); background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); line-height: 1.4; }
-  .ai-veil.issue > .issue-text { flex: 1 1 210px; min-width: 0; text-wrap: balance; }
+  /* A page problem: the red tone, in a wider column (it can carry four actions), the words first and the actions after
+     them as one group. Where both fit they share a row; on a narrow canvas the actions wrap below the words as a row of
+     their own, trailing, so the words never shrink to a column. Its height is measured (issueH), so whatever stands on
+     it moves. */
+  .canvas-notice.issue { width: min(760px, calc(100% - 24px)); max-width: none; flex-wrap: wrap; row-gap: 4px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); }
+  .canvas-notice.issue > .issue-text { flex: 1 1 210px; text-wrap: balance; }
   /* The sentence stays whole: where the words take two lines, they break between it and the reassurance. */
-  .ai-veil.issue .issue-text strong { display: inline-block; }
-  .ai-veil.issue .issue-safe { white-space: nowrap; }
-  .ai-veil.issue > .spinner { flex: none; }
-  .ai-veil.issue > svg { flex: none; color: var(--red); }
-  .ai-veil.issue .issue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
+  .canvas-notice.issue .issue-text strong { display: inline-block; }
+  .canvas-notice.issue .issue-safe { white-space: nowrap; }
+  .canvas-notice.issue .canvas-notice-icon { color: var(--red); }
   /* Reloading is progress, not a fresh failure. */
-  .ai-veil.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
-  .ai-veil.issue .btn { flex: none; }
-  .ai-veil.issue .btn[aria-disabled='true'] { cursor: not-allowed; }
-  /* Focus on filled dark surfaces (selection chip, preview pill): a white ring that reads on the fill. */
+  .canvas-notice.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
+  .canvas-notice.issue.retrying .canvas-notice-icon { color: var(--accent-text); }
+  .canvas-notice.issue .btn[aria-disabled='true'] { cursor: not-allowed; }
   /* Shared header and footer: the canvas selection and selected layer turn green, matching the shared scope note. */
   .canvas.sel-shared, .insert-ghost.sel-shared { --select: #0b6b45; }
-  /* Round 5 polish */
-  /* Outside the filled exit button, in white, so the ring stands clear of both the fill and the pill. */
-  .preview-pill button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  /* The Previewing bar is an inverse surface, so it redefines --focus as the toasts do: the sky of the mark holds 3:1
+     on the ink. One 2px ring, 2px out, on every control on it. */
+  .preview-pill { --focus: var(--sky-2); }
+  .preview-pill :is(button, .pill-address):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  /* Back and Forward stand 2px apart, so their ring is drawn 2px in, clear of each other. */
+  .preview-pill .pill-step:focus-visible { outline-offset: -2px; }
   .frame-width-label.gone { visibility: hidden; }
 
 

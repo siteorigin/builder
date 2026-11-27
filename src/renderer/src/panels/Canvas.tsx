@@ -2,7 +2,7 @@ import './Canvas.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { previewPill } from '../lib/previewing';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, Ban, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Plus, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
+import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, Ban, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, CircleHelp, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Plus, Rows3, Sparkles, Square, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
@@ -487,9 +487,30 @@ export function Canvas() {
   const formsShown = mode === 'preview' && forms.length > 0;
   // A page problem can wrap, so the panel stands on its measured height rather than a fixed step.
   const issueShown = !!frameError && runtime.state === 'ready';
-  const issueBottom = 18 + (mode === 'preview' ? 46 : 0) + (runStatus ? 46 : 0);
+  // The AI's notice stands on the canvas floor, or above the Previewing bar. It is one line (36px) where it fits, and its
+  // height is measured, so a notice that wraps on a narrow canvas lifts a page problem above it rather than meeting it.
+  const runBottom = 18 + (mode === 'preview' ? 46 : 0);
+  const runRef = useRef<HTMLDivElement>(null);
+  const [runH, setRunH] = useState(0);
+  useLayoutEffect(() => {
+    const el = runRef.current;
+    if (!el) return;
+    setRunH(el.offsetHeight);
+    const ro = new ResizeObserver(() => setRunH(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [!!runStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+  const runStep = runStatus ? (runH || 36) + 10 : 0;
+  const issueBottom = runBottom + runStep;
   const issueRef = useRef<HTMLDivElement>(null);
   const exitRef = useRef<HTMLButtonElement>(null);
+  // Stop leaves the notice once the AI is stopping, and the notice leaves when the run ends: focus that was on it moves
+  // to a control that stays. Read while rendering, because the button has gone by the time an effect runs.
+  const focusInRun = useRef(false);
+  focusInRun.current = !!runRef.current?.contains(document.activeElement);
+  useLayoutEffect(() => {
+    if (focusInRun.current && !runRef.current?.contains(document.activeElement)) (getState().mode === 'preview' ? exitRef.current : canvasRef.current)?.focus({ preventScroll: true });
+  }, [runStatus]);
   const [issueH, setIssueH] = useState(0);
   useLayoutEffect(() => {
     const el = issueRef.current;
@@ -506,7 +527,7 @@ export function Canvas() {
   useLayoutEffect(() => {
     if (!issueShown && focusInIssue.current) (getState().mode === 'preview' ? exitRef.current : canvasRef.current)?.focus({ preventScroll: true });
   }, [issueShown]);
-  const practiceBottom = issueShown ? issueBottom + (issueH || 40) + 10 : 18 + 46 + (runStatus ? 46 : 0);
+  const practiceBottom = issueShown ? issueBottom + (issueH || 40) + 10 : 18 + 46 + runStep;
   // The panel and the page share the height above the bars: past this the panel scrolls, so it never covers the page.
   const practiceMax = Math.max(120, size.h - practiceBottom - 50 - 160 * zoom);
   // While a restarted page loads, the pill keeps naming the page it is on.
@@ -534,10 +555,12 @@ export function Canvas() {
   const practiceRoom = formsShown && practiceH ? Math.max(0, practiceBottom + practiceH + 8 - 28) : 0;
   // While editing, a page problem sits below the page rather than over its foot (a card, a form's Send button).
   const issueRoom = issueShown && mode === 'edit' && !formsShown ? Math.max(0, issueBottom + (issueH || 40) + 8 - 28) : 0;
+  // And the AI's notice, while editing, sits below the page too, so it never covers the page's foot as it works.
+  const runRoom = runStatus && mode === 'edit' && !issueShown ? runBottom + (runH || 36) + 8 - 28 : 0;
   // A collection's layout being edited has its band (TemplateStrip) over the pasteboard, which starts below it.
   const layoutBand = !!templateMode && mode === 'edit';
   // The frame's whole footprint (20px top padding + 14px label margin + 28px bottom padding) fits at Fit, so the pasteboard never needs its own scrollbar.
-  const frameH = Math.max(formsShown ? 160 : 300, (size.h - 70 - practiceRoom - issueRoom) / zoom);
+  const frameH = Math.max(formsShown ? 160 : 300, (size.h - 70 - practiceRoom - issueRoom - runRoom) / zoom);
   // Said once on opening a collection's layout and once on leaving it, as editing a component everywhere is; stepping
   // through its entries says nothing.
   const layoutKey = layoutBand && state && templateMode && Object.hasOwn(state.collections, templateMode.collectionId) ? `${layoutTitle(state, templateMode)}\n${layoutScope(state, templateMode)}` : null;
@@ -3225,16 +3248,16 @@ export function Canvas() {
       {issueShown && (
         // Bottom bars stack: preview pill, then the AI run, then a page problem, each one step up. It comes right after
         // the pill in the tab order, ahead of the form panel and the page, so recovery is close at hand.
-        <div ref={issueRef} className={`ai-veil issue${retrying ? ' retrying' : ''}`} style={{ bottom: issueBottom }} role="group" aria-label="Page problem">
-          {retrying ? <Spinner decorative /> : <TriangleAlert size={15} aria-hidden="true" />}
-          <span className="issue-text">
+        <div ref={issueRef} className={`canvas-notice issue${retrying ? ' retrying' : ''}`} style={{ bottom: issueBottom }} role="group" aria-label="Page problem">
+          <span className="canvas-notice-icon">{retrying ? <Spinner decorative /> : <TriangleAlert aria-hidden="true" />}</span>
+          <span className="canvas-notice-text issue-text">
             <strong>{retrying ? 'Reloading the page…' : issueText}</strong> <span className="issue-safe">Your work is safe.</span>
           </span>
           {/* Help first, then the way back, with the one filled button last. Try again is the primary because it keeps
               the work as it is; Revert, when there is a change to put down to, undoes it. The group wraps below the
               words as one row when the canvas is narrow. Not natively disabled, so focus stays here while the page
               reloads. */}
-          <div className="issue-actions">
+          <div className="canvas-notice-actions">
             <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'health' } })}>
               Project health
             </button>
@@ -3285,29 +3308,51 @@ export function Canvas() {
         />
       )}
       {runStatus && (
-        <div className="ai-veil" role="status" style={{ bottom: mode === 'preview' ? 64 : 18 }}>
-          <Sparkles size={15} className="spark" />{' '}
-          {runStatus === 'awaiting-input' ? (
-            <>
-              The AI has a question for you.{' '}
-              <button className="link-btn" onClick={() => setState({ dockOpen: true, rightTab: 'chat' })}>
-                Answer it
-              </button>
-            </>
-          ) : (
-            reading ? (
-              runStatus === 'stopping' ? 'Stopping the question.' : 'The AI is reading the site to answer your question. You can keep editing.'
-            ) : runPhase(runStatus) === 'checking' ? (
-              'The AI is checking its changes. You can look around while it works.'
+        // What the AI is doing, as a status card of the canvas notices: the spinner while it works, its phase first, and
+        // what that leaves you free to do after it. No live region of its own: the chat (from outside the dock) and the
+        // toolbar's save state already say each phase, wherever focus is. It never takes focus; Stop (which undoes an
+        // edit's changes, so it says so) and Answer are in the tab order, and Stop leaves once the AI is stopping, since
+        // there is nothing left to press.
+        <div ref={runRef} className={`canvas-notice ai-run${runStatus === 'awaiting-input' ? ' attention' : runStatus === 'stopping' ? ' stopping' : ''}`} style={{ bottom: runBottom }} role="group" aria-label="AI at work">
+          <span className="canvas-notice-icon">{runStatus === 'awaiting-input' ? <CircleHelp aria-hidden="true" /> : <Spinner key={runStatus === 'stopping' ? 'stopping' : 'working'} decorative />}</span>
+          <span className="canvas-notice-text">
+            {runStatus === 'awaiting-input' ? (
+              <strong>The AI has a question for you.</strong>
+            ) : reading ? (
+              runStatus === 'stopping' ? (
+                <strong>Stopping the question.</strong>
+              ) : (
+                <>
+                  <strong>The AI is reading the site to answer your question.</strong> <span className="canvas-notice-more">You can keep editing.</span>
+                </>
+              )
             ) : runPhase(runStatus) === 'stopping' ? (
-              'Stopping the AI and undoing its changes.'
+              <strong>Stopping the AI and undoing its changes.</strong>
             ) : (
-              'The AI is editing this site. You can look around while it works.'
-            )
+              <>
+                <strong>{runPhase(runStatus) === 'checking' ? 'The AI is checking its changes.' : 'The AI is editing this site.'}</strong> <span className="canvas-notice-more">You can look around.</span>
+              </>
+            )}
+          </span>
+          {runStatus !== 'stopping' && (
+            <span className="canvas-notice-actions">
+              <button className="btn btn-sm btn-ghost" title={reading ? 'Stop this question' : 'Stop this request and undo its changes'} onClick={() => void api.ai.stop()}>
+                <Square fill="currentColor" aria-hidden="true" /> {reading ? 'Stop' : 'Stop and undo'}
+              </button>
+              {runStatus === 'awaiting-input' && (
+                <button
+                  className="btn btn-sm btn-primary"
+                  onClick={() => {
+                    // To the answer box itself, as Write with AI does: the chat takes the request once it shows.
+                    const { snapshot: snap, pageId: page } = getState();
+                    setState({ dockOpen: true, rightTab: 'chat', ...(snap && page ? { chatFocus: { workspaceKey: snap.workspaceKey, pageId: page, at: Date.now() } } : {}) });
+                  }}
+                >
+                  Answer in chat
+                </button>
+              )}
+            </span>
           )}
-          <button className="btn btn-sm" onClick={() => void api.ai.stop()}>
-            Stop
-          </button>
         </div>
       )}
       {/* Over the pasteboard, never scrolled away, at every zoom and through every drag, and while the preview is not

@@ -344,8 +344,8 @@ await frame.locator('html').evaluate(() => {
     throw new Error('Capture: this section failed to render');
   });
 });
-await win.locator('.ai-veil.issue').waitFor({ timeout: 8000 });
-await shot('page-problem', '.ai-veil.issue', { themes: LIGHT });
+await win.locator('.canvas-notice.issue').waitFor({ timeout: 8000 });
+await shot('page-problem', '.canvas-notice.issue', { themes: LIGHT });
 
 // ---- The preview's own states, pushed through the app's runtime status broadcast ----
 const status = (s) => app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].webContents.send('runtime:status', s), s);

@@ -62,7 +62,7 @@ await app.context().addInitScript(() => {
 
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 const panel = win.locator('.form-practice');
-const issue = win.locator('.ai-veil.issue');
+const issue = win.locator('.canvas-notice.issue');
 
 async function page() {
   const handle = await win.locator('.frame-box iframe').elementHandle();
