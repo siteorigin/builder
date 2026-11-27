@@ -32,7 +32,7 @@ class FakeRuntime extends EventEmitter {
 }
 
 /** While `held` is set, the copies an import makes once its pictures have landed (#979) wait for it to settle. */
-const later = vi.hoisted(() => ({ held: null as Promise<void> | null, asked: 0, requests: [] as Array<{ kind: string; bytes: number; weighed?: boolean }>, failLibrary: false, copyHeld: null as Promise<void> | null }));
+const later = vi.hoisted(() => ({ held: null as Promise<void> | null, asked: 0, requests: [] as Array<{ kind: string; bytes: number; weighed?: boolean }>, failLibrary: false, copyHeld: null as Promise<void> | null, releaseCopy: null as (() => void) | null }));
 
 /** The media worker, run in this process by the code the real worker runs. */
 class InlineMediaWorker extends EventEmitter {
@@ -89,6 +89,9 @@ beforeEach(() => {
   env.userData = temp('userdata');
 });
 afterEach(async () => {
+  // A copy held back by a test that did not finish is let go, so no later test waits behind it.
+  later.releaseCopy?.();
+  later.copyHeld = later.releaseCopy = null;
   for (const c of controllers.splice(0)) await c.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
@@ -671,23 +674,19 @@ describe('making a web-sized copy of a large library image', () => {
     const payload = Buffer.concat([Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'latin1'), xmp]);
     const segment = Buffer.concat([Buffer.from([0xff, 0xe1, (payload.length + 2) >> 8, (payload.length + 2) & 0xff]), payload]);
     const placed = Buffer.concat([photo.subarray(0, 2), segment, photo.subarray(2)]);
-    let release!: () => void;
-    later.copyHeld = new Promise<void>((r) => (release = r));
-    try {
-      const plan = c.webCopyPlan(id);
-      expect(await c.photoMetadata(id)).toEqual(photoMetadata(photo));
-      writeFileSync(`${file}.new`, placed);
-      renameSync(`${file}.new`, file);
-      // Asked again while the first look still holds its copy back: about the file now there.
-      expect(await c.photoMetadata(id)).toMatchObject({ location: true });
-      release();
-      expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
-      // No longer the recorded picture: no copy is offered for it.
-      expect(await c.webCopyPlan(id)).toBeNull();
-    } finally {
-      release();
-      later.copyHeld = null;
-    }
+    later.copyHeld = new Promise<void>((r) => (later.releaseCopy = r));
+    const plan = c.webCopyPlan(id);
+    expect(await c.photoMetadata(id)).toEqual(photoMetadata(photo));
+    writeFileSync(`${file}.new`, placed);
+    renameSync(`${file}.new`, file);
+    // Asked again while the first look still holds its copy back: a look of its own, about the file now there (with one
+    // worker slot it waits for the first look's copy, so that is let go before its answer is awaited).
+    const again = c.photoMetadata(id);
+    later.releaseCopy!();
+    expect(await again).toMatchObject({ location: true });
+    expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
+    // No longer the recorded picture: no copy is offered for it.
+    expect(await c.webCopyPlan(id)).toBeNull();
   }, 60_000);
 
   it('says what a large photo records as soon as the worker has read it, before its copy is made (#1046)', async () => {
@@ -695,19 +694,13 @@ describe('making a web-sized copy of a large library image', () => {
     const id = (await c.importAssets([sourceFile('later.jpg', await noisy(3000, 2000, 'jpeg'))])).assetIds[0];
     await c.copiesMade();
     const file = join(dir, c.session!.state.assets.assets[id].file);
-    let release!: () => void;
-    later.copyHeld = new Promise<void>((r) => (release = r));
-    try {
-      let planned = false;
-      const plan = c.webCopyPlan(id).then((p) => ((planned = true), p));
-      expect(await c.photoMetadata(id)).toEqual(photoMetadata(readFileSync(file)));
-      expect(planned).toBe(false);
-      release();
-      expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
-    } finally {
-      release();
-      later.copyHeld = null;
-    }
+    later.copyHeld = new Promise<void>((r) => (later.releaseCopy = r));
+    let planned = false;
+    const plan = c.webCopyPlan(id).then((p) => ((planned = true), p));
+    expect(await c.photoMetadata(id)).toEqual(photoMetadata(readFileSync(file)));
+    expect(planned).toBe(false);
+    later.releaseCopy!();
+    expect(await plan).toEqual({ format: 'JPEG', width: 2560, height: 1707 });
   }, 60_000);
 
   it('never offers a lighter copy of its own web-sized copy, or of a photo a copy would hardly lighten', async () => {
