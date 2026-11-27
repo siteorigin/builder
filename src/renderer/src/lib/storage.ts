@@ -26,10 +26,11 @@ export interface TrimmedSide {
 export function describeTrim(plan: ReclaimPlan): { undo: TrimmedSide | null; redo: TrimmedSide | null } {
   const side = (labels: string[], verb: 'undone' | 'redone', kept: number, earlier: string): TrimmedSide | null => {
     if (!labels.length) return null;
+    const noun = verb === 'undone' ? 'Undo' : 'Redo';
     const n = labels.length;
     const rest = n - SHOWN_STEPS;
     return {
-      lead: `${n === 1 ? 'This step' : `These ${n} steps`} can no longer be ${verb}:`,
+      lead: n === 1 ? `The ${noun} step you’ll lose:` : `${noun} steps you’ll lose (${n}):`,
       steps: labels.slice(0, SHOWN_STEPS),
       more: rest > 0 ? `and ${plural(rest, `${earlier} step`, `${earlier} steps`)}` : null,
       after: verb === 'undone'

@@ -384,16 +384,16 @@ describe('the Free up space dialog wording', () => {
 
   it('names the newest lost undo steps first, counts the rest, and says what stays', () => {
     const t = describeTrim(plan(['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5', 'Step 6'], [], 2, 0));
-    expect(t.undo).toEqual({ lead: 'These 6 steps can no longer be undone:', steps: ['Step 6', 'Step 5', 'Step 4', 'Step 3'], more: 'and 2 earlier steps', after: 'Your 2 latest steps can still be undone.' });
+    expect(t.undo).toEqual({ lead: 'Undo steps you’ll lose (6):', steps: ['Step 6', 'Step 5', 'Step 4', 'Step 3'], more: 'and 2 earlier steps', after: 'Your 2 latest steps can still be undone.' });
     expect(t.redo).toBeNull();
     expect(describeTrim(plan(['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5'], [], 1, 0)).undo).toMatchObject({ more: 'and 1 earlier step', after: 'Your latest step can still be undone.' });
   });
 
   it('says when nothing is left to undo, and which redo steps stay, nearest first', () => {
     const t = describeTrim(plan(['Remove 6 unused images'], ['Import image', 'Rename site'], 0, 1));
-    expect(t.undo).toMatchObject({ lead: 'This step can no longer be undone:', steps: ['Remove 6 unused images'], more: null, after: 'Nothing will be left to undo.' });
-    expect(t.redo).toMatchObject({ lead: 'These 2 steps can no longer be redone:', steps: ['Import image', 'Rename site'], after: '1 step before them can still be redone.' });
-    expect(describeTrim(plan([], ['Import image'], 0, 2)).redo).toMatchObject({ lead: 'This step can no longer be redone:', after: '2 steps before it can still be redone.' });
+    expect(t.undo).toMatchObject({ lead: 'The Undo step you’ll lose:', steps: ['Remove 6 unused images'], more: null, after: 'Nothing will be left to undo.' });
+    expect(t.redo).toMatchObject({ lead: 'Redo steps you’ll lose (2):', steps: ['Import image', 'Rename site'], after: '1 step before them can still be redone.' });
+    expect(describeTrim(plan([], ['Import image'], 0, 2)).redo).toMatchObject({ lead: 'The Redo step you’ll lose:', after: '2 steps before it can still be redone.' });
   });
 
   it('formats sizes the way the panel shows them', () => {
