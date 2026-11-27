@@ -326,4 +326,45 @@
   .so-redirect .so-redirect-form { padding: 6px 0 0; }
   .so-redirect-kinds { display: flex; flex-direction: column; gap: 4px; }
   .so-redirect-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+  /* ---------- AI agents (AgentDiscovery.tsx) ---------- */
+  /* Plain names first; the file or standard each writes follows as secondary text. The index's summary and preview
+     sit under its switch, indented on a rule, because nothing else in the section uses them. */
+  .agents-intro { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .agents-tech { font-family: var(--mono); font-size: 11px; color: var(--text-2); white-space: nowrap; }
+  .agents-feature { display: flex; flex-direction: column; }
+  .agents-sub { display: flex; flex-direction: column; gap: 11px; margin: 10px 0 2px 1px; padding-left: 12px; border-left: 2px solid var(--border); }
+  .agents-copy { height: 22px; margin: -3px -6px -3px 0; padding: 0 6px; gap: 4px; font-weight: 500; color: var(--text-2); }
+  .agents-copy svg { width: 13px; height: 13px; }
+  .agents-file { display: flex; flex-direction: column; gap: 6px; }
+  .agents-file-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+  .agents-file-body:not([hidden]) { display: flex; flex-direction: column; gap: 6px; }
+  .agents-file-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; text-decoration: none; }
+  .agents-file-toggle svg { width: 12px; height: 12px; transition: transform 120ms; }
+  .agents-file-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .agents-file-toggle svg { transition: none; } }
+  /* A short file sized to its lines (the shared code view is a tall pane), its long lines wrapped. */
+  .code-view.agents-preview { height: auto; max-height: 280px; padding: 10px 12px; font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  /* ---------- Visitor text (VisitorText.tsx) ---------- */
+  /* Each wording is a row of its own: name (with its reset while changed), field, then what it is. Rows stand apart so
+     a note never reads as the next row's. */
+  .vt-find { display: flex; flex-direction: column; gap: 5px; }
+  .vt-tools { display: flex; align-items: center; gap: 8px; }
+  .vt-search.search { flex: 1; min-width: 0; margin: 0; }
+  .vt-group.ss-group { gap: 14px; }
+  .vt-group > .ss-group-label { padding-bottom: 0; }
+  .vt-label { display: flex; align-items: center; gap: 2px; min-height: 22px; }
+  .vt-label .reset-dot { margin: -2px 0; }
+  .vt-field .field-hint > span { display: block; margin-top: 3px; }
+  .vt-fills code { margin-left: 4px; font-family: var(--mono); font-size: 11px; color: var(--text-2); }
+  /* A single line that wraps: as tall as an input, growing with its text or its built-in wording, never dragged. */
+  .textarea.vt-input { min-height: 30px; padding: 5px 9px; line-height: 18px; resize: none; }
+  .vt-field .field-quiet > .textarea:focus:has(+ .field-count.quiet) { padding-right: 60px; }
+  .vt-field .field-quiet > .field-count.quiet { align-items: flex-start; padding-top: 6px; }
+  .vt-fallback-text { color: var(--text-2); overflow-wrap: anywhere; }
+  .vt-results { display: flex; flex-direction: column; gap: 11px; }
+  /* While filtering, the list keeps a screen's height, so the find box stays where it was as results shrink. */
+  .vt-results.filtering { min-height: 70vh; }
+  .vt-empty { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 4px 0; font-size: 12px; color: var(--text-2); }
 }
