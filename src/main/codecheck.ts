@@ -677,7 +677,7 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
   walkAst(ast.fragment, (n) => {
     const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' ? (((n.expression as Node).properties as Node[]) ?? []) : [];
     const keyOf = (k: Node | undefined) => (k?.type === 'Identifier' ? k.name : k?.type === 'Literal' ? k.value : null);
-    if (spread.some((p) => p.type === 'Property' && keyOf(p.key as Node) === 'data-so-part')) out.push({ severity: 'error', message: 'Write data-so-part as an attribute of its own (data-so-part="total"), not in a spread: the published site must not carry it.', node: n });
+    if (spread.some((p) => p.type === 'Property' && isCodeMarker(String(keyOf(p.key as Node))))) out.push({ severity: 'error', message: 'Write data-so-part as an attribute of its own (data-so-part="total"), not in a spread: the published site must not carry it.', node: n });
   });
   for (const { attr, host } of partMarkers(ast.fragment)) {
     const id = markerName(attr);

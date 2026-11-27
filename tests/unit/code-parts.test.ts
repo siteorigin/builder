@@ -176,6 +176,7 @@ describe('the code check holds code to its contract', () => {
     expect(await said(SOURCE.replace('<div class="extras">', '<div class={["extras", so_o?.note]}>'))).not.toContainEqual(expect.stringMatching(/“Note” part is not in the code/));
     expect(await errors(SOURCE.replace('data-so-part="total"', 'data-so-part=" total "'), c)).toEqual([expect.stringContaining('camelCase')]);
     expect(await errors(SOURCE.replace('<div class="extras">', `<div class="extras" {...{ "data-so-part": 'note' }}>`), c)).toEqual([expect.stringContaining('not in a spread')]);
+    expect(await errors(SOURCE.replace('<div class="extras">', `<div class="extras" {...{ "DATA-SO-PART": 'note' }}>`), c)).toEqual([expect.stringContaining('not in a spread')]);
     // A default so_o of its own is replaced by each placement's classes.
     expect((await checkSvelteSource(SOURCE.replace('so_o = undefined', "so_o = { total: 'amount' }"), { contract: c })).map((p) => p.message)).toContainEqual(expect.stringContaining('Give so_o no default of its own'));
     // Words that only mention a marker are not one.
@@ -303,10 +304,12 @@ describe('the website’s build carries no part marker', () => {
   it('keeps a byte order mark and the space between the attributes around a marker', async () => {
     expect(await withoutCodeMarkers('﻿<p data-so-part="total" class="x">a</p>\n')).toBe('﻿<p class="x">a</p>\n');
     expect(await withoutCodeMarkers('<p data-so-part="total"class="x">a</p>\n')).toBe('<p class="x">a</p>\n');
+    expect(await withoutCodeMarkers('<p class="x" DATA-SO-PART="total" id="y">a</p>\n')).toBe('<p class="x" id="y">a</p>\n');
   });
 
   it('finds a marker left in a built page or script, never words that only mention one', async () => {
     expect(carriesCodeMarker('<output class="amount" data-so-part="total">10</output>')).toBe(true);
+    expect(carriesCodeMarker('<output class="amount" DATA-SO-PART="total">10</output>')).toBe(true);
     expect(carriesCodeMarker('const t = $.from_html(`<div data-so-part="extras"><b></b></div>`);')).toBe(true);
     expect(carriesCodeMarker('<div title="Example data-so-part=total">x</div>')).toBe(false);
     expect(carriesCodeMarker('<p>Mark a part with data-so-part="total".</p>')).toBe(false);

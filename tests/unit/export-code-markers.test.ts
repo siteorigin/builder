@@ -46,6 +46,7 @@ const { applyOperations } = await import('@engine/apply');
 const { defFile, webMcpFormFile } = await import('@generator/index');
 const { editedGeneratedFile } = await import('../../src/main/export');
 const { componentDocPath } = await import('../../src/main/project/documents');
+const { sha } = await import('../../src/main/project/fsutil');
 const { removeRendered } = await import('./generated-site');
 
 const dirs: string[] = [];
@@ -118,6 +119,8 @@ describe('a theme code component’s editor markers', () => {
       if (webmcp) expect(readFileSync(join(out, files[1]), 'utf8')).toContain('toolname=');
       // The manifest lists the cleaned files as they are, so the copy reads as SiteOrigin Builder left it.
       expect(await editedGeneratedFile(out)).toBeNull();
+      const manifest = JSON.parse(readFileSync(join(out, 'siteorigin/generated-manifest.json'), 'utf8')) as { files: Record<string, string> };
+      for (const f of files) expect(manifest.files[f]).toBe(sha(readFileSync(join(out, f))));
       // The theme's canonical code keeps the marker, for the copy to write back when it is opened.
       expect(readFileSync(join(out, componentDocPath(form)), 'utf8')).toContain('data-so-part=\\"inner\\"');
       for (const f of files) expect(readFileSync(join(dir, f), 'utf8')).toContain(MARKER);
