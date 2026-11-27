@@ -44,7 +44,7 @@ import { ValidationCache } from '@engine/validation-cache';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, componentSources } from '../codecheck';
+import { checkSvelteSource, codeAxisPropProblems, codeContractNames, codeManifestProblems, componentSources, projectTokenVars } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
@@ -3261,6 +3261,7 @@ export class ProjectSession extends EventEmitter {
           await checkSvelteSource(def.source, {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
+            tokens: projectTokenVars(next),
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
             ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties } } : {}),
             // Its code takes what its properties hold, and nothing they do not.
