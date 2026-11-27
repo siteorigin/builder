@@ -254,16 +254,24 @@
   /* A text button's focus ring steps outside its resting rim, so focus is as plain a change as on the icon buttons. */
   .ov-chip .chip-text:focus-visible { outline-offset: 1px; background: rgb(16 24 40 / 0.42); }
   .ov-chip .chip-text kbd { margin-left: 2px; font: inherit; font-weight: 400; opacity: 0.8; }
-  /* While a section is dragged, the strip above the page names what is moving and how to back out. */
-  .ov-moving { position: absolute; top: -34px; left: 0; overflow: hidden; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 2px 6px -2px rgb(16 24 40 / 0.35); pointer-events: none; z-index: 1; }
-  .ov-moving svg { width: 14px; height: 14px; opacity: 0.85; }
-  .ov-moving svg { flex: none; }
+  /* What a drag shows (#52, #652): the strip above the page, the marks on it and what the pointer carries. Its colours
+     are fixed, like everything drawn on the user's page, and named here once: the refusal's red (white lettering holds
+     6.4:1 on it), the quiet slate of a picture with nowhere to go, the strip's white rim, and the shade that lifts the
+     strip and the ghost; the rim and the shade step back on the dark pasteboard. */
+  .canvas, .insert-ghost { --refuse: #b02e28; --refuse-soft: rgb(176 46 40 / 0.1); --drop-idle: #4a5670; --drag-rim: rgb(255 255 255 / 0.65); --drag-shade: rgb(16 24 40 / 0.35); }
+  :where(:root[data-appearance='dark']) { .canvas, .insert-ghost { --drag-rim: rgb(255 255 255 / 0.45); --drag-shade: rgb(0 0 0 / 0.5); } }
+  /* While something is dragged, the strip above the page names what is moving, where it would go, and how to back out.
+     Drawn, never faded: the hint is told apart by weight. */
+  .ov-moving { position: absolute; top: -34px; left: 0; overflow: hidden; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; box-shadow: 0 0 0 1px var(--drag-rim), 0 2px 6px -2px var(--drag-shade); pointer-events: none; z-index: 1; }
+  .ov-moving svg { flex: none; width: 14px; height: 14px; }
   .ov-moving .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .ov-moving .hint { flex: none; font-weight: 400; opacity: 0.88; }
-  .ov-moving .sep, .ov-chip.editing .sep { flex: none; margin: 0 -1px; font-weight: 400; opacity: 0.7; }
-  :where(:root[data-appearance='dark']) { .ov-moving { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.45), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
+  .ov-moving .hint, .ov-moving .sep { flex: none; font-weight: 400; }
+  .ov-moving .sep { margin: 0 -1px; }
+  .ov-chip.editing .sep { flex: none; margin: 0 -1px; font-weight: 400; opacity: 0.7; }
   /* While dragging a section or a frame edge, the pointer keeps the gesture's cursor wherever it goes. */
   .canvas.reordering, .canvas.reordering * { cursor: grabbing !important; }
+  /* A drag takes focus so Escape reaches it; its ring would be one more blue mark over the marks the drag draws. */
+  .canvas:is(.reordering, .placing):focus-visible { box-shadow: none; }
   .canvas.resizing, .canvas.resizing * { cursor: ew-resize !important; }
   /* A page the editor has not confirmed (one leaving, or one that never arrived) takes no picks and, if the wait is
      noticeable, steps back; the wait cursor shows only while something is actually on its way. */
@@ -391,34 +399,49 @@
   .ai-veil.issue .btn[aria-disabled='true'] { cursor: not-allowed; }
   /* Focus on filled dark surfaces (selection chip, preview pill): a white ring that reads on the fill. */
   /* Shared header and footer: the canvas selection and selected layer turn green, matching the shared scope note. */
-  .canvas.sel-shared { --select: #0b6b45; }
+  .canvas.sel-shared, .insert-ghost.sel-shared { --select: #0b6b45; }
   /* Round 5 polish */
   /* Outside the filled exit button, in white, so the ring stands clear of both the fill and the pill. */
   .preview-pill button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
   .frame-width-label.gone { visibility: hidden; }
 
 
-  /* A tile dragged from Insert onto the page (#52): the container it goes into, outlined, and what it carries beside the pointer. */
-  .ov-drop-target { outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 6%, transparent); }
-  /* Refusals sit on the user's page, so their red is the same in both themes and always holds white lettering. */
-  .ov-drop-target.refused, .ov-drop-reason, .ov-moving.ov-placing.refused, .insert-ghost.refused { --red: #b02e28; --red-soft: rgb(176 46 40 / 0.09); }
-  .ov-drop-target.refused { outline-color: var(--red); background: var(--red-soft); }
-  /* Why the place under the pointer can't take it, on the place itself (#652). */
-  .ov-drop-reason { position: absolute; left: 4px; bottom: 4px; width: max-content; max-width: max(calc(100% - 8px), 220px); padding: 3px 6px; border-radius: var(--r-xs); background: var(--red); color: #fff; font-size: 11px; font-weight: 600; line-height: 1.3; }
-  /* Each empty slot a dragged tile can go into, while the drag runs (#652): drawn over the page at the size a drop finds
-     it, so a collapsed or narrow column is still a place to drop. */
-  .ov-slot-surface { display: flex; align-items: flex-start; justify-content: center; padding-top: 6px; outline: 2px dashed color-mix(in srgb, var(--select) 70%, transparent); outline-offset: -3px; background: color-mix(in srgb, var(--select) 10%, transparent); }
-  .ov-slot-surface span { max-width: calc(100% - 8px); padding: 1px 6px; border-radius: var(--r-xs); overflow: hidden; background: var(--select); color: #fff; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-  .ov-moving.ov-placing.refused { background: var(--red); }
-  /* The image a drop from Assets would change: filled in, so it stands out from the outlines around it. */
-  .ov-image-drop { outline: 3px solid var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 22%, transparent); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.7) inset; }
-  /* Over the page with nothing there to take the image: the strip says so, quieter. */
-  .ov-moving.ov-placing.idle { background: #4a5670; }
-  .insert-ghost { position: fixed; z-index: 1000; display: inline-flex; align-items: center; gap: 6px; max-width: 240px; height: 26px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 4px 10px -2px rgb(16 24 40 / 0.35); }
+  /* The marks on the page while something is dragged onto it. One grammar, the selection's: --select between an ink
+     keyline outside and a white one inside, all of it inside the box, so each holds 3:1 on any page (one in the
+     selection's own blue included) and a full-width box keeps its ink edge where the page clips it. Solid is where a
+     release lands; dashed is a place it could go, or one that refuses it. A line between things is .ov-drop, below. */
+  /* Where it lands, inside something: the container or empty slot it goes into, one step heavier than the selection
+     and on a tint, so "in here" reads apart from "selected". The image a picture would fill takes the same, on a deeper
+     tint, since it replaces what is there. */
+  .ov-drop-target, .ov-image-drop { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px var(--select), inset 0 0 0 5px #fff; background: color-mix(in srgb, var(--select) 8%, transparent); }
+  .ov-image-drop { background: color-mix(in srgb, var(--select) 18%, transparent); }
+  /* Each empty slot it could go into, while the drag runs (#652): drawn over the page at the size a drop finds it, so a
+     collapsed or narrow column is still a place to drop, with its name on the on-page label's face (white, outlined).
+     The one under the pointer gets the solid mark above and its name filled. */
+  .ov-slot-surface { display: flex; align-items: flex-start; justify-content: center; padding-top: 8px; box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 4%, transparent); }
+  .ov-slot-surface span { max-width: calc(100% - 16px); height: 20px; padding: 0 7px; border-radius: var(--r-xs); overflow: hidden; background: #fff; color: var(--select); box-shadow: inset 0 0 0 1px var(--select), 0 1px 3px rgb(16 24 40 / 0.18); font-size: 12px; font-weight: 600; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+  .ov-slot-surface.aimed span { background: var(--select); color: #fff; box-shadow: 0 0 0 1px #fff, 0 1px 3px rgb(16 24 40 / 0.25); }
+  /* A place that refuses it: dashed in the refusal red, since nothing will land there, with the reason hung from it. */
+  .ov-drop-target.refused { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--refuse); outline-offset: -3px; background: var(--refuse-soft); }
+  /* Why it refuses (#652), led by the refusal's mark, on a tag from the place's edge (placed and sized by reasonAt):
+     above it, so what the pointer carries never covers it, else below it, else just inside its top; it wraps rather
+     than leave the page. */
+  .ov-drop-reason { position: absolute; z-index: 1; display: flex; align-items: flex-start; gap: 5px; width: max-content; padding: 3px 8px 3px 6px; border-radius: var(--r-xs); background: var(--refuse); color: #fff; font-size: 12px; font-weight: 600; line-height: 16px; box-shadow: 0 0 0 1px #fff, 0 1px 3px rgb(16 24 40 / 0.25); pointer-events: none; }
+  .ov-drop-reason.above { transform: translateY(calc(-100% - 5px)); }
+  .ov-drop-reason svg { flex: none; width: 13px; height: 13px; margin-top: 1.5px; }
+  .ov-drop-reason span { min-width: 0; overflow-wrap: anywhere; }
+  /* Refused, the strip and the ghost turn the refusal's red, and their glyph becomes the refusal's mark. */
+  .ov-moving.refused, .insert-ghost.refused { background: var(--refuse); }
+  /* Over the page with nothing there to take the picture: the strip says so, on a quiet slate. */
+  .ov-moving.ov-placing.idle { background: var(--drop-idle); }
+  /* What a drag carries, beside the pointer anywhere in the window: above every panel, menu and notice (nothing opens
+     mid-drag), keylined white then ink like the marks on the page so it holds on any page or panel, and lifted. */
+  .insert-ghost { position: fixed; z-index: 1200; display: inline-flex; align-items: center; gap: 6px; max-width: 240px; height: 26px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828, 0 4px 10px -2px var(--drag-shade); }
   .insert-ghost span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .insert-ghost svg { flex: none; width: 14px; height: 14px; }
-  .insert-ghost.refused { background: var(--red); }
+  /* The pointer keeps the gesture's closed hand wherever it goes, and over a place that refuses the drop says so. */
   html.insert-dragging, html.insert-dragging * { cursor: grabbing !important; user-select: none; }
+  html.insert-dragging.drop-refused, html.insert-dragging.drop-refused * { cursor: no-drop !important; }
   /* A collection's layout being edited: whose layout, the entry it is shown on, and Done, in the strip above the page. */
   .frame-status.template-strip { gap: 6px; color: var(--text); overflow: visible; }
   .frame-status.template-strip svg { flex: none; width: 14px; height: 14px; color: var(--accent-text); }

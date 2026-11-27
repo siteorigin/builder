@@ -422,6 +422,8 @@ describe('an Assets image dropped between content (#506)', () => {
       const aim = dest.aim(lists, x, y, 1)!;
       expect(aim).toMatchObject({ at: null, line: null, where: null });
       expect(aim.refused).toMatch(/takes text, not an image/);
+      // In the words a person reads: not the engine's name for which of the drop's operations failed.
+      expect(aim.refused).not.toMatch(/^Operation \d/);
     }
     // Each place is checked for itself: the column, which no slot holds, still takes it, before and after a refused one.
     const fresh = insertDestination(p.state, p.owner, 'element', 0, (at: InsertAt) => imageInsertOps(at, photo.id, 'n_portrait'));
