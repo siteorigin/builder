@@ -455,12 +455,13 @@ export class VersionStore {
   }
 
   /**
-   * A listed version that holds exactly what `v` does, newest first, if there is one (and, with `name`, only one the app
-   * saved by that name, never the author's namesake): in the store `v` was saved to, and with Git snapshots on, of the whole site, its tree the same and its commit
-   * still there to read. Then it stands for `v`, which need not be listed beside it.
+   * A listed version that holds exactly what `v` does, newest first (or with `oldest`, oldest first: a restore's way
+   * back), if there is one (and, with `name`, only one the app saved by that name, never the author's namesake): in the
+   * store `v` was saved to, and with Git snapshots on, of the whole site, its tree the same and its commit still there to
+   * read. Then it stands for `v`, which need not be listed beside it.
    */
-  async sameAs(v: SavedVersion, name?: string): Promise<SavedVersion | undefined> {
-    for (const x of [...this.versions].reverse()) {
+  async sameAs(v: SavedVersion, name?: string, oldest = false): Promise<SavedVersion | undefined> {
+    for (const x of oldest ? this.versions : [...this.versions].reverse()) {
       if ((name !== undefined && (x.name !== name || !x.auto)) || !sameContents(x, v) || (v.git ? x.git?.tree !== v.git.tree : !!x.git)) continue;
       if (v.git && !(await this.holdsTree(x, v.git.tree))) continue;
       return x;

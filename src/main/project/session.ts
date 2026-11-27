@@ -4680,7 +4680,7 @@ export class ProjectSession extends EventEmitter {
         inGit = !!now.git;
         // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
         // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
-        const kept = await this.versions.sameAs(now);
+        const kept = await this.versions.sameAs(now, undefined, true);
         if (kept) backup = kept;
         else {
           if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
