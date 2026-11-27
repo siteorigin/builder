@@ -6,7 +6,7 @@ import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, stat
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
@@ -37,8 +37,11 @@ import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents'
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
-import { gitClient } from './git/process';
-import { GitError, type GitRepository } from './git/protocol';
+import { gitClient, remoteGitClient } from './git/process';
+import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, PUBLISH_BRANCH, type GitRepository, type Oid } from './git/protocol';
+import { opaqueOk, readRemoteState, receiptOk, RemoteStateError, writeRemoteState, type DeploymentStatus, type PushPublicationResult, type RemoteFailure, type RemoteResult, type RemoteState } from './remote/binding';
+import { createRemoteCredentialStore, REMOTE_CREDENTIALS_FILE, RemoteCredentialError, type CredentialOwner, type RemoteCredentialStore } from './remote/credentials';
+import { httpsGitTransport, type RemotePushTransport } from './remote/transport';
 import { SNAPSHOT_ROOT_FILES, snapshotPlace } from './project/snapshot-inventory';
 import { commitPublication, credentialProblem, projectPublication, publishedTree, treeOid, type PreparedPublication, type Projection, type PublicationStatus } from './publication';
 import { redactSecrets } from './sources/redact';
@@ -385,6 +388,25 @@ function publicationFailed(e: unknown): { ok: false; message: string; warnings: 
 
 /** Why a read-only project's notes are not changed. */
 const READ_ONLY_NOTES = 'This project is open read-only, so its notes can’t be changed.';
+
+/**
+ * What a push or a change to where the project is published says when it stops (#1157): the app's own words, which
+ * name no credential (`secrets` are taken out of them all the same), and for a divergence the commit the host has.
+ */
+/** `v` with its address escapes undone, or as it is when they are not valid. */
+function decodeURIComponentSafe(v: string): string {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+}
+
+function remoteFailed(e: unknown, secrets: readonly string[] = []): RemoteFailure {
+  if (e instanceof GitError) return { ok: false, code: e.code, message: redactSecrets(e.message, secrets), ...(e.actual !== undefined && (e.code === 'diverged' || e.code === 'conflict') ? { actual: e.actual } : {}) };
+  if (e instanceof RemoteCredentialError || e instanceof RemoteStateError) return { ok: false, code: 'failed', message: e.message };
+  return { ok: false, code: 'failed', message: 'The publication could not be pushed.' };
+}
 
 export class Controller {
   session: ProjectSession | null = null;
@@ -4066,7 +4088,7 @@ export class Controller {
   /** The user's secrets and keys, to search the publication for and to keep out of what it says, or why they cannot be read. */
   private async publicationSecrets(s: ProjectSession): Promise<{ values: string[] } | { failed: string }> {
     try {
-      return { values: [...(await sourceSecrets.values(s.state.manifest.projectId)), ...(await keyValues())] };
+      return { values: [...(await sourceSecrets.values(s.state.manifest.projectId)), ...(await keyValues()), ...(await this.remoteCredentials.values())] };
     } catch (e) {
       return { failed: `${(e as Error).message} The website could not be checked for your secrets, so it was not prepared.` };
     }
@@ -4101,18 +4123,23 @@ export class Controller {
       const problem = await credentialProblem(made.files, secrets.values);
       if (problem) return { ok: false, message: problem, warnings: [] };
       if (this.session !== s) return closed;
+      let prepared: Awaited<ReturnType<typeof commitPublication>>;
       try {
-        return { ok: true, ...(await commitPublication(repo, made.files, last)) };
+        prepared = await commitPublication(repo, made.files, last);
       } catch (e) {
         return told(publicationFailed(e));
       }
+      // What was just prepared is the website as it is.
+      await this.recordRemote(s, null, (st) => ({ ...st, content: { prepared: prepared.commit, changed: false, at: new Date().toISOString() } }));
+      return { ok: true, ...prepared };
     });
   }
 
   /**
    * Whether the open project's website differs from its last publication (#1154): its publication made again and
    * compared file by file, so an edit to what the website does not carry (the brief, a draft), or one undone, is no
-   * change, and a picture replaced on disk is one. Writes nothing, and makes no repository.
+   * change, and a picture replaced on disk is one. Writes nothing in the project's files and makes no repository; a
+   * project connected to a host keeps the answer with its remote state (#1157).
    */
   publicationStatus(): Promise<PublicationStatus> {
     const s = this.session;
@@ -4134,12 +4161,223 @@ export class Controller {
         return { ...made, message: redactSecrets(made.message, values), warnings: made.warnings.map((w) => redactSecrets(w, values)) };
       }
       // The last publication as it is now that the website has been read, so the answer is about the branch as it stands.
+      let status: { ok: true; prepared: Oid | null; changed: boolean };
       try {
         const last = await publishedTree(this.repository(s.dir));
-        return { ok: true, prepared: last?.commit ?? null, changed: last?.tree !== treeOid(made.files) };
+        status = { ok: true, prepared: last?.commit ?? null, changed: last?.tree !== treeOid(made.files) };
       } catch (e) {
         return publicationFailed(e);
       }
+      // A project published to a host keeps what was found, for whatever shows its state later (#1157).
+      await this.recordRemote(s, null, (st) => ({ ...st, content: { prepared: status.prepared, changed: status.changed, at: new Date().toISOString() } }));
+      return status;
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Pushing the publication to a host (#1157)
+  // -------------------------------------------------------------------------
+
+  /** How publications are pushed to hosts: HTTPS Git, through the push worker. Tests give one of their own. */
+  remoteTransport: RemotePushTransport = httpsGitTransport(remoteGitClient);
+
+  /** The credentials pushes sign in with: the user's own file in the app's data folder, never the project. */
+  remoteCredentials: RemoteCredentialStore = createRemoteCredentialStore(() => join(app.getPath('userData'), REMOTE_CREDENTIALS_FILE));
+
+  /** Who a credential for the open project is kept for: the project, its folder as it is now, and the repository address. */
+  private credentialOwner(s: ProjectSession, url: string): CredentialOwner {
+    return { projectId: s.state.manifest.projectId, dir: canonicalDir(s.dir), url };
+  }
+
+  /** Why where `s` is published to cannot be changed now (it is not the open project, or is open read-only), or null. */
+  private async remoteBlocked(s: ProjectSession | null): Promise<RemoteFailure | null> {
+    if (!s || this.session !== s || this.closing) return { ok: false, code: 'closed', message: 'No project open.' };
+    if (s.readOnly || !(await s.stillOwner())) return { ok: false, code: 'read-only', message: s.readOnly?.reason ?? READ_ONLY };
+    return null;
+  }
+
+  /**
+   * Change the remote state of `s` with `f`: only while it is the open project, writable and the app's, and only when
+   * it is connected through `binding` still (null: through any). Says whether it was written; a failure to write is
+   * no failure of what it records, which the next push or status finds again.
+   */
+  private async recordRemote(s: ProjectSession, binding: string | null, f: (state: RemoteState) => RemoteState): Promise<boolean> {
+    if (s.readOnly) return false;
+    let wrote = false;
+    try {
+      // Read and written while this app holds the project, so another that took it over meanwhile is never written over.
+      await this.writeFence(s)(async () => {
+        const state = await readRemoteState(s.dir);
+        if (!state || (binding !== null && state.binding.id !== binding)) return;
+        await writeRemoteState(s.dir, f(state));
+        wrote = true;
+      });
+    } catch {
+      return false;
+    }
+    return wrote;
+  }
+
+  /** Where the open project is published to and what is known of it, never a credential: null when it is not connected. */
+  remoteStatus(): Promise<RemoteResult> {
+    const s = this.session;
+    return this.onePublication(async () => {
+      if (!s || this.session !== s) return { ok: false, code: 'closed', message: 'No project open.' };
+      try {
+        return { ok: true, state: await readRemoteState(s.dir) };
+      } catch (e) {
+        return remoteFailed(e);
+      }
+    });
+  }
+
+  /**
+   * Connect the open project to a host: its repository at `url` (HTTPS, approved), signed in to with `username` and
+   * `token`, which are kept in the user's own credential file under a new binding, never in the project. A binding it
+   * had goes, with its credential and what was known of it. For the main process alone: no window ever sends a token.
+   */
+  bindRemote(opts: { url: string; username: string; token: string; site?: string | null }): Promise<RemoteResult> {
+    const s = this.session;
+    return this.onePublication(async (): Promise<RemoteResult> => {
+      const blocked = await this.remoteBlocked(s);
+      if (blocked || !s) return blocked!;
+      let url: string;
+      try {
+        url = approveEndpoint(opts.url);
+      } catch (e) {
+        return remoteFailed(e);
+      }
+      const site = opts.site ?? null;
+      if (site !== null && !opaqueOk(site)) return { ok: false, code: 'invalid', message: 'That is not a site name the app can keep.' };
+      // The project keeps the address and the site's name: neither may carry the token, as it is or as an address spells it.
+      const token = typeof opts.token === 'string' ? opts.token.trim() : '';
+      if (token.length >= MIN_REMOTE_TOKEN && [url, site ?? ''].some((v) => redactSecrets(v, [token]) !== v || decodeURIComponentSafe(v).includes(token)))
+        return { ok: false, code: 'invalid', message: 'The repository address or site name holds the token. Give the token on its own.' };
+      const state: RemoteState = { binding: { id: `rb_${randomBytes(12).toString('hex')}`, provider: 'https-git', url, site }, content: null, acknowledged: null, receipt: null };
+      const owner = this.credentialOwner(s, url);
+      try {
+        await this.remoteCredentials.set(state.binding.id, owner, { username: opts.username, token: opts.token });
+      } catch (e) {
+        return remoteFailed(e);
+      }
+      let old: RemoteState | null = null;
+      let failed = false;
+      const wrote = await this.writeFence(s)(async () => {
+        old = await readRemoteState(s.dir).catch(() => null);
+        await writeRemoteState(s.dir, state);
+      }).catch(() => ((failed = true), false));
+      if (!wrote) {
+        await this.remoteCredentials.forget(state.binding.id, owner).catch(() => undefined);
+        return failed ? { ok: false, code: 'failed', message: 'Where the project is published to could not be saved.' } : { ok: false, code: 'read-only', message: READ_ONLY };
+      }
+      const replaced = old as RemoteState | null;
+      if (replaced) await this.remoteCredentials.forget(replaced.binding.id, this.credentialOwner(s, replaced.binding.url)).catch(() => undefined);
+      return { ok: true, state };
+    });
+  }
+
+  /** Disconnect the open project from its host: its binding goes, and the credential kept for it. */
+  unbindRemote(): Promise<RemoteResult> {
+    const s = this.session;
+    return this.onePublication(async (): Promise<RemoteResult> => {
+      const blocked = await this.remoteBlocked(s);
+      if (blocked || !s) return blocked!;
+      let old: RemoteState | null = null;
+      let failed = false;
+      const wrote = await this.writeFence(s)(async () => {
+        old = await readRemoteState(s.dir).catch(() => null);
+        await writeRemoteState(s.dir, null);
+      }).catch(() => ((failed = true), false));
+      if (!wrote) return failed ? { ok: false, code: 'failed', message: 'Where the project is published to could not be forgotten.' } : { ok: false, code: 'read-only', message: READ_ONLY };
+      const removed = old as RemoteState | null;
+      // Only this project's, in this folder: a copy of it made outside the app leaves the original's credential alone.
+      if (removed) await this.remoteCredentials.forget(removed.binding.id, this.credentialOwner(s, removed.binding.url)).catch(() => undefined);
+      return { ok: true, state: null };
+    });
+  }
+
+  /**
+   * Push the open project's prepared publication to its host: `commit` (by default the publication last prepared),
+   * which must be the publication branch's commit, sent to the host's publication branch, fast-forward only. A host
+   * already holding it is sent nothing; a reply lost once the push was sent is settled by the host's branch; a host
+   * whose branch went its own way is left as it is (`diverged`, with the commit it has). Once the host holds the
+   * commit, the project's remote state says so.
+   */
+  pushPublication(opts: { commit?: Oid; signal?: AbortSignal } = {}): Promise<PushPublicationResult> {
+    const s = this.session;
+    return this.onePublication(() => timed('controller.pushPublication', () => this.pushPublicationNow(s, opts), (r) => ({ ok: r?.ok ?? false }))());
+  }
+
+  private async pushPublicationNow(s: ProjectSession | null, opts: { commit?: Oid; signal?: AbortSignal }): Promise<PushPublicationResult> {
+    const blocked = await this.remoteBlocked(s);
+    if (blocked || !s) return blocked!;
+    let state: RemoteState | null;
+    let tip: Oid | null;
+    try {
+      state = await readRemoteState(s.dir);
+      if (!state) return { ok: false, code: 'not-bound', message: 'This project is not connected to a host yet.' };
+      tip = (await publishedTree(this.repository(s.dir)))?.commit ?? null;
+    } catch (e) {
+      return remoteFailed(e);
+    }
+    if (!tip) return { ok: false, code: 'not-prepared', message: 'Prepare the publication first, then push it.' };
+    const commit = opts.commit ?? tip;
+    if (commit !== tip) return { ok: false, code: 'conflict', message: 'That is not the publication last prepared, so it was not pushed. Prepare the publication again, then push it.', actual: tip };
+    const { binding } = state;
+    // The credential kept for this binding of this project, in this folder, at this address, is what approved the
+    // address: without one (a copy of the folder, an address changed outside the app) the host is never contacted.
+    let credential: Awaited<ReturnType<RemoteCredentialStore['resolve']>>;
+    try {
+      credential = await this.remoteCredentials.resolve(binding.id, this.credentialOwner(s, binding.url));
+    } catch (e) {
+      return remoteFailed(e);
+    }
+    if (!credential) return { ok: false, code: 'auth-rejected', message: 'No credential is saved for this project here, so nothing was sent to the host. Connect the project to its host again.' };
+    // Looked for in everything sent: a publication was searched only for those saved when it was prepared.
+    const secrets = await this.publicationSecrets(s);
+    if ('failed' in secrets) return { ok: false, code: 'failed', message: secrets.failed.replace('so it was not prepared', 'so it was not pushed') };
+    const tokens = [credential.token, ...secrets.values];
+    try {
+      const outcome = await this.remoteTransport.push(s.dir, {
+        endpoint: binding.url,
+        binding: binding.id,
+        ref: PUBLISH_BRANCH,
+        commit,
+        // Only for the binding's own address.
+        credentials: async (url) => (url === binding.url ? credential : null),
+        secrets: secrets.values,
+        ...(opts.signal ? { signal: opts.signal } : {})
+      });
+      const at = new Date().toISOString();
+      await this.recordRemote(s, binding.id, (st) => ({ ...st, acknowledged: { commit, at }, receipt: outcome.receipt ?? st.receipt }));
+      return { ok: true, commit, uploaded: outcome.uploaded, reconciled: outcome.reconciled };
+    } catch (e) {
+      return remoteFailed(e, tokens);
+    }
+  }
+
+  /**
+   * Keep what the open project's provider said of the commit its host took going live (building, live, or failed),
+   * apart from the upload, which stands whatever the build does. Only for the commit the host last acknowledged.
+   */
+  recordDeploymentReceipt(receipt: { commit: Oid; status: DeploymentStatus; id?: string | null }): Promise<RemoteResult> {
+    const s = this.session;
+    return this.onePublication(async (): Promise<RemoteResult> => {
+      const blocked = await this.remoteBlocked(s);
+      if (blocked || !s) return blocked!;
+      const r = { commit: receipt.commit, status: receipt.status, id: receipt.id ?? null, at: new Date().toISOString() };
+      if (!receiptOk(r)) return { ok: false, code: 'invalid', message: 'That is not a deployment receipt the app can keep.' };
+      let state: RemoteState | null;
+      try {
+        state = await readRemoteState(s.dir);
+      } catch (e) {
+        return remoteFailed(e);
+      }
+      if (!state) return { ok: false, code: 'not-bound', message: 'This project is not connected to a host yet.' };
+      if (state.acknowledged?.commit !== r.commit) return { ok: false, code: 'conflict', message: 'A deployment is only kept for the commit the host last took.', actual: state.acknowledged?.commit ?? null };
+      const next = { ...state, receipt: r };
+      if (!(await this.recordRemote(s, state.binding.id, () => next))) return { ok: false, code: 'failed', message: 'The deployment could not be kept.' };
+      return { ok: true, state: next };
     });
   }
 

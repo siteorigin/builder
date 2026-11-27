@@ -3239,6 +3239,40 @@ async function settled(deadline, animations = false) {
 }
 
 /**
+ * The pictures the page holds loaded, and the pixels of the files it chose for them, for the editor's timing marks
+ * (scripts/perf). A picture offered at several widths (a srcset of width descriptors, its own or a <picture>'s
+ * sources) is as wide as the candidate it chose says; any other is its natural size.
+ */
+function picturesHeld() {
+  let pictures = 0;
+  let pixels = 0;
+  for (const img of document.images) {
+    if (!img.complete || !img.naturalWidth || !img.naturalHeight) continue;
+    let width = img.naturalWidth;
+    const sets = [img.getAttribute('srcset')];
+    if (img.parentElement && img.parentElement.tagName === 'PICTURE') for (const s of img.parentElement.querySelectorAll('source')) sets.push(s.getAttribute('srcset'));
+    for (const set of sets)
+      for (const candidate of String(set || '').split(',')) {
+        const [url, descriptor] = candidate.trim().split(/\s+/);
+        if (!url || !/^\d+w$/.test(descriptor || '')) continue;
+        try {
+          if (new URL(url, location.href).href === img.currentSrc) width = parseInt(descriptor, 10);
+        } catch {
+          // An address that cannot be read names no file this picture chose.
+        }
+      }
+    // Its shape from its width and height when it has them (as a library picture does): the natural size of a copy
+    // chosen by width is rounded to whole CSS pixels.
+    const w = Number(img.getAttribute('width'));
+    const h = Number(img.getAttribute('height'));
+    const ratio = w > 0 && h > 0 ? h / w : img.naturalHeight / img.naturalWidth;
+    pictures++;
+    pixels += width * Math.round(width * ratio);
+  }
+  return { pictures, pixels };
+}
+
+/**
  * The image's address as an author would recognise it: the path on this site, or the address elsewhere. An
  * inline image's address is its whole content, so it is named, never sent (it could exceed a message's size).
  */
@@ -5435,8 +5469,16 @@ window.addEventListener('message', async (e) => {
         // Element IDs whose findings alone are listed (validate_project narrowed to them).
         const focus = Array.isArray(m.payload.focus) ? m.payload.focus.filter((id) => typeof id === 'string') : undefined;
         report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000, { readability: m.payload.readability === true, gaps: m.payload.gaps === true, page, ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) });
-        // How long the page took to settle, when the editor asks (a page check, for its timing marks).
-        if (m.payload.timing === true && report && typeof report === 'object') report.settled = waited;
+        // How long the page took to settle, and the pictures it then held, when the editor asks (its timing marks).
+        if (m.payload.timing === true && report && typeof report === 'object') {
+          report.settled = waited;
+          // Only ever for the marks: a page whose pictures cannot be read is measured all the same.
+          try {
+            report.pictures = picturesHeld();
+          } catch {
+            report.pictures = null;
+          }
+        }
       } catch (err) {
         // A failed measurement is answered as one, never left for the editor to time out on.
         report = { error: `The page could not be measured: ${String((err && err.message) || err).slice(0, 200)}` };

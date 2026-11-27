@@ -24,7 +24,7 @@ import { constants as zlibConstants, createDeflate, deflateSync, inflateSync } f
 import git from 'isomorphic-git';
 import { eachAtMost, ensureDir, renameReplacing, safeJoinLooking, syncDir } from '../project/fsutil';
 import { openRegularFile, readAtMost } from '../regular-file';
-import { HOST, repoFs, TMP_PREFIX, type Fault } from './fs';
+import { HOST, repoFs, TMP_PREFIX, type Fault, type RepoFs } from './fs';
 import { BRANCH_RE, GIT_LIMITS, GitError, OID_RE, VERSIONS_BRANCH, VERSIONS_GITDIR, type BlobInput, type CommitInfo, type CommitInput, type FileInput, type GitLimits, type Identity, type Oid, type TreeEntry } from './protocol';
 
 /** Set when the caller no longer wants the result: checked between files and before a branch moves. */
@@ -151,6 +151,11 @@ export interface Repo {
   listCommits(ref: string, limit: number): Promise<CommitInfo[]>;
   resolveRef(ref: string): Promise<Oid | null>;
   advanceRef(ref: string, next: Oid, expected: Oid | null, token?: CancelToken): Promise<void>;
+  /**
+   * What a push reads the repository through (remote.ts): the repository checked to be there and the app's, its folder,
+   * the bundled Git's view of its files (confined to it, never through a link), and the commit `ref` points at now.
+   */
+  source(ref: string): Promise<{ gitdir: string; files: RepoFs['promises']; tip: Oid | null }>;
 }
 
 /** The repository of the project at `root` (absolute). Opening it reads and writes nothing. */
@@ -718,6 +723,12 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       io(async () => {
         checkRef(ref);
         return readRef(ref);
+      }),
+
+    source: (ref) =>
+      io(async () => {
+        checkRef(ref);
+        return { gitdir, files: gfs.promises, tip: await readRef(ref) };
       }),
 
     advanceRef: (ref, next, expected, token = NEVER) =>

@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
@@ -1649,12 +1649,69 @@ export async function showConversation(fallback: Conversation, opening: string, 
     .catch(() => null);
   if (showing === mine) showing = null;
   if (!current() || getState().snapshot?.workspaceKey !== opening) return;
+  // The request still going, in this thread or another: a window reloaded on another thread learns it holds the app,
+  // and where it is answered and stopped (#1125).
   const run = read?.conversation.id === id ? read.run : null;
   // A status that arrived while it was read is newer than the one read (the run may have ended meanwhile).
-  const status = run && statusSeen === seen ? { runStatus: run.status, activeRunId: run.runId, runMode: run.mode, runConversationId: id } : {};
+  const status = run && statusSeen === seen ? { runStatus: run.status, activeRunId: run.runId, runMode: run.mode, runConversationId: run.conversationId } : {};
   if (run && statusSeen === seen && run.mode !== 'ask') aiEpoch++;
   setState({ conversation: read?.conversation.id === id ? read.conversation : fallback, ...extra(), ...status });
   if (mine.missed) catchUpConversation(id, opening);
+}
+
+/** Moves between conversations, counted: only the latest one asked for shows its conversation. */
+let navigation = 0;
+
+/**
+ * Take the next move between conversations: what it answers says whether it is still the latest one asked for, in
+ * the opening `opening`. A restore of the project's last conversation takes one too, so a jump made while it reads
+ * (Answer in chat) is never undone by it.
+ */
+export function claimNavigation(opening?: string): () => boolean {
+  const mine = ++navigation;
+  return () => mine === navigation && (opening === undefined || getState().snapshot?.workspaceKey === opening);
+}
+
+/** Show conversation `c` at once, over any move still under way: what Clear history leaves (nothing opens meanwhile). */
+export function replaceThread(c: Conversation, extra?: Partial<State>) {
+  navigation++;
+  catchingUp = null;
+  setState({ conversation: c, ...extra });
+}
+
+/**
+ * Show the conversation `pick` opens in main (Earlier conversations, New conversation, the manager, or a way back to
+ * the thread a request runs in) in opening `opening`, with what `extra(c)` gives then. Only the latest move shows: one
+ * that answers after another was asked for, or after the project changed, shows nothing and fails silently. A thread
+ * with a turn still going is read again as main has it (showConversation): what its request sent while another thread
+ * was on screen, or while it opened, lands nowhere, and the request may have ended meanwhile (#1125). True once shown.
+ */
+export async function openThread(pick: Promise<Conversation>, opening: string, extra?: (c: Conversation) => Partial<State>): Promise<boolean> {
+  const current = claimNavigation(opening);
+  const c = await pick.catch((e: unknown) => {
+    if (current()) throw e;
+    return null;
+  });
+  if (!c || !current()) return false;
+  // A read for the thread on screen that is still out is older than this: the thread it was for has been left.
+  catchingUp = null;
+  if (c.messages.some((m) => m.role === 'assistant' && !!m.runId && !m.result)) await showConversation(c, opening, current, () => extra?.(c) ?? {});
+  else setState({ conversation: c, ...extra?.(c) });
+  return current();
+}
+
+/**
+ * Show the thread the running request was filed in (`id`, taken when its Stop or Answer was pressed, before the
+ * request can end), in the opening on screen. True once it shows; a thread that cannot be opened is said so. Opened in
+ * main even when it is on screen: a switch to another thread may still be under way, and this one is asked for later.
+ */
+export function openRunThread(id = getState().runConversationId): Promise<boolean> {
+  const { snapshot } = getState();
+  if (!id || !snapshot) return Promise.resolve(false);
+  return openThread(api.ai.openConversation(id), snapshot.workspaceKey).catch((e: Error) => {
+    toast(e.message || 'Could not open that conversation.', 'error');
+    return false;
+  });
 }
 
 /**
@@ -1759,6 +1816,10 @@ export interface ConfirmRequest {
   /** One short line each: what is lost, what is at risk, what stays safe, how to take it back or that it can't
    *  be, and anything else to know. Shown in the order given, each with its own icon. */
   details?: ConfirmDetail[];
+  /** The app's review of an AI change to where contact forms send: each form, before and after (#1130). */
+  formRouting?: FormRoutingPrompt;
+  /** Names a question its asker may take back unanswered (withdrawConfirm), once it no longer needs an answer. */
+  key?: string;
   /** true = confirm, false = the cancel button, null = dismissed (Escape, ×, backdrop): stay where you were. */
   resolve: (ok: boolean | null) => void;
 }
@@ -1800,4 +1861,11 @@ export function confirmDialog(req: Omit<ConfirmRequest, 'resolve' | 'id'>): Prom
     // Only a question that takes the screen changes what the host shows.
     if (confirmQueue.length === 1) notifyConfirm();
   });
+}
+/**
+ * Take back the questions asked with `key` that no one answered: off the screen, or out of the queue. Each resolves
+ * as dismissed (null), so its asker, which withdrew it, should not read that as an answer.
+ */
+export function withdrawConfirm(key: string) {
+  for (const entry of confirmQueue.filter((q) => q.key === key)) entry.resolve(null);
 }

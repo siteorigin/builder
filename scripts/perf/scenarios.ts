@@ -10,8 +10,8 @@
  * (memory.ts), and is never reported beside a timing scenario.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import type { CDPSession, ElectronApplication, FrameLocator, Page } from 'playwright';
 import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
 import { HISTORY_LIMIT, type BuilderApi, type ProjectSnapshot } from '../../src/shared/api';
@@ -25,7 +25,7 @@ import { projectFolderName } from '../../src/shared/project-name';
 import { fixturePng, ROOT, type FixtureSpec } from './fixtures';
 import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
 import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
-import { PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos } from './photos';
+import { GALLERY_COUNT, galleryPhotos, type GalleryPhoto, PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
 import { displayName } from '../../src/engine/tree';
 
@@ -5199,6 +5199,428 @@ export const thumbs: Scenario = {
   }
 };
 
+// ---------------------------------------------------------------------------
+// previewImages
+// ---------------------------------------------------------------------------
+
+/** The page `previewImages` makes: a section for each gallery photo, holding that photo's project component. */
+export const GALLERY_PAGE = { pageId: 'pg_perfgallery', title: 'Gallery', route: '/gallery/' } as const;
+/** The readings `previewImages` takes, in order, and their kinds. */
+export const PREVIEW_IMAGE_READINGS = [
+  ['gallery', 'rest'],
+  ['chat', 'peak'],
+  ['chatted', 'rest'],
+  ['layout', 'peak'],
+  ['laidOut', 'rest'],
+  ['component', 'peak'],
+  ['inspected', 'rest'],
+  ['insertShown', 'rest'],
+  ['hover', 'peak'],
+  ['hovered', 'rest'],
+  ['insert', 'peak'],
+  ['peeked', 'rest']
+] as const;
+/** Each frame window's control: the same kind of work in the editor with no frame of the preview's, so a peak's
+ *  difference from its control is what the frames cost (the GPU process grows whenever the editor draws after a rest). */
+export const PREVIEW_IMAGE_CONTROLS = [
+  ['layout', 'chat'],
+  ['component', 'chat'],
+  ['insert', 'hover']
+] as const;
+/** How many of the theme's section tiles the `hover` control points at, each this long: the walk's pace, with no live preview. */
+export const HOVER_TILES = 10;
+const HOVER_MS = 600;
+/** The windows whose frames' pictures `previewImages` adds up, each the stretch of the peak of that name. */
+export const PREVIEW_IMAGE_WINDOWS = ['layout', 'component', 'insert'] as const;
+const GALLERY_ADDED_AT = '2026-01-03T00:00:00.000Z';
+const two = (i: number) => String(i).padStart(2, '0');
+
+/** A gallery photo's library record, as an import of it records it (with its copies), from the bytes of its file. */
+export function galleryRecord(p: GalleryPhoto, i: number, bytes: Buffer): Record<string, unknown> {
+  return { id: `img-gallery-${two(i)}`, name: p.name, file: p.file, mime: 'image/jpeg', bytes: bytes.length, width: p.width, height: p.height, hash: createHash('sha256').update(bytes).digest('hex'), kind: 'image', variants: p.variants, createdAt: GALLERY_ADDED_AT };
+}
+
+/** Gallery photo `i`'s component's ID: the same in every launch, so what a check reports of it is too. */
+export const galleryDefinitionId = (i: number) => `proj.gallery-photo-${two(i)}-bench`;
+
+/** A project component showing gallery photo `i` (from 1), as the fixture's cards are made: a heading, a line, the photo. */
+export function galleryComponent(i: number): Record<string, unknown> {
+  return {
+    type: 'component.upsert',
+    newDefinitionId: galleryDefinitionId(i),
+    name: `Gallery photo ${two(i)}`,
+    properties: {},
+    nodes: [
+      { kind: 'element', id: 'root', tag: 'article', children: ['title', 'body', 'pic'] },
+      { kind: 'text', id: 'title', tag: 'h3', text: `Photo ${two(i)}` },
+      { kind: 'text', id: 'body', tag: 'p', text: `Gallery photo ${two(i)}, as the benchmark shows it.` },
+      { kind: 'image', id: 'pic', image: { assetId: `img-gallery-${two(i)}`, alt: `Gallery photo ${two(i)}` } }
+    ]
+  };
+}
+
+/** The gallery page, and on it a section holding each of `definitions` in turn. */
+export function galleryPlacements(definitions: string[]): Array<Record<string, unknown>> {
+  const owner = { kind: 'page', id: GALLERY_PAGE.pageId };
+  return [
+    { type: 'page.create', pageId: GALLERY_PAGE.pageId, title: GALLERY_PAGE.title, route: GALLERY_PAGE.route, starter: 'empty' },
+    ...definitions.flatMap((definitionId, n) => [
+      { type: 'node.insert', owner, parentId: null, componentId: 'layout.section', newNodeId: `n_gals${two(n + 1)}` },
+      { type: 'node.insert', owner, parentId: `n_gals${two(n + 1)}`, slot: 'content', definitionId, newNodeId: `n_galc${two(n + 1)}` }
+    ])
+  ];
+}
+
+/** The canvas reporting a page of the site ready to edit (not a component preview, nor Preview mode). */
+const canvasPageReady = (r: PerfRecord): boolean => r.proc === 'renderer' && r.attrs?.mode === 'edit' && r.attrs?.studio === false;
+
+const atPreviewImages = (window: string, edge: 'start' | 'end') => (r: PerfRecord) => r.proc === 'renderer' && r.attrs?.scenario === 'previewImages' && r.attrs?.window === window && r.attrs?.edge === edge;
+
+/** The gallery's pictures the canvas's page has, by the address each was given, and those loaded. */
+async function galleryShown(win: Page): Promise<{ images: number; loaded: number }> {
+  return preview(win)
+    .locator('img')
+    .evaluateAll((els) => {
+      const mine = els.filter((e) => ((e as unknown as { getAttribute(n: string): string | null }).getAttribute('src') ?? '').includes('/assets/gallery-'));
+      return { images: mine.length, loaded: mine.filter((e) => (e as unknown as { complete: boolean; naturalWidth: number }).complete && (e as unknown as { naturalWidth: number }).naturalWidth > 0).length };
+    });
+}
+
+/** The pointer onto `tile`, once it is scrolled into view and the scroll has settled (two frames, and where it is holds still). */
+async function pointAt(win: Page, tile: ReturnType<Page['locator']>) {
+  await tile.scrollIntoViewIfNeeded();
+  let box = await tile.boundingBox();
+  for (let n = 0; n < 20; n++) {
+    await win.evaluate(() => new Promise<void>((done) => (globalThis as unknown as { requestAnimationFrame(f: () => void): void }).requestAnimationFrame(() => (globalThis as unknown as { requestAnimationFrame(f: () => void): void }).requestAnimationFrame(() => done()))));
+    const again = await tile.boundingBox();
+    if (box && again && box.y === again.y && box.x === again.x) break;
+    box = again;
+  }
+  await tile.hover();
+}
+
+/** How far the canvas's page is scrolled: a window that scrolled it drew more of the gallery there than at rest. */
+const canvasScroll = (win: Page): Promise<number> => preview(win).locator('html').evaluate(() => Math.round((globalThis as unknown as { scrollY: number }).scrollY));
+
+/** The last result the model was given for a call of `tool`, as the scripted server received it (its text, and as read). */
+function toolResult(server: MockOpenAIServer, tool: string): { text: string; value: unknown } | undefined {
+  for (const q of [...server.requests].reverse()) {
+    const messages = (q.body as { messages?: Array<{ role?: string; name?: string; content?: unknown }> }).messages ?? [];
+    const m = messages.filter((x) => x.role === 'tool' && x.name === tool).at(-1);
+    if (!m) continue;
+    const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+    try {
+      return { text, value: JSON.parse(text) };
+    } catch {
+      return { text, value: text };
+    }
+  }
+  return undefined;
+}
+
+/** A number standing for a text, so two runs can tell whether a check reported the same (its first 48 bits of SHA-256). */
+export const digestOf = (text: string): number => parseInt(createHash('sha256').update(text).digest('hex').slice(0, 12), 16);
+
+/** The widths inspect_component measures a component at (src/agent/component-inspection.ts INSPECT_WIDTHS). */
+const COMPONENT_WIDTHS = [390, 1280];
+
+/**
+ * Each frame's pictures in a window, or null when a frame did not say: every page check's load (inspect.done), every
+ * component measurement (componentPreview.measured, at both widths), or each of the 20 live previews as its last
+ * measurement found it (livePreview.measured, by session). `measured` counts the measurements (a component check
+ * measures both widths in one frame); `pictures` and `pixels` add up what each held.
+ */
+export function windowPictures(trace: Trace, window: (typeof PREVIEW_IMAGE_WINDOWS)[number], from: number, to: number): { measured: number; pictures: number; pixels: number } | null {
+  const marks = window === 'layout' ? trace.all('inspect.done', inProc('renderer'), from, to) : window === 'component' ? trace.all('componentPreview.measured', inProc('renderer'), from, to) : trace.all('livePreview.measured', inProc('renderer'), from, to);
+  if (window === 'insert' && marks.some((r) => typeof r.attrs?.session !== 'string')) return null;
+  const counted = window === 'insert' ? [...new Map(marks.map((r) => [r.attrs!.session as string, r])).values()] : marks;
+  if (!counted.length || counted.some((r) => typeof r.attrs?.pictures !== 'number' || typeof r.attrs?.pixels !== 'number')) return null;
+  if (window === 'insert' && counted.length !== GALLERY_COUNT) return null;
+  if (window === 'component' && !COMPONENT_WIDTHS.every((w) => counted.some((r) => r.attrs?.width === w))) return null;
+  return { measured: counted.length, pictures: counted.reduce((n, r) => n + (r.attrs!.pictures as number), 0), pixels: counted.reduce((n, r) => n + (r.attrs!.pixels as number), 0) };
+}
+
+export const previewImages: Scenario = {
+  name: 'previewImages',
+  after: 'open',
+  memory: true,
+  deadlineMs: 15 * 60_000,
+  description: `The memory of the app's processes, the preview's renderer above all, with a page of ${GALLERY_COUNT} photographs on the canvas: at rest, at its peak in a turn of the assistant (a scripted model) that only answers, at rest, at its peak while it checks that page's layout, at rest, at its peak while it checks one of its photo components, at rest, with Insert open on Your components, at its peak while the pointer rests on the theme's section tiles in turn, at rest, at its peak while the live previews of all ${GALLERY_COUNT} photo components are shown there one after another, and at rest once they are gone; with the pictures each of those frames chose.`,
+  async run(ctx) {
+    const { win } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('previewImages was run without a memory probe');
+    const before = await snapshotOf(win);
+    expect(before, 'no project is open');
+    // Not measured: the gallery's photos written where an import stores them, added to the library as an import adds
+    // them, each shown by a project component of its own, and those placed on a new page, a section each.
+    const gallery = await galleryPhotos();
+    const records = gallery.photos.map((p, n) => {
+      for (const f of [p.file, ...p.variants.map((v) => v.file)]) {
+        mkdirSync(dirname(join(ctx.projectDir, f)), { recursive: true });
+        copyFileSync(join(gallery.dir, basename(f)), join(ctx.projectDir, f));
+      }
+      return galleryRecord(p, n + 1, readFileSync(join(gallery.dir, basename(p.file))));
+    });
+    const apply = (operations: Array<Record<string, unknown>>, label: string) =>
+      win.evaluate(
+        async (a) => {
+          const r = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: a.operations } as never, { label: a.label });
+          return r.ok ? { revision: r.revision, results: (r.results ?? []).map((x) => (typeof x.definitionId === 'string' ? x.definitionId : null)) } : { error: r.error?.message ?? 'no reason given' };
+        },
+        { operations, label }
+      );
+    const made = await apply([...records.map((asset) => ({ type: 'asset.add', asset })), ...gallery.photos.map((_, n) => galleryComponent(n + 1))], 'Benchmark gallery photos');
+    expect(!('error' in made), `adding the gallery's photos and components was refused: ${'error' in made ? made.error : ''}`);
+    const definitions = made.results.slice(records.length);
+    expect(definitions.length === GALLERY_COUNT && definitions.every((d, n) => d === galleryDefinitionId(n + 1)), 'the gallery’s components were not all made');
+    const placed = await apply(galleryPlacements(definitions as string[]), 'Benchmark gallery page');
+    expect(!('error' in placed), `making the gallery page was refused: ${'error' in placed ? placed.error : ''}`);
+    await ctx.waitTrace((t) => !!t.first('renderer.commit', atRevision(placed.revision)), 30_000);
+    const server = await new MockOpenAIServer().start();
+    try {
+      // The scripted model in native tool mode, as `ai` sets it, and the window reloaded to take it.
+      await win.evaluate((url) => (globalThis as unknown as EditorPage).builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL: url, allowRemote: false, toolMode: 'native', contextWindow: 131_072 } } } as never), server.baseURL);
+      await ctx.mark('previewImages.open', { scenario: 'previewImages' });
+      const opened = (await ctx.waitTrace((t) => !!t.first('previewImages.open', inProc('main')), 15_000)).first('previewImages.open', inProc('main'));
+      await win.reload();
+      await win.locator('.editor').waitFor({ timeout: 60_000 });
+      await preview(win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
+      // The gallery on the canvas (the page just made is the one the editor opens on), opened from Pages if it is not,
+      // until the canvas says it is ready and its first photo shows.
+      await showSidebar(win, 'Pages');
+      const row = win.locator(`.side-panel-view:not([hidden]) [data-page="${GALLERY_PAGE.pageId}"]`).first();
+      if ((await row.getAttribute('aria-selected')) !== 'true') await row.click();
+      // The canvas's page ready after the reload, then on the gallery (a page opened in the canvas is navigated to in
+      // the same page, which says so as `navigated`, not `ready`).
+      const ready = await ctx.waitTrace((t) => !!t.first('canvas.ready', canvasPageReady, opened?.t ?? Infinity), 60_000);
+      expect(ready.first('canvas.ready', canvasPageReady, opened?.t ?? Infinity), 'the canvas never reported a page ready after the reload');
+      await preview(win).getByRole('heading', { name: 'Photo 01', exact: true }).first().waitFor({ timeout: 30_000 });
+      const at = await preview(win).locator('html').evaluate(() => (globalThis as unknown as { location: { pathname: string } }).location.pathname);
+      expect(at === GALLERY_PAGE.route, `the canvas shows ${at}, not the gallery page`);
+      const deadline = Date.now() + 30_000;
+      let shown = await galleryShown(win);
+      while ((shown.images !== GALLERY_COUNT || shown.loaded < 1) && Date.now() < deadline) {
+        await sleep(200);
+        shown = await galleryShown(win);
+      }
+      expect(shown.images === GALLERY_COUNT, `the canvas shows ${shown.images} of the gallery’s ${GALLERY_COUNT} photos`);
+      expect(shown.loaded >= 1, 'the canvas shows none of the gallery’s photos loaded');
+      // The AI panel in Edit mode with Whole site chosen, as `ai` asks: page checks measure the live preview only there.
+      await win.locator('.dock-tab', { hasText: 'AI' }).first().click();
+      await composer(win).waitFor({ timeout: 15_000 });
+      const ask = win.getByRole('button', { name: /^What your next message does: Ask/ });
+      if (await ask.count()) {
+        await ask.first().click();
+        await win.getByRole('menuitemradio', { name: /^Edit/ }).click();
+      }
+      await win.getByRole('button', { name: /^What the AI may change:/ }).first().click();
+      await win.getByRole('menuitemradio', { name: /^Whole site/ }).or(win.getByRole('menuitem', { name: /^Whole site/ })).first().click();
+      await expectChip(win);
+      await sleep(WORKSPACE_SAVE_WAIT_MS);
+      await ctx.mark('scenario.start', { scenario: 'previewImages' });
+      await probe.rest('gallery');
+
+      /** One request of the scripted model, which asks for `call` and then answers, its peak read as `label`. */
+      const chatDir = join(ctx.projectDir, '.siteorigin', 'sessions', 'chat');
+      const request = async (label: 'layout' | 'component', text: string, call: { id: string; name: string; args: unknown }) => {
+        const asked = server.requests.filter((q) => q.method === 'POST').length;
+        server.script(toolCallsReply([call]), textReply(`Checked: ${label}.`));
+        server.respond = () => textReply('Done.');
+        await composer(win).fill(text);
+        await sleep(WORKSPACE_SAVE_WAIT_MS);
+        await ctx.mark('previewImages.window', { scenario: 'previewImages', window: label, edge: 'start' });
+        await probe.peak(label, async () => {
+          await win.keyboard.press('Enter');
+          await win.waitForFunction(() => !!(globalThis as unknown as DomPage).document.querySelector('.run-strip'), undefined, { timeout: 30_000 });
+          await win.waitForFunction(() => !(globalThis as unknown as DomPage).document.querySelector('.run-strip'), undefined, { timeout: AI_RUN_MS, polling: 100 });
+        });
+        await ctx.mark('previewImages.window', { scenario: 'previewImages', window: label, edge: 'end', canvasY: await canvasScroll(win) });
+        const end = Date.now() + 15_000;
+        let result = savedRun(chatDir, text)?.result;
+        while (!result && Date.now() < end) {
+          await sleep(100);
+          result = savedRun(chatDir, text)?.result;
+        }
+        expect(result, `the ${label} check's result was not saved with its conversation`);
+        // A check that changes nothing ends with nothing changed, as a person sees it in the log.
+        expect(result.status === 'no-changes', `the ${label} check ended ${result.status}: ${result.summary}`);
+        const posts = server.requests.filter((q) => q.method === 'POST').length - asked;
+        expect(posts === 2, `the ${label} check asked the model ${posts} times, not 2`);
+        const answer = toolResult(server, call.name);
+        expect(answer && answer.value && typeof answer.value === 'object', `the model was given no result for the ${label} check`);
+        return { value: answer.value as Record<string, unknown>, text: answer.text };
+      };
+
+      // The control for both checks: a turn of the scripted model that answers in words, measuring nothing.
+      const said = 'Say hello.';
+      const askedBefore = server.requests.filter((q) => q.method === 'POST').length;
+      server.script(textReply('Hello.'));
+      server.respond = () => textReply('Done.');
+      await composer(win).fill(said);
+      await sleep(WORKSPACE_SAVE_WAIT_MS);
+      await probe.peak('chat', async () => {
+        await win.keyboard.press('Enter');
+        await win.waitForFunction(() => !!(globalThis as unknown as DomPage).document.querySelector('.run-strip'), undefined, { timeout: 30_000 });
+        await win.waitForFunction(() => !(globalThis as unknown as DomPage).document.querySelector('.run-strip'), undefined, { timeout: AI_RUN_MS, polling: 100 });
+      });
+      const answered = server.requests.filter((q) => q.method === 'POST').length - askedBefore;
+      expect(answered === 1, `the control turn asked the model ${answered} times, not once`);
+      await probe.rest('chatted');
+
+      // The layout of the gallery page at desktop width: every photo on it loaded, none failed.
+      const layout = await request('layout', `Check how the ${GALLERY_PAGE.title} page lays out at desktop width.`, { id: 'call_layout', name: 'inspect_layout', args: { pageId: GALLERY_PAGE.pageId, viewport: 'desktop' } });
+      const report = layout.value.report as { error?: unknown; path?: unknown; documentHeight?: unknown; images?: { total?: unknown; loaded?: unknown; failed?: unknown } } | undefined;
+      expect(layout.value.ok === true && report && !report.error, `the layout check could not run: ${String(report?.error ?? layout.value.error)}`);
+      expect(report.path === GALLERY_PAGE.route, `the layout check measured ${String(report.path)}, not the gallery page`);
+      expect(report.images?.total === GALLERY_COUNT && report.images.loaded === GALLERY_COUNT && report.images.failed === 0, `the layout check found ${String(report.images?.loaded)} of ${String(report.images?.total)} images loaded and ${String(report.images?.failed)} failed, not all ${GALLERY_COUNT} loaded`);
+      // What the check reported, as a number per report: the same page measured the same way reports the same.
+      await ctx.mark('previewImages.checked', { scenario: 'previewImages', window: 'layout', digest: digestOf(JSON.stringify(report)), height: typeof report.documentHeight === 'number' ? report.documentHeight : -1 });
+      // At rest between the two checks, so each peak starts from where the app rests (the GPU process lets go of a
+      // frame's pictures some seconds after the frame goes).
+      await probe.rest('laidOut');
+      // The first photo component, in every case inspect_component measures.
+      const component = await request('component', 'Check the Gallery photo 01 component on phones and desktops.', { id: 'call_component', name: 'inspect_component', args: { definitionId: definitions[0] } });
+      expect(component.value.ok !== false && !component.value.error, `the component check could not run: ${String(component.value.error ?? component.text.slice(0, 300))}`);
+      // Of the first photo's component, whole: every case measured in this call, none failed, nothing left unchecked.
+      const cases = component.value.cases;
+      expect(component.value.definitionId === definitions[0], `the component check measured ${String(component.value.definitionId)}, not ${definitions[0]}`);
+      expect(Array.isArray(cases) && cases.length > 0 && !component.value.incomplete && !component.value.failed && !component.value.next, `the component check was not whole: ${component.text.slice(0, 300)}`);
+      await ctx.mark('previewImages.checked', { scenario: 'previewImages', window: 'component', digest: digestOf(component.text), height: -1 });
+      await probe.rest('inspected');
+
+      // Insert opened on Your components, all shown, and left until their thumbnails are drawn (not measured). The
+      // pointer is kept off the panel meanwhile, so no tile scrolled under it opens a preview before the readings.
+      const yours = ctx.fixture.projectComponents + GALLERY_COUNT;
+      await win.mouse.move(2, 2);
+      const insert = win.locator('.rail button[data-rail="insert"]');
+      if ((await insert.getAttribute('aria-pressed')) !== 'true') await insert.click();
+      const more = win.locator('#editor-sidebar button.insert-more', { hasText: `Show all ${yours} components` });
+      if (await more.count()) await more.first().click({ timeout: 15_000 });
+      // A click leaves the pointer where it pressed: off the panel again before the tiles move under it.
+      await win.mouse.move(2, 2);
+      await win.locator('.insert-peek').waitFor({ state: 'detached', timeout: 15_000 });
+      await thumbsShown(win, yours, 'opening Insert');
+      // Every tile's thumbnail drawn before the walk (each tile scrolled into view in turn, then the first gallery photo's
+      // again), so the walk's peak is the live previews' alone: a tile scrolled into view would have its thumbnail drawn.
+      for (const id of [...(await thumbTiles(win)).map((t) => t.id), definitions[0]]) {
+        await win.locator(`#editor-sidebar [data-definition-id="${id}"]`).first().scrollIntoViewIfNeeded();
+        await thumbsShown(win, yours, 'scrolling Insert through its tiles');
+      }
+      await thumbsQuiet(ctx, 'opening Insert');
+      const drawn = (await thumbTiles(win)).filter((t) => t.state === 'ready').length;
+      expect(drawn === yours, `${drawn} of the ${yours} thumbnails were drawn before the walk`);
+      expect(!(await win.locator('.insert-peek').count()), 'a larger preview was open before the walk');
+      await probe.rest('insertShown');
+      // The control for the walk: the pointer resting on the theme's section tiles in turn, at the walk's pace, each
+      // opening its larger preview, a sketch with no live frame.
+      const sections = win.locator('#editor-sidebar .insert-tile.section');
+      expect((await sections.count()) >= HOVER_TILES, `Insert lists ${await sections.count()} section tiles, not ${HOVER_TILES}`);
+      let sketched = 0;
+      await probe.peak('hover', async () => {
+        for (let k = 0; k < HOVER_TILES; k++) {
+          await pointAt(win, sections.nth(k));
+          await sleep(HOVER_MS);
+          if ((await win.locator('.insert-peek:not(.lib)').count()) && !(await win.locator('.insert-live iframe').count())) sketched++;
+        }
+      });
+      expect(sketched >= HOVER_TILES - 1, `the section tiles opened ${sketched} of ${HOVER_TILES} larger previews`);
+      expect(!(await win.locator('.insert-live iframe').count()), 'a section tile’s preview held a live frame');
+      await win.mouse.move(2, 2);
+      await win.locator('.insert-peek').waitFor({ state: 'detached', timeout: 15_000 });
+      await win.locator(`#editor-sidebar [data-definition-id="${definitions[0]}"]`).first().scrollIntoViewIfNeeded();
+      await probe.rest('hovered');
+      // Each photo component's live preview, one after another, as the pointer moves down Your components: each until
+      // the larger preview beside the panel shows the component rendered live.
+      await ctx.mark('previewImages.window', { scenario: 'previewImages', window: 'insert', edge: 'start' });
+      let retried = 0;
+      await probe.peak('insert', async () => {
+        for (let i = 1; i <= GALLERY_COUNT; i++) {
+          const tile = win.locator(`#editor-sidebar [data-definition-id="${definitions[i - 1]}"]`).first();
+          const peek = win.locator('.insert-peek.lib', { hasText: `Gallery photo ${two(i)}` });
+          await pointAt(win, tile);
+          // A scroll Insert takes after the pointer came onto the tile closes the preview it opened (onBodyScroll): the
+          // pointer leaves and comes back once, as a person's would.
+          if (!(await peek.waitFor({ timeout: 5_000 }).then(() => true, () => false))) {
+            await win.mouse.move(2, 2);
+            await win.locator('.insert-peek').waitFor({ state: 'detached', timeout: 15_000 });
+            await pointAt(win, tile);
+          }
+          // A live preview whose page never says it is ready (the app's, about one in 150 on a busy Mac) is shown again
+          // once, the pointer leaving and coming back: counted, so a build that needs it more shows it.
+          const live = peek.locator('.insert-live[data-preview-state="ready"]');
+          if (!(await live.waitFor({ timeout: 25_000 }).then(() => true, () => false))) {
+            retried++;
+            await win.mouse.move(2, 2);
+            await win.locator('.insert-peek').waitFor({ state: 'detached', timeout: 15_000 });
+            await pointAt(win, tile);
+            await live.waitFor({ timeout: 30_000 });
+          }
+          // The live preview shows this photo's component, its photo loaded.
+          const shows = await peek
+            .frameLocator('iframe')
+            .locator(`img[src*="/gallery-${two(i)}-"]`)
+            .first()
+            .evaluate((img) => (img as unknown as { complete: boolean; naturalWidth: number }).complete && (img as unknown as { naturalWidth: number }).naturalWidth > 0, undefined, { timeout: 5_000 })
+            .catch(() => false);
+          expect(shows, `the live preview of Gallery photo ${two(i)} does not show its photo`);
+        }
+      });
+      await ctx.mark('previewImages.window', { scenario: 'previewImages', window: 'insert', edge: 'end', canvasY: await canvasScroll(win), retried });
+      const walked = await ctx.waitTrace((t) => !!t.first('previewImages.window', (r) => r.proc === 'main' && r.attrs?.window === 'insert' && r.attrs?.edge === 'end'), 15_000);
+      const walkStart = walked.first('previewImages.window', (r) => r.proc === 'main' && r.attrs?.window === 'insert' && r.attrs?.edge === 'start');
+      const walkEnd = walked.first('previewImages.window', (r) => r.proc === 'main' && r.attrs?.window === 'insert' && r.attrs?.edge === 'end');
+      const redrawn = walked.all('thumbs.asked', inProc('main'), walkStart?.t ?? 0, walkEnd?.t ?? Infinity).length;
+      expect(walkStart && walkEnd && !redrawn, `the walk through the live previews asked for ${redrawn} thumbnails`);
+      // The pointer off the panel, the last preview gone, then at rest once nothing of the previews is left.
+      await win.mouse.move(2, 2);
+      await win.locator('.insert-peek').waitFor({ state: 'detached', timeout: 15_000 });
+      expect(!(await win.locator('.insert-live iframe').count()), 'a live preview frame is still in the editor after its preview closed');
+      await probe.rest('peeked');
+      // Nothing changed the project: every check measured, no check edited.
+      const after = await snapshotOf(win);
+      expect(after && after.revision === placed.revision, `the checks left the project at revision ${after?.revision}, not ${placed.revision}`);
+      await ctx.mark('scenario.end', { scenario: 'previewImages' });
+      await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('previewImages', 'renderer')));
+    } finally {
+      await server.stop();
+    }
+  },
+  measure(trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string, kind: 'rest' | 'peak' = 'rest') => readings.find((r) => r.label === label && r.kind === kind);
+    for (const [label, kind] of PREVIEW_IMAGE_READINGS) readingMetrics(m, label, reading(label, kind));
+    growthMetrics(m, 'inspect', reading('gallery'), reading('inspected'));
+    growthMetrics(m, 'previews', reading('hovered'), reading('peeked'));
+    // What each window's frames cost over its control's peak: `memory.layoutOverChat.growth.*` and so on.
+    for (const [w, control] of PREVIEW_IMAGE_CONTROLS) growthMetrics(m, `${w}Over${control[0].toUpperCase()}${control.slice(1)}`, reading(control, 'peak'), reading(w, 'peak'));
+    for (const w of PREVIEW_IMAGE_WINDOWS) {
+      const start = m.need(`previewImages.window ${w} start`, trace.first('previewImages.window', atPreviewImages(w, 'start')));
+      const end = m.need(`previewImages.window ${w} end`, trace.first('previewImages.window', atPreviewImages(w, 'end')));
+      if (!start || !end) continue;
+      const held = windowPictures(trace, w, start.t, end.t);
+      if (!held) {
+        m.need(`the pictures of the ${w} window's frames`, undefined);
+        continue;
+      }
+      m.count(`canvas.${w}.scrollY`, typeof end.attrs?.canvasY === 'number' ? end.attrs.canvasY : -1);
+      if (w === 'insert') m.count('insert.retried', typeof end.attrs?.retried === 'number' ? end.attrs.retried : -1);
+      m.count(`pictures.${w}.measured`, held.measured);
+      m.count(`pictures.${w}.pictures`, held.pictures);
+      // Decoded as the browser holds a picture: four bytes a pixel.
+      m.count(`pictures.${w}.bytes`, held.pixels * 4, 'bytes');
+    }
+    // The assistant's two checks reported what they did before: their reports' digests, and the page's height.
+    for (const w of ['layout', 'component'] as const) {
+      const checked = m.need(`previewImages.checked ${w}`, trace.first('previewImages.checked', (r) => r.proc === 'renderer' && r.attrs?.window === w));
+      if (!checked) continue;
+      m.count(`checks.${w}.digest`, checked.attrs!.digest as number);
+      if (w === 'layout') m.count('checks.layout.documentHeight', checked.attrs!.height as number);
+    }
+    return m;
+  }
+};
+
 /** The composer's chip says the next edit may change the whole site. */
 async function expectChip(win: Page) {
   const chip = win.getByRole('button', { name: /^What the AI may change: Whole site/ });
@@ -5206,7 +5628,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

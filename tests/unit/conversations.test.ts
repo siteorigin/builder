@@ -791,7 +791,7 @@ describe('reading a conversation by its ID (#1123)', () => {
     const read = await env.orch.readConversation(id);
     expect(said(read.conversation)).toEqual(['user: Write an About page', 'assistant: Done.']);
     expect(read.conversation.title).toBe('Write an About page');
-    expect(read.run).toEqual({ runId: r.runId, status: 'running', mode: 'edit' });
+    expect(read.run).toEqual({ runId: r.runId, status: 'running', mode: 'edit', conversationId: id });
     // Nothing was opened, and what was read is a copy: changing it changes nothing in main.
     expect(env.orch.conversation?.id).toBe(other);
     read.conversation.messages[1].text = 'Changed';
