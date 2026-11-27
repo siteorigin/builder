@@ -38,6 +38,11 @@ const QUIET_MS = 150;
 
 /** The requests a picture depends on: a missing one leaves a hole, an unstyled page or a fallback font. */
 const NEEDED = new Set(['Document', 'Stylesheet', 'Image', 'Media', 'Font', 'Script']);
+/**
+ * Those the picture waits for. Video and audio are watched for failing but not waited for: a stream stays open as long
+ * as it plays, and the picture shows its poster or first frame.
+ */
+const AWAITED = new Set(['Document', 'Stylesheet', 'Image', 'Font', 'Script']);
 
 /** Every animation and transition at its end at once, as Insert's thumbnails are taken (main/thumb-capture). */
 const STILL_CSS = 'html { scroll-behavior: auto !important; } *, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition: none !important; }';
@@ -79,13 +84,21 @@ const CHECK = `(async () => {
     if (!(await decodes(img)) && (img.currentSrc === src || !(await decodes(img)))) broken.push(img.currentSrc || src);
   }
   const backgrounds = new Set();
+  // What the page fetched: of the pictures an image-set() offers, the one it paints.
+  const fetched = new Set(performance.getEntriesByType('resource').map((e) => e.name));
   for (const el of document.querySelectorAll('*')) {
     if (!el.getClientRects().length) continue;
     for (const pseudo of [null, '::before', '::after']) {
-      const bg = getComputedStyle(el, pseudo).backgroundImage;
-      // image-set() offers several pictures and paints one; only that one is fetched, and its request is watched.
-      if (!bg || bg === 'none' || bg.includes('image-set(')) continue;
-      for (const m of bg.matchAll(/url\\(\\s*(['"]?)(.*?)\\1\\s*\\)/g)) backgrounds.add(new URL(m[2], document.baseURI).href);
+      const style = getComputedStyle(el, pseudo);
+      // A ::before or ::after with no content is not drawn, nor is its background.
+      if (pseudo && (style.content === 'none' || style.content === 'normal')) continue;
+      const bg = style.backgroundImage;
+      if (!bg || bg === 'none') continue;
+      const offered = bg.includes('image-set(');
+      for (const m of bg.matchAll(/url\\(\\s*(['"]?)(.*?)\\1\\s*\\)/g)) {
+        const src = new URL(m[2], document.baseURI).href;
+        if (!offered || fetched.has(src)) backgrounds.add(src);
+      }
     }
   }
   await Promise.all([...backgrounds].map(async (src) => {
@@ -129,6 +142,8 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
   const origin = new URL(url).origin;
   /** The requests under way, by ID, with their addresses. */
   const pending = new Map<string, string>();
+  /** The video and audio requests watched for failing, by ID, with their addresses. */
+  const streams = new Map<string, string>();
   /** What failed to arrive, as the notes name it, in order. */
   const failed: string[] = [];
   let lastActivity = Date.now();
@@ -160,6 +175,10 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
         }
         if (capturing) ignored.add(id);
         if (!needed || capturing) return;
+        if (!AWAITED.has(String(p.type))) {
+          streams.set(id, String((p.request as { url?: string })?.url ?? ''));
+          return;
+        }
         pending.set(id, String((p.request as { url?: string })?.url ?? ''));
         break;
       }
@@ -171,11 +190,11 @@ export async function shootReviewPage(page: CdpPage, url: string, width: number,
         break;
       }
       case 'Network.loadingFinished':
-        if (!pending.delete(id)) return;
+        if (!pending.delete(id)) return void streams.delete(id);
         break;
       case 'Network.loadingFailed': {
-        const at = pending.get(id);
-        if (!pending.delete(id)) return;
+        const at = pending.get(id) ?? streams.get(id);
+        if (!pending.delete(id) && !streams.delete(id)) return;
         // A request the page called off itself (a responsive image it chose another size of) took nothing away.
         if (p.canceled === true) break;
         const what = `${shortUrl(at ?? '', origin)} (${String(p.errorText ?? 'failed')})`;

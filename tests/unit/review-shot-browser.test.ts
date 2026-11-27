@@ -53,6 +53,10 @@ beforeAll(async () => {
   put('bad-background/index.html', page('Bad background', '.hero{height:200px;background:url(/client/corrupt.png) #ccc}', '<div class="hero">Hero</div>'));
   // A background offering two pictures, the one painted at one pixel per pixel there, the other missing.
   put('image-set/index.html', page('Image set', '.hero{height:200px;background-image:image-set(url(/client/blue.png) 1x, url(/client/missing-2x.png) 2x)}', '<div class="hero">Hero</div>'));
+  // A background on a ::before that is never drawn (it has no content), of a file that arrives but cannot be drawn.
+  put('undrawn/index.html', page('Undrawn', '.hero{height:200px}.hero::before{content:none;background:url(/client/corrupt.png)}', '<div class="hero">Hero</div>'));
+  // An image-set() whose painted picture arrives whole but cannot be drawn.
+  put('bad-set/index.html', page('Bad set', '.hero{height:200px;background-image:image-set(url(/client/corrupt.png) 1x, url(/client/blue.png) 2x)}', '<div class="hero">Hero</div>'));
   put('über/index.html', page('Über', '', '<p>Über uns</p>'));
   put('broken/index.html', page('Broken', '', '<img src="/client/corrupt.png" width="40" height="40">'));
   put('lazy/index.html', page('Lazy', '', `${tall(3000)}<img id="late" loading="lazy" src="/client/blue.png" width="40" height="40" style="display:block">`));
@@ -154,6 +158,14 @@ describe.skipIf(!browserInstalled)('a review page pictured in Chromium', () => {
 
   it('does not hold the picture a background offers but does not paint against the page', async () => {
     expect(await shoot('image-set/', 800)).toMatchObject({ ok: true });
+  });
+
+  it('does not hold a background that is never drawn against the page', async () => {
+    expect(await shoot('undrawn/', 800)).toMatchObject({ ok: true });
+  });
+
+  it('marks a page whose image-set() paints a picture that cannot be drawn unavailable', async () => {
+    expect(await shoot('bad-set/', 800)).toMatchObject({ ok: false, reason: 'assets', detail: expect.stringContaining('/client/corrupt.png') });
   });
 
   it('pictures a page at an address of any script, under the base path', async () => {

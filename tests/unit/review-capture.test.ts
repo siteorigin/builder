@@ -7,7 +7,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const env = vi.hoisted(() => ({ windows: [] as FakeWindow[], steps: [] as string[], cleared: 0 }));
+const env = vi.hoisted(() => ({ windows: [] as FakeWindow[], steps: [] as string[], cleared: 0, clearing: 0, overlapped: false, clearMs: 5 }));
 
 interface FakeWindow {
   options: Record<string, unknown>;
@@ -99,7 +99,12 @@ vi.mock('electron', () => {
       this.destroyed = true;
     };
   }
-  const ses = { setPermissionRequestHandler: () => undefined, setPermissionCheckHandler: () => undefined, on: () => undefined, clearStorageData: () => new Promise<void>((r) => setTimeout(() => (env.cleared++, r()), 5)) };
+  const ses = { setPermissionRequestHandler: () => undefined, setPermissionCheckHandler: () => undefined, on: () => undefined, clearStorageData: () => {
+      if (env.clearing) env.overlapped = true;
+      env.clearing++;
+      return new Promise<void>((r) => setTimeout(() => (env.clearing--, env.cleared++, r()), env.clearMs));
+    }
+  };
   return { BrowserWindow, session: { fromPartition: () => ses } };
 });
 
@@ -109,6 +114,9 @@ beforeEach(() => {
   env.windows.length = 0;
   env.steps.length = 0;
   env.cleared = 0;
+  env.clearing = 0;
+  env.overlapped = false;
+  env.clearMs = 5;
 });
 
 describe('the review capture window', () => {
@@ -145,6 +153,18 @@ describe('the review capture window', () => {
     shooter.dispose();
     expect(await shooting).toMatchObject({ ok: false, reason: 'failed', detail: 'The capture was stopped.' });
     expect(env.windows).toHaveLength(0);
+  });
+
+  it('starts the next picture’s clear of stored state only once a called-off one has finished', async () => {
+    env.clearMs = 50;
+    const shooter = createReviewShooter();
+    const first = shooter.shoot('http://127.0.0.1:1/', 1440);
+    shooter.dispose();
+    const next = shooter.shoot('http://127.0.0.1:1/', 390);
+    expect(await first).toMatchObject({ ok: false });
+    expect(await next).toMatchObject({ ok: true });
+    expect(env.cleared).toBe(2);
+    expect(env.overlapped).toBe(false);
   });
 
   it('ends a picture under way when the capture is called off, and destroys its window', async () => {

@@ -31,21 +31,29 @@ export interface ReviewShooter {
   dispose(): void;
 }
 
+/** `p`, or `fallback` once OPEN_MS have passed. */
+function within<T>(p: Promise<T>, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<T>((resolve) => (timer = setTimeout(() => resolve(fallback), OPEN_MS)))]).finally(() => clearTimeout(timer));
+}
+
 export function createReviewShooter(): ReviewShooter {
   const open = new Set<BrowserWindow>();
   /** How many times the windows were disposed of: a picture that began before the last one opens none. */
   let disposals = 0;
+  /** The last clear of the windows' stored state, finished or not. */
+  let lastClear: Promise<unknown> = Promise.resolve();
 
   const shoot = async (url: string, width: number, signal?: AbortSignal): Promise<ReviewShot> => {
     if (signal?.aborted) return { ok: false, reason: 'failed', detail: 'The capture was stopped.' };
     const ses = guardSession();
     const generation = disposals;
     // Each picture starts as a first visit: nothing a page stored, and no worker it registered, at another width.
-    let clearing: ReturnType<typeof setTimeout> | undefined;
-    const cleared = await Promise.race([
-      ses.clearStorageData().then(() => true, () => false),
-      new Promise<false>((resolve) => (clearing = setTimeout(() => resolve(false), OPEN_MS)))
-    ]).finally(() => clearTimeout(clearing));
+    // One clear at a time, each after the last (chained before anything is awaited): an earlier one still running,
+    // its picture called off, would wipe this one's page.
+    const clear = within(lastClear.then(() => true), false).then((free) => (free ? ses.clearStorageData().then(() => true, () => false) : false));
+    lastClear = clear;
+    const cleared = await within(clear, false);
     // Called off, or the windows disposed of, meanwhile: no window is made for it.
     if (signal?.aborted || generation !== disposals) return { ok: false, reason: 'failed', detail: 'The capture was stopped.' };
     if (!cleared) return { ok: false, reason: 'failed', detail: 'What an earlier page stored could not be cleared, so the page would not be shown as a first visit.' };
