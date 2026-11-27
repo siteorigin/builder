@@ -25,7 +25,7 @@ import { registerSecondTheme } from './second-theme';
 import { closedPort, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
 // Only Foundation ships, so the brand tool's theme switch (and the room its grammar needs) is measured against a second theme.
-registerSecondTheme();
+await registerSecondTheme();
 
 let server: MockOpenAIServer;
 const dirs: string[] = [];

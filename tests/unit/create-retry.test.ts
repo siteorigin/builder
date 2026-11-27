@@ -751,7 +751,7 @@ describe('the theme a new project starts with (#390)', () => {
   it('records the theme chosen, and refuses one it cannot start from before writing anything', async () => {
     const { c, parent } = setup();
     // Only Foundation ships, so the choice that is not the default is another offered theme.
-    registerSecondTheme();
+    await registerSecondTheme();
     try {
       expect(await c.create({ ...opts(parent), themeId: SECOND_THEME_ID })).toEqual({ ok: true });
       const site = JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'site.json'), 'utf8'));

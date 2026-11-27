@@ -5,7 +5,7 @@
  */
 import type { ComponentDefinition, ElementNode, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { FOUNDATION } from '@catalogue/foundation/pack';
+import { FOUNDATION_AUTHOR } from './fixtures/packs';
 import { P } from '@catalogue/dsl';
 import { makeInstance } from '@engine/install';
 
@@ -21,7 +21,7 @@ function projectDef(def: ComponentDefinition, id: string, insertAs: 'section' | 
  */
 export function mediaCard(): ComponentDefinition {
   return projectDef(
-    FOUNDATION.managed({
+    FOUNDATION_AUTHOR.managed({
       componentId: 'test.media-card',
       name: 'Media card',
       description: 'A picture beside its text.',
@@ -44,7 +44,7 @@ export function mediaCard(): ComponentDefinition {
 /** A two-column layout whose wide and narrow columns are each a query container around a slot. */
 export function splitLayout(): ComponentDefinition {
   return projectDef(
-    FOUNDATION.managed({
+    FOUNDATION_AUTHOR.managed({
       componentId: 'test.split',
       name: 'Split',
       description: 'A wide main column beside a narrow sidebar.',

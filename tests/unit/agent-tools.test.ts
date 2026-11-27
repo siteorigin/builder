@@ -77,7 +77,7 @@ function inSection(s: ProjectState, node: GraphNode) {
 }
 
 // Only Foundation ships, so the brand tool's theme switch is exercised against a second, offered theme.
-registerSecondTheme();
+await registerSecondTheme();
 
 async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, starter: 'business' | 'blank' = 'business', prepare?: (s: ProjectState) => void, deps: Partial<ConstructorParameters<typeof Orchestrator>[0]> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'so-tools-'));
