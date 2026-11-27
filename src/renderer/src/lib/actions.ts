@@ -1061,6 +1061,17 @@ export function openLayout(collectionId: string, entryId?: string) {
 }
 
 /**
+ * Leave a collection's layout for the page that was open, from its Done or from Escape. What was selected in the
+ * layout goes with it. The layout's band goes too, so focus that was in it moves to the canvas, where the page now is.
+ */
+export function leaveLayout() {
+  if (!getState().templateMode) return;
+  const inside = !!document.activeElement?.closest('[data-testid="template-strip"]');
+  setState({ templateMode: null, selection: null });
+  if (inside) requestAnimationFrame(() => document.querySelector<HTMLElement>('main.canvas')?.focus());
+}
+
+/**
  * Edit a collection's index layout (its archive pages') on the canvas, shown on its index, starting one first when the
  * collection still shows the ready-made cards.
  */

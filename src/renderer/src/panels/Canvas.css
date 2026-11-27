@@ -441,14 +441,38 @@
   /* The pointer keeps the gesture's closed hand wherever it goes, and over a place that refuses the drop says so. */
   html.insert-dragging, html.insert-dragging * { cursor: grabbing !important; user-select: none; }
   html.insert-dragging.drop-refused, html.insert-dragging.drop-refused * { cursor: no-drop !important; }
-  /* A collection's layout being edited: whose layout, the entry it is shown on, and Done, in the strip above the page. */
-  .frame-status.template-strip { gap: 6px; color: var(--text); overflow: visible; }
-  .frame-status.template-strip svg { flex: none; width: 14px; height: 14px; color: var(--accent-text); }
-  /* The name keeps its width; a long one stops at under half the strip, so the entry picker and Done keep their room. */
-  .template-strip-name { font-weight: 600; flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .template-strip-sample { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); }
-  .template-strip-sample .select { height: 24px; max-width: 220px; padding-block: 0; font-size: 12px; }
-  .frame-status.template-strip .link-btn { flex: none; min-height: 24px; }
+  /* A collection's layout being edited: a band over the pasteboard (TemplateStrip), which starts below it, so the band
+     never scrolls away and the strip above the page stays the selection chip's and the width's. A neutral raised bar,
+     since layouts have no hue: the words say it is shared, and Done is a bordered button. It is a container, and gives
+     way as it narrows: the words around the controls go, then the picker narrows to its floor (its list has every
+     title in full), then the collection's name is cut, and only then the end of who an edit reaches. Done never is. */
+  .template-strip { position: absolute; top: 8px; z-index: 5; height: 42px; container-type: inline-size; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-sm); }
+  /* The words keep their whole width before the picker's column has any room past its floor. */
+  .template-strip-row { display: grid; grid-template-columns: auto minmax(120px, max-content) minmax(min-content, 1fr) auto; align-items: center; column-gap: 10px; height: 100%; padding: 0 7px 0 12px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+  .template-strip-mark { width: 16px; height: 16px; color: var(--text); }
+  /* Whose layout, over who an edit to it reaches. */
+  .template-strip-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+  .template-strip-title { display: flex; min-width: 0; overflow: hidden; gap: 0.3em; font-size: 13px; line-height: 16px; font-weight: 600; color: var(--text); }
+  .template-strip-title > span { flex: none; }
+  .template-strip-title > .template-strip-name { flex: 0 1 auto; min-width: 2.5em; overflow: hidden; text-overflow: ellipsis; }
+  .template-strip-scope { min-width: 0; line-height: 15px; overflow: hidden; text-overflow: ellipsis; }
+  .template-strip-end { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+  .template-strip-sample { display: flex; flex: 1 1 auto; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+  /* It fills its column up to 360px and down to 88px: a zero width, so its floor (not its longest title) is its minimum. */
+  .template-strip-sample .select { flex: 1 1 360px; width: 0; min-width: 88px; max-width: 360px; }
+  .template-strip-busy { display: inline-grid; flex: none; place-items: center; width: 14px; }
+  .template-strip-busy .spinner { width: 14px; height: 14px; }
+  .template-strip-done { gap: 4px; padding: 0 10px 0 8px; }
+  .template-strip-done svg { width: 14px; height: 14px; }
+  .template-strip-scope-short { display: none; }
+  @container (max-width: 600px) {
+    .template-strip-verb, .template-strip-label, .template-strip-done-more { display: none; }
+    /* Narrow, the spinner takes no room (so nothing shifts as entries open): it is drawn over the mode glyph instead. */
+    .template-strip-busy { position: absolute; top: 50%; left: 12px; width: 16px; margin-top: -8px; }
+    .template-strip-busy:not(:empty) { height: 16px; background: var(--raised); }
+    .template-strip-scope:has(.template-strip-scope-short) .template-strip-scope-full { display: none; }
+    .template-strip-scope-short { display: inline; }
+  }
   .template-no-entries { position: absolute; inset: 0; z-index: 4; display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; background: var(--canvas); }
   .template-no-entries .status-card-icon { width: 22px; height: 22px; color: var(--accent-text); }
   /* The drop line: 2px of the selection colour between opaque keylines (white, then ink), so it holds at 3:1 on any
