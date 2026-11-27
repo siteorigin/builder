@@ -1,7 +1,7 @@
 import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationState, type ConversationSummary, type FieldLocation, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft, type TokenUsage } from '@shared/api';
+import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationState, type ConversationSummary, type FieldLocation, type FormRoutingPrompt, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft, type TokenUsage } from '@shared/api';
 import type { EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
@@ -26,7 +26,7 @@ import { authorityCheck, authorityLabel, canEditContracts, layoutLabel, liveEntr
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { untilStopped } from './validation';
 import { developerModeCheck } from '@engine/developer-mode';
-import { formRoutingQuestion, formRoutingReview, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
+import { formRoutingPrompt, formRoutingQuestion, formRoutingReview, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { FORM_ROUTING_PROPS } from '@engine/form-destinations';
 import { guestEditProblem } from '@engine/guest-edits';
 import { checkEditBatch } from '@shared/live/capabilities';
@@ -1822,7 +1822,7 @@ export class Orchestrator {
      * Ask the user a question and wait for the answer. `resume` is what the run goes back to once it is answered: the
      * app's own question, asked while the run checks its work, goes back to checking.
      */
-    const askUser = (question: string, choices: string[], widenScope?: boolean, images?: ChatImageRef[], resume: RunStatus = 'running') =>
+    const askUser = (question: string, choices: string[], widenScope?: boolean, images?: ChatImageRef[], resume: RunStatus = 'running', routing?: FormRoutingPrompt) =>
       new Promise<string>((resolve) => {
         // Stopped before the question could be shown: there is nothing to wait for.
         if (signal.aborted) return resolve(STOPPED_ANSWER);
@@ -1848,7 +1848,8 @@ export class Orchestrator {
           }
         };
         // Each question is added to the turn, so earlier questions and their answers stay with it.
-        (msg.questions ??= []).push({ id, text: question, choices: widen ? [yes, no] : choices, ...(widen ? { widen: true } : {}), ...(!widen && images?.length ? { images } : {}) });
+        // Only the app's own question about where a form sends (approveRouting) carries its review, for its dialog.
+        (msg.questions ??= []).push({ id, text: question, choices: widen ? [yes, no] : choices, ...(widen ? { widen: true } : {}), ...(!widen && images?.length ? { images } : {}), ...(!widen && routing ? { formRouting: routing } : {}) });
         this.setStatus('awaiting-input');
         this.emitMessage(msg, runId);
       });
@@ -1859,7 +1860,8 @@ export class Orchestrator {
      */
     const approveRouting = async (review: FormRoutingReview, send: (grant: FormRoutingGrant) => ReturnType<RunSession['apply']>) => {
       const { text, choices, allow } = formRoutingQuestion(review.changes);
-      const answer = await askUser(text, choices, false, undefined, run.status === 'awaiting-input' ? 'running' : run.status);
+      // The editor shows it in its own dialog, each form's destination before and after (#1130).
+      const answer = await askUser(text, choices, false, undefined, run.status === 'awaiting-input' ? 'running' : run.status, formRoutingPrompt(review.changes));
       if (signal.aborted) return refused('CANCELLED', 'Canceled', false);
       if (answer !== allow && !TYPED_YES.test(answer))
         return refused('SCOPE_MISMATCH', `The user kept where the contact form sends its messages. Nothing in this batch was applied: send the rest of it again without changing a form's ${FORM_ROUTING_PROPS.join(', ')}, or the design or code that decides them.`, true);

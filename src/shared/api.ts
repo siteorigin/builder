@@ -789,6 +789,26 @@ export interface ChatQuestion {
   images?: ChatImageRef[];
   /** The offered image the user chose; `answered` is then its name. */
   answeredAssetId?: string;
+  /**
+   * Set only by the app itself, never by the model: the question asks the user to allow an AI batch that changes where
+   * contact forms send visitors' messages (#1130), and the editor shows it in its own dialog, each form's destination
+   * before and after. `choices` are [keep, allow].
+   */
+  formRouting?: FormRoutingPrompt;
+}
+
+/**
+ * What the app shows in its dialog before an AI batch changes where a contact form sends (engine/form-routing): each
+ * affected form (or a design's defaults, or its code), and each of its settings that decides it, before and after.
+ */
+export interface FormRoutingPrompt {
+  forms: Array<{
+    /** The form and where it is, in the user's words (“Contact form” on “Home”). */
+    title: string;
+    rows: Array<{ label: string; before: string; after: string }>;
+    /** Something the rows cannot say: that code decides where it sends. */
+    note?: string;
+  }>;
 }
 
 /** A turn's questions in order, including one stored by an earlier version as `question`. */

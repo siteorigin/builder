@@ -5,9 +5,10 @@
  * it passes), a copy, a layout, or code that places a form. Only the project as it was before the batch is trusted,
  * and the designs the app ships as it ships them. The user allows exactly the changes they were shown (FormRoutingGrant).
  */
+import type { FormRoutingPrompt } from '@shared/api';
 import type { ComponentDefinition, GraphNode, NodeTree, ProjectState } from '@shared/types';
 import { listThemes } from '@catalogue/index';
-import { FORM_DESTINATIONS, sendsFormMessages } from '@shared/form-contract';
+import { FORM_DESTINATIONS, FORM_PROVIDERS, FORM_SERVICES, sendsFormMessages } from '@shared/form-contract';
 import { codeImports } from './code-imports';
 import { EMPTY_ROUTING, formDestinationProps, propDefault, routingText } from './form-destinations';
 import { allTrees, childLists } from './tree';
@@ -30,10 +31,36 @@ export interface FormRoutingChange {
   label?: string;
   value?: unknown;
   /**
+   * What it was before the batch, for the user to compare: the placement's own value or its design's default then, or
+   * the design's default then. Absent where there was nothing before: a placement or design the batch makes, a setting
+   * the earlier design did not have.
+   */
+  was?: unknown;
+  /** The placement or design the batch makes, which sent nowhere before it. */
+  added?: boolean;
+  /**
+   * The placement it reaches, as `key` names it, so every change to one form is shown together; absent for a design's
+   * own default or code.
+   */
+  placement?: string;
+  /**
+   * For a placement of one of the app's forms, where it sends on each side, whichever setting the batch changes: the
+   * service it uses and that service's setting, so the user sees the address a changed service now reads too. `was` is
+   * absent for a placement that is new or was not a form before, `is` for one that is no longer a form.
+   */
+  sends?: { was?: FormSends; is?: FormSends };
+  /**
    * The change itself, as a grant names it: the placement it reaches (its page, layout or design, and the node when it
    * was there before), and the value whole. The same change made again (new IDs and all) has the same key.
    */
   key: string;
+}
+
+/** Where one of the app's forms sends: its service, and that service's setting, as the form's design labels them. */
+export interface FormSends {
+  service: string;
+  setting?: string;
+  value?: unknown;
 }
 
 /**
@@ -194,6 +221,18 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   const trusted = new WeakMap<ComponentDefinition, boolean>();
   const isShipped = (d: ComponentDefinition | undefined) => !!d && (trusted.get(d) ?? (trusted.set(d, shipped(d)), trusted.get(d)!));
   const def = (state: ProjectState, id: string) => (Object.hasOwn(state.components, id) ? state.components[id] : undefined);
+  // Where a placement of one of the app's forms sends: the service it uses, and the one setting that service reads.
+  const sendsWith = (state: ProjectState, n: Instance): FormSends | undefined => {
+    const d = def(state, n.definitionId);
+    if (!sendsFormMessages(d)) return undefined;
+    const provider = String(resolved(state, n, 'provider') ?? 'endpoint');
+    const options = (d!.properties.provider as { options?: Array<{ value: string; label: string }> }).options ?? [];
+    const service = options.find((o) => o.value === provider)?.label ?? FORM_PROVIDERS.find(([v]) => v === provider)?.[1] ?? provider;
+    const prop = Object.hasOwn(FORM_SERVICES, provider) ? FORM_SERVICES[provider].prop : undefined;
+    if (!prop) return { service };
+    const label = (d!.properties[prop] as { label?: unknown } | undefined)?.label;
+    return { service, setting: typeof label === 'string' && label ? label : prop, value: resolved(state, n, prop) };
+  };
   // The designs that place a form at all, a setting of their own or not, worked out only if something needs them.
   let bearing: { before: Set<string>; after: Set<string> } | undefined;
   const bears = () => (bearing ??= { before: formBearing(before, was), after: formBearing(after, is) });
@@ -281,14 +320,24 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       // by where it is.
       const placement = prior ? `${scope}:${n.id}` : `${scope}:\u0001new:${added++}`;
       // Named, for a grant, without its list items' IDs: the batch sent again gives new items new IDs.
-      const report = (p: string) => add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p) }, valueOf(after, tree, scope, n, p, true), placement);
+      // Where the placement sends on each side, as the dialog shows it: worked out only for a placement that changes.
+      const sends = () => {
+        const was = prior ? sendsWith(before, prior) : undefined;
+        const is = sendsWith(after, n);
+        return was || is ? { sends: { ...(was ? { was } : {}), ...(is ? { is } : {}) } } : {};
+      };
+      const report = (p: string) => {
+        // What it sent with before: the placement's value then, where it was there and its design had the setting.
+        const then = prior && (p === VARIANTS || Object.hasOwn(def(before, prior.definitionId)?.properties ?? {}, p)) ? { was: resolved(before, prior, p) } : {};
+        add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p), ...then, ...(prior ? {} : { added: true }), placement, ...sends() }, valueOf(after, tree, scope, n, p, true), placement);
+      };
       if (prior && prior.definitionId !== n.definitionId) {
         if (!bears().before.has(prior.definitionId) && !bears().after.has(n.definitionId)) continue;
         const had_ = (p: string) => valueOf(before, had!.tree, scope, prior, p);
         const settings = new Set([...(was.get(prior.definitionId) ?? []), ...(is.get(n.definitionId) ?? [])]);
         const carried = isShipped(def(before, prior.definitionId)) && isShipped(def(after, n.definitionId)) && [...settings].every((p) => valueOf(after, tree, scope, n, p) === had_(p));
         if (carried) continue;
-        add({ kind: 'design', definitionId: n.definitionId, name, where, value: nameOf(before, prior.definitionId) }, prior.definitionId, placement);
+        add({ kind: 'design', definitionId: n.definitionId, name, where, value: nameOf(before, prior.definitionId), placement, ...sends() }, prior.definitionId, placement);
         // And what it sends with, where that is not what the placement had: the user sees every address it would use.
         for (const p of ps) if (!EMPTY_ROUTING.has(valueOf(after, tree, scope, n, p)) && valueOf(after, tree, scope, n, p) !== had_(p)) report(p);
         continue;
@@ -318,7 +367,7 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       const value = defaultOf(now, p);
       const text = routingText(unlisted(value));
       if (prev ? text === routingText(unlisted(defaultOf(prev, p))) : EMPTY_ROUTING.has(text) || p === VARIANTS) continue;
-      add({ kind: 'default', definitionId: id, name: now.name, prop: p, label: labelOf(id, p), value }, text);
+      add({ kind: 'default', definitionId: id, name: now.name, prop: p, label: labelOf(id, p), value, ...(prev ? { was: defaultOf(prev, p) } : { added: true }) }, text);
     }
   }
 
@@ -353,4 +402,74 @@ export function formRoutingQuestion(changes: readonly FormRoutingChange[]): { te
 /** What a batch refused for its form changes tells the assistant. */
 export function formRoutingRefusal(changes: readonly FormRoutingChange[]): string {
   return `Only the user can allow a change to where a contact form sends visitors’ messages. ${describe(changes[0])}${changes.length > 1 ? ` And ${changes.length - 1} more.` : ''} Nothing in this batch was applied.`;
+}
+
+/** A setting's value as the dialog shows it: the text itself, what a binding reads, or that nothing is set. */
+function display(value: unknown): string {
+  if (EMPTY_ROUTING.has(routingText(value))) return 'Not set';
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const v = value as { $prop?: unknown; $item?: unknown };
+    if (typeof v.$prop === 'string' && Object.keys(v).length === 1) return `Its design’s “${v.$prop}” setting`;
+    if (typeof v.$item === 'string' && Object.keys(v).length === 1) return `Each item’s “${v.$item}”`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * What the app's dialog shows before an AI batch changes where contact forms send (agent/orchestrator.ts asks it, the
+ * renderer's ConfirmDialog draws it): each form the batch reaches, by where it is, with the service it uses and where
+ * that sends before and after, and every other setting the batch changes that decides it; a design's defaults; and
+ * code, which decides in its source where it sends. Only what the session's review found is shown, in the app's
+ * words: nothing in it comes from the model.
+ */
+export function formRoutingPrompt(changes: readonly FormRoutingChange[]): FormRoutingPrompt {
+  const groups = new Map<string, FormRoutingChange[]>();
+  for (const c of changes) {
+    const at = c.kind === 'setting' || c.kind === 'design' ? `p\u0000${c.placement ?? c.where ?? ''}\u0000${c.definitionId}` : `${c.kind}\u0000${c.definitionId}`;
+    groups.set(at, [...(groups.get(at) ?? []), c]);
+  }
+  const forms: FormRoutingPrompt['forms'] = [];
+  for (const cs of groups.values()) {
+    const first = cs[0];
+    if (first.kind === 'code') {
+      forms.push({ title: `The code of “${first.name}”`, rows: [], note: 'This design places a contact form, and its code decides where the form sends. The AI changes that code, so the app can’t show the address it will use.' });
+      continue;
+    }
+    if (first.kind === 'default') {
+      forms.push({ title: `The “${first.name}” design: what new placements start with`, rows: cs.map((c) => ({ label: c.label ?? c.prop ?? '', before: c.added ? 'New design' : display(c.was), after: display(c.value) })) });
+      continue;
+    }
+    const added = cs.every((c) => c.added);
+    const rows: FormRoutingPrompt['forms'][number]['rows'] = [];
+    const swap = cs.find((c) => c.kind === 'design');
+    if (swap) rows.push({ label: 'Design', before: String(swap.value), after: swap.name });
+    const sends = cs.find((c) => c.sends)?.sends;
+    // The settings the service rows already show, on either side.
+    const shown = new Set<string>(['provider']);
+    if (sends) {
+      const service = (s: FormSends | undefined) => s?.service ?? 'Not a contact form';
+      const to = (s: FormSends | undefined) => (!s ? 'Not a contact form' : s.setting ? `${display(s.value)} (${s.setting})` : 'Nowhere');
+      rows.push({ label: 'Form service', before: added ? 'New form' : service(sends.was), after: service(sends.is) });
+      rows.push({ label: 'Sends to', before: added ? 'New form' : to(sends.was), after: to(sends.is) });
+      for (const s of [sends.was, sends.is]) for (const c of cs) if (s?.setting && c.label === s.setting && c.prop) shown.add(c.prop);
+    }
+    for (const c of cs) {
+      if (c.kind !== 'setting' || (sends && shown.has(c.prop ?? ''))) continue;
+      rows.push({ label: sends ? `${c.label}, a setting this service doesn’t use` : (c.label ?? c.prop ?? ''), before: added ? 'New form' : Object.hasOwn(c, 'was') ? display(c.was) : 'Not set', after: display(c.value) });
+    }
+    forms.push({ title: `“${first.name}” ${first.where ?? ''}`.trim(), rows });
+  }
+  // Forms with the same name in the same place are told apart by their order there.
+  const titles = new Map<string, number>();
+  for (const f of forms) titles.set(f.title, (titles.get(f.title) ?? 0) + 1);
+  const nth = new Map<string, number>();
+  for (const f of forms) {
+    const n = titles.get(f.title)!;
+    if (n < 2) continue;
+    const i = (nth.get(f.title) ?? 0) + 1;
+    nth.set(f.title, i);
+    f.title = `${f.title} (${i} of ${n})`;
+  }
+  return { forms };
 }
