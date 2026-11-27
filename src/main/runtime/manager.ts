@@ -628,6 +628,14 @@ function runNpmNow(args: string[], dir: string, onLine: (line: string) => void, 
 /** Numbers each preview process forked, so the benchmark's marks can tell one from the next. */
 let forks = 0;
 
+/**
+ * V8 settings of the preview's dev server: compiled code is never thrown away for being idle. The server collects its
+ * garbage once it has gone quiet (src/runtime/idle-collect.ts), a collection that would otherwise drop the bytecode of
+ * everything it has not just run, and the next save would compile the toolchain's code all over again. Given as
+ * Chromium's switch, which the utility process reads before it creates its V8 isolate.
+ */
+export const DEV_SERVER_V8_FLAGS = ['--no-flush-bytecode'];
+
 /** How long a stopping preview process gets: asked to stop, then terminated, then killed, then no longer waited for. */
 export const STOP_LIMITS = { termMs: 1500, killMs: 3000, giveUpMs: 5000 };
 
@@ -709,6 +717,7 @@ export class DevServer {
     const proc = utilityProcess.fork(workerPath(), [], {
       cwd: this.dir,
       env: projectEnv(),
+      execArgv: [`--js-flags=${DEV_SERVER_V8_FLAGS.join(' ')}`],
       serviceName: 'SiteOrigin project runtime',
       stdio: 'pipe'
     });
