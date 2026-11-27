@@ -209,14 +209,14 @@
      chrome beside the user's page, so it takes the selection colour (--select: blue, green on a shared header or
      footer, plum while defining) and the fixed inks named once on it here, never a chrome token that changes with
      the theme. States are drawn, never faded: everything live is solid white (the name at 600, its context at 400);
-     an unavailable move is a neutral slate tile under a quieter glyph, whatever the scope; an open menu takes the
+     an unavailable move or step keeps the chip's face and draws its glyph in a solid mix of white and the scope colour; an open menu takes the
      pale raised face, as Done does (a notice's one answer is drawn the same way); keyboard focus is the one 2px ring,
      inside the control, white on the fill and the selection colour on a pale face. Every control is a 24px target
      with --r-xs corners, concentric with the chip's --r-sm. Its rim and shade are the drag strip's (--drag-rim and
      --drag-shade, below), since the two share the strip above the page. */
   .ov-chip {
     --chip-ink: #fff; --chip-rule: color-mix(in srgb, #fff 45%, var(--select)); --chip-hover: color-mix(in srgb, #fff 10%, var(--select));
-    --chip-off: #43536a; --chip-off-ink: #adbacd;
+    --chip-off-ink: color-mix(in srgb, #fff 55%, var(--select));
     position: absolute; display: flex; align-items: center; gap: 1px; height: 28px; padding: 2px; border-radius: var(--r-sm); background: var(--select); color: var(--chip-ink); box-shadow: 0 0 0 1px var(--drag-rim), 0 2px 6px -2px var(--drag-shade); pointer-events: auto; white-space: nowrap; z-index: 1;
   }
   .ov-chip .name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; height: 24px; padding: 0 6px 0 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.005em; }
@@ -234,8 +234,9 @@
   .ov-chip .icon-btn svg { width: 15px; height: 15px; }
   .ov-chip :is(.icon-btn, .chip-text, .of.link):hover:not([aria-disabled='true'], [aria-expanded='true'], .raised) { background: var(--chip-hover); color: var(--chip-ink); }
   /* Unavailable (a move with nowhere to go): it stays in place and focusable, and says why in its tooltip and
-     description. The tile is the same slate on every scope colour, so it never reads as a pressed blue. */
-  .ov-chip .icon-btn[aria-disabled='true'] { background: var(--chip-off); color: var(--chip-off-ink); cursor: default; }
+     description. No tile: a filled square reads as a pressed key or a hole in the bar. The glyph steps back into the
+     scope colour instead, a solid ink (never opacity) that follows blue, green and plum. */
+  .ov-chip .icon-btn[aria-disabled='true'] { background: none; color: var(--chip-off-ink); cursor: default; }
   .ov-chip .icon-btn.grip { cursor: grab; }
   .ov-chip .icon-btn.grip:active { cursor: grabbing; }
   /* Labelled actions (Show, Inspect) are ghost buttons like the icons beside them; Done, the editing chip's one

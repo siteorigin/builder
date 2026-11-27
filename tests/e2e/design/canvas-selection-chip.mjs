@@ -114,7 +114,11 @@ await shot('section-first', '.ov-chip [aria-label="Move up"]');
 
 // 2. A section further down the page: both moves available.
 await clearSelection();
-await frame.locator('section[data-so-node="root"]').nth(1).dispatchEvent('click');
+// The page's second section, picked in Layers (the rail is closed again before the capture).
+const layersRail = win.locator('.rail [aria-label="Layers"]');
+if ((await layersRail.getAttribute('aria-pressed')) !== 'true') await layersRail.click();
+await win.locator('.list-item', { hasText: 'Logo strip' }).first().click();
+await layersRail.click();
 await win.locator('.ov-chip').waitFor({ timeout: 8000 });
 await pause(600);
 if ((await win.locator('.ov-chip [aria-label="Move up"]').getAttribute('aria-disabled')) === 'true') throw new Error('Move up should be available on the second section');
@@ -259,15 +263,20 @@ await win.locator('.dock-tab', { hasText: 'Inspector' }).click().catch(() => {})
 await pause(300);
 const componentSection = win.locator('.section-head', { hasText: 'Component' }).first();
 if ((await componentSection.getAttribute('aria-expanded')) === 'false') await componentSection.click();
-await win.getByRole('button', { name: 'Edit everywhere…' }).first().click();
-await win.getByRole('button', { name: /Make a copy and edit/ }).click();
-await win.locator('.editor.defining').waitFor({ timeout: 20000 });
-await pause(1800);
-await deepPick(frame.locator('h1').first());
-await win.locator('.ov-chip').waitFor({ timeout: 8000 });
-await shot('defining-part', '.editor.defining .ov-chip');
-await clearSelection();
-await shot('defining-hover', '.editor.defining .ov-hover .ov-label', { themes: LIGHT, pointer: overHero, crop: '.ov-hover .ov-label', pad: { left: 40, right: 260, up: 30, down: 60 } });
+// The starter's sections are code components now, which have no Edit everywhere: the plum scope is captured only
+// when the picked section offers it, and said when it does not.
+const editEverywhere = win.getByRole('button', { name: 'Edit everywhere…' }).first();
+if (await editEverywhere.isVisible().catch(() => false)) {
+  await editEverywhere.click();
+  await win.getByRole('button', { name: /Make a copy and edit/ }).click();
+  await win.locator('.editor.defining').waitFor({ timeout: 20000 });
+  await pause(1800);
+  await deepPick(frame.locator('h1').first());
+  await win.locator('.ov-chip').waitFor({ timeout: 8000 });
+  await shot('defining-part', '.editor.defining .ov-chip');
+  await clearSelection();
+  await shot('defining-hover', '.editor.defining .ov-hover .ov-label', { themes: LIGHT, pointer: overHero, crop: '.ov-hover .ov-label', pad: { left: 40, right: 260, up: 30, down: 60 } });
+} else console.log('skipped defining-part and defining-hover: the section has no Edit everywhere');
 
 await app.close();
 rmSync(WORK, { recursive: true, force: true });

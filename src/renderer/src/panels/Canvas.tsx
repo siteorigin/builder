@@ -3977,6 +3977,9 @@ function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLa
   const why = (ok: boolean, reason: string, which: string) => (ok ? {} : { title: reason, 'aria-describedby': `${whyId}-${which}` });
   const prevWhy = item?.n === 1 ? 'This is the first item' : 'No earlier item shows this part';
   const nextWhy = item && item.n === item.count ? 'This is the last item' : 'No later item shows this part';
+  // Layers selected together are held back by whichever of them is at the end, not always the one named.
+  const upWhy = group ? 'One of these is already first' : 'Already first';
+  const downWhy = group ? 'One of these is already last' : 'Already last';
   // Layers selected together: the chip names the one picked and counts the rest, which its moves and Duplicate act on too.
   const others = group ? group.indexes.length - 1 : 0;
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -4115,14 +4118,14 @@ function SelectionChip({ box, frameWidth, name, icon, parent, repeats, repeatsLa
       {(canReorder || canEdit) && <span className="chip-sep" aria-hidden="true" />}
       {canReorder && (
         <>
-          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} {...why(canUp, 'Already first', 'up')} onClick={guard(canUp, () => onMove(-1))}>
+          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} {...why(canUp, upWhy, 'up')} onClick={guard(canUp, () => onMove(-1))}>
             <ArrowUp />
           </button>
-          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} {...why(canDown, 'Already last', 'down')} onClick={guard(canDown, () => onMove(1))}>
+          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} {...why(canDown, downWhy, 'down')} onClick={guard(canDown, () => onMove(1))}>
             <ArrowDown />
           </button>
-          {!canUp && <span id={`${whyId}-up`} hidden>Already first</span>}
-          {!canDown && <span id={`${whyId}-down`} hidden>Already last</span>}
+          {!canUp && <span id={`${whyId}-up`} hidden>{upWhy}</span>}
+          {!canDown && <span id={`${whyId}-down`} hidden>{downWhy}</span>}
         </>
       )}
       {canEdit && (
