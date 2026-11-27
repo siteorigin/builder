@@ -73,8 +73,6 @@ jobs:
             exit 1
           fi
       - run: npm ci
-      # The theme pack thumbnails are drawn in Chromium (`--require-previews`).
-      - run: npx playwright install chromium
       # Not Authenticode-signed yet, so SmartScreen warns on the installer.
       - run: npm run dist -- --win --x64 --publish never
       - uses: ./.github/actions/resolve-update-metadata-prefix

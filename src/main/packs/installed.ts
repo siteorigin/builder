@@ -30,8 +30,8 @@ export async function loadInstalledPacks(roots: PackRoot[]): Promise<PackCatalog
   const builtInMissing = !packs.some((p) => p.pack.source === 'bundled' && !p.pack.devOnly);
   if (builtInMissing) refused.unshift({ dir: roots[0]?.dir ?? '', reason: 'Missing from this installation of SiteOrigin Builder.' });
   for (const r of refused) console.warn(`Theme pack refused (${r.dir}): ${r.reason}`);
-  // A development build makes its built-in theme with a script; a person reinstalls instead (StartupFailure.tsx says so).
-  if (builtInMissing) console.warn('Run "npm run build:packs" to build the built-in theme.');
+  // A development checkout has Foundation committed, checked by a script; a person reinstalls instead (StartupFailure.tsx says so).
+  if (builtInMissing) console.warn('Run "npm run build:packs -- --committed" to check the committed Foundation release against resources/packs.lock.json.');
   clearPackFiles();
   registerPacks(packs.map((p) => p.pack));
   for (const p of packs) registerPackFiles(p.pack.id, p.files);

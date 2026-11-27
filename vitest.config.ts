@@ -16,8 +16,17 @@ export default defineConfig({
     include: ['tests/unit/**/*.test.ts'],
     environment: 'node',
     setupFiles: ['tests/unit/setup.ts'],
-    // A change to any of these runs the whole suite under `--changed`, as PR CI runs it (.github/workflows/ci.yml).
-    forceRerunTriggers: ['**/package.json', '**/package-lock.json', '**/{vitest,vite}.config.*', 'tests/unit/setup.ts'],
+    // A change to any of these runs the whole suite under `--changed`, as PR CI runs it (.github/workflows/ci.yml). The
+    // committed theme releases and their lock are read from disk, not imported, so `--changed` would not follow them.
+    forceRerunTriggers: [
+      '**/package.json',
+      '**/package-lock.json',
+      '**/{vitest,vite}.config.*',
+      '**/tests/unit/setup.ts',
+      '**/resources/packs.lock.json',
+      '**/resources/packs/foundation/**',
+      '**/resources/packs-dev/foundation-alt/**'
+    ],
     // A CI runner has a quarter of a workstation's cores, so image encoding and browser tests run several times
     // slower there: tests without a timeout of their own get more time on CI, never less anywhere.
     ...(process.env.CI ? { testTimeout: 30_000, hookTimeout: 60_000 } : {})

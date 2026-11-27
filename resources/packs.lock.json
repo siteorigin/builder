@@ -1,0 +1,13 @@
+{
+	"builderComponentsCommit": "36fcbcc51dbf62b2e6b69456c1e717401a3ec9d7",
+	"packs": {
+		"foundation": {
+			"version": "0.1.0",
+			"digest": "b73a38d7706894a08bfcc089e9c43d9039a8ddf23ae098f70b349942a19da7b7"
+		},
+		"foundation-alt": {
+			"version": "0.1.0",
+			"digest": "29290febde1cba33615d3bd161d1ebac250de29670719f8aea471d12e48eae7f"
+		}
+	}
+}
