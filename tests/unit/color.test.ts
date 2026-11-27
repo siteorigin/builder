@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { colorFromPicker, opacityOf, paintableColor, parseColor, pickerHex, retirePicks, toHex6 } from '@shared/color';
+import { colorFromPicker, colorWithAlpha, hsvToRgb, opacityOf, paintableColor, parseColor, pickerHex, retirePicks, rgbToHsv, toHex6 } from '@shared/color';
 import { validateStyleValue } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { createStarterState } from '@catalogue/starters';
@@ -316,4 +316,61 @@ describe('a saved colour through save, reopen, adjust and undo', () => {
       await s.close();
     });
   }
+});
+
+describe('the picker setting an opacity', () => {
+  it('writes the opacity it was given, keeping hex only where a byte holds it', () => {
+    expect(colorFromPicker('#d14131', '#d14131', undefined, 0.5)).toBe('rgb(209 65 49 / 0.5)');
+    expect(colorFromPicker('#d1413180', '#c0392b', undefined, 0.555)).toBe('rgb(192 57 43 / 0.555)');
+    expect(colorFromPicker('#d1413180', '#c0392b', undefined, 0x40 / 255)).toBe('#c0392b40');
+    expect(colorFromPicker('rgba(209, 65, 49, 0.5)', '#d14131', undefined, 0.25)).toBe('rgba(209, 65, 49, 0.25)');
+    expect(colorFromPicker('rgb(209 65 49 / 0.5)', '#d14131', undefined, 1)).toBe('#d14131');
+  });
+
+  it('rewrites nothing when neither the colour nor the opacity moved', () => {
+    expect(colorFromPicker('rgb(209 65 49 / 0.5)', '#d14131', undefined, 0.5)).toBe('rgb(209 65 49 / 0.5)');
+  });
+
+  it('keeps an opacity it was not given, however precise', () => {
+    expect(colorFromPicker('rgb(209 65 49 / 0.555)', '#c0392b')).toBe('rgb(192 57 43 / 0.555)');
+    expect(colorFromPicker('#d14131fe', '#c0392b')).toBe('#c0392bfe');
+  });
+});
+
+describe('colorWithAlpha', () => {
+  it('changes only the opacity of a colour function, its colour written as it was', () => {
+    expect(colorWithAlpha('oklch(70% 0.30 145)', 0.5)).toBe('oklch(70% 0.30 145 / 0.5)');
+    expect(colorWithAlpha('oklch(70% 0.30 145 / 0.5)', 1)).toBe('oklch(70% 0.30 145)');
+    expect(colorWithAlpha('color(display-p3 1 0 0)', 0.5)).toBe('color(display-p3 1 0 0 / 0.5)');
+    expect(colorWithAlpha('hsl(10 63% 50% / 0.2)', 0.35)).toBe('hsl(10 63% 50% / 0.35)');
+  });
+
+  it('gives legacy rgb() and rgba() a fourth value', () => {
+    expect(colorWithAlpha('rgb(209, 65, 49)', 0.5)).toBe('rgb(209, 65, 49, 0.5)');
+    expect(colorWithAlpha('rgba(209, 65, 49, 0.5)', 0.25)).toBe('rgba(209, 65, 49, 0.25)');
+    expect(colorWithAlpha('rgba(209, 65, 49, 0.5)', 1)).toBe('rgba(209, 65, 49)');
+  });
+
+  it('writes hex with an opacity byte only when the byte holds it', () => {
+    expect(colorWithAlpha('#d14131', 0x80 / 255)).toBe('#d1413180');
+    expect(colorWithAlpha('#d1413180', 1)).toBe('#d14131');
+    expect(colorWithAlpha('#d14131', 0.5)).toBeNull();
+  });
+
+  it('leaves what it cannot rewrite to the picker', () => {
+    for (const v of ['transparent', 'red', 'color-mix(in srgb, red 50%, blue)', 'rgb(var(--r) 0 0)', 'currentcolor']) expect(colorWithAlpha(v, 0.5), v).toBeNull();
+  });
+});
+
+describe('hue, saturation and brightness', () => {
+  it('turns sRGB into HSV and back', () => {
+    expect(rgbToHsv({ r: 255, g: 0, b: 0, a: 1 })).toEqual({ h: 0, s: 1, v: 1, a: 1 });
+    expect(hsvToRgb({ h: 120, s: 1, v: 1, a: 0.5 })).toEqual({ r: 0, g: 255, b: 0, a: 0.5 });
+    for (const hex of ['#c0392b', '#1f5a4c', '#ffffff', '#000000', '#808080', '#336699']) expect(toHex6(hsvToRgb(rgbToHsv(parseColor(hex)!))), hex).toBe(hex);
+  });
+
+  it('gives a grey no saturation and a black no brightness', () => {
+    expect(rgbToHsv({ r: 128, g: 128, b: 128, a: 1 }).s).toBe(0);
+    expect(rgbToHsv({ r: 0, g: 0, b: 0, a: 1 })).toEqual({ h: 0, s: 0, v: 0, a: 1 });
+  });
 });

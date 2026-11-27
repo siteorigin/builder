@@ -6,6 +6,7 @@ import type { ElementRef, StyleValue, TokenDef } from '@shared/types';
 import { STYLE_PROP_MAP, cssRivals } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { ChoiceField, Modal, Spinner, type MenuItem } from '../components/ui';
+import { ColorChip } from '../components/ColorPick';
 import { commitOps, dismissToast, getState, setState, toast, undoAction, useStore, type State } from '../store';
 import { SCOPE_LABELS, STATE_LABELS, captureStyle, changeSize, planStylePaste, styleSelection, type PasteRow, type PasteScope } from '../lib/style-copy';
 import { CONTAINER_SCOPES, isContainerScope, styleScopeKey, type StyleState } from '@shared/types';
@@ -83,7 +84,7 @@ function PasteValue({ row, value, tokens, text }: { row: PasteRow; value: StyleV
   const linked = def ? isStyleLink(def, value) : typeof value === 'object' && value !== null;
   return (
     <>
-      {color ? <span className="paste-swatch" style={{ background: color }} aria-hidden="true" /> : linked && <Palette className="paste-lead" aria-hidden="true" />}
+      {color ? <ColorChip color={color} /> : linked && <Palette className="paste-lead" aria-hidden="true" />}
       {text}
       {linked && <span className="sr-only">, from Site styles</span>}
     </>

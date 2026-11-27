@@ -1,0 +1,68 @@
+@layer components {
+  /* ---------- Colour swatch, chip and picker (ColorPick.tsx) ---------- */
+  /* One family for every colour the editor shows: the colour (wellPaint, or --paint from swatchPaint) over the --checker so
+     opacity shows, split on the diagonal with its opaque colour when it is see-through; a --swatch-edge inside so
+     white and near-black keep their shape; the 3:1 --border-control ring outside. The swatch is a --r-sm square (a
+     control); a chip inside another control is round, so it never reads as a checkbox (StyleControls, StylePaste). */
+  .color-pick { position: relative; display: grid; width: 28px; height: 28px; flex: none; padding: 0; border: 0; border-radius: var(--r-sm); background: var(--checker) 0 0 / 8px 8px; box-shadow: 0 0 0 1px var(--border-control); color: inherit; }
+  .color-pick.md { width: 26px; height: 26px; }
+  .color-pick-fill { grid-area: 1 / 1; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--swatch-edge); }
+  button.color-pick { cursor: pointer; }
+  button.color-pick:hover { box-shadow: 0 0 0 1px var(--text-2); }
+  button.color-pick:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  /* Its picker open: the ring the accent's tint, as a menu's trigger keeps its pressed face. */
+  button.color-pick.open { box-shadow: 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+  /* Following another colour: a dashed ring (as its value field) and a link mark in its corner. */
+  .color-pick.linked, button.color-pick.linked:hover { box-shadow: none; outline: 1px dashed var(--border-control); outline-offset: 2px; }
+  button.color-pick.linked:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  button.color-pick.linked.open, button.color-pick.linked.open:hover { box-shadow: 0 0 0 4px var(--accent-soft); outline: 1px dashed var(--accent); outline-offset: 2px; }
+  .color-pick-link { position: absolute; right: -6px; bottom: -6px; display: grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; background: var(--raised); box-shadow: 0 0 0 1px var(--border-control); color: var(--text-2); }
+  .color-pick-link svg { width: 9px; height: 9px; stroke-width: 2.5; }
+  /* Nothing it can paint (empty, currentcolor, text not yet checked): hatched, never a colour it is not. */
+  .color-pick.unpainted { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--border-control) 5px 6px), var(--raised); }
+
+  .color-chip { display: inline-block; width: 12px; height: 12px; flex: none; border-radius: 50%; background: var(--paint, none), var(--checker) 0 0 / 6px 6px; box-shadow: inset 0 0 0 1px var(--swatch-edge), 0 0 0 1px var(--border-control); }
+  .color-chip.unpainted { background: repeating-linear-gradient(135deg, transparent 0 3px, var(--border-control) 3px 4px), var(--raised); }
+
+  /* The picker: a popover card, as menus are, under its swatch. */
+  .color-pop { position: fixed; z-index: 1000; display: flex; flex-direction: column; gap: 10px; width: 264px; max-height: calc(100vh - 16px); overflow-y: auto; padding: 12px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); outline: none; animation: menu-in 120ms ease-out; }
+  @media (prefers-reduced-motion: reduce) { .color-pop { animation: fade-in 80ms ease-out; } }
+  .color-pop-head { overflow: hidden; margin-top: -2px; font-size: 12px; font-weight: 600; color: var(--text-2); text-overflow: ellipsis; white-space: nowrap; }
+  .color-pop-note { display: flex; gap: 6px; margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; }
+  .color-pop-note svg { width: 14px; height: 14px; flex: none; margin-top: 1px; }
+  .color-pop-note strong { font-weight: 600; color: var(--text); }
+  .color-pop-follows { display: flex; flex-direction: column; gap: 10px; }
+  .color-pop-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* The colour area: the hue, whitened to the left and darkened to the bottom. */
+  .color-pop-area { position: relative; height: 144px; border-radius: var(--r-sm); background: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, var(--hue)); box-shadow: inset 0 0 0 1px var(--swatch-edge), 0 0 0 1px var(--border-control); touch-action: none; cursor: crosshair; }
+  .color-pop-area:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+  /* Thumbs are round by nature: a white ring with a dark one outside, so one shows on any colour. */
+  .color-pop-thumb { position: absolute; width: 14px; height: 14px; border-radius: 50%; translate: -50% -50%; box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgb(0 0 0 / 0.55), inset 0 0 0 1px rgb(0 0 0 / 0.3); pointer-events: none; }
+  /* Sliders: a 12px bar in a 24px target, thumbs kept inside its ends; the eyedropper beside hue, the opacity in
+     numbers beside its slider. Bars and the area take the 3:1 --border-control edge, as every control does. */
+  .color-pop-controls { display: grid; grid-template-columns: minmax(0, 1fr) 64px; align-items: center; gap: 4px 10px; }
+  .color-pop-track { position: relative; height: 24px; margin: 0 7px; touch-action: none; cursor: pointer; outline: none; }
+  .color-pop-track::before { content: ''; position: absolute; inset: 6px -7px; border-radius: 6px; background: var(--track); box-shadow: inset 0 0 0 1px var(--swatch-edge), 0 0 0 1px var(--border-control); }
+  .color-pop-track:focus-visible::before { outline: 2px solid var(--focus); outline-offset: 3px; }
+  .color-pop-track .color-pop-thumb { top: 50%; }
+  /* The gradients run between the thumb's two end positions (7px in from each end), so the colour under the thumb
+     is the one chosen; the rounded caps carry on the end colours. */
+  .color-pop-track.hue { --track: linear-gradient(to right, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00) 7px 0 / calc(100% - 14px) 100% no-repeat, #f00; }
+  .color-pop-track.alpha { --track: linear-gradient(to right, transparent, var(--solid)) 7px 0 / calc(100% - 14px) 100% no-repeat, linear-gradient(to right, transparent calc(100% - 7px), var(--solid) 0), var(--checker) 0 0 / 8px 8px; }
+  .color-pop-dropper { justify-self: end; width: 26px; height: 26px; }
+  .color-pop-alpha { position: relative; display: flex; }
+  .color-pop-alpha-input { width: 100%; padding-right: 22px; text-align: right; font-variant-numeric: tabular-nums; }
+  .color-pop-unit { position: absolute; right: 9px; top: 50%; translate: 0 -50%; font-size: 12px; color: var(--text-2); pointer-events: none; }
+  .color-pop .color-pop-error { margin: -4px 0 0; }
+  .color-pop-hex { width: 100%; }
+  /* The site's colours to copy, named. */
+  .color-pop-presets { display: flex; flex-direction: column; gap: 4px; margin: 0 -12px -12px; padding: 10px 6px 8px; border-top: 1px solid var(--border); }
+  .color-pop-label { padding: 0 6px 2px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+  /* One to a row, so every name reads whole; half a row shows below the fold when there are more. */
+  .color-pop-swatches { display: flex; flex-direction: column; max-height: 154px; overflow-y: auto; }
+  .color-pop-preset { display: flex; flex: none; align-items: center; gap: 7px; min-width: 0; height: 28px; padding: 0 6px; border: 0; border-radius: var(--r-sm); background: none; font-size: 12px; color: var(--text); text-align: left; cursor: pointer; }
+  .color-pop-preset:hover { background: var(--hover); }
+  .color-pop-preset:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .color-pop-preset .color-chip.wide { width: 20px; height: 14px; border-radius: 3px; }
+  .color-pop-preset-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}

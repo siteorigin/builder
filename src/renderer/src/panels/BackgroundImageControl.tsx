@@ -113,7 +113,7 @@ export function BackgroundImageControl({
           </select>
           <label htmlFor={ids.scrim}>Overlay</label>
           <span className={`style-field${swatch && !drafting ? ' has-lead' : ''}`}>
-            {swatch && !drafting && <span className="style-lead swatch style-overlay-swatch" aria-hidden="true" />}
+            {swatch && !drafting && <span className="color-chip style-lead style-overlay-swatch" aria-hidden="true" />}
             <select
               id={ids.scrim}
               className={`select sm grow style-select${drafting ? ' is-drafting' : mark(!!value?.scrim)}`}

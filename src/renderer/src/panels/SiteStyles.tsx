@@ -15,7 +15,7 @@ import { allTrees, instancesOf } from '@engine/tree';
 import { forEachTokenPropRef } from '@engine/tokens';
 import { api, applyOps, commitOps, dismissToast, getState, setState, shownAt, toast, undoAction, useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
-import { ColorPick } from '../components/ColorPick';
+import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
 import { DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -760,6 +760,9 @@ export function SiteStyles() {
     return out;
   };
 
+  /** The palette's other colours, as its picker offers them to copy. */
+  const colorPresets = (id: string) => colorIds.filter((c) => c !== id && !!shownHex(c)).map((c) => ({ id: c, label: byId(c)?.label ?? c, value: shownHex(c)! }));
+
   /** What this project sets directly to a style, grouped by where it is. */
   const usesOf = (id: string) => {
     const u = uses.get(id);
@@ -838,6 +841,8 @@ export function SiteStyles() {
     const open = !compact && openDetail === t.id;
     const detailId = `${uid}-detail-${t.id}`;
     const loops = followers(t.id);
+    // How see-through it is, in words beside what it colours: the swatch shows it, this says how much.
+    const opacity = opacityWords(value);
     return (
       <div className={`ss-color${shownChanged(t.id) ? ' set' : ''}${open ? ' open' : ''}${compact ? ' compact' : ''}${follows ? ' linked' : ''}`} key={t.id} data-ss-row data-token-id={compact ? undefined : t.id}>
         {!compact && (
@@ -846,7 +851,16 @@ export function SiteStyles() {
           </button>
         )}
         {/* Each palette has its own picker and field: a pick or a draft under way never carries over to the other. */}
-        <ColorPick key={`picker-${palette}`} value={value} disabled={!!follows} onPick={(next) => setShown(t.id, next, 'picker')} label={`${t.label}${darkShown ? ' dark' : ''} color`} />
+        <ColorPick
+          key={`picker-${palette}`}
+          value={value}
+          follows={follows}
+          onFollowed={lost ? undefined : () => jumpTo(ref!)}
+          onOwn={value ? () => relinkShown(t.id, value) : undefined}
+          onPick={(next) => setShown(t.id, next, 'picker')}
+          presets={colorPresets(t.id)}
+          label={`${t.label}${darkShown ? ' dark' : ''} color`}
+        />
         <div className="ss-color-text">
           <div className="ss-name">
             <NameWithReset
@@ -857,7 +871,13 @@ export function SiteStyles() {
               }
             />
           </div>
-          {desc && <div className="ss-desc">{desc}</div>}
+          {(desc || opacity) && (
+            <div className="ss-desc">
+              {desc}
+              {desc && opacity && ' · '}
+              {opacity}
+            </div>
+          )}
         </div>
         {follows ? (
           <span className="ss-hex ss-hex-linked mono" title={lost ? 'The color it followed is no longer available. Open its details to choose another.' : `${value}. Follows ${follows}. Choose "Use its own color" to set it separately.`}>

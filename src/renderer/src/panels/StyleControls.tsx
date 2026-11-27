@@ -8,7 +8,7 @@ import { hasGroupStyles } from '@shared/interaction-groups';
 import { CONTAINER_SCOPE_LABEL, CONTAINER_SCOPE_RANGE, STATE_WORDS, STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, colorAtStrength, cssRivals, hasStateStyles, isStateStyleProp, partStrength, styleDeclOrder, withColumnSizes, type StyleLayer, type StylePropDef } from '@shared/styles';
 import { parseColor } from '@shared/color';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
-import { ColorPick } from '../components/ColorPick';
+import { ColorChip, ColorPick, opacityWords } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { BackgroundImageControl, describeBackgroundImage } from './BackgroundImageControl';
 import { DraftInput } from '../components/ui';
@@ -730,7 +730,7 @@ function tokenOptions(tokens: TokenDef[], group: StylePropDef['tokenGroup']) {
 
 /** The mark for a value linked to Site styles: the colour itself for a colour, the Site styles glyph otherwise. */
 function Lead({ def, v, tokens }: { def: StylePropDef; v: StyleTokenRef; tokens: TokenDef[] }) {
-  if (def.kind === 'color') return <span className="style-lead swatch" style={{ background: linkedColor(tokens, v) }} aria-hidden="true" />;
+  if (def.kind === 'color') return <ColorChip className="style-lead" color={linkedColor(tokens, v)} />;
   return <Palette className="style-lead" aria-hidden="true" />;
 }
 
@@ -971,7 +971,17 @@ function Control({
             cancelDraft();
           }}
         >
-          {def.kind === 'color' && <ColorPick key={`${scope}:${styleState ?? ''}`} className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
+          {def.kind === 'color' && (
+            <ColorPick
+              key={`${scope}:${styleState ?? ''}`}
+              className="md"
+              value={literal ? String(value) : colorText}
+              onPick={onSet}
+              presets={tokOpts.filter((t) => t.group === 'color').map((t) => ({ id: t.id, label: t.label, value: linkedColor(tokens, { token: t.id }) }))}
+              propId={def.id}
+              label={label}
+            />
+          )}
           <CustomValueInput
             // Each size and state has its own field: text refused in one never shows, or saves, in another.
             key={`${scope}:${styleState ?? ''}`}
@@ -984,6 +994,7 @@ function Control({
             ariaLabel={`${label} value`}
             describedBy={[describedBy, literal ? undefined : draftId].filter(Boolean).join(' ') || undefined}
           />
+          {literal && def.kind === 'color' && opacityWords(String(value)) && <p className="style-custom-hint">{opacityWords(String(value))}</p>}
           {!literal && (
             <p className="style-custom-hint">
               <span id={draftId}>
