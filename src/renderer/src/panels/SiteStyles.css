@@ -161,14 +161,26 @@
   .ss-scale-choices { flex-wrap: wrap; }
   .ss-scale-choices:not(.full) button { flex: 1 0 auto; }
   .ss-scale-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  /* Which palettes visitors get, and which one Colors shows. */
-  .ss-schemes { gap: 8px; }
-  .ss-palette-switch button svg { width: 14px; height: 14px; }
+  /* Which palettes visitors get, and which one Colors shows and edits. */
+  .ss-schemes { gap: 12px; }
+  .ss-schemes .field-hint, .ss-harmony .field-hint { line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  /* The view switch is the panel's, not the site's: its own block under a rule, apart from the two site settings. */
+  .ss-palette-editing { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
   .ss-palette-contrast { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; }
   .ss-palette-contrast .ss-verdict { grid-column: auto; grid-row: auto; }
-  .ss-palette-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  /* A palette made from the brand: a mood chooser, a small page drawn in the proposed colors, their names, and one button. */
-  .ss-harmony { gap: 8px; }
+  .ss-palette-contrast .link-btn { font-size: 12px; }
+  .ss-palette-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  .ss-palette-remake { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .ss-palette-remake .btn svg { width: 13px; height: 13px; }
+  /* The palette a colour group's rows edit, beside its name, on a site with two palettes. */
+  .ss-group-scheme { margin-left: 8px; padding: 1px 6px; border-radius: var(--r-xs); background: var(--track); font-size: 11px; font-weight: 500; color: var(--text-2); }
+  /* A palette made from the brand: a mood, a small page drawn in the proposed colors with their names, what to know, one button. */
+  .ss-harmony { gap: 10px; }
+  /* Four moods in a narrow dock: each label on one line, the row wrapping before a label does. */
+  .ss-harmony .segmented { flex-wrap: wrap; }
+  .ss-harmony .segmented button { flex: 1 0 auto; padding: 0 7px; white-space: nowrap; }
+  .ss-harmony-sample { display: flex; flex-direction: column; gap: 6px; }
+  .ss-harmony-caption { font-size: 11px; font-weight: 500; color: var(--text-3); }
   .ss-harmony-preview { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-strong); font-size: 12px; line-height: 1.3; }
   .ss-harmony-card { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border-radius: var(--r-sm); }
   .ss-harmony-heading { font-size: 13px; font-weight: 600; }
@@ -176,11 +188,16 @@
   .ss-harmony-btn { padding: 2px 8px; border-radius: var(--r-sm); font-weight: 600; }
   .ss-harmony-band { padding: 6px 10px; border-radius: var(--r-sm); font-weight: 600; }
   .ss-harmony-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 3px 10px; margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.35; color: var(--text-2); }
-  .ss-harmony-chips li { display: flex; align-items: center; gap: 5px; min-width: 0; }
-  .ss-harmony-verdict { display: flex; align-items: flex-start; gap: 5px; margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  .ss-harmony-verdict svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }
-  .ss-harmony-verdict.pass svg { color: var(--green); }
-  .ss-harmony-verdict.fail, .ss-harmony-verdict.fail svg { color: var(--red); }
+  .ss-harmony-chips li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  /* A wide swatch, not a ringed circle or a square: in a two-column list those read as radio buttons and checkboxes. */
+  .ss-harmony-chips .ss-chip { width: 22px; height: 12px; border-radius: 3px; }
+  .ss-harmony-facts { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .ss-harmony-facts li { display: flex; align-items: flex-start; gap: 6px; text-wrap: pretty; }
+  .ss-harmony-facts svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+  .ss-harmony-facts .pass svg { color: var(--green); }
+  .ss-harmony-facts .fail, .ss-harmony-facts .fail svg { color: var(--red); }
+  .ss-harmony-pairs { display: flex; flex-direction: column; margin-top: 2px; font-weight: 500; }
+  .ss-harmony-hex { font-family: var(--mono); font-size: 11px; }
   .ss-harmony-apply { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
   .ss-type-specimen { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border-radius: var(--r-sm); background: var(--border); box-shadow: 0 0 0 1px var(--border-strong); overflow: hidden; }
   .ss-type-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 10px 10px; background: var(--raised); color: var(--text); }
