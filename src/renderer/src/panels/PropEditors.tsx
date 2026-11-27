@@ -24,6 +24,7 @@ import { emptyPickNote, pickAnnouncement, pickRoom, sampleRows, startingSamples 
 import { importAndPlace, showAsset } from '../lib/place';
 import { AssetImage } from '../components/AssetImage';
 import { fitFor } from '../components/AssetPicture';
+import { WindowedGrid, type WindowedGridApi } from '../components/WindowedGrid';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
@@ -46,7 +47,7 @@ import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@share
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
 import { menuGroups, shownUnder } from '@engine/tree';
-import { ImagesPicker, missingKey, pickGridKeys } from './ImagesPicker';
+import { ImagesPicker, missingKey, pickGridKeys, windowedPickKeys } from './ImagesPicker';
 import { isShellPart, type ShellPart } from '@shared/page-shell';
 import { documentDetails, documentLabels, isLibraryDocument, libraryDocuments } from '../lib/documents';
 import { assetArrived } from '../lib/import-review';
@@ -1169,6 +1170,9 @@ function ImageBrowser({ id, box, anchor, trigger, label, state, value, importing
   // The grid's one tab stop: the tile last moved to while it is still shown, else the image chosen, else the first.
   const [rover, setRover] = useState<string | null>(null);
   const tabStop = shown.some((a) => a.id === rover) ? rover : shown.some((a) => a.id === value) ? value : (shown[0]?.id ?? null);
+  // The grid draws only the rows in and near its view (#973), and always the Tab stop's and the chosen image's.
+  const gridApi = useRef<WindowedGridApi | null>(null);
+  const chosenAt = shown.findIndex((a) => a.id === value);
   const damageOf = (assetId: string) => snapshot?.missingAssets.find((m) => m.assetId === assetId);
   const [pos, setPos] = useState<{ left: number; top: number; width: number; maxHeight?: number; minHeight?: number } | null>(null);
   const natural = useRef(0);
@@ -1249,12 +1253,16 @@ function ImageBrowser({ id, box, anchor, trigger, label, state, value, importing
   // Opens on whole rows with the chosen picture in view (a cut row only at the bottom, where it reads as more), and
   // focus on the first useful thing: once it has its place and size, since a short window shrinks the grid.
   const revealed = useRef(false);
+  // Until it has opened on the chosen image, the rows up to a full view above it are drawn too (the grid is never more
+  // than 312px tall, a row at least 60px), so it can open on whole rows with that image on the last.
+  const opening = revealed.current || chosenAt < 0 ? [] : Array.from({ length: 6 }, (_, k) => chosenAt - 3 * (k + 1));
   useLayoutEffect(() => {
     if (!pos || revealed.current) return;
     revealed.current = true;
     const g = grid.current;
     const tile = g?.querySelector<HTMLElement>('[aria-selected="true"]');
     if (g && tile) {
+      // The rows a view above the chosen image are drawn while it opens (see `opening`), so this finds its whole row.
       const rows = [...new Set([...g.querySelectorAll<HTMLElement>('[role="option"]')].map((t) => t.offsetTop))].sort((a, b) => a - b);
       const top = rows.find((r) => r + g.clientHeight >= tile.offsetTop + tile.offsetHeight + 2) ?? tile.offsetTop;
       g.scrollTop = Math.max(0, top - 2);
@@ -1329,8 +1337,20 @@ function ImageBrowser({ id, box, anchor, trigger, label, state, value, importing
         {(images.length > 6 || !!series.key) && <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />}
       </div>
       {shown.length > 0 ? (
-        <div ref={grid} className="insp-pick-grid" role="listbox" aria-label="Your images" onScroll={measure} onKeyDown={(e) => pickGridKeys(e, (to) => setRover(shown[to]?.id ?? null))}>
-          {shown.map((a) => {
+        <WindowedGrid
+          gridRef={grid}
+          api={gridApi}
+          className="insp-pick-grid"
+          role="listbox"
+          aria-label="Your images"
+          onScroll={measure}
+          onKeyDown={(e) => windowedPickKeys(e, shown.length, 3, gridApi, (to) => setRover(shown[to]?.id ?? null))}
+          count={shown.length}
+          keep={[shown.findIndex((a) => a.id === tabStop), chosenAt, ...opening]}
+          // The rows measured hold while the same images are shown.
+          layoutKey={JSON.stringify([needle, series.key, assetSort])}
+          tile={(i) => {
+            const a = shown[i];
             const hurt = damageOf(a.id);
             const current = a.id === value;
             // A picture whose file is gone can't be chosen here; the one already chosen keeps its place and says so.
@@ -1346,6 +1366,8 @@ function ImageBrowser({ id, box, anchor, trigger, label, state, value, importing
                 aria-selected={current}
                 aria-disabled={blocked || undefined}
                 aria-label={why ? `${shownName}: ${why}` : shownName}
+                aria-posinset={i + 1}
+                aria-setsize={shown.length}
                 tabIndex={a.id === tabStop ? 0 : -1}
                 className={`insp-pick-tile${current ? ' current' : ''}`}
                 title={why ? `${shownName}: ${why}` : shownName}
@@ -1376,8 +1398,8 @@ function ImageBrowser({ id, box, anchor, trigger, label, state, value, importing
                 )}
               </button>
             );
-          })}
-        </div>
+          }}
+        />
       ) : images.length ? (
         <div className="insp-pick-nomatch">
           <p className="faint insp-note insp-image-echo">{noMatch}</p>

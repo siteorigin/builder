@@ -5,7 +5,7 @@ import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, bat
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
-import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, grownImages } from '../../scripts/perf/scenarios';
+import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, ASSET_PICKERS, grownImages } from '../../scripts/perf/scenarios';
 
 let seq = 0;
 const m = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
@@ -2182,7 +2182,12 @@ describe('assets metrics', () => {
       w(at, 'edit', 'end', t + 3000, 3, { revision }),
       w(at, 'scroll', 'start', t + 4000, 3),
       w(at, 'scroll', 'end', t + 6000, 7, { ...frames, notches: 30 }),
-      r('assets.held', t + 7000, { attrs: { scenario: 'assets', at, pictures: 300, pictureBytes: 300 * 96 * 72 * 4 } })
+      r('assets.held', t + 7000, { attrs: { scenario: 'assets', at, pictures: 300, pictureBytes: 300 * 96 * 72 * 4 } }),
+      ...ASSET_PICKERS.flatMap(({ key }, k) => [
+        w(at, key, 'start', t + 8000 + k * 2000, 7 + k * 4),
+        w(at, key, 'end', t + 8500 + k * 2000, 9 + k * 4, { tiles: at === 'at300' ? 300 : 1000 }),
+        r('assets.pickerHeld', t + 9000 + k * 2000, { attrs: { scenario: 'assets', at, picker: key, pictures: 240 + k, pictureBytes: (240 + k) * 96 * 72 * 4 } })
+      ])
     ];
   }
   it('measure each library’s show, edit and scroll windows, and the pictures it holds', () => {
@@ -2195,10 +2200,13 @@ describe('assets metrics', () => {
       expect([v(`assets.${key}.scroll.ms`), v(`assets.${key}.scroll.notches`), v(`assets.${key}.scroll.droppedFrames`), v(`assets.${key}.scroll.renders`), v(`assets.${key}.picturesHeld`), v(`assets.${key}.pictureBytes`)]).toEqual([2000, 30, 3, 400, 300, 300 * 96 * 72 * 4]);
     }
     expect([v('assets.at300.tiles'), v('assets.at1000.tiles')]).toEqual([300, 1000]);
+    for (const { key } of ASSET_LIBRARIES)
+      ASSET_PICKERS.forEach(({ key: pk }, k) => expect([v(`assets.${key}.${pk}.renders`), v(`assets.${key}.${pk}.rendererCommits`), v(`assets.${key}.${pk}.picturesHeld`), v(`assets.${key}.${pk}.pictureBytes`)]).toEqual([200, 2, 240 + k, (240 + k) * 96 * 72 * 4]));
+    expect([v('assets.at300.imagePicker.tiles'), v('assets.at1000.imagePicker.tiles'), v('assets.at1000.galleryPicker.tiles')]).toEqual([300, 1000, 1000]);
   });
   it('name what is missing instead of reporting a library that was not measured', () => {
     const got = assets.measure(new Trace([r('scenario.start', 10, { attrs: { scenario: 'assets' } }), ...library('at300', 100, 5)]), facts);
-    expect(got.missing).toEqual(['assets.window at1000 show start', 'assets.window at1000 show end', 'assets.window at1000 edit start', 'assets.window at1000 edit end', 'assets.window at1000 scroll start', 'assets.window at1000 scroll end', 'assets.held at1000']);
+    expect(got.missing).toEqual(['assets.window at1000 show start', 'assets.window at1000 show end', 'assets.window at1000 edit start', 'assets.window at1000 edit end', 'assets.window at1000 scroll start', 'assets.window at1000 scroll end', 'assets.held at1000', 'assets.window at1000 imagePicker start', 'assets.window at1000 imagePicker end', 'assets.pickerHeld at1000 imagePicker', 'assets.window at1000 galleryPicker start', 'assets.window at1000 galleryPicker end', 'assets.pickerHeld at1000 galleryPicker']);
     const blind = assets.measure(new Trace(library('at300', 100, 5).map((x) => (x.attrs?.window === 'show' && x.attrs?.edge === 'end' ? { ...x, attrs: { ...x.attrs, picturesMs: -1 } } : x))), facts);
     expect(blind.missing).toContain('assets.at300.picturesMs (the show watch)');
   });

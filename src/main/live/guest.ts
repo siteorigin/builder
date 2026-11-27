@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type { LiveActivity, RemoteAi, RemoteAiSendResult, RemoteEnding, RemoteJoinResult, RemoteParticipant, RemotePresence, RemoteState, RuntimeState } from '@shared/api';
 import { NO_AI_ACCESS, readAiAccess, readAiTurnEvent, type LiveAiAccess, type LiveAiTurn } from '@shared/live/ai';
-import type { LiveMethod } from '@shared/live/roles';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { LIVE_PROTOCOL_VERSION, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type FrameOf, type GuestToRelay, type Presence, type RpcError } from '@shared/live/messages';
 import type { LiveApplyResult, LiveProjectChanged, LiveProjectSnapshot } from '@shared/live/snapshot';
+import { isLiveNotes, type LiveNoteResult, type LiveNotes } from '@shared/live/notes';
 import { parseInviteLink, relaySocketUrl, roomPreviewOrigin, roomSocketPath } from '@shared/live/relay-url';
-import { canCall } from '@shared/live/roles';
+import { canCall, type LiveMethod } from '@shared/live/roles';
 import { GuestPreviewServer, redeemPreviewTicket, REMOTE_PREVIEW_HEADER, type RedeemResult } from './guest-preview';
 import type { LiveSocketFactory } from './host';
 
@@ -28,7 +28,10 @@ import type { LiveSocketFactory } from './host';
  * presence never reach the next.
  */
 
-export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence' | 'remote:ai';
+/** How many times notes the host would not give are asked for again, before the next change it tells of. */
+const NOTES_RETRIES = 5;
+
+export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence' | 'remote:ai' | 'remote:notes';
 
 export interface LiveGuestContext {
   emit(channel: 'remote:state', payload: RemoteState): void;
@@ -36,6 +39,7 @@ export interface LiveGuestContext {
   emit(channel: 'remote:reload', payload: { joinId: string; revision: number | null }): void;
   emit(channel: 'remote:presence', payload: RemotePresence): void;
   emit(channel: 'remote:ai', payload: RemoteAi): void;
+  emit(channel: 'remote:notes', payload: { joinId: string; notes: LiveNotes }): void;
 }
 
 /** How many of its own AI requests a join keeps, newest last. */
@@ -175,6 +179,20 @@ interface Join {
   fetching: Promise<LiveProjectSnapshot | null> | null;
   refetch: boolean;
   busyTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The host's pinned notes (#770) as last received, once the editor has asked for them (null before), and the request
+   * for them under way: asked again whenever the host says they changed, and on coming back.
+   */
+  notes: LiveNotes | null;
+  /** The editor has asked for the notes this join: from then on they are kept read, also after a read that failed. */
+  notesWanted: boolean;
+  notesFetch: Promise<LiveNotes | null> | null;
+  notesRefetch: boolean;
+  /** Asks again for notes that could not be read (BUSY, the relay's backlog), a few times, each later than the last. */
+  notesTimer: ReturnType<typeof setTimeout> | null;
+  notesRetries: number;
+  /** The last read of the notes failed: what is kept may be behind the host's. */
+  notesStale: boolean;
   tooLarge: boolean;
   hostRuntime: RuntimeState['state'] | null;
   /** The latest project revision the host said its preview serves (preview:reload), or null before it said one. */
@@ -339,6 +357,13 @@ export class LiveGuestManager {
       fetching: null,
       refetch: false,
       busyTimer: null,
+      notes: null,
+      notesWanted: false,
+      notesFetch: null,
+      notesRefetch: false,
+      notesTimer: null,
+      notesRetries: 0,
+      notesStale: false,
       tooLarge: false,
       hostRuntime: null,
       previewRevision: null,
@@ -471,6 +496,10 @@ export class LiveGuestManager {
         // Whatever the host changed while it was away reaches the editor now.
         if (back && join.phase === 'admitted') {
           void this.fetchSnapshot(join);
+          if (join.notesWanted) {
+            join.notesRetries = 0;
+            void this.fetchNotes(join);
+          }
           this.reload(join);
         }
         // A host back, or on a connection that replaced one still open, may not have heard where this app is: told
@@ -576,6 +605,11 @@ export class LiveGuestManager {
         // On first admission, and on taking the place back after a drop (changes may have been missed), the host's
         // project is asked for; a role or deadline changing on a live connection needs no new copy.
         if (!returning || back || !join.latest) void this.fetchSnapshot(join);
+        // Notes the editor already holds may have changed while the connection was down.
+        if (join.notesWanted && back) {
+          join.notesRetries = 0;
+          void this.fetchNotes(join);
+        }
         this.answerJoin(join);
         return this.publish();
       }
@@ -626,6 +660,12 @@ export class LiveGuestManager {
       return;
     }
     if (frame.event === 'ai:turn') return this.onAiTurn(join, frame.payload);
+    // The notes changed: asked for again, once the editor has wanted them.
+    if (frame.event === 'notes:changed') {
+      join.notesRetries = 0;
+      if (join.notesWanted) void this.fetchNotes(join);
+      return;
+    }
     if (frame.event === 'runtime:status') {
       const state = (frame.payload as { state?: unknown } | null)?.state;
       if (typeof state === 'string') {
@@ -855,6 +895,91 @@ export class LiveGuestManager {
   }
 
   // -------------------------------------------------------------------------
+  // Pinned notes (#770)
+
+  /** Ask the host for its notes now, one request at a time; asked for again meanwhile, once more after. */
+  private fetchNotes(join: Join): Promise<LiveNotes | null> {
+    if (join.notesFetch) {
+      join.notesRefetch = true;
+      return join.notesFetch;
+    }
+    const run = (async (): Promise<LiveNotes | null> => {
+      for (;;) {
+        join.notesRefetch = false;
+        const answer = await this.call(join, 'notes.list', []);
+        if (join.ended || this.current !== join) return null;
+        const read = answer.ok && isLiveNotes(answer.result);
+        join.notesStale = !read;
+        if (read) {
+          join.notesRetries = 0;
+          this.takeNotes(join, answer.result as LiveNotes);
+        }
+        // Not read: asked again shortly, so a change the host told of is never missed for good. While the host or this
+        // connection is away, its return asks instead.
+        // A host that keeps refusing is asked no more until the next change it tells of.
+        else if (!join.notesTimer && join.phase === 'admitted' && join.hostConnected && !join.reconnecting && join.notesRetries < NOTES_RETRIES)
+          join.notesTimer = setTimeout(() => {
+            join.notesTimer = null;
+            if (!join.ended && this.current === join && join.phase === 'admitted') void this.fetchNotes(join);
+          }, this.timings.busyRetryMs * 2 ** join.notesRetries++);
+        if (!join.notesRefetch) return read ? join.notes : null;
+      }
+    })();
+    join.notesFetch = run;
+    void run.finally(() => {
+      if (join.notesFetch === run) join.notesFetch = null;
+    });
+    return run;
+  }
+
+  private takeNotes(join: Join, notes: LiveNotes): void {
+    join.notes = notes;
+    this.ctx.emit('remote:notes', { joinId: join.joinId, notes });
+  }
+
+  /** The host's notes: the copy last received, else asked for now. Null when not in a session, or they could not be read. */
+  async notes(joinId: unknown): Promise<LiveNotes | null> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
+    join.notesWanted = true;
+    // Asked again by the editor (its Notes opened): notes that could not be read last time are asked for now.
+    if (join.notesStale) join.notesRetries = 0;
+    return join.notes && !join.notesStale ? join.notes : ((await this.fetchNotes(join)) ?? join.notes);
+  }
+
+  addNote(joinId: unknown, draft: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.add', [draft], false);
+  }
+
+  resolveNote(joinId: unknown, id: unknown, resolved: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.resolve', [id, resolved], true);
+  }
+
+  deleteNote(joinId: unknown, id: unknown): Promise<LiveNoteResult> {
+    return this.noteCall(joinId, 'notes.delete', [id], true);
+  }
+
+  /** A change to the host's notes; the host checks it again, and keeps it. */
+  private async noteCall(joinId: unknown, method: LiveMethod, args: unknown[], collaborator: boolean): Promise<LiveNoteResult> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, message: 'You are no longer in that live session.' };
+    if (collaborator && join.role !== 'collaborator') return { ok: false, message: 'Only the host and collaborators can resolve or delete notes.' };
+    if (!join.hostConnected) return { ok: false, message: 'The host is reconnecting. Try again in a moment.' };
+    join.notesWanted = true;
+    const answer = await this.call(join, method, args);
+    if (!answer.ok) {
+      // A change the host may have made before the connection let go: the notes are read again, and nobody sends a
+      // note twice without looking.
+      if (answer.error.code !== 'UNAVAILABLE') return { ok: false, message: answer.error.message };
+      if (this.current === join) void this.fetchNotes(join);
+      return { ok: false, message: `${answer.error.message.replace(/\s*Try again.*$/, '')} The change may have been made: look at the notes before trying again.` };
+    }
+    // The host answers that the change was made; the notes as they are now are read again.
+    const notes = this.current === join ? await this.fetchNotes(join) : null;
+    return notes ? { ok: true, notes } : { ok: true };
+  }
+
+  // -------------------------------------------------------------------------
   // Presence
 
   /** Where this app is in the editor, for the others: shared while it is a collaborator. The latest is kept and resent. */
@@ -1040,8 +1165,8 @@ export class LiveGuestManager {
     if (join.ended) return;
     join.ended = true;
     this.closeSocket(join);
-    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer, join.activityTimer]) if (timer) clearTimeout(timer);
-    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = join.activityTimer = null;
+    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer, join.activityTimer, join.notesTimer]) if (timer) clearTimeout(timer);
+    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = join.activityTimer = join.notesTimer = null;
     this.failCalls(join, reason === 'left' ? 'You left the live session.' : ENDING_MESSAGES[reason]);
     join.preview.abort?.abort();
     join.preview.queued = null;

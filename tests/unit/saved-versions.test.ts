@@ -16,9 +16,9 @@ import { describeReview, restoredNotice } from '../../src/renderer/src/lib/versi
 import type { VersionReview } from '@shared/api';
 import { inProcessGit, useTestGit } from './fixtures/git-in-process';
 import { openRepo } from '../../src/main/git/repo';
-import { VERSIONS_BRANCH } from '../../src/main/git/protocol';
+import { GitError, VERSIONS_BRANCH, type GitRepository } from '../../src/main/git/protocol';
 import { advanceVersions, writeVersionCommit } from '../../src/main/project/versions-git';
-import type { SavedVersion } from '../../src/main/project/versions';
+import { VersionStore, type SavedVersion } from '../../src/main/project/versions';
 import type { EditOperation } from '@shared/ops';
 import { deflateSync } from 'node:zlib';
 
@@ -168,7 +168,9 @@ describe('saved versions', () => {
     // The project keeps its identity: the manifest is never part of what a restore changes.
     expect(again.state.manifest.projectId).toBe(s.state.manifest.projectId);
     const names = again.versionsInfo().list.map((v) => [v.name, v.auto]);
+    // With Git snapshots on, the site as the restore left it is saved after it, on top of the history (#1155).
     expect(names).toEqual([
+      ...(mode === 'git' ? [['Restored “Approved portfolio”', true]] : []),
       ['Before restoring “Approved portfolio”', true],
       ['Approved portfolio', false]
     ]);
@@ -260,9 +262,11 @@ describe('saved versions', () => {
     const two = await ok(s.saveVersion('Two'));
     const r = await ok(s.restoreVersion(one.id!, s.revision));
     expect(r.backup).toEqual({ id: two.id, name: 'Two' });
-    expect(s.versionsInfo().list).toHaveLength(2);
+    // With Git snapshots on, the site as restored is saved after it all the same (#1155).
+    const listed = s.versionsInfo().list;
+    expect(listed.map((v) => v.name)).toEqual([...(mode === 'git' ? ['Restored “One”'] : []), 'Two', 'One']);
     // Both hold the same starter documents: neither alone frees those.
-    const [b, a] = s.versionsInfo().list;
+    const [b, a] = listed.slice(-2);
     if (mode === 'git') expect([a.bytes, b.bytes]).toEqual([null, null]);
     else expect(a.bytes! + b.bytes!).toBeLessThan(s.versionsInfo().bytes);
   });
@@ -537,7 +541,8 @@ describe('saved versions, guarded', () => {
     await s.close();
     const again = await reopen(dir);
     expect(again.versionsInfo().problem).toBeUndefined();
-    expect(again.versionsInfo().list).toHaveLength(5);
+    // With Git snapshots on, each restore also saves the site as it left it (#1155).
+    expect(again.versionsInfo().list).toHaveLength(mode === 'git' ? 9 : 5);
   });
 
   both('refuses to save while a change made outside the app is not loaded yet', async (mode) => {
@@ -814,6 +819,8 @@ describe('saved versions in Git (#1153)', () => {
     await ok(s.deleteVersion(r.backup!.id));
     expect(existsSync(gitdir(dir))).toBe(false);
     expect(catalogue(dir).every((v) => !v.git)).toBe(true);
+    // Nor is the site as restored saved after the restore: that is Git's alone (#1155).
+    expect(s.versionsInfo().list.some((v) => v.restored)).toBe(false);
     expect(s.versionsInfo().historyBytes).toBeUndefined();
     expect(git.calls.length).toBe(calls);
   });
@@ -1167,8 +1174,8 @@ describe('saved versions in Git (#1153)', () => {
     const repo = git.client.repository(root);
     // Stale: written on an empty branch, which another save then moves.
     const files = [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Mine"}') }];
-    const mine = await writeVersionCommit(repo, files, 'vmine000000', new Date().toISOString(), false);
-    const theirs = await writeVersionCommit(repo, [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Theirs"}') }], 'vtheirs00000', new Date().toISOString(), false);
+    const mine = await writeVersionCommit(repo, files, 'vmine000000', new Date().toISOString(), 'saved');
+    const theirs = await writeVersionCommit(repo, [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Theirs"}') }], 'vtheirs00000', new Date().toISOString(), 'saved');
     await repo.advanceRef(VERSIONS_BRANCH, theirs.commit, null);
     const tip = await advanceVersions(repo, mine.commit);
     expect(tip).not.toBe(mine.commit);
@@ -1176,6 +1183,450 @@ describe('saved versions in Git (#1153)', () => {
     const c = await repo.readCommit(tip);
     const first = await repo.readCommit(mine.commit);
     expect(c).toEqual({ oid: tip, tree: mine.tree, parents: [theirs.commit], author: first.author, committer: first.committer, message: first.message });
+  });
+});
+
+describe('restoring with Git snapshots on (#1155)', () => {
+  const catalogue = (dir: string) => JSON.parse(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).versions as Array<SavedVersion>;
+  const RECORDING = '.siteorigin/versions/recording.json';
+  const RESTORING = '.siteorigin/versions/restoring.json';
+  const tipOf = (dir: string) => openRepo(dir).resolveRef(VERSIONS_BRANCH);
+  const commits = async (dir: string) => (await openRepo(dir).listCommits(VERSIONS_BRANCH, 100)).map((c) => c.oid);
+  const restoredRows = (dir: string) => catalogue(dir).filter((v) => v.restored);
+  /**
+   * The project's versions repository as the session reaches it, with `wrap` standing in for some of its calls: the
+   * client gives a new one each time it is asked, so the same one is given every time instead.
+   */
+  const intercept = (wrap: (real: GitRepository) => Partial<GitRepository>) => {
+    const real = git.client.repository.bind(git.client);
+    return vi.spyOn(git.client, 'repository').mockImplementation((root: string) => {
+      const repo = real(root);
+      return { ...repo, ...wrap(repo) } as GitRepository;
+    });
+  };
+  /** A project with a saved version, changed since: restoring it changes the site's description back. */
+  async function changed() {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const first = await ok(s.saveVersion('First'));
+    const firstSite = read(dir, 'siteorigin/site.json').toString();
+    await describe1(s, 'Later', 'Later');
+    return { dir, s, first, firstSite };
+  }
+
+  it('saves the site as restored on top of the history, its parent the tip before it, and Undo still takes the restore back', async () => {
+    const { dir, s, first, firstSite } = await changed();
+    const before = s.revision;
+    const r = await ok(s.restoreVersion(first.id!, s.revision));
+    expect(r.notice).toBeUndefined();
+    expect(r.revision).toBeGreaterThan(before);
+    const rows = catalogue(dir);
+    const backup = rows.find((v) => v.id === r.backup!.id)!;
+    const [row] = restoredRows(dir);
+    expect(rows.map((v) => v.name)).toEqual(['First', 'Before restoring “First”', 'Restored “First”']);
+    expect(row).toMatchObject({ name: 'Restored “First”', auto: true, restored: true, revision: s.revision });
+    expect(s.versionsInfo().list[0]).toMatchObject({ id: row.id, auto: true, restored: true, bytes: null });
+    const repo = openRepo(dir);
+    expect(await tipOf(dir)).toBe(row.git!.commit);
+    const c = await repo.readCommit(row.git!.commit);
+    expect(c.parents).toEqual([backup.git!.commit]);
+    expect(c.tree).toBe(row.git!.tree);
+    expect(c.message).toBe(`Restored version\n\nSiteOrigin-Version: ${row.id}\n`);
+    expect(c.author).toEqual({ name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: expect.any(Number), timezoneOffset: 0 });
+    // What the project holds after the restore, byte for byte.
+    expect(Buffer.from(await repo.readBlob(row.git!.commit, 'siteorigin/site.json')).toString()).toBe(firstSite);
+    expect(read(dir, 'siteorigin/site.json').toString()).toBe(firstSite);
+    expect((await ok(s.reviewVersion(row.id))).review!.unchanged).toBe(true);
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+    expect(existsSync(join(dir, RESTORING))).toBe(false);
+    // Undo takes back the documents; history only ever goes forward.
+    await ok(s.undo());
+    expect(s.state.site.description).toBe('Later');
+    expect(s.revision).toBeGreaterThan(r.revision!);
+    expect(await tipOf(dir)).toBe(row.git!.commit);
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.recoveryNotes).toEqual([]);
+    expect(again.versionsInfo().list).toHaveLength(3);
+  });
+
+  it('builds on the tip, not on an older version a restore reuses as the way back', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    await describe1(s, 'One', 'One');
+    const one = await ok(s.saveVersion('One'));
+    await describe1(s, 'Two', 'Two');
+    const two = await ok(s.saveVersion('Two'));
+    await ok(s.saveVersion('Two again'));
+    const tip = await tipOf(dir);
+    const r = await ok(s.restoreVersion(one.id!, s.revision));
+    // The older of the two that hold the work is the way back; history goes on from its newest commit all the same.
+    expect(r.backup!.id).toBe(two.id);
+    const [row] = restoredRows(dir);
+    expect(catalogue(dir).find((v) => v.id === two.id)!.git!.commit).not.toBe(tip);
+    expect((await openRepo(dir).readCommit(row.git!.commit)).parents).toEqual([tip]);
+    expect(await tipOf(dir)).toBe(row.git!.commit);
+  });
+
+  it('saves the files a restore put back when no document changed, as they now are', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    mkdirSync(join(dir, ASSETS), { recursive: true });
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>blue</svg>');
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Logo', source: '<img src="/assets/logo.svg" alt="Logo" />\n' }] }, { label: 'Add logo' }));
+    const saved = await ok(s.saveVersion('Blue logo'));
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
+    const revision = s.revision;
+    const events: string[] = [];
+    s.on('changed', (e) => events.push(e.label ?? ''));
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    const r = await ok(s.restoreVersion(saved.id!, review!.revision, { files: review!.files, replaced: review!.replaced }));
+    expect(r.entryId).toBeUndefined();
+    expect(r.revision).toBe(revision);
+    expect(events).toEqual(['Restore “Blue logo”']);
+    const backup = catalogue(dir).find((v) => v.id === r.backup!.id)!;
+    const [row] = restoredRows(dir);
+    const repo = openRepo(dir);
+    expect(Buffer.from(await repo.readBlob(row.git!.commit, `${ASSETS}/logo.svg`)).toString()).toBe('<svg>blue</svg>');
+    expect(Buffer.from(await repo.readBlob(backup.git!.commit, `${ASSETS}/logo.svg`)).toString()).toBe('<svg>green</svg>');
+    expect(row.media[`${ASSETS}/logo.svg`]).toBe(sha('<svg>blue</svg>'));
+    expect((await repo.readCommit(row.git!.commit)).parents).toEqual([backup.git!.commit]);
+    // Restoring what the project already matches saves nothing more.
+    const same = await ok(s.reviewVersion(saved.id!));
+    expect(await s.restoreVersion(saved.id!, same.review!.revision)).toMatchObject({ ok: true, unchanged: true });
+    expect(await tipOf(dir)).toBe(row.git!.commit);
+  });
+
+  it('moves the branch on reopening when the app stopped before it could, and lists the version once', async () => {
+    const { dir, s, first } = await changed();
+    const spy = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        // The backup's own move goes through; the restore's stops here, as the app would by stopping.
+        if (restoredRows(dir).length || existsSync(join(dir, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    const r = await ok(s.restoreVersion(first.id!, s.revision));
+    spy.mockRestore();
+    expect(r.notice).toMatch(/not in Saved versions yet.*next time the project opens/);
+    expect(s.state.site.description).not.toBe('Later');
+    const backup = catalogue(dir).find((v) => v.id === r.backup!.id)!;
+    expect(await tipOf(dir)).toBe(backup.git!.commit);
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    expect(pending).toMatchObject({ op: pending.row.id, version: 'First', backup: 'Before restoring “First”', expected: backup.git!.commit, row: { name: 'Restored “First”', restored: true } });
+    expect(restoredRows(dir)).toEqual([]);
+    const history = await commits(dir);
+    await s.close();
+    // As if the app had stopped before it cleared its note of the restore, too.
+    writeFileSync(join(dir, RESTORING), JSON.stringify({ version: 'First', backup: 'Before restoring “First”', op: pending.op, settled: true }));
+    const again = await reopen(dir);
+    expect(again.recoveryNotes).toEqual([]);
+    expect(await tipOf(dir)).toBe(pending.row.git.commit);
+    expect(await commits(dir)).toEqual([pending.row.git.commit, ...history]);
+    expect(restoredRows(dir)).toEqual([pending.row]);
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+    expect(catalogue(dir).find((v) => v.id === r.backup!.id)).toEqual(backup);
+    await again.close();
+    // Nothing is left to do, however often it is opened.
+    const third = await reopen(dir);
+    expect(third.recoveryNotes).toEqual([]);
+    expect(await commits(dir)).toEqual([pending.row.git.commit, ...history]);
+    expect(third.versionsInfo().list).toHaveLength(3);
+  });
+
+  it('lists the version on reopening when the branch moved and the list could not be written (a full disk), without committing again', async () => {
+    const { dir, s, first } = await changed();
+    const publish = VersionStore.prototype.publish;
+    const full = vi.spyOn(VersionStore.prototype, 'publish').mockImplementation(async function (this: VersionStore, next) {
+      if (next.some((v) => v.restored)) throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+      return publish.call(this, next);
+    });
+    const r = await ok(s.restoreVersion(first.id!, s.revision));
+    full.mockRestore();
+    expect(r.notice).toMatch(/not in Saved versions yet\. ENOSPC/);
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    // The branch is at the restore's commit already; only the list is behind.
+    expect(await tipOf(dir)).toBe(pending.row.git.commit);
+    expect(restoredRows(dir)).toEqual([]);
+    expect(existsSync(join(dir, RESTORING))).toBe(false);
+    const history = await commits(dir);
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.recoveryNotes).toEqual([]);
+    expect(await commits(dir)).toEqual(history);
+    expect(restoredRows(dir)).toEqual([pending.row]);
+    expect(catalogue(dir).map((v) => v.name)).toEqual(['First', 'Before restoring “First”', 'Restored “First”']);
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+  });
+
+  it('says so, and leaves nothing to finish, when the version could not be noted on a full disk', async () => {
+    const { dir, s, first } = await changed();
+    let marker: unknown = null;
+    vi.spyOn(VersionStore.prototype, 'writePending').mockImplementationOnce(async () => {
+      // By now the restore is noted as done, with the ID of the version that was to record it.
+      marker = JSON.parse(readFileSync(join(dir, RESTORING), 'utf8'));
+      throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+    });
+    const r = await ok(s.restoreVersion(first.id!, s.revision));
+    expect(r.notice).toMatch(/could not be saved as a version of its own\. ENOSPC/);
+    expect(marker).toMatchObject({ version: 'First', backup: 'Before restoring “First”', op: expect.stringMatching(/^v/), settled: true });
+    expect(s.state.site.description).not.toBe('Later');
+    const backup = catalogue(dir).find((v) => v.id === r.backup!.id)!;
+    expect(await tipOf(dir)).toBe(backup.git!.commit);
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+    expect(existsSync(join(dir, RESTORING))).toBe(false);
+    const history = await commits(dir);
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.recoveryNotes).toEqual([]);
+    expect(await commits(dir)).toEqual(history);
+    expect(again.versionsInfo().list.map((v) => v.name)).toEqual(['Before restoring “First”', 'First']);
+  });
+
+  it('says on reopening that the restore finished but its version was not saved, when the app stopped while saving it', async () => {
+    const { dir, s } = await changed();
+    await s.close();
+    writeFileSync(join(dir, RESTORING), JSON.stringify({ version: 'First', backup: 'Before restoring “First”', op: 'vstopped0000', settled: true }));
+    const again = await reopen(dir);
+    expect(again.recoveryNotes.join(' ')).toMatch(/Restoring “First” finished, but the site as it left it could not be saved as a version of its own\. Your work from before is saved as “Before restoring “First””/);
+    expect(again.recoveryNotes.join(' ')).not.toMatch(/may be missing/);
+    expect(existsSync(join(dir, RESTORING))).toBe(false);
+  });
+
+  it('leaves the branch and the restore’s commit as they are when something else moved the branch meanwhile', async () => {
+    const { dir, s, first } = await changed();
+    const spy = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        if (existsSync(join(dir, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    const r = await ok(s.restoreVersion(first.id!, s.revision));
+    spy.mockRestore();
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    await s.close();
+    // Another Git moves the branch on from where the restore's commit was written.
+    const repo = git.client.repository(dir);
+    const other = await writeVersionCommit(repo, [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Elsewhere"}') }], 'velsewhere00', new Date().toISOString(), 'saved');
+    await repo.advanceRef(VERSIONS_BRANCH, other.commit, pending.expected);
+    const again = await reopen(dir);
+    expect(again.recoveryNotes.join(' ')).toMatch(/Restoring “First” finished, but the project’s version history was changed by something else.*both were left as they are\. Your work from before is saved as “Before restoring “First””/);
+    expect(await tipOf(dir)).toBe(other.commit);
+    expect((await openRepo(dir).readCommit(pending.row.git.commit)).tree).toBe(pending.row.git.tree);
+    expect(restoredRows(dir)).toEqual([]);
+    expect(catalogue(dir).some((v) => v.id === r.backup!.id)).toBe(true);
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, `.siteorigin/versions/unrecorded-${pending.op}.json`), 'utf8'))).toEqual(pending);
+    await again.close();
+    // Told once, and saving goes on from where the branch is.
+    const third = await reopen(dir);
+    expect(third.recoveryNotes).toEqual([]);
+    const next = await ok(third.saveVersion('Next'));
+    const row = catalogue(dir).find((v) => v.id === next.id)!;
+    expect((await openRepo(dir).readCommit(row.git!.commit)).parents).toEqual([other.commit]);
+  });
+
+  it('finishes the restore’s version before the next version is saved, so that one builds on it', async () => {
+    const { dir, s, first } = await changed();
+    let stop = true;
+    const spy = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        if (stop && existsSync(join(dir, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    await ok(s.restoreVersion(first.id!, s.revision));
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    // Still stopped: nothing else may move the branch from under the restore's version.
+    await describe1(s, 'Next', 'Next');
+    expect(await s.saveVersion('Next')).toMatchObject({ ok: false, message: expect.stringMatching(/not in Saved versions yet/) });
+    expect(await s.restoreVersion(first.id!, s.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/not in Saved versions yet/) });
+    stop = false;
+    const next = await ok(s.saveVersion('Next'));
+    spy.mockRestore();
+    expect(catalogue(dir).map((v) => v.name)).toEqual(['First', 'Before restoring “First”', 'Restored “First”', 'Next']);
+    const row = catalogue(dir).find((v) => v.id === next.id)!;
+    expect((await openRepo(dir).readCommit(row.git!.commit)).parents).toEqual([pending.row.git.commit]);
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+  });
+
+  it('finishes a version noted whole when only flushing its folder failed', async () => {
+    const { dir, s, first } = await changed();
+    const write = VersionStore.prototype.writePending;
+    vi.spyOn(VersionStore.prototype, 'writePending').mockImplementationOnce(async function (this: VersionStore, p) {
+      await write.call(this, p);
+      throw new Error('EIO: i/o error, fsync');
+    });
+    const r = await ok(s.restoreVersion(first.id!, s.revision));
+    expect(r.notice).toBeUndefined();
+    const [row] = restoredRows(dir);
+    expect(await tipOf(dir)).toBe(row.git!.commit);
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+  });
+
+  it('tries again on reopening when the restore’s commit could not be read just then, rather than setting it aside', async () => {
+    const { dir, s, first } = await changed();
+    const crash = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        if (existsSync(join(dir, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    await ok(s.restoreVersion(first.id!, s.revision));
+    crash.mockRestore();
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    await s.close();
+    const busy = intercept((repo) => ({
+      readCommit: async (oid, opts) => {
+        if (oid === pending.row.git.commit) throw new GitError('timeout', 'The versions repository took too long.');
+        return repo.readCommit(oid, opts);
+      }
+    }));
+    const again = await reopen(dir);
+    busy.mockRestore();
+    expect(again.recoveryNotes.join(' ')).toMatch(/Restoring “First” finished, but the site as it left it is not in Saved versions yet/);
+    expect(existsSync(join(dir, RECORDING))).toBe(true);
+    expect(readdirSync(join(dir, '.siteorigin/versions')).filter((f) => f.startsWith('unrecorded-'))).toEqual([]);
+    await again.close();
+    const third = await reopen(dir);
+    expect(third.recoveryNotes).toEqual([]);
+    expect(restoredRows(dir)).toEqual([pending.row]);
+    expect(await tipOf(dir)).toBe(pending.row.git.commit);
+  });
+
+  it('never lists a version again from a record left behind once it was listed and then deleted', async () => {
+    const { dir, s, first } = await changed();
+    vi.spyOn(VersionStore.prototype, 'clearPending').mockRejectedValueOnce(new Error('EBUSY: resource busy'));
+    await ok(s.restoreVersion(first.id!, s.revision));
+    const [row] = restoredRows(dir);
+    expect(existsSync(join(dir, RECORDING))).toBe(true);
+    await ok(s.deleteVersion(row.id));
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+    await s.close();
+    const again = await reopen(dir);
+    expect(restoredRows(dir)).toEqual([]);
+    expect(again.versionsInfo().list.map((v) => v.name)).toEqual(['Before restoring “First”', 'First']);
+  });
+
+  it('says nothing on reopening when the version was listed and only the note of the restore was left', async () => {
+    const { dir, s, first } = await changed();
+    await ok(s.restoreVersion(first.id!, s.revision));
+    const [row] = restoredRows(dir);
+    await s.close();
+    // As if the app had stopped after the version was listed and its record removed, but before the note was.
+    writeFileSync(join(dir, RESTORING), JSON.stringify({ version: 'First', backup: 'Before restoring “First”', op: row.id, settled: true }));
+    const again = await reopen(dir);
+    expect(again.recoveryNotes).toEqual([]);
+    expect(restoredRows(dir)).toEqual([row]);
+  });
+
+  it('leaves another project’s record alone when the versions folder is a link to it', async () => {
+    const { dir: theirs, s: other, first } = await changed();
+    const crash = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        if (existsSync(join(theirs, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    await ok(other.restoreVersion(first.id!, other.revision));
+    crash.mockRestore();
+    await other.close();
+    const record = readFileSync(join(theirs, RECORDING));
+    const { dir, s } = await make();
+    await s.close();
+    rmSync(join(dir, '.siteorigin/versions'), { recursive: true, force: true });
+    symlinkSync(join(theirs, '.siteorigin/versions'), join(dir, '.siteorigin/versions'));
+    const again = await reopen(dir);
+    expect(again.recoveryNotes.join(' ')).toMatch(/not in Saved versions yet\. The saved versions folder in \.siteorigin is a link/);
+    expect(readFileSync(join(theirs, RECORDING)).equals(record)).toBe(true);
+    expect(readdirSync(join(theirs, '.siteorigin/versions')).filter((f) => f.startsWith('unrecorded-'))).toEqual([]);
+  });
+
+  it('lets nothing go past a version still being saved whose record could not be read just then', async () => {
+    const { dir, s, first } = await changed();
+    const crash = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        if (existsSync(join(dir, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    await ok(s.restoreVersion(first.id!, s.revision));
+    crash.mockRestore();
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    chmodSync(join(dir, RECORDING), 0o000);
+    try {
+      expect(await s.saveVersion('Next')).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read just now/) });
+      expect(await s.deleteVersion(first.id!)).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read just now/) });
+    } finally {
+      chmodSync(join(dir, RECORDING), 0o644);
+    }
+    const next = await ok(s.saveVersion('Next'));
+    const row = catalogue(dir).find((v) => v.id === next.id)!;
+    expect((await openRepo(dir).readCommit(row.git!.commit)).parents).toEqual([pending.row.git.commit]);
+  });
+
+  it('keeps an edit made outside the app while the site as restored is saved, and does not save it', async () => {
+    const { dir, s, first } = await changed();
+    const site = JSON.parse(read(dir, 'siteorigin/site.json').toString());
+    let writes = 0;
+    const external = JSON.stringify({ ...site, description: 'Edited outside' }, null, 2) + '\n';
+    const spy = intercept((repo) => ({
+      writeFiles: async (files, opts) => {
+        // The second tree written is the site as restored: an editor saves the site's settings just then.
+        if (++writes === 2) writeFileSync(join(dir, 'siteorigin/site.json'), external);
+        return repo.writeFiles(files, opts);
+      }
+    }));
+    const events: string[] = [];
+    s.on('changed', (e) => events.push(e.label ?? ''));
+    const r = await ok(s.restoreVersion(first.id!, s.revision));
+    spy.mockRestore();
+    expect(r.notice).toMatch(/could not be saved as a version of its own\. siteorigin\/site\.json changed outside the app meanwhile/);
+    expect(read(dir, 'siteorigin/site.json').toString()).toBe(external);
+    expect(events).toEqual(['Restore “First”']);
+    const backup = catalogue(dir).find((v) => v.id === r.backup!.id)!;
+    expect(await tipOf(dir)).toBe(backup.git!.commit);
+    expect(restoredRows(dir)).toEqual([]);
+    expect(existsSync(join(dir, RECORDING))).toBe(false);
+    // The edit is the project's next change, as any made outside the app.
+    expect(await s.reloadChanged(['siteorigin/site.json'])).toMatchObject({ ok: true });
+    expect(s.state.site.description).toBe('Edited outside');
+  });
+
+  it('keeps what a version still to be listed holds when versions are deleted meanwhile', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    await ok(
+      s.apply(
+        {
+          operations: [
+            { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', pages: { detail: true, archive: false }, route: '/team/', fields: { role: { type: 'string', label: 'Role', default: '' } } },
+            { type: 'source.upsert', sourceId: 'people', name: 'People API', adapter: 'fixture', collectionId: 'team', config: {} }
+          ] as EditOperation[]
+        },
+        { label: 'Add the team source' }
+      )
+    );
+    const saved = await ok(s.saveVersion('With the source'));
+    await ok(s.apply({ operations: [{ type: 'source.upsert', sourceId: 'people', name: 'Renamed API', adapter: 'fixture', collectionId: 'team', config: {} }] as EditOperation[] }, { label: 'Rename source' }));
+    const spy = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        if (existsSync(join(dir, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    await ok(s.restoreVersion(saved.id!, s.revision));
+    spy.mockRestore();
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    const SOURCE = 'siteorigin/sources/people/source.json';
+    // Deleting every listed version would free the source's settings, but the version still to be listed holds them.
+    for (const v of s.versionsInfo().list) await ok(s.deleteVersion(v.id));
+    expect(objects(dir)).toEqual([pending.row.docs[SOURCE]]);
+    await s.close();
+    const again = await reopen(dir);
+    const [row] = restoredRows(dir);
+    expect(row.id).toBe(pending.op);
+    expect((await ok(again.reviewVersion(row.id))).review!.problem).toBeUndefined();
   });
 });
 

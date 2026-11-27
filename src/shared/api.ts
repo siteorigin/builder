@@ -18,6 +18,7 @@ import type { ElementTarget, Participant, Presence, Spotlight } from './live/mes
 import type { LiveEditBatch } from './live/capabilities';
 import type { LiveApplyResult, LiveProjectSnapshot } from './live/snapshot';
 import type { LiveAiAccess, LiveAiContext, LiveAiTurn } from './live/ai';
+import type { LiveNoteResult, LiveNotes, NoteDraft } from './live/notes';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -229,8 +230,10 @@ export interface SavedVersionInfo {
   name: string;
   /** When it was saved (ISO time). */
   time: string;
-  /** Saved by the app before a restore, as the way back to the work that restore replaced. */
+  /** Saved by the app, not the author: before a restore, as the way back to the work it replaced, or after one. */
   auto: boolean;
+  /** Saved by the app after a restore, with Git snapshots on: the site as that restore left it (#1155). */
+  restored?: boolean;
   /** How many pages it holds. */
   pages: number;
   /**
@@ -302,6 +305,11 @@ export interface RestoreVersionResult {
   replaced?: number;
   /** Files an earlier restore put back that this one leaves in the project folder. */
   left?: string[];
+  /**
+   * With Git snapshots on: why the site as restored is not, or not yet, a saved version of its own, though the restore
+   * itself is done (#1155).
+   */
+  notice?: string;
 }
 
 export type RuntimeState =
@@ -1064,6 +1072,8 @@ export interface LiveRoom {
   relayClockOffsetMs: number;
   /** A locked room turns away new join requests. */
   locked: boolean;
+  /** Whether guests may leave pinned notes (#770): Allow guest notes, on until the host turns it off. */
+  guestNotes: boolean;
   /** Everyone in the room: those waiting to be let in, and those admitted with their role and access. */
   participants: Participant[];
 }
@@ -1532,6 +1542,20 @@ export interface BuilderApi {
     cancelFix(): Promise<void>;
   };
   /**
+   * The open project's pinned notes (#770): short feedback left on a page or an element, kept in the project's local
+   * state (never its documents or export) as a checklist. Guests of a live session leave them too; in the remote shell
+   * these reach the host's project, as far as the guest's role allows.
+   */
+  notes: {
+    /** The notes as they are now, newest first, in the opening named (its snapshot's workspaceKey); null when that is not the project open. */
+    list(opening: string): Promise<LiveNotes | null>;
+    /** Leave a note, on the page and element named. */
+    add(opening: string, draft: NoteDraft): Promise<LiveNoteResult>;
+    /** Mark a note done, or open it again. */
+    resolve(opening: string, id: string, resolved: boolean): Promise<LiveNoteResult>;
+    delete(opening: string, id: string): Promise<LiveNoteResult>;
+  };
+  /**
    * Host a live session of the open project. It belongs to that opening: closing the project, switching to another or
    * quitting ends it. Times are on the relay's clock (LiveRoom.relayClockOffsetMs).
    */
@@ -1547,6 +1571,8 @@ export interface BuilderApi {
     setGuestExpiry(run: LiveRun, guestId: string, guestExpiresAt: number | null): Promise<LiveCommandResult>;
     kick(run: LiveRun, guestId: string): Promise<LiveCommandResult>;
     setLocked(run: LiveRun, locked: boolean): Promise<LiveCommandResult>;
+    /** Allow guest notes, or stop guests leaving any more; notes already left stay. */
+    setGuestNotes(run: LiveRun, allowed: boolean): Promise<LiveCommandResult>;
     /** Move the session's end later, to `expiresAt` on the relay's clock, at most 24 hours after it started. */
     extend(run: LiveRun, expiresAt: number): Promise<LiveCommandResult>;
     /** Where the host is in the editor (its page and preview width), for guests following it. The latest is kept and resent. */
@@ -1586,6 +1612,12 @@ export interface BuilderApi {
     aiStop(joinId: string, runId: string): Promise<boolean>;
     /** Answer the question this app's request is waiting on; false when it is no longer waiting. */
     aiAnswer(joinId: string, runId: string, questionId: string, answer: string): Promise<boolean>;
+    /** The host's pinned notes: the copy last received, or asked for now. Null when not admitted. */
+    notes(joinId: string): Promise<LiveNotes | null>;
+    /** Leave, resolve or delete a note in the host's project, as far as this guest's role allows. */
+    addNote(joinId: string, draft: NoteDraft): Promise<LiveNoteResult>;
+    resolveNote(joinId: string, id: string, resolved: boolean): Promise<LiveNoteResult>;
+    deleteNote(joinId: string, id: string): Promise<LiveNoteResult>;
   };
   /**
    * The project as it is now. Over IPC (`window.builder`) it comes as a `ProjectChange` from the copy sent before
@@ -1633,6 +1665,10 @@ export interface BuilderApi {
   on(channel: 'remote:presence', cb: (presence: RemotePresence) => void): () => void;
   /** This app's requests to the host's AI changed: access, a request's progress, or its end (#769). */
   on(channel: 'remote:ai', cb: (ai: RemoteAi) => void): () => void;
+  /** The host's pinned notes changed, or whether guests may leave them. */
+  on(channel: 'remote:notes', cb: (notes: { joinId: string; notes: LiveNotes }) => void): () => void;
+  /** The shown project's pinned notes changed, or whether guests may leave them (#770). */
+  on(channel: 'notes:changed', cb: (notes: LiveNotes) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */

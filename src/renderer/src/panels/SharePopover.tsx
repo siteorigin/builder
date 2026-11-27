@@ -524,6 +524,13 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
           disabled={reconnecting || busy.has('lock')}
           onChange={(locked) => void go('lock', () => liveCommand(run, (r) => api.live.setLocked(r, locked)))}
         />
+        <SwitchRow
+          label="Allow guest notes"
+          hint="Guests can pin short notes to pages for you. Notes already left stay."
+          checked={live.guestNotes}
+          disabled={busy.has('notes')}
+          onChange={(allowed) => void go('notes', () => liveCommand(run, (r) => api.live.setGuestNotes(r, allowed)))}
+        />
         <div className="share-foot">
           <button type="button" className="btn btn-sm btn-danger" disabled={busy.has('end')} onClick={(e) => void end(e.currentTarget)}>
             End session

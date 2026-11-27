@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { ArrowLeft, Check, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, Grid3x3, ImageDown, ImageIcon, ImageOff, ImagePlus, Info, MapPin, Newspaper, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Type, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
@@ -11,6 +12,7 @@ import { FontList } from './FontFiles';
 import { inSeries, sortAssets } from '@shared/asset-order';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { Picture, Thumb } from '../components/AssetPicture';
+import { gridMeasures, WindowedGrid, type WindowedGridApi } from '../components/WindowedGrid';
 import { assetDropRefusal, goToShellPart, imagePlacement, openComponentStudio, openPost, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
 import { beginAssetDrag } from '../lib/asset-drag';
 import { SHOW_ASSET_EVENT } from '../lib/place';
@@ -564,18 +566,6 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
 
 const PLACE_ICON = { page: FileText, shell: PanelTop, component: Component, site: Globe, post: Newspaper };
 
-/** Arrow keys, Home and End move between tiles by row and column. The grid is one Tab stop: the tile last focused. */
-function gridKeys(e: React.KeyboardEvent<HTMLElement>) {
-  const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-asset]')];
-  const i = tiles.indexOf(document.activeElement as HTMLElement);
-  if (i < 0 || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
-  const cols = tiles.filter((t) => t.offsetTop === tiles[0].offsetTop).length || 1;
-  const to = ({ ArrowLeft: i - 1, ArrowRight: i + 1, ArrowUp: i - cols, ArrowDown: i + cols, Home: 0, End: tiles.length - 1 } as Record<string, number>)[e.key];
-  if (to === undefined) return;
-  e.preventDefault();
-  tiles[Math.max(0, Math.min(tiles.length - 1, to))].focus();
-}
-
 /**
  * Whether the photo shown records where it was taken, asked for each time a photo is shown or its file changes.
  * An answer that arrives after another photo is shown is dropped.
@@ -659,17 +649,40 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const [activeTile, setActiveTile] = useState<string | null>(null);
   // Each image's record as its tile last drew it, handed on again while what the tile shows of it is unchanged.
   const tileRecords = useRef(new Map<string, AssetRecord>());
-  // Where the grid was scrolled when an image's details opened, so Back returns to the same view.
+  // Where the grid was scrolled when an image's details opened, so Back returns to the same view; and the frame that
+  // starts the details at their top.
   const browseScroll = useRef(0);
+  const detailsTop = useRef(0);
   // The images view's scroll container, in browsing and in Replace everywhere alike.
   const bodyRef = useRef<HTMLDivElement>(null);
-  // The tile to keep in view when the thumbnails change size.
+  // The grid draws only the rows in and near its view (#973): it puts a tile out of view in the page when asked, and
+  // keeps the rows it measured for each of its two uses, so the grid drawn again on Back starts from them.
+  const gridApi = useRef<WindowedGridApi | null>(null);
+  const browseMeasures = useRef(gridMeasures());
+  const pickMeasures = useRef(gridMeasures());
+  // The images the grid shows, as last drawn: what a tile wanted after a later frame is looked up in.
+  const shownNow = useRef<AssetRecord[]>([]);
+  /**
+   * An image's tile, put in the page first when it is out of view; `scrollTop` moves the grid there before. Null when
+   * the grid does not show it.
+   */
+  const tileFor = (id: string, scrollTop?: number): HTMLElement | null => {
+    const find = () => document.querySelector<HTMLElement>(`[data-asset="${CSS.escape(id)}"]`);
+    const i = shownNow.current.findIndex((a) => a.id === id);
+    if (scrollTop === undefined && (find() || i < 0)) return find();
+    if (i >= 0 && gridApi.current) gridApi.current.reveal(i, scrollTop === undefined ? undefined : { scrollTop });
+    else if (scrollTop !== undefined && bodyRef.current) bodyRef.current.scrollTop = scrollTop;
+    return find();
+  };
+  // The tile to keep in view when the thumbnails change size: once the grid has been drawn at the new size.
   const densityAnchor = useRef<string | null>(null);
   useEffect(() => {
     const id = densityAnchor.current;
     densityAnchor.current = null;
-    if (id) bodyRef.current?.querySelector<HTMLElement>(`[data-asset="${id}"]`)?.scrollIntoView({ block: 'start' });
-  }, [compact]);
+    if (!id) return;
+    const frame = requestAnimationFrame(() => tileFor(id)?.scrollIntoView({ block: 'start' }));
+    return () => cancelAnimationFrame(frame);
+  }, [compact]); // eslint-disable-line react-hooks/exhaustive-deps
   const [nameError, setNameError] = useState<string | null>(null);
   const [allPlaces, setAllPlaces] = useState(false);
   // Replacing in some places: the uses ticked (by key) and the image picked for them. Null: every place, as picked.
@@ -786,7 +799,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   /** Focus moves to the tile (when it is still shown), else search, else the empty state's Add images. */
   const focusTile = (id?: string | null) =>
     requestAnimationFrame(() => {
-      const el = (id && document.querySelector<HTMLElement>(`[data-asset="${id}"]`)) || searchRef.current || document.querySelector<HTMLElement>('.asset-drop');
+      const el = (id && tileFor(id)) || searchRef.current || document.querySelector<HTMLElement>('.asset-drop');
       el?.focus();
     });
   const gridBody = () => bodyRef.current;
@@ -794,23 +807,29 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const openDetails = (id: string) => {
     browseScroll.current = gridBody()?.scrollTop ?? 0;
     setSelected(id);
-    // The details start at the picture, whatever depth of the grid they were opened from.
-    requestAnimationFrame(() => {
+    // The details start at the picture, whatever depth of the grid they were opened from (unless Back came first).
+    cancelAnimationFrame(detailsTop.current);
+    detailsTop.current = requestAnimationFrame(() => {
       if (bodyRef.current) bodyRef.current.scrollTop = 0;
     });
   };
-  /** Back to the grid as it was left: the same scroll position, focus on the same tile. */
+  /**
+   * Back to the grid as it was left: the same scroll position, focus on the same tile. The grid is drawn at once, so the
+   * tile takes the focus as Back is pressed, never a frame later with nothing focused in between.
+   */
   const back = () => {
     const id = selected;
-    setSelected(null);
-    setReplacing(false);
-    requestAnimationFrame(() => {
-      const body = gridBody();
-      if (body) body.scrollTop = browseScroll.current;
-      const el = (id && document.querySelector<HTMLElement>(`[data-asset="${id}"]`)) || searchRef.current || document.querySelector<HTMLElement>('.asset-drop');
-      el?.focus({ preventScroll: !!body });
-      if (body && el?.matches('[data-asset]')) el.scrollIntoView({ block: 'nearest' });
+    cancelAnimationFrame(detailsTop.current);
+    flushSync(() => {
+      setSelected(null);
+      setReplacing(false);
     });
+    const body = gridBody();
+    const tile = id ? tileFor(id, body ? browseScroll.current : undefined) : null;
+    if (body && !tile) body.scrollTop = browseScroll.current;
+    const el = tile || searchRef.current || document.querySelector<HTMLElement>('.asset-drop');
+    el?.focus({ preventScroll: !!body });
+    if (body && el?.matches('[data-asset]')) el.scrollIntoView({ block: 'nearest' });
   };
   /** Change the thumbnail size and keep the picture in view: the focused tile, else the first one showing. */
   const toggleCompact = () => {
@@ -1062,6 +1081,20 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   };
 
   const roving = shown.some((a) => a.id === activeTile) ? activeTile : (shown[0]?.id ?? null);
+  shownNow.current = shown;
+  /** Arrow keys, Home and End move between tiles by row and column, to tiles out of view too. The grid is one Tab stop:
+   *  the tile last focused. */
+  const gridKeys = (e: React.KeyboardEvent<HTMLElement>) => {
+    const at = document.activeElement;
+    if (!(at instanceof HTMLElement) || !at.matches('[data-asset]') || !e.currentTarget.contains(at) || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    const i = shown.findIndex((a) => a.id === at.dataset.asset);
+    if (i < 0) return;
+    const cols = Math.min(gridApi.current?.columns() ?? 1, shown.length);
+    const to = ({ ArrowLeft: i - 1, ArrowRight: i + 1, ArrowUp: i - cols, ArrowDown: i + cols, Home: 0, End: shown.length - 1 } as Record<string, number>)[e.key];
+    if (to === undefined) return;
+    e.preventDefault();
+    tileFor(shown[Math.max(0, Math.min(shown.length - 1, to))].id)?.focus();
+  };
   // An image tile pressed and moved a few pixels is dragged onto the canvas, which outlines the image on the page it
   // would fill or replace (#505); the click that ends a drag opens nothing. A click, Enter or Space still opens it.
   const dragged = useRef(false);
@@ -1118,60 +1151,70 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       const id = (e.target as Element).closest?.('[data-asset]')?.getAttribute('data-asset');
       return id ? shown.find((x) => x.id === id) : undefined;
     };
+    const tile = (i: number) => {
+      const fresh = shown[i];
+      const was = drawn.get(fresh.id);
+      const a = was && sameTileRecord(was, fresh) ? was : fresh;
+      kept.set(a.id, a);
+      const gone = missingOf.get(a.id);
+      return (
+        <AssetTile
+          key={a.id}
+          a={a}
+          reason={blocked?.(a) ?? null}
+          hurt={damage(a, gone)}
+          copies={gone?.variants.length ?? 0}
+          thumbKey={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'}
+          gone={!!gone}
+          apart={sameNames.get(a.id)}
+          picked={picked === undefined ? undefined : picked === a.id}
+          tabbable={a.id === roving}
+          compact={compact}
+          devUrl={devUrl}
+          drag={!!drag}
+        />
+      );
+    };
     return (
-      <div
-        className={`asset-grid${compact ? ' compact' : ''}`}
-        role="group"
-        aria-label={label}
-        aria-describedby="asset-grid-keys"
-        onKeyDown={gridKeys}
-        onFocus={(e) => {
-          const a = tileOf(e);
-          if (a) setActiveTile(a.id);
-        }}
-        onClick={(e) => {
-          const a = tileOf(e);
-          if (a && !(drag && endsDrag(e)) && !(blocked?.(a) ?? null)) onPick(a);
-        }}
-        {...(drag
-          ? {
-              onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
-                const a = tileOf(e);
-                if (a) dragFrom(a).onPointerDown(e);
-              },
-              onDragStart: (e: React.DragEvent<HTMLElement>) => {
-                if (tileOf(e)) e.preventDefault();
-              }
-            }
-          : {})}
-      >
+      <>
         <span className="sr-only" id="asset-grid-keys">
           Arrow keys move between images.
         </span>
-        {shown.map((fresh) => {
-          const was = drawn.get(fresh.id);
-          const a = was && sameTileRecord(was, fresh) ? was : fresh;
-          kept.set(a.id, a);
-          const gone = missingOf.get(a.id);
-          return (
-            <AssetTile
-              key={a.id}
-              a={a}
-              reason={blocked?.(a) ?? null}
-              hurt={damage(a, gone)}
-              copies={gone?.variants.length ?? 0}
-              thumbKey={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'}
-              gone={!!gone}
-              apart={sameNames.get(a.id)}
-              picked={picked === undefined ? undefined : picked === a.id}
-              tabbable={a.id === roving}
-              compact={compact}
-              devUrl={devUrl}
-              drag={!!drag}
-            />
-          );
-        })}
-      </div>
+        <WindowedGrid
+          className={`asset-grid${compact ? ' compact' : ''}`}
+          role="group"
+          aria-label={label}
+          aria-describedby="asset-grid-keys"
+          count={shown.length}
+          tile={tile}
+          scroller={bodyRef}
+          keep={[shown.findIndex((a) => a.id === roving)]}
+          measures={(drag ? browseMeasures : pickMeasures).current}
+          // The rows measured hold while the same images are shown the same size.
+          layoutKey={JSON.stringify([compact, assetSort, needle, series.key, mode])}
+          api={gridApi}
+          onKeyDown={gridKeys}
+          onFocus={(e) => {
+            const a = tileOf(e);
+            if (a) setActiveTile(a.id);
+          }}
+          onClick={(e) => {
+            const a = tileOf(e);
+            if (a && !(drag && endsDrag(e)) && !(blocked?.(a) ?? null)) onPick(a);
+          }}
+          {...(drag
+            ? {
+                onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+                  const a = tileOf(e);
+                  if (a) dragFrom(a).onPointerDown(e);
+                },
+                onDragStart: (e: React.DragEvent<HTMLElement>) => {
+                  if (tileOf(e)) e.preventDefault();
+                }
+              }
+            : {})}
+        />
+      </>
     );
   };
   const noMatches = (

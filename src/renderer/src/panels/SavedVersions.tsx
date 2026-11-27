@@ -2,7 +2,7 @@ import './SavedVersions.css';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArchiveRestore, ArrowLeft, Bookmark, BookmarkPlus, Check, CircleAlert, Pencil, Trash2 } from 'lucide-react';
-import type { SavedVersionInfo, VersionReview } from '@shared/api';
+import type { RestoreVersionResult, SavedVersionInfo, VersionReview } from '@shared/api';
 import { api, confirmDialog, getState, setState, toast, undoAction, useStore } from '../store';
 import { Spinner } from '../components/ui';
 import { BlockedNote, BlockedStatus, projectBlock, type Blocked } from '../components/BlockedNote';
@@ -168,8 +168,10 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
     const m = getState().modal;
     if (m?.kind === 'history' && m.tab === 'versions') close();
     if ('unchanged' in r && r.unchanged) return toast(`Your site already matches “${version.name}”.`, 'info');
-    const done = r as { entryId?: string; revision?: number; backup?: { name: string }; replaced?: number; left?: string[] };
-    toast(restoredNotice(version.name, !!done.backup, done.replaced ?? 0, done.left ?? []), 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
+    const done = r as RestoreVersionResult;
+    // A restore done whose own saved version is not (or not yet) saved says so, with its Undo all the same.
+    const said = [restoredNotice(version.name, !!done.backup, done.replaced ?? 0, done.left ?? []), ...(done.notice ? [done.notice] : [])].join(' ');
+    toast(said, done.notice ? 'info' : 'success', done.entryId ? undoAction({ entryId: done.entryId, revision: done.revision ?? 0, workspaceKey: key }) : undefined);
   };
 
   /** Focus a row's control again once the list has settled (after a rename, or a cancelled one). */
@@ -321,7 +323,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
             <span>{open.version.name}</span>
           </h3>
           <p className="muted version-review-when" title={fullWhen(open.version.time)}>
-            {open.version.auto ? 'Saved automatically, ' : 'Saved '}
+            {open.version.restored ? 'Saved automatically after a restore, ' : open.version.auto ? 'Saved automatically, ' : 'Saved '}
             {lowerDay(savedAt(open.version.time))}
           </p>
           {note}
@@ -383,7 +385,7 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
                   const editing = renaming?.id === v.id;
                   return (
                     <li key={v.id} data-version={v.id} className={editing ? 'renaming' : undefined}>
-                      {v.auto ? <ArchiveRestore aria-label="Saved automatically" /> : <Bookmark aria-label="Saved by you" />}
+                      {v.auto ? <ArchiveRestore aria-label={v.restored ? 'Saved automatically after a restore' : 'Saved automatically'} /> : <Bookmark aria-label="Saved by you" />}
                       <span className="grow version-text">
                         {editing ? (
                           <input
