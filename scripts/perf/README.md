@@ -434,6 +434,22 @@ the reading's collection, detached ones included); the peak's are `memory.open.p
 difference of two readings in the same launch: `memory.edits.growth.*` (`edit50` − `edit1`: what 49 edits left behind)
 and `memory.close.growth.*` (`closed` − `welcome`: what a project left behind once closed).
 
+**`exportMemory`** (after `open`, a memory scenario, on its own): the memory of every process of the app while the
+website is exported (#1044). The hero chosen in Layers and its Heading changed once in the Inspector, untimed, so the first
+reading holds what a first edit loads; at rest on the canvas (`canvas`); the website exported as `export` exports it
+(the Export dialog, Website files, a folder chosen through the driver), sampled from the card's click to the dialog
+saying it is done for its peak (`export.peak`): the production build's own process (`projectBuild`) is in it, beside the
+dev server and everything else; the dialog closed and the Heading changed again straight after; at rest, starting 20 s
+after the export finished (`exported`). Checks: everything `export` checks of the export (the dialog's words, the new
+folder listed from the revision it started on, a page for every page and entry, the hero's heading as it was changed
+before the export, nothing of the editor's), and each change shown in the preview and reported applied by the canvas
+(in place, or by a full reload ready at its revision), the project one revision on after the second with its heading.
+Metrics: each reading's, as `memory`'s, with the peak's as `memory.export.peak.*`; `memory.export.growth.*` (`exported`
+− `canvas`: what the export left behind, beside one more edit); `exportMemory.total` and `exportMemory.build` (the
+export's and its build's spans, taken while the peak samples, so compare them only with each other's); and
+`exportMemory.editAfter`, from the editor sending the edit after the export to the canvas reporting it applied (the
+preview usable at once). The fixture has no drafts, and only the folder format is measured.
+
 **`noWindow`** (after `launch`, a memory scenario, macOS only: elsewhere the last window closing quits): the app with a
 project open and no window, as it is after its window is closed and the app is left in the Dock. Readings at rest: a
 fresh Welcome (`welcome`); the fixture opened from its card, untimed, then a page other than home chosen in Pages (the

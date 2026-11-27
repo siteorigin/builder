@@ -2382,6 +2382,76 @@ const EDITOR_ONLY = /data-so-(ctx|node|part)|siteorigin-bridge/;
 /** A span's start, on the trace's clock. */
 const startOf = (r: PerfRecord | undefined) => (r && typeof r.ms === 'number' ? r.t - r.ms : undefined);
 
+/** The folder exports are made in, beside the iteration's project. */
+const exportsFolder = (ctx: ScenarioContext) => join(dirname(ctx.projectDir), 'exports');
+
+/** The Export dialog open on Website files, the card ready and the folder chooser answered with `parent`. */
+async function websiteExportReady(ctx: ScenarioContext, parent: string): Promise<{ modal: Locator; card: Locator; before: NonNullable<Snapshot>; earlier: Set<string> }> {
+  const { win, app } = ctx;
+  const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+  expect(before, 'no project is open');
+  const earlier = new Set(before.recentExports.map((e) => e.path));
+  await win.getByRole('button', { name: 'Export', exact: true }).first().click();
+  const modal = win.locator('.modal');
+  const card = modal.getByRole('button', { name: /Website files, ready to upload/ });
+  await card.waitFor({ timeout: 30_000 });
+  for (let end = Date.now() + 30_000; (await card.getAttribute('aria-disabled')) === 'true'; ) {
+    expect(Date.now() < end, 'the Website files card never became available');
+    await sleep(100);
+  }
+  const answer: DesktopCall = { op: 'setAnswers', answers: [{ dialog: 'open', selection: 'folder', paths: [parent] }], request: null };
+  const set = (await app.evaluate(desktopInMain, answer)) as { error?: string };
+  if (set.error) throw new Error(`The folder chooser could not be answered: ${set.error}`);
+  return { modal, card, before, earlier };
+}
+
+/** The dialog's result once the export has ended: a status when it finished, an alert when it stopped. */
+async function websiteExportResult(modal: Locator): Promise<Locator> {
+  const result = modal.locator('.export-result');
+  await result.first().waitFor({ timeout: SCENARIO_EXPORT_MS });
+  return result.first();
+}
+
+/**
+ * The export the dialog reported, checked: it says it exported the fixture's pages and entries, it is listed as a new
+ * website folder in `parent`, made from the revision it started on, and the folder holds a page for every page and
+ * entry, the home hero's `heading`, and nothing of the editor's. Returns the folder's files and bytes.
+ */
+async function checkWebsiteExport(ctx: ScenarioContext, result: Locator, before: NonNullable<Snapshot>, earlier: Set<string>, parent: string, heading = ctx.fixture.heading): Promise<{ files: number; bytes: number }> {
+  const { win, fixture } = ctx;
+  const said = (await result.innerText()).trim();
+  expect((await result.getAttribute('role')) === 'status' && said.startsWith(`Exported ${fixture.pages} pages`), `the export did not finish: ${said.split('\n')[0]}`);
+  if (fixture.entries) expect(said.includes(`${fixture.entries} entries`), `the export did not publish the fixture's ${fixture.entries} entries: ${said.split('\n')[0]}`);
+  const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+  expect(after, 'no project is open');
+  const made = after.recentExports[0];
+  expect(made && !earlier.has(made.path) && dirname(made.path) === parent, 'the export was not listed as a new folder in the chosen place');
+  expect(made.kind === 'site' && made.format === 'folder', `the export listed is a ${made.kind} ${made.format}, not a website folder`);
+  // Made from the revision it started on (recording the addresses it published may move the project on after).
+  expect(made.revision === before.revision, `the export was made from revision ${made.revision}, not the ${before.revision} it started on`);
+  // The website, on disk: every page and entry, the home page's hero, and nothing of the editor's.
+  expect(existsSync(made.path), 'the exported folder is not there');
+  const files = filesUnder(made.path);
+  const pagesBuilt = files.filter((f) => f === 'index.html' || f.endsWith('/index.html')).length;
+  expect(pagesBuilt >= fixture.pages + fixture.entries, `the website has ${pagesBuilt} pages, fewer than the fixture's ${fixture.pages} pages and ${fixture.entries} entries`);
+  const home = join(made.path, 'index.html');
+  expect(existsSync(home) && htmlText(readFileSync(home, 'utf8')).includes(heading), 'the exported home page does not show the home hero’s heading');
+  let bytes = 0;
+  for (const f of files) {
+    expect(!/(^|\/)(node_modules|\.siteorigin|\.svelte-kit)(\/|$)/.test(f), `the website carries ${f}`);
+    const body = readFileSync(join(made.path, f));
+    bytes += body.length;
+    if (/\.(html|js)$/.test(f)) expect(!EDITOR_ONLY.test(body.toString('utf8')), `the website carries editor-only markup in ${f}`);
+  }
+  return { files: files.length, bytes };
+}
+
+/** The Export dialog closed, as a person leaves it, so what comes next starts from the editor. */
+async function closeExportDialog(modal: Locator): Promise<void> {
+  await modal.getByRole('button', { name: 'Close', exact: true }).last().click();
+  await modal.waitFor({ state: 'detached', timeout: 15_000 });
+}
+
 /**
  * Export the website as a folder from the Export dialog, as a person does: open the dialog, choose Website files, pick
  * a folder (the chooser answered through the driver), and wait for the dialog to say what it exported. `exportAgain`
@@ -2393,64 +2463,23 @@ function exportScenario(name: 'export' | 'exportAgain', after: 'open' | 'export'
     after,
     description: after === 'open' ? 'Export the website as a folder from the Export dialog, to the dialog saying it is done.' : 'Export the website again with nothing changed, into a second folder.',
     async run(ctx) {
-      const { win, app, fixture } = ctx;
-      const parent = join(dirname(ctx.projectDir), 'exports');
+      const parent = exportsFolder(ctx);
       if (name === 'export') {
         rmSync(parent, { recursive: true, force: true });
         mkdirSync(parent, { recursive: true });
       }
-      const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-      expect(before, 'no project is open');
-      const earlier = new Set(before.recentExports.map((e) => e.path));
-      await win.getByRole('button', { name: 'Export', exact: true }).first().click();
-      const modal = win.locator('.modal');
-      const card = modal.getByRole('button', { name: /Website files, ready to upload/ });
-      await card.waitFor({ timeout: 30_000 });
-      for (let end = Date.now() + 30_000; (await card.getAttribute('aria-disabled')) === 'true'; ) {
-        expect(Date.now() < end, 'the Website files card never became available');
-        await sleep(100);
-      }
-      const answer: DesktopCall = { op: 'setAnswers', answers: [{ dialog: 'open', selection: 'folder', paths: [parent] }], request: null };
-      const set = (await app.evaluate(desktopInMain, answer)) as { error?: string };
-      if (set.error) throw new Error(`The folder chooser could not be answered: ${set.error}`);
+      const { modal, card, before, earlier } = await websiteExportReady(ctx, parent);
       // Opening the dialog may set off a workspace save: it lands before the export starts, not in it.
       await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
       await ctx.mark('scenario.start', { scenario: name });
       await card.click();
-      // The dialog's result: a status when the export finished, an alert when it stopped.
-      const result = modal.locator('.export-result');
-      await result.first().waitFor({ timeout: SCENARIO_EXPORT_MS });
-      const said = (await result.first().innerText()).trim();
-      expect((await result.first().getAttribute('role')) === 'status' && said.startsWith(`Exported ${fixture.pages} pages`), `the export did not finish: ${said.split('\n')[0]}`);
-      if (fixture.entries) expect(said.includes(`${fixture.entries} entries`), `the export did not publish the fixture's ${fixture.entries} entries: ${said.split('\n')[0]}`);
-      const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-      expect(after, 'no project is open');
-      const made = after.recentExports[0];
-      expect(made && !earlier.has(made.path) && dirname(made.path) === parent, 'the export was not listed as a new folder in the chosen place');
-      expect(made.kind === 'site' && made.format === 'folder', `the export listed is a ${made.kind} ${made.format}, not a website folder`);
-      // Made from the revision it started on (recording the addresses it published may move the project on after).
-      expect(made.revision === before.revision, `the export was made from revision ${made.revision}, not the ${before.revision} it started on`);
-      // The website, on disk: every page and entry, the home page's hero, and nothing of the editor's.
-      expect(existsSync(made.path), 'the exported folder is not there');
-      const files = filesUnder(made.path);
-      const pagesBuilt = files.filter((f) => f === 'index.html' || f.endsWith('/index.html')).length;
-      expect(pagesBuilt >= fixture.pages + fixture.entries, `the website has ${pagesBuilt} pages, fewer than the fixture's ${fixture.pages} pages and ${fixture.entries} entries`);
-      const home = join(made.path, 'index.html');
-      expect(existsSync(home) && htmlText(readFileSync(home, 'utf8')).includes(fixture.heading), 'the exported home page does not show the home hero’s heading');
-      let bytes = 0;
-      for (const f of files) {
-        expect(!/(^|\/)(node_modules|\.siteorigin|\.svelte-kit)(\/|$)/.test(f), `the website carries ${f}`);
-        const body = readFileSync(join(made.path, f));
-        bytes += body.length;
-        if (/\.(html|js)$/.test(f)) expect(!EDITOR_ONLY.test(body.toString('utf8')), `the website carries editor-only markup in ${f}`);
-      }
-      await ctx.mark('export.output', { scenario: name, files: files.length, bytes });
+      const result = await websiteExportResult(modal);
+      const { files, bytes } = await checkWebsiteExport(ctx, result, before, earlier, parent);
+      await ctx.mark('export.output', { scenario: name, files, bytes });
       await sleep(ctx.settleMs);
       await ctx.mark('scenario.end', { scenario: name });
       await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario(name, 'renderer')) && !!t.first('scenario.end', forScenario(name, 'main')));
-      // The dialog closed, as a person leaves it, so a scenario after this one starts from the editor.
-      await modal.getByRole('button', { name: 'Close', exact: true }).last().click();
-      await modal.waitFor({ state: 'detached', timeout: 15_000 });
+      await closeExportDialog(modal);
     },
     measure(trace) {
       const m = new Collector();
@@ -2661,6 +2690,114 @@ export const reopen: Scenario = {
     growthMetrics(m, 'close', reading('welcome'), reading('closed1'));
     growthMetrics(m, 'cycles', reading('closed1'), reading(`closed${REOPEN_CYCLES}`));
     growthMetrics(m, 'reopen', reading('welcome'), reading(`closed${REOPEN_CYCLES}`));
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// exportMemory
+// ---------------------------------------------------------------------------
+
+/** The readings `exportMemory` takes, in order, and their kinds. */
+export const EXPORT_MEMORY_READINGS = [
+  ['canvas', 'rest'],
+  ['export', 'peak'],
+  ['exported', 'rest']
+] as const;
+/** How long after the export finished `exported` is read: always the same age, as `closed` is after a close, so a build
+ *  that lets go of what the export held later than another shows it. */
+export const EXPORTED_AFTER_MS = CLOSED_AFTER_MS;
+/** The heading `exportMemory` gives the home hero: before the export (`0`), and straight after it (`1`). */
+export const exportMemoryHeading = (iteration: number, k: number) => `Export memory heading ${iteration}.${k}`;
+
+/** The canvas first reporting the project at `revision` applied, from `from`: in place, or by a full reload whose page
+ *  says it is ready at that revision. */
+const appliedAt =
+  (fixture: FixtureFacts, revision: number, from?: number) =>
+  (t: Trace): PerfRecord | undefined => {
+    const inPlace = t.first('canvas.revisionApplied', (r) => r.proc === 'renderer' && atRevision(revision)(r), from);
+    const reloaded = t.first('canvas.ready', (r) => homeReady(fixture)(r) && r.attrs?.revision === revision, from);
+    return inPlace && reloaded ? (inPlace.t <= reloaded.t ? inPlace : reloaded) : (inPlace ?? reloaded);
+  };
+
+export const exportMemory: Scenario = {
+  name: 'exportMemory',
+  after: 'open',
+  memory: true,
+  deadlineMs: 15 * 60_000,
+  description: 'The memory of every process of the app at rest on the canvas, at its peak while the website is exported as a folder from the Export dialog, and at rest again 20 s after the export finished, with an edit shown in the preview straight after it.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('exportMemory was run without a memory probe');
+    // The hero chosen in Layers and its Heading changed once in the Inspector, untimed, so the reading before the export
+    // holds what a first edit loads, as the one after it does.
+    const hero = win.getByRole('treeitem', { name: HERO_NAME }).first();
+    if (!(await hero.isVisible())) await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
+    await hero.click();
+    await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+    const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
+    await field.waitFor({ timeout: 15_000 });
+    /** The Heading changed to `text`, shown in the preview, and the canvas reporting the project at `revision` applied. */
+    const change = async (text: string, revision: number) => {
+      await field.fill(text);
+      await win.keyboard.press('Tab');
+      const shown = await preview(win).getByRole('heading', { name: text, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 }).then(() => true, () => false);
+      expect(shown, `the preview never showed the heading “${text}”`);
+      expect(appliedAt(fixture, revision)(await ctx.waitTrace((t) => !!appliedAt(fixture, revision)(t), 30_000)), `the canvas never reported revision ${revision} applied`);
+    };
+    const start = await snapshotOf(win);
+    expect(start, 'no project is open');
+    await change(exportMemoryHeading(ctx.iteration, 0), start.revision + 1);
+    await probe.rest('canvas');
+    const parent = exportsFolder(ctx);
+    rmSync(parent, { recursive: true, force: true });
+    mkdirSync(parent, { recursive: true });
+    const { modal, card, before, earlier } = await websiteExportReady(ctx, parent);
+    expect(before.revision === start.revision + 1, `the edit before the export left the project at revision ${before.revision}, not ${start.revision + 1}`);
+    // Opening the dialog may set off a workspace save: it lands before the export starts, not in it.
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await ctx.mark('scenario.start', { scenario: 'exportMemory' });
+    let result: Locator | undefined;
+    await probe.peak('export', async () => {
+      await card.click();
+      result = await websiteExportResult(modal);
+    });
+    const finished = Date.now();
+    await checkWebsiteExport(ctx, result!, before, earlier, parent, exportMemoryHeading(ctx.iteration, 0));
+    await closeExportDialog(modal);
+    // The preview usable at once: the Heading changed again straight after, shown in the preview and applied by the
+    // canvas. Recording the addresses the export published may have moved the project on.
+    const exported = await snapshotOf(win);
+    expect(exported, 'no project is open after the export');
+    await ctx.mark('exportMemory.edit', { scenario: 'exportMemory', revision: exported.revision });
+    await change(exportMemoryHeading(ctx.iteration, 1), exported.revision + 1);
+    const after = await snapshotOf(win);
+    expect(after && after.revision === exported.revision + 1, `the edit after the export left the project at revision ${after?.revision}, not ${exported.revision + 1}`);
+    expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === exportMemoryHeading(ctx.iteration, 1), 'the project does not hold the heading changed after the export');
+    const wait = finished + EXPORTED_AFTER_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    await probe.rest('exported');
+    await ctx.mark('scenario.end', { scenario: 'exportMemory' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('exportMemory', 'renderer')) && !!t.first('scenario.end', forScenario('exportMemory', 'main')));
+  },
+  measure(trace, fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string, kind: 'rest' | 'peak' = 'rest') => readings.find((r) => r.label === label && r.kind === kind);
+    for (const [label, kind] of EXPORT_MEMORY_READINGS) readingMetrics(m, label, reading(label, kind));
+    growthMetrics(m, 'export', reading('canvas'), reading('exported'));
+    const begin = m.need('scenario.start (main)', trace.first('scenario.start', forScenario('exportMemory', 'main')));
+    const end = m.need('scenario.end (main)', trace.first('scenario.end', forScenario('exportMemory', 'main'), begin?.t));
+    // This scenario's own export, and its production build.
+    const total = m.need('controller.exportStatic', trace.first('controller.exportStatic', inProc('main'), begin?.t ?? Infinity, end?.t ?? -Infinity));
+    m.span('exportMemory.total', total);
+    m.span('exportMemory.build', m.need('export.build', trace.first('export.build', inProc('main'), startOf(total) ?? Infinity, total?.t ?? -Infinity)));
+    // The edit straight after the export, from the editor sending it to the canvas reporting it applied.
+    const asked = m.need('exportMemory.edit (renderer)', trace.first('exportMemory.edit', forScenario('exportMemory', 'renderer'), total?.t ?? Infinity));
+    const req = m.need('edit.requested (after the export)', trace.first('edit.requested', inProc('renderer'), asked?.t ?? Infinity));
+    const target = typeof asked?.attrs?.revision === 'number' ? asked.attrs.revision + 1 : NaN;
+    const shown = m.need('canvas.revisionApplied (after the export)', asked ? appliedAt(fixture, target, asked.t)(trace) : undefined);
+    m.since('exportMemory.editAfter', req, shown);
     return m;
   }
 };
@@ -6981,7 +7118,7 @@ export const sourceSync: Scenario = {
 /** The scenarios that show every panel, Insert among them, before `thumbs` could run in the same launch. */
 const PANEL_TOURS = ['firstShow', 'panels', 'panelsInUse'] as const;
 
-export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync];
+export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync, exportMemory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, aiMemory, AI_MEMORY_RUNS, aiMemoryReply, BATCH_REPLY, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, welcome, emptyAppMain, emptyAppSwitches, EMPTY_PAGE, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, FIRST_SHOW, firstShow, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, aiMemory, AI_MEMORY_RUNS, aiMemoryReply, BATCH_REPLY, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, EXPORT_MEMORY_READINGS, exportMemory, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, welcome, emptyAppMain, emptyAppSwitches, EMPTY_PAGE, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, FIRST_SHOW, firstShow, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -1967,6 +1967,52 @@ describe('memory', () => {
     expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.close'))).toBe(false);
     // A reading at rest named like the peak is not the peak.
     expect(memory.measure(new Trace([]), facts, all.map((r) => (r.label === 'open' ? { ...r, kind: 'rest' as const } : r))).missing).toEqual(['memory reading open']);
+  });
+
+  it('exportMemory: follows open on its own, and reports its readings, their growth, the export and the edit after it', () => {
+    expect([exportMemory.memory, exportMemory.after]).toEqual([true, 'open']);
+    expect(chainFor(['exportMemory']).map((s) => s.name)).toEqual(['launch', 'open', 'exportMemory']);
+    expect(() => chainFor(['exportMemory', 'export'])).toThrow('are run on their own');
+    expect(EXPORT_MEMORY_READINGS.map(([label, kind]) => `${label}:${kind}`)).toEqual(['canvas:rest', 'export:peak', 'exported:rest']);
+    const readings = [reading('canvas', 200, 'rest', { editor: 300, devServer: 400 }), reading('export', 700, 'peak', { editor: 320, devServer: 410, projectBuild: 900 }), reading('exported', 230, 'rest', { editor: 305, devServer: 402, media: 5 })];
+    const at = { scenario: 'exportMemory' };
+    const records = [
+      // A revision applied before the export: never the edit after it.
+      r('canvas.revisionApplied', 500, { attrs: { revision: 4 } }),
+      m('scenario.start', 1000, { attrs: at }),
+      r('scenario.start', 1000, { attrs: at }),
+      m('export.build', 6000, { kind: 'span', ms: 4000 }),
+      m('controller.exportStatic', 8000, { kind: 'span', ms: 6900 }),
+      r('exportMemory.edit', 9000, { attrs: { ...at, revision: 4 } }),
+      r('edit.requested', 9010, { attrs: { revision: 4 } }),
+      // The revision before, reported again after the edit was asked for: not the edit.
+      r('canvas.revisionApplied', 9050, { attrs: { revision: 4 } }),
+      // The preview's own report of the edit, from the main process's copy of a renderer mark: not the canvas.
+      m('canvas.revisionApplied', 9100, { attrs: { revision: 5 } }),
+      r('canvas.revisionApplied', 9250, { attrs: { revision: 5 } }),
+      // A reload's page ready at the edit's revision after it applied in place: the first report stands.
+      r('canvas.ready', 9400, { attrs: { revision: 5, mode: 'edit', studio: false, path: '/' } }),
+      m('scenario.end', 40_000, { attrs: at }),
+      r('scenario.end', 40_000, { attrs: at })
+    ];
+    const got = exportMemory.measure(new Trace(records), facts, readings);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.canvas.total'), v('memory.export.peak.total'), v('memory.export.peak.mem.main'), v('memory.export.peak.mem.projectBuild'), v('memory.exported.heap.main')]).toEqual([900, 2330, 700, 900, 10]);
+    expect([v('memory.export.growth.total'), v('memory.export.growth.mem.main'), v('memory.export.growth.mem.devServer'), v('memory.export.growth.processes'), v('memory.export.growth.mem.media')]).toEqual([42, 30, 2, 1, 5]);
+    expect([v('exportMemory.total'), v('exportMemory.build'), v('exportMemory.editAfter')]).toEqual([6900, 4000, 240]);
+    // A full reload of the preview that shows the edit counts as it applied, when it comes first, and alone.
+    const earlier = exportMemory.measure(new Trace([...records, r('canvas.ready', 9200, { attrs: { revision: 5, mode: 'edit', studio: false, path: '/' } })].sort((a, b) => a.t - b.t)), facts, readings);
+    expect(earlier.metrics['exportMemory.editAfter'].value).toBe(190);
+    const reloaded = exportMemory.measure(new Trace(records.filter((x) => !(x.name === 'canvas.revisionApplied' && x.t > 9060))), facts, readings);
+    expect(reloaded.metrics['exportMemory.editAfter'].value).toBe(390);
+    // Another page ready at that revision is not the home page showing the edit.
+    const elsewhere = exportMemory.measure(new Trace([...records.filter((x) => !(x.name === 'canvas.revisionApplied' && x.t > 9060)), r('canvas.ready', 9300, { attrs: { revision: 5, mode: 'edit', studio: false, path: '/about/' } })].sort((a, b) => a.t - b.t)), facts, readings);
+    expect(elsewhere.metrics['exportMemory.editAfter'].value).toBe(390);
+    // A missing reading, export or applied edit is missing, never a zero.
+    const lacking = exportMemory.measure(new Trace(records.filter((x) => x.name !== 'controller.exportStatic' && !((x.name === 'canvas.revisionApplied' || x.name === 'canvas.ready') && x.t > 9060))), facts, readings.slice(0, 2));
+    expect(lacking.missing).toEqual(['memory reading exported', 'controller.exportStatic', 'export.build', 'exportMemory.edit (renderer)', 'edit.requested (after the export)', 'canvas.revisionApplied (after the export)']);
+    expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.export.growth') || k.startsWith('exportMemory.'))).toBe(false);
   });
 
   it('memoryPanels: report both readings, their growth and the snapshots the editor still held at each', () => {
