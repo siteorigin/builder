@@ -3,6 +3,7 @@ import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
 import type { ShortcutSettings } from './shortcuts';
+import type { FirstStepsRecord } from './first-steps';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
 import type { ComponentThumb } from './component-thumbs';
 import type { ThemePack } from '@catalogue/pack';
@@ -387,6 +388,8 @@ export interface LocalWorkspaceState {
   keptSamples?: string[];
   /** The element last selected on each page, by page ID, so a page opened again resumes there (lib/page-place). */
   pagePlaces?: Record<string, ElementRef>;
+  /** A new Business site's Get started list (shared/first-steps): what the starter made, and how far the author is. */
+  firstSteps?: FirstStepsRecord;
 }
 
 export interface CreateProjectOptions {

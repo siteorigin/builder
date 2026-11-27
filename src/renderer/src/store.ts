@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
 import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
+import type { FirstStepsRecord } from '@shared/first-steps';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
 import type { SeoSubject } from '@shared/seo';
@@ -305,6 +306,8 @@ export interface State {
   chatFocus: ChatFocusRequest | null;
   /** Sample contact details the author chose to publish as they are, so the export stops reviewing them. */
   keptSamples: string[];
+  /** This project's Get started list (shared/first-steps), or null for a project that has none. */
+  firstSteps: FirstStepsRecord | null;
   /** A field to bring into view and focus once its component shows in the Inspector ("Open in inspector"). */
   inspectorFocus: InspectorFocus | null;
   /** Typed edits made while the AI was working (see HeldEdit). */
@@ -443,6 +446,7 @@ const live = create<State>((set) => ({
   chatMode: 'edit',
   chatFocus: null,
   keptSamples: [],
+  firstSteps: null,
   inspectorFocus: null,
   heldEdits: [],
   aiOutcome: null,

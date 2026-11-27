@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, toast, useStore, whenThemesReady } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
+import { readFirstSteps } from '@shared/first-steps';
 import { Welcome } from './Welcome';
 import { UnpackingModal } from './components/ProjectDialogs';
 import { Toasts, openDialogs, openMenus } from './components/ui';
@@ -287,6 +288,7 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     // A choice to change the whole site was made for the last project, never for this one.
     chatContextEnabled: { page: true, scope: 'selection' },
     keptSamples: Array.isArray(local.keptSamples) ? local.keptSamples.filter((v): v is string => typeof v === 'string') : [],
+    firstSteps: readFirstSteps(local.firstSteps),
     conversation: null,
     pagePlaces,
     selection: placeOn(snap.state, pagePlaces, pageId),

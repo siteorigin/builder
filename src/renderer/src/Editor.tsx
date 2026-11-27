@@ -13,6 +13,7 @@ import { waitingPreview } from './lib/posts';
 import { withoutSlot } from './lib/model';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
+import { FirstSteps, GetStartedStatus, useFirstStepsTracking } from './panels/FirstSteps';
 import { PostsPanel } from './panels/PostsPanel';
 import { PostWriter } from './panels/PostWriter';
 import { SeoPanel, SeoView } from './panels/SeoView';
@@ -413,6 +414,7 @@ export function Editor() {
   // Another computer's project, as a guest in its live session (#766): only what a guest may do there is offered,
   // and the views and dialogs that are the host's alone are never mounted.
   const remoteShell = useStore(isRemoteShell);
+  useFirstStepsTracking();
   const leftTab = useStore((s) => s.leftTab);
   const rightTab = useStore((s) => s.rightTab);
   const leftWidth = useStore((s) => s.leftWidth);
@@ -767,6 +769,7 @@ export function Editor() {
       <span className="sr-only" role="status">
         {modeAnnouncement}
       </span>
+      {!remoteShell && <GetStartedStatus />}
       <div className="workspace">
         <div className="rail" role="toolbar" aria-orientation="vertical" aria-label="Panels" onKeyDown={onRailKey}>
           {leftTabs.map((t) => (
@@ -822,6 +825,7 @@ export function Editor() {
                   {t === 'seo' && <SeoPanel />}
                 </Hideable>
               )}
+              {t === 'pages' && !remoteShell && <FirstSteps />}
             </div>
           ))}
         </aside>
