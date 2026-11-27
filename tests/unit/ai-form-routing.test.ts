@@ -295,7 +295,7 @@ describe('where a form sends, as an AI batch would leave it', () => {
     expect(formRoutingChanges(state, plain)).toEqual([]);
   });
 
-  it('is asked about in the app’s own words, naming each change', () => {
+  it('is asked about in the app’s own words, naming each change whole', () => {
     const { state, owner, form } = project();
     const found = formRoutingChanges(state, applyOperations(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL }]).state);
     const q = formRoutingQuestion(found);
@@ -303,6 +303,20 @@ describe('where a form sends, as an AI batch would leave it', () => {
     expect(q.text).toContain('“Home”');
     expect(q.choices).toEqual(['Keep it as it is', 'Allow this change']);
     expect(q.allow).toBe(q.choices[1]);
+    // Five forms, each sent somewhere else, one of them to an address too long to read at a glance: every one is named, whole.
+    const long = `https://forms.example.com/${'x'.repeat(200)}/inbox-at-the-end`;
+    let many = state;
+    const forms = [form];
+    for (let i = 0; i < 4; i++) {
+      const r = applyOperations(many, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }]);
+      many = r.state;
+      forms.push(r.results[0].nodeId as string);
+    }
+    const ops: EditOperation[] = forms.map((nodeId, i) => ({ type: 'instance.setProp', owner, nodeId, prop: 'endpoint', value: i === 4 ? long : `${EVIL}${i}` }));
+    const five = formRoutingQuestion(formRoutingChanges(many, applyOperations(many, ops).state));
+    for (let i = 0; i < 4; i++) expect(five.text).toContain(`${EVIL}${i}`);
+    expect(five.text).toContain(long);
+    expect(five.allow).toBe('Allow these changes');
   });
 });
 
@@ -339,6 +353,46 @@ describe('an AI batch at commit', () => {
     const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) });
     expect(allowed.error).toBeUndefined();
     expect(Object.values(s.state.pages[owner.id].nodes).filter((n) => n.kind === 'instance' && n.definitionId === FORM && n.props.endpoint === EVIL)).toHaveLength(1);
+    await s.close();
+  });
+
+  it('is refused for a batch sent under an AI run, whatever it names as its source', async () => {
+    const { state, owner, form } = project();
+    const s = await ProjectSession.create(temp('session'), state);
+    expect(await s.beginRun('run_1')).toBeNull();
+    const r = await s.apply({ operations: [{ type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL }] }, { label: 'AI', source: 'user', runId: 'run_1' });
+    expect(r.error?.code).toBe('SCOPE_MISMATCH');
+    expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    await s.close();
+  });
+
+  it('lands a batch only when the grant covers every change it makes', async () => {
+    const { state: start, owner, form } = project();
+    const r0 = applyOperations(start, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }]);
+    const second = r0.results[0].nodeId as string;
+    const s = await ProjectSession.create(temp('session'), r0.state);
+    const ops: EditOperation[] = [
+      { type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL },
+      { type: 'instance.setProp', owner, nodeId: second, prop: 'endpoint', value: SUPPORT }
+    ];
+    const review = formRoutingReview((await s.apply({ operations: ops }, { label: 'AI', source: 'ai' })).error)!;
+    expect(review.changes).toHaveLength(2);
+    const half = { operations: review.operations, changes: [review.changes[0].key] };
+    expect((await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: half })).ok).toBe(false);
+    expect((await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review) })).ok).toBe(true);
+    await s.close();
+  });
+
+  it('lands an allowed batch that makes a new design, made again with a new ID', async () => {
+    const { state, owner, support } = banded();
+    const s = await ProjectSession.create(temp('session'), state);
+    // Making the Support band unique copies its design under a new ID, which decides where the copy sends.
+    const ops: EditOperation[] = [{ type: 'component.makeUnique', owner, nodeId: support, name: 'Support band' }];
+    const first = await s.apply({ operations: ops }, { label: 'AI', source: 'ai' });
+    const review = formRoutingReview(first.error);
+    expect(review?.changes.map((c) => c.kind)).toContain('design');
+    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) });
+    expect(allowed.error).toBeUndefined();
     await s.close();
   });
 

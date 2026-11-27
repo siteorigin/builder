@@ -6049,6 +6049,13 @@ describe('a change to where a contact form sends (#1128)', () => {
     expect(node.props.endpoint).toBe(SALES);
   });
 
+  it('takes a typed reply that is not a plain yes as keeping it', async () => {
+    const { asked, told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, 'only if that is the new inbox'));
+    expect(asked).toBeDefined();
+    expect(told.error?.code).toBe('SCOPE_MISMATCH');
+    expect(node.props.endpoint).toBe(SALES);
+  });
+
   it('lands nothing when the request is stopped while the question waits', async () => {
     const { asked, env, node } = await editForm('provider', 'web3forms', async (orch, runId) => void (await orch.stopRun(runId)));
     expect(asked).toBeDefined();

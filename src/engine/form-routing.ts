@@ -165,8 +165,11 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   if (!was.size && !is.size) return [];
   const out: FormRoutingChange[] = [];
   const seen = new Set<string>();
+  // A design the batch makes (a copy made unique, say) has a new ID each time the batch is made: it is named by what
+  // it is called instead, so the same batch sent again once allowed makes the same changes.
+  const known = (id: string) => (Object.hasOwn(before.components, id) ? id : `\u0001new\u0000${after.components[id]?.name ?? ''}`);
   const add = (c: Omit<FormRoutingChange, 'key'>, value: string) => {
-    const key = [c.kind, c.definitionId, c.prop ?? '', value].join('\u0000');
+    const key = [c.kind, known(c.definitionId), c.prop ?? '', value].join('\u0000');
     if (seen.has(`${key}\u0000${c.where ?? ''}`)) return;
     seen.add(`${key}\u0000${c.where ?? ''}`);
     out.push({ ...c, key });
@@ -218,8 +221,10 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
     defaults.set(id, by);
   }
 
+  // The same goes for where a binding is read: a page or design the batch makes is named by what it is called.
+  const owners = new Set(allTrees(before).map(({ owner }) => `${owner.kind}:${owner.id}`));
   for (const { owner, tree, label } of allTrees(after)) {
-    const scope = `${owner.kind}:${owner.id}`;
+    const scope = owners.has(`${owner.kind}:${owner.id}`) ? `${owner.kind}:${owner.id}` : `${owner.kind}:\u0001new\u0000${label}`;
     const where = owner.kind === 'page' ? `on “${label}”` : owner.kind === 'shell' ? `in the ${label.toLowerCase()}` : owner.kind === 'component' ? `in the “${label}” design` : `in “${label}”`;
     for (const n of Object.values(tree.nodes)) {
       if (n.kind !== 'instance') continue;
@@ -268,11 +273,8 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   return out;
 }
 
-const shown = (value: unknown): string => {
-  if (EMPTY_ROUTING.has(routingText(value))) return 'is cleared';
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return `becomes ${text.length > 120 ? `${text.slice(0, 119)}…` : text}`;
-};
+/** A setting's new value, whole: what the user allows is what they read. */
+const shown = (value: unknown): string => (EMPTY_ROUTING.has(routingText(value)) ? 'is cleared' : `becomes ${typeof value === 'string' ? value : JSON.stringify(value)}`);
 
 /** One change, in the user's words. */
 function describe(c: FormRoutingChange): string {
@@ -282,19 +284,16 @@ function describe(c: FormRoutingChange): string {
   return `The code of “${c.name}”, which places a contact form, changes.`;
 }
 
-/** How many changes the question lists one by one; the rest are counted. */
-const LISTED = 4;
-
 /**
  * The question the app asks before an AI batch changes where a form sends (agent/orchestrator.ts): in the app's own
  * words, naming every change, never the model's. `allow` is the answer that allows it.
  */
 export function formRoutingQuestion(changes: readonly FormRoutingChange[]): { text: string; choices: [keep: string, allow: string]; allow: string } {
-  const many = changes.length > 1;
-  const listed = changes.slice(0, LISTED).map(describe);
-  const more = changes.length > LISTED ? ` And ${changes.length - LISTED} more.` : '';
+  // Every change is named, each once: Allow allows exactly what the question says.
+  const listed = [...new Set(changes.map(describe))];
+  const many = listed.length > 1;
   const allow = many ? 'Allow these changes' : 'Allow this change';
-  return { text: `Let the assistant change where your contact ${many ? 'forms send' : 'form sends'} visitors’ messages? ${listed.join(' ')}${more}`, choices: ['Keep it as it is', allow], allow };
+  return { text: `Let the assistant change where your contact ${many ? 'forms send' : 'form sends'} visitors’ messages? ${listed.join(' ')}`, choices: ['Keep it as it is', allow], allow };
 }
 
 /** What a batch refused for its form changes tells the assistant. */
