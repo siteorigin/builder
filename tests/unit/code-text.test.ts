@@ -232,6 +232,7 @@ describe('the code check holds text markers to the hook and to the component’s
     // alias, or a type.
     expect(await errors(SOURCE.replace('</script>', '\tconst note = { so_text: 1 };\n\tconst other = note.so_text;\n</script>'))).toEqual([]);
     expect(await errors(aliased.replace('</script>', '\tconst titles = $derived(features.map((mark) => mark.title));\n</script>'))).toEqual([]);
+    expect(await errors(aliased.replace('</script>', '\tconst names = $derived(features.map((mark) => String(mark)));\n</script>').replace('</section>', '\t<SoRichText value={body} label={features.mark} />\n\t{#each features as mark}{String(mark)}{/each}\n</section>'))).toEqual([]);
     const typed = SOURCE.replace('<script>', '<script lang="ts">\n\ttype Hook = (path: string, item?: string) => string;\n\tinterface Marks { so_text?: Hook }\n\tconst none: Marks = {};');
     expect(await errors(typed)).toEqual([]);
   });

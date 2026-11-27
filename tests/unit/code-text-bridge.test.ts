@@ -142,5 +142,7 @@ describe.skipIf(!browserInstalled)('marked text of a code component in the previ
     await expect.poll(() => lastOf('textCommit')).toMatchObject({ desc: desc('features.title#b'), editId: 'u2', detached: true, before: 'Building things' });
     expect((await lastOf('textCommit'))?.text).toMatch(/ more$/);
     expect(await editable('t2')).toBeNull();
+    // The page wrote nothing over the typing (the other item's words are the ones shown): the row shows them again.
+    expect(await frame.evaluate(`document.getElementById('t2').textContent`)).toBe('Building things');
   });
 });

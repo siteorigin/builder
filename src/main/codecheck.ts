@@ -886,6 +886,10 @@ function textMarkerProblems(ast: Node, locals: ReturnType<typeof propsLocals>, p
       walkAst(root, (n, around) => {
         if (n.type !== 'Identifier' || n.name !== hook.local || calls.has(n) || around.some(props) || around.some((a) => String(a.type).startsWith('TS'))) return;
         const parent = around[around.length - 1];
+        // A property of something else (`config.mark`, `{ mark: 1 }`) only shares the name, and so does a name a
+        // function, a list's items or a snippet declares for its own values.
+        if ((parent?.type === 'MemberExpression' && parent.property === n && !parent.computed) || (parent?.type === 'Property' && parent.key === n && !parent.computed && parent.value !== n)) return;
+        if (around.some((a) => declares(a, hook.local))) return;
         const given = around.some((a, i) => (a.type === 'Attribute' || a.type === 'SpreadAttribute' || a.type === 'BindDirective') && placed(around[i - 1]));
         const replaced = (parent?.type === 'AssignmentExpression' && parent.left === n) || (parent?.type === 'UpdateExpression' && parent.argument === n);
         const passed = (parent?.type === 'CallExpression' || parent?.type === 'NewExpression') && ((parent.arguments as Node[]) ?? []).includes(n);
@@ -893,6 +897,24 @@ function textMarkerProblems(ast: Node, locals: ReturnType<typeof propsLocals>, p
       });
   }
   return out;
+}
+
+/** Whether a function, an {#each} or a snippet declares `name` for its own values, hiding the one around it. */
+function declares(scope: Node, name: string): boolean {
+  const patterns: unknown[] =
+    scope.type === 'ArrowFunctionExpression' || scope.type === 'FunctionExpression' || scope.type === 'FunctionDeclaration'
+      ? (scope.params as Node[])
+      : scope.type === 'EachBlock'
+        ? [scope.context, scope.index]
+        : scope.type === 'SnippetBlock'
+          ? (scope.parameters as Node[])
+          : [];
+  let found = false;
+  for (const p of patterns) {
+    if (typeof p === 'string') found ||= p === name;
+    else walkAst(p, (n) => void (n.type === 'Identifier' && n.name === name && (found = true)));
+  }
+  return found;
 }
 
 /** An attribute's name as it reaches the page: an HTML element's whatever its case, a component's prop as written. */

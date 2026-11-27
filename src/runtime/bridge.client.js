@@ -3016,6 +3016,9 @@ function commitEdit(detached = false) {
     endEdit();
     return send('textCancel', { desc, editId, reason: 'too-large' });
   }
+  // A row the page gave another item without writing over what was typed (that item's words are the same as the
+  // ones it showed) still shows the typing: it shows the words the page last wrote there again.
+  if (moved && el.innerHTML === left.innerHTML) el.innerHTML = original;
   endEdit();
   if (!moved) committed.set(editId, { el, original, left: el.innerHTML, bind: desc.bind });
   // Only the last few can still be answered: older ones are let go.
