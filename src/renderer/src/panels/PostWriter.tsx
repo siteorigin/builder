@@ -262,8 +262,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   /** Whether the writer is put away, and the dialog open in it, as they are now (for an import finishing later). */
   /** The text saved elsewhere, shown to read before the author chooses it over theirs. */
   const [reviewing, setReviewing] = useState(false);
+  // The saved text is shown while there is a conflict to settle (see SavedTextDialog below).
   const shownRef = useRef({ hidden, dialog, reviewing });
-  shownRef.current = { hidden, dialog, reviewing };
+  shownRef.current = { hidden, dialog, reviewing: reviewing && status.problem?.kind === 'changed' };
   /** Where a picture being dragged in from the desktop would go: the line drawn there, from the top of the text. */
   const [dropLine, setDropLine] = useState<{ top: number; left: number; width: number } | null>(null);
   /**
@@ -724,10 +725,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     if (!el || !opening) return;
     const run = ++dropRun.current;
     const index = blockIndex(el, at);
-    // Until the files start to be copied, a drop the author has moved on from asks nothing and imports nothing.
+    // Until the files have been read, a drop the author has moved on from asks nothing and imports nothing; once a
+    // review is confirmed, the files are imported as asked, whatever has happened to the writer meanwhile.
     const wanted = () => run === dropRun.current && mounted.current && getState().snapshot?.workspaceKey === opening;
     const plan = await reviewImport(paths, 'image', wanted).catch((e: Error) => (toast(`The image couldn’t be added: ${e.message}`, 'error'), null));
-    if (!plan || !wanted()) return;
+    if (!plan) return;
     // The copying counts as a save in flight: closing the project waits for it, and the bar never says Saved before it.
     let landed!: (o: ApplyOutcome) => void;
     trackApply(new Promise<ApplyOutcome>((done) => (landed = done)));

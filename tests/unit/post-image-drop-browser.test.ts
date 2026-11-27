@@ -39,7 +39,8 @@ const ENTRY = [
   // A change as it arrives from main: the whole project, new objects throughout.
   '  change: (state) => flushSync(() => { const s = useStore.getState().snapshot; useStore.setState({ snapshot: { ...s, state, assetUsage: { ...s.assetUsage }, revision: s.revision + 1 } }); }),',
   '  toasts: () => useStore.getState().toasts.map((t) => t.text),',
-  '  assets: () => useStore.getState().snapshot.state.assets.assets',
+  '  assets: () => useStore.getState().snapshot.state.assets.assets,',
+  '  modal: () => useStore.getState().modal?.kind ?? null',
   '};'
 ].join('\n');
 
@@ -52,7 +53,12 @@ const BRIDGE = `
   window.drop = { lookups: 0, reviews: [], imports: [], applies: 0 };
   const answers = {
     'pathForFile': (file) => (window.drop.lookups++, file.name === 'nopath' ? '' : '/drops/' + file.name),
-    'project.reviewImport': (paths, only) => (window.drop.reviews.push({ paths, only }), Promise.resolve({ paths, rows: paths.map((path) => ({ path, action: 'import' })) })),
+    // A HEIC photo is read until the test lets it go, and then needs the author to confirm its conversion.
+    'project.reviewImport': (paths, only) => {
+      window.drop.reviews.push({ paths, only });
+      if (!paths[0].endsWith('.heic')) return Promise.resolve({ paths, rows: paths.map((path) => ({ path, action: 'import' })) });
+      return new Promise((resolve) => (window.drop.read = () => resolve({ paths, rows: paths.map((path) => ({ path, action: 'convert', fingerprint: 'f', format: 'heic' })) })));
+    },
     'project.apply': () => (window.drop.applies++, Promise.resolve({ ok: true })),
     'project.importAssets': (paths, only, choices) => new Promise((resolve) => window.drop.imports.push({ paths, only, choices, release: (assetIds, message) => resolve({ ok: !message, assetIds, message }) }))
   };
@@ -90,6 +96,7 @@ const BRIDGE = `
     selection: () => { const s = getSelection(); const r = text(); const at = (n) => [...r.children].findIndex((b) => b.contains(n)); return [at(s.anchorNode), s.anchorOffset, at(s.focusNode), s.focusOffset]; },
     heard: () => ({ lookups: window.drop.lookups, reviews: window.drop.reviews, imports: window.drop.imports.map(({ paths, only, choices }) => ({ paths, only, choices })), applies: window.drop.applies }),
     release: (i, ids, message) => window.drop.imports[i].release(ids, message),
+    read: () => window.drop.read(),
     frames: (n) => new Promise((done) => { const next = (k) => (k ? requestAnimationFrame(() => next(k - 1)) : done()); next(n); })
   };
 `;
@@ -264,6 +271,17 @@ describe.skipIf(!browserInstalled)('image files dropped on the post writer’s t
     await so('set', { post: { collectionId: 'posts', entryId: 'en_spring' } });
     await body().getByText(TEXT[0]).waitFor();
     expect(await blocks()).toEqual(TEXT);
+  });
+
+  it('asks nothing and imports nothing for a photo still being read when the author moves to another post', async () => {
+    await drop(['kiln.heic'], 1);
+    await expect.poll(async () => (await heard()).reviews.length).toBe(1);
+    await so('set', { post: { collectionId: 'posts', entryId: 'en_autumn' } });
+    await body().getByText('Autumn is for glazing.').waitFor();
+    await t('read');
+    await t('frames', 3);
+    expect(await so('modal', null)).toBe(null);
+    expect(await imports()).toBe(0);
   });
 
   it('opens no dialog for an import that finishes while the writer is put away', async () => {
