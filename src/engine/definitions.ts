@@ -482,7 +482,9 @@ export function setPart(state: ProjectState, op: Op<'component.setPart'>): OpRes
     if (bad.length) fail(`Unknown style properties: ${bad.join(', ')}.`);
     controls = [...new Set(op.styleControls)];
   } else controls = prev && prev.nodeId === op.nodeId ? prev.styleControls : node ? styleSetFor(node) : undefined;
-  def.parts[op.partId] = { nodeId: op.nodeId, label: op.label.trim(), ...(controls ? { styleControls: controls } : {}) };
+  // A code component's part keeps the list its code repeats it over (see declareCodeNames).
+  const list = def.kind === 'code' && prev && prev.nodeId === op.nodeId ? prev.list : undefined;
+  def.parts[op.partId] = { nodeId: op.nodeId, label: op.label.trim(), ...(controls ? { styleControls: controls } : {}), ...(list !== undefined ? { list } : {}) };
   return {};
 }
 
@@ -494,11 +496,26 @@ const labelOf = (id: string) => id.replace(/([A-Z])/g, ' $1').toLowerCase().repl
  * its contract does not have yet, each under its own name: "total" is the "Total" part, "content" the "Content" slot.
  * Names that are not plain camelCase words are left to the code check to report. Nothing is taken away: a part or slot
  * the code no longer shows keeps its placements' styles and content until it is removed.
+ *
+ * Which list each part is shown once per item of (`lists`, read from the item class the code gives it) is the code's
+ * to say every time it is saved: a part whose code no longer gives it one item's class, or names a list that is not
+ * one of the component's own, is styled for every item together again, and any one item's styles wait unused.
  */
-export function declareCodeNames(def: Pick<ComponentDefinition, 'kind' | 'parts' | 'slots'>, names: { parts: readonly string[]; slots: readonly string[] }): void {
+export function declareCodeNames(
+  def: Pick<ComponentDefinition, 'kind' | 'parts' | 'slots'> & { properties?: ComponentDefinition['properties'] },
+  names: { parts: readonly string[]; slots: readonly string[]; lists?: Readonly<Record<string, string>> }
+): void {
   if (def.kind !== 'code') return;
   for (const id of names.parts) if (id !== 'root' && validId(id) && !own(def.parts, id)) def.parts[id] = { nodeId: id, label: labelOf(id) };
   for (const name of names.slots) if (validId(name) && !own(def.slots, name)) (def.slots ??= {})[name] = { label: labelOf(name) };
+  if (!names.lists || !def.properties) return;
+  for (const id of Object.keys(def.parts)) {
+    const part = def.parts[id];
+    const list = id === 'root' ? undefined : own(names.lists, id);
+    const schema = list !== undefined ? own(def.properties, list) : undefined;
+    if (list !== undefined && schema?.type === 'list' && !schema.feed) part.list = list;
+    else delete part.list;
+  }
 }
 
 /** The declared slots of a component that hold content in at least one of its placements. */

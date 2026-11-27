@@ -635,6 +635,61 @@ function hookedPart(n: Node): string | null {
   return p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
 }
 
+/** The part an item hook names and the expression it reads the item's ID from (so_oi?.[plan.id]?.card), if any. */
+function itemHookOf(n: Node): { part: string; key: Node } | null {
+  if (n.type !== 'MemberExpression') return null;
+  const inner = n.object as Node;
+  if (inner?.type !== 'MemberExpression' || !inner.computed || (inner.object as Node)?.type !== 'Identifier' || (inner.object as Node).name !== 'so_oi') return null;
+  const p = n.property as Node;
+  const part = !n.computed ? (p?.type === 'Identifier' ? String(p.name) : null) : p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
+  return part === null ? null : { part, key: inner.property as Node };
+}
+
+/** The variable `expr` reads the `id` of (`plan.id`, `plan["id"]`), or null. */
+function idOf(expr: Node | undefined): string | null {
+  if (expr?.type !== 'MemberExpression' || (expr.object as Node)?.type !== 'Identifier') return null;
+  const p = expr.property as Node;
+  const named = !expr.computed ? p?.type === 'Identifier' && p.name === 'id' : p?.type === 'Literal' && p.value === 'id';
+  return named ? String((expr.object as Node).name) : null;
+}
+
+/**
+ * Every item hook in a code component's markup (so_oi?.[plan.id]?.card), with the list property it repeats the part
+ * over, or null when it says none the editor can rely on. It names one when it is in the class of an element inside
+ * `{#each plans as plan (plan.id)}` (or `plans ?? []`), where `plans` is a property the code takes from $props() and
+ * `plan` is the row whose ID it reads, keyed by that ID and inside no other list: each item of that list then shows
+ * the part once, so one item's class lands on one element and moves with it when the list is reordered.
+ */
+function itemHooks(ast: Node): Array<{ part: string; list: string | null; node: Node }> {
+  const locals = propsLocals(ast);
+  const propOf = new Map([...locals].map(([prop, { local }]) => [local, prop]));
+  const out: Array<{ part: string; list: string | null; node: Node }> = [];
+  walkAst(ast.fragment, (n, around) => {
+    const hook = itemHookOf(n);
+    if (!hook) return;
+    const row = idOf(hook.key);
+    const inClass = around.some((a) => a.type === 'Attribute' && a.name === 'class');
+    // The nearest list around the hook that names its row, the hook inside its body (not its key or its fallback).
+    const at = row === null ? -1 : around.findLastIndex((a, i) => a.type === 'EachBlock' && (a.context as Node)?.type === 'Identifier' && (a.context as Node).name === row && around[i + 1] === a.body);
+    const each = at >= 0 ? around[at] : undefined;
+    let source = each?.expression as Node | undefined;
+    if (source?.type === 'LogicalExpression' && (source.operator === '??' || source.operator === '||')) source = source.left as Node;
+    const prop = source?.type === 'Identifier' ? propOf.get(String(source.name)) : undefined;
+    const keyed = !!each && idOf(each.key as Node) === row;
+    const alone = at >= 0 && !around.slice(0, at).some((a) => a.type === 'EachBlock');
+    const list = inClass && prop && keyed && alone && !/^(so|slot)_/.test(prop) ? prop : null;
+    out.push({ part: hook.part, list, node: n });
+  });
+  return out;
+}
+
+/** The list each part is repeated over, by its item hooks: none for a part whose hooks disagree or name none. */
+function hookLists(hooks: ReturnType<typeof itemHooks>): Record<string, string> {
+  const seen = new Map<string, string | null>();
+  for (const h of hooks) seen.set(h.part, seen.has(h.part) && seen.get(h.part) !== h.list ? null : h.list);
+  return Object.fromEntries([...seen].filter((e): e is [string, string] => e[1] !== null));
+}
+
 /** A part marker's name when it is written out (data-so-part="total"), or null for one an expression gives. */
 function markerName(attr: Node): string | null {
   const values = attr.value === true ? [] : Array.isArray(attr.value) ? (attr.value as Node[]) : [attr.value as Node];
@@ -644,13 +699,15 @@ function markerName(attr: Node): string | null {
 
 /**
  * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
- * written-out data-so-part or gives its class through so_o, and each slot_<name> its script takes from $props().
+/**
+ * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
+ * written-out data-so-part or gives its class through so_o (or one item's class through so_oi), and each slot_<name>
+ * its script takes from $props(); and the list each part repeated once per item is shown over (see itemHooks).
  * `shown` is the slot props (slot_content, as the generator names each slot's snippet) it takes and its markup renders
  * or hands on, so content placed there can reach the page: a slot only taken, or only tested ({#if slot_content}),
- * shows nothing. Comments, strings and a script's own logic declare
- * nothing. Null when the code cannot be parsed.
+ * shows nothing. Comments, strings and a script's own logic declare nothing. Null when the code cannot be parsed.
  */
-export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[] } | null> {
+export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[]; lists: Record<string, string> } | null> {
   const { parse } = await import('svelte/compiler');
   let ast: Node;
   try {
@@ -667,13 +724,16 @@ export async function codeContractNames(source: string): Promise<{ parts: string
     const id = hookedPart(n);
     if (id !== null) parts.add(id);
   });
+  // A part given one item's class is one of the parts the code shows, repeated over the list that item is in.
+  const hooks = itemHooks(ast);
+  for (const h of hooks) parts.add(h.part);
   const locals = propsLocals(ast);
   const slots = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
   const rendered = new Set(snippetRenders(ast).map((r) => r.name));
   const handed = handedNames(ast);
   // Any slot prop counts here, not only the camelCase names saving declares: a theme's slot may be named related_links.
   const shown = [...locals].flatMap(([prop, { local }]) => (prop.startsWith('slot_') && (rendered.has(local) || handed.has(local)) ? [prop] : []));
-  return { parts: [...parts], slots, shown };
+  return { parts: [...parts], slots, shown, lists: hookLists(hooks) };
 }
 
 /**
@@ -780,6 +840,19 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
   const parts = contract.parts ?? {};
   const marked = new Set<string>();
   walkAst(ast.fragment, (n) => void (hookedPart(n) !== null && marked.add(hookedPart(n)!)));
+  // One item's class reaches the part only for the list it is shown once per item of, read where the code repeats it.
+  const hooks = itemHooks(ast);
+  const lists = hookLists(hooks);
+  for (const h of hooks) {
+    marked.add(h.part);
+    if (h.list === null)
+      out.push({
+        severity: 'warning',
+        message: `Give the “${h.part}” part one item's class inside the list it repeats over, keyed by the item's ID ({#each plans as plan (plan.id)} … class={so_oi?.[plan.id]?.${h.part}}), with the list taken from $props() and inside no other list: otherwise its items are styled together.`,
+        node: h.node
+      });
+    else if (!Object.hasOwn(lists, h.part)) out.push({ severity: 'warning', message: `The “${h.part}” part takes item classes from more than one list, so its items are styled together. Give each list's element a part of its own.`, node: h.node });
+  }
   // A marker in a spread is set by the code as it runs, where the website's build cannot take it out.
   walkAst(ast.fragment, (n) => {
     const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' ? (((n.expression as Node).properties as Node[]) ?? []) : [];

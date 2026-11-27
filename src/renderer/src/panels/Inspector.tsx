@@ -80,7 +80,7 @@ import { isRequiredRefusal } from '@shared/required';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { StructuredDataFields, structuredSummary } from '../components/StructuredDataFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
-import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
+import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
 import { designGridRef, isGridChild } from '../lib/grid-child';
 import { TagField } from './TagField';
@@ -1988,9 +1988,44 @@ function CodePartInspector({ state, selection, tokens }: { state: ProjectState; 
   // Styles reach the part only through the classes the code places on it (so_o).
   const codeStyled = codeTakesOverrides(def);
   const allowed = placementStyleControls(def, partId, codeStyled);
-  const overrides = countStyles(inst.overrides?.[partId]);
+  // A part its code shows once per item of a list (a card) can also be styled for the item it was picked in alone.
+  const itemList = repeatedPartList(def, partId);
+  const listSchema = itemList ? (def.properties[itemList] as ListProp) : undefined;
+  const listItems = itemList ? placementItems(def, inst, itemList) : [];
+  const itemId = itemList && selection.itemPath?.length === 1 ? selection.itemPath[0] : undefined;
+  const itemIndex = itemId ? listItems.findIndex((x) => x.id === itemId) : -1;
+  const canStyleItem = itemIndex >= 0;
+  const ownItemStyles = canStyleItem ? itemStylesOf(def, inst, partId, itemId!) : undefined;
+  // Another part of the same card keeps the choice made there: "This card" stays this card.
+  const reachKey = canStyleItem ? itemReachKey(owner, inst.id, itemId!) : '';
+  const [reach, setReachState] = useState<'all' | 'item'>(() => (reachKey && reachByItem.get(reachKey)) || (ownItemStyles ? 'item' : 'all'));
+  const setReach = (next: 'all' | 'item') => {
+    if (reachKey) reachByItem.set(reachKey, next);
+    setReachState(next);
+  };
+  const hidden = usePanelHidden();
+  useEffect(() => (reachKey && !hidden ? showReach(reachKey, reach) : undefined), [reachKey, reach, hidden]);
+  const oneItem = canStyleItem && reach === 'item';
+  const reachId = useId();
+  const partName = part.label.toLowerCase();
+  const n = listItems.length;
+  const itemLabel = listSchema?.itemLabel.toLowerCase() ?? 'item';
+  const itemName = (it: ListItem | undefined, i: number) => {
+    const t = listSchema?.titleField ? it?.[listSchema.titleField] : undefined;
+    return typeof t === 'string' && t.trim() ? `“${t.trim()}”` : `${listSchema?.itemLabel ?? 'Item'} ${i + 1}`;
+  };
+  const thisItem = canStyleItem ? itemName(listItems[itemIndex], itemIndex) : '';
+  // Style reach, worded as a managed part's is.
+  const styleReach = oneItem ? `this ${partName} only` : n === 1 ? `the 1 ${partName}` : `all ${n} ${partName}s`;
+  const overrides = countStyles(oneItem ? ownItemStyles : inst.overrides?.[partId]);
   const siblings = Object.keys(def.parts).filter((p) => p !== 'root');
-  const selectSibling = (p: string) => (p === partId ? focusName() : selectAndFocus({ owner, instancePath: [inst.id], nodeId: def.parts[p].nodeId, partId: p }));
+  // A part repeated over the same list stays on the same item, so moving from one card's title to its price never
+  // widens the edit to every card.
+  const selectSibling = (p: string) => {
+    if (p === partId) return focusName();
+    const sameItem = !!itemId && repeatedPartList(def, p) === itemList;
+    selectAndFocus({ owner, instancePath: [inst.id], nodeId: def.parts[p].nodeId, partId: p, ...(sameItem ? { itemPath: [itemId!] } : {}) });
+  };
   return (
     <>
       <Header
@@ -2001,6 +2036,12 @@ function CodePartInspector({ state, selection, tokens }: { state: ProjectState; 
             <button className="link-btn" onClick={() => selectAndFocus(parent)} title={`Select the whole ${noun} (Esc)`}>
               {parentName}
             </button>
+            {listSchema && (canStyleItem || !itemId) ? (
+              <>
+                {' '}
+                <span className="insp-kind-pos">· {canStyleItem ? `${itemLabel} ${itemIndex + 1} of ${n}` : n === 1 ? `the one ${itemLabel}` : `every ${itemLabel}`}</span>
+              </>
+            ) : null}
           </>
         }
         tone={owner.kind === 'shell' || owner.kind === 'template' ? 'shared' : 'local'}
@@ -2019,7 +2060,32 @@ function CodePartInspector({ state, selection, tokens }: { state: ProjectState; 
           }
         />
       </Header>
-      <Section title="Style" id="part-style" level={LEVEL} scope={overrides ? changes(overrides) : undefined}>
+      <Section title="Style" id="part-style" level={LEVEL} scope={[listSchema ? styleReach.charAt(0).toUpperCase() + styleReach.slice(1) : '', overrides ? changes(overrides) : ''].filter(Boolean).join(' · ') || undefined}>
+        {allowed !== null && canStyleItem && (
+          <div className="field">
+            {/* Named "Apply to: style which plan cards", so the choice says what it is for when heard on its own. */}
+            <div className="field-label" id={reachId}>
+              Apply to<span className="sr-only">: style which {partName}s</span>
+            </div>
+            <Segmented
+              radio
+              full
+              labelledBy={reachId}
+              value={reach}
+              onChange={setReach}
+              options={[
+                { value: 'all', label: n === 1 ? `The ${partName}` : `All ${n} ${partName}s` },
+                { value: 'item', label: `This ${partName}` }
+              ]}
+              describedBy={oneItem ? `${reachId}-note` : undefined}
+            />
+            {oneItem && (
+              <div className="field-hint" id={`${reachId}-note`}>
+                Only {thisItem} changes. Anything it doesn’t set follows the style all {listSchema!.label.toLowerCase()} share.
+              </div>
+            )}
+          </div>
+        )}
         {allowed === null ? (
           <p className="muted insp-note">
             {def.name}’s code doesn’t place the classes it is given, so styles set here can’t reach {part.label.toLowerCase()}. Add <code>{`class={so_o?.${/^[A-Za-z_$][\w$]*$/.test(partId) ? partId : `[${JSON.stringify(partId)}]`}}`}</code> to the element in its code.
@@ -2027,24 +2093,54 @@ function CodePartInspector({ state, selection, tokens }: { state: ProjectState; 
         ) : (
           <>
             <CodeImportantNote name={def.name} props={codeImportantProps(def)} />
-            <StyleControls
-              styles={inst.overrides?.[partId]}
-              inherited={undefined}
-              wideColumns
-              allowed={allowed}
-              grouped={partInInteractionGroup(def, partId, inGroupAt(state, owner, inst.id))}
-              tokens={tokens}
-              onSet={(property, value, expectedRevision, inState) =>
-                commitOps(
-                  [{ type: 'node.setStyle', owner, nodeId: inst.id, partId, ...styleAt(scope, inState), property, value }],
-                  styleLabel(state, property, here, part.label, value, inState),
-                  styleKey(property, `${inst.id}:${partId}:${styleScopeKey(scope, inState)}:${property}`),
-                  expectedRevision
-                )
-              }
-              onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: inst.id, partId }, sc, states), forLabel(state, resetWords('Reset overrides', states), here, part.label))}
-              target={`the ${part.label.toLowerCase()}`}
-            />
+            {oneItem ? (
+              <StyleControls
+                key={`item:${itemId}`}
+                styles={ownItemStyles}
+                // What every item shares shows through wherever the item sets nothing of its own.
+                inherited={inst.overrides?.[partId]}
+                wideColumns
+                allowed={allowed}
+                grouped={partInInteractionGroup(def, partId, inGroupAt(state, owner, inst.id))}
+                tokens={tokens}
+                resetLabel="Reset to shared style"
+                target={thisItem}
+                onSet={(property, value, expectedRevision, inState) =>
+                  commitOps(
+                    [{ type: 'node.setStyle', owner, nodeId: inst.id, partId, itemId, ...styleAt(scope, inState), property, value }],
+                    styleLabel(state, property, here, thisItem, value, inState),
+                    styleKey(property, JSON.stringify([inst.id, partId, itemId, styleScopeKey(scope, inState), property])),
+                    expectedRevision
+                  )
+                }
+                onReset={(sc, states) =>
+                  void applyOps(
+                    styleResets({ type: 'node.resetStyles', owner, nodeId: inst.id, partId, itemId }, sc, states),
+                    states?.length ? forLabel(state, resetWords('', states), here, thisItem) : `Reset ${thisItem} to shared style in ${subjectWords(state, here)}`
+                  )
+                }
+              />
+            ) : (
+              <StyleControls
+                key="all"
+                styles={inst.overrides?.[partId]}
+                inherited={undefined}
+                wideColumns
+                allowed={allowed}
+                grouped={partInInteractionGroup(def, partId, inGroupAt(state, owner, inst.id))}
+                tokens={tokens}
+                onSet={(property, value, expectedRevision, inState) =>
+                  commitOps(
+                    [{ type: 'node.setStyle', owner, nodeId: inst.id, partId, ...styleAt(scope, inState), property, value }],
+                    styleLabel(state, property, here, part.label, value, inState),
+                    styleKey(property, `${inst.id}:${partId}:${styleScopeKey(scope, inState)}:${property}`),
+                    expectedRevision
+                  )
+                }
+                onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: inst.id, partId }, sc, states), forLabel(state, resetWords('Reset overrides', states), here, part.label))}
+                target={`the ${part.label.toLowerCase()}`}
+              />
+            )}
           </>
         )}
       </Section>

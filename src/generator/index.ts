@@ -97,7 +97,7 @@ import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToPara
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, codeAxisProps, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
-import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
+import { itemOverrideClass, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
 import { feedLimit, isArticleDate, pageArticle } from '@shared/articles';
@@ -1572,9 +1572,10 @@ export function generateSiteCss(state: ProjectState): string {
         for (const partId of Object.keys(n.itemOverrides ?? {}).sort()) {
           const entry = liveItemStyles(def, n, partId);
           if (!entry) continue;
-          const target = def!.tree!.nodes[def!.parts[partId].nodeId];
+          // A code component has no tree: its part is an element of its own markup.
+          const target = def!.tree?.nodes[def!.parts[partId].nodeId];
           // One class more than the part's shared override, so an item's own value wins over it at every size.
-          const times = target?.kind === 'instance' ? 5 : 3;
+          const times = target?.kind === 'instance' ? 5 : def!.kind === 'code' ? 4 : 3;
           for (const itemId of Object.keys(entry.items).sort()) {
             const cls = itemOverrideClass(n.id, partId, itemId);
             const own = entry.items[itemId];
@@ -3561,16 +3562,27 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // where the placement's own properties are what the page edits. The website is given none, so it carries no marker.
   if (ctx.instrument && !ctx.def && def.kind === 'code' && !Object.hasOwn(def.properties, CODE_TEXT_HOOK) && new RegExp(`\\b${CODE_TEXT_HOOK}\\b`).test(def.source ?? '')) attrs.push(`${CODE_TEXT_HOOK}={${CODE_TEXT_HOOK_JS}}`);
   // Styles of single list items: each item's parts get a class of their own, looked up by the item's ID.
-  if (!ctx.def && node.itemOverrides) {
+  /** In the editor's preview, the item each class names for a code placement's repeated parts (see codeItemMarks). */
+  let partItems: Record<string, [string, string]> | undefined;
+  if (!ctx.def && (node.itemOverrides || (ctx.instrument && code))) {
     const byItem: Record<string, Record<string, string>> = {};
-    for (const partId of Object.keys(node.itemOverrides).sort()) {
+    const give = (partId: string, itemId: string) => {
+      // Own keys only: an item ID can be any word, "toString" included.
+      if (!Object.hasOwn(byItem, itemId)) byItem[itemId] = {};
+      byItem[itemId][partId] = itemOverrideClass(node.id, partId, itemId);
+    };
+    for (const partId of Object.keys(node.itemOverrides ?? {}).sort()) {
       const entry = liveItemStyles(design ?? def, node, partId);
+      // A code placement's list connected to a collection shows its entries, not the items these were set for.
+      if (code && entry && Object.hasOwn(node.listSources ?? {}, entry.list)) continue;
       for (const itemId of Object.keys(entry?.items ?? {}).sort()) {
         if (!entry!.items[itemId] || typeof entry!.items[itemId] !== 'object') continue;
-        // Own keys only: an item ID can be any word, "toString" included.
-        if (!Object.hasOwn(byItem, itemId)) byItem[itemId] = {};
-        byItem[itemId][partId] = itemOverrideClass(node.id, partId, itemId);
+        give(partId, itemId);
       }
+    }
+    if (ctx.instrument && code) {
+      partItems = codeItemMarks(def, node);
+      for (const [partId, itemId] of Object.values(partItems)) give(partId, itemId);
     }
     if (Object.keys(byItem).length) attrs.push(`so_oi={${js(byItem)}}`);
   }
@@ -3648,9 +3660,27 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   let markup = [...beside, slotContent ? `${open}>\n${slotContent}\n${p}</${name}>` : `${open}/>`].join('\n');
   if (ctx.instrument && def.kind === 'code') {
     const c = ctx.def ? '{__so}' : attrJs(ctx.ctxExpr);
-    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
+    // Which item of which repeated part each item class names, so the canvas picks one card (see codeItemMarks).
+    const marks = partItems && Object.keys(partItems).length ? ` data-so-part-items=${attrJs(JSON.stringify(partItems))}` : '';
+    markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)}${marks} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
   }
   return markup;
+}
+
+/**
+ * The editor's preview gives every item of a code placement's repeated parts its item class (`so_oi`), styled or not,
+ * so the canvas can tell one card from the next by the class alone: the class each item's part takes, with the part
+ * and the item it names. The classes are the ones the item's own styles use, so they follow the item when the list
+ * is reordered. A list connected to a collection shows entries, not its own items, and takes none.
+ */
+function codeItemMarks(def: ComponentDefinition, node: InstanceNode): Record<string, [string, string]> {
+  const out: Record<string, [string, string]> = {};
+  for (const partId of Object.keys(def.parts).sort()) {
+    const list = repeatedPartList(def, partId);
+    if (!list || Object.hasOwn(node.listSources ?? {}, list)) continue;
+    for (const item of placementItems(def, node, list)) out[itemOverrideClass(node.id, partId, item.id)] = [partId, item.id];
+  }
+  return out;
 }
 
 /** Whether a managed design shows content of its own in a slot a placement leaves empty. */
