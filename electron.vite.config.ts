@@ -46,7 +46,8 @@ export default defineConfig({
           'tools-worker': resolve('src/main/runtime/tools-worker.ts'),
           'compile-worker': resolve('src/main/compile-worker.ts'),
           'posts-import-worker': resolve('src/main/posts-import/worker.ts'),
-          'source-sync-worker': resolve('src/main/sources/worker.ts')
+          'source-sync-worker': resolve('src/main/sources/worker.ts'),
+          'git-worker': resolve('src/main/git/worker.ts')
         }
       }
     }
