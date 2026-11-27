@@ -12,9 +12,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 // Imported only so a change to the field or its styles reaches this test through the import graph (CI runs the tests
 // a pull request's changes reach). Vitest imports a stylesheet as nothing, so the page reads them from disk below, and
 // the field itself is bundled for the browser.
-import '../../src/renderer/src/styles/tokens.css';
-import '../../src/renderer/src/styles/reset.css';
-import '../../src/renderer/src/styles/primitives.css';
+import '../../src/renderer/src/styles/tokens.css?raw';
+import '../../src/renderer/src/styles/reset.css?raw';
+import '../../src/renderer/src/styles/primitives.css?raw';
 import fieldSource from '../../src/renderer/src/components/ui.tsx?raw';
 
 const browserInstalled = existsSync(chromium.executablePath());
