@@ -403,7 +403,8 @@ export function StyleControls({
       const r = rivalAt(s);
       return r ? { text: `${SCOPE_LABEL[s]}${s === preview ? ' preview' : ''} uses ${rivalName(r)} instead`, previewed: s === preview } : undefined;
     };
-    if (value === undefined && underFrom) lines.push({ text: underFrom, quiet: underFrom === 'From the design' });
+    // A background image showing through says where it comes from inside its own card.
+    if (value === undefined && underFrom && p.kind !== 'media') lines.push({ text: underFrom, quiet: underFrom === 'From the design' });
     for (const s of exceptions) lines.push(insteadAt(s) ?? uses(s, styles![at(s)]![p.id]!));
     // At one size, a value set here that a rival set here outranks.
     const outranked = scope !== 'base' && value !== undefined ? rivalAt(scope) : undefined;
@@ -471,8 +472,22 @@ export function StyleControls({
         </div>
         <div className="style-control">
           {p.kind === 'media' ? (
-            // Each size and state has its own fields: a scrim refused in one never shows, or saves, in another.
-            <BackgroundImageControl key={`${scope}:${state ?? ''}`} label={label} value={value} underText={underText} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
+            // Each size and state has its own fields: an overlay refused in one never shows, or saves, in another.
+            <BackgroundImageControl
+              key={`${scope}:${state ?? ''}`}
+              label={label}
+              value={value}
+              underText={underText}
+              under={under}
+              underFrom={underFrom}
+              describedBy={lines.length ? sourceId : undefined}
+              scope={scope}
+              size={scope === 'base' ? preview : scope}
+              // The crop is drawn only where the canvas shows this value: not where the row names something else showing
+              // in the preview (a size's own picture, or one the design keeps there).
+              previewed={(scope === preview || (scope === 'base' && !exceptions.includes(preview))) && !lines.some((l) => l.previewed)}
+              onSet={(v, rev) => onSet(p.id, v, rev, state ?? undefined)}
+            />
           ) : (
             <Control def={p} label={label} value={value} under={under} underText={underText} underFrom={underFrom} tokens={tokens} state={state} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
           )}
