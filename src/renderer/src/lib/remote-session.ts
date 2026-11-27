@@ -4,7 +4,7 @@ import type { Presence } from '@shared/live/messages';
 import type { LiveProjectSnapshot } from '@shared/live/snapshot';
 import { LIVE_BATCH_LABEL_MAX } from '@shared/live/capabilities';
 import { refKey } from '@shared/types';
-import { api, getState, setState, toast, transport, useStore, type State } from '../store';
+import { api, confirmDialog, getState, setState, toast, transport, useStore, type State } from '../store';
 import { IDLE_LIVE, sharedSelection } from './live-session';
 import { presenceOf } from './live-host';
 import { remoteApplyResult, remoteOpening, remoteSnapshot, type AdmittedRemote } from './remote-snapshot';
@@ -234,6 +234,28 @@ export async function leaveLive(): Promise<boolean> {
   if (isRemoteShell(getState()) && !(await prepareToLeave(() => undefined).catch(() => false))) return false;
   await api.remote.leave().catch(() => undefined);
   return true;
+}
+
+/**
+ * Leave the live session the editor shows, once the guest says so. Every way out of the remote shell asks first (the
+ * Leave session button, the session menu, the toolbar's mark, the project menu and Close Project), as the host's End
+ * session does: a place the host let this guest into is only had back by asking the host again.
+ */
+export async function confirmLeaveLive(): Promise<boolean> {
+  const remote = admittedRemote(getState());
+  if (remote) {
+    const ok = await confirmDialog({
+      title: 'Leave the live session?',
+      body: `You stop seeing ${remote.projectName}. To come back, you ask the host to let you in again.`,
+      details: [{ kind: 'keep', text: remote.role === 'collaborator' ? 'Changes already sent to the host’s project stay there.' : 'Nothing in the host’s project changes.' }],
+      confirmLabel: 'Leave session',
+      cancelLabel: 'Stay in session',
+      tone: 'caution',
+      icon: 'leave'
+    });
+    if (!ok) return false;
+  }
+  return leaveLive();
 }
 
 // ---------------------------------------------------------------------------

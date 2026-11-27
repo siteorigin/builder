@@ -454,12 +454,35 @@ describe('presence', () => {
     expect(view.presenceLines(state, remote, { joinId: 'join-0', host: at, guests: {} })).toEqual([]);
   });
 
+  it('lists everyone else the count counts: the host while connected, collaborators where they are or not yet known, then viewers', () => {
+    const at = { pageId: home, viewportWidth: 1280, selection: null, previewPath: '/' };
+    const participants = [
+      { guestId: 'g-1', displayName: 'Sarah', role: 'collaborator' as const },
+      { guestId: 'g-2', displayName: 'Tom', role: 'collaborator' as const },
+      { guestId: 'g-4', displayName: 'Lee', role: 'collaborator' as const },
+      { guestId: 'g-3', displayName: 'Ann', role: 'viewer' as const }
+    ];
+    const roster = view.remoteRoster(state, admitted({ participants }), { joinId: 'join-1', host: at, guests: { 'g-2': at } });
+    expect(roster.map((l: { who: string; where: string; pageId: string | null; watching: boolean }) => [l.who, l.where, l.pageId, l.watching])).toEqual([
+      ['Host', state.pages[home].title, home, false],
+      ['Tom', state.pages[home].title, home, false],
+      ['Lee', 'Location not known yet', null, false],
+      ['Ann', 'Watching', null, true]
+    ]);
+    // A host that is away is not counted as here; presence from another join says nothing about where anyone is.
+    expect(view.remoteRoster(state, admitted({ participants, hostConnected: false }), { joinId: 'join-0', host: at, guests: {} }).map((l: { who: string; where: string }) => [l.who, l.where])).toEqual([
+      ['Tom', 'Location not known yet'],
+      ['Lee', 'Location not known yet'],
+      ['Ann', 'Watching']
+    ]);
+  });
+
   it('shows the role and the time left on the pill, and when the host or the connection is away', () => {
     const now = 1_000_000;
     const remote = admitted({ sessionExpiresAt: now + 90 * 60_000, guestExpiresAt: now + 30 * 60_000 });
     expect(view.remoteLeftMs(remote, now)).toBe(30 * 60_000);
-    expect(view.remotePill(remote, now)).toMatchObject({ kind: 'live', text: 'Collaborator · 30m', label: 'Connected to Acme as Collaborator, 30 minutes left' });
-    expect(view.remotePill(admitted({ role: 'viewer', sessionExpiresAt: now + 60_000 }), now).text).toBe('Viewer · 1m');
+    expect(view.remotePill(remote, now)).toMatchObject({ kind: 'live', text: 'Collaborator · 30m left', label: 'Connected to Acme as Collaborator, 30 minutes left' });
+    expect(view.remotePill(admitted({ role: 'viewer', sessionExpiresAt: now + 60_000 }), now).text).toBe('Viewer · 1m left');
     expect(view.remotePill(admitted({ hostConnected: false }), now).kind).toBe('away');
     expect(view.remotePill(admitted({ reconnecting: true }), now).kind).toBe('reconnecting');
   });
