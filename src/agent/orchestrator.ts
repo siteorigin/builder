@@ -19,7 +19,7 @@ import { narrowedInspection } from './layout-targets';
 import { asksForCollection, asksForComponent, asksForSource, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { STATE_STYLE_WORDS } from '@shared/styles';
 import { serializeResult, stamp, toolError, type ResultOutcome } from './result';
-import { PreviewCheck } from './preview-check';
+import { inTurns, MEASURE_AT_ONCE, PreviewCheck, slots } from './preview-check';
 import { compactProjectSummary, describeSelection, layoutGlance, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
 import { outsideOffer, themeUpdateNote } from './theme-update';
 import { authorityLabel, canEditContracts, checkAuthority, layoutLabel, liveEntry, liveLayout, requestAuthority, requestedAuthority, widenChoices, type Authority } from './scope';
@@ -63,6 +63,11 @@ const REUSABILITY_CHECKS = 5;
 
 /** Tools that ask the user a question and wait for the answer. */
 const QUESTION_TOOLS = new Set(['request_clarification', 'request_wider_scope']);
+/**
+ * Reads of the project, the catalogue, images and the live preview: none changes anything or asks the author, so the
+ * ones a response asks for one after another run together (#976), each still reported in its turn.
+ */
+const OVERLAPPING_TOOLS = new Set(['read_project', 'read_page', 'read_layout', 'read_component', 'read_source', 'inspect_element', 'search_components', 'search_assets', 'list_collection_entries', 'read_collection_entry', 'audit_seo', 'locate_field', 'inspect_layout']);
 /** A message that only asks to carry on with the previous request, as the Continue button sends it. */
 const CONTINUE = /^\s*(please )?(continue|carry on|keep going|go on|resume|finish( it| the rest| up)?)( please)?[\s.!]*$/i;
 
@@ -1793,13 +1798,16 @@ export class Orchestrator {
       if (unmeasured.length) {
         const endCheck = perf ? perf.span('ai.finalCheck', { targets: unmeasured.length }) : NO_SPAN;
         const p = addActivity('Checking the changed pages in the preview', 'inspect_layout');
-        for (const t of unmeasured) {
-          if (signal.aborted) throw new Error('Canceled');
-          const m = await measureLive(t.pageId, t.viewport, until);
-          if (signal.aborted) throw new Error('Canceled');
+        if (signal.aborted) throw new Error('Canceled');
+        // The pages are measured together, a few at a time (none is asked once the run is stopped), and recorded in
+        // the order the plan lists them.
+        const measured = await inTurns(unmeasured, MEASURE_AT_ONCE, (t) => measureLive(t.pageId, t.viewport, until));
+        if (signal.aborted) throw new Error('Canceled');
+        unmeasured.forEach((t, i) => {
+          const m = measured[i];
           // A check that could not run names its page and width in its error's details.
           inspections.record(t.pageId, t.viewport, m.ok, m.ok ? m.content : (m.content.error.details ?? {}), m.ok ? m.report : undefined);
-        }
+        });
         p.status = 'done';
         endCheck();
       }
@@ -2345,11 +2353,42 @@ export class Orchestrator {
           return;
         }
 
-        // Calls run in order. Reads may come in parallel, but only the first change of a turn is applied:
-        // each change moves the revision, so later ones in the same turn were planned against stale state.
+        // Calls are reported in order, and reads that come one after another run together. Only the first change of
+        // a turn is applied: each change moves the revision, so later ones in the same turn were planned against stale state.
         let mutationTried = false;
         const endTurn = perf ? perf.span('ai.turnTools', { turn: turns, calls: done.toolCalls.length, reads: done.toolCalls.filter((c) => !MUTATING_TOOLS.has(c.name as never)).length }) : NO_SPAN;
-        for (const call of done.toolCalls) {
+        const runCall = async (call: ToolCall) => {
+          const endTool = perf ? perf.span('ai.tool', { tool: call.name, turn: turns }) : NO_SPAN;
+          try {
+            return await executeTool(call.name, call.arguments, host, call.id);
+          } finally {
+            endTool();
+          }
+        };
+        /** Reads started with the first of them, before their turn comes; page checks among them a few at a time. */
+        const started = new Map<ToolCall, Promise<ResultOutcome>>();
+        const measuring = slots(MEASURE_AT_ONCE);
+        /**
+         * The reads offered from `index` on, up to the response's next other call, started together: every call before
+         * them has finished, and none of them changes what the others read. Only as many as the tool limit has room for,
+         * each still checked against the limits when its turn comes.
+         */
+        const startReads = (index: number) => {
+          for (let i = index, n = toolCalls - 1; i < done.toolCalls.length; i++) {
+            const c = done.toolCalls[i];
+            if (!OVERLAPPING_TOOLS.has(c.name) || !tools.some((t) => t.name === c.name) || ++n > LIMITS.toolCalls) break;
+            if (started.has(c)) continue;
+            // Nothing is started once the run is stopped or out of time: those calls are never reported. A page check
+            // waiting for its slot looks again when it gets one.
+            if (signal.aborted || activeMs + Date.now() - lastResume > limitMs) break;
+            const stillOn = () => !signal.aborted && activeMs + Date.now() - lastResume <= limitMs;
+            const p = c.name === 'inspect_layout' ? measuring(() => (stillOn() ? runCall(c) : Promise.resolve(stamp(toolError('CANCELLED', 'Not run: the request was stopped or reached its time limit.'), readRevision())))) : runCall(c);
+            // A read whose turn never comes (the run stopped at a limit first) is let go.
+            p.catch(() => undefined);
+            started.set(c, p);
+          }
+        };
+        for (const [index, call] of done.toolCalls.entries()) {
           if (signal.aborted) throw new Error('Canceled');
           const mutating = MUTATING_TOOLS.has(call.name as never);
           // Page and selection tools work from the current project, so several can safely run in one turn.
@@ -2388,14 +2427,7 @@ export class Orchestrator {
               stamp(toolError('INVALID_ARGUMENT', `Unknown tool "${call.name}".`, { recoverable: !(ask && mutating) }), readRevision())
             : outside
               ? stamp(toolError('SCOPE_MISMATCH', outside), readRevision())
-              : await (async () => {
-                  const endTool = perf ? perf.span('ai.tool', { tool: call.name, turn: turns }) : NO_SPAN;
-                  try {
-                    return await executeTool(call.name, call.arguments, host, call.id);
-                  } finally {
-                    endTool();
-                  }
-                })();
+              : await (startReads(index), started.get(call) ?? runCall(call));
           // Record a landed edit before honouring Stop, so the stopped result reports the rollback truthfully.
           if (outcome.ok && outcome.mutated) {
             // Whatever comes later in this turn was planned against the revision this just moved.

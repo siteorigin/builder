@@ -1,15 +1,17 @@
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep, PreparedComponentPreview } from '@shared/component-preview';
-import { api, getState } from '../store';
+import { api, getState, shownAt } from '../store';
 import { acceptMessage, newSessionId, postToFrame, viewAfter, type BridgeMessage, type FrameView } from './bridge';
 import type { InspectLayoutOptions } from '@shared/api';
 import { attributeFindings, failedImages, missingImages, missingSections, staleImages } from './inspect-check';
 import { descOf } from './model';
+import { MEASURING_SESSION_PREFIX, measuringFrameStyle } from './measuring-frame';
 import { perfMark, perfOn } from './perf';
 
-/** How long the preview server gets to pick up files the AI just wrote before a fresh page load. */
-const SETTLE_MS = 400;
+/** How long a page check waits for the editor to show the revision it is about (it arrives before the request). */
+const SHOWN_WAIT_MS = 2000;
 
-type InspectRequest = { requestId: string; pageId: string; width: number } & InspectLayoutOptions;
+/** `revision`: the project revision main measures the page at, its files already published to the preview. */
+type InspectRequest = { requestId: string; pageId: string; width: number; revision?: number } & InspectLayoutOptions;
 
 /**
  * Measure a page for the AI at a given viewport width using an off-screen preview frame.
@@ -53,13 +55,15 @@ export async function runInspection(req: InspectRequest) {
 
 /** `attempt`: the first load of the page for this request, or the second when the first looked behind (scripts/perf marks). */
 async function measure(req: InspectRequest, attempt: number): Promise<unknown> {
-  await new Promise((r) => setTimeout(r, SETTLE_MS));
+  // Main asks once the preview has the change's files; the page and its sections are read from the same revision.
+  const opening = getState().snapshot?.workspaceKey;
+  if (typeof req.revision === 'number' && opening && !(await shownAt(req.revision, opening, SHOWN_WAIT_MS))) return { error: 'The preview has not caught up with the latest changes to this page.' };
   const s = getState();
   const runtime = s.runtime;
   const page = s.snapshot?.state.pages[req.pageId];
   if (runtime.state !== 'ready' || !page) return { error: 'The preview is not running.' };
   const origin = new URL(runtime.url).origin;
-  const sessionId = newSessionId();
+  const sessionId = MEASURING_SESSION_PREFIX + newSessionId();
   const frame = hiddenFrame(sessionId, req.width);
   return new Promise((resolve) => {
     const done = (report: unknown) => {
@@ -114,14 +118,19 @@ const PREVIEW_MEASURE_MS = 8000;
 /** How long the editor gets to prepare a preview's files. */
 const PREVIEW_PREPARE_MS = 15000;
 
-/** A hidden frame for measuring, `width` CSS pixels wide, kept out of sight, reach and the accessibility tree. */
+/**
+ * A hidden frame for measuring, `width` CSS pixels wide, kept out of sight, reach and the accessibility tree, but
+ * rendered as the preview is (see measuringFrameStyle).
+ */
 function hiddenFrame(sessionId: string, width: number): HTMLIFrameElement {
   const frame = document.createElement('iframe');
   frame.name = sessionId;
   frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
   frame.setAttribute('aria-hidden', 'true');
   frame.tabIndex = -1;
-  Object.assign(frame.style, { position: 'fixed', left: '-10000px', top: '0', width: `${width}px`, height: '900px', border: '0', visibility: 'hidden', pointerEvents: 'none' });
+  // Nothing in it can take focus or a click, or be read out, while it is in the window.
+  frame.inert = true;
+  Object.assign(frame.style, measuringFrameStyle(width));
   return frame;
 }
 
@@ -146,7 +155,7 @@ export interface ComponentFrame {
 }
 
 export function componentFrame(): ComponentFrame {
-  const sessionId = newSessionId();
+  const sessionId = MEASURING_SESSION_PREFIX + newSessionId();
   let frame: HTMLIFrameElement | null = null;
   let origin: string | null = null;
   /** The preview the frame shows, what it was made from (request, project revision, preview server) and its definition. */

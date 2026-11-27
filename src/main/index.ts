@@ -139,6 +139,18 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: t
 // ---------------------------------------------------------------------------
 
 const pendingInspections = new Map<string, (report: unknown) => void>();
+/**
+ * The longest a page check (or a component preview) waits for the preview to publish the change it is about: past that
+ * it is a check that could not run, never one of the page from before the change.
+ */
+const PUBLISH_WAIT_MS = 5000;
+const NOT_CAUGHT_UP = 'The preview has not caught up with the latest changes to this page.';
+
+/** The revision the preview serves (null without one), once it has published it; `caughtUp` false when it did not in time. */
+async function publishedPreview(): Promise<{ previewRevision: number | null; caughtUp: boolean }> {
+  const previewRevision = await controller.previewRevision();
+  return { previewRevision, caughtUp: previewRevision === null || (await controller.previewPublished(previewRevision, PUBLISH_WAIT_MS)) };
+}
 const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
 
 /**
@@ -158,15 +170,23 @@ function inspectLayout(pageId: string, width: number, opts: InspectLayoutOptions
       reject(new Error('The preview did not respond in time.'));
     }, 50000); // The renderer may load the page twice (two 20s attempts plus a pause) before answering.
     // The deadline covers waiting for a private copy of the project to catch up too.
-    controller
-      .previewRevision()
-      .then((previewRevision) => {
+    // The page is loaded once the preview has published what it is measured at: at once when nothing was just
+    // written, else as soon as the change's files are in the preview's hands.
+    const revision = controller.session?.revision ?? null;
+    publishedPreview()
+      .then(({ previewRevision, caughtUp }) => {
         if (done) return;
+        if (!caughtUp) {
+          done = true;
+          clearTimeout(timer);
+          resolve({ error: NOT_CAUGHT_UP });
+          return;
+        }
         pendingInspections.set(requestId, (r) => {
           clearTimeout(timer);
           resolve(r && typeof r === 'object' && !(r as { error?: unknown }).error && previewRevision !== null ? { ...r, previewRevision } : r);
         });
-        controller.send('inspect:request', { requestId, pageId, width, ...(opts.targets ? { targets: opts.targets } : {}), ...(opts.focus ? { focus: opts.focus } : {}) });
+        controller.send('inspect:request', { requestId, pageId, width, ...(revision !== null ? { revision } : {}), ...(opts.targets ? { targets: opts.targets } : {}), ...(opts.focus ? { focus: opts.focus } : {}) });
       })
       .catch((e: unknown) => {
         // A request that could not be made is answered now, not at the deadline.
@@ -226,7 +246,21 @@ function previewComponents(steps: ComponentPreviewStep[], measure?: ComponentPre
       settle();
       resolve(Array.isArray(r) ? (r as ComponentPreviewResult[]) : []);
     });
-    controller.send('component-preview:request', { requestId, steps, ...(measure ? { measure } : {}) });
+    // Shown once the preview has published what the components are shown with (the site's styles among it).
+    publishedPreview().then(
+      ({ caughtUp }) => {
+        // Answered meanwhile: stopped, or out of time.
+        if (!pendingComponentPreviews.has(requestId)) return;
+        if (caughtUp) return controller.send('component-preview:request', { requestId, steps, ...(measure ? { measure } : {}) });
+        settle();
+        resolve(steps.map((s): ComponentPreviewResult => ({ state: 'error', error: 'The preview has not caught up with the latest changes.', width: Number.isFinite(s?.width) ? s.width : 1280 })));
+      },
+      () => {
+        if (!pendingComponentPreviews.has(requestId)) return;
+        settle();
+        resolve([]);
+      }
+    );
   });
 }
 
