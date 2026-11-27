@@ -94,6 +94,20 @@ try {
   const launched = await launch(WORK, { SITEORIGIN_LIVE_RELAY_URL: origin });
   ({ app, win } = launched);
   const { errors } = launched;
+  // The host connects from the app's main process, through Node's resolver. Where the system does not answer names
+  // under `localhost` (Windows; see resolveLocalhostNames in the relay harness), they are given loopback there too.
+  await app.evaluate(async () => {
+    const dns = process.getBuiltinModule('node:dns');
+    if (await dns.promises.lookup('relay.localhost').then(() => true, () => false)) return;
+    const local = (name) => /(^|\.)localhost\.?$/i.test(name);
+    const original = dns.lookup;
+    dns.lookup = (hostname, options, callback) => {
+      if (!local(hostname)) return original.call(dns, hostname, options, callback);
+      const done = typeof options === 'function' ? options : callback;
+      const all = typeof options === 'object' && options?.all;
+      process.nextTick(() => (all ? done(null, [{ address: '127.0.0.1', family: 4 }]) : done(null, '127.0.0.1', 4)));
+    };
+  });
   await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
   // The headless window is not focused, so the page's clipboard would refuse the copy that starting makes.
   await win.evaluate(() => {
@@ -211,7 +225,7 @@ try {
       if (request) answerPreview(second.host, request.requestId, { body: enc(secondSite) });
       await wait(10);
     }
-  })();
+  })().catch(() => undefined);
   const tabB = await context.newPage();
   await tabB.goto(`${origin}/s/${second.roomId}`);
   await askToJoin(tabB, 'Ann Lee');
