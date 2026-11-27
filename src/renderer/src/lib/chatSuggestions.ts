@@ -457,7 +457,14 @@ function selectionStarters(input: SuggestionInput, ref: ElementRef): ChatSuggest
 // ---------------------------------------------------------------------------
 
 /** The starters to offer, best first: a scoped selection's own, else the page's pictures or copy, search and AI readiness, the page's copy, another page, and a missing page. */
+/** Told of every time the starters are worked out, for the editor's timing marks (lib/perf-panels.tsx); unset otherwise. */
+let countStarters: (() => void) | null = null;
+export function countChatStarters(count: typeof countStarters): void {
+  countStarters = count;
+}
+
 export function chatSuggestions(input: SuggestionInput): ChatSuggestion[] {
+  countStarters?.();
   try {
     return suggest(input);
   } catch {

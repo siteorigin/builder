@@ -197,9 +197,18 @@ function entryExcerpt(state: ProjectState, subject: Extract<SeoSubject, { kind: 
 
 const overviews = new WeakMap<ProjectState, SeoOverviewRow[]>();
 
+/** Told of every overview worked out, for the editor's timing marks (lib/perf-panels.tsx); unset otherwise. */
+let countOverview: (() => void) | null = null;
+export function countSeoOverviews(count: typeof countOverview): void {
+  countOverview = count;
+}
+
 /** The overview of one saved project state, worked out once: a saved state is never changed, only replaced. */
 export function seoOverviewOnce(state: ProjectState): SeoOverviewRow[] {
   let rows = overviews.get(state);
-  if (!rows) overviews.set(state, (rows = seoOverview(state)));
+  if (!rows) {
+    countOverview?.();
+    overviews.set(state, (rows = seoOverview(state)));
+  }
   return rows;
 }

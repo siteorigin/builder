@@ -12,6 +12,8 @@
  */
 import type { ReactNode } from 'react';
 import { countTreeWalks } from '@engine/tree';
+import { countSeoOverviews } from './seo-overview';
+import { countChatStarters } from './chatSuggestions';
 import { useStore } from '../store';
 import { perfCount, perfOn, perfPanel, setPerfPanelTypes } from './perf';
 
@@ -45,7 +47,14 @@ if (perfOn) {
   // The editor's scans of a tree (src/engine/tree.ts), counted from zero so a build without them is told apart.
   perfCount('tree.findParent', 0);
   perfCount('tree.subtreeIds', 0);
+  // The work panels do over the whole site while they render: the SEO overview, the website read for an entry's
+  // address (SeoPreview's useDocumentPreview) and the AI panel's starters.
+  perfCount('seo.overviews', 0);
+  perfCount('seo.routes', 0);
+  perfCount('chat.starters', 0);
   countTreeWalks((walk) => perfCount(`tree.${walk}`));
+  countSeoOverviews(() => perfCount('seo.overviews'));
+  countChatStarters(() => perfCount('chat.starters'));
 }
 
 /** `panel`, timed and counted as `id` while marks are on; `panel` itself otherwise. */

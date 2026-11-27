@@ -34,6 +34,7 @@ import type { EditOperation } from '@shared/ops';
 import { openSeoView, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
 import { SeoInlineActions, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import { Hideable, useShownValue } from '../lib/hideable';
 import { PostSearchFields } from './PostSearchFields';
 import { EntryValueFields } from './EntryValueFields';
 import { entryNoun, entryNounLower, isReadOnlyCollection } from '../lib/content';
@@ -1081,12 +1082,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                 </fieldset>
               </Section>
             </div>
-            {paged && <PostSearchSettings state={state} post={post} collection={collection} entry={entry} update={update} off={readOnly || gone} />}
+            {paged && <PostSearchSettings state={state} post={post} collection={collection} entry={entry} update={update} off={readOnly || gone} hidden={hidden} />}
           </div>
           <fieldset className="post-fieldset" disabled={readOnly || gone}>
           {bodyOn && structured && <div className="post-record-section field-label">Text</div>}
           {bodyOn && (
           <>
+          {/* Put away, the formatting toolbar is held as it was (lib/hideable), and drawn again as the writer shows. The bar
+              above stays live: its buttons may be pressed as the writer shows, before it is drawn again (Publish from the
+              SEO view). */}
+          <Hideable hidden={hidden}>
           <div className="post-tools" role="toolbar" aria-label="Formatting" onKeyDown={onToolsKey}>
             {groups.map((g, i) => (
               <span key={i} className="post-tools-group">
@@ -1116,6 +1121,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               {blockLabel[pressed.block] ?? ''}
             </span>
           </div>
+          </Hideable>
           <div
             ref={root}
             className="post-body"
@@ -1715,17 +1721,23 @@ function LinkDialog({ dialog, state, self, home, onChange, onApply, onCancel, on
  * The title and description meters follow what is typed before it is saved. Its own component, so typing re-renders
  * only this, not the writer.
  */
-function PostSearchSettings({ state, post, collection, entry, update, off }: { state: ProjectState; post: PostRef; collection: Collection; entry: EntryDoc; update: (fields: Record<string, unknown>, label: string) => unknown; off?: boolean }) {
+function PostSearchSettings({ state, post, collection, entry, update, off, hidden }: { state: ProjectState; post: PostRef; collection: Collection; entry: EntryDoc; update: (fields: Record<string, unknown>, label: string) => unknown; off?: boolean; hidden: boolean }) {
   const seoScope = seoSummary(entry.seo && typeof entry.seo === 'object' ? entry.seo : {});
   const seoSubject = useMemo<SeoSubject>(() => ({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }), [post.collectionId, post.entryId]);
   const { typed: seoTyped, on: seoOn } = useTypedSeo(subjectKey(seoSubject));
-  const { overlay: seoOverlay, doc: seoDoc } = useDocumentPreview(state, seoSubject, seoTyped);
+  // Put away, what the meters and the AI's offer read is worked out from the project as the writer last showed it (lib/
+  // hideable): where the post is published is read from the whole website. The fields stay live (the SEO view and
+  // Publish read what they hold).
+  const seen = useShownValue(state, hidden);
+  const { overlay: seoOverlay, doc: seoDoc } = useDocumentPreview(seen, seoSubject, seoTyped);
   return (
     <div className="post-details post-seo">
       <Section id="post-seo" title="Search & sharing" scope={seoScope || undefined} defaultOpen={false} keepMounted>
         <fieldset className="post-fieldset" disabled={off}>
           <div className="post-fields">
-            <SeoInlineActions subject={seoSubject} overlay={seoOverlay} typed={seoTyped} />
+            <Hideable hidden={hidden}>
+              <SeoInlineActions subject={seoSubject} overlay={seoOverlay} typed={seoTyped} />
+            </Hideable>
             <PostSearchFields state={state} collection={collection} entry={entry} doc={seoDoc} on={seoOn} save={(edit) => update(edit.fields, edit.label)} />
           </div>
         </fieldset>

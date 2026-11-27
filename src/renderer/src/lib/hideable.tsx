@@ -9,7 +9,7 @@
  * and `getState()`, `setState()` and `useStore.subscribe()` are always the live store's. A panel whose effects must
  * follow the store while it is hidden (announcing, sending, acting on a request made of it) is not wrapped in this.
  */
-import { createContext, memo, useContext, useMemo, type ReactNode } from 'react';
+import { createContext, memo, useContext, useMemo, useRef, type ReactNode } from 'react';
 import { StoreViewContext, useStore, type State, type StoreView } from '../store';
 import { activeWorkspace } from './workspace';
 
@@ -54,3 +54,15 @@ const Held = memo(
   },
   (prev, next) => prev.hidden && next.hidden && prev.era === next.era
 );
+
+/**
+ * `value` as it was when it was last shown (or first drawn), while `hidden`; `value` itself otherwise. What a panel that
+ * must stay live works out from it for display alone (an overview, a preview) is then worked out from what it last
+ * showed while it is hidden, so it does nothing for changes it cannot show; shown again, it works it out from `value`
+ * in that same render.
+ */
+export function useShownValue<T>(value: T, hidden: boolean): T {
+  const last = useRef(value);
+  if (!hidden) last.current = value;
+  return last.current;
+}

@@ -19,6 +19,7 @@ import { LockedFields, useLockedFields } from '../components/ui';
 import { postAt } from '../lib/posts';
 import { savePostSeo } from '../lib/post-seo';
 import { PostSearchFields } from './PostSearchFields';
+import { Hideable, useShownValue } from '../lib/hideable';
 
 /**
  * The SEO view's list (#700), in the sidebar: every page of the site in its page order, then each collection's entries
@@ -379,13 +380,17 @@ function SeoViewPageSettings({ state, pageId, on, preview }: { state: ProjectSta
  */
 function SeoViewDocument({ state, doc, collection, shown, locked }: { state: ProjectState; doc: SeoDocument; collection: string | undefined; shown: boolean; locked: boolean }) {
   const { typed, on } = useTypedSeo(doc.key);
-  const { overlay, doc: preview } = useDocumentPreview(state, doc.subject, typed);
+  // Put away, the view's findings and previews are held as they were (lib/hideable), worked out from the project as it
+  // last showed: they are for reading alone, and each change would work them out over the whole site. Its settings stay
+  // live, since the post writer reads what they could not save, and they follow what the project saves meanwhile.
+  const seen = useShownValue(state, !shown);
+  const { overlay, doc: preview } = useDocumentPreview(seen, doc.subject, typed);
   const page = doc.subject.kind === 'page' ? doc.subject.pageId : null;
   // A post synced from an external source is changed there, as the post writer says, whatever the project allows.
   const synced = doc.subject.kind === 'entry' && isReadOnlyCollection(Object.hasOwn(state.collections, doc.subject.collectionId) ? state.collections[doc.subject.collectionId] : undefined);
   const settingsLocked = locked || synced;
   // What the overview says of it, carried here so a finding is in sight, a click from the field that fixes it.
-  const row = seoOverviewOnce(state).find((r) => r.key === doc.key);
+  const row = useMemo(() => seoOverviewOnce(seen).find((r) => r.key === doc.key), [seen, doc.key]);
   const findings = row ? docFindings(row) : [];
   const reason = row && !row.listed && !doc.draft ? (row.noindex ? 'It asks search engines to leave it out of their results, so the search result below is how it would show if they listed it. Shared links still show it: see Link preview.' : 'It is not on the website, so search engines and link previews don’t see it.') : null;
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -402,6 +407,7 @@ function SeoViewDocument({ state, doc, collection, shown, locked }: { state: Pro
   };
   return (
     <div className="seo-doc" data-seo-doc={doc.key}>
+      <Hideable hidden={!shown}>
       <div className="seo-doc-head">
         <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
         {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published. What follows is how it would show once it is.</p>}
@@ -456,8 +462,9 @@ function SeoViewDocument({ state, doc, collection, shown, locked }: { state: Pro
         </button>
       </div>
       <div className="seo-doc-previews">
-        <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} />
+        <SeoPreview state={seen} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} />
       </div>
+      </Hideable>
       {/* Locked (a project open read-only, a synced post), the settings stay in sight: their text read-only, still
           focusable, selectable and copyable, every other control disabled, and nothing dropped on them imported. */}
       <div

@@ -18,6 +18,7 @@ import { destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 import type { GraphSection } from '../lib/structured-summary';
 import { AiHandoffButton } from '../components/AiHandoff';
+import { perfCount } from '../lib/perf';
 
 type PreviewTab = 'search' | 'link' | 'data';
 
@@ -65,7 +66,11 @@ export type TypedSeoOn = ReturnType<typeof useTypedSeo>['on'];
 export function useDocumentPreview(state: ProjectState, subject: SeoSubject, typed: TypedSeo) {
   const key = subjectKey(subject);
   // Where the website publishes an entry is read from the whole website: once per saved change, not per keystroke.
-  const route = useMemo(() => (subject.kind === 'entry' ? createSeoResolver(state).resolve(subject)?.route : undefined), [state, key]);
+  const route = useMemo(() => {
+    if (subject.kind !== 'entry') return undefined;
+    perfCount('seo.routes');
+    return createSeoResolver(state).resolve(subject)?.route;
+  }, [state, key]);
   const overlay = useMemo(() => withTypedSeo(state, subject, typed), [state, key, typed.title, typed.description, typed.canonical]);
   const doc = useMemo(() => previewDocument(overlay, subject, route), [overlay, route]);
   return { overlay, doc };

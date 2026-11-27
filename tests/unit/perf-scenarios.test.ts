@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -835,6 +835,63 @@ describe('panels metrics', () => {
     expect(gone.metrics['panels.click.renders.insert']).toBeUndefined();
     const uncounted = new Trace(trace().records.map((x) => (x.name === 'scenario.start' && x.proc === 'renderer' ? { ...x, c: { 'react.commits': 100 } } : x)));
     expect(panels.measure(uncounted, facts).missing).toEqual(['panels.click (the editor did not count component renders)']);
+  });
+});
+
+describe('panelsInUse metrics', () => {
+  /** The editor's counters at a mark: React's, each panel's, and the work over the whole site, scaled by `k`. */
+  const counters = (commits: number, renders: number, k: number, work: [number, number, number] | null): Record<string, number> => {
+    const c: Record<string, number> = { 'react.commits': commits, 'react.renders': renders };
+    PANELS.forEach((id, i) => {
+      c[`panel.${id}.renders`] = k * (i + 1);
+      c[`panel.${id}.renderMs`] = k * (i + 1) * 0.5;
+    });
+    if (work) Object.values(SITE_WORK).forEach((name, i) => (c[name] = work[i]));
+    return c;
+  };
+  const phase = (name: string) => ({ attrs: { scenario: 'panelsInUse', phase: name } });
+  function trace(uncounted = false) {
+    const w = (x: [number, number, number]) => (uncounted ? null : x);
+    return new Trace([
+      r('scenario.start', 5000, { attrs: { scenario: 'panelsInUse' }, c: counters(100, 1000, 1, w([3, 5, 7])) }),
+      m('scenario.start', 5000, { attrs: { scenario: 'panelsInUse' } }),
+      r('canvas.select', 5100),
+      r('renderer.selectionCommit', 5130, { attrs: { selected: true } }),
+      r('scenario.phase', 7000, { ...phase('clicked'), c: counters(110, 1600, 3, w([3, 5, 9])) }),
+      m('scenario.phase', 7000, phase('clicked')),
+      // Showing the Inspector, between the windows: its work is in neither.
+      r('scenario.phase', 8000, { ...phase('edit'), c: counters(130, 2000, 10, w([4, 6, 10])) }),
+      m('scenario.phase', 8000, phase('edit')),
+      r('edit.requested', 8200, { attrs: { revision: 4, operations: 1 } }),
+      r('renderer.snapshotReceived', 8300, { attrs: { revision: 5 } }),
+      r('renderer.commit', 8345, { attrs: { revision: 5 } }),
+      r('scenario.end', 9000, { attrs: { scenario: 'panelsInUse' }, c: counters(145, 3000, 14, w([5, 8, 11])) }),
+      m('scenario.end', 9000, { attrs: { scenario: 'panelsInUse' } })
+    ]);
+  }
+
+  it('count, per window, the work over the whole site beside panels’ metrics under its own name', () => {
+    const got = panelsInUse.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k]?.value;
+    expect([v('panelsInUse.click.commit'), v('panelsInUse.edit.commit'), v('panelsInUse.edit.rendererCommit')]).toEqual([30, 45, 145]);
+    expect([v('panelsInUse.click.seoOverviews'), v('panelsInUse.click.seoRoutes'), v('panelsInUse.click.chatStarters')]).toEqual([0, 0, 2]);
+    expect([v('panelsInUse.edit.seoOverviews'), v('panelsInUse.edit.seoRoutes'), v('panelsInUse.edit.chatStarters')]).toEqual([1, 2, 1]);
+    expect(v('panelsInUse.edit.renders.seoView')).toBe(4 * (PANELS.indexOf('seoView') + 1));
+    expect(got.metrics['panels.edit.commit']).toBeUndefined();
+  });
+
+  it('never count work the editor did not count as none', () => {
+    const got = panelsInUse.measure(trace(true), facts);
+    expect(got.missing).toEqual([
+      'panelsInUse.click.seoOverviews (the editor did not count seo.overviews)',
+      'panelsInUse.click.seoRoutes (the editor did not count seo.routes)',
+      'panelsInUse.click.chatStarters (the editor did not count chat.starters)',
+      'panelsInUse.edit.seoOverviews (the editor did not count seo.overviews)',
+      'panelsInUse.edit.seoRoutes (the editor did not count seo.routes)',
+      'panelsInUse.edit.chatStarters (the editor did not count chat.starters)'
+    ]);
+    expect(got.metrics['panelsInUse.edit.seoOverviews']).toBeUndefined();
   });
 });
 

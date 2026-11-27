@@ -704,6 +704,8 @@ export function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, conversation?.id]);
 
+  /** The starters last shown, which a hidden panel keeps (see `suggestions`). */
+  const shownStarters = useRef<Array<{ text: string; kind: string }>>([]);
   if (!snap) return null;
   const st = snap.state;
   // What the next message is about: the page, or the component edited everywhere, and the element within it.
@@ -740,7 +742,13 @@ export function Chat() {
   // edited everywhere offers none.
   // A local server or model that failed its last check is said instead, so no starters are offered.
   const fresh = !component && !scope.post && !scope.empty && !scope.template && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
-  const suggestions: Array<{ text: string; kind: string }> = !fresh
+  // Worked out only while the panel shows: they read the page, the selection, the site's images and its search
+  // findings, which a hidden panel need not follow. Hidden, it keeps the ones it last showed; shown again, it works
+  // them out in that same render.
+  const chatShown = dockOpen && rightTab === 'chat';
+  const suggestions: Array<{ text: string; kind: string }> = !chatShown
+    ? shownStarters.current
+    : (shownStarters.current = !fresh
     ? []
     : askMode
       ? // A question's strongest use is finding where something is edited, so its starters ask that about what is here.
@@ -750,7 +758,7 @@ export function Chat() {
             `Which parts of the “${page.title}” page are shared with other pages?`
           ].map((text) => ({ text, kind: 'ask' }))
         : []
-      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId: seoPage ?? pageId, selection: workspace ? null : selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: dockOpen && rightTab === 'chat' ? seoFindingsOf(st) : undefined });
+      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId: seoPage ?? pageId, selection: workspace ? null : selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: seoFindingsOf(st) }));
   const stepNow = currentStep(working?.activities);
   // The run strip is the one place that says what a run is doing now: an edit's current step, or its phase. A question
   // is always "Reading the site", as the dock tab and the canvas say it, followed by its current step.
