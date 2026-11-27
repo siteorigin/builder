@@ -124,3 +124,31 @@ describe('a theme code component’s editor markers', () => {
     });
   }
 });
+
+describe('a project code component’s editor markers', () => {
+  it('are left out of its own source in both exports, while the project keeps them', async () => {
+    let state = createStarterState('blank', 'Bookshop', false);
+    state.site.baseUrl = 'https://books.example';
+    const created = applyOperations(state, [{ type: 'component.createCode', name: 'Total', source: '<output class="amount" data-so-part="total">Total: 10</output>\n' }]);
+    state = applyOperations(created.state, [{ type: 'node.insert', owner: { kind: 'page', id: created.state.site.homePageId }, definitionId: created.results[0].definitionId as string }]).state;
+    const def = created.state.components[created.results[0].definitionId as string];
+    const dir = temp('project');
+    await (await ProjectSession.create(dir, state)).close();
+    const c = new Controller(() => null);
+    c.send = () => undefined;
+    c.startRuntime = async () => undefined;
+    controllers.push(c);
+    expect((await c.trustAndOpen(dir)).ok).toBe(true);
+    await vi.waitFor(() => expect(c.snapshot()).not.toBeNull());
+    const built = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(built.ok).toBe(true);
+    const html = readFileSync(join(built.path!, 'index.html'), 'utf8');
+    expect(html).toContain('Total: 10');
+    expect(html).not.toContain('data-so-part');
+    const out = join(temp('out'), 'handoff');
+    expect((await c.exportSourceTo(out)).ok).toBe(true);
+    expect(readFileSync(join(out, def.sourcePath!), 'utf8')).toBe('<output class="amount">Total: 10</output>\n');
+    expect(await editedGeneratedFile(out)).toBeNull();
+    expect(readFileSync(join(dir, def.sourcePath!), 'utf8')).toContain('data-so-part="total"');
+  });
+});
