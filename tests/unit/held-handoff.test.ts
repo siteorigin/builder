@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, ProjectSnapshot, RunStatus } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
+import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agent/types';
@@ -150,10 +151,11 @@ beforeAll(async () => {
           applyCalls++;
           const admitted = current!.orch.admitSave(opts.runId);
           if (!admitted) return { ok: false, revision: current!.session.revision, error: { code: 'BUSY', message: 'The AI is no longer waiting for your answer.' } };
-          let saved: string | null = null;
+          let saved: { summary: string; operations: EditOperation[]; before: ProjectState; after: ProjectState } | null = null;
           try {
+            const before = current!.session.state;
             const r = await current!.session.apply({ operations: batch.operations }, { label: opts.label ?? 'Edit', source: 'user', asking: { runId: opts.runId, base: opts.base } });
-            if (r.ok) saved = opts.label ?? 'Edit';
+            if (r.ok) saved = { summary: opts.label ?? 'Edit', operations: batch.operations, before, after: current!.session.state };
             return r;
           } finally {
             admitted.done(saved);

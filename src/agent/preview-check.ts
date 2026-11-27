@@ -548,6 +548,18 @@ export class PreviewCheck {
     todo.forEach((t, i) => this.baselines.set(keyOf(t.pageId, t.viewport), measured[i].ok ? { findings: findingsOf(measured[i].report) } : 'unknown'));
   }
 
+  /**
+   * The author saved an edit of their own while the run waited for an answer (#1281), taking the project from `before`
+   * to `after`. A page it reaches that was measured before it no longer shows where the run started, so the run is never
+   * held to what the author changed there: what it finds is said, not sent back for repair. The run still measures it
+   * again before it finishes, as the caller makes every check of it stale.
+   */
+  authorSaved(ops: EditOperation[], before: ProjectState, after: ProjectState): Reach {
+    const reach = visibleReach(ops, before, after);
+    for (const key of this.baselines.keys()) if (reach.shared || reach.lists || reach.pages.has(key.slice(0, key.indexOf('\n')))) this.baselines.set(key, 'unknown');
+    return reach;
+  }
+
   /** A batch landed, taking the project from `before` to `after`. */
   landed(ops: EditOperation[], before: ProjectState, after: ProjectState): Reach {
     const reach = visibleReach(ops, before, after);

@@ -213,7 +213,7 @@ interface ActiveRun {
   /** The question waiting for an answer; an answer or Stop takes it, so it is settled exactly once. */
   pendingQuestion: PendingQuestion | null;
   /** What the author saved while the question just answered waited (PendingQuestion.edits), for its answer to say. */
-  authorEdits: string[];
+  authorEdits: AuthorSave[];
   message: ChatMessage;
   /**
    * The conversation the run was filed in, as its events name it. Emptied when its project closes: a run may still
@@ -238,8 +238,18 @@ interface PendingQuestion {
   saveable: boolean;
   /** Saves admitted while it waits that have not finished: its answer goes to the model once they have. */
   saving: Set<Promise<void>>;
-  /** What each edit saved while it waited changed, in the author's words. */
-  edits: string[];
+  /** The edits saved while it waited. */
+  edits: AuthorSave[];
+}
+
+/** An edit the author saved while a run waited for their answer (#1281), as Orchestrator.admitSave is told of it. */
+export interface AuthorSave {
+  /** What it changed, in the author's words, for the model. */
+  summary: string;
+  operations: EditOperation[];
+  /** The project just before and just after it was saved. */
+  before: ProjectState;
+  after: ProjectState;
 }
 
 /**
@@ -1248,7 +1258,7 @@ export class Orchestrator {
    * not: it is working, stopping, or asking the app's own question about where forms send. The answer waits for every
    * save admitted before it, so the model hears of each: `done` says what one changed, or null when nothing was saved.
    */
-  admitSave(runId: string): { done: (edit: string | null) => void } | null {
+  admitSave(runId: string): { done: (edit: AuthorSave | null) => void } | null {
     const run = this.run;
     if (!run || run.id !== runId || !this.saveable(run)) return null;
     const pending = run.pendingQuestion!;
@@ -2149,11 +2159,17 @@ export class Orchestrator {
       ...(this.deps.sources && !delegation ? { sources: this.deps.sources(signal) } : {}),
       ask: (question, choices, widenScope, images) => askUser(question, choices, widenScope, images),
       authorEdits: () => {
-        const edits = run.authorEdits.splice(0);
+        const saves = run.authorEdits.splice(0);
         // What the author saved is in no page the run was refused before: such a page is sent whole again rather than
         // repaired from a draft that would put back what the author changed. It is still owed until then.
-        if (edits.length) for (const route of macros.drafts.keys()) (macros.outdated ??= new Set()).add(route);
-        return edits;
+        if (saves.length) for (const route of macros.drafts.keys()) (macros.outdated ??= new Set()).add(route);
+        // Nor in a check of the preview made before it: each page it reaches is measured again before the run finishes,
+        // and what the author changed there is never the run's to repair.
+        for (const s of saves) {
+          const reach = preview.authorSaved(s.operations, s.before, s.after);
+          inspections.invalidate(reach.shared || reach.lists ? 'all' : reach.pages, pagesTouched(s.operations, s.after));
+        }
+        return saves.map((s) => s.summary);
       }
     };
 
@@ -2835,10 +2851,12 @@ export class Orchestrator {
             started.set(c, p);
           }
         };
-        // The project as the model planned this response's calls against.
-        const planned = readState();
+        // The project as the model planned this response's calls against: as the run left it, before the author saved
+        // anything while it waited for an answer (taken again as each question is asked).
+        let planned = readState();
         for (const [index, call] of done.toolCalls.entries()) {
           if (signal.aborted) throw new Error('Canceled');
+          if (QUESTION_TOOLS.has(call.name)) planned = readState();
           const mutating = MUTATING_TOOLS.has(call.name as never);
           // Page and selection tools work from the current project, so several can safely run in one turn.
           const revisionBound = REVISION_BOUND_TOOLS.has(call.name as never);

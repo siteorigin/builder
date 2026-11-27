@@ -175,6 +175,22 @@ describe('an edit saved while the AI waits for an answer (#1281)', () => {
     expect(after.props.links.map((l) => l.label).slice(0, 2)).toEqual([links[0].label, 'Who we are']);
   });
 
+  it('saves an edit of a list item the run moved, keeping it through the stop', async () => {
+    const { s } = await make();
+    const header = brandPlacements(s.state).find((p) => p.part === 'header')!.node;
+    const links = header.props.links as Array<{ id: string; label: string }>;
+    expect(await s.beginRun('run_q')).toBeNull();
+    // The AI moves the first link to the end.
+    const moved = [...links.slice(1), links[0]];
+    expect((await s.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header.id, prop: 'links', value: moved }] }, { label: 'AI', source: 'ai', runId: 'run_q', history: false })).ok).toBe(true);
+    const mine: EditOperation[] = [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header.id, prop: 'links', itemId: links[0].id, field: 'label', value: 'Start here' }];
+    expect((await s.apply({ operations: mine }, { label: 'Rename link', source: 'user', asking: { runId: 'run_q', base: seen(s.state, mine) } })).ok).toBe(true);
+    expect(await s.abortRun()).toEqual({ restored: true });
+    const after = s.state.site.shell.header.nodes[header.id] as unknown as { props: { links: Array<{ id: string; label: string }> } };
+    expect(after.props.links.map((l) => l.id)).toEqual(links.map((l) => l.id));
+    expect(after.props.links[0].label).toBe('Start here');
+  });
+
   it('never counts a save turned away at the last moment as the run’s own writing', async () => {
     const { dir, s, typed } = await waitingRun();
     // The very file the save would write is saved outside the app just after its journal is in place.

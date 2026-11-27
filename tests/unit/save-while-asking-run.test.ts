@@ -26,6 +26,8 @@ const { Orchestrator } = await import('@agent/orchestrator');
 const { createStarterState } = await import('@catalogue/starters');
 const { readFields } = await import('../../src/renderer/src/lib/held');
 const { upsertCreatesIn } = await import('@agent/completeness');
+const { PreviewCheck } = await import('@agent/preview-check');
+const { applyOperations } = await import('@engine/apply');
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 /** Replays scripted turns, keeping each request. */
@@ -311,5 +313,35 @@ describe('a page a skipped change would have made (#1281)', () => {
     expect(upsertCreatesIn(JSON.stringify({ slug: about.route, title: 'About us' }), state)).toEqual([]);
     expect(upsertCreatesIn(JSON.stringify({ slug: 'home' }), state)).toEqual([]);
     expect(upsertCreatesIn('{not json', state)).toEqual([]);
+  });
+});
+
+describe('a preview check after the author saved while the AI waited (#1281)', () => {
+  it('never holds the run to what the author changed on a page it measured before', async () => {
+    const state = createStarterState('business', 'Persist', false);
+    const home = state.pages[state.site.homePageId];
+    const hero = Object.values(home.nodes).find((n) => n.kind === 'instance' && typeof (n as { props: Record<string, unknown> }).props.heading === 'string')!;
+    const edit = (value: string): EditOperation[] => [{ type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: hero.id, prop: 'heading', value }];
+    const clean = { ok: true, report: { documentWidth: 1280, viewportWidth: 1280, issues: [] } };
+    const wide = { ok: true, report: { documentWidth: 1600, viewportWidth: 1280, issues: [{ kind: 'horizontal-overflow', message: 'The page is wider than the screen.' }] } };
+    /** A run that measured the home page, then changed its heading. */
+    const measuredRun = async () => {
+      const preview = new PreviewCheck(state, 'Improve the home page', 1280);
+      await preview.beforeApply(edit('AI heading'), state, async () => clean, () => undefined);
+      const after = applyOperations(state, edit('AI heading')).state;
+      preview.landed(edit('AI heading'), state, after);
+      const keys = [...(preview as unknown as { baselines: Map<string, unknown> }).baselines.keys()].filter((k) => k.startsWith(`${home.id}\n`));
+      expect(keys.length).toBeGreaterThan(0);
+      return { preview, after, viewport: keys[0].split('\n')[1] as never };
+    };
+    // A page the run left too wide is the run's to repair.
+    const own = await measuredRun();
+    expect(own.preview.introduced(own.after, [{ pageId: home.id, viewport: own.viewport, m: wide }])).toHaveLength(1);
+    // The same page, once the author saved an edit of their own on it: what is found there is not sent back to the run.
+    const run = await measuredRun();
+    const mine = [{ type: 'page.update', pageId: home.id, seoTitle: 'Mine' }, ...edit('Author heading')] as EditOperation[];
+    const saved = applyOperations(run.after, mine).state;
+    expect([...run.preview.authorSaved(mine, run.after, saved).pages]).toContain(home.id);
+    expect(run.preview.introduced(saved, [{ pageId: home.id, viewport: run.viewport, m: wide }])).toEqual([]);
   });
 });

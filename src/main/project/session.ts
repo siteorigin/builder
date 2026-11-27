@@ -509,17 +509,40 @@ function heldRefusal(state: ProjectState, start: ProjectState, ops: EditOperatio
 
 const plainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** The items of a list each with an ID of their own, by ID, or null for any other list. */
+function itemsById(list: unknown[]): Map<string, unknown> | null {
+  const out = new Map<string, unknown>();
+  for (const item of list) {
+    const id = plainObject(item) ? item.id : undefined;
+    if (typeof id !== 'string' || out.has(id)) return null;
+    out.set(id, item);
+  }
+  return out;
+}
+
 /**
  * Every value that differs between two states, by its path through them, with its value in each. Parts the two share
- * are skipped unread (an edit copies only what it changes). Two lists of the same length are compared item by item, so
- * edits of different items are told apart; lists of different lengths are one value. A path is missing on one side when
- * its value is undefined there, so an object made on the way to a field is never told apart from the field itself.
+ * are skipped unread (an edit copies only what it changes). A list whose items have IDs is compared item by item by ID,
+ * with their order as a value of its own, so an edit of one item is told apart from a change to another, or a move;
+ * any other two lists of the same length item by item; lists of different lengths are one value. A path is missing on
+ * one side when its value is undefined there, so an object made on the way to a field is never told apart from the
+ * field itself.
  */
 function stateDelta(a: unknown, b: unknown, at = '', out = new Map<string, [unknown, unknown]>()): Map<string, [unknown, unknown]> {
   if (a === b) return out;
-  if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) {
-    a.forEach((x, i) => stateDelta(x, b[i], `${at}\u0000${i}`, out));
-    return out;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const x = itemsById(a);
+    const y = itemsById(b);
+    if (x && y) {
+      for (const id of new Set([...x.keys(), ...y.keys()])) stateDelta(x.get(id), y.get(id), `${at}\u0000#${id}`, out);
+      const order = (m: Map<string, unknown>) => [...m.keys()];
+      if (!sameValue(order(x), order(y))) out.set(`${at}\u0000#order`, [order(x), order(y)]);
+      return out;
+    }
+    if (a.length === b.length) {
+      a.forEach((v, i) => stateDelta(v, b[i], `${at}\u0000${i}`, out));
+      return out;
+    }
   }
   if ((plainObject(a) || a === undefined) && (plainObject(b) || b === undefined) && (plainObject(a) || plainObject(b))) {
     const x: Record<string, unknown> = plainObject(a) ? a : {};
@@ -529,6 +552,19 @@ function stateDelta(a: unknown, b: unknown, at = '', out = new Map<string, [unkn
   }
   if (!sameValue(a, b)) out.set(at, [a, b]);
   return out;
+}
+
+/** The value at a path stateDelta names, or undefined where there is none. */
+function valueAt(root: unknown, at: string): unknown {
+  let v = root;
+  for (const step of at.split('\u0000').slice(1)) {
+    if (Array.isArray(v)) {
+      if (step === '#order') return itemsById(v) ? [...itemsById(v)!.keys()] : undefined;
+      v = step.startsWith('#') ? itemsById(v)?.get(step.slice(1)) : v[Number(step)];
+    } else v = plainObject(v) && Object.hasOwn(v, step) ? v[step] : undefined;
+    if (v === undefined) return undefined;
+  }
+  return v;
 }
 
 /** An edit of a collection, of its entries, or of its layout template. */
@@ -3638,12 +3674,11 @@ export class ProjectSession extends EventEmitter {
         } catch (e) {
           return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `${EARLY_SAVE_WAITS} ${(e as Error).message}`, recoverable: true, details: { held: 'differs' } } };
         }
-        // Everything the edit changes, as it lands in each: the fields it names and what the engine changes with them (a
-        // header that follows the site's name, the pages inside a moved one). Changed from and to the same values in both,
-        // or the request touched something the edit changes, and stopping it would take part of the edit back.
-        const here = stateDelta(this.state, next);
-        const there = stateDelta(start, made);
-        const differs = here.size !== there.size || [...here].some(([at, [b, a]]) => !there.has(at) || !sameValue(b, there.get(at)![0]) || !sameValue(a, there.get(at)![1]));
+        // Everything the edit changes, as it lands in either: the fields it names and what the engine changes with them (a
+        // header that follows the site's name, the pages inside a moved one). Each must end up the same in both, or the
+        // request touched something the edit changes, and stopping it would take part of the edit back.
+        const touched = new Set([...stateDelta(this.state, next).keys(), ...stateDelta(start, made).keys()]);
+        const differs = [...touched].some((at) => !sameValue(valueAt(next, at), valueAt(made, at)));
         const problem = themePinProblem(made) ?? (differs ? 'The AI changed something this edit changes too, in this request.' : null);
         const introducedThere = problem ? [] : introducedDiagnostics(this.savingProblems(start), this.savingProblems(made));
         if (problem || introducedThere.length)

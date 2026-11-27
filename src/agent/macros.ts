@@ -794,7 +794,8 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   const sections = args.sections ?? [];
   const keepDraft = () => {
     const { repair: _r, sections: _s, ...meta } = args;
-    if (sections.length) memory.drafts.set(route, { ...meta, pageId: page?.id ?? null, sections: sections.map(({ index: _i, ...section }) => section) });
+    if (!sections.length) return;
+    memory.drafts.set(route, { ...meta, pageId: page?.id ?? null, sections: sections.map(({ index: _i, ...section }) => section) });
     memory.outdated?.delete(route);
   };
 

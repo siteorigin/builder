@@ -50,6 +50,7 @@ import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, ty
 import { createAgentSources } from './sources/agent';
 import { sourceFingerprint } from '@shared/sources';
 import type { SourceToolHost } from '@agent/source-tools';
+import type { AuthorSave } from '@agent/orchestrator';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { readContained } from './posts-import/files';
@@ -621,7 +622,7 @@ export class Controller {
    * Admits a save of the author's held edit while AI request `runId` waits for their answer (Orchestrator.admitSave):
    * null when it does not. `done` tells the request what was saved, or null for nothing.
    */
-  admitSave = (_runId: string): { done: (edit: string | null) => void } | null => null;
+  admitSave = (_runId: string): { done: (edit: AuthorSave | null) => void } | null => null;
   /** The editor is sent each change against the copy it was sent before (#967), while it is the same page's. */
   private feed = new ProjectFeed();
   private feedTo: WebContents | null = null;
@@ -2833,14 +2834,14 @@ export class Controller {
       return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: 'A held edit is saved with the request it waits on and what its fields held.', recoverable: false } };
     const admitted = this.admitSave(runId);
     if (!admitted) return { ok: false, revision: session.revision, error: { code: 'BUSY', message: 'The AI is no longer waiting for your answer.', recoverable: true } };
-    let saved: string | null = null;
+    let saved: AuthorSave | null = null;
     try {
       const codeAllowed = (await loadSettings()).settings.developerMode;
       if (this.session !== session || this.closing) return closed;
       const label = typeof opts.label === 'string' && opts.label ? opts.label : (batch.label ?? 'Edit');
       const before = session.state;
       const r = await session.apply({ operations: batch.operations }, { label, source: 'user', codeAllowed, asking: { runId, base } });
-      if (r.ok) saved = heldSummary(before, batch.operations, label);
+      if (r.ok) saved = { summary: heldSummary(before, batch.operations, label), operations: batch.operations, before, after: session.state };
       return r;
     } finally {
       admitted.done(saved);
