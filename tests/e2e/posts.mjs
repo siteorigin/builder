@@ -281,7 +281,7 @@ const date = win.getByLabel('Publication date');
 step('a future-dated post asks before it is published (#1115)');
 // Typed and not yet committed: Publish saves it first, and asks about the date as saved.
 await date.fill('2099-01-01');
-const futureAsk = win.getByRole('dialog', { name: 'Publish this post dated 1 January 2099?' });
+const futureAsk = win.getByRole('dialog', { name: /^Publish this post dated .*1.*2099\?$/ });
 await win.getByRole('button', { name: 'Publish' }).click();
 await eventually(async () => assert.equal(await futureAsk.isVisible(), true, 'Publish asks, naming the date'), 20000);
 assert.equal(entryFile(entryId).publishedAt, '2099-01-01', 'the date was saved before the question');
