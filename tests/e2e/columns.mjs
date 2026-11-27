@@ -379,11 +379,11 @@ try {
   // A start line and a span compose, and the item stays where it was in the document.
   const lines = () => at(made.first).evaluate((el) => [getComputedStyle(el).gridColumnStart, getComputedStyle(el).gridColumnEnd]);
   const siblings = () => at(made.first).evaluate((el) => [...el.parentElement.children].indexOf(el));
-  const before = await siblings();
+  const place = await siblings();
   await inspector.locator('.style-row[data-prop="columnStart"] select').selectOption('2');
   await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('1');
   await eventually(async () => assert.deepEqual(await lines(), ['2', 'span 1']), 30000);
-  assert.equal(await siblings(), before, 'a start line moves nothing in the document');
+  assert.equal(await siblings(), place, 'a start line moves nothing in the document');
   await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('full');
   await eventually(async () => assert.deepEqual(await lines(), ['1', '-1']), 30000);
   await inspector.locator('.style-row[data-prop="rowSpan"] select').selectOption('2');
