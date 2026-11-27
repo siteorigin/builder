@@ -244,6 +244,12 @@ export interface StringProp extends PropBase {
   default: string;
   multiline?: boolean;
   maxLength?: number;
+  /**
+   * The host lets a live session's Copy Editor change this property on the site's pages (engine/copy-editor.ts): a
+   * piece of copy or a picture, never anything that shapes the layout. Only a top-level property of a managed design
+   * whose every use shows it as text (or as a picture) counts; a marker anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export interface RichTextProp extends PropBase {
   type: 'richtext';
@@ -257,6 +263,12 @@ export interface RichTextProp extends PropBase {
    * item, with **bold** and *italic*. Managed components always take blocks.
    */
   codeForm?: RichCodeForm;
+  /**
+   * The host lets a live session's Copy Editor change this property on the site's pages (engine/copy-editor.ts): a
+   * piece of copy or a picture, never anything that shapes the layout. Only a top-level property of a managed design
+   * whose every use shows it as text (or as a picture) counts; a marker anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export type RichCodeForm = 'blocks' | 'paragraphs';
 export const RICH_CODE_FORMS: readonly RichCodeForm[] = ['blocks', 'paragraphs'];
@@ -283,6 +295,12 @@ export interface LinkProp extends PropBase {
 export interface ImageProp extends PropBase {
   type: 'image';
   default: ImageValue;
+  /**
+   * The host lets a live session's Copy Editor change this property on the site's pages (engine/copy-editor.ts): a
+   * piece of copy or a picture, never anything that shapes the layout. Only a top-level property of a managed design
+   * whose every use shows it as text (or as a picture) counts; a marker anywhere else grants nothing.
+   */
+  copyEditable?: true;
 }
 export interface IconProp extends PropBase {
   type: 'icon';
