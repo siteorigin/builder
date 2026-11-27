@@ -1,6 +1,6 @@
 import './Toolbar.css';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Search, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Search, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle, LayoutTemplate } from 'lucide-react';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
@@ -9,6 +9,8 @@ import { Segmented, useMenu, sendCommand, useWindowWidth, type MenuItem } from '
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
 import { pageChoices } from '../lib/page-switch';
+import { templateOwner } from '../lib/template-view';
+import { ownerLabel } from '../lib/model';
 import { toolbarAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
 import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
@@ -44,6 +46,7 @@ export function Toolbar() {
   // The save state is about the author's work and the AI's changes; a read-only question has none.
   const runStatus = useStore(editRunStatus);
   const definitionMode = useStore((s) => s.definitionMode);
+  const templateMode = useStore((s) => s.templateMode);
   const dockOpen = useStore((s) => s.dockOpen);
   const hasConflict = useStore((s) => (s.snapshot?.conflicts.length ?? 0) > 0);
   // A save that failed, until one succeeds again (or, when it did not finish, until the project is reopened).
@@ -196,8 +199,10 @@ export function Toolbar() {
   const shown = workspace === 'write' || workspace === 'preview' ? postShown(state, workspace, post, postPreviewAt) : null;
   const shownPage = shown?.kind === 'page' && Object.hasOwn(state.pages, shown.pageId) ? state.pages[shown.pageId] : null;
   const defName = !shown && !seo && definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
-  const placeName = seo ? 'SEO' : shown ? (shown.kind === 'post' ? shown.title : shown.kind === 'page' ? (shownPage?.title ?? '') : shown.path) : (defName ?? page?.title ?? '');
-  const isHome = seo ? false : shown ? !!shownPage && shownPage.id === state.site.homePageId : !definitionMode && page?.id === state.site.homePageId;
+  // A collection's layout open on the canvas covers the page that was open, which is named again once it is left.
+  const layoutName = !shown && !seo && !definitionMode && templateMode && Object.hasOwn(state.collections, templateMode.collectionId) ? ownerLabel(state, templateOwner(templateMode)) : null;
+  const placeName = seo ? 'SEO' : shown ? (shown.kind === 'post' ? shown.title : shown.kind === 'page' ? (shownPage?.title ?? '') : shown.path) : (defName ?? layoutName ?? page?.title ?? '');
+  const isHome = seo ? false : shown ? !!shownPage && shownPage.id === state.site.homePageId : !definitionMode && !layoutName && page?.id === state.site.homePageId;
   // The width is a whole number from 240 to 2560. Anything else is not applied: the field says why and
   // keeps focus after Enter so it can be corrected, or goes back to the current width when left.
   const validWidth = (raw: string) => {
@@ -254,7 +259,7 @@ export function Toolbar() {
     ...pageChoices(state).map((p): MenuItem => ({
       id: p.id,
       label: p.title,
-      checked: seo ? false : shown ? p.id === shownPage?.id : !definitionMode && p.id === pageId,
+      checked: seo ? false : shown ? p.id === shownPage?.id : !definitionMode && !layoutName && p.id === pageId,
       hint: p.home ? 'Home page · /' : p.address,
       onSelect: () => selectPage(p.id)
     })),
@@ -316,6 +321,9 @@ export function Toolbar() {
                 <Search aria-hidden="true" />
               ) : defName ? (
                 <Component role="img" aria-label="Component" />
+              ) : layoutName ? (
+                // Its name already says it is a layout.
+                <LayoutTemplate aria-hidden="true" />
               ) : shown?.kind === 'post' ? (
                 shown.ref ? (
                   <Newspaper role="img" aria-label="Post" />
