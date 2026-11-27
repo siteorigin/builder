@@ -807,7 +807,7 @@ export class Orchestrator {
         // The write reads the name from here; only this change runs until it is done.
         names.set(id, title);
         try {
-          await this.transcriptWrite()?.();
+          await this.transcriptWrite({ opening: this.opening, session, dir, conv: open, deleted: this.deleted, names: this.names })?.();
         } catch (e) {
           // Not saved, so not named: the list and the file go on agreeing.
           if (before.name === undefined) names.delete(id);
@@ -894,26 +894,18 @@ export class Orchestrator {
     return this.conversation;
   }
 
-  private async saveConversation() {
-    await this.transcriptWrite()?.();
-  }
-
   /**
-   * The write of a conversation as it is now: the open one, or the transcript a request was admitted into. Its
-   * folder, identity and bytes are taken at once, so a conversation switch before the write runs cannot change what
-   * is written or where.
+   * The write of transcript `to` as it is now (a request's, or the open conversation a rename saves): its bytes are
+   * taken at once, and where they go was taken with `to`, so a conversation switch before the write runs cannot
+   * change what is written or where.
    */
-  private transcriptWrite(to?: RunTranscript): (() => Promise<void>) | null {
-    // A request admitted in an earlier opening of the project saves nothing: its session may be closing, its lock gone.
-    if (to && to.opening !== this.opening) return null;
-    const session = to ? to.session : this.deps.session();
-    // Also covers a run that ends after another app took the project over.
-    if (!session || session.readOnly) return null;
-    const dir = to ? to.dir : this.chatDir();
-    const conv = to ? to.conv : this.conversation;
-    if (!dir || !conv || !conv.messages.length || !/^c_[a-z0-9]+$/.test(conv.id)) return null;
+  private transcriptWrite(to: RunTranscript): (() => Promise<void>) | null {
+    const { opening, session, dir, conv, deleted, names } = to;
+    // An earlier opening of the project saves nothing: its session may be closing, its lock gone. Also covers a run
+    // that ends after another app took the project over.
+    if (opening !== this.opening || session.readOnly) return null;
+    if (!conv.messages.length || !/^c_[a-z0-9]+$/.test(conv.id)) return null;
     const saved = JSON.parse(JSON.stringify(conv)) as Conversation;
-    const { deleted, names, opening } = to ?? this;
     return async () => {
       // Checked again when the write's turn comes: the project may have been taken over or closed, or the
       // conversation deleted (by a delete that finished: one that failed leaves it to be saved as usual), meanwhile.
@@ -924,18 +916,25 @@ export class Orchestrator {
       saved.title = renamed ?? conv.title;
       if (renamed !== undefined || conv.named) saved.named = true;
       else delete saved.named;
-      await this.writeConversation(dir, saved);
+      await this.writeConversation(dir, saved, opening);
     };
   }
 
-  /** Replace a conversation's file whole: written beside it, then moved over it, so a reader never sees half. */
-  private async writeConversation(dir: string, conv: Conversation) {
+  /**
+   * Replace a conversation's file whole: written beside it, then moved over it, so a reader never sees half. With
+   * `opening`, a write that the project's closing overtook is dropped rather than moved into place.
+   */
+  private async writeConversation(dir: string, conv: Conversation, opening?: object) {
     const bytes = JSON.stringify(conv);
     const target = join(dir, `${conv.id}.json`);
     const tmp = `${target}.${newId('t')}.tmp`;
     await fs.mkdir(dir, { recursive: true });
     try {
       await fs.writeFile(tmp, bytes);
+      if (opening && opening !== this.opening) {
+        await fs.rm(tmp, { force: true });
+        return;
+      }
       await fs.rename(tmp, target);
     } catch (e) {
       await fs.rm(tmp, { force: true }).catch(() => undefined);

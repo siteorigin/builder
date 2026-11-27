@@ -680,4 +680,20 @@ describe('a run saves the conversation it was sent in (#1122)', () => {
     expect(readFileSync(env.file(first), 'utf8')).toBe(before);
     expect(readdirSync(env.chatDir).filter((f) => f.endsWith('.json'))).toEqual([`${first}.json`]);
   });
+
+  it('a request whose save was still queued when its project closed writes nothing once the queue moves on', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    const before = readFileSync(env.file(first), 'utf8');
+    // The request ends while the queue is held, so its save waits; the project closes before its turn comes.
+    const release = hold(env.orch);
+    expect((await env.orch.send('And a footer', env.ctx, first)).ok).toBe(true);
+    await until(() => !env.orch.busy, 'the request to finish');
+    const queued = (env.orch as unknown as { saving: Promise<void> }).saving;
+    env.orch.reset();
+    release();
+    await queued;
+    expect(readFileSync(env.file(first), 'utf8')).toBe(before);
+    expect(readdirSync(env.chatDir)).toEqual([`${first}.json`]);
+  });
 });
