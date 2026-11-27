@@ -219,7 +219,7 @@ export const dataTable: ComponentDefinition = {
   // The root places the classes it is given, so these style changes (hiding at a size included) show.
   parts: { root: { nodeId: 'root', label: 'Table section', styleControls: ['paddingBlock', 'background', 'color', 'hidden'] } },
   variantAxes: {
-    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
+    tone: { label: 'Tone', prop: 'variant', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
   source: TABLE_SOURCE,
   provenance: FOUNDATION.provenance('data.table'),

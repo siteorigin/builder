@@ -14,7 +14,7 @@ import { sourceWriteRefusal } from '../sources/grant';
 import type { ApplyResult, EditBatch, EditOperation, ToolError } from '@shared/ops';
 import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
-import { choicesLost } from '@shared/variants';
+import { axesOf, choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
 import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, type Clipboard } from '@engine/apply';
 import { frozen } from '@engine/draft';
@@ -41,7 +41,7 @@ import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, codeContractNames, componentSources } from '../codecheck';
+import { checkSvelteSource, codeAxisPropProblems, codeContractNames, componentSources } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
@@ -80,6 +80,8 @@ export interface OpenOptions {
 }
 /** Sources AI runs wrote or tried to write, a folder per run, in the recovery folder (see keepSourceDraft). */
 export const SOURCE_DRAFTS = 'ai-runs';
+/** Which property each variant axis of a definition arrives in, comparable between two versions of it. */
+const axisPropsKey = (def: ComponentDefinition) => JSON.stringify(axesOf(def).map(([axis, a]) => [axis, a.prop]));
 /** A run's ID as the orchestrator makes it (newId): safe to name a folder with. */
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -1468,7 +1470,7 @@ export class ProjectSession extends EventEmitter {
     const problems = (
       await checkSvelteSource(def.source, {
         filename: def.sourcePath,
-        contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def) },
+        contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes },
         resolve,
         modules: exists
       })
@@ -3131,7 +3133,16 @@ export class ProjectSession extends EventEmitter {
       const guarded = new Set(results.flatMap((r) => (Array.isArray(r?.guarded) ? (r.guarded as string[]) : [])));
       const files = brought ? new Set(brought.filter((d) => !sendsFormMessages(d) && !guarded.has(d.id)).map(defFile)) : null;
       for (const def of Object.values(next.components)) {
-        if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
+        if (def.kind !== 'code' || def.source === undefined) continue;
+        const was = this.state.components[def.id];
+        if (was?.source === def.source) {
+          // Unchanged code passed its checks when it was saved: only a change of the props its axes arrive in is
+          // checked, against that code (a project's own; a theme's comes with its code).
+          if (def.owner !== 'project' || axisPropsKey(was) === axisPropsKey(def)) continue;
+          const errors = ((await codeAxisPropProblems(def.source, def.variantAxes)) ?? []).filter((p) => p.severity === 'error');
+          if (errors.length) return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => e.message).join(' ')}`, recoverable: true, details: errors } };
+          continue;
+        }
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
         // whichever pack reuses it; nor does a package bringing that code to a site whose theme lacks it, unchanged
         // with the settings it takes (a form's destinations are emptied as it lands).
@@ -3145,7 +3156,7 @@ export class ProjectSession extends EventEmitter {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
-            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def) } } : {}),
+            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes } } : {}),
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }

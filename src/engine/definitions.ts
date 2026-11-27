@@ -13,7 +13,7 @@ import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entry
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
-import { axesOf, findVariant, variantOptions } from '@shared/variants';
+import { axesOf, codeAxisProblems, findVariant, variantOptions } from '@shared/variants';
 import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, getTree, instancesOf, subtreeIds } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
@@ -537,6 +537,8 @@ export function setVariant(state: ProjectState, op: Op<'component.setVariant'>):
   const had = own(def.variantAxes, axisId);
   if (!had && !validId(axisId)) fail(`Variant axis names must be camelCase identifiers ("${axisId}").`);
   if (!(had && own(had.options, op.variant)) && !validId(op.variant, /^[a-z][a-z0-9-]{0,39}$/)) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${op.variant}").`);
+  if (op.prop !== undefined && def.kind !== 'code') fail(`"${def.name}" is a design, which takes every variant itself: only a code component takes one through a property.`);
+  const wrong = new Set(codeAxisProblems(def).map((p) => p.message));
   def.variantAxes ??= {};
   // A new axis starts with a plain base option as its default, so placements keep the look they had and can choose the
   // new option (a picker needs two to choose between).
@@ -546,6 +548,11 @@ export function setVariant(state: ProjectState, op: Op<'component.setVariant'>):
   if (op.axisLabel) axis.label = op.axisLabel.trim();
   axis.options[op.variant] = { ...(own(axis.options, op.variant) ?? {}), label: op.label.trim() };
   if (op.makeDefault) axis.default = op.variant;
+  // Code takes the axis through the property its manifest names: the one given (a rename in the code follows it),
+  // otherwise the one it has, otherwise the axis's own name.
+  if (def.kind === 'code') axis.prop = op.prop ?? axis.prop ?? axisId;
+  const problem = codeAxisProblems(def).find((p) => !wrong.has(p.message));
+  if (problem) fail(`"${def.name}": ${problem.message.charAt(0).toUpperCase()}${problem.message.slice(1)}`);
   return {};
 }
 

@@ -732,7 +732,8 @@ export function componentDetail(def: ComponentDefinition) {
         return [k, { label: p.label, styleControls: partStyleControls(def, k) ?? [], ...(list ? { repeatsPerItemOf: list } : {}) }];
       })
     ),
-    variantAxes: Object.fromEntries(axesOf(def).map(([axis, a]) => [axis, { label: a.label, default: a.default, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, v.label])) }])),
+    // Code takes each axis through the property its manifest names, which its source must take from $props().
+    variantAxes: Object.fromEntries(axesOf(def).map(([axis, a]) => [axis, { label: a.label, ...(def.kind === 'code' && a.prop ? { prop: a.prop } : {}), default: a.default, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, v.label])) }])),
     slots: def.slots ?? {},
     ...(def.owner === 'theme' && def.insertAs === 'element' ? { block: true } : {}),
     // UI state the design reads in conditions and variants and its buttons change; placements never set it.

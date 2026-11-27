@@ -907,7 +907,7 @@ export const contactForm: ComponentDefinition = {
   },
   parts: { root: { nodeId: 'root', label: 'Form section' } },
   variantAxes: {
-    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
+    tone: { label: 'Tone', prop: 'variant', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
   source: FORM_SOURCE,
   provenance: FOUNDATION.provenance('contact.form'),
@@ -944,7 +944,7 @@ export const signupForm: ComponentDefinition = {
   },
   parts: { root: { nodeId: 'root', label: 'Form card' } },
   variantAxes: {
-    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Card' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
+    tone: { label: 'Tone', prop: 'variant', default: 'default', options: { default: { label: 'Card' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
   source: formSource('block'),
   provenance: FOUNDATION.provenance('block.signup'),

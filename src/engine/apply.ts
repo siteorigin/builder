@@ -64,7 +64,7 @@ import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { resolveFontStack } from '@catalogue/fonts';
-import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
+import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneComponent, variantProp, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
 import { chosenUses, imageUses, variantBackgrounds } from './image-uses';
 import { isPictureAsset } from '@shared/background-image';
@@ -3674,7 +3674,8 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   // Parts keep their node IDs: the converted source keeps each part's class and so_o hook, so existing
   // placement overrides still reach the same elements.
   // Variant styles now live in the source; the variant names remain the component's contract.
-  if (copy.variantAxes) copy.variantAxes = Object.fromEntries(Object.entries(copy.variantAxes).map(([axis, a]) => [axis, { ...a, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, { label: v.label }])) }]));
+  // The source takes each axis as a design's file does, which its manifest now declares.
+  if (copy.variantAxes) copy.variantAxes = Object.fromEntries(Object.entries(copy.variantAxes).map(([axis, a]) => [axis, { ...a, prop: variantProp(axis), options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, { label: v.label }])) }]));
   if (deps.length) copy.dependencies = deps;
   else delete copy.dependencies;
   state.components[copy.id] = copy;
@@ -3724,13 +3725,14 @@ export function convertEditedDesign(state: ProjectState, definitionId: string, s
     if (schema.type === 'list' || schema.type === 'object') for (const f of Object.values(schema.fields)) if (f.type === 'richtext') f.codeForm = 'blocks';
   }
   // Variant styles are the design's, in the shared stylesheet; the variant names (and what else an option says of
-  // itself) remain the component's contract.
+  // itself) remain the component's contract, and the file takes each axis through the prop the design's file does.
   if (copy.variantAxes)
     copy.variantAxes = Object.fromEntries(
       Object.entries(copy.variantAxes).map(([axis, a]) => [
         axis,
         {
           ...a,
+          prop: variantProp(axis),
           options: Object.fromEntries(
             Object.entries(a.options).map(([k, v]) => {
               const { styles: _styles, ...rest } = v;

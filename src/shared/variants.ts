@@ -26,6 +26,48 @@ export function axesOf(def: Pick<ComponentDefinition, 'variantAxes'>): Array<[st
   return out;
 }
 
+/** A name a code component can take an axis's option through: the form its properties' names take. */
+const AXIS_PROP = /^[A-Za-z][A-Za-z0-9_]{0,59}$/;
+/** Names every code placement already passes for itself (`class`, a slot's `slot_<name>`, the `so_` plumbing) or Svelte keeps. */
+const placementOwn = (prop: string) => prop === 'class' || prop === 'children' || prop === 'slot' || prop.startsWith('so_') || prop.startsWith('slot_');
+
+/**
+ * What is wrong with the properties a code component's axes arrive in (`VariantAxis.prop`), axis by axis: one names
+ * none, a name no property could have, one a placement already passes for itself, one of the component's own
+ * properties, or one an earlier axis takes. Only usable axes count (see axesOf); managed components take none.
+ */
+export function codeAxisProblems(def: Pick<ComponentDefinition, 'kind' | 'variantAxes' | 'properties'>): Array<{ axis: string; message: string }> {
+  if (def.kind !== 'code') return [];
+  const out: Array<{ axis: string; message: string }> = [];
+  const taken = new Map<string, string>();
+  for (const [axis, a] of axesOf(def)) {
+    const label = typeof a.label === 'string' && a.label.trim() ? a.label.trim() : axis;
+    const prop: unknown = a.prop;
+    const problem =
+      prop === undefined
+        ? 'names no property it arrives in (prop), so what placements choose never reaches the code'
+        : typeof prop !== 'string' || !AXIS_PROP.test(prop)
+          ? `arrives in “${String(prop)}”, which is not a property name: letters, numbers and underscores, starting with a letter`
+          : placementOwn(prop)
+            ? `arrives in “${prop}”, a name every placement already passes for itself`
+            : Object.hasOwn(def.properties ?? {}, prop)
+              ? `arrives in “${prop}”, which is also one of the component's properties`
+              : taken.has(prop)
+                ? `arrives in “${prop}”, as the “${taken.get(prop)}” axis does`
+                : null;
+    if (problem) out.push({ axis, message: `the “${label}” variant axis ${problem}.` });
+    if (typeof prop === 'string' && !taken.has(prop)) taken.set(prop, label);
+  }
+  return out;
+}
+
+/** The property each axis of a code component arrives in, in axis order: only the axes whose prop is sound (codeAxisProblems). */
+export function codeAxisProps(def: Pick<ComponentDefinition, 'kind' | 'variantAxes' | 'properties'>): Array<[axis: string, prop: string]> {
+  if (def.kind !== 'code') return [];
+  const bad = new Set(codeAxisProblems(def).map((p) => p.axis));
+  return axesOf(def).flatMap(([axis, a]) => (bad.has(axis) || typeof a.prop !== 'string' ? [] : [[axis, a.prop] as [string, string]]));
+}
+
 /** Whether every axis and option ID in the document is one the generator can use. */
 export function variantIdsValid(def: Pick<ComponentDefinition, 'variantAxes'>): boolean {
   return Object.entries(def.variantAxes ?? {}).every(([axis, a]) => AXIS_ID.test(axis) && Object.keys(a?.options ?? {}).every((id) => OPTION_ID.test(id)));

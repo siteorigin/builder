@@ -16,6 +16,7 @@ import { LATEST_SCHEMA_VERSION, definitionHash, migrateProject, newestDocumentVe
 import { linkOf, tokenVar } from '@shared/styles';
 import { slugify } from '@shared/routes';
 import { newId } from '@shared/ids';
+import { codeAxisProblems } from '@shared/variants';
 import { CUSTOM_DIR, defFile, defKey, effectiveTokens } from '@generator/index';
 import { getTheme } from '@catalogue/index';
 import { codeImports, directDependencies } from './definitions';
@@ -480,6 +481,8 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
   }
   for (const [axis, a] of Object.entries(def.variantAxes ?? {}))
     if (!isRecord(a) || typeof a.label !== 'string' || !isRecord(a.options) || !Object.values(a.options).every((o) => isRecord(o) && typeof o.label === 'string')) damaged(`its variant "${axis}" has no options`);
+  const axisProblem = codeAxisProblems(def)[0];
+  if (axisProblem) damaged(axisProblem.message.replace(/\.$/, ''));
   if (def.kind === 'code') {
     if (typeof def.source !== 'string' || !def.source.trim()) fail(`${name} is a code component without its code.`);
     if (def.tree) fail(`${name} is a code component with a design as well, which no component has.`);

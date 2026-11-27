@@ -431,7 +431,7 @@ export const siteSearch: ComponentDefinition = {
   },
   parts: { root: { nodeId: 'root', label: 'Search section' } },
   variantAxes: {
-    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
+    tone: { label: 'Tone', prop: 'variant', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
   source: SEARCH_SOURCE,
   provenance: FOUNDATION.provenance('site.search'),

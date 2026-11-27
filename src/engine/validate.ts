@@ -14,7 +14,7 @@ import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entry
 import { validateRoute } from '@shared/routes';
 import { loopText, redirectRecord, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
-import { variantIdsValid, variantOptions } from '@shared/variants';
+import { codeAxisProblems, variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
 import { normalizeTable } from './table';
 import { normalizeObject } from './values';
@@ -1157,6 +1157,8 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
       const problem = slotDeclProblem(d);
       if (problem) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${def.name}: the slot "${k}" ${problem}.`, owner: { kind: 'component', id: def.id } });
     }
+    // Each axis of code arrives in the property its manifest names, which must be one the code can take.
+    for (const p of codeAxisProblems(def)) out.push({ severity: 'error', code: 'VARIANT_INVALID', message: `${def.name}: ${p.message}`, owner: { kind: 'component', id: def.id } });
   }
   // A token property names a token of its own group. One that is gone (a hand edit, a theme without it) shows nothing.
   forEachTokenPropRef(state, (id, site) => {
