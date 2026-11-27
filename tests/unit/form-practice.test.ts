@@ -50,25 +50,30 @@ describe('forms in Preview, as the editor reads the preview bridge (issue #193)'
     expect(formDestinationNote(FORM)).toBe('On the published site, “Send us a message” sends to formspree.io/f/abc123.');
     expect(formDestinationNote({ ...FORM, label: '' })).toBe('On the published site, the form sends to formspree.io/f/abc123.');
     expect(formDestinationNote({ ...FORM, service: 'netlify', destination: '', live: false })).toBe('“Send us a message” sends to Netlify Forms once the site is deployed on Netlify. Test delivery there.');
-    expect(formDestinationNote({ ...FORM, service: 'none', destination: '', live: false })).toBe('“Send us a message” is not connected to a form service yet.');
+    expect(formDestinationNote({ ...FORM, service: 'none', destination: '', live: false })).toBe('“Send us a message” is not connected to a form service yet. Choose one in its settings.');
   });
 
   it('says what a practice send did, and that nothing was sent', () => {
-    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'sending' }, FORM)).toBe('Practicing a send. Nothing is being sent.');
-    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'success' }, FORM)).toBe('Practice send: the form showed its sent message. Nothing was sent.');
-    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'error' }, FORM)).toBe('Practice send: the form showed its error message. Nothing was sent.');
+    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'sending' }, FORM)).toBe('The form is answering in the page. Nothing is being sent.');
+    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'success' }, FORM)).toBe('The form showed its success message. Nothing was sent.');
+    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'error' }, FORM)).toBe('The form showed its error message. Nothing was sent.');
+    // On a page with several forms, the report says which one it was.
+    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'success' }, FORM, '“Send us a message”')).toBe('“Send us a message” showed its success message. Nothing was sent.');
   });
 
   it('says what a live test did, with what the service answered', () => {
     const live = { id: FORM.id, kind: 'live' as const, destination: FORM.destination };
     expect(formSendNote({ ...live, result: 'sending' })).toBe('Sending one real test message to formspree.io/f/abc123…');
-    expect(formSendNote({ ...live, result: 'sent', status: 200 })).toBe('Live test sent to formspree.io/f/abc123. The service answered with status 200. Check the service to see the message arrived.');
-    expect(formSendNote({ ...live, result: 'refused', status: 422 })).toBe('Live test sent to formspree.io/f/abc123, but the service answered with status 422. Check the form’s settings with the service.');
-    expect(formSendNote({ ...live, result: 'sent', status: 200, redirected: 'https://inbox.test/m/1' })).toBe('Live test sent to formspree.io/f/abc123, which passed it on to inbox.test/m/1. The service answered with status 200. Check the service to see the message arrived.');
-    expect(formSendNote({ ...live, result: 'unreadable' })).toBe('The live test to formspree.io/f/abc123 got no reply the editor could read. The message may still have arrived: check the service before you test again.');
+    expect(formSendNote({ ...live, result: 'sent', status: 200 })).toBe('Real test sent to formspree.io/f/abc123. Check the service to see the message arrived.');
+    expect(formSendNote({ ...live, result: 'refused', status: 422 })).toBe('Real test sent to formspree.io/f/abc123, but the service refused it (status 422). Check the form’s settings with the service.');
+    expect(formSendNote({ ...live, result: 'sent', status: 200, redirected: 'https://inbox.test/m/1' })).toBe('Real test sent to formspree.io/f/abc123, which passed it on to inbox.test/m/1. Check the service to see the message arrived.');
+    expect(formSendNote({ ...live, result: 'unreadable' })).toBe('The real test to formspree.io/f/abc123 got no reply the editor could read. The message may still have arrived: check the service before you test again.');
     expect(formSendNote({ id: FORM.id, kind: 'live', result: 'invalid' })).toBe('Nothing was sent: the form has answers missing or not valid. Correct them and test again.');
     expect(formSendNote({ id: FORM.id, kind: 'live', result: 'unavailable' })).toBe('Nothing was sent: the form or its settings changed. Check them and test again.');
     expect(formSendNote({ id: FORM.id, kind: 'live', result: 'not-sent' })).toBe('Nothing was sent: the form did not send its message.');
+    // On a page with several forms, the report says which one it was.
+    expect(formSendNote({ ...live, result: 'sent', status: 200 }, FORM, '“Send us a message”')).toBe('Real test from “Send us a message” sent to formspree.io/f/abc123. Check the service to see the message arrived.');
+    expect(formSendNote({ id: FORM.id, kind: 'live', result: 'invalid' }, FORM, 'The form in the footer')).toBe('Nothing was sent: the form in the footer has answers missing or not valid. Correct them and test again.');
     // Without a destination of its own, the report falls back to the form's.
     expect(formSendNote({ id: FORM.id, kind: 'live', result: 'sending' }, FORM)).toBe('Sending one real test message to formspree.io/f/abc123…');
   });
