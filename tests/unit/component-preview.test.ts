@@ -482,6 +482,13 @@ describe('serving an isolated preview', () => {
     expect(previewSpec({ definitionId: 'c1', states: { open: true } })).toEqual({ definitionId: 'c1', states: { open: true } });
     expect(previewSpec({ definitionId: 'd'.repeat(200) })).not.toBeNull();
     expect(previewSpec({ componentId: 'c'.repeat(200) })).not.toBeNull();
+    // A placement's content, named by its tree and node, for one of the project's own definitions and never with sample values.
+    const placement = { owner: { kind: 'page', id: 'pg1' }, nodeId: 'n1' };
+    expect(previewSpec({ definitionId: 'c1', placement: { ...placement, extra: 1 } })).toEqual({ definitionId: 'c1', placement });
+    for (const p of [null, 'n1', { owner: { kind: 'site', id: 'pg1' }, nodeId: 'n1' }, { owner: { kind: 'page' }, nodeId: 'n1' }, { owner: { kind: 'page', id: 'pg1' } }, { owner: { kind: 'page', id: 'pg1' }, nodeId: 'n'.repeat(201) }])
+      expect(previewSpec({ definitionId: 'c1', placement: p })).toBeNull();
+    expect(previewSpec({ definitionId: 'c1', placement, props: { heading: 'Hi' } })).toBeNull();
+    expect(previewSpec({ componentId: 'content.media', placement })).toBeNull();
     for (const bad of [null, 'c1', [], { definitionId: 3 }, { definitionId: '' }, { definitionId: 'd'.repeat(201) }, { componentId: 'c'.repeat(201) }, { variants: { tone: 2 } }, { props: [] }, { states: [] }, { states: { open: -1 } }, { states: { open: 1.5 } }, { states: { open: Number.MAX_SAFE_INTEGER + 1 } }, { states: { plan: { value: 'annual' } } }, { props: { big: 'x'.repeat(300_000) } }]) expect(previewSpec(bad)).toBeNull();
   });
 });

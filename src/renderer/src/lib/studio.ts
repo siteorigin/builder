@@ -5,10 +5,9 @@
  * the value of each UI state variable) is the author's view, never saved: only edits to the design itself change the
  * project.
  */
-import { isBinding, type ComponentDefinition, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
+import type { ComponentDefinition, OwnerRef, ProjectState } from '@shared/types';
 import { declaredState, stateValueFits } from '@engine/schema';
-import { instancesOf } from '@engine/tree';
-import { normalizeProp } from '@engine/values';
+import { instancesOf, placementContent, type PlacementRef } from '@engine/tree';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
 import { studioSampleProps, type StudioSample } from './studio-samples';
@@ -34,10 +33,7 @@ export interface StudioView {
 export type DefinitionMode = { definitionId: string; returnPageId: string; studio?: StudioView } | null;
 
 /** A placement of the component, by the tree it is in and its node there. */
-export interface StudioPlacementRef {
-  owner: OwnerRef;
-  nodeId: string;
-}
+export type StudioPlacementRef = PlacementRef;
 
 export const NEW_STUDIO: StudioView = { variants: {}, sample: 'defaults' };
 
@@ -85,71 +81,45 @@ export function previewedState(def: ComponentDefinition, view: StudioView | unde
   return { state };
 }
 
-/** One placement Component Studio can show the content of: where it is, its name in the Sample select, and that content. */
+/** One placement Component Studio can show the content of: where it is, and its name in the Sample select. */
 export interface StudioPlacement extends StudioPlacementRef {
   /** The select's value for it, unique among the component's placements. */
   key: string;
   label: string;
-  /** Its content as the preview takes it, or undefined when it is all the starting content. */
-  props: Record<string, unknown> | undefined;
-}
-
-/** Whether a value reads from somewhere else (an enclosing design's property, a list item, a collection entry), at any depth. */
-function bound(v: unknown): boolean {
-  if (isBinding(v)) return true;
-  if (Array.isArray(v)) return v.some(bound);
-  return !!v && typeof v === 'object' && Object.values(v).some(bound);
 }
 
 /**
- * A placement's own content as a sample: each property the design still declares, as the placement holds it. A value
- * that is bound (it is only known where its design or entry is shown) or that the preview would refuse as a new value
- * (one a saved document was let keep) is left out, so that property shows its starting value instead.
- */
-function placementProps(state: ProjectState, def: ComponentDefinition, props: Record<string, unknown>): Record<string, unknown> | undefined {
-  const out: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(props ?? {})) {
-    const schema = Object.hasOwn(def.properties, name) ? (def.properties[name] as PropSchema) : undefined;
-    if (!schema || value === undefined || bound(value)) continue;
-    try {
-      normalizeProp(schema, structuredClone(value), state, name);
-    } catch {
-      continue;
-    }
-    out[name] = value;
-  }
-  return Object.keys(out).length ? out : undefined;
-}
-
-/**
- * Every placement of `def` in the project, in site order, each named by where it is (a page, the shared header, a
- * layout); several in one place are told apart by their own names or their order there.
+ * Every placement of `def` in the project, each named by where it is (a page, the shared header, a layout); several
+ * in one place are told apart by their own names or their order there.
  */
 export function studioPlacements(state: ProjectState, def: ComponentDefinition): StudioPlacement[] {
   const all = instancesOf(state, def.id);
+  const where = (owner: OwnerRef) => JSON.stringify([owner.kind, owner.id]);
   const perOwner = new Map<string, number>();
-  for (const u of all) perOwner.set(`${u.owner.kind}:${u.owner.id}`, (perOwner.get(`${u.owner.kind}:${u.owner.id}`) ?? 0) + 1);
+  for (const u of all) perOwner.set(where(u.owner), (perOwner.get(where(u.owner)) ?? 0) + 1);
   const seen = new Map<string, number>();
   return all.map((u) => {
-    const where = `${u.owner.kind}:${u.owner.id}`;
-    const n = (seen.get(where) ?? 0) + 1;
-    seen.set(where, n);
-    const many = perOwner.get(where)! > 1;
-    const label = many ? `${u.label}, ${u.node.name?.trim() || `${n} of ${perOwner.get(where)}`}` : u.label;
-    return { key: `${where}:${u.node.id}`, owner: u.owner, nodeId: u.node.id, label, props: placementProps(state, def, u.node.props) };
+    const at = where(u.owner);
+    const n = (seen.get(at) ?? 0) + 1;
+    seen.set(at, n);
+    const count = perOwner.get(at)!;
+    const name = u.node.name?.trim();
+    const label = count > 1 ? `${u.label}, ${name ? `${name} (${n} of ${count})` : `${n} of ${count}`}` : u.label;
+    return { key: JSON.stringify([u.owner.kind, u.owner.id, u.node.id]), owner: u.owner, nodeId: u.node.id, label };
   });
 }
 
-/** The placement the studio is showing the content of, while it is still one of the component's. */
-export function studioPlacement(state: ProjectState | undefined, def: ComponentDefinition, view: StudioView): StudioPlacement | undefined {
-  const p = view.placement;
-  if (!p || !state) return undefined;
-  return studioPlacements(state, def).find((o) => o.owner.kind === p.owner.kind && o.owner.id === p.owner.id && o.nodeId === p.nodeId);
+/** The chosen placement's own content, while it is still a placement of `def`; null once it is not (or with none chosen). */
+function chosenContent(state: ProjectState | undefined, def: ComponentDefinition, view: StudioView): Record<string, unknown> | null {
+  return view.placement && state ? placementContent(state, def.id, view.placement) : null;
 }
 
-/** The content the studio fills the component with: the chosen placement's while it exists, else the sample's. */
+/**
+ * The content the studio fills the component with, as far as it differs from the starting content: the chosen
+ * placement's own while it exists (a placement gone since shows the starting content), else the sample's.
+ */
 export function studioContent(state: ProjectState | undefined, def: ComponentDefinition, view: StudioView): Record<string, unknown> | undefined {
-  if (view.placement) return studioPlacement(state, def, view)?.props;
+  if (view.placement) return chosenContent(state, def, view) ?? undefined;
   return studioSampleProps(def, view.sample);
 }
 
@@ -160,8 +130,11 @@ export function studioSpec(def: ComponentDefinition, view: StudioView, styled?: 
   const defaults = new Map(axesOf(def).map(([axis, a]) => [axis, a.default]));
   const variants = Object.fromEntries(Object.entries(all).filter(([axis, v]) => defaults.get(axis) !== v));
   const states = Object.fromEntries(Object.entries(studioStates(def, view)).filter(([name, v]) => declaredState(def, name)?.initial !== v));
-  const props = studioContent(state, def, view);
-  return { definitionId: def.id, ...(Object.keys(variants).length ? { variants } : {}), ...(props ? { props } : {}), ...(Object.keys(states).length ? { states } : {}) };
+  // A placement's content is read by the preview from the project as it is saved, so the request only names it; one
+  // gone since is the plain request for the starting content.
+  const placed = view.placement && chosenContent(state, def, view) ? { placement: { owner: { kind: view.placement.owner.kind, id: view.placement.owner.id }, nodeId: view.placement.nodeId } } : null;
+  const props = placed || view.placement ? undefined : studioSampleProps(def, view.sample);
+  return { definitionId: def.id, ...(Object.keys(variants).length ? { variants } : {}), ...(props ? { props } : {}), ...(placed ?? {}), ...(Object.keys(states).length ? { states } : {}) };
 }
 
 /**

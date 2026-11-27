@@ -13,6 +13,7 @@ import { namesFormFields } from '@shared/form-contract';
 import { defaultProps, installComponent } from '@engine/install';
 import { declaredState, stateValueFits } from '@engine/schema';
 import { normalizeProp } from '@engine/values';
+import { placementContent } from '@engine/tree';
 import { formDefaults, settleFormKeys } from '@engine/form-keys';
 import { RUNTIME_DIR, STYLES_DIR, FONTS_DIR, generateIsolatedInstance, generateLibrary, type FileMap } from './index';
 import { iconsJs } from './runtime-files';
@@ -106,6 +107,14 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
   // same in every preview of it, so an item picked in Component Studio is still there after the next edit. Then the
   // sample values checked and stored as an edit stores them, and the fields of a new form given keys of their own.
   const node: InstanceNode = { id: PREVIEW_NODE_ID, kind: 'instance', definitionId: def.id, props: startingProps(def), ...(Object.keys(variants).length ? { variants } : {}) };
+  if (spec.placement) {
+    if (spec.props) return { error: 'Show either a placement’s content or sample values, not both.' };
+    if (spec.definitionId === undefined) return { error: 'Only a component of the project’s own has placements to show the content of.' };
+    // Its content as it is saved, as its page shows it (a picture whose file is gone included), over the starting
+    // values; a placement gone since shows the starting content.
+    const own = placementContent(state, def.id, spec.placement);
+    if (own) Object.assign(node.props, structuredClone(own));
+  }
   for (const [name, value] of Object.entries(spec.props ?? {})) {
     const schema = Object.hasOwn(def.properties, name) ? def.properties[name] : undefined;
     if (!schema) return { error: `"${def.name}" has no property "${name}".` };

@@ -43,7 +43,7 @@ export function StudioControls({ def }: { def: ComponentDefinition }) {
   if (!view) return null;
   const shown = studioVariants(def, view, styled);
   const states = studioStates(def, view);
-  const sample = chosen ? { hint: `The content of the placement on ${chosen.label}` } : STUDIO_SAMPLES.find((o) => o.value === view.sample);
+  const sample = chosen ? { hint: `The content of the placement on ${chosen.label}, as it is saved; what it takes from elsewhere shows its starting value` } : STUDIO_SAMPLES.find((o) => o.value === view.sample);
   // An item state is previewed at a position among the items the content shows (Long copy has more than the design).
   const sampleProps = studioContent(project, def, view);
   const sampleItems = (list: string) => (Array.isArray(sampleProps?.[list]) ? (sampleProps[list] as unknown[]) : undefined);
