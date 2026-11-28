@@ -1319,7 +1319,7 @@ export interface EntrySource {
   contentHash: string;
 }
 
-/** What a sync does with an entry whose record the source no longer has: draft it (links keep working), delete it, or leave it. */
+/** What a sync does with an entry whose record the source no longer has: draft it (saved links stay; the website leaves it out), delete it, or leave it. */
 export type SourceRemoval = 'unpublish' | 'remove' | 'keep';
 
 /** A setting that names one of the user's secrets (kept in their own source-secrets.json) instead of holding its value. */

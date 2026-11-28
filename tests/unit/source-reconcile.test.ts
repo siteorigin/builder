@@ -88,7 +88,7 @@ describe('planning a sync', () => {
     const { plan, next } = sync(withLink, [rec('1')], LATER);
     expect(plan.unpublish).toEqual([gone]);
     expect(next.collections.team.entries[gone]).toMatchObject({ draft: true, source: first.collections.team.entries[gone].source });
-    // The link still goes to it.
+    // The saved link still names the same entry.
     expect(JSON.stringify(next.collections.news.entries.en_news1.body)).toContain(gone);
     // Gone still, it is left alone: drafted once.
     const again = planSourceSync(next, next.sources!.people, [rec('1')], LATER);

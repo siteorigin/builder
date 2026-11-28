@@ -28,7 +28,21 @@ import { ADAPTER_IDS, MAPPED_DETAILS, draftSecretNames, sourceDraft, sourceForm,
 import './SourceModal.css';
 import './SourceDialog.css';
 
-const REMOVAL_LABELS = { unpublish: 'Make it a draft (links keep working)', remove: 'Delete it', keep: 'Keep it as it is' } as const;
+/** What happens to a record the source no longer has: each choice as the list names it, and what the chosen one means. */
+const REMOVALS = {
+  unpublish: {
+    label: 'Make it a draft (comes off the website)',
+    hint: 'Its entry stays in the project as a draft and comes off the next exported website. Links and references to it stay in the editor. Reference fields leave it off the website, but a link to it on a published page or post stops the website export until that link changes.'
+  },
+  remove: {
+    label: 'Delete it (comes off the website)',
+    hint: 'Its entry is deleted from the project and comes off the next exported website. While a link or reference field elsewhere in the project points to it, or a redirect you added goes to it, the whole sync stops.'
+  },
+  keep: {
+    label: 'Keep it as last synced (stays on the website if published)',
+    hint: 'Its entry stays as it was last synced. A published one stays on the website, and a draft stays a draft.'
+  }
+} as const;
 
 /** A list of name and value pairs (headers, query parameters): its heading and Add on one line, then labelled rows. */
 function Pairs({ label, addLabel, hint, rows, onChange, namePlaceholder, valuePlaceholder }: { label: string; addLabel: string; hint?: ReactNode; rows: PairRow[]; onChange: (rows: PairRow[]) => void; namePlaceholder: string; valuePlaceholder: string }) {
@@ -915,11 +929,11 @@ export function SourceDialog({ collectionId, onClose }: { collectionId: string; 
         </Part>
 
         <Part title="When a record goes away">
-          <Field label="When the source no longer has a record" controlId={`${uid}-removal`}>
+          <Field label="When the source no longer has a record" controlId={`${uid}-removal`} hint={REMOVALS[form.removal].hint}>
             <select id={`${uid}-removal`} className="select" value={form.removal} onChange={(e) => set({ removal: e.target.value as SourceForm['removal'] })}>
               {SOURCE_REMOVALS.map((r) => (
                 <option key={r} value={r}>
-                  {REMOVAL_LABELS[r]}
+                  {REMOVALS[r].label}
                 </option>
               ))}
             </select>
