@@ -164,7 +164,7 @@ function textRule(id: string, field: 'title' | 'description'): SeoAuditRule {
             finding('content', {
               severity: 'warning',
               code: `${CODE}_DUPLICATE`,
-              message: `${named(state, d)} has the same ${what} as ${named(state, other)}${peers.length > 2 ? ` and ${peers.length - 2} more` : ''}: “${value}”.`,
+              message: `${named(state, d)} has the same ${what} as ${named(state, other)}${peers.length > 2 ? ` and ${peers.length - 2} more` : ''}: “${value}”${/[.!?…]$/.test(value) ? '' : '.'}`,
               explanation: `Search engines tell pages apart by their ${what}s; pages that share one compete with each other, and the wrong one may be shown.`,
               ...where
             })

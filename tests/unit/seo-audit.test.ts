@@ -142,6 +142,12 @@ describe('baseline rules', () => {
     // Two pages left to the site's description share it.
     const inherited = run(state, { type: 'page.update', pageId: home, description: '' }, { type: 'page.update', pageId: services, description: '' });
     expect(only(inherited, 'SEO_DESCRIPTION_DUPLICATE').map((f) => f.owner?.id)).toEqual([home, services]);
+    // Quoted, the shared words end the sentence: one full stop, never a second after the closing quote.
+    const sentence = 'We make pots by hand in a small riverside studio.';
+    const stopped = only(run(state, { type: 'page.update', pageId: home, description: sentence }, { type: 'page.update', pageId: services, description: sentence }), 'SEO_DESCRIPTION_DUPLICATE');
+    expect(stopped.map((f) => f.message.endsWith(`“${sentence}”`))).toEqual([true, true]);
+    const open = only(run(state, { type: 'page.update', pageId: home, description: 'Pots by hand' }, { type: 'page.update', pageId: services, description: 'Pots by hand' }), 'SEO_DESCRIPTION_DUPLICATE');
+    expect(open.map((f) => f.message.endsWith('“Pots by hand”.'))).toEqual([true, true]);
     const lengths = (n: number) => only(run(state, { type: 'page.update', pageId: services, description: x(n) }), 'SEO_DESCRIPTION_LENGTH').length;
     expect(SEO_DESCRIPTION_RANGE).toEqual({ min: 50, max: 160 });
     expect([49, 50, 160, 161].map(lengths)).toEqual([1, 0, 0, 1]);
