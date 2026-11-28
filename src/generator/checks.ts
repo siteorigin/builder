@@ -1618,8 +1618,9 @@ export function renderedContentKnown(state: ProjectState, tree: NodeTree): { con
           if (!item || typeof item !== 'object') continue;
           // A computed list's rows are pages, not items of the placement: their words are not its fields.
           const itemId = typeof item.id === 'string' && item.id && !schema.feed ? item.id : undefined;
-          // A form field's setting its type never shows (a checkbox's placeholder) is not on the page.
-          const unused = isFormContract(which) && key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden(item) : [];
+          // A form field's setting its type never shows (a checkbox's placeholder) is not on the page, and nor is anything
+          // of a hidden field, whose label only names it in the editor.
+          const unused = isFormContract(which) && key === 'fields' && offersFormChoices(def) ? [...formFieldSettingsHidden(item), ...(item.type === 'hidden' ? ['label'] : [])] : [];
           for (const f of Object.keys(schema.fields)) {
             const source = !rows && field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined;
             const markup = known(schema.fields, item, f, key);
