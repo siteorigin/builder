@@ -212,6 +212,7 @@ describe('the website’s build takes text markers out of the code too', () => {
       ['{\n\t\theading,\n\t\tso_text\n\t}', '{\n\t\theading\n\t}'],
       ['{ heading, so_text = undefined }', '{ heading }'],
       ['{ so_text, }', '{}'],
+      ['{ heading, so_text = null }', '{ heading }'],
       ['{ so_text /* a, b */, ...rest }', '{  /* a, b */ ...rest }'],
       ['{ heading, /* a, b */ so_text }', '{ heading, /* a, b */ }'],
       ['{\n\t\theading,\n\t\t// The hook, here\n\t\tso_text\n\t}', '{\n\t\theading,\n\t\t// The hook, here\n\t}']
@@ -220,8 +221,13 @@ describe('the website’s build takes text markers out of the code too', () => {
       expect(out, written).toBe(`<script>\n\tlet ${shipped} = $props();\n</script>\n<p>a</p>\n`);
       expect(() => compile(out, { generate: 'server', runes: true }), written).not.toThrow();
     }
+    // The separator is looked for after the property alone: a comment there never leads to a comma further on.
+    const later = `<script>\n\tlet { heading, so_text /* hook */ } = $props();\n\tconst labels = [1 /* first */, 2];\n</script>\n<p data-so-text={so_text?.('heading' /* marker */, )}>{heading}{labels}</p>\n`;
+    expect(await withoutCodeMarkers(later)).toBe('<script>\n\tlet { heading /* hook */ } = $props();\n\tconst labels = [1 /* first */, 2];\n</script>\n<p>{heading}{labels}</p>\n');
+    // A property of something else only shares the name.
+    expect(await withoutCodeMarkers('<script>let { so_text, note } = $props();</script>\n<p>{note.so_text}</p>\n')).toBe('<script>let { note } = $props();</script>\n<p>{note.so_text}</p>\n');
     const typed = await withoutCodeMarkers(`<script lang="ts">\n\tlet { so_text, heading }: { so_text?: Function; heading: string } = $props();\n</script>\n<p data-so-text={so_text?.('heading')}>{heading}</p>\n`);
-    expect(typed).toContain('let { heading }:');
+    expect(typed).toBe('<script lang="ts">\n\tlet { heading }: { so_text?: Function; heading: string } = $props();\n</script>\n<p>{heading}</p>\n');
     // Under another name, the same hook.
     expect(await withoutCodeMarkers(`<script>let { so_text: mark, heading } = $props();</script>\n<p data-so-text={mark?.('heading')}>{heading}</p>\n`)).toBe('<script>let { heading } = $props();</script>\n<p>{heading}</p>\n');
     // Taken and never used, it is still the editor's.
@@ -233,6 +239,12 @@ describe('the website’s build takes text markers out of the code too', () => {
       const out = await withoutCodeMarkers(`<script>let { so_text } = $props();</script>\n<p data-so-text={so_text?.('heading')}>a</p>\n${markup}\n`);
       expect(out, markup).toBe(`<script>let { so_text } = $props();</script>\n<p>a</p>\n${markup}\n`);
     }
+    for (const source of [
+      '<script>let { so_text: mark } = $props();</script>\n<p>{typeof mark}</p>\n',
+      '<script>let { so_text: store } = $props();</script>\n<p>{String($store)}</p>\n',
+      '<script lang="ts">const { so_text }: { readonly so_text: unique symbol } = $props();\ntype Config = { [so_text]: string };</script>\n<p>b</p>\n'
+    ])
+      expect(await withoutCodeMarkers(source), source).toBe(source);
     for (const script of ["let { so_text, label = so_text?.('label') } = $props();", 'let { so_text = hook() } = $props();']) {
       const source = `<script>${script}</script>\n<p>b</p>\n`;
       expect(await withoutCodeMarkers(source), script).toBe(source);

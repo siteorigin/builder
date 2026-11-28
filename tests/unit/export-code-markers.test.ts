@@ -117,6 +117,7 @@ describe('a theme code component’s editor markers', () => {
 
     it(`are left out of the source export${webmcp ? ', the form’s WebMCP copy included' : ''}, which still reopens without conflicts`, async () => {
       const { c, dir, files, form } = await projectWithThemeForm(webmcp);
+      expect(readFileSync(join(dir, files[0]), 'utf8')).toContain('so_text');
       const out = join(temp('out'), 'handoff');
       const r = await c.exportSourceTo(out);
       expect(r.ok).toBe(true);

@@ -1797,18 +1797,26 @@ function unreadTextHook(ast: Node, markers: ReadonlySet<Node>): { pattern: Node[
     walkAst(root, (n, around) => {
       if (n.type === 'ObjectPattern' && (n.properties as Node[]).includes(prop)) found = { pattern: n.properties as Node[], at: (n.properties as Node[]).indexOf(prop) };
       if (read || n === prop || around.includes(prop) || markers.has(n) || around.some((a) => markers.has(a))) return;
-      // A member of a TypeScript type only shares the name (`typeof so_text` there reads it).
+      // A property of something else (`note.so_text`, `{ so_text: 1 }`, a type's member) only shares the name.
       const parent = around[around.length - 1];
-      if (parent?.type === 'TSPropertySignature' && parent.key === n) return;
+      if (parent && !parent.computed && ((parent.type === 'MemberExpression' && parent.property === n) || ((parent.type === 'Property' || parent.type === 'TSPropertySignature') && parent.key === n && parent.value !== n))) return;
       // `use:so_text`, `class:so_text` and `<so_text.Part>` read it by a name written on the node itself.
       const named = n.type === 'Identifier' || n.type === 'Component' || /Directive$/.test(String(n.type));
-      if (named && String(n.name).split('.')[0] === local) read = true;
+      // `$so_text` subscribes to it as a store.
+      const name = named ? String(n.name).split('.')[0] : null;
+      if (name === local || name === `$${local}`) read = true;
     });
   return read ? null : found;
 }
 
-/** The space and comments before a comma, which is where a property's separator is. */
-const TO_COMMA = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*,/;
+/** Where the comma after a property is, past any space and comments; null when the next thing is not one. */
+function commaAfter(body: string, from: number): number | null {
+  // One token at a time from where the last ended, so a comment is never read into.
+  const skip = /\s+|\/\*[\s\S]*?\*\/|\/\/[^\n\r\u2028\u2029]*/y;
+  let at = from;
+  for (skip.lastIndex = at; skip.test(body); ) at = skip.lastIndex;
+  return body[at] === ',' ? at : null;
+}
 
 /**
  * What to cut so a destructured property reads as never written: its line when it has one to itself, and one comma.
@@ -1817,8 +1825,7 @@ const TO_COMMA = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*,/;
 function propertyCuts(body: string, pattern: Node[], at: number): Array<{ start: number; end: number }> {
   const start = Number(pattern[at].start);
   const end = Number(pattern[at].end);
-  const toComma = TO_COMMA.exec(body.slice(end))?.[0];
-  const comma = toComma === undefined ? null : end + toComma.length - 1;
+  const comma = commaAfter(body, end);
   // A comment between the property and its comma: each goes by itself.
   if (comma !== null && body.slice(end, comma).trim()) return [{ start, end }, { start: comma, end: comma + 1 }];
   const after = comma === null ? end : comma + 1;
