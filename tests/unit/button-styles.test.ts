@@ -9,12 +9,13 @@ import { chromium, type Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProjectState, TokenDef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { getTheme } from '@catalogue/index';
+import { getTheme, listThemes, registerPacks } from '@catalogue/index';
+import { restorePacks } from './fixtures/packs';
 import { applyOperations } from '@engine/apply';
 import { STYLES_DIR, generateProject, generateTokensCss } from '@generator/index';
 import { TYPE_SCALE_ROLES } from '@shared/type-scale';
 import { buttonStyleIds, tokenFollowers } from '@shared/button-styles';
-import { tokenResetOrder } from '@engine/tokens';
+import { findTokenCycle, tokenResetOrder } from '@engine/tokens';
 
 const THEMES = ['foundation', 'foundation-alt'];
 const starter = (themeId = 'foundation') => {
@@ -120,6 +121,52 @@ describe('the Buttons styles a theme declares', () => {
     expect(tokenResetOrder(s, ['radius.button'])).toEqual(['radius.button']);
     const back = applyOperations(s, ids.map((tokenId) => ({ type: 'token.set' as const, tokenId, value: null }))).state;
     expect(back.tokens.overrides).toEqual({});
+  });
+});
+
+describe('putting every style back on a theme whose colours follow each other', () => {
+  afterAll(() => restorePacks());
+  const color = (id: string, value: TokenDef['value']): TokenDef => ({ id: `color.${id}`, label: id.toUpperCase(), group: 'color', value });
+  const link = (id: string) => ({ token: `color.${id}` });
+  /** A project on a theme of these colours, with these light and dark values of its own. */
+  function linked(themeColors: TokenDef[], light: Record<string, unknown>, dark: Record<string, unknown>): ProjectState {
+    const base = getTheme('foundation');
+    registerPacks([...listThemes().filter((t) => t.id !== 'linked'), { ...base, id: 'linked', name: 'Linked', tokens: [...base.tokens, ...themeColors] }]);
+    const s = starter();
+    const own = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [`color.${k}`, v]));
+    return { ...s, site: { ...s.site, themeId: 'linked' }, tokens: { ...s.tokens, overrides: own(light) as ProjectState['tokens']['overrides'], darkOverrides: own(dark) as NonNullable<ProjectState['tokens']['darkOverrides']> } };
+  }
+  /** Whether resetting in this order passes no loop on the way, in either palette, and ends with nothing of the owner's. */
+  function clean(s: ProjectState, order: string[]): boolean {
+    const overrides = { ...s.tokens.overrides };
+    for (const id of order) {
+      delete overrides[id];
+      if (findTokenCycle({ ...s, tokens: { ...s.tokens, overrides } })) return false;
+    }
+    return Object.keys(overrides).length === 0;
+  }
+
+  it('finds an order when the order the styles follow each other in leads there', () => {
+    // Putting X back first (the order given) strands A in a light loop and B in a dark one; the theme's chains say B, A, X.
+    const s = linked(
+      [color('a', link('u')), color('u', link('b')), color('b', link('y')), color('x', link('a')), color('w', link('x')), color('v', '#111111'), color('y', '#222222')],
+      { x: '#333333', a: link('v'), b: link('w') },
+      { u: '#444444', w: '#555555', v: link('b'), y: link('x') }
+    );
+    expect(findTokenCycle(s)).toBeNull();
+    const ids = Object.keys(s.tokens.overrides);
+    expect(clean(s, ids)).toBe(false);
+    expect(clean(s, tokenResetOrder(s, ids))).toBe(true);
+  });
+
+  it('finds an order when the order given leads there and the theme chains do not', () => {
+    const s = linked(
+      [color('a', link('c')), color('b', link('a')), color('c', link('d')), color('f', link('b')), color('d', '#111111'), color('e', '#222222')],
+      { b: link('e'), a: '#333333', c: link('f') },
+      { a: '#444444', f: '#555555', d: link('b'), e: link('c') }
+    );
+    expect(findTokenCycle(s)).toBeNull();
+    expect(clean(s, tokenResetOrder(s, Object.keys(s.tokens.overrides)))).toBe(true);
   });
 });
 

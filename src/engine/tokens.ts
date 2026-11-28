@@ -169,14 +169,13 @@ export function findTokenCycle(state: ProjectState): string | null {
   return findTokenCycleIn(state, 'light') ?? findTokenCycleIn(state, 'dark');
 }
 
-/** The first token that refers back to itself in one palette. */
 /**
  * Theme styles to put back to their theme values, in an order that never passes through a loop. Each reset is checked
  * as it is made, and a theme value can follow a style the owner made follow it back (Pill set to follow the button
- * corners, whose theme value follows Pill) until that one is put back too. The styles are tried in the order their
- * theme values are followed (a style before the ones that follow it), and each step takes the first whose reset leaves
- * neither palette looping, so a theme's own chains go back in one pass. Any that never can come last, for the engine
- * to refuse.
+ * corners, whose theme value follows Pill) until that one is put back too. Each step takes the first style whose
+ * reset leaves neither palette looping, trying them in the order their theme values are followed (a style before the
+ * ones that follow it), so a theme's own chains go back in one pass, and then in the order given; the order that puts
+ * back the most wins. Any that never can come last, for the engine to refuse.
  */
 export function tokenResetOrder(state: ProjectState, ids: readonly string[]): string[] {
   const declared = new Map(declaredTokens(state).map((t) => [t.id, t]));
@@ -194,9 +193,19 @@ export function tokenResetOrder(state: ProjectState, ids: readonly string[]): st
     }
     return d;
   };
+  const byDepth = ids.map((id, i) => ({ id, i, d: depth(id) })).sort((x, y) => x.d - y.d || x.i - y.i).map((x) => x.id);
+  const first = placeResets(state, byDepth);
+  if (!first.blocked || byDepth.every((id, i) => id === ids[i])) return first.order;
+  // The depth order can strand a reset that the order given would not, and the other way round: the one that puts back more wins.
+  const given = placeResets(state, ids);
+  return given.blocked < first.blocked ? given.order : first.order;
+}
+
+/** Resets in the order tried, each the first whose reset leaves neither palette looping; `blocked` never could be. */
+function placeResets(state: ProjectState, ids: readonly string[]): { order: string[]; blocked: number } {
   const overrides = { ...state.tokens.overrides };
   const trial: ProjectState = { ...state, tokens: { ...state.tokens, overrides } };
-  const left = ids.map((id, i) => ({ id, i, d: depth(id) })).sort((x, y) => x.d - y.d || x.i - y.i).map((x) => x.id);
+  const left = [...ids];
   const out: string[] = [];
   while (left.length) {
     const i = left.findIndex((id) => {
@@ -211,9 +220,10 @@ export function tokenResetOrder(state: ProjectState, ids: readonly string[]): st
     delete overrides[id];
     out.push(id);
   }
-  return [...out, ...left];
+  return { order: [...out, ...left], blocked: left.length };
 }
 
+/** The first token that refers back to itself in one palette. */
 export function findTokenCycleIn(state: ProjectState, scheme: 'light' | 'dark'): string | null {
   const declared = declaredTokens(state);
   const byId = new Map(declared.map((t) => [t.id, t]));

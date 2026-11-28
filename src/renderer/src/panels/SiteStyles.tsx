@@ -1806,7 +1806,7 @@ export function SiteStyles() {
     const famLabel = famRef ? (byId(famRef)?.label ?? 'a font that is no longer available') : familyName(stack);
     // At its real size, as far as the dock has room for (a size that grows with the window, at its largest); the padding
     // is in em, as the theme's is, so it scales with it. A size written some other way is drawn as written.
-    const px = v ? (toPx(v.size) ?? clampRange(v.size)?.[1] ?? null) : 16;
+    const px = v ? (toPx(v.size) ?? clampRange(v.size)?.[1] ?? (Number(v.size.trim()) === 0 ? 0 : null)) : 16;
     const look: React.CSSProperties = {
       borderRadius: r ? resolvedText(tokens, r.id) || undefined : undefined,
       fontFamily: shownStack(stack),
