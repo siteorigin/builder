@@ -94,7 +94,7 @@ export function generateHostHeaders(state: ProjectState): string {
  * without a word: `_headers`, and a `vercel.json` with no redirect in it. Redirect rules are not given up that way,
  * since an old address would then answer as a page that is there.
  */
-export function yieldsToOwnFile(path: string, content: string | Buffer): boolean {
+export function yieldsToOwnFile(path: string, content: string | Uint8Array): boolean {
   if (path === HOST_HEADERS_FILE) return true;
   if (path !== VERCEL_CONFIG_FILE || typeof content !== 'string') return false;
   try {
