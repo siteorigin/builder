@@ -613,7 +613,7 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Find what is holding the site back in search and AI answers, and fix it',
     start: 'Business site with no public URL, Home hidden from search, an undescribed page and post picture, a “Click here!” link',
     routes: ['command:health', 'dialog:Project health › Search & AI readiness'],
-    outcome: 'Project health counts the findings by area, what needs fixing first with the optional notes folded below it, and its area and severity filters each count what they list; each finding leads to the field or element that fixes it, and a row fixed while the dialog is open goes without moving focus elsewhere',
+    outcome: 'Project health counts the warnings to fix and lists every finding by area, the warnings first and the optional notes folded below them; its area and severity filters each count the findings they list; a finding with one place to fix it leads to that field or element, and an unlinked page says what to do instead; a row fixed while the dialog is open goes, leaving focus elsewhere where it is and moving focus on its own action to the section heading',
     scenario: 'Business starter · none',
     proof: [
       { test: 'tests/e2e/seo-health.mjs', kind: 'e2e', step: 'Project health counts Search & AI readiness on its own, by area: what needs fixing first, the notes folded below it' },
