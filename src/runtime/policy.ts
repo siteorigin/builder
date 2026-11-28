@@ -6,10 +6,13 @@ import { sep } from 'node:path';
 /** Folders of the project the dev server does not watch, and the build configuration files it does not either. */
 const UNWATCHED_DIRS = ['.siteorigin', 'siteorigin', 'build', 'node_modules', '.svelte-kit/output'];
 const UNWATCHED_FILES = ['vite.config.js', 'vite.config.ts', 'svelte.config.js', 'package.json', 'package-lock.json'];
+/** The local environment files at the project's top (any case, as a Windows path is compared). */
+const LOCAL_ENV = /^\.env(\..*)?$/i;
 
 /**
  * What the dev server does not watch, anchored to the project root (src/lib/siteorigin must stay watched). Build
  * configuration is not watched: a changed config must go through the editor's trust check, not an automatic restart.
+ * Nor are the local environment files at the top (.env and the rest): the editor restarts the preview for those.
  *
  * Vite's watcher asks with forward slashes on every platform (`C:/Users/…` on Windows) and the publication gate with
  * the platform's own separators, so on Windows both spellings, and any case, name the same file. Anything else would
@@ -25,9 +28,14 @@ export function unwatched(dir: string, platform: NodeJS.Platform = process.platf
   const root = norm(dir);
   const dirs = UNWATCHED_DIRS.map((d) => norm(`${root}/${d}`));
   const files = new Set(UNWATCHED_FILES.map((f) => norm(`${root}/${f}`)));
+  const top = `${root}/`;
   return (path: string) => {
     const p = norm(path);
-    return files.has(p) || dirs.some((d) => p === d || p.startsWith(`${d}/`));
+    if (files.has(p) || dirs.some((d) => p === d || p.startsWith(`${d}/`))) return true;
+    // The local environment files Vite reads (.env, .env.local, .env.development, …, and the editor's own temporary
+    // copies of one): Vite would restart the server in place when one changed, around the publication gate; the editor
+    // starts the preview again itself once it has changed one (#1481).
+    return p.startsWith(top) && !p.slice(top.length).includes('/') && LOCAL_ENV.test(p.slice(top.length));
   };
 }
 
@@ -65,8 +73,9 @@ export function frameAncestorsCsp(packaged: boolean): string {
 /**
  * What the preview server may serve from disk: the project folder only, never the editor's private data or
  * secrets, nor the project's private brief (#518) and any copy of it an editor left beside it, nor its external
- * sources' settings and any copy of a credential file (#676). Vite's own defaults
- * are repeated because setting `deny` replaces them.
+ * sources' settings and any copy of a credential file (#676), nor the modules SvelteKit writes with the endpoints'
+ * private environment variables in them as the dev server reads them from .env (#1481): its public ones, which pages
+ * do load, hold none. Vite's own defaults are repeated because setting `deny` replaces them.
  */
 /**
  * The header the host's live session tunnel marks every guest's preview request with (src/main/live/preview-proxy.ts).
@@ -144,7 +153,7 @@ export function liveGuestPlugin() {
 }
 
 export function previewFsPolicy(dir: string) {
-  return { strict: true, allow: [dir], deny: ['.env', '.env.*', '.dev.vars', '.dev.vars.*', '**/.wrangler/**', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#', '**/siteorigin/sources/**', '**/*source-secrets*.json*', '**/*api-keys*.json*', '**/*remote-credentials*.json*'] };
+  return { strict: true, allow: [dir], deny: ['.env', '.env.*', '.dev.vars', '.dev.vars.*', '**/.wrangler/**', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#', '**/siteorigin/sources/**', '**/*source-secrets*.json*', '**/*api-keys*.json*', '**/*remote-credentials*.json*', '**/.svelte-kit/generated/*/env/config.js', '**/.svelte-kit/generated/*/env/private/**'] };
 }
 
 type HeaderValue = string | number | readonly string[];

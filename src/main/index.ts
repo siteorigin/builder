@@ -850,6 +850,15 @@ function registerIpc() {
   handle('project:photoMetadata', (assetId: unknown) => (typeof assetId === 'string' ? controller.photoMetadata(assetId) : null));
   handle('project:locateAsset', (assetId: string, path?: string) => controller.locateAsset(String(assetId), typeof path === 'string' && path ? path : undefined));
   handle('project:regenerateAssetCopies', (assetId: string) => controller.regenerateAssetCopies(String(assetId)));
+  // The project's own API endpoints and their environment (#1481): the controller checks the opening and Developer mode.
+  handle('project:listEndpoints', (opening: unknown) => controller.listEndpoints(opening));
+  handle('project:readEndpoint', (file: unknown, opening: unknown) => controller.readEndpoint(file, opening));
+  handle('project:saveEndpoint', (file: unknown, text: unknown, hash: unknown, opening: unknown) => controller.saveEndpoint(file, text, hash, opening));
+  handle('project:createEndpoint', (route: unknown, language: unknown, opening: unknown) => controller.createEndpoint(route, language, opening));
+  handle('project:sendEndpointRequest', (req: unknown, opening: unknown) => controller.sendEndpointRequest(req, opening));
+  handle('project:stopEndpointRequest', () => controller.stopEndpointRequest());
+  handle('project:endpointEnvironment', (opening: unknown) => controller.endpointEnvironment(opening));
+  handle('project:changeEndpointVariable', (change: unknown, opening: unknown) => controller.changeEndpointVariable(change, opening));
   handle('project:storage', (key: unknown) => (typeof key === 'string' ? controller.storageInfo(key) : null));
   handle('project:reclaimStorage', (plan: unknown, key: unknown) =>
     typeof plan === 'string' && typeof key === 'string' ? controller.reclaimStorage(plan, key) : { ok: false, message: 'Nothing to free.' }

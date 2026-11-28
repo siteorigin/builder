@@ -37,6 +37,8 @@ import { AgentDiscoveryFields, agentsScope } from './AgentDiscovery';
 import { CrawlerPolicyFields } from './CrawlerPolicy';
 import { RedirectsFields } from './RedirectsManager';
 import { IntegrationFields, SiteCodeFields, integrationsScope, siteCodeScope } from './SiteCode';
+import { EndpointsPanel } from './EndpointsPanel';
+import { DEPLOY_TARGET_HINTS, DEPLOY_TARGET_LABELS, DEPLOY_TARGETS, deployTarget, runsOnNode } from '@shared/deploy-target';
 import { redirectRecords } from '@shared/redirects';
 import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
@@ -1141,7 +1143,8 @@ function ThemeCard({ st, theme, themes, look, lookOf, changedCount, changes, say
 
 export function SiteStyles() {
   const snap = useStore((s) => s.snapshot);
-  // The site's own head code and CSS change in Developer mode alone (Custom code).
+  // The site's own head code and CSS change in Developer mode alone (Custom code), and so do its API endpoints and
+  // where it is deployed (#1481).
   const developer = useStore((s) => !!s.settings?.developerMode);
   const [dev, setDev] = useState(false);
   useEffect(() => void api.app.info().then((i) => setDev(i.dev)), []);
@@ -2348,6 +2351,26 @@ export function SiteStyles() {
       <Section title="Custom code" id="site-code" defaultOpen={false} keepMounted scope={siteCodeScope(site)}>
         <SiteCodeFields key={`code-${snap?.workspaceKey}`} site={site} developer={developer} onChange={updSite} />
       </Section>
+
+      {(developer || runsOnNode(site)) && (
+        <Section title="Deployment" id="site-deployment" defaultOpen={false} scope={DEPLOY_TARGET_LABELS[deployTarget(site)]}>
+          <ChoiceField
+            label="Build the website as"
+            full
+            value={deployTarget(site)}
+            options={DEPLOY_TARGETS.map((value) => ({ value, label: value === 'static' ? 'Static website' : 'Node.js server' }))}
+            hint={DEPLOY_TARGET_HINTS[deployTarget(site)]}
+            onChange={(target) => updSite({ deployTarget: target })}
+          />
+        </Section>
+      )}
+
+      {developer && (
+        <Section title="API endpoints" id="site-endpoints" defaultOpen={false}>
+          {/* Keyed by the project's opening: what one project's panel had open never shows in the next. */}
+          <EndpointsPanel key={`endpoints-${snap?.workspaceKey}`} />
+        </Section>
+      )}
 
       <Section title="Redirects" id="site-redirects" defaultOpen={false} keepMounted scope={redirectCount ? plural(redirectCount, 'redirect', 'redirects') : undefined}>
         {/* Keyed by the project's opening: a redirect half typed in one project is never offered in the next. */}

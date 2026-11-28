@@ -15,6 +15,7 @@ import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, liveGuestPlugin, pr
 import { collectGarbage, createIdleCollector, heapGrowth, IDLE_COLLECT, idleCollectPlugin, type IdleCollector } from './idle-collect';
 import { createPublicationGate, type GateServer, type PublicationGate } from './publication-gate';
 import { waitForPreviewPage } from './preview-ready';
+import { serveBuilt } from './serve-built';
 
 type Msg =
   | { type: 'start'; dir: string; port?: number; packaged?: boolean; perf?: boolean }
@@ -23,6 +24,8 @@ type Msg =
   | { type: 'hold'; id: string }
   | { type: 'release'; id: string; files: string[] }
   | { type: 'build'; dir: string }
+  /** Serve a website built as a Node.js server (its adapter-node folder) on loopback, for the export's checks. */
+  | { type: 'serve-built'; dir: string }
   | { type: 'stop' };
 
 const port = (process as unknown as { parentPort: { on: (e: string, cb: (ev: { data: Msg }) => void) => void; postMessage: (m: unknown) => void } }).parentPort;
@@ -241,6 +244,9 @@ port.on('message', async (ev) => {
     else if (m.type === 'build') {
       await build(m.dir);
       process.exit(0);
+    } else if (m.type === 'serve-built') {
+      const { url } = await serveBuilt(useRealProjectDir(m.dir));
+      post({ type: 'serving', url });
     } else if (m.type === 'stop') {
       idle?.dispose();
       gate?.close();

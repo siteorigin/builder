@@ -5,6 +5,7 @@ import { isDraftEntry, siteEntries } from '@shared/collections';
 import { redirectRecords, resolveRedirects, type LiveRedirect } from '@shared/redirects';
 import { isDraftPage } from '@generator/index';
 import { redirectHost } from '@generator/host-redirects';
+import { runsOnNode } from '@shared/deploy-target';
 import { TriangleAlert } from 'lucide-react';
 import { Field, Segmented } from '../components/ui';
 import { applyOps } from '../store';
@@ -209,15 +210,20 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
 
   return (
     <div ref={root} className="so-redirects-fields">
-      <Field label="Published on" info={HOST_HINTS[host]}>
-        <select id="site-redirect-host" className="select" value={host} onChange={(e) => void applyOps([{ type: 'site.update', redirectHost: e.target.value as RedirectHost }], 'Update site settings')}>
-          {(['cloudflare', 'netlify', 'vercel'] as const).map((h) => (
-            <option key={h} value={h}>
-              {HOST_LABELS[h]}
-            </option>
-          ))}
-        </select>
-      </Field>
+      {/* A Node.js server reads no host's redirect rules: its old addresses are their pages (shared/deploy-target.ts). */}
+      {runsOnNode(state.site) ? (
+        <p className="faint so-redirects-node">The site is built as a Node.js server, so each old address is a page that sends visitors on (HTTP 200). No host rules are written.</p>
+      ) : (
+        <Field label="Published on" info={HOST_HINTS[host]}>
+          <select id="site-redirect-host" className="select" value={host} onChange={(e) => void applyOps([{ type: 'site.update', redirectHost: e.target.value as RedirectHost }], 'Update site settings')}>
+            {(['cloudflare', 'netlify', 'vercel'] as const).map((h) => (
+              <option key={h} value={h}>
+                {HOST_LABELS[h]}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       {list.length ? (
         <ul className="so-redirects" aria-label="Redirects">
           {list.map((r) => {

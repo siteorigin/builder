@@ -746,6 +746,10 @@ export const OPERATION_SCHEMAS = {
       .enum(['cloudflare', 'netlify', 'vercel'])
       .optional()
       .describe('The host the website is published on, for its HTTP 301 redirect rules: "cloudflare" (default) writes _redirects for Cloudflare Pages, "netlify" for Netlify, "vercel" also writes vercel.json.'),
+    deployTarget: z
+      .enum(['static', 'node'])
+      .optional()
+      .describe('How the website is built and deployed: "static" (default) prerenders every page into plain files for any static host, and fails on an API endpoint that needs a server; "node" builds a Node.js server that answers the project\'s own API endpoints (src/routes/**/+server.js or .ts) while its pages stay prerendered.'),
     crawlerPolicy: z
       .object({
         preset: z

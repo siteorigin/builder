@@ -6,6 +6,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, simplifySelection
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from '@codemirror/language';
 import { forceLinting, linter, lintGutter, type Diagnostic } from '@codemirror/lint';
 import { svelte } from '@replit/codemirror-lang-svelte';
+import { javascript } from '@codemirror/lang-javascript';
 import { tags as t } from '@lezer/highlight';
 import { CircleAlert, CircleCheck, Lock, TriangleAlert, WrapText } from 'lucide-react';
 import type { CodePropsTaken, SourceManifest } from '@shared/api';
@@ -209,7 +210,8 @@ export function CodeEditor({
   onProps,
   problemsShown,
   manifest,
-  handle
+  handle,
+  language = 'svelte'
 }: {
   value: string;
   onChange?: (v: string) => void;
@@ -231,7 +233,14 @@ export function CodeEditor({
   /** The manifest the code is checked against, as edited: a change checks the code again. */
   manifest?: SourceManifest;
   handle?: MutableRefObject<CodeEditorHandle | null>;
+  /**
+   * What the code is: a Svelte component (the default), checked by the compiler as it is typed, or JavaScript or
+   * TypeScript (an API endpoint's), highlighted only: the project's own build checks it.
+   */
+  language?: 'svelte' | 'js' | 'ts';
 }) {
+  // Only Svelte is checked as it is typed: other code has no check to wait for.
+  const checked = !readOnly && language === 'svelte';
   const held = useRef(manifest);
   held.current = manifest;
   const manifestKey = manifest ? JSON.stringify(manifest) : '';
@@ -241,7 +250,7 @@ export function CodeEditor({
   const wrapSlot = useRef(new Compartment());
   const armed = useRef(false);
   const said = useRef('');
-  const pending = useRef(!readOnly);
+  const pending = useRef(checked);
   const lastJump = useRef(-1);
   const found = useRef<Problem[]>([]);
   const callbacks = useRef({ onChange, onSave, onErrorCount, onChecking, onProps });
@@ -251,7 +260,7 @@ export function CodeEditor({
   const [selecting, setSelecting] = useState(false);
   const [focused, setFocused] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const [checking, setCheckingState] = useState(!readOnly);
+  const [checking, setCheckingState] = useState(checked);
   const [lint, setLint] = useState<Lint>({ errors: 0, warnings: 0, items: [] });
   const [wrap, setWrap] = useState(() => savedWrap(!!readOnly));
   // Where the last jump landed, said politely, since the strip then moves on to name the next finding.
@@ -383,7 +392,7 @@ export function CodeEditor({
         history(),
         indentOnInput(),
         bracketMatching(),
-        svelte(),
+        language === 'svelte' ? svelte() : javascript({ typescript: language === 'ts' }),
         syntaxHighlighting(highlight),
         theme,
         margins,
@@ -418,7 +427,7 @@ export function CodeEditor({
         EditorView.contentAttributes.of({ 'aria-label': label, ...(readOnly ? { 'aria-readonly': 'true' } : { 'aria-describedby': hintId }) }),
         // The gutter is there in read-only code too, so code starts at the same column in every view.
         lintGutter(),
-        ...(readOnly ? [] : [svelteLint]),
+        ...(checked ? [svelteLint] : []),
         EditorView.updateListener.of((u) => {
           if (u.focusChanged) {
             setFocused(u.view.hasFocus);
@@ -454,7 +463,7 @@ export function CodeEditor({
       resize.disconnect();
       view.current?.destroy();
     };
-  }, [readOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readOnly, language]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Replace the document when the value changes from outside (revert, reload, a repaired save).
   useEffect(() => {
@@ -472,7 +481,7 @@ export function CodeEditor({
   useEffect(() => {
     if (linted.current === manifestKey) return;
     linted.current = manifestKey;
-    if (!view.current || readOnly) return;
+    if (!view.current || !checked) return;
     setChecking(true);
     view.current.dispatch({ annotations: manifestChanged.of(true) });
     forceLinting(view.current);
@@ -506,6 +515,13 @@ export function CodeEditor({
         {readOnly ? (
           <span className="code-status-item">
             <Lock aria-hidden="true" /> Read only
+            <span className="code-status-sep" aria-hidden="true" />
+            {plural(pos.lines, 'line')}
+          </span>
+        ) : !checked ? (
+          // Code that is not checked as it is typed says what it is, never "No problems".
+          <span className="code-status-item">
+            {language === 'ts' ? 'TypeScript' : 'JavaScript'}
             <span className="code-status-sep" aria-hidden="true" />
             {plural(pos.lines, 'line')}
           </span>

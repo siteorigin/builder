@@ -14,11 +14,15 @@
  * Vercel reads neither: with the host set to Vercel, `vercel.json` beside the project's package.json (and at the root
  * of an exported website) gives it the same rules. Addresses are written as browsers send them (percent-encoded), under
  * the site's sub-path when its public URL has one.
+ *
+ * A website built as a Node.js server (SiteDoc.deployTarget) is not served by these hosts' own static serving, so it
+ * gets neither file: each old address keeps its page, which sends visitors on.
  */
 import { routeUrl } from '@shared/routes';
 import { siteMount } from '@shared/crawler-policy';
 import { resolveRedirects } from '@shared/redirects';
 import type { ProjectState, RedirectHost, SiteDoc } from '@shared/types';
+import { runsOnNode } from '@shared/deploy-target';
 import { derived } from './cache';
 
 /** Where the generated project keeps the rules Cloudflare Pages and Netlify read. */
@@ -47,6 +51,8 @@ const withoutSlash = (path: string) => path.replace(/\/$/, '');
  * Rules keep the order the old addresses were kept in.
  */
 export function generateHostRedirects(state: ProjectState): string | null {
+  // A Node.js server reads no host's rules: its old addresses are their pages alone (shared/deploy-target.ts).
+  if (runsOnNode(state.site)) return null;
   const pairs = redirectPairs(state);
   if (!pairs.length) return null;
   const mount = siteMount(state.site);
@@ -65,7 +71,7 @@ export function generateHostRedirects(state: ProjectState): string | null {
 
 /** The site's `vercel.json`, while its host is Vercel and it keeps an old address; null otherwise. */
 export function generateVercelConfig(state: ProjectState): string | null {
-  if (redirectHost(state.site) !== 'vercel') return null;
+  if (redirectHost(state.site) !== 'vercel' || runsOnNode(state.site)) return null;
   const pairs = redirectPairs(state);
   if (!pairs.length) return null;
   const mount = siteMount(state.site);

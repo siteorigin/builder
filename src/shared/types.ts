@@ -1116,6 +1116,12 @@ export interface SiteDoc {
    * `vercel.json`. Absent: `_redirects` as Cloudflare Pages reads it.
    */
   redirectHost?: RedirectHost;
+  /**
+   * How the website is built and deployed (src/shared/deploy-target.ts): absent, a static website of prerendered pages
+   * any static host serves; `node`, a Node.js server (SvelteKit's adapter-node) that also answers the project's own
+   * API endpoints (`src/routes/**\/+server.js` or `.ts`) when visitors ask, while its pages stay prerendered.
+   */
+  deployTarget?: 'node';
   /** The not-found page's heading, message and Home link label; the defaults are used while these are unset. */
   notFoundHeading?: string;
   notFoundMessage?: string;
@@ -1214,6 +1220,9 @@ export type SiteRedirect = { from: string; custom?: true; archiveOf?: string } &
 
 /** Where the website is published, as its redirect rules are written for it (see SiteDoc.redirectHost). */
 export type RedirectHost = 'cloudflare' | 'netlify' | 'vercel';
+
+/** How the website is built and deployed (see SiteDoc.deployTarget). */
+export type DeployTarget = 'static' | 'node';
 
 export interface AssetRecord {
   id: string;

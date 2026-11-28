@@ -117,6 +117,7 @@ import { BROWSE_COMPONENT_FILE, BROWSE_HELPER_FILE, BROWSE_SVELTE, browseIndexFi
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
+import { runsOnNode } from '@shared/deploy-target';
 import { derived, isTracked, type GenerationCache } from './cache';
 import { createSeoResolver, entryMetadata, pageMetadata, sameAddress, type SeoMetadata } from './seo-metadata';
 import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
@@ -5394,9 +5395,12 @@ export function basePath(state: ProjectState): string {
   return siteMount(state.site);
 }
 
-/** Read by vite.config.js: SvelteKit's paths.base for production builds. */
+/**
+ * Read by vite.config.js for production builds: SvelteKit's paths.base, and the adapter the website is built with
+ * (`deployTarget`, named only for a Node.js server; shared/deploy-target.ts).
+ */
 export function generatePathsJson(state: ProjectState): string {
-  return JSON.stringify({ base: basePath(state) }, null, '\t') + '\n';
+  return JSON.stringify({ base: basePath(state), ...(runsOnNode(state.site) ? { deployTarget: 'node' } : {}) }, null, '\t') + '\n';
 }
 
 // ---------------------------------------------------------------------------

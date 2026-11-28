@@ -21,6 +21,7 @@ import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publ
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
+import { NODE_START_COMMAND, runsOnNode } from '@shared/deploy-target';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { browseIndexFile, browsingCollections } from '@generator/collection-browse';
@@ -957,10 +958,17 @@ function inlineBytes(params: string, payload: string): Buffer {
  * not be read or cleaned (those that could not be read as images first); the export must stop if there are any.
  *
  * Each file is read once. `inspect` is given every file read whole (every HTML file and script among them), as the
- * build wrote it, before it is cleaned.
+ * build wrote it, before it is cleaned. With `unrewritten`, nothing is written: the files that would have been cleaned
+ * are listed there instead.
  */
-export async function cleanBuiltSite(dir: string, inspect?: (rel: string, bytes: Buffer) => void): Promise<string[]> {
+export async function cleanBuiltSite(dir: string, inspect?: (rel: string, bytes: Buffer) => void, opts: { unrewritten?: string[] } = {}): Promise<string[]> {
   const failed: string[] = [];
+  // A Node.js server's build records each file's size and hash as it is built (adapter-node), so nothing is rewritten
+  // in it: a file that would be is listed instead, and the export stops on it.
+  const rewrite = async (rel: string, path: string, bytes: Buffer) => {
+    if (opts.unrewritten) opts.unrewritten.push(rel);
+    else await rewriteBuilt(path, bytes);
+  };
   const inlineFailed: string[] = [];
   for (const rel of (await listFiles(dir)).map((f) => f.split(sep).join('/'))) {
     const path = join(dir, rel);
@@ -986,7 +994,7 @@ export async function cleanBuiltSite(dir: string, inspect?: (rel: string, bytes:
       if (!r) failed.push(rel);
       // Renamed into place, so a file the build linked from elsewhere is replaced rather than written through.
       else if (r.changed) {
-        await rewriteBuilt(path, r.data);
+        await rewrite(rel, path, r.data);
         bytes = r.data;
       }
     }
@@ -1003,7 +1011,7 @@ export async function cleanBuiltSite(dir: string, inspect?: (rel: string, bytes:
       return r.changed ? `data:image/${type.toLowerCase()};base64,${r.data.toString('base64')}` : match;
     });
     if (bad) inlineFailed.push(rel);
-    else if (cleaned !== text) await rewriteBuilt(path, Buffer.from(cleaned, 'latin1'));
+    else if (cleaned !== text) await rewrite(rel, path, Buffer.from(cleaned, 'latin1'));
   }
   return [...failed, ...inlineFailed];
 }
@@ -1543,7 +1551,7 @@ export async function finishExportedSource(dest: string, state: ProjectState, no
   const syncs = await writeSyncScript(dest, state, syncCli);
   const readmePath = join(dest, 'README.md');
   const readme = await readIfExists(readmePath);
-  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry)), redirectHost(state.site), syncs, installedThemeRequirement(state)));
+  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry)), redirectHost(state.site), syncs, installedThemeRequirement(state), runsOnNode(state.site)));
   const usesSamples = STARTER_ASSETS.some((a) => state.assets.assets[a.id]);
   if (usesSamples && !existsSync(join(dest, 'NOTICE.md')) && existsSync(noticePath)) await fs.copyFile(noticePath, join(dest, 'NOTICE.md'));
 }
@@ -1560,6 +1568,22 @@ export async function listFiles(dir: string, base = ''): Promise<string[]> {
 
 const README_INTRO = 'This website was created with [SiteOrigin Builder](https://siteorigin.com).';
 
+/** How a README says the static website is published. */
+const STATIC_DEPLOYING = `The static website is written to \`build/\`. Upload the contents of that folder to any static host. If the site lives in a sub-folder (for example on GitHub Pages), publish them there: the build takes that path from \`src/lib/siteorigin/paths.json\`.
+
+`;
+
+/** How it says a website built as a Node.js server is (shared/deploy-target.ts). */
+const NODE_DEPLOYING = `The website is built as a Node.js server with SvelteKit's [adapter-node](https://svelte.dev/docs/kit/adapter-node), chosen under Deployment in SiteOrigin Builder's Site settings and read from \`src/lib/siteorigin/paths.json\`. Its pages are prerendered; the server also answers the site's own API endpoints (\`src/routes/**/+server.js\` or \`.ts\`). Start it on any host with Node.js 22.17 or newer:
+
+\`\`\`sh
+node build/index.js
+\`\`\`
+
+It listens on port 3000 unless \`PORT\` names another. Set \`ORIGIN\` to the address it is published at, and set the environment variables its endpoints read (declared in \`src/env.js\`) on the host. The \`.env\` file SiteOrigin Builder keeps their local values in is never exported.
+
+`;
+
 /** Whether a README is one this app wrote rather than the owner's own. */
 export function isGeneratedReadme(text: string): boolean {
   // A checkout may have converted the line endings of an otherwise untouched file.
@@ -1574,7 +1598,7 @@ export function isGeneratedReadme(text: string): boolean {
   const named = normalized.match(/\n## Editing in SiteOrigin Builder\n\nThis project uses the installed theme (.+) \(`([^`\n]+)`\) ([^\s,]+), /);
   const theme = named ? { name: named[1], id: named[2], version: named[3] } : null;
   return notices
-    .flatMap((n) => (Object.keys(README_HOSTS) as RedirectHost[]).flatMap((h) => [false, true].flatMap((drafts) => [false, true].flatMap((entries) => [false, true].map((sources) => projectReadme(title, drafts, n, entries, h, sources, theme))))))
+    .flatMap((n) => (Object.keys(README_HOSTS) as RedirectHost[]).flatMap((h) => [false, true].flatMap((drafts) => [false, true].flatMap((entries) => [false, true].flatMap((sources) => [false, true].map((node) => projectReadme(title, drafts, n, entries, h, sources, theme, node)))))))
     .includes(normalized);
 }
 
@@ -1639,7 +1663,7 @@ const README_HOSTS: Record<RedirectHost, { notFound: string; redirects: string }
  * The README an exported project gets, for the host its redirect rules are written for. One exported with drafts
  * says how its build treats them.
  */
-export function projectReadme(name: string, drafts = false, notice = NOTICE, draftEntries = false, host: RedirectHost = 'cloudflare', sources = false, theme: { id: string; name: string; version: string } | null = null): string {
+export function projectReadme(name: string, drafts = false, notice = NOTICE, draftEntries = false, host: RedirectHost = 'cloudflare', sources = false, theme: { id: string; name: string; version: string } | null = null, node = false): string {
   return `# ${name}
 
 ${README_INTRO} It is a normal [SvelteKit](https://svelte.dev/docs/kit) project and does not need SiteOrigin Builder to run or build.
@@ -1653,15 +1677,13 @@ ${README_INTRO} It is a normal [SvelteKit](https://svelte.dev/docs/kit) project 
 \`\`\`sh
 npm ci          # install the locked dependencies
 npm run dev     # start a local development server
-npm run build   # build the static website into build/
+npm run build   # build the ${node ? 'Node.js server' : 'static website'} into build/
 npm run preview # preview the production build
 \`\`\`
 
 ## Deploying
 
-The static website is written to \`build/\`. Upload the contents of that folder to any static host. If the site lives in a sub-folder (for example on GitHub Pages), publish them there: the build takes that path from \`src/lib/siteorigin/paths.json\`.
-
-### Not-found page
+${node ? NODE_DEPLOYING : STATIC_DEPLOYING}${node ? '' : `### Not-found page
 
 Addresses the site does not have should show its not-found page, \`build/404.html\`. ${README_HOSTS[host].notFound} when the contents of \`build/\` are the root of what you publish. Otherwise, if the host has a 404 error document setting, set it to \`/404.html\`, with the sub-folder in front when the site is in one (\`/my-site/404.html\`). On Apache, that is \`ErrorDocument 404 /404.html\`.
 
@@ -1671,7 +1693,7 @@ When the site keeps old addresses (of pages that have moved, say), each gets a p
 
 ${README_HOSTS[host].redirects}
 
-## Project layout
+`}## Project layout
 
 - \`src/\`: the website's source. \`src/routes/\` and \`src/lib/siteorigin/\` hold the generated SvelteKit pages, components and styles.
 - \`src/lib/siteorigin/custom/\`: code components you wrote. These are yours to edit.
@@ -1861,6 +1883,8 @@ const MISSING_ID = /no element with id|handleMissingId|prerender_missing_id/i;
 export function explainBuildFailure(state: ProjectState, build: BuildReport, ctx: BuildFailureContext = {}): { message: string; warnings: string[]; details: string } {
   const read = readBuildFailure(state, build, ctx);
   const all = read.entries;
+  const dynamic = dynamicRoutesFailure(state, read);
+  if (dynamic) return dynamic;
   if (!MISSING_ID.test(all.join('\n'))) return generalFailure(read);
   const done = (message: string, warnings: string[]) => ({ message, warnings, details: read.report(message) });
   // The lines that name the page and the missing ID come first, so a long build log cannot push them out.
@@ -1875,6 +1899,26 @@ export function explainBuildFailure(state: ProjectState, build: BuildReport, ctx
     `The production build failed because ${broken.length === 1 ? 'a link goes to a section its page does not have' : 'links go to sections their pages do not have'}. Choose a section for ${broken.length === 1 ? 'the link' : 'each link'} in Project health, then export again.`,
     [...new Set([...broken.slice(0, 8 - kept.length), ...kept, ...details])].slice(0, 8)
   );
+}
+
+/** adapter-static's refusal of a route it cannot prerender, and the routes it listed beneath it. */
+const DYNAMIC_ROUTES = /Encountered dynamic routes/;
+const DYNAMIC_ROUTE_LINE = /^\s*-\s+(src\/routes(?:\/[^\s]*)?)\s*$/;
+
+/**
+ * A static website's build that stopped at a route needing a server (adapter-static's "Encountered dynamic routes"),
+ * most often an API endpoint of the project's own (`+server.js` or `.ts`): said with the routes it named and the two
+ * ways on, a Node.js server (SiteDoc.deployTarget) or an endpoint that prerenders. Null for any other failure, and for
+ * a Node.js server's, which builds such routes.
+ */
+function dynamicRoutesFailure(state: ProjectState, read: ExplainedBuild): { message: string; warnings: string[]; details: string } | null {
+  if (runsOnNode(state.site) || !DYNAMIC_ROUTES.test(read.entries.join('\n'))) return null;
+  const routes = [...new Set(read.lines.map((l) => DYNAMIC_ROUTE_LINE.exec(l)?.[1]).filter((r): r is string => !!r))];
+  const shown = routes.slice(0, 5);
+  const named = !routes.length ? '' : routes.length > shown.length ? `${shown.join(', ')} and ${routes.length - shown.length} more` : listNames(shown);
+  const message = `The website is built as a static website, which cannot answer ${routes.length === 1 ? 'an API endpoint' : 'API endpoints'} that need${routes.length === 1 ? 's' : ''} a server${named ? `: ${named}` : ''}. Choose Node.js server under Deployment in Site settings to export ${routes.length === 1 ? 'it' : 'them'}, then export again.`;
+  const warnings = ['An endpoint whose answer never changes can stay on a static website: add `export const prerender = true` to its +server.js or +server.ts file.', 'A page whose own +page.js or +page.server.js reads the request (its query, cookies or headers) needs a server too.'];
+  return { message, warnings, details: read.report(message) };
 }
 
 /** Any other failure: the headline names where the build was, and the first details say what went wrong. */
@@ -2117,6 +2161,81 @@ export function notFoundHostNote(base: string, host: RedirectHost): string {
   }
   if (named) return `${page} ${named} uses it automatically when it publishes the exported website as it is.`;
   return `${page} Cloudflare Pages, Netlify and Vercel use it automatically when they publish the exported website as it is. On another host, ${errorDocument}.`;
+}
+
+/** The Node.js version a website built as a Node.js server needs, as the project's own package.json names it. */
+const NODE_ENGINES = { node: '>=22.17.0' };
+
+/**
+ * What a website built as a Node.js server says about itself, beside its server (writeNodeServerFiles): how to start
+ * it, where it listens, and what it reads from its environment. `dependencies`: it lists packages to install first.
+ */
+export function nodeServerReadme(name: string, dependencies = false): string {
+  return `# ${name}
+
+This folder is the website built as a Node.js server by [SiteOrigin Builder](https://siteorigin.com/) with SvelteKit's [adapter-node](https://svelte.dev/docs/kit/adapter-node). Its pages are prerendered; the server sends them, the site's files, and the answers of its own API endpoints.
+
+## Starting it
+
+Run it on any host with Node.js 22.17 or newer:
+
+\`\`\`sh
+${dependencies ? 'npm install --omit=dev   # the packages its server code imports\n' : ''}${NODE_START_COMMAND}
+\`\`\`
+
+It listens on port 3000 unless \`PORT\` names another, and on every address unless \`HOST\` names one (\`HOST=127.0.0.1\`).
+
+## Environment
+
+- \`ORIGIN\`: the public address it is reached at, such as \`https://example.com\`. Without it, forms sent to the site's endpoints may be refused as coming from another site.
+- The site's own variables, such as API keys its endpoints read: set them on the host. Values kept for local testing in SiteOrigin Builder (the project's \`.env\`) are never exported.
+
+See [adapter-node's documentation](https://svelte.dev/docs/kit/adapter-node#Environment-variables) for the rest, such as \`BODY_SIZE_LIMIT\` and running behind a proxy.
+`;
+}
+
+/**
+ * Make a website built as a Node.js server in `out` (adapter-node's folder) ready to start where it is published: a
+ * package.json that runs it as the ES modules it is (`npm start`), with the Node.js it needs and the packages its
+ * server code imports at run time (the project's own `dependencies`, which adapter-node leaves out of its bundle), and a
+ * README that says how. `project` is the staged project it was built from.
+ */
+export async function writeNodeServerFiles(out: string, live: ProjectState, project: string): Promise<void> {
+  let own: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse((await readExportText(join(project, 'package.json'))) ?? '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) own = parsed as Record<string, unknown>;
+  } catch {
+    // A package.json that cannot be read built nothing: the build would have failed first.
+  }
+  const deps = own.dependencies && typeof own.dependencies === 'object' && !Array.isArray(own.dependencies) && Object.keys(own.dependencies).length ? own.dependencies : null;
+  const manifest = {
+    name: typeof own.name === 'string' ? own.name : 'siteorigin-site',
+    version: typeof own.version === 'string' ? own.version : '0.0.1',
+    private: true,
+    type: 'module',
+    scripts: { start: NODE_START_COMMAND },
+    engines: own.engines && typeof own.engines === 'object' && !Array.isArray(own.engines) ? own.engines : NODE_ENGINES,
+    ...(deps ? { dependencies: deps } : {})
+  };
+  await fs.writeFile(join(out, 'package.json'), JSON.stringify(manifest, null, '\t') + '\n');
+  await fs.writeFile(join(out, 'README.md'), nodeServerReadme(live.site.name, !!deps));
+}
+
+/**
+ * The stop when a Node.js server's build holds files the export would have to clean (photo metadata in an image the
+ * build brought in from a package or generated code, or inlined into a page or script): the server records each file's
+ * size and hash as it is built, so none can be rewritten after.
+ */
+export function nodeUncleanedMessage(files: string[]): string {
+  const shown = files.slice(0, 3).map((f) => f.split('/').slice(1).join('/') || f);
+  const named = files.length > shown.length ? `${shown.join(', ')} and ${files.length - shown.length} more` : listNames(shown);
+  return `The Node.js server’s build has ${files.length === 1 ? 'an image' : 'images'} with photo details (such as where it was taken) that the export cannot remove from it: ${named}. ${files.length === 1 ? 'It comes' : 'They come'} from a package or code rather than the Assets library. Remove the details from the file, or add it to Assets, then export again.`;
+}
+
+/** How a website built as a Node.js server is started where it is published, for the export's success screen. */
+export function nodeServerHostNote(): string {
+  return `This is a Node.js server: start it with ${NODE_START_COMMAND} in its folder, on a host with Node.js 22.17 or newer. Set ORIGIN to the address it is published at, and set the environment variables its API endpoints read on the host: your .env stays on this computer.`;
 }
 
 /**

@@ -175,6 +175,7 @@ function siteChanges(a: Obj, b: Obj, state: ProjectState): StepChange[] {
   }
   if (!same(a.redirects, b.redirects)) out.push({ owner, property: 'Old addresses', change: 'changed' });
   if (!same(a.visitorText, b.visitorText)) out.push({ owner, property: 'Site wording', change: 'changed' });
+  if (!same(a.deployTarget, b.deployTarget)) out.push({ owner, property: 'Deployment', change: 'changed' });
   const shell = (s: Obj, part: 'header' | 'footer') => (isObj(s.shell) && isObj(s.shell[part]) ? (s.shell[part] as unknown as NodeTree) : undefined);
   for (const [part, name] of [
     ['header', 'Header'],
