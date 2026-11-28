@@ -12,6 +12,7 @@ import { articleTemplateFor, catalogueComponent, getTheme } from '@catalogue/ind
 import { declaredTokens } from './tokens';
 import { bindingSlots } from './schema';
 import { installComponent } from './install';
+import { galleryFitProblem, galleryListProp } from '@shared/gallery-field';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 const EMPTY: NodeTree = { rootIds: [], nodes: {} };
@@ -195,10 +196,14 @@ function fieldBlocks(fields: Record<string, CollectionFieldSchema>, styles: (s: 
   }
   // Galleries: the theme's Gallery, under the field's name, showing the entry's photos while it has any. A theme
   // without a Gallery shows none; an author can place one of their own.
-  if (gallery)
+  // Its photos go in the first of the Gallery's lists that shows them; its name in its heading, with no eyebrow over it.
+  const text = (prop: string) => gallery?.properties[prop]?.type === 'string';
+  const photos = gallery && Object.entries(gallery.properties).find(([, p]) => !galleryFitProblem(galleryListProp({ label: '' }), p))?.[0];
+  if (gallery && photos)
     for (const [name, f] of of('gallery')) {
       const bound = { $entry: `field.${name}` };
-      galleries.push(add({ kind: 'instance', name: label(f), definitionId: gallery.id, props: { eyebrow: '', heading: label(f), images: bound }, when: bound }));
+      const props = { ...(text('eyebrow') ? { eyebrow: '' } : {}), ...(text('heading') ? { heading: label(f) } : {}), [photos]: bound };
+      galleries.push(add({ kind: 'instance', name: label(f), definitionId: gallery.id, props, when: bound }));
     }
   return { nodes, lead, pictures, passages, galleries };
 }

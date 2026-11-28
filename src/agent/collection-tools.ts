@@ -9,14 +9,14 @@
 import { z } from 'zod';
 import type { Collection, CollectionFieldSchema, CollectionFieldValue, EntryDoc, ProjectState } from '@shared/types';
 import { COLLECTION_FIELD_TYPES, MAX_GALLERY_PHOTOS } from '@shared/types';
-import { galleryRows } from '@shared/gallery-field';
+import { GALLERY_CAPTION_MAX, galleryRows } from '@shared/gallery-field';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import type { EditOperation } from '@shared/ops';
 import { assignedTermIds, collectionKind, entryRoute, hasDetailPages, inSiteFeed, isCollectionId, isSyncedCollection, orderedEntries, termIdFor } from '@shared/collections';
 import { syncedRefusal } from '@shared/collection-grant';
 import { ENTRY_LINK_PREFIX, entryTarget, isImageBlock, richTextToMarkdown, type RichBlock, type RichText } from '@shared/richtext';
 import { sha256Hex } from '@shared/sha256';
-import { MAX_CAPTION, MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS, normalizeRichText } from '@engine/values';
+import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS, normalizeRichText } from '@engine/values';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -42,7 +42,8 @@ const GALLERY_PHOTO = z
     id: z.string().min(1).max(64).optional().describe('The photo\'s ID as values shows it, to keep that photo (its place, words, description); leave it out for a new photo.'),
     assetId: z.string().min(1).max(80).describe('A library image\'s assetId.'),
     alt: z.string().max(TEXT_LIMITS.imageAlt).optional().describe('Its description; left out, a kept photo keeps its own and a new one shows the library\'s suggestion.'),
-    caption: z.string().max(MAX_CAPTION).optional().describe('"" or left out for none.')
+    decorative: z.boolean().optional().describe('true: the picture says nothing a visitor needs, so screen readers pass it over. Left out, a kept photo keeps its own.'),
+    caption: z.string().max(GALLERY_CAPTION_MAX).optional().describe('"" or left out for none.')
   })
   .strict();
 type GalleryPhoto = z.infer<typeof GALLERY_PHOTO>;
@@ -149,6 +150,8 @@ function otherTerms(collection: Collection, entry: EntryDoc): Array<{ taxonomyId
 
 /** Most characters a custom text or rich text value shows in a read, and most entries a list of them; more are read whole with `field`. */
 const VALUE_CHARS = 400;
+/** How much of a gallery an entry's read shows before it is clipped (read whole with field): a few photos' words. */
+const GALLERY_CHARS = 2000;
 const REFERENCES_SHOWN = 10;
 
 /** A custom text or rich text value as text: rich text as its Markdown. */
@@ -186,7 +189,13 @@ function linkShown(v: CollectionFieldValue, pages: ProjectState['pages']): strin
 /** A custom field's value as values writes it back, and whether it was cut short or is the editor's to change. */
 function valueShown(schema: CollectionFieldSchema, v: CollectionFieldValue, pages: ProjectState['pages']): { value: unknown; clipped?: true; editorOnly?: true } {
   // A gallery's photos in order, each by its ID, so a call sending them back edits or moves the ones it names.
-  if (schema.type === 'gallery') return { value: galleryRows(v).map((r) => ({ id: r.id, assetId: r.image.assetId, ...(r.image.alt ? { alt: r.image.alt } : {}), ...(r.caption ? { caption: r.caption } : {}) })) };
+  // A long one is shown in part (its first photos whole), and read whole with field.
+  if (schema.type === 'gallery') {
+    const photos = galleryRows(v).map((r) => ({ id: r.id, assetId: r.image.assetId, ...(r.image.alt ? { alt: r.image.alt } : {}), ...(r.image.decorative ? { decorative: true } : {}), ...(r.caption ? { caption: r.caption } : {}) }));
+    let shown = photos;
+    while (shown.length > 1 && JSON.stringify(shown).length > GALLERY_CHARS) shown = shown.slice(0, -1);
+    return shown.length < photos.length ? { value: shown, clipped: true } : { value: photos };
+  }
   // An image by its asset ID ("" for one emptied on purpose); written back as read, it keeps its alt text as it is.
   if (schema.type === 'image') return { value: v && typeof v === 'object' && 'assetId' in v ? (v.assetId ?? '') : null };
   // A long list of entries is shown in part, and read whole with field.
@@ -203,6 +212,7 @@ function valueShown(schema: CollectionFieldSchema, v: CollectionFieldValue, page
 /** One custom value whole (read with field): a list of entries in full. */
 function valueShownWhole(schema: CollectionFieldSchema, v: CollectionFieldValue, pages: ProjectState['pages']): { value: unknown; editorOnly?: true } {
   if (schema.type === 'reference') return { value: v };
+  if (schema.type === 'gallery') return { value: galleryRows(v).map((r) => ({ id: r.id, assetId: r.image.assetId, ...(r.image.alt ? { alt: r.image.alt } : {}), ...(r.image.decorative ? { decorative: true } : {}), ...(r.caption ? { caption: r.caption } : {}) })) };
   const { clipped: _c, ...shown } = valueShown(schema, v, pages);
   return shown;
 }
@@ -506,7 +516,8 @@ function entryValue(field: string, schema: CollectionFieldSchema, v: string | nu
       return (v as GalleryPhoto[]).map((p) => {
         const was = p.id !== undefined ? before.get(p.id) : undefined;
         const kept = was && was.image.assetId === p.assetId ? was.image : undefined;
-        const image = p.alt !== undefined ? { assetId: p.assetId, alt: p.alt } : kept ? structuredClone(kept) : { assetId: p.assetId, alt: '' };
+        const decorative = p.decorative ?? (kept?.decorative === true);
+        const image = { assetId: p.assetId, alt: p.alt ?? (kept ? kept.alt : ''), ...(decorative ? { decorative: true } : {}) };
         return { ...(p.id !== undefined ? { id: p.id } : {}), image, caption: p.caption ?? '' };
       });
     }

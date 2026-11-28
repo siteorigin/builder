@@ -9,6 +9,8 @@ import { MAX_GALLERY_PHOTOS } from './types';
 
 /** What a photo's ID may be: the IDs list items are given (`i_k3j9x2ab`), or any short word of that alphabet. */
 export const GALLERY_ITEM_ID = /^[A-Za-z0-9_-]{1,64}$/;
+/** The longest caption a photo has: as long as a picture's in an article. */
+export const GALLERY_CAPTION_MAX = 300;
 
 /** The list of photos a layout reads a gallery field as: each one's picture (always there) and its caption. */
 export function galleryListProp(f: Pick<GalleryFieldSchema, 'label' | 'description'>): ListProp {
@@ -21,7 +23,7 @@ export function galleryListProp(f: Pick<GalleryFieldSchema, 'label' | 'descripti
     fields: {
       // Every photo of a gallery has its picture: one whose picture the library no longer has is left out.
       image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' }, required: true },
-      caption: { type: 'string', label: 'Caption', default: '' }
+      caption: { type: 'string', label: 'Caption', default: '', maxLength: GALLERY_CAPTION_MAX }
     },
     default: [],
     max: MAX_GALLERY_PHOTOS
@@ -39,7 +41,7 @@ export function galleryRows(value: unknown): GalleryItem[] {
   for (const row of value) {
     if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
     const { id, image, caption } = row as Partial<GalleryItem>;
-    if (typeof id !== 'string' || !id || seen.has(id)) continue;
+    if (typeof id !== 'string' || !GALLERY_ITEM_ID.test(id) || seen.has(id)) continue;
     if (!image || typeof image !== 'object' || typeof image.assetId !== 'string' || !image.assetId) continue;
     seen.add(id);
     const picture: ImageValue = { assetId: image.assetId, alt: typeof image.alt === 'string' ? image.alt : '', ...(image.decorative === true ? { decorative: true } : {}) };

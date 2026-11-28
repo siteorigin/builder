@@ -390,7 +390,7 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
       return typeof option?.label === 'string' && option.label.trim() ? option.label : value;
     }
     // A rich text field's text is no article: a section heading or a picture a hand edit put there is left out.
-    if (schema.type === 'richtext') return Array.isArray(value) ? value.filter((b) => b && typeof b === 'object' && b.type !== 'h2' && b.type !== 'image') : [];
+    if (schema.type === 'richtext') return Array.isArray(value) ? (value as RichText).filter((b) => b && typeof b === 'object' && b.type !== 'h2' && b.type !== 'image') : [];
     return value;
   }
   return undefined;

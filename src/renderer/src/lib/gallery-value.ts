@@ -16,7 +16,8 @@ export type GalleryEdit =
 
 /**
  * The gallery after one edit, with the IDs of the photos it added; null when the edit changes nothing or cannot be
- * made (a photo that is no longer there, a picture removed from Assets, more photos than a gallery holds). A chosen
+ * made (a photo that is no longer there, a picture removed from Assets, more photos than a gallery holds). A photo's
+ * picture removed in its row is the photo removed. A chosen
  * picture starts with no description of its own, so it shows the library's suggested alt text until one is written.
  */
 export function editGallery(rows: readonly GalleryItem[], edit: GalleryEdit, assets: Record<string, Pick<AssetRecord, 'id' | 'kind'>>, makeId: () => string = () => newId('i')): { rows: GalleryItem[]; added: string[] } | null {
@@ -49,8 +50,8 @@ export function editGallery(rows: readonly GalleryItem[], edit: GalleryEdit, ass
       if (edit.field === 'caption') changed = { ...row, caption: typeof edit.value === 'string' ? edit.value : '' };
       else if (edit.field === 'image') {
         const v = edit.value as Partial<ImageValue> | null;
-        // A photo always has its picture: clearing it is removing the photo.
-        if (!v || typeof v !== 'object' || typeof v.assetId !== 'string' || !v.assetId) return null;
+        // A photo always has its picture: removing the picture removes the photo.
+        if (!v || typeof v !== 'object' || typeof v.assetId !== 'string' || !v.assetId) return { rows: rows.filter((_, i) => i !== at), added: [] };
         changed = { ...row, image: { assetId: v.assetId, alt: typeof v.alt === 'string' ? v.alt : '', ...(v.decorative ? { decorative: true } : {}) } };
       } else return null;
       if (JSON.stringify(changed) === JSON.stringify(row)) return null;

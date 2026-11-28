@@ -10,6 +10,7 @@ import { conditionRef, isBinding, isBindingRef, isCollectionLoop, isComparison, 
 import { CURRENT_COLLECTION, ENTRY_ORDER_FIELD, normalizeCollectionQuery, type CollectionQuery } from '@shared/collection-query';
 import { fieldFitProblem, normalizeConnection, rowFieldSchema } from '@shared/collection-rows';
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldLabel, isEntryDateField, isLinkedForm } from '@shared/entry-fields';
+import { galleryFitProblem } from '@shared/gallery-field';
 import { acceptedTypes, bindingProblem, bindingSlots } from './schema';
 import { requiredGap } from '@shared/required';
 import { formDestinationLookup, type FormDestinationLookup } from './form-destinations';
@@ -258,6 +259,12 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
     const choice = slot.field === 'prop' ? entryChoiceProblem(schema, nested?.[slot.prop!]) : null;
     if (choice) {
       out.push(`shows “${schema.label}” in "${slot.prop}", but it ${choice}`);
+      continue;
+    }
+    // A gallery's photos fill a list of pictures, as in a collection's layout (see shared/gallery-field.ts).
+    const fit = slot.field === 'prop' && schema.type === 'list' ? galleryFitProblem(schema, nested?.[slot.prop!]) : null;
+    if (fit) {
+      out.push(`shows “${schema.label}” in "${slot.prop}", but ${fit}`);
       continue;
     }
     const comparison = condition && isComparison(slot.value) ? slot.value : undefined;

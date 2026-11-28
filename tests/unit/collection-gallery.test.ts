@@ -4,7 +4,7 @@
  * ready-made one in a Gallery of its own), and Assets and exports count every photo.
  */
 import { afterAll, describe, expect, it } from 'vitest';
-import type { AssetRecord, GalleryItem, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { AssetRecord, GalleryItem, InstanceNode, ListProp, OwnerRef, ProjectState } from '@shared/types';
 import { MAX_GALLERY_PHOTOS } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -19,6 +19,8 @@ import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
 import { editGallery } from '../../src/renderer/src/lib/gallery-value';
 import { publishedGalleryFiles } from '../../src/main/export';
 import { mappingFieldsProblem } from '../../src/main/sources/mapping';
+import { queriedEntries } from '@generator/collection-query';
+import { queryProblem } from '@engine/collection-sources';
 import { executeTool, type ToolHost } from '@agent/tools';
 import { checkAuthority } from '@agent/scope';
 import { collectionGrantRefusal } from '@shared/collection-grant';
@@ -129,6 +131,25 @@ describe('a gallery field and its values', () => {
     expect(refusal(s, { type: 'collection.update', collectionId: 'listings', fields: { photos: { type: 'gallery', label: 'Photos', default: [{ image: 'a_front' }] } } })).toMatch(/its default is \[\]/);
   });
 
+  it('keeps a gallery stored with its keys in another order through a change elsewhere in the collection', () => {
+    const s = agency();
+    const hand = structuredClone(s);
+    hand.collections.listings.entries.en_harbour.values.photos = photos(s).map((p) => ({ caption: p.caption, image: { alt: p.image.alt, assetId: p.image.assetId }, id: p.id })) as never;
+    const after = run(hand, { type: 'collection.update', collectionId: 'listings', fields: { price: { type: 'string', label: 'Asking price' }, photos: { type: 'gallery', label: 'Photos' } } });
+    expect(after.collections.listings.entries.en_harbour.values.photos).toEqual(hand.collections.listings.entries.en_harbour.values.photos);
+  });
+
+  it('reads a decorative photo as decorative, and a photo with a malformed ID as damaged', () => {
+    let s = run(agency(), { type: 'entry.update', collectionId: 'listings', entryId: 'en_mill', values: { photos: [{ id: 'i_wall', image: { assetId: 'a_garden', alt: 'Wall', decorative: true } }] } });
+    expect(photos(s, 'en_mill')[0].image).toEqual({ assetId: 'a_garden', alt: 'Wall', decorative: true });
+    const read = (st: ProjectState) => entryFieldValue({ state: st, collection: st.collections.listings, entry: st.collections.listings.entries.en_mill, neighbours: {} }, 'field.photos');
+    expect(read(s)).toEqual([{ id: 'i_wall', image: { assetId: 'a_garden', alt: '', decorative: true }, caption: '' }]);
+    s = structuredClone(s);
+    s.collections.listings.entries.en_mill.values.photos = [{ id: 'front door', image: { assetId: 'a_front', alt: '' }, caption: '' }] as never;
+    expect(read(s)).toEqual([]);
+    expect(validateState(s).some((d) => d.code === 'FIELD_VALUE_INVALID' && d.owner?.kind === 'entry' && d.owner.id === 'en_mill')).toBe(true);
+  });
+
   it('keeps a filled image field from turning into a gallery, and a filled gallery from turning into anything else', () => {
     let s = run(agency(), { type: 'collection.update', collectionId: 'listings', fields: { price: { type: 'string', label: 'Price' }, photos: { type: 'gallery', label: 'Photos' }, hero: { type: 'image', label: 'Hero' } } });
     s = run(s, { type: 'entry.update', collectionId: 'listings', entryId: 'en_mill', values: { hero: 'a_garden' } });
@@ -203,13 +224,36 @@ describe('a layout showing the photos', () => {
     expect(refusal(s, { type: 'node.setBinding', owner: LISTINGS, nodeId: carousel, field: 'prop', prop: 'slides', binding: { $entry: 'field.price' } })).toMatch(/needs a list field/);
   });
 
+  it('lists the listings with photos, or without, when a collection loop asks whether the field is set', () => {
+    const s = agency();
+    const ids = (exists: boolean) => queriedEntries(s, { collectionId: 'listings', where: [{ field: 'field.photos', op: 'exists', value: exists }] }, {}).map((e) => e.id);
+    expect(queryProblem(s, { kind: 'page', id: s.site.homePageId }, { collectionId: 'listings', where: [{ field: 'field.photos', op: 'exists', value: true }] })).toBeNull();
+    expect(ids(true)).toEqual(['en_harbour']);
+    expect(ids(false)).toEqual(['en_mill']);
+  });
+
+  it('refuses, on load, a collection loop that shows the photos in a list with no picture for each', () => {
+    const s = agency();
+    const home = { kind: 'page' as const, id: s.site.homePageId };
+    const box = applyOperations(s, [{ type: 'node.insert', owner: home, parentId: null, primitive: 'container' }]);
+    const r = applyOperations(box.state, [{ type: 'node.insert', owner: home, parentId: box.results[0].nodeId as string, primitive: 'repeat', query: { collectionId: 'listings' } }]);
+    const loop = r.results[0].nodeId as string;
+    const f = applyOperations(r.state, [{ type: 'node.insert', owner: home, parentId: loop, componentId: 'faq.list' }]);
+    const faq = f.results[0].nodeId as string;
+    const hand = structuredClone(f.state);
+    const node = hand.pages[s.site.homePageId].nodes[faq] as InstanceNode;
+    node.props.items = { $item: 'field.photos' };
+    expect(validateState(hand).some((d) => d.nodeId === faq && /no picture \(“image”\) for each photo/.test(d.message))).toBe(true);
+  });
+
   it('judges a list by its fields: a picture called image, and the caption and picture of the kinds a photo has', () => {
     const from = galleryListProp({ label: 'Photos' });
-    const list = (fields: Record<string, unknown>) => ({ type: 'list', label: 'Slides', itemLabel: 'Slide', fields, default: [] }) as never;
+    const list = (fields: Record<string, unknown>) => ({ type: 'list', label: 'Slides', itemLabel: 'Slide', fields, default: [] }) as unknown as ListProp;
     expect(galleryFitProblem(from, list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } }, link: { type: 'link', label: 'Link', default: { type: 'none', target: '' } } }))).toBeNull();
     expect(galleryFitProblem(from, list({ photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } } }))).toMatch(/no picture/);
     expect(galleryFitProblem(from, list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } }, caption: { type: 'richtext', label: 'Caption', default: [] } }))).toMatch(/“caption” that is a richtext/);
-    expect(galleryFitProblem(from, { ...list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } }), feed: 'pages' })).toMatch(/fills itself/);
+    expect(galleryFitProblem(from, { ...list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } }), feed: 'pages' } as ListProp)).toMatch(/fills itself/);
+    expect(galleryFitProblem(from, { ...list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } }), pageTeaser: { link: 'link' } } as unknown as ListProp)).toMatch(/fills itself/);
   });
 });
 
@@ -247,9 +291,19 @@ describe('Assets and exports count every photo', () => {
     expect(assetUsages(s).a_front ?? 0).toBe(0);
   });
 
-  it('keeps the original of every published listing\'s photo in the website, and none of a draft\'s', () => {
+  it('keeps every file of each published listing\'s photo in the website, its responsive copies too, and none of a draft\'s', () => {
     const s = agency();
-    expect([...publishedGalleryFiles(s)].sort()).toEqual(['static/assets/front-1a2b3c4d.jpg', 'static/assets/garden-1a2b3c4d.jpg']);
+    s.assets.assets.a_garden.variants = [{ width: 480, file: 'static/assets/Garden-1a2b3c4d-480w.jpg' }];
+    const kept = publishedGalleryFiles(s);
+    expect(kept.has('static/assets/front-1a2b3c4d.jpg')).toBe(true);
+    expect(kept.has('static/assets/garden-1a2b3c4d.jpg')).toBe(true);
+    // A copy is kept by its spelling and as a disk that ignores case reads it.
+    expect(kept.has('static/assets/Garden-1a2b3c4d-480w.jpg')).toBe(true);
+    expect(kept.has('static/assets/garden-1a2b3c4d-480w.jpg')).toBe(true);
+    expect([...kept].some((f) => f.includes('kitchen'))).toBe(false);
+    // Once the listing goes back to draft, none of its photos are the website's.
+    const drafted = run(s, { type: 'entry.update', collectionId: 'listings', entryId: 'en_harbour', draft: true });
+    expect(publishedGalleryFiles(drafted).size).toBe(0);
   });
 
   it('leaves a gallery out of what a sync fills in', () => {
@@ -280,8 +334,9 @@ describe('the Content writer\'s gallery edits', () => {
     expect(editGallery(rows, { kind: 'remove', itemId: 'i_a' }, assets)?.rows).toEqual([rows[1]]);
     expect(editGallery(rows, { kind: 'field', itemId: 'i_b', field: 'caption', value: 'Spring' }, assets)?.rows[1]).toEqual({ ...rows[1], caption: 'Spring' });
     expect(editGallery(rows, { kind: 'field', itemId: 'i_a', field: 'image', value: { assetId: 'a_front', alt: 'Front door', decorative: false } }, assets)?.rows[0].image).toEqual({ assetId: 'a_front', alt: 'Front door' });
-    // A photo always has its picture, and an edit of one that is gone changes nothing.
-    expect(editGallery(rows, { kind: 'field', itemId: 'i_a', field: 'image', value: { assetId: null, alt: '' } }, assets)).toBeNull();
+    expect(editGallery(rows, { kind: 'field', itemId: 'i_b', field: 'image', value: { assetId: 'a_garden', alt: 'Garden', decorative: true } }, assets)?.rows[1].image).toEqual({ assetId: 'a_garden', alt: 'Garden', decorative: true });
+    // A photo always has its picture: removing it in the row removes the photo. An edit of one that is gone changes nothing.
+    expect(editGallery(rows, { kind: 'field', itemId: 'i_a', field: 'image', value: { assetId: null, alt: '' } }, assets)?.rows).toEqual([rows[1]]);
     expect(editGallery(rows, { kind: 'remove', itemId: 'i_gone' }, assets)).toBeNull();
     expect(editGallery(rows, { kind: 'move', itemId: 'i_a', index: 0 }, assets)).toBeNull();
   });
@@ -336,6 +391,19 @@ describe('the assistant\'s gallery values', () => {
       ['i_again', 'The original entrance', 'Entrance'],
       ['new', '', 'Kitchen']
     ]);
+  });
+
+  it('echoes a decorative photo back as decorative, changes a description it is given, and resets with null', async () => {
+    const { h, now } = host(run(agency(), { type: 'entry.update', collectionId: 'listings', entryId: 'en_mill', values: { photos: [{ id: 'i_wall', image: { assetId: 'a_garden', alt: 'Wall', decorative: true } }, { id: 'i_door', image: { assetId: 'a_front', alt: 'Door' } }] } }));
+    const read = (await tool(h, 'read_collection_entry', { collectionId: 'listings', entryId: 'en_mill', field: 'photos' })).content as unknown as { value: Array<Record<string, unknown>> };
+    expect(read.value[0]).toEqual({ id: 'i_wall', assetId: 'a_garden', alt: 'Wall', decorative: true });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'listings', entryId: 'en_mill', values: [{ field: 'photos', value: [read.value[0], { id: 'i_door', assetId: 'a_front', alt: 'Front door' }] }] })).ok).toBe(true);
+    expect(photos(now(), 'en_mill').map((p) => p.image)).toEqual([
+      { assetId: 'a_garden', alt: 'Wall', decorative: true },
+      { assetId: 'a_front', alt: 'Front door' }
+    ]);
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'listings', entryId: 'en_mill', values: [{ field: 'photos', value: null }] })).ok).toBe(true);
+    expect(now().collections.listings.entries.en_mill.values).not.toHaveProperty('photos');
   });
 
   it('defines a gallery field and refuses a value of the wrong shape', async () => {

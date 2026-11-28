@@ -285,9 +285,10 @@ export function libraryAssetFiles(state: ProjectState): Set<string> {
 }
 
 /**
- * The originals of the photos published entries' gallery fields hold (#1320): the website keeps each one even where
- * no page shows it (a layout that leaves the gallery out), as the entry's own photos. Drafts' photos are not the
- * website's, and the responsive copies only ship where a page shows them.
+ * The files of the photos published entries' gallery fields hold (#1320), each original and its responsive copies:
+ * the website keeps them even where no page shows them (a layout that leaves the gallery out), as the entry's own
+ * photos, and the library it publishes names every copy. Drafts' photos are not the website's. Each is spelled as the
+ * record has it and lowercase, so a file renamed only in case on a disk that ignores case is still found (keptFile).
  */
 export function publishedGalleryFiles(state: ProjectState): Set<string> {
   const live = publishedState(state);
@@ -299,11 +300,15 @@ export function publishedGalleryFiles(state: ProjectState): Set<string> {
       for (const [name] of galleries)
         for (const id of galleryAssetIds(e?.values && Object.hasOwn(e.values, name) ? e.values[name] : undefined)) {
           const a = Object.hasOwn(live.assets.assets, id) ? live.assets.assets[id] : undefined;
-          if (a?.kind === 'image' && typeof a.file === 'string') out.add(a.file);
+          if (a?.kind !== 'image') continue;
+          for (const f of [a.file, ...(a.variants ?? []).map((v) => v.file)]) if (typeof f === 'string') out.add(f).add(f.toLowerCase());
         }
   }
   return out;
 }
+
+/** Whether a staged file is one of `kept` (publishedGalleryFiles): by its very path, or as a disk that ignores case reads it. */
+const keptFile = (kept: ReadonlySet<string>, rel: string) => kept.has(rel) || kept.has(rel.toLowerCase());
 
 /** The name the asset importer gives a file: a slug, eight hash characters and an optional width. */
 const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
@@ -563,7 +568,7 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
-    if (namesAsset(named, rel) || photos.has(rel)) shipped.add(rel);
+    if (namesAsset(named, rel) || keptFile(photos, rel)) shipped.add(rel);
     else {
       await fs.rm(join(project, rel));
       removed.add(rel);
@@ -596,7 +601,7 @@ export async function draftOnlyAssetFiles(project: string, state: ProjectState, 
   const shipped = await websiteNames(project, site, candidates.map((rel) => basename(rel)), unreached);
   // A published entry's gallery photo is the website's whether or not a page shows it (pruneWebsiteAssets).
   const photos = publishedGalleryFiles(state);
-  const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel) && !photos.has(rel)));
+  const unshipped = new Set(candidates.filter((rel) => !namesAsset(shipped, rel) && !keptFile(photos, rel)));
   if (!unshipped.size) return [];
   const used = new NameMatcher([...unshipped].map((rel) => basename(rel)));
   for (const [path, text] of drafts) if (/^(src|static)\//.test(path) && TEXT_FILE.test(path) && path !== SEARCH_INDEX) used.scan(text);
@@ -659,7 +664,7 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
   return missing.map((m) => {
     const { direct, copies } = asked(m);
     const named = (f: string) => found.whole(basename(f));
-    return { asset: state.assets.assets[m.assetId], missing: m, used: direct.some(named) || copies.some(named) || (m.original && photos.has(state.assets.assets[m.assetId].file)) };
+    return { asset: state.assets.assets[m.assetId], missing: m, used: direct.some(named) || copies.some(named) || direct.some((f) => keptFile(photos, f)) };
   });
 }
 

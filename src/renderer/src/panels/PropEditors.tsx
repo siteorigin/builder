@@ -3339,7 +3339,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, openI
     const a = after.current;
     if (!a) return;
     const root = rootRef.current;
-    const focusRow = (id: string | null) => ((id && root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(id)}`)) || root?.querySelector<HTMLElement>('.insp-add'))?.focus();
+    const focusRow = (id: string | null) => ((id && root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(id)}`)) || root?.querySelector<HTMLElement>('.insp-add, .insp-pick-open'))?.focus();
     if (a.kind === 'added') {
       const added = items.find((i) => !a.before.includes(i.id));
       if (!added) return;

@@ -37,8 +37,8 @@ import { newId } from '@shared/ids';
 import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';
 import { EngineError, allTrees, fail } from './tree';
 import { starterArchiveLayout } from './collection-sources';
-import { MAX_CAPTION, normalizeImage, normalizeLink, normalizeRichText, normalizeScalar } from './values';
-import { GALLERY_ITEM_ID, galleryRows } from '@shared/gallery-field';
+import { normalizeImage, normalizeLink, normalizeRichText, normalizeScalar } from './values';
+import { GALLERY_CAPTION_MAX, GALLERY_ITEM_ID, galleryRows } from '@shared/gallery-field';
 import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
 import { collectionLinkUses, entryLinkUses, type LinkHolder, type PageLinkUse } from './page-links';
 import { defaultLayout, installLayoutComponents, isDefaultLayout } from './collection-layouts';
@@ -458,7 +458,7 @@ function galleryValue(state: ProjectState, v: unknown, label: string, stored?: u
   if (rows.length > MAX_GALLERY_PHOTOS) fail(`${label}: a gallery holds at most ${MAX_GALLERY_PHOTOS} photos.`);
   const before = new Map((Array.isArray(stored) ? stored : []).flatMap((r) => (r && typeof r === 'object' && typeof (r as GalleryItem).id === 'string' ? [[(r as GalleryItem).id, r as GalleryItem]] : [])));
   const seen = new Set<string>();
-  return rows.map((row, i) => {
+  const out = rows.map((row, i) => {
     const at = `${label} → Photo ${i + 1}`;
     if (!row || typeof row !== 'object' || Array.isArray(row)) fail(`${at}: expected { image, caption? }.`);
     const r = row as Record<string, unknown>;
@@ -474,9 +474,12 @@ function galleryValue(state: ProjectState, v: unknown, label: string, stored?: u
     const image = normalizeImage(given, state, at, before.get(id)?.image?.alt);
     const caption = r.caption === undefined ? '' : r.caption;
     if (typeof caption !== 'string') fail(`${at}: its caption is text.`);
-    if (caption.length > MAX_CAPTION) fail(`${at}: its caption: ${tooLongMessage(caption.length, MAX_CAPTION)}`);
+    if (caption.length > GALLERY_CAPTION_MAX) fail(`${at}: its caption: ${tooLongMessage(caption.length, GALLERY_CAPTION_MAX)}`);
     return { id, image, caption: caption as string };
   });
+  // Unchanged, it is kept exactly as stored (its keys in whatever order a hand edit wrote them), so a change elsewhere
+  // in the collection never reads it as changed (see settleEntries).
+  return stored !== undefined && JSON.stringify(v) === JSON.stringify(stored) ? (v as GalleryItem[]) : out;
 }
 
 /**
@@ -1326,8 +1329,8 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
         if (f.type === 'gallery') {
           // The photos it can show still show; a damaged one is left out, and each picture gone is a problem of its own.
           const rows = galleryRows(v);
-          if (!Array.isArray(v) || rows.length !== v.length || v.length > MAX_GALLERY_PHOTOS)
-            out.push({ severity: 'warning', code: 'FIELD_VALUE_INVALID', message: `${what}: its ${f.label} is not a list of at most ${MAX_GALLERY_PHOTOS} photos, each with its own ID and a picture, so the ones that are not show nothing.`, owner: eo, site: `values|${k}` });
+          if (!Array.isArray(v) || rows.length !== v.length || v.length > MAX_GALLERY_PHOTOS || rows.some((r) => r.caption.length > GALLERY_CAPTION_MAX))
+            out.push({ severity: 'warning', code: 'FIELD_VALUE_INVALID', message: `${what}: its ${f.label} is not a list of at most ${MAX_GALLERY_PHOTOS} photos, each with its own ID, a picture and a caption of at most ${GALLERY_CAPTION_MAX} characters, so the ones that are not show nothing.`, owner: eo, site: `values|${k}` });
           for (const row of rows) {
             const a = own(assets, row.image.assetId as string);
             if (!a) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${what}: a photo of ${f.label} shows an image that is not in the library.`, owner: eo, site: `values|${k}|${row.id}` });

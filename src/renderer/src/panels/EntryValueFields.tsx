@@ -8,7 +8,7 @@
 import './PostTerms.css';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
-import type { Collection, CollectionFieldSchema, DateFieldSchema, EntryDoc, GalleryFieldSchema, ListItem, ProjectState, ReferenceFieldSchema, ScalarPropSchema } from '@shared/types';
+import type { Collection, CollectionFieldSchema, DateFieldSchema, EntryDoc, GalleryFieldSchema, GalleryItem, ListItem, ProjectState, ReferenceFieldSchema, ScalarPropSchema } from '@shared/types';
 import { isDraftEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { MAX_REFERENCES } from '@engine/collections';
@@ -91,13 +91,29 @@ function GalleryValue({ state, name, schema, value, set }: { state: ProjectState
   const list = galleryListProp(schema);
   const rows = galleryRows(value);
   const field = schema.label.toLowerCase();
+  // While a change is being saved, the next one builds on the gallery that change sends, not on the one shown before
+  // it lands: two photos removed in quick succession both go.
+  const sending = useRef<{ rows: GalleryItem[]; count: number } | null>(null);
   const onList = (op: ListOp) => {
     const edit: GalleryEdit | null =
       op.kind === 'pick' ? { kind: 'pick', assetIds: op.assetIds } : op.kind === 'remove' ? { kind: 'remove', itemId: op.itemId } : op.kind === 'move' ? { kind: 'move', itemId: op.itemId, index: op.index } : op.kind === 'field' ? { kind: 'field', itemId: op.itemId, field: op.field, value: op.value } : null;
-    const next = edit && editGallery(rows, edit, state.assets.assets);
+    const next = edit && editGallery(sending.current?.rows ?? rows, edit, state.assets.assets);
     if (!next) return op.kind === 'pick' ? Promise.resolve(null) : undefined;
-    const label = op.kind === 'pick' ? `Add ${next.added.length === 1 ? 'a photo' : `${next.added.length} photos`} to ${field}` : op.kind === 'remove' ? `Remove a photo from ${field}` : op.kind === 'move' ? `Move a photo in ${field}` : `Change a photo in ${field}`;
-    const saved = Promise.resolve(set(name, next.rows, label));
+    const label = op.kind === 'pick' ? `Add ${next.added.length === 1 ? 'a photo' : `${next.added.length} photos`} to ${field}` : op.kind === 'remove' || (op.kind === 'field' && next.rows.length < (sending.current?.rows ?? rows).length) ? `Remove a photo from ${field}` : op.kind === 'move' ? `Move a photo in ${field}` : `Change a photo in ${field}`;
+    const mine = { rows: next.rows, count: (sending.current?.count ?? 0) + 1 };
+    sending.current = mine;
+    const saved = Promise.resolve(set(name, next.rows, label)).then(
+      (ok) => {
+        // A change refused leaves the gallery as saved: the next edit starts from what shows.
+        if (!ok) sending.current = null;
+        else if (sending.current && --sending.current.count <= 0) sending.current = null;
+        return ok;
+      },
+      (e) => {
+        sending.current = null;
+        throw e;
+      }
+    );
     // Choose images… opens the photos it added once they show.
     return op.kind === 'pick' ? saved.then((ok) => (ok ? { added: next.added, replaced: 0 } : null)) : saved;
   };
