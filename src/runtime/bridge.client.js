@@ -58,7 +58,7 @@ const shownPath = () => readablePath(location.pathname);
 
 /**
  * This document's own name, so a later load of the same page is never taken for it, and how many times it has moved
- * to another page in place: together they name the navigation each message comes from (§17.4). The editor drops what
+ * to another page in place: together they name the navigation each message comes from. The editor drops what
  * a navigation it has moved past reports about the page.
  */
 const documentId = 'd' + Array.from(crypto.getRandomValues(new Uint32Array(2)), (n) => n.toString(36)).join('');

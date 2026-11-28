@@ -54,26 +54,27 @@ export interface FillerResult {
 }
 
 /**
- * Stand-ins for the other results, plainly made up, on the domains reserved for examples. The first shows above the
+ * Stand-ins for the other results, on the domains reserved for examples: believable search copy of the usual lengths,
+ * so the owner's result is read against results like it rather than against text about placeholders. The first shows above the
  * document's own result and the rest below it.
  */
 export const FILLER_RESULTS: readonly FillerResult[] = [
   {
-    site: 'Example Site',
-    url: 'example.com › sample-page',
-    title: 'Sample result title from an example website',
-    description: 'Placeholder text standing in for another result’s description, so you can compare how yours reads beside it.'
+    site: 'Example Co.',
+    url: 'example.com › services',
+    title: 'Services and prices · Example Co.',
+    description: 'What we offer, what it costs and how to book, with answers to the questions customers ask most before they get in touch.'
   },
   {
-    site: 'Another Example',
-    url: 'example.org › guides › sample',
-    title: 'Another placeholder result',
-    description: 'This is not a real page. It fills the space a second site would take in a list of search results.'
+    site: 'Example Guides',
+    url: 'example.org › guides › choosing',
+    title: 'How to choose the right local business for the job',
+    description: 'Five questions worth asking before you book, from what the price includes to how long the work usually takes.'
   },
   {
-    site: 'Placeholder Site',
-    url: 'example.net › articles',
-    title: 'A third sample result with a slightly longer title',
-    description: 'More placeholder text, long enough to run on to a second line the way many descriptions do in a list of results.'
+    site: 'Example Reviews',
+    url: 'example.net › reviews',
+    title: 'Customer reviews and ratings for local businesses near you',
+    description: 'Read what customers say about service, value and quality, compare ratings side by side and leave a review of your own.'
   }
 ];

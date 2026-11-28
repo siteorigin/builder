@@ -2142,7 +2142,7 @@ export function SiteStyles() {
           </div>
           <CheckedField key={`name-${snap?.workspaceKey}`} id="site-name" label="Site name" hint={siteNameNote(st)} value={site.name} check={siteNameCheck(st)} unusable="" onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
           <Field label="Default description" hint="Used by pages without a description of their own.">
-            <DraftInput multiline limit={TEXT_LIMITS.siteDescription} keep="site:description" value={site.description} onCommit={(v) => updSite({ description: v })} />
+            <DraftInput id="site-description" multiline limit={TEXT_LIMITS.siteDescription} keep="site:description" value={site.description} onCommit={(v) => updSite({ description: v })} />
           </Field>
           {/* Keyed by the project's opening: text one project refused never shows in the next. */}
           <CheckedField

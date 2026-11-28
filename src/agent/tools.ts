@@ -357,7 +357,7 @@ const COMPONENT_CHECK: ToolName = 'inspect_component';
 const MODEL_PAGE_STARTER = z
   .enum(['empty', 'intro', 'article'])
   .optional()
-  .describe('"intro" adds a page introduction section. "article" makes a dated article (news, an announcement): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body.');
+  .describe('"intro" adds a page introduction section. "article" makes one dated announcement page (a news item): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body. Blog posts are entries of the "posts" collection, never article pages.');
 
 /**
  * The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it.
@@ -491,11 +491,13 @@ export function asksForSource(text: string, state?: ProjectState): boolean {
 
 /**
  * Whether a request typed into the chat asks for a collection or its entries, which a small site or page run is then
- * offered the tools for: in so many words, or by naming one of the project's collections (its ID, its name or what one
- * entry is called, "Add a Role field to Team").
+ * offered the tools for: in so many words, by asking for a blog or to write its posts (the ready-made "posts" collection,
+ * #1423; a post office or fence posts are no blog), or by naming one of the project's collections (its ID, its name or
+ * what one entry is called, "Add a Role field to Team").
  */
 export function asksForCollection(text: string, state?: ProjectState): boolean {
-  if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop)\b/i.test(text)) return true;
+  if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop|blogs?|blogging)\b/i.test(text)) return true;
+  if (/\b(?:write|draft|publish)\s+(?:\S+\s+){0,3}?posts?\b/i.test(text)) return true;
   const fold = (s: string) => s.normalize('NFKC').toLowerCase();
   const words = fold(text);
   const named = (n: unknown) => {
@@ -974,7 +976,7 @@ export type { ToolOutcome } from './result';
  * read wherever the tool does not name the one it reflects (a change names the revision it made).
  */
 /**
- * How a theme's code is changed (§8.4): on a project copy for the placements the request covers, which then reads and
+ * How a theme's code is changed: on a project copy for the placements the request covers, which then reads and
  * patches like any project code, while the theme's own stays for every other placement, for inserting and for theme
  * switches. Says which copy this run may make, and lists the placements it may move to one.
  */

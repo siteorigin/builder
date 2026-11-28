@@ -258,8 +258,12 @@ interface Listed {
 const OPEN_FILE = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
 const windows = process.platform === 'win32';
 
-/** Every folder the walk looks in and every file a snapshot takes in `root`, by project path ('' is the project folder). */
-async function listProject(root: string, settleMs: number): Promise<Map<string, Listed>> {
+/**
+ * Every folder the walk looks in and every file a snapshot takes in `root`, by project path ('' is the project folder).
+ * `capture`: a file too large for a snapshot, or one whose name is not valid text, fails the listing; otherwise the
+ * first is listed and the second left out, for a listing that only compares (listSnapshotFiles).
+ */
+async function listProject(root: string, settleMs: number, capture = true): Promise<Map<string, Listed>> {
   const now = Date.now();
   const out = new Map<string, Listed>();
   const record = (rel: string, abs: string, st: BigIntStats, place: SnapshotPlace) =>
@@ -314,7 +318,7 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
           if (isMissing(e)) return null;
           throw unreadable(r, e);
         });
-        if (st && (st.isFile() || st.isDirectory())) throw badName(r, 'has a name that is not valid text');
+        if (capture && st && (st.isFile() || st.isDirectory())) throw badName(r, 'has a name that is not valid text');
         continue;
       }
       let st: BigIntStats;
@@ -330,7 +334,7 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
         record(r, a, st, place);
         await walk(r, a);
       } else if (st.isFile() && place.kind !== 'excluded') {
-        if (st.size > BigInt(MAX_SNAPSHOT_FILE)) throw new SnapshotCaptureError(r, 'too-large', `${r} is larger than a saved version can hold (2 GB). Move it out of the project, then try again.`);
+        if (capture && st.size > BigInt(MAX_SNAPSHOT_FILE)) throw new SnapshotCaptureError(r, 'too-large', `${r} is larger than a saved version can hold (2 GB). Move it out of the project, then try again.`);
         record(r, a, st, place);
       }
       // A link, or anything else that is not a plain file (a pipe, a socket, a device), is no file of a snapshot's.
@@ -381,6 +385,51 @@ async function hashListed(l: Listed): Promise<{ sha256: string; stamp: string }>
   } finally {
     await handle.close().catch(() => undefined);
   }
+}
+
+/** Git's name for the listed file's bytes (`blob <size>\0` and the bytes, by SHA-1), read through one checked handle. */
+async function blobOidListed(l: Listed): Promise<string> {
+  const { handle, stamp } = await openListed(l);
+  try {
+    const hash = createHash('sha1').update(`blob ${l.size}\0`);
+    const chunk = Buffer.allocUnsafe(1 << 20);
+    let total = 0n;
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (!bytesRead) break;
+      hash.update(chunk.subarray(0, bytesRead));
+      total += BigInt(bytesRead);
+    }
+    if (total !== l.size || stampOf(await handle.stat({ bigint: true })) !== stamp) throw changed(l.rel);
+    return hash.digest('hex');
+  } catch (e) {
+    throw asCaptureError(l.rel, e);
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/** A file a snapshot of the project would hold now, listed but not read (listSnapshotFiles). */
+export interface ListedSnapshotFile {
+  /** Relative to the project, with forward slashes, as the disk spells it. */
+  path: string;
+  executable: boolean;
+  /** Its size in bytes, as listed: one past MAX_SNAPSHOT_FILE is no file a snapshot holds. */
+  size: number;
+  /** Git's name for its bytes, read through a handle checked to reach the file listed: a SnapshotCaptureError says it changed since. */
+  blobOid(): Promise<string>;
+}
+
+/**
+ * The files a snapshot of the project in `root` would hold in its tree now, chosen as a capture chooses them (never
+ * through a link, nor into another repository), none of them read: for a comparison with a saved snapshot that reads
+ * only the files it has to (#1396). A file no snapshot could take (too large, or a name that is not valid text) stops
+ * a capture but not this: the first is listed, the second can't be named and is left out. Throws a SnapshotCaptureError
+ * when the project changes while it is listed.
+ */
+export async function listSnapshotFiles(root: string): Promise<ListedSnapshotFile[]> {
+  const listed = await listProject(root, 0, false);
+  return [...listed.values()].filter((l) => !l.dir && l.place.kind === 'tree').map((l) => ({ path: l.rel, executable: l.executable, size: Number(l.size), blobOid: () => blobOidListed(l) }));
 }
 
 /** The listed file's bytes, read through a checked handle, as long as they are still the ones captured. */

@@ -24,7 +24,7 @@ const ENTRY = [
   "import { createRoot } from 'react-dom/client';",
   "import { flushSync } from 'react-dom';",
   `import { Chat } from ${src('renderer/src/panels/Chat')};`,
-  `import { applyAiEvent, useStore } from ${src('renderer/src/store')};`,
+  `import { applyAiEvent, getConfirm, pendingConfirms, useStore } from ${src('renderer/src/store')};`,
   "const time = '2026-11-24T00:00:00.000Z';",
   'window.mount = (state) => {',
   "const context = { pageId: state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, mode: 'ask' };",
@@ -65,6 +65,15 @@ const ENTRY = [
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
   '  }),',
   "  calls: (path) => window.calls.filter((c) => c[0] === path).map((c) => c[1]),",
+  // The app's own question, as the dialog host shows it, and the answer given to it.
+  "  confirming: () => getConfirm()?.title ?? null,",
+  "  confirm: (ok) => getConfirm()?.resolve(ok),",
+  "  confirms: () => pendingConfirms().length,",
+  "  toasts: () => useStore.getState().toasts.map((t) => t.text),",
+  "  shown: () => useStore.getState().conversation?.id,",
+  // A request started from elsewhere (a live session guest) while the chat is idle.
+  "  busy: () => flushSync(() => useStore.setState({ runStatus: 'running', activeRunId: 'run_guest', runConversationId: 'c_r' })),",
+  "  idle: () => flushSync(() => useStore.setState({ runStatus: null, activeRunId: null, runConversationId: null })),",
   '};'
 ].join('\n');
 
@@ -76,7 +85,7 @@ const BRIDGE = `
   window.perfRecords = [];
   window.calls = [];
   window.builderPerf = { send: (record) => window.perfRecords.push(record) };
-  const answers = { 'ai.localContext': { server: 'http://127.0.0.1:9/v1', reportedWindow: null }, 'ai.localModels': { ok: true, models: ['test-model'] }, 'ai.providers': ${PROVIDERS} };
+  const answers = { 'ai.localContext': { server: 'http://127.0.0.1:9/v1', reportedWindow: null }, 'ai.localModels': { ok: true, models: ['test-model'] }, 'ai.providers': ${PROVIDERS}, 'ai.newConversation': { id: 'c_new', title: 'New conversation', createdAt: '2026-11-24T00:00:00.000Z', messages: [] } };
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : key === 'platform' ? 'darwin' : any(path ? path + '.' + key : key)),
     apply: (_, __, args) => (window.calls.push([path, args]), path === 'on' ? () => {} : Promise.resolve(path === 'ai.openConversation' ? structuredClone(window.liveConv) : answers[path]))
@@ -242,6 +251,67 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await page.evaluate("so.calls('ai.stop')")).toEqual([['run_live'], ['run_live']]);
     expect(await page.evaluate("so.calls('ai.openConversation')")).toEqual([['c_r'], ['c_r']]);
     await page.locator('.run-strip[data-run-id="run_live"]').waitFor();
+  });
+
+  it('never sends `/clear` to the AI: it starts a new conversation once confirmed, and says why while a request runs (#1356)', async () => {
+    const box = page.getByRole('textbox', { name: 'Message', exact: true });
+    // While the request runs, nothing is cleared or asked, and the chat says why; the text stays in the box.
+    await box.fill('/clear');
+    await box.press('Enter');
+    expect(await page.evaluate('so.confirming()')).toBeNull();
+    expect(await page.evaluate<string[]>('so.toasts()')).toContainEqual(expect.stringContaining('once the AI finishes'));
+    expect(await page.evaluate("so.draft('c_r')")).toBe('/clear');
+    await page.evaluate('so.done()');
+    // Cancelled: the chat and the box are as they were. A second Enter while it is asked asks nothing more.
+    await box.press('Enter');
+    await page.waitForFunction('so.confirming() !== null');
+    await box.press('Enter');
+    expect(await page.evaluate('so.confirms()')).toBe(1);
+    await page.evaluate('so.confirm(false)');
+    await page.waitForFunction('so.confirming() === null');
+    expect(await page.evaluate('so.shown()')).toBe('c_r');
+    expect(await page.evaluate("so.draft('c_r')")).toBe('/clear');
+    // Confirmed after a request started while it was asked: nothing is cleared, and the chat says why.
+    await box.press('Enter');
+    await page.waitForFunction('so.confirming() !== null');
+    const toasts = (await page.evaluate<string[]>('so.toasts()')).length;
+    await page.evaluate('so.busy()');
+    await page.evaluate('so.confirm(true)');
+    await page.waitForFunction(`so.toasts().length > ${toasts}`);
+    expect((await page.evaluate<string[]>('so.toasts()')).at(-1)).toContain('once the AI finishes');
+    expect(await page.evaluate('so.shown()')).toBe('c_r');
+    expect(await page.evaluate("so.calls('ai.newConversation')")).toEqual([]);
+    expect(await page.evaluate("so.draft('c_r')")).toBe('/clear');
+    await page.evaluate('so.idle()');
+    // Confirmed, from the Send button: a new conversation, with the earlier one left without the command as its draft.
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.waitForFunction('so.confirming() !== null');
+    await page.evaluate('so.confirm(true)');
+    await page.waitForFunction("so.shown() === 'c_new'");
+    expect(await page.evaluate("so.draft('c_r')")).toBe('');
+    expect(await page.evaluate("so.calls('ai.newConversation')")).toEqual([[]]);
+    expect(await page.evaluate("so.calls('ai.send')")).toEqual([]);
+    expect(await page.locator('[data-message-id]').count()).toBe(0);
+    // Nothing sent yet in the new one: the chat says there is nothing to clear.
+    await box.fill(' /clear ');
+    await box.press('Enter');
+    expect(await page.evaluate<string[]>('so.toasts()')).toContainEqual(expect.stringContaining('already empty'));
+    expect(await page.evaluate('so.confirming()')).toBeNull();
+    expect(await page.evaluate("so.calls('ai.send')")).toEqual([]);
+  });
+
+  it('never sends `/clear` as the answer to the AI’s question (#1356)', async () => {
+    await page.evaluate('so.ask()');
+    const box = page.getByRole('textbox', { name: 'Your answer', exact: true });
+    await box.fill('/clear');
+    // Enter and Send answer each say why, and neither answers.
+    await box.press('Enter');
+    expect(await page.evaluate<string[]>('so.toasts()')).toEqual([expect.stringContaining('waiting for your answer')]);
+    await page.getByRole('button', { name: 'Send answer' }).click();
+    expect(await page.evaluate<string[]>('so.toasts()')).toHaveLength(2);
+    expect(await page.evaluate("so.calls('ai.answer')")).toEqual([]);
+    expect(await page.evaluate('so.confirming()')).toBeNull();
+    expect(await box.inputValue()).toBe('/clear');
   });
 
   it('renders no message while an answer to the AI’s question is typed', async () => {

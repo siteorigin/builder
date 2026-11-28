@@ -1,10 +1,10 @@
 # SiteOrigin Builder
 
-Electron + React desktop editor that builds portable SvelteKit 3 / Svelte 5 brochure sites. Canonical JSON documents under `siteorigin/` are the source of truth; the generator turns them into plain Svelte and CSS with no Builder runtime in the exported site. Manual edits and the AI assistant both go through the same validated `EditOperation` pipeline. The spec is `docs/specification-v0.1.md`.
+Electron + React desktop editor that builds portable SvelteKit 3 / Svelte 5 brochure sites. Canonical JSON documents under `siteorigin/` are the source of truth; the generator turns them into plain Svelte and CSS with no Builder runtime in the exported site. Manual edits and the AI assistant both go through the same validated `EditOperation` pipeline.
 
 ## Where the project is
 
-The 0.1 release is being polished, and changes reach `develop` through pull requests: branch from `develop` and open the pull request against it. In a `/work-batch` run in Daintree (`.daintree/`), each issue that needs a change gets a `/work` PR, its agent sees the PR's CI through, and `/merge-prs` lands them. The exceptions are the `stabilize` skill (below), which pushes its fixes to `develop` itself, and the `release` skill, which merges each release into `main` and back into `develop`.
+We are working towards a full, highly polished 1.0 release for SiteOrigin's users. There is no written specification: the feature set is what ships, and the work now is polishing all of it, finding and fixing bugs and edge cases until every part of the app feels finished. Changes reach `develop` through pull requests: branch from `develop` and open the pull request against it. In a `/work-batch` run in Daintree (`.daintree/`), each issue that needs a change gets a `/work` PR, its agent sees the PR's CI through, and `/merge-prs` lands them. The exceptions are the `stabilize` skill (below), which pushes its fixes to `develop` itself, and the `release` skill, which merges each release into `main` and back into `develop`.
 
 **Pre-release: no backwards compatibility.** Nothing has shipped, and every existing project is throwaway development data. Never spend effort keeping old projects, old document formats or old component definitions working: no migrations, schema-version bumps, compatibility shims, fallbacks for old shapes, or deprecation paths. Change the format or the contract directly and update the starters, fixtures and tests to match. An old project that breaks gets deleted and recreated. Compatibility work starts at the first public release.
 

@@ -14,7 +14,7 @@ import { FontSelect, familyName } from './FontSelect';
 import { usePreviewStack } from '../lib/editor-fonts';
 
 /**
- * The project's own site styles (spec §7.2): create, rename, change and remove them, with how many places use
+ * The project's own site styles: create, rename, change and remove them, with how many places use
  * each. Each style is a summary row (its sample, name, kind, value and whether it is used) that opens to edit, as
  * the Text styles list above does. Removing a used style asks for a replacement, or keeps its value where it is
  * used; any removal is answered with a notice carrying Undo.

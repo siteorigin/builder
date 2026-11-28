@@ -55,3 +55,12 @@ export function followReport(nav: FrameNav, path: string, navId: number | null, 
 export function followed(nav: FrameNav, pageId: string | null): void {
   nav.asked = pageId;
 }
+
+/**
+ * Whether the editor sends the frame to a page it opens, from the preview's answer to whether that page is served yet:
+ * true, false, or null when there is no preview here to ask. This computer's own preview is asked, and a page it has
+ * not said yes to is left to the canvas's recovery. A guest in a live session (`remote`) has none: the host's preview
+ * is the host's, so the frame goes there unchecked, as the host's next reload follows a page it did not have yet
+ * (#1529).
+ */
+export const sendsFrame = (served: boolean | null, remote: boolean): boolean => served === true || (served === null && remote);
