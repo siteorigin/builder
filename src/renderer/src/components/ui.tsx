@@ -1130,6 +1130,8 @@ function DraftField({
   // Text `check` refused, kept as a draft after the field was left (or by another control of its place), and the reason
   // shown for it.
   const kept = useRef(restoredAs === 'check');
+  // Text the project refused once sent while it was being left, or sent again after Keep editing (see keepAfterRefusal).
+  const projectRefused = useRef(false);
   const shown = useRef<DraftProblem | null>(null);
   const showProblem = (p: DraftProblem | null) => {
     if (p?.message === shown.current?.message && p?.suggestion === shown.current?.suggestion) return;
@@ -1172,6 +1174,17 @@ function DraftField({
       return;
     }
     restoringRef.current = false;
+    // Text the project refused while it was being left stays too, until the project holds that very text: sent again,
+    // it is still checked against where typing began, so a change made somewhere else meanwhile is never written over.
+    if (projectRefused.current && startedAt.current) {
+      if (draftRef.current === value) {
+        projectRefused.current = false;
+        forget();
+        release();
+        mark(false);
+      }
+      return;
+    }
     if (!focused.current) forget();
     if (!startedAt.current) setDraft(value);
   }, [value]);
@@ -1188,8 +1201,8 @@ function DraftField({
   });
   const aiRan = (from: { ai: number }) => !!useStore.getState().snapshot?.aiBusy || aiActivity() !== from.ai;
   /** Commit what was typed; returns what the commit returned (false: the project refused it; TOO_LONG: the
-   *  text is over the limit and was not sent). */
-  const commit = (text: string): unknown => {
+   *  text is over the limit and was not sent). `refused` hears if the project refuses it once it is sent. */
+  const commit = (text: string, refused?: () => void): unknown => {
     const from = startedAt.current;
     if (!from || text === from.value) return forget();
     if (limit !== undefined && text.length > limit) return TOO_LONG;
@@ -1197,7 +1210,7 @@ function DraftField({
     // meanwhile, say): once the AI is idle the edit is built from that, and still checked against where typing began.
     // While it still runs, stopping it takes the project back there, so the edit is built from that instead.
     const build = tooLongRef.current && !useStore.getState().snapshot?.aiBusy ? onCommit : from.commit;
-    const result = aiRan(from) ? commitDraft(from.base, () => build(text), text, { check: true, control: owner.current }) : commitDraft(from.base, () => onCommit(text), text, { control: owner.current });
+    const result = aiRan(from) ? commitDraft(from.base, () => build(text), text, { check: true, control: owner.current, refused }) : commitDraft(from.base, () => onCommit(text), text, { control: owner.current, refused });
     if (result !== false) forget();
     return result;
   };
@@ -1255,7 +1268,7 @@ function DraftField({
       if (!field || !keptDraft(field)) markDraft(draftKey, false);
       // Refused by its check with no place to keep it, and left before it went (the selection changed): offered to copy.
       const dropped = refused && !field && !focused.current;
-      if (!open || offered || !(focused.current || over || (gone && refused) || dropped)) return;
+      if (!open || offered || !(focused.current || over || (gone && refused) || dropped || projectRefused.current)) return;
       const copy = { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) };
       if (over) toast(`${tooLongReport(nameRef.current, text.length, limit!)} The field went away, so copy it to keep it.`, 'error', copy);
       else if (gone && refused) toast(goneReport(nameRef.current), 'error', copy);
@@ -1270,6 +1283,18 @@ function DraftField({
   const held = useRef(false);
   const refusedLast = useRef(!!restored);
   const named = (el: HTMLInputElement | HTMLTextAreaElement) => refusedReport(fieldName(el, ariaLabel));
+  /** The project refused text sent while it was being left, or kept since with Keep editing (its folder moved, so it
+   *  is read-only now): the text stays, marked as not saved, from where typing began. Leaving again sends it again and
+   *  asks again when it is refused, leaving the project with it unfocused asks too, and the field going away offers
+   *  it to copy. Not once the author has typed on: that newer text is the field's now. */
+  const keepAfterRefusal = (text: string, from: DraftStart | null, el: HTMLInputElement | HTMLTextAreaElement) => {
+    if (!mounted.current || !from || draftRef.current !== text) return;
+    projectRefused.current = true;
+    refusedLast.current = true;
+    startedAt.current ??= from;
+    mark(true);
+    retainRefused(draftKey, named(el), revealable(el, reveal));
+  };
   /** Leave the field with this text: commit it, or (refused) say so; the saved value comes back after, unless
    *  `check` refused it or it is too long to save, which keeps it. */
   const leave = (text: string, el: HTMLInputElement | HTMLTextAreaElement) => {
@@ -1290,7 +1315,11 @@ function DraftField({
       reportRefused(named(el), draftKey, revealable(el, reveal));
       return;
     }
-    const result = commit(text);
+    // Sent while the project is being left, or kept since then with Keep editing: refused, it stays (see keepAfterRefusal).
+    // Otherwise a refusal puts the saved value back, as below.
+    const keepIfRefused = isSettling() || held.current || projectRefused.current;
+    projectRefused.current = false;
+    const result = commit(text, keepIfRefused ? () => keepAfterRefusal(text, from, el) : undefined);
     // Too long to save: the whole text stays, marked as not saved, for the author to shorten. Nothing is put
     // back, now or once leaving the project is decided.
     if (result === TOO_LONG) {
@@ -1313,11 +1342,11 @@ function DraftField({
     if (refused) reportRefused(named(el), draftKey, el);
     // The saved value comes back once the change has landed or been refused: until then the field shows what was
     // typed, never the value from before it. While the project is being left, the typed text stays until the author
-    // decides, so Keep editing returns to it intact.
+    // decides, so Keep editing returns to it intact; refused then, it stays after that too.
     const at = edit.current;
     afterLanding(() =>
       setTimeout(() => {
-        if (!mounted.current || focused.current || edit.current !== at) return;
+        if (!mounted.current || focused.current || edit.current !== at || projectRefused.current) return;
         held.current = false;
         mark(false);
         forget();
@@ -1422,6 +1451,7 @@ function DraftField({
         forget();
         release();
         refusedLast.current = false;
+        projectRefused.current = false;
         if (tooLongRef.current) setTooLong(false);
         setDraft(value);
         (e.target as HTMLElement).blur();
