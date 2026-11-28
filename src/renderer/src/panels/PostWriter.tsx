@@ -1,5 +1,5 @@
 import './PostsPanel.css';
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Check, CircleAlert, Clock, Eye, FileText, FileX, Heading2, Heading3, Heading4, ImageOff, ImagePlus, Italic, Link, List, ListChecks, Library, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Search, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
@@ -14,7 +14,7 @@ import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { api, applyOps, applyWith, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PendingEdit, type PostRef } from '../store';
-import { ChoiceField, DraftInput, Field, Modal, Section, SwitchRow } from '../components/ui';
+import { ChoiceField, DraftInput, Field, Modal, Section, Spinner, SwitchRow } from '../components/ui';
 import { RevisionDateField } from '../components/SeoFields';
 import { LinkRelControls } from '../components/LinkRelControls';
 import { seoSummary } from '../lib/sharing';
@@ -27,6 +27,7 @@ import { isImeComposing } from '../lib/ime';
 import { assetArrived, reviewImport } from '../lib/import-review';
 import { appliesLanded, registerFlush, trackApply, type ApplyOutcome } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
+import { setTypedAheadField } from '../lib/typed-ahead';
 import { articleProblem, blockAtCaret, blockAtPoint, caretIn, figureElement, fillFigure, insertFigure, pastedArticle, pasteArticle, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, futurePublishChoice, futurePublishQuestion, listedCollection, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
@@ -147,14 +148,52 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   const key = post ? `${post.collectionId}/${post.entryId}` : null;
   const keep = key !== null && (exists || shown.current === key);
   shown.current = keep ? key : null;
+  // An entry the Content panel is making or copying (#1394): until it opens, the one shown takes nothing typed, and the
+  // writer says what it is waiting for. A new entry's text can be typed meanwhile, in a field of its own (lib/typed-ahead),
+  // focused at once and where a click on the writer goes.
+  const opening = useStore((s) => s.postOpening);
+  const ahead = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ahead.current;
+    if (!el) return;
+    const off = setTypedAheadField(el);
+    el.focus({ preventScroll: true });
+    // Words typed there are a change not made yet: Save and leaving the project say so, as for the form's title.
+    const key = 'post-typed-ahead';
+    const typed = () => markDraft(key, !!el.value.trim());
+    el.addEventListener('input', typed);
+    return () => {
+      el.removeEventListener('input', typed);
+      markDraft(key, false);
+      off();
+    };
+  }, [opening]);
   return (
-    <div className="post-writer" hidden={hidden}>
-      {post && keep ? (
-        <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
-      ) : (
-        <div className="post-none">
-          {!listed ? <Library aria-hidden="true" /> : isArticleCollection(listed) ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
-          <p>{nothingOpenNote(listed)}</p>
+    <div
+      className="post-writer"
+      hidden={hidden}
+      // A click on the writer still showing goes to the field (never a dialog of its own, whose events bubble here).
+      onMouseDown={(e) => {
+        const el = ahead.current;
+        if (el && e.currentTarget.contains(e.target as Node) && !el.contains(e.target as Node)) (e.preventDefault(), el.focus({ preventScroll: true }));
+      }}
+    >
+      <div className="post-hold" inert={!!opening} aria-busy={opening ? true : undefined}>
+        {post && keep ? (
+          <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
+        ) : (
+          <div className="post-none">
+            {!listed ? <Library aria-hidden="true" /> : isArticleCollection(listed) ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
+            <p>{nothingOpenNote(listed)}</p>
+          </div>
+        )}
+      </div>
+      {opening && (
+        <div className="post-opening">
+          <p className="post-opening-note" role="status">
+            <Spinner decorative /> <span className="ellipsis">{opening.label}</span>
+          </p>
+          {opening.field && <textarea ref={ahead} className="input post-opening-text" aria-label={opening.field} placeholder="Keep typing: it goes into the text as it opens" rows={3} spellCheck />}
         </div>
       )}
     </div>
@@ -244,6 +283,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const saveAllRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
   /** The latest `command`, for the editor's own input listener. */
   const commandRef = useRef<(run: () => void) => void>(() => {});
+  /** The latest `start`, for the Content panel opening the post it has just made (see setOpenWriter). */
+  const startRef = useRef<(typed: string) => boolean>(() => false);
   /** Why the stored text cannot be edited here, if it cannot. */
   const unreadable = articleProblem(entry.body);
   /** The text the writer and the project last agreed on: what it showed from the project, or what it saved. */
@@ -400,7 +441,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       () => saveAllRef.current(),
       { collectionId: post.collectionId, entryId: post.entryId },
       // A change to the post's fields made in the SEO view is followed as one of the writer's own.
-      (change) => void follow(change)
+      (change) => void follow(change),
+      (typed) => startRef.current(typed)
     );
     const offHistory = setWriterHistory((action) => void history(action));
     return () => {
@@ -530,6 +572,25 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     draft.checkpoint(true);
   };
   commandRef.current = command;
+  /**
+   * Just made, and opened (#1394): straight into the text, or the first field of a record without any (the title is
+   * already written), where what was typed while it was made goes in, as typed. False when it had nowhere to go.
+   */
+  const start = (typed: string): boolean => {
+    const el = root.current?.isContentEditable ? root.current : null;
+    // A record's own fields, not a box that only finds something to choose; words go into the first that takes words.
+    const fields = [...(pageRef.current?.querySelectorAll<HTMLElement>('.post-record .entry-value :is(input, textarea, select):not(:disabled)') ?? [])].filter((f) => !f.closest('.entry-ref-find'));
+    const words = fields.find((f) => f.matches('textarea, input:is(:not([type]), [type="text"], [type="url"], [type="email"], [type="tel"])'));
+    const at = el ?? words ?? fields[0];
+    if (!at) return !typed;
+    at.focus();
+    if (!typed) return true;
+    // Focus that could not come here (the writer put away, a dialog over it) types nothing anywhere else.
+    if (document.activeElement !== at || (at !== el && at !== words)) return false;
+    // One line, in a field of one line.
+    return document.execCommand('insertText', false, at.matches('input') ? typed.replace(/\s*\n\s*/g, ' ') : typed);
+  };
+  startRef.current = start;
   // Blocks and lists change in the DOM directly: the browser's own commands can nest a list in a paragraph.
   const block = (tag: ArticleBlockTag) => command(() => void setBlock(root.current!, tag));
   const list = (kind: ArticleListKind) => command(() => void toggleList(root.current!, kind));

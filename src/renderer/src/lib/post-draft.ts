@@ -258,16 +258,16 @@ export class PostDraft {
 /**
  * How the writer on screen saves its post now: its text, and (`all`) its fields too, and which post that is. Set while a
  * post is open in it. `follow` takes a change to that post's fields made somewhere else (the SEO view), for the writer to
- * follow as one of its own.
+ * follow as one of its own. `start` takes the author into the post just made, with what they typed while it was (#1394).
  */
-let openWriter: { flush: () => Promise<boolean>; all?: () => Promise<boolean>; post?: PostRef; follow?: (change: Promise<unknown>) => void } | null = null;
+let openWriter: { flush: () => Promise<boolean>; all?: () => Promise<boolean>; post?: PostRef; follow?: (change: Promise<unknown>) => void; start?: (typed: string) => boolean } | null = null;
 
 /**
- * The writer registers how its open post is saved, which post it holds, and how it follows a change to that post's
- * fields made elsewhere; returns the unregister.
+ * The writer registers how its open post is saved, which post it holds, how it follows a change to that post's fields
+ * made elsewhere, and how it is started on once made; returns the unregister.
  */
-export function setOpenWriter(flush: () => Promise<boolean>, all?: () => Promise<boolean>, post?: PostRef, follow?: (change: Promise<unknown>) => void): () => void {
-  const mine = { flush, all, post, follow };
+export function setOpenWriter(flush: () => Promise<boolean>, all?: () => Promise<boolean>, post?: PostRef, follow?: (change: Promise<unknown>) => void, start?: (typed: string) => boolean): () => void {
+  const mine = { flush, all, post, follow, start };
   openWriter = mine;
   return () => {
     if (openWriter === mine) openWriter = null;
@@ -285,6 +285,15 @@ const holds = (w: typeof openWriter, post: PostRef): w is NonNullable<typeof ope
 export function followPostChange(post: PostRef, change: Promise<unknown>): void {
   const w = openWriter;
   if (holds(w, post)) w.follow?.(change);
+}
+
+/**
+ * A post just made and opened (#1394): the writer holding it takes focus to its text, or a record's first field, and
+ * types there what was typed while it was made. Null when no writer holds `post`; else whether `typed` went in.
+ */
+export function startOpenPost(post: PostRef, typed: string): boolean | null {
+  const w = openWriter;
+  return holds(w, post) && w.start ? w.start(typed) : null;
 }
 
 /** The post the writer holds now, while one is open in it and it said which (it stays mounted while hidden). */

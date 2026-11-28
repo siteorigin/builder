@@ -1,8 +1,9 @@
 import './PostsPanel.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { ArrowLeft, ChevronDown, Copy, FileDown, FilePen, FileText, LayoutTemplate, Library, MoreHorizontal, Newspaper, Plug, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
 import { entryLinkUses } from '@engine/page-links';
-import { api, commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
+import { api, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, setState, shownAt, toast, undoAction, useStore } from '../store';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
 import { Field, Modal, Segmented, Spinner, rovingKeys, useMenu, type MenuItem } from '../components/ui';
 import { Marked, fold, found, shortDate } from '../components/ListText';
@@ -18,9 +19,11 @@ import { sourceFingerprint } from '@shared/sources';
 import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps, withArticle, pluralNoun, isArticleCollection } from '../lib/content';
 import { openLayout } from '../lib/actions';
 import type { EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, collectionKind, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, collectionHasBody, collectionKind, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
 import type { CollectionKind, ProjectState } from '@shared/types';
-import { saveOpenPost } from '../lib/post-draft';
+import { saveOpenPost, startOpenPost } from '../lib/post-draft';
+import { typedAhead, typedAheadSettled } from '../lib/typed-ahead';
+import { trackApply } from '../lib/pending';
 
 /**
  * Save the post open in the writer before another takes its place. False, said in a notice, when its text could not
@@ -32,6 +35,9 @@ async function openSaved(): Promise<boolean> {
   toast('The entry you are writing has a change that is not saved yet. See the note beside it.', 'error');
   return false;
 }
+
+/** Said when another entry is asked to open while one is still opening (#1394). */
+const OPENING_NOW = 'An entry is still opening. Try again once it has.';
 
 /** How many old addresses of a post are kept working, sending visitors on to it. */
 function keptAddresses(state: ProjectState, entryId: string): number {
@@ -470,58 +476,108 @@ export function PostsPanel() {
   const create = async () => {
     const t = title.trim();
     const to = addTarget.current;
+    // One at a time: a second press while the open entry saves makes no second draft, nor one while a copy is made. Busy
+    // from the first wait, so the title, Cancel and Escape hold still while what was typed is on its way.
     if (!t || busy || creating.current || !to) return;
-    // One at a time: a second press while the open entry saves makes no second draft. Busy from the first wait, so the
-    // title, Cancel and Escape hold still while what was typed is on its way.
+    if (getState().postOpening) return void toast(OPENING_NOW, 'info');
     creating.current = true;
     setBusy(true);
+    // Until the new entry opens, the writer keeps the one before it, which takes nothing typed: what is typed meanwhile
+    // (straight on after Enter, or with a click on the writer) goes into a field for the new one's text (#1394).
+    const opening = { label: `Opening “${t}”…`, field: `Text for “${t}”` };
+    // In the writer, shown now (not the post's preview), for that field to have focus.
+    setState({ postOpening: opening, postView: 'write' });
     try {
-      await createIn(to, t);
+      await createIn(to, t, opening);
     } finally {
       creating.current = false;
       setBusy(false);
+      if (getState().postOpening === opening) setState({ postOpening: null });
     }
   };
-  const createIn = async (to: { collectionId: string; workspaceKey: string | undefined }, t: string) => {
+  const createIn = async (to: { collectionId: string; workspaceKey: string | undefined }, t: string, opening: object) => {
     // Creating opens the new entry: a choice made while it saves (another collection, another entry) wins over that.
     const seq = ++navigation.current;
-    if (!(await openSaved())) return;
+    // Still the one the writer waits for, in the project it was typed in: another project opened meanwhile owns all that.
+    const mine = () => getState().postOpening === opening && getState().snapshot?.workspaceKey === to.workspaceKey;
+    // Nothing made: the form keeps its title, and what was typed for the entry is said to be gone, never quietly.
+    const notMade = () => void (mine() && typedAhead().text.trim() && toast(`What you typed for “${t}” was not kept: it was not made.`, 'error'));
+    if (!(await openSaved())) return notMade();
     const s = getState().snapshot;
     if (!s) return;
     const target = to.collectionId;
     // Only ever into the collection it was typed for: one gone meanwhile (an Undo), or another project, keeps the title.
-    if (s.workspaceKey !== to.workspaceKey || !Object.hasOwn(s.state.collections, target)) return void toast('The collection this was typed for is no longer in the project.', 'error');
+    if (s.workspaceKey !== to.workspaceKey || !Object.hasOwn(s.state.collections, target)) return void (toast('The collection this was typed for is no longer in the project.', 'error'), notMade());
     const { ops, ref } = newPostOps(s.state, target, t);
-    setBusy(true);
     const r = await commitOps(ops, `New ${noun}`);
-    setBusy(false);
-    if (!r) return;
+    if (!r) return notMade();
     setAdding(false);
     setTitle('');
+    // In the editor's copy of the project before it opens, so its writer is there at once to take what was typed.
+    const shown = await shownAt(r.revision, r.workspaceKey);
+    if (!mine()) return;
+    const saved = shown && (await openSaved());
+    // A composition in progress where the text was typed ahead ends first, so all of it goes in, wherever it goes.
+    await typedAheadSettled();
+    if (!mine()) return;
+    const typed = typedAhead();
     // Filters that would hide the new draft let go of it once it opens (the reveal above); a find it matches stays.
-    // Typed into the open post while the new one was made: saved first, or the new one waits in the list.
-    if (!(await openSaved()) || seq !== navigation.current) return;
-    setState({ post: ref, postView: 'write', postReveal: null });
-    // Straight into the text, or the first field of a record without any: the title is already written.
-    requestAnimationFrame(() => document.querySelector<HTMLElement>('.post-body, .entry-values input, .entry-values textarea, .entry-values select')?.focus());
+    // Something kept in the open entry, another choice made meanwhile, or typing gone on somewhere else (Find, a dialog,
+    // left as they are): the new one waits in the list, with what was typed for it as its text.
+    if (!saved || seq !== navigation.current || typed.elsewhere) return void keepTyped(ref, t, typed.text);
+    // Opened and started on in one go: no key typed between the two goes anywhere else.
+    flushSync(() => setState({ post: ref, postView: 'write', postReveal: null, postOpening: null }));
+    if (!startOpenPost(ref, typed.text)) void keepTyped(ref, t, typed.text);
+  };
+  /**
+   * What was typed for an entry made but not started on in the writer, saved as its text, so it is in the entry it was
+   * typed for: only while that text is still as it was made (empty; nothing else wrote it meanwhile), and said either
+   * way. Followed as a save in flight, so leaving the project waits for it.
+   */
+  const keepTyped = async (ref: PostRef, t: string, text: string) => {
+    const body = text
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => ({ type: 'p' as const, spans: [{ text: line }] }));
+    if (!body.length) return;
+    const s = getState().snapshot;
+    const c = s && Object.hasOwn(s.state.collections, ref.collectionId) ? s.state.collections[ref.collectionId] : undefined;
+    const e = s && postAt(s.state, ref);
+    const outcome = s && c && e && collectionHasBody(c.settings) && !e.body?.length ? commitIfUnchanged(s, () => commitOps([{ type: 'entry.update', collectionId: ref.collectionId, entryId: ref.entryId, body }], `Edit ${noun} text`)) : null;
+    if (outcome) trackApply(outcome.then((o) => (o.kind === 'applied' ? { ok: true } : { ok: false })));
+    const o = await outcome;
+    if (o?.kind === 'applied') toast(`What you typed is saved in “${t}”.`, 'info');
+    else toast(`What you typed for “${t}” was not kept: it could not be saved there.`, 'error');
   };
 
   const duplicate = async (entryId: string) => {
     if (!collection) return;
+    // One entry opens at a time: what is typed for a new one meanwhile is never taken from it.
+    if (getState().postOpening) return void toast(OPENING_NOW, 'info');
     // Opening the copy is a choice made now: another made while it saves (an entry, a collection) wins over it.
     const seq = ++navigation.current;
     const ref = { collectionId: collection.settings.id, entryId };
-    // The copy opens in the writer: whatever it holds is saved first (and the copy has the latest words of its own).
-    if (!(await openSaved())) return;
-    const s = getState().snapshot;
-    const plan = s && duplicatePostOps(s.state, ref);
-    if (!plan) return;
-    const r = await commitOps(plan.ops, `Duplicate ${noun}`);
-    if (!r) return;
-    // Filters that would hide the copy (a draft at a new address) let go of it once it opens; a find it matches stays.
-    if (!(await openSaved()) || seq !== navigation.current) return;
-    setState({ post: plan.ref, postView: 'write', postReveal: null });
-    toast(`Duplicated as a draft: “${postAt(getState().snapshot!.state, plan.ref)?.title ?? 'copy'}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
+    const workspaceKey = getState().snapshot?.workspaceKey;
+    // Until the copy opens, the writer keeps the entry before it, which takes nothing typed (#1394).
+    const opening = { label: 'Opening the copy…' };
+    setState({ postOpening: opening });
+    // Still the one the writer waits for, in the project it was asked for in.
+    const mine = () => getState().postOpening === opening && getState().snapshot?.workspaceKey === workspaceKey;
+    try {
+      // The copy opens in the writer: whatever it holds is saved first (and the copy has the latest words of its own).
+      if (!(await openSaved()) || !mine()) return;
+      const s = getState().snapshot;
+      const plan = s && duplicatePostOps(s.state, ref);
+      if (!plan) return;
+      const r = await commitOps(plan.ops, `Duplicate ${noun}`);
+      if (!r) return;
+      // Filters that would hide the copy (a draft at a new address) let go of it once it opens; a find it matches stays.
+      if (!(await openSaved()) || seq !== navigation.current || !mine()) return;
+      setState({ post: plan.ref, postView: 'write', postReveal: null, postOpening: null });
+      toast(`Duplicated as a draft: “${postAt(getState().snapshot!.state, plan.ref)?.title ?? 'copy'}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
+    } finally {
+      if (getState().postOpening === opening) setState({ postOpening: null });
+    }
   };
 
   /** Read a WordPress export or a folder of Markdown posts, once the post being written is saved, and review it. */
