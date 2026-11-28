@@ -915,7 +915,7 @@ describe('source export helpers', () => {
       await finishExportedSource(dest, state, join(dest, 'missing.md'));
       const readme = readFileSync(join(dest, 'README.md'), 'utf8');
       expect(readme).toContain('## Editing in SiteOrigin Builder\n\nThis project uses the installed theme Harbour (`foundation-alt`) 1.2.0, which does not come with SiteOrigin Builder.');
-      expect(readme).toContain('the same copy of 1.2.0 the project was made with, or a newer release.');
+      expect(readme).toContain('the same copy of 1.2.0 the project was made with, or a newer release, and restart SiteOrigin Builder.');
       expect(readme).toContain('Without it, SiteOrigin Builder opens the project read-only.');
       expect(readme.indexOf('## Editing in SiteOrigin Builder')).toBeLessThan(readme.indexOf('## Notices'));
       expect(isGeneratedReadme(readme)).toBe(true);

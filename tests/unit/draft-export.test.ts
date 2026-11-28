@@ -176,7 +176,7 @@ describe('exporting a project with a draft', () => {
       const dir = temp('project');
       await (await ProjectSession.create(dir, applyOperations(cleanSite(), [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state)).close();
       const c = await open(dir);
-      const note = 'This project uses the installed theme Harbour (foundation-alt) 1.2.0. Anyone who opens it in SiteOrigin Builder needs that theme installed first, the same copy of 1.2.0 or a newer release, or the project opens read-only: send them the theme pack with it. The project’s README says the same.';
+      const note = 'This project uses the installed theme Harbour (foundation-alt) 1.2.0. Anyone who opens it in SiteOrigin Builder needs that theme installed first, the same copy of 1.2.0 or a newer release, and restart SiteOrigin Builder, or the project opens read-only: send them a copy of the theme pack with it.';
       const r = await c.exportSourceTo(join(temp('out'), 'handoff'));
       expect(r.ok).toBe(true);
       expect(r.warnings).toContain(note);

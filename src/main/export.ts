@@ -1548,7 +1548,7 @@ export function isGeneratedReadme(text: string): boolean {
 function installedThemeSection(theme: { id: string; name: string; version: string }): string {
   return `## Editing in SiteOrigin Builder
 
-This project uses the installed theme ${theme.name} (\`${theme.id}\`) ${theme.version}, which does not come with SiteOrigin Builder. To edit the project in SiteOrigin Builder, install that theme first: the same copy of ${theme.version} the project was made with, or a newer release. Ask whoever sent you the project for the theme pack. Without it, SiteOrigin Builder opens the project read-only. Running and building the project with the commands above does not need the theme.
+This project uses the installed theme ${theme.name} (\`${theme.id}\`) ${theme.version}, which does not come with SiteOrigin Builder. To edit the project in SiteOrigin Builder, install that theme first: the same copy of ${theme.version} the project was made with, or a newer release, and restart SiteOrigin Builder. Ask whoever sent you the project for the theme pack. Without it, SiteOrigin Builder opens the project read-only. Running and building the project with the commands above does not need the theme.
 
 `;
 }

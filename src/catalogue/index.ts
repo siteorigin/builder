@@ -106,7 +106,7 @@ export function installedThemeRequirement(state: { site: { themeId: string }; th
 
 /** What the author is told about the installed theme an editable export needs, once it is exported. */
 export function installedThemeNote(theme: { id: string; name: string; version: string }): string {
-  return `This project uses the installed theme ${theme.name} (${theme.id}) ${theme.version}. Anyone who opens it in SiteOrigin Builder needs that theme installed first, the same copy of ${theme.version} or a newer release, or the project opens read-only: send them the theme pack with it. The project’s README says the same.`;
+  return `This project uses the installed theme ${theme.name} (${theme.id}) ${theme.version}. Anyone who opens it in SiteOrigin Builder needs that theme installed first, the same copy of ${theme.version} or a newer release, and restart SiteOrigin Builder, or the project opens read-only: send them a copy of the theme pack with it.`;
 }
 
 export function catalogueComponent(themeId: string, componentId: string): ComponentDefinition | undefined {
