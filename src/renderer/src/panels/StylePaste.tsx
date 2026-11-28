@@ -1,6 +1,6 @@
 import './StylePaste.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, ChevronRight, CircleCheck, ClipboardPaste, Eraser, Info, Paintbrush, Palette, X } from 'lucide-react';
+import { ArrowRight, ChevronRight, CircleCheck, ClipboardPaste, Eraser, Info, LayoutGrid, Paintbrush, Palette, SquareMousePointer, X } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';
 import type { ElementRef, StyleValue, TokenDef } from '@shared/types';
 import { STYLE_PROP_MAP, cssRivals } from '@shared/styles';
@@ -9,15 +9,16 @@ import { ChoiceField, Modal, type MenuItem } from '../components/ui';
 import { ColorChip } from '../components/ColorPick';
 import { BlockedNote, useProjectBlock } from '../components/BlockedNote';
 import { commitOps, dismissToast, getState, setState, toast, undoAction, useStore, type State } from '../store';
-import { SCOPE_LABELS, STATE_LABELS, captureStyle, changeSize, planStylePaste, styleSelection, type PasteRow, type PasteScope } from '../lib/style-copy';
+import { SCOPE_LABELS, STATE_LABELS, captureStyle, changeLabel, changeSize, planStylePaste, styleSelection, type PasteRow, type PasteScope, type RepeatReach } from '../lib/style-copy';
+import { chosenReach } from '../lib/item-reach';
 import { CONTAINER_SCOPES, isContainerScope, styleScopeKey, type StyleState } from '@shared/types';
 import { allSizesReach } from '../lib/style-source';
 import { describeStyleValue, isStyleLink, styleLabel, styleSwatch } from './StyleControls';
 
-/** Copy style: take the style changes the selection carries now, for Paste style onto another selection. */
+/** Copy style: take the style changes the selection carries now (one card's own, when Apply to is "This card"). */
 export function copyStyle(ref: ElementRef) {
   const snap = getState().snapshot;
-  const copy = snap ? captureStyle(snap.state, ref) : null;
+  const copy = snap ? captureStyle(snap.state, ref, chosenReach) : null;
   if (!snap || !copy) return;
   if (!copy.sets.length) return toast(`${copy.label} has no style changes of its own to copy.`, 'info');
   setState({ styleCopy: { ...copy, opening: snap.workspaceKey } });
@@ -77,6 +78,51 @@ function byTarget(rows: PasteRow[]): Array<[string, PasteRow[]]> {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Apply to's choice for every card, as the inspector words it: "All 3 cards", or "The card" in a list of one. */
+const allOf = (r: RepeatReach) => (r.count === undefined || r.count === 0 ? `Every ${r.partName}` : r.count === 1 ? `The ${r.partName}` : `All ${r.count} ${r.partName}s`);
+/** The style every card shares, said as the thing that changes: "The style all 3 cards share". */
+const sharedStyle = (r: RepeatReach) => (r.count !== undefined && r.count > 1 ? `The style all ${r.count} ${r.partName}s share` : `The style every ${r.itemLabel} shares`);
+
+/**
+ * Which cards a paste onto a repeated part changes, in the words of the inspector's Apply to, said with where it goes
+ * (the route above names the card): one card, or the style every card shares and the cards that keep values of their
+ * own. Then how to choose the other, which is Apply to's to say.
+ */
+function ReachNote({ reach, keeping, id }: { reach: RepeatReach; keeping: string[]; id: string }) {
+  const { partName: part, itemLabel: item } = reach;
+  const empty = reach.count === 0;
+  const lead = reach.kind === 'item' ? `This ${part} only.` : empty ? `No ${item}s yet.` : `${allOf(reach)}.`;
+  const kept = !keeping.length
+    ? ''
+    : keeping.length < 3
+      ? ` ${keeping.join(' and ')} ${keeping.length === 1 ? 'keeps values of its own' : 'keep values of their own'}, noted below.`
+      : keeping.length === reach.count
+        ? ` Each keeps values of its own, noted below.`
+        : ` ${keeping.length} ${item}s keep values of their own, noted below.`;
+  const what =
+    reach.kind === 'item'
+      ? `Anything it doesn’t set follows the style all ${reach.listLabel.toLowerCase()} share.`
+      : empty
+        ? `${item.charAt(0).toUpperCase()}${item.slice(1)}s added later take this style.`
+        : `Changes the style ${reach.count !== undefined && reach.count > 1 ? 'they share' : `every ${item} shares`}, so ${item}s added later take it too.${kept}`;
+  // Apply to is the inspector's: the way to the other choice is through it.
+  const how =
+    reach.kind === 'item'
+      ? reach.count === 1
+        ? `To change the shared style for this ${part} and ${item}s added later, cancel and choose The ${part} in the Inspector.`
+        : `To paste onto every ${part}, cancel and choose ${allOf(reach)} in the Inspector.`
+      : reach.oneByOne && !empty && (reach.picked ? `To paste onto this ${part} alone, cancel and choose This ${part} in the Inspector.` : `To paste onto one ${part}, cancel, pick it on the page and choose This ${part} in the Inspector.`);
+  return (
+    <div className="scope-note instance paste-reach-note" id={id}>
+      {reach.kind === 'item' ? <SquareMousePointer aria-hidden="true" /> : <LayoutGrid aria-hidden="true" />}
+      <p>
+        <strong>{lead}</strong> {what}
+        {how && <span className="paste-reach-how">{how}</span>}
+      </p>
+    </div>
+  );
+}
+
 /** A pasted value as the inspector names it, with its colour beside it when it is one. */
 function PasteValue({ row, value, tokens, text }: { row: PasteRow; value: StyleValue; tokens: TokenDef[]; text: string }) {
   const def = Object.hasOwn(STYLE_PROP_MAP, row.property) ? STYLE_PROP_MAP[row.property] : undefined;
@@ -121,6 +167,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   // Not pasted folds away under its count while there are changes to read; it is the whole answer when there are none.
   const [skippedOpen, setSkippedOpen] = useState<boolean | null>(null);
   const summaryId = useId();
+  const reachId = useId();
   const skippedId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
   const disclosureRef = useRef<HTMLButtonElement>(null);
@@ -133,21 +180,36 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   const current = !!snap && snap.workspaceKey === opening;
   const copy = current && stored?.opening === opening ? stored : null;
   const state = current ? snap.state : undefined;
-  const plan = useMemo(() => (state && copy ? planStylePaste(state, copy, target, scope) : null), [state, copy, target, scope]);
+  // A card picked on the page goes where its Apply to says, as the inspector behind this shows it.
+  const plan = useMemo(() => (state && copy ? planStylePaste(state, copy, target, scope, chosenReach) : null), [state, copy, target, scope]);
   const tokens = useMemo(() => (state ? effectiveTokens(state) : []), [state]);
   const destination = plan?.destination ?? null;
+  // What was reviewed is the reach it opened with: one card, or the style every card shares, over a list that keeps
+  // its own cards or not. A project change that would move the paste (the list now filled from a collection, say)
+  // ends the review for good: it stays ended if the change is undone, so what is pasted is always what was opened.
+  // A destination lost after it was reviewed (the card removed) ends it the same way, so an Undo that brings the
+  // card back doesn't make a review nobody is reading pressable again.
+  const bound = useRef<string | null>(null);
+  const ended = useRef<'lost' | 'moved' | null>(null);
+  const r0 = destination?.repeat;
+  const reachNow = destination ? JSON.stringify([r0?.kind, destination.targets[0]?.itemId, r0?.oneByOne]) : null;
+  if (bound.current === null && reachNow !== null) bound.current = reachNow;
+  if (bound.current !== null && !ended.current) ended.current = reachNow === null ? 'lost' : reachNow !== bound.current ? 'moved' : null;
+  const moved = ended.current !== null;
   const rows = plan?.rows ?? [];
   const changing = rows.filter((r) => r.status === 'change');
   const same = rows.filter((r) => r.status === 'same');
   const skipped = rows.filter((r) => r.status === 'skip');
+  // Onto the style every card shares: the cards that keep a value of their own over something this paste changes.
+  const keeping = [...new Map(changing.flatMap((r) => (r.kept ?? []).map((k) => [k.id, k.name] as const))).values()];
   const readOnly = !!snap?.readOnly;
   const aiBusy = !!snap?.aiBusy;
-  const canPaste = !!plan && plan.operations.length > 0 && !busy && !readOnly && !aiBusy;
+  const canPaste = !!plan && plan.operations.length > 0 && !moved && !busy && !readOnly && !aiBusy;
   const close = () => !busy && setState({ modal: null });
   const show = (r: PasteRow, v: StyleValue) => (Object.hasOwn(STYLE_PROP_MAP, r.property) ? describeStyleValue(STYLE_PROP_MAP[r.property], v, tokens) : String(v));
   const paste = async () => {
     // A click handled after another opening took over would otherwise send this review's edits to that project.
-    if (!plan || !copy || !destination || !canPaste || getState().snapshot?.workspaceKey !== opening) return;
+    if (!plan || !copy || !destination || moved || !canPaste || getState().snapshot?.workspaceKey !== opening) return;
     setBusy(true);
     let done: Awaited<ReturnType<typeof commitOps>> = null;
     try {
@@ -158,7 +220,18 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
     }
     if (!done || getState().snapshot?.workspaceKey !== opening) return;
     setState({ modal: null });
-    toast(`Pasted the style of ${copy.label} onto ${destination.label}.`, 'info', undoAction(done));
+    // It says where it went, as the review did: one card, or the style the cards share (and so cards added later),
+    // and which cards kept values of their own over it.
+    const r = destination.repeat;
+    const many = r?.count !== undefined && r.count > 1;
+    const onto =
+      r?.kind === 'item'
+        ? `onto ${r.itemName} only.`
+        : r
+          ? `into the style ${many ? `all ${r.count} ${r.partName}s` : `every ${r.itemLabel}`} in ${r.parent} ${many ? 'share' : 'shares'}.${many ? '' : ` ${r.itemLabel.charAt(0).toUpperCase()}${r.itemLabel.slice(1)}s added later take it too.`}`
+          : `onto ${destination.label}.`;
+    const kept = !r || !keeping.length ? '' : keeping.length === 1 ? ` ${keeping[0]} kept values of its own.` : ` ${plural(keeping.length, r.itemLabel)} kept values of their own.`;
+    toast(`Pasted the style of ${copy.label} ${onto}${kept}`, 'info', undoAction(done));
   };
   // A section's paste can land on several of its parts: the review groups the changes under each.
   const sectionWide = destination?.kind === 'section';
@@ -177,6 +250,16 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   const valueAfter = (r: PasteRow, property: string, size: PasteRow['changes'][number]['scope'], state?: StyleState) => {
     const planned = rows.find((x) => x.part === r.part && x.property === property && x.status === 'change')?.changes.find((c) => c.scope === size && c.state === state);
     return planned ? planned.to : targetOf(r)?.styles?.[styleScopeKey(size, state)]?.[property];
+  };
+  // What a size with nothing of its own shows now: the All sizes value, where the stylesheet carries it there (as
+  // "uses All sizes" reads it once the paste is done).
+  const usesNow = (r: PasteRow, size: PasteRow['changes'][number]['scope'], state?: StyleState) => {
+    if (size === 'base' || isContainerScope(size)) return undefined;
+    const at = targetOf(r);
+    const now = (sz: PasteRow['changes'][number]['scope'], property = r.property) => at?.styles?.[styleScopeKey(sz, state)]?.[property];
+    const all = now('base');
+    if (all === undefined || CONTAINER_SCOPES.some((c) => now(c) !== undefined)) return undefined;
+    return cssRivals(r.property).some((rv) => now(size, rv) !== undefined) || !allSizesReach(r.property, all, size, at?.partId !== undefined) ? undefined : all;
   };
   const fallsToAll = (r: PasteRow, size: PasteRow['changes'][number]['scope'], state?: StyleState) => {
     // A container width's value cleared falls to whatever the screen sizes give, not to All sizes alone; and where a
@@ -207,15 +290,17 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
     : changing.length
       ? `${changing.length === 1 ? '1 style changes' : `${changing.length} styles change`}${cleared ? `, ${plural(cleared, 'value')} cleared` : ''}${skipped.length ? `, ${skipped.length} not pasted` : ''}.`
       : `Nothing to change${scope === 'every' ? '' : ` for ${SCOPE_LABELS[scope]}`}.`;
-  // An empty review says why, for the sizes chosen.
+  // An empty review says why, for the sizes chosen, and of what was compared: one card's own style, or the shared one.
+  const reach = destination?.repeat;
+  const subject = reach?.kind === 'every' ? sharedStyle(reach) : destination?.label;
   const empty = scope === 'every'
     ? same.length
       ? skipped.length
-        ? `${destination?.label} already has the styles that apply here.`
-        : `${destination?.label} already has this style.`
+        ? `${subject} already has the styles that apply here.`
+        : `${subject} already ${reach?.kind === 'every' ? 'matches the copy' : 'has this style'}.`
       : 'None of the copied style applies here.'
     : same.length
-      ? `${destination?.label} already matches for ${SCOPE_LABELS[scope]}.`
+      ? `${subject} already matches for ${SCOPE_LABELS[scope]}.`
       : `The copy has no changes for ${SCOPE_LABELS[scope]} that apply here.`;
   // Why Paste style can't be pressed, said once: read-only or the AI at work on a row of its own above the buttons,
   // anything else beside them.
@@ -228,9 +313,11 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   // The copy is gone, or the selection takes no style now: there is nothing to review, only the reason and a way out.
   const gone = !copy
     ? 'Nothing copied is available to paste. Choose Copy style on a section, part or element first.'
-    : !destination
+    : !destination || ended.current === 'lost'
       ? 'This selection can no longer take styles. Close this and choose another selection.'
-      : null;
+      : moved
+        ? `Which ${destination.repeat?.itemLabel ?? 'item'}s this paste reaches has changed since it opened. Close this and choose Paste style again.`
+        : null;
   // One live region for the whole dialog, so a screen reader hears why Paste style stops (or starts) being available.
   const announced = gone ?? (blocked ? blocked.text : status);
   // When the review gives way to a reason, focus goes to the one way out rather than being lost with the review.
@@ -272,7 +359,7 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
       icon={<ClipboardPaste />}
       onClose={close}
       busy={busy}
-      describedBy={`${summaryId}${hold ? ` ${heldId}` : ''}`}
+      describedBy={`${summaryId}${!gone && destination?.repeat && copy ? ` ${reachId}` : ''}${!gone && hold ? ` ${heldId}` : ''}`}
       footer={
         gone ? (
           <button ref={closeRef} className="btn" onClick={close}>
@@ -317,9 +404,9 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                 <span className="sr-only"> onto </span>
                 <strong>{destination.label}</strong> <span className="faint">{destination.where}</span>
               </p>
+              {destination.repeat && <ReachNote reach={destination.repeat} keeping={keeping} id={reachId} />}
               <ChoiceField label="Sizes" hint={scopeHint} value={scope} full options={SCOPE_CHOICES.map((c) => ({ value: c.value, label: c.label, disabled: busy }))} onChange={(v) => !busy && setScope(v)} />
             </div>
-            {destination.targets.some((t) => t.reach) && destination.kind === 'single' && <p className="faint paste-note">This styles {destination.targets[0].reach}.</p>}
             <section className="paste-section" aria-label="Changes">
               <h3 className="paste-heading">
                 {changing.length ? `Changes to ${plural(changing.length, 'style')}` : 'Nothing to change'}
@@ -361,6 +448,22 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                                     <del className="paste-from">
                                       <PasteValue row={r} value={c.from} tokens={tokens} text={show(r, c.from)} />
                                     </del>
+                                  ) : c.shared !== undefined ? (
+                                    // One card with nothing of its own here: the shared value it shows now, not struck, as it stays shared.
+                                    <span className="paste-shared">
+                                      <PasteValue row={r} value={c.shared} tokens={tokens} text={show(r, c.shared)} />
+                                      <span className="paste-source">
+                                        <span className="sr-only">, </span>shared
+                                      </span>
+                                    </span>
+                                  ) : usesNow(r, c.scope, c.state) !== undefined ? (
+                                    // A size with nothing of its own: the All sizes value it shows now, quiet and not struck.
+                                    <span className="paste-shared">
+                                      <PasteValue row={r} value={usesNow(r, c.scope, c.state)!} tokens={tokens} text={show(r, usesNow(r, c.scope, c.state)!)} />
+                                      <span className="paste-source">
+                                        <span className="sr-only">, from </span>All sizes
+                                      </span>
+                                    </span>
                                   ) : (
                                     <span className="paste-unset">not set</span>
                                   )}
@@ -379,7 +482,14 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                                           <Eraser aria-hidden="true" />
                                           cleared
                                         </span>
-                                        {c.scope !== 'base' && fallsToAll(r, c.scope, c.state) && <span className="paste-fallback">uses All sizes</span>}
+                                        {c.shared !== undefined ? (
+                                          // One card's own value cleared: the shared value it shows instead.
+                                          <span className="paste-fallback">
+                                            uses shared <PasteValue row={r} value={c.shared} tokens={tokens} text={show(r, c.shared)} />
+                                          </span>
+                                        ) : (
+                                          c.scope !== 'base' && fallsToAll(r, c.scope, c.state) && <span className="paste-fallback">uses All sizes</span>
+                                        )}
                                       </>
                                     )}
                                   </span>
@@ -387,6 +497,17 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
                               </span>
                             ))}
                           </span>
+                          {/* Onto every card: the cards that keep a value of their own for this style don't take it. */}
+                          {r.kept && (
+                            <span className="paste-kept">
+                              {r.kept.map((k) => (
+                                <span key={`${k.id}:${styleScopeKey(k.scope, k.state)}`} className="paste-kept-card">
+                                  {k.name} keeps <PasteValue row={r} value={k.value} tokens={tokens} text={show(r, k.value)} />
+                                  {(k.scope !== 'base' || k.state) && <span className="paste-kept-size">for {changeLabel(k)}</span>}
+                                </span>
+                              ))}
+                            </span>
+                          )}
                         </li>
                       ))}
                     </ul>
