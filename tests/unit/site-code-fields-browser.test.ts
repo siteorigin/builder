@@ -100,7 +100,7 @@ describe.skipIf(!browserInstalled)('Integrations and Custom code in Site setting
     await mount('integrations', site());
     await page.getByRole('button', { name: 'Add Fathom Analytics' }).click();
     const id = page.getByRole('textbox', { name: 'Site ID' });
-    await expect.poll(() => id.evaluate((e) => e === document.activeElement)).toBe(true);
+    await expect.poll(() => page.evaluate<string | undefined>('document.activeElement?.id')).toBe('integration-fathom-new-id');
     await id.fill('ABCDEFGH');
     // Leaving the field for Cancel saves nothing: the ID is only ever the form's until Add.
     await page.getByRole('button', { name: 'Cancel adding Fathom Analytics' }).click();

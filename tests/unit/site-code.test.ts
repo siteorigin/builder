@@ -301,7 +301,7 @@ describe('site.update', () => {
     expect(developerModeRefusal(s, [{ type: 'site.update', integrations: { fathom: { siteId: 'ABCDEFGH' } } }])).toBeNull();
     expect(developerModeRefusal(s, [{ type: 'site.update', name: 'A' }])).toBeNull();
     // Known without walking the batch, whatever comes before the code edit.
-    expect(developerModeCheck(s, [{ type: 'page.delete', pageId: 'missing' }, { type: 'site.update', globalCss: 'a{}' }])).toBe('The site’s head code and custom CSS need Developer mode.');
+    expect(developerModeCheck(s, [{ type: 'page.remove', pageId: 'missing' }, { type: 'site.update', globalCss: 'a{}' }])).toBe('The site’s head code and custom CSS need Developer mode.');
     expect(developerModeCheck(s, [{ type: 'site.update', integrations: { fathom: null } }])).toBeNull();
   });
 
@@ -335,7 +335,7 @@ describe('the AI', () => {
   it('never replaces code longer than it can read whole', async () => {
     const long = `/* ${'x'.repeat(SITE_CODE_READ_MAX)} */ a { color: red }`;
     const s = run(fresh(), { type: 'site.update', globalCss: long });
-    const read = (await executeTool('read_project', JSON.stringify({ sections: ['siteCode'] }), host(s), 'c1')).content as { siteCode: { globalCss: { characters: number } } };
+    const read = (await executeTool('read_project', JSON.stringify({ sections: ['siteCode'] }), host(s), 'c1')).content as unknown as { siteCode: { globalCss: { characters: number } } };
     expect(read.siteCode.globalCss.characters).toBe(long.length);
     const replaced = (await executeTool('apply_operations', JSON.stringify({ expectedRevision: 7, operations: [{ type: 'site.update', globalCss: 'a{}' }] }), host(s), 'c2')).content as { error?: { message: string } };
     expect(replaced.error?.message).toMatch(/^The site's custom CSS is \d+ characters, more than a run reads whole/);
