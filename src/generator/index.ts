@@ -68,7 +68,9 @@ import {
   styleFallbackCss,
   styleReducedMotionCss,
   styleToCss,
+  followedText,
   textLinkLeadsToText,
+  textMetrics,
   textStyleValue,
   tokenVar,
   validateStyleValue,
@@ -78,12 +80,12 @@ import {
 import { RANGE_WIDTHS, backgroundImageAt, backgroundImageDecls, paintDecls, resetDecls } from './background';
 import { hasBackgroundImage } from '@shared/background-image';
 import { getTheme } from '@catalogue/index';
-import { usedPackFonts } from '@catalogue/fonts';
+import { fontFamilies, usedPackFonts } from '@catalogue/fonts';
 import { ICONS } from '@shared/icons';
 import { ACTION_SVELTE, DRAFT_NOTE_CSS, DRAFTS_JS, HISTORY_SCROLL_JS, IMAGE_SVELTE, SEARCH_HISTORY_JS, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
 import { resolveRedirects, type LiveRedirect } from '@shared/redirects';
-import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from './host-redirects';
+import { generateHostHeaders, generateHostRedirects, generateVercelConfig, HOST_HEADERS_FILE, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from './host-redirects';
 import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ENGLISH, NOT_FOUND_ROUTE, notFoundCopy, notFoundEnglish } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
@@ -92,7 +94,7 @@ import { HTML_ATTR, HTML_START, languageKey, pageDirection, pageLanguage, sameLa
 import { publicUrl } from '@shared/public-url';
 import { resolveVisitorText, siteVisitorText, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
-import { fontFaceCss } from '@shared/fonts';
+import { fontFaceCss, projectFontFamilies } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { asParagraphList, linkQuery, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
@@ -629,6 +631,48 @@ function packFontFaceCss(state: ProjectState): string {
     )
   );
   return `/* Fonts from the ${inComment(getTheme(state.site.themeId).name)} theme. Licences: ../fonts/NOTICE.txt */\n${rules.join('\n')}\n\n`;
+}
+
+/** The text styles whose fonts a page shows first, in the order their faces are preloaded: body text, the main heading. */
+const PRELOAD_TEXT_STYLES = ['text.body', 'text.h1'];
+/** The range of a face that covers basic Latin, the space among it: a page showing the family loads that file whatever its language. */
+const BASIC_LATIN_RANGE = /(^|,)\s*U\+0000-00FF\s*(,|$)/i;
+
+/** Whether a face's weight (`400`, or a variable range such as `100 900`) draws `weight`. */
+function faceDraws(face: { weight: string }, weight: number): boolean {
+  const [low, high = low] = face.weight.trim().split(/\s+/).map(Number);
+  return weight >= low && weight <= high;
+}
+
+/**
+ * The project files of the theme font faces every page loads first (#1487), which the server hook asks the browser
+ * to fetch from <head> rather than once the stylesheet that names them has arrived. For body text and then the main
+ * heading: the upright .woff2 face of the family its stack leads with that covers basic Latin and the style's weight.
+ * None for a style that leads with a system font, one of the project's own fonts, or a family the site's text could
+ * also take from a project font of the same name; each file once.
+ */
+export function preloadFontFiles(state: ProjectState): string[] {
+  const fonts = usedFonts(state);
+  if (!fonts.length) return [];
+  const tokens = effectiveTokens(state);
+  const theme = getTheme(state.site.themeId);
+  const key = (family: string) => family.replace(/\s+/g, ' ').toLowerCase();
+  // The project's own fonts are read only for a style that leads with a theme font, so most edits to the media
+  // library leave the server hook as it is.
+  let own: Set<string> | undefined;
+  const files = new Set<string>();
+  for (const id of PRELOAD_TEXT_STYLES) {
+    const metrics = textMetrics(tokens, id, theme.tokens.find((t) => t.id === id)?.value);
+    if (!metrics) continue;
+    const link = linkOf(metrics.family);
+    const stack = link ? followedText(tokens, link) : typeof metrics.family === 'string' ? metrics.family : '';
+    const lead = fontFamilies(stack)[0];
+    const font = lead && fonts.find((f) => key(f.family) === key(lead));
+    if (!font || (own ??= new Set(projectFontFamilies(state).map((f) => key(f.family)))).has(key(lead))) continue;
+    const face = font.faces.find((f) => f.style === 'normal' && f.file.endsWith('.woff2') && (!f.unicodeRange || BASIC_LATIN_RANGE.test(f.unicodeRange)) && faceDraws(f, metrics.weight));
+    if (face) files.add(`${FONTS_DIR}/${face.file.slice('fonts/'.length)}`);
+  }
+  return [...files];
 }
 
 /** The licence notices of the theme fonts the site ships. */
@@ -5301,18 +5345,32 @@ export function handleError({ error, event, kind }) {
   const sections = `/** Sections the shared header and footer link to "on this page", with the page that has each. */
 const SECTIONS = ${js(notFoundSections(state))};
 `;
+  // The website's pages ask for the theme fonts they show first from <head> (#1487); the editor's preview has no
+  // built files to preload.
+  const fonts = instrument ? [] : preloadFontFiles(state);
+  const preload = fonts.length
+    ? `
+/** The theme font faces every page shows first (body text, the main heading), as project files. */
+const FONTS = new Set(${js(fonts)});
+
+/** What each page's <head> asks the browser for early: SvelteKit's scripts and styles, and the fonts above. */
+const preload = ({ type, filename }) => type === 'js' || type === 'css' || (type === 'font' && FONTS.has(filename));
+`
+    : '';
+  const plain = fonts.length ? 'resolve(event, { preload })' : 'resolve(event)';
+  const withPreload = fonts.length ? 'preload, ' : '';
   const imports = `import { building } from '$app/env';
 import { publishNotFound } from './lib/siteorigin/runtime/not-found.js';
 `;
   if (!languagesByRoute(state).length)
     return `// Generated by SiteOrigin Builder. Makes 404.html, the not-found page, work at any missing address.
 ${imports}
-${sections}
+${sections}${preload}
 export function handle({ event, resolve }) {
-	if (!building || event.route.id !== ${js(NOT_FOUND_ROUTE)}) return resolve(event);
+	if (!building || event.route.id !== ${js(NOT_FOUND_ROUTE)}) return ${plain};
 	const path = event.url.pathname;
 	const base = path.endsWith(${js(NOT_FOUND_ROUTE)}) ? path.slice(0, -${NOT_FOUND_ROUTE.length}) : '';
-	return resolve(event, { transformPageChunk: ({ html }) => publishNotFound(html, base, SECTIONS) });
+	return resolve(event, { ${withPreload}transformPageChunk: ({ html }) => publishNotFound(html, base, SECTIONS) });
 }
 ${handleError}`;
   return `// Generated by SiteOrigin Builder from siteorigin/site.json and siteorigin/pages/*.json. Makes 404.html, the
@@ -5320,7 +5378,7 @@ ${handleError}`;
 // in, and its dir the way that language runs: pages not listed in LANGUAGES are in the site's language, and pages not
 // listed in DIRECTIONS run the site's way, both of which src/app.html names.
 ${imports}
-${sections}
+${sections}${preload}
 /** Pages written in another language than the site's, by route, with that language. */
 const LANGUAGES = ${routeLanguagesJs(state)};
 
@@ -5355,13 +5413,13 @@ export function handle({ event, resolve }) {
 	const id = event.route.id;
 	const notFound = building && id === ${js(NOT_FOUND_ROUTE)};
 	const lang = id && Object.hasOwn(LANGUAGES, id) ? LANGUAGES[id] : null;
-	if (!notFound && !lang) return resolve(event);
+	if (!notFound && !lang) return ${plain};
 	const root = lang ? (Object.hasOwn(DIRECTIONS, id) ? { lang, dir: DIRECTIONS[id] } : { lang }) : null;
 	const path = notFound ? event.url.pathname : '';
 	const base = path.endsWith(${js(NOT_FOUND_ROUTE)}) ? path.slice(0, -${NOT_FOUND_ROUTE.length}) : '';
 	let first = true;
 	return resolve(event, {
-		transformPageChunk: ({ html }) => {
+		${withPreload}transformPageChunk: ({ html }) => {
 			// The opening <html> tag comes first: only the first chunk can hold it.
 			const page = root && first ? withLanguage(html, root) : html;
 			first = false;
@@ -5591,6 +5649,8 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   // The same old addresses as HTTP 301 rules the website's host reads, ahead of their pages (see ./host-redirects).
   const hostRedirects = file('_redirects', (s) => generateHostRedirects(s) ?? '');
   if (hostRedirects) files.set(HOST_REDIRECTS_FILE, hostRedirects);
+  // How long browsers and the host's CDN keep the built files named by their contents (see ./host-redirects).
+  files.set(HOST_HEADERS_FILE, file('_headers', generateHostHeaders));
   const vercelConfig = file('vercel.json', (s) => generateVercelConfig(s) ?? '');
   if (vercelConfig) files.set(VERCEL_CONFIG_FILE, vercelConfig);
   // The RSS feed of the published posts, once the site has a public URL to give their full addresses (see ./rss).

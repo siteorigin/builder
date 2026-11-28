@@ -24,7 +24,7 @@ import { webMcpOn } from '@shared/webmcp';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, pageAlternates, publishedState, redirectFile, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
-import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
+import { IMMUTABLE_CACHE_CONTROL, redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { isPrivateFileName } from './project/private-files';
 import { converterDocPath, sourceDocPath, storedSourceDoc } from './project/documents';
@@ -1431,7 +1431,7 @@ export async function projectInventory(dir: string, opts: { cache?: ExportHashes
 }
 
 /**
- * Puts the staged project's vercel.json (its redirect rules for Vercel, already without the drafts) at the root of the
+ * Puts the staged project's vercel.json (its redirect and caching rules for Vercel, the redirects already without the drafts) at the root of the
  * built website, where Vercel reads it when that folder is deployed: while the site is published on Vercel, and only
  * the one SiteOrigin Builder generated (a vercel.json of the author's own beside package.json configures their
  * project, not the website). A file of the author's own already in the website (from static/) is never replaced:
@@ -1449,7 +1449,7 @@ export async function deliverVercelConfig(project: string, out: string, live: Pr
   if (!Object.hasOwn(manifest.files ?? {}, VERCEL_CONFIG_FILE) || !isPlainFile(join(project, VERCEL_CONFIG_FILE))) return null;
   const config = await readExportFile(join(project, VERCEL_CONFIG_FILE));
   const there = join(out, VERCEL_CONFIG_FILE);
-  if (existsSync(there)) return `static/${VERCEL_CONFIG_FILE} takes the place of the redirect rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.`;
+  if (existsSync(there)) return `static/${VERCEL_CONFIG_FILE} takes the place of the redirect and caching rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.`;
   await fs.writeFile(there, config);
   return null;
 }
@@ -1584,21 +1584,24 @@ export function themeNotice(theme: { name: string; license: string }): string {
 /** The notices of a site on Foundation, the theme every new project starts with. */
 const NOTICE = themeNotice({ name: 'Foundation', license: 'MIT-0' });
 /** What the README says about each host a site's redirect rules can be written for (see redirectHost). */
-const README_HOSTS: Record<RedirectHost, { notFound: string; redirects: string }> = {
+const README_HOSTS: Record<RedirectHost, { notFound: string; redirects: string; caching: string }> = {
   cloudflare: {
     notFound: 'Cloudflare Pages, Netlify and Vercel use it automatically',
     redirects:
-      'The rules are in `static/_redirects`, written for Cloudflare Pages. The build copies the file to `build/_redirects`. Cloudflare Pages reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Netlify or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.'
+      'The rules are in `static/_redirects`, written for Cloudflare Pages. The build copies the file to `build/_redirects`. Cloudflare Pages reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Netlify or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.',
+    caching: 'Cloudflare Pages reads `_headers` from the root of the folder you publish, as it does `_redirects`.'
   },
   netlify: {
     notFound: 'Netlify uses it automatically',
     redirects:
-      'The rules are in `static/_redirects`, written for Netlify, each forced (`301!`) so that it applies ahead of the old address’s own page. The build copies the file to `build/_redirects`. Netlify reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Cloudflare Pages or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.'
+      'The rules are in `static/_redirects`, written for Netlify, each forced (`301!`) so that it applies ahead of the old address’s own page. The build copies the file to `build/_redirects`. Netlify reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Cloudflare Pages or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.',
+    caching: 'Netlify reads `_headers` from the root of the folder you publish, as it does `_redirects`.'
   },
   vercel: {
     notFound: 'Vercel uses it automatically',
     redirects:
-      'The rules for Vercel are in `vercel.json`, beside `package.json`. Vercel reads that file from the root of what you deploy. When Vercel builds this project, it is already there; set the Vercel project’s Output Directory to `build`. When you deploy `build/` by itself, copy `vercel.json` into `build/` after each build: `npm run build` does not. If the contents of `build/` go into a sub-folder of what you deploy, put `vercel.json` at the root instead (its addresses already include the sub-folder). `static/_redirects` holds the same redirects for Cloudflare Pages.'
+      'The rules for Vercel are in `vercel.json`, beside `package.json`. Vercel reads that file from the root of what you deploy. When Vercel builds this project, it is already there; set the Vercel project’s Output Directory to `build`. When you deploy `build/` by itself, copy `vercel.json` into `build/` after each build: `npm run build` does not. If the contents of `build/` go into a sub-folder of what you deploy, put `vercel.json` at the root instead (its addresses already include the sub-folder). `static/_redirects` holds the same redirects for Cloudflare Pages.',
+    caching: 'For Vercel, the same rule is in the `headers` of `vercel.json`, which goes where the redirect rules above say.'
   }
 };
 
@@ -1634,15 +1637,19 @@ Addresses the site does not have should show its not-found page, \`build/404.htm
 
 ### Redirects
 
-When the site keeps old addresses (of pages that have moved, say), each gets a page of its own that sends visitors on. Those pages work on any static host, but answer as pages that are there (HTTP 200). Rules for the host give a permanent redirect (HTTP 301) instead. A site with no old addresses has no rules file, so there is nothing more to set up.
+When the site keeps old addresses (of pages that have moved, say), each gets a page of its own that sends visitors on. Those pages work on any static host, but answer as pages that are there (HTTP 200). Rules for the host give a permanent redirect (HTTP 301) instead. A site with no old addresses has no redirect rules, so there is nothing more to set up.
 
 ${README_HOSTS[host].redirects}
+
+### Caching
+
+The build names each file in \`build/_app/immutable/\` (the site's scripts, styles and fonts) by its contents, so a file that changes gets a new address. \`static/_headers\` (\`build/_headers\` after a build) tells Cloudflare Pages and Netlify that browsers may keep those files for a year (\`Cache-Control: ${IMMUTABLE_CACHE_CONTROL}\`). ${README_HOSTS[host].caching} Other hosts read neither file: give \`_app/immutable/\` (with the sub-folder in front when the site is in one) that header in the host's own settings. Every other file keeps the host's own caching, since its address stays the same when it changes.
 
 ## Project layout
 
 - \`src/\`: the website's source. \`src/routes/\` and \`src/lib/siteorigin/\` hold the generated SvelteKit pages, components and styles.
 - \`src/lib/siteorigin/custom/\`: code components you wrote. These are yours to edit.
-- \`static/\`: files the build copies into the website as they are, such as images (in \`static/assets/\`), icons, the web app manifest and \`robots.txt\`. Depending on the site and its settings, it also holds \`sitemap.xml\`, \`rss.xml\`, \`llms.txt\`, \`llms-full.txt\`, Markdown copies of pages and \`_redirects\`.
+- \`static/\`: files the build copies into the website as they are, such as images (in \`static/assets/\`), icons, the web app manifest and \`robots.txt\`. Depending on the site and its settings, it also holds \`sitemap.xml\`, \`rss.xml\`, \`llms.txt\`, \`llms-full.txt\`, Markdown copies of pages and \`_redirects\`. It always holds \`_headers\`, the caching rules Cloudflare Pages and Netlify read (see Caching above).
 - \`siteorigin/\` and \`siteorigin.project.json\`: SiteOrigin Builder's editable documents. Keep them if you want to keep editing visually.
 
 Files generated by SiteOrigin Builder start with a comment. If you edit them by hand, SiteOrigin Builder keeps your version and asks before regenerating them.

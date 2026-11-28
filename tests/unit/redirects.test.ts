@@ -15,12 +15,12 @@ import { validateState } from '@engine/validate';
 import { generateProject, generateRedirect, liveRedirects, publishedState, redirectFile } from '@generator/index';
 import { publicationPlan } from '@generator/checks';
 import { GenerationCache } from '@generator/cache';
-import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
+import { generateHostHeaders, generateHostRedirects, generateVercelConfig, HOST_HEADERS_FILE, HOST_REDIRECTS_FILE, IMMUTABLE_CACHE_CONTROL, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { resolveRedirects } from '@shared/redirects';
 import { archivePages } from '@shared/archives';
 import { validateRoute } from '@shared/routes';
 import { heldAsMedia } from '../../src/main/project/versions';
-import { deliverVercelConfig, withheldRoutes } from '../../src/main/export';
+import { deliverVercelConfig, projectReadme, withheldRoutes } from '../../src/main/export';
 import { ProjectSession } from '../../src/main/project/session';
 import { withPublished } from '@shared/published';
 
@@ -260,6 +260,8 @@ describe('host redirect rules', () => {
       { source: '/studio.v2/home-again', destination: '/studio.v2/', statusCode: 301 }
     ]);
     expect(config.redirects.every((r: Record<string, unknown>) => !('permanent' in r))).toBe(true);
+    // The caching rule of _headers comes with them, under the same sub-path.
+    expect(config.headers).toEqual([{ source: '/studio.v2/_app/immutable/(.*)', headers: [{ key: 'Cache-Control', value: IMMUTABLE_CACHE_CONTROL }] }]);
     // _redirects is still written, as Cloudflare Pages reads it, with no character escaped twice.
     expect(generateHostRedirects(s)).toContain('/studio.v2/team/ /studio.v2/about/ 301\n');
     expect(generateHostRedirects(s)).not.toContain('%25');
@@ -268,11 +270,12 @@ describe('host redirect rules', () => {
     expect(files.get(HOST_REDIRECTS_FILE)).toBe(generateHostRedirects(s));
   });
 
-  it('writes no rule files while the site keeps no old address', () => {
+  it('writes no redirect rules while the site keeps no old address, and Vercel its caching rule alone', () => {
     const s = run(site(), { type: 'site.update', redirectHost: 'vercel' });
     const files = generateProject(s);
     expect(files.has(HOST_REDIRECTS_FILE)).toBe(false);
-    expect(files.has(VERCEL_CONFIG_FILE)).toBe(false);
+    expect(JSON.parse(files.get(VERCEL_CONFIG_FILE)!)).toEqual({ headers: [{ source: '/_app/immutable/(.*)', headers: [{ key: 'Cache-Control', value: IMMUTABLE_CACHE_CONTROL }] }] });
+    expect(generateProject(run(s, { type: 'site.update', redirectHost: 'cloudflare' })).has(VERCEL_CONFIG_FILE)).toBe(false);
     // With redirects, vercel.json is written only for Vercel.
     const kept = run(site(), { type: 'redirect.add', from: '/team/', to: '/about/' });
     expect(generateProject(kept).has(VERCEL_CONFIG_FILE)).toBe(false);
@@ -295,8 +298,41 @@ describe('host redirect rules', () => {
 
   it('keeps the rule files out of the routes a page can take and out of saved versions', () => {
     expect(validateRoute('/_redirects/')).not.toBeNull();
+    expect(validateRoute('/_headers/')).not.toBeNull();
     expect(validateRoute('/vercel.json/')).not.toBeNull();
     expect(heldAsMedia('static/_redirects')).toBe(false);
+    expect(heldAsMedia('static/_headers')).toBe(false);
+  });
+});
+
+describe('caching rules for the host (#1487)', () => {
+  it('let every site’s host keep the built files named by their contents for a year, whatever host it names', () => {
+    for (const host of ['cloudflare', 'netlify', 'vercel'] as const) {
+      const s = run(site(), { type: 'site.update', redirectHost: host });
+      const text = generateProject(s).get(HOST_HEADERS_FILE)!;
+      expect(text, host).toBe(generateHostHeaders(s));
+      expect(text.split('\n').filter((l) => !l.startsWith('#'))).toEqual(['/_app/immutable/*', `  Cache-Control: ${IMMUTABLE_CACHE_CONTROL}`, '']);
+    }
+    // Only the built files: the media library keeps a file of the author's own at the name they gave it.
+    expect(generateHostHeaders(site())).not.toContain('/assets/');
+    expect(IMMUTABLE_CACHE_CONTROL).toBe('public, max-age=31536000, immutable');
+  });
+
+  it('cover the built files under the site’s sub-path', () => {
+    const s = run(site(), { type: 'site.update', baseUrl: 'https://example.com/studio.v2' });
+    expect(generateHostHeaders(s)).toContain('\n/studio.v2/_app/immutable/*\n  Cache-Control: ');
+    const vercel = JSON.parse(generateVercelConfig(run(s, { type: 'site.update', redirectHost: 'vercel' }))!);
+    expect(vercel.headers[0].source).toBe('/studio.v2/_app/immutable/(.*)');
+    expect(vercel.redirects).toBeUndefined();
+  });
+
+  it('are explained in the exported README for the host the site names', () => {
+    for (const host of ['cloudflare', 'netlify', 'vercel'] as const) {
+      const readme = projectReadme('Studio', false, undefined, false, host);
+      expect(readme, host).toContain('### Caching');
+      expect(readme, host).toContain(`Cache-Control: ${IMMUTABLE_CACHE_CONTROL}`);
+    }
+    expect(projectReadme('Studio', false, undefined, false, 'vercel')).toContain('the `headers` of `vercel.json`');
   });
 });
 
@@ -536,7 +572,9 @@ describe('redirects in the project session', () => {
     expect(JSON.parse(readFileSync(join(dir, VERCEL_CONFIG_FILE), 'utf8')).redirects[0]).toEqual({ source: '/team/', destination: '/contact/', statusCode: 301 });
     await ok([{ type: 'redirect.remove', from: '/team/' }]);
     expect(existsSync(rules)).toBe(false);
-    expect(existsSync(join(dir, VERCEL_CONFIG_FILE))).toBe(false);
+    // Vercel keeps its caching rule with no redirect left.
+    expect(JSON.parse(readFileSync(join(dir, VERCEL_CONFIG_FILE), 'utf8')).redirects).toBeUndefined();
+    expect(existsSync(join(dir, HOST_HEADERS_FILE))).toBe(true);
     expect(existsSync(join(dir, 'src/routes/team'))).toBe(false);
     expect((await s.undo()).ok).toBe(true);
     expect(s.state.site.redirects).toEqual([{ from: '/team/', custom: true, to: '/contact/' }]);
@@ -607,7 +645,7 @@ describe('vercel.json in an exported website', () => {
     expect(await deliverVercelConfig(project, out, live)).toBeNull();
     expect(readFileSync(join(out, VERCEL_CONFIG_FILE), 'utf8')).toBe('{"redirects":[]}\n');
     writeFileSync(join(out, VERCEL_CONFIG_FILE), '{"own":true}');
-    expect(await deliverVercelConfig(project, out, live)).toBe('static/vercel.json takes the place of the redirect rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.');
+    expect(await deliverVercelConfig(project, out, live)).toBe('static/vercel.json takes the place of the redirect and caching rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.');
     expect(readFileSync(join(out, VERCEL_CONFIG_FILE), 'utf8')).toBe('{"own":true}');
   });
 });

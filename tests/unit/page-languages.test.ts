@@ -69,7 +69,7 @@ async function loadHook(files: Map<string, string>, { building = true } = {}) {
   return (routeId: string | null, chunks: string[], base = '') =>
     hook.handle({
       event: { route: { id: routeId }, url: new URL(`http://sveltekit-prerender${base}${routeId ?? '/missing/'}`) },
-      resolve: (_e: unknown, opts?: { transformPageChunk: (c: { html: string; done: boolean }) => string }) => chunks.map((html, i) => (opts ? opts.transformPageChunk({ html, done: i === chunks.length - 1 }) : html))
+      resolve: (_e: unknown, opts?: { transformPageChunk?: (c: { html: string; done: boolean }) => string }) => chunks.map((html, i) => (opts?.transformPageChunk ? opts.transformPageChunk({ html, done: i === chunks.length - 1 }) : html))
     }) as string[];
 }
 

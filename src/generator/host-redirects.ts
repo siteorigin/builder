@@ -14,6 +14,12 @@
  * Vercel reads neither: with the host set to Vercel, `vercel.json` beside the project's package.json (and at the root
  * of an exported website) gives it the same rules. Addresses are written as browsers send them (percent-encoded), under
  * the site's sub-path when its public URL has one.
+ *
+ * The hosts' caching rules go beside them (#1487): `_headers` (Cloudflare Pages and Netlify, written for every site)
+ * and the `headers` of Vercel's `vercel.json` let browsers and the host's CDN keep the files SvelteKit builds into
+ * `_app/immutable/` for a year without asking again. The build names each of those files by its contents, so a file
+ * that changes gets a new address. Nothing else is: `static/assets/` keeps an author's own file at the name they gave
+ * it, and a responsive copy shares its original's hash, so those addresses keep the host's own caching.
  */
 import { routeUrl } from '@shared/routes';
 import { siteMount } from '@shared/crawler-policy';
@@ -25,6 +31,12 @@ import { derived } from './cache';
 export const HOST_REDIRECTS_FILE = 'static/_redirects';
 /** Where it keeps Vercel's, beside package.json; an exported website has it at its root. */
 export const VERCEL_CONFIG_FILE = 'vercel.json';
+/** Where it keeps the caching rules Cloudflare Pages and Netlify read. */
+export const HOST_HEADERS_FILE = 'static/_headers';
+/** How long a browser or CDN may keep a file whose address changes with its contents: a year, never asking again. */
+export const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+/** SvelteKit's folder of built files named by their contents (its default `appDir`, `_app`). */
+const IMMUTABLE_DIR = '/_app/immutable/';
 
 /** The host the site's redirect rules are written for: Cloudflare Pages unless it names another. */
 export function redirectHost(site: Pick<SiteDoc, 'redirectHost'>): RedirectHost {
@@ -63,17 +75,35 @@ export function generateHostRedirects(state: ProjectState): string | null {
   return [...header, ...lines].join('\n') + '\n';
 }
 
-/** The site's `vercel.json`, while its host is Vercel and it keeps an old address; null otherwise. */
+/**
+ * The site's `_headers`, which Cloudflare Pages and Netlify read the same way: the built files named by their
+ * contents (see the top of this file) cached for a year, under the site's sub-path when it has one. Written whatever
+ * the host, as `_redirects` is, so moving the built website to either host keeps it.
+ */
+export function generateHostHeaders(state: ProjectState): string {
+  return [
+    '# Files the build names by their contents, which browsers and the host may keep for a year without asking again.',
+    '# Written for Cloudflare Pages and Netlify by SiteOrigin Builder.',
+    `${siteMount(state.site)}${IMMUTABLE_DIR}*`,
+    `  Cache-Control: ${IMMUTABLE_CACHE_CONTROL}`
+  ].join('\n') + '\n';
+}
+
+/**
+ * The site's `vercel.json` while its host is Vercel, null otherwise: the caching rule of `_headers` (see
+ * generateHostHeaders), and the HTTP 301 rules while the site keeps an old address.
+ */
 export function generateVercelConfig(state: ProjectState): string | null {
   if (redirectHost(state.site) !== 'vercel') return null;
   const pairs = redirectPairs(state);
-  if (!pairs.length) return null;
   const mount = siteMount(state.site);
+  const headers = [{ source: `${mount}${IMMUTABLE_DIR}(.*)`, headers: [{ key: 'Cache-Control', value: IMMUTABLE_CACHE_CONTROL }] }];
+  if (!pairs.length) return JSON.stringify({ headers }, null, '\t') + '\n';
   // Vercel matches the address as given, so each old address has a rule with its trailing slash and one without.
   const redirects = pairs.flatMap(([from, to]) => {
     const source = publicPath(mount, from);
     const destination = publicPath(mount, to);
     return [source, withoutSlash(source)].map((s) => ({ source: s, destination, statusCode: 301 }));
   });
-  return JSON.stringify({ redirects }, null, '\t') + '\n';
+  return JSON.stringify({ headers, redirects }, null, '\t') + '\n';
 }
