@@ -611,13 +611,13 @@ describe('SEO and performance', () => {
     expect(gallery).not.toContain('eager');
     expect(gallery).toContain('sizes="(min-width: 1024px) 400px, (min-width: 768px) 50vw, 100vw"');
     expect(files.get(`${RUNTIME_DIR}/Image.svelte`)).toContain("fetchpriority={eager ? 'high' : undefined}");
+    // The split hero's picture takes the wider of its two columns from desktop up, the whole width below.
+    expect(hero).toMatch(/<SoImage \{image\} eager=\{so_eager\} sizes="\(min-width: 1024px\) 59vw, 100vw"/);
   });
 
-  // Release gap: the release's hero.split and testimonials portraits give their images no sizes.
-  it.fails('gives the hero’s picture and the testimonial portraits realistic sizes', () => {
+  // Release gap: the release's testimonials portraits give their images no sizes.
+  it.fails('gives the testimonial portraits realistic sizes', () => {
     const files = generateProject(fresh());
-    const hero = [...files.entries()].find(([p]) => p.endsWith('hero-split.svelte'))![1];
-    expect(hero).toMatch(/\bsizes="[^"]+"/);
     const testimonials = [...files.entries()].find(([p]) => p.endsWith('testimonials-grid.svelte'))![1];
     expect(testimonials).toMatch(/\bsizes="[^"]+"/);
   });
@@ -856,13 +856,12 @@ describe('SEO and performance', () => {
   });
 
   it('keeps a definition\'s images to what the definition alone decides', () => {
-    // A container with no grid can be widened by any placement, so the split hero without a grid keeps 100vw.
+    // The split hero is code: its picture carries the sizes its own source writes, and nothing the generator works out.
     const s = fresh();
     s.site.themeId = 'foundation-alt';
     addToHome(s, 'hero.split');
     const hero = [...generateProject(s).entries()].find(([p]) => p.endsWith('foundation-alt-hero-split.svelte'))![1];
-    expect(hero).toContain('<SoImage');
-    expect(hero).not.toMatch(/<SoImage[^>]*\ssizes=/);
+    expect(hero.match(/<SoImage[^>]*\ssizes="[^"]*"/g)).toEqual(['<SoImage {image} eager={so_eager} sizes="(min-width: 1024px) 59vw, 100vw"']);
   });
 
   it('passes the header logo its small copies, so its sizes hint can pick one', () => {

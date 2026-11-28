@@ -54,8 +54,7 @@ const homeOf = (s: ProjectState) => s.pages[s.site.homePageId];
 
 /**
  * The site with its split hero, the home page's first section, as a design drawn in the editor: its picture is an
- * image bound to the placement's `image` property, which the head's preload reads. (Foundation's hero is a code
- * component, which loads its picture eagerly but whose markup the preload cannot read: the Release gap below.)
+ * image bound to the placement's `image` property, which the head's preload reads.
  */
 function managedHero(s: ProjectState): ProjectState {
   managedFoundation(s, ['hero.split']);
@@ -177,7 +176,7 @@ describe('the image a page renders', () => {
       fetchpriority: 'high'
     });
     expect(img.class).toMatch(/^so-img /);
-    // Every source says the same width as the <img> (how wide the split hero shows it: see the Release gap below).
+    // Every source says the same width as the <img> (how wide the split hero shows it).
     expect(img.sizes).toBeTruthy();
     for (const x of sources) expect(x.sizes).toBe(img.sizes);
     // An image further down the page loads lazily, its own <picture> too.
@@ -187,10 +186,11 @@ describe('the image a page renders', () => {
     expect(attrs(lower[1].match(/<img\b[^>]*>/)![0])).toMatchObject({ loading: 'lazy', decoding: 'async' });
   });
 
-  // Release gap: the release's hero.split hands its image no sizes, so its picture takes the runtime image's default (100vw), though it shows at half the page's width on a wide screen.
-  it.fails('sizes the split hero’s picture by how wide it shows', async () => {
-    const { img } = heroPicture((await renderHome(site(picture('hero')))).body);
-    expect(img.sizes).toMatch(/^\(min-width: 1024px\) /);
+  it('sizes the split hero’s picture by how wide it shows', async () => {
+    // From desktop up it takes seven of twelve columns (59vw, before the container's cap); stacked, the whole width.
+    const { img, sources } = heroPicture((await renderHome(site(picture('hero')))).body);
+    expect(img.sizes).toBe('(min-width: 1024px) 59vw, 100vw');
+    for (const x of sources) expect(x.sizes).toBe(img.sizes);
   });
 
   it('stays a bare <img> for an image with copies in its own format only', async () => {
@@ -220,7 +220,80 @@ describe('the hero’s preload', () => {
   it('asks for the set the release hero’s <picture> takes first, at the widths and sizes it offers, under the base path', async () => {
     const { head, body } = await renderHome(site(picture('hero')));
     const first = firstSource(body);
+    expect(first.sizes).toBe('(min-width: 1024px) 59vw, 100vw');
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
+  });
+
+  /** The home page with a project's own code hero first, its picture `photo`, its markup `markup` (Image.svelte imported as `Pic`). */
+  const codeHero = (markup: string, opts: { asset?: AssetRecord | null; wrap?: boolean } = {}) => {
+    const s = site(opts.asset === undefined ? picture('hero') : opts.asset);
+    const def = {
+      schemaVersion: 2,
+      id: 'project.code-hero',
+      componentId: 'project.code-hero',
+      contractVersion: 1,
+      kind: 'code',
+      owner: 'project',
+      name: 'Code hero',
+      description: '',
+      category: 'custom',
+      tags: [],
+      icon: 'component',
+      properties: { photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } } },
+      parts: { root: { nodeId: 'root', label: 'Root' } },
+      source: `<script>\n\timport Pic from '../runtime/Image.svelte';\n\timport { thumbnail } from '../runtime/util.js';\n\tlet { photo = null, so_eager = false, open = false, size = '50vw', class: className = '' } = $props();\n</script>\n\n<section class={['code-hero', className]}>\n\t${markup}\n</section>\n`,
+      sourcePath: 'src/lib/siteorigin/custom/CodeHero.svelte',
+      provenance: { createdBy: 'user' },
+      license: 'Project'
+    } as unknown as (typeof s.components)[string];
+    s.components[def.id] = def;
+    const home = homeOf(s);
+    home.nodes.code = { id: 'code', kind: 'instance', definitionId: def.id, props: { photo: { assetId: 'a_hero', alt: 'Ours' } } } as InstanceNode;
+    if (opts.wrap) {
+      // Placed inside the first section's own design, in a slot the page fills.
+      const tree = { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'section', children: ['body'] }, body: { id: 'body', kind: 'slot', slot: 'body' } } };
+      s.components['project.band'] = { ...def, id: 'project.band', componentId: 'project.band', kind: 'managed', name: 'Band', properties: {}, slots: { body: { label: 'Body' } }, tree, source: undefined, sourcePath: undefined } as unknown as (typeof s.components)[string];
+      home.nodes.band = { id: 'band', kind: 'instance', definitionId: 'project.band', props: {}, slots: { body: ['code'] } } as InstanceNode;
+      home.rootIds = ['band', ...home.rootIds];
+    } else home.rootIds = ['code', ...home.rootIds];
+    return s;
+  };
+
+  it('asks for the picture a project’s code hero loads eagerly, at the sizes its markup writes', async () => {
+    const { head, body } = await renderHome(codeHero('<Pic image={photo} eager={true} sizes="(min-width: 1120px) 1080px, 100vw" class="code-hero__media" />'));
+    const first = firstSource(body);
+    expect(first.sizes).toBe('(min-width: 1120px) 1080px, 100vw');
+    expect(first.srcset).toContain('/studio/assets/hero-1a2b3c4d-160w.avif 160w');
+    expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
+    // The flag the page hands it, the runtime's own sizes when it writes none, inside an {#if} on its own picture, and
+    // placed in a slot of the first section's design.
+    for (const [markup, wrap] of [
+      ['{#if photo?.src}<Pic image={photo} eager={so_eager} />{/if}', false],
+      ['<Pic image={{ ...photo, decorative: true }} eager />', true]
+    ] as const) {
+      const shown = await renderHome(codeHero(markup, { wrap }));
+      const source = firstSource(shown.body);
+      expect(preloads(shown.head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: source.srcset, imagesizes: '100vw' }]);
+    }
+  });
+
+  it('asks for nothing from code whose eager picture the head cannot read as the page renders it', async () => {
+    for (const markup of [
+      // Loaded lazily; shown only when something else allows; sized as it renders; spread with anything; two images.
+      '<Pic image={photo} sizes="50vw" />',
+      '{#if open}<Pic image={photo} eager />{/if}',
+      '{#if photo}<span></span>{:else}<Pic image={photo} eager />{/if}',
+      '<Pic image={photo} eager sizes={size} />',
+      '<Pic image={photo} eager sizes="{size}" />',
+      '<Pic {...{ image: photo }} eager />',
+      '<Pic image={photo} eager /><Pic image={photo} />',
+      // The picture or its thumbnail, as the page decides.
+      '<Pic image={open ? photo : thumbnail(photo)} eager />'
+    ]) {
+      expect(preloads((await renderHome(codeHero(markup))).head), markup).toEqual([]);
+    }
+    // Nor for a code hero with no picture chosen.
+    expect(preloads((await renderHome(codeHero('<Pic image={photo} eager />', { asset: null }))).head)).toEqual([]);
   });
 
   it('asks for the <img>’s own set, untyped, for an image with copies in its own format only, and its file for one with none', async () => {
