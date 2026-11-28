@@ -724,6 +724,54 @@ describe('the release’s own sections (#1341)', () => {
     expect(titled(placed.state)).toHaveLength(1);
   });
 
+  it('changes a title a design shows in one hero’s window frame, whatever another hero leaves out of its plain one', () => {
+    const { s } = insert(fresh(), 'hero.screenshot');
+    const hero = Object.values(s.components).find((d) => d.owner === 'theme' && d.componentId === 'hero.screenshot')!;
+    const plain = Object.keys(hero.variantAxes!.frame.options).find((f) => f !== 'window')!;
+    const design = projectDesign(s, {
+      componentId: 'project.pair',
+      name: 'Pair',
+      properties: { title: { type: 'string', label: 'Title', default: 'Quarterly report' } },
+      parts: { root: { nodeId: 'root', label: 'Pair' } },
+      build: (b) => b.el('root', 'section', { name: 'Pair' }, [])
+    });
+    for (const [id, frame] of [['open', 'window'], ['bare', plain]])
+      design.tree!.nodes[id] = { id, kind: 'instance', definitionId: hero.id, props: { frameTitle: { $prop: 'title' } }, variants: { frame } } as InstanceNode;
+    (design.tree!.nodes.root as { children: string[] }).children.push('open', 'bare');
+    const placed = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, definitionId: design.id }]).state;
+    // Words a hero leaves out are no setting of it: the title the other shows is still the placement's to change.
+    expect(labels(placed, 'Quarterly report')).toEqual([['Title', undefined]]);
+    expect(pageText(placed, home(placed))).toContain('Quarterly report');
+  });
+
+  it('takes a frame bound to a field an item lacks as one that may show the title, as the generated site reads nothing there', () => {
+    const { s } = insert(fresh(), 'hero.screenshot');
+    const hero = Object.values(s.components).find((d) => d.owner === 'theme' && d.componentId === 'hero.screenshot')!;
+    const options = Object.keys(hero.variantAxes!.frame.options);
+    const plain = options.find((f) => f !== 'window')!;
+    const design = projectDesign(s, {
+      componentId: 'project.shots',
+      name: 'Shots',
+      properties: {
+        shots: { type: 'list', label: 'Shots', itemLabel: 'Shot', fields: { title: { type: 'string', label: 'Title', default: '' }, frame: { type: 'enum', label: 'Frame', default: plain, options: options.map((value) => ({ value, label: value })) } }, default: [] } as PropSchema
+      },
+      parts: { root: { nodeId: 'root', label: 'Shots' } },
+      build: (b) => b.el('root', 'section', { name: 'Shots' }, [])
+    });
+    design.tree!.nodes.each = { id: 'each', kind: 'repeat', list: { $prop: 'shots' }, children: ['shot'] } as GraphNode;
+    design.tree!.nodes.shot = { id: 'shot', kind: 'instance', definitionId: hero.id, props: { frameTitle: { $item: 'title' } }, variants: { frame: { $item: 'frame' } } } as InstanceNode;
+    (design.tree!.nodes.root as { children: string[] }).children.push('each');
+    const placed = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, definitionId: design.id }]);
+    const node = placed.state.pages[s.site.homePageId].nodes[placed.results[0].nodeId as string] as InstanceNode;
+    const titled = () => renderedContent(placed.state, home(placed.state)).filter((c) => c.value === 'Quarterly report');
+    node.props.shots = [{ id: 'i1', title: 'Quarterly report' }];
+    expect(titled()).toHaveLength(1);
+    node.props.shots = [{ id: 'i1', title: 'Quarterly report', frame: plain }];
+    expect(titled()).toEqual([]);
+    node.props.shots = [{ id: 'i1', title: 'Quarterly report', frame: 'window' }];
+    expect(titled()).toHaveLength(1);
+  });
+
   it('leaves to the inspector what the release’s markup does not mark, a section made unique, and another theme’s', () => {
     const s = fresh();
     const owner = { kind: 'page' as const, id: home(s).id };

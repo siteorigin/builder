@@ -1434,11 +1434,13 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
        * the site leaves out while it goes nowhere, and some marked text shows only in some states (FOUNDATION_GATES):
        * `hidden`, then. Anything else is up to its code.
        */
-      // The option shown on an axis: chosen, bound to a field the placement has (its default unless that names an option,
-      // as the generator writes it), or undefined while bound to UI state.
+      // The option shown on an axis: chosen, or bound to a field the placement has (its default unless that names an
+      // option, as the generator writes it). Undefined when it may be any: bound to UI state, which changes while the
+      // page is open, or to a field the item lacks, which the generated site reads as nothing, not as a default.
       const variant = (axis: string): string | undefined => {
         const v = selectedVariants(def, n.variants)[axis];
-        if (typeof v === 'string' || isStateRef(v)) return typeof v === 'string' ? v : undefined;
+        if (typeof v === 'string') return v;
+        if (isStateRef(v) || ('$item' in v && !Object.hasOwn(scope.item ?? {}, v.$item))) return undefined;
         const chosen = evaluate(v, scope);
         const a = def.variantAxes?.[axis];
         return typeof chosen === 'string' && a && Object.hasOwn(a.options, chosen) ? chosen : a?.default;
@@ -1489,12 +1491,12 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
       for (const [key, schema] of Object.entries(def.properties)) {
         const field = fieldOf(key);
         if (schema.type !== 'list') {
-          // A shipped component's setting is not listed, nor a button the site leaves out, and whatever else shows its
-          // field may not change it.
+          // A shipped component's setting is not listed, and whatever else shows its field may not change it. Words the
+          // site leaves out here (a button with nowhere to go) are not listed either, but are no setting.
           const markup = known(def.properties, props, key);
           const rows = fromRows(key);
-          if ((shows && !shows.has(key)) || markup === 'hidden') guard(field);
-          else take(def.properties, props, key, rows ? undefined : field, `${placement}|${key}`, !shows && markup !== 'shown', rows);
+          if (shows && !shows.has(key)) guard(field);
+          else if (markup !== 'hidden') take(def.properties, props, key, rows ? undefined : field, `${placement}|${key}`, !shows && markup !== 'shown', rows);
           continue;
         }
         const rows = fromRows(key);
@@ -1507,8 +1509,8 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
           for (const f of Object.keys(schema.fields)) {
             const source = !rows && field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined;
             const markup = known(schema.fields, item, f, key);
-            if ((shows && !shows.has(`${key}.${f}`)) || unused.includes(f) || markup === 'hidden') guard(source);
-            else take(schema.fields, item, f, source, `${placement}|${key}|${String(item.id ?? '')}|${f}`, (!shows && markup !== 'shown') || keyless(key), rows);
+            if ((shows && !shows.has(`${key}.${f}`)) || unused.includes(f)) guard(source);
+            else if (markup !== 'hidden') take(schema.fields, item, f, source, `${placement}|${key}|${String(item.id ?? '')}|${f}`, (!shows && markup !== 'shown') || keyless(key), rows);
           }
           // A whole list handed in from a design is that design's field too.
           if (!shows || keyless(key)) guard(field);
