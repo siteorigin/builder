@@ -1182,8 +1182,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(ofType(about.head, 'WebPage')).toHaveLength(1);
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('describes the contact point and place the shipped theme’s Contact details show', async () => {
+  it('describes the contact point and place the shipped theme’s Contact details show', async () => {
     const s = publishedRelease();
     s.site.baseUrl = 'https://studio.example';
     const contact = byTitle(s, 'Contact');
@@ -1201,8 +1200,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
     ]);
   });
 
-  // Release gap: structured data reads managed FAQ and contact trees only (src/generator/checks.ts), so the release's FAQ and Contact details make none.
-  it.fails('makes the page the shipped theme’s FAQ is on an FAQ page, with every question and its answer', async () => {
+  it('makes the page the shipped theme’s FAQ is on an FAQ page, with every question and its answer', async () => {
     const s = publishedRelease();
     s.site.baseUrl = 'https://studio.example';
     const contact = byTitle(s, 'Contact');

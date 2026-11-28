@@ -21,6 +21,7 @@ import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from
 import { actionWraps } from './card-links';
 import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
+import { shippedOutline } from './shipped-outlines';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { connectedListItems } from './collection-loops';
 import { hasArchiveLayout } from './archive';
@@ -717,11 +718,28 @@ function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent
   // lists inside lists give them the same trail.
   const faqIn = new Map<object, Map<string, Partial<FaqEntry>>>();
   const factsIn = new Map<object, BusinessFacts>();
+  const contactFact = (scope: Scope, link: LinkValue | undefined, label: string) => {
+    let facts = factsIn.get(scope.props);
+    if (!facts) {
+      facts = { email: [], telephone: [], address: [] };
+      factsIn.set(scope.props, facts);
+      businesses.push(facts);
+    }
+    const target = typeof link?.target === 'string' ? link.target.trim() : '';
+    const add = (list: string[], v: string) => v && !list.includes(v) && list.push(v);
+    if (link?.type === 'email') add(facts.email, target.split('?')[0]);
+    // The number as shown, unless the label is words: then the number it dials.
+    else if (link?.type === 'tel') add(facts.telephone, phoneLike(label) ? label : target);
+    // An address shown beside an address icon, not words such as "Get directions".
+    else if (ADDRESS_ICONS.has(String(scope.item?.icon ?? '')) && /\d|,/.test(label)) add(facts.address, label);
+  };
   for (const tree of trees) {
     // The sizes each page node around what renders hides it at, from the outermost one in.
     const hiding: Array<Set<Size>> = [];
     const shown = (def: ComponentDefinition, nodeId: string, scope: Scope) => !hiddenEverySize([...hiding, ...hiddenInDesign(def, nodeId, scope)]);
     walkRendered(state, tree, {
+      // The theme's FAQ and Contact details are code: read through the designs that stand for what they show.
+      outline: (def) => shippedOutline(state, def),
       enter: (n) => {
         hiding.push(hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]));
       },
@@ -743,22 +761,11 @@ function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent
         entry[n.id] = plainText(evaluate(n.text, scope), !!n.rich);
       },
       node: (n, scope, _reportId, inDef, def) => {
-        if (!inDef || !def || n.kind !== 'link' || n.id !== 'method-value' || !isComponent(def, 'contact.details') || !shown(def, n.id, scope)) return;
-        let facts = factsIn.get(scope.props);
-        if (!facts) {
-          facts = { email: [], telephone: [], address: [] };
-          factsIn.set(scope.props, facts);
-          businesses.push(facts);
-        }
-        const link = evaluate(n.link, scope) as LinkValue | undefined;
-        const label = plainText(evaluate(n.label, scope));
-        const target = typeof link?.target === 'string' ? link.target.trim() : '';
-        const add = (list: string[], v: string) => v && !list.includes(v) && list.push(v);
-        if (link?.type === 'email') add(facts.email, target.split('?')[0]);
-        // The number as shown, unless the label is words: then the number it dials.
-        else if (link?.type === 'tel') add(facts.telephone, phoneLike(label) ? label : target);
-        // An address shown beside an address icon, not words such as "Get directions".
-        else if (ADDRESS_ICONS.has(String(scope.item?.icon ?? '')) && /\d|,/.test(label)) add(facts.address, label);
+        if (!inDef || !def || !isComponent(def, 'contact.details') || !shown(def, n.id, scope)) return;
+        // A method's value: a design's link, or the theme's own as its outline shows it (a link, or its words alone
+        // while it goes nowhere).
+        if (n.kind === 'link' && (n.id === 'method-value' || n.id === 'md-value')) contactFact(scope, evaluate(n.link, scope) as LinkValue | undefined, plainText(evaluate(n.label, scope)));
+        else if (n.kind === 'text' && n.id === 'md-value-text') contactFact(scope, undefined, plainText(evaluate(n.text, scope), !!n.rich));
       }
     });
   }
