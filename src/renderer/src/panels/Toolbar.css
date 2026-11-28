@@ -78,10 +78,19 @@
     .save-slot:has(.save-state:is(.ask, .wait, .error)) { min-width: 96px; }
     .save-state:is(.ask, .wait, .error) { flex: 0 1 auto; min-width: 0; }
     .save-state:is(.ask, .wait, .error) .save-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    .toolbar-group:has(.save-state:is(.ask, .wait, .error)) .project-title { min-width: 88px; }
+    .toolbar-group:has(.save-state:is(.ask, .wait, .error)) .project-title { min-width: 76px; }
     .toolbar-group:has(.save-state:is(.ask, .wait, .error)) .project-title :is(.site, .brand, .sep) { display: none; }
   }
-  @container chrome-start (max-width: 292px) { .project-title, .project-title:has(.brand) { min-width: 88px; } .project-title :is(.site, .brand, .sep) { display: none; } }
+  /* With the project's name out, the switcher's floor is the page and chevron (padding 10, a 4px gap, the page's 48, the
+     chevron's 14). These rules name the group so they outrank the switcher's own floors further down. */
+  @container chrome-start (max-width: 292px) { .toolbar-group .project-title { min-width: 76px; } .project-title :is(.site, .brand, .sep) { display: none; } }
+  /* The tightest column (a guest's long session controls at the smallest window): a quiet status keeps its glyph alone,
+     its words in its tooltip and the live announcement, and the page may shorten past its usual floor. */
+  @container chrome-start (max-width: 200px) {
+    .toolbar-group .project-title { min-width: 60px; }
+    .project-title .page { min-width: 32px; }
+    .save-state:is(.saved, .pending) .save-text { display: none; }
+  }
   .toolbar .segmented button { transition: background 120ms, color 120ms, box-shadow 120ms; }
   .toolbar-start, .toolbar-end { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .toolbar-end { justify-content: flex-end; }

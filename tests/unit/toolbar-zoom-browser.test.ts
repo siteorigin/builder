@@ -92,7 +92,8 @@ const measure = (p: Page) =>
       .filter((el) => el.getClientRects().length > 0)
       .map((el) => rect(el, String(label(el))));
     const title = bar.querySelector('.project-title');
-    const parts = [...title.querySelectorAll('.site, .page, .chev, .sep')].map((el) => rect(el, el.getAttribute('class')));
+    // A part the narrowest switcher lets go (the project's name and its separator) is not drawn, so it cannot run outside.
+    const parts = [...title.querySelectorAll('.site, .page, .chev, .sep')].filter((el) => el.getClientRects().length > 0).map((el) => rect(el, el.getAttribute('class')));
     const hit = (el) => { const r = el.getBoundingClientRect(); const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!at && title.contains(at); };
     return {
       controls,
