@@ -118,6 +118,9 @@ describe('syntax-tree code checks', () => {
     const viteCheck = async (spec: string) => (await checkSvelteSource(`<script>\n\timport X from '${spec}';\n</script>\n<X />\n`, { modules: (p) => vite.has(p) })).filter((p) => p.severity === 'error');
     for (const spec of ['./calc.js', './calc', '#lib/util', '#lib/data', '#lib']) expect(await viteCheck(spec)).toEqual([]);
     expect((await viteCheck('./calc.mjs')).length).toBe(1);
+    // A folder's index.svelte is no module the build finds.
+    const widgets = (await checkSvelteSource(`<script>\n\timport W from '#lib/widgets';\n</script>\n<W />\n`, { modules: (p) => p === 'src/lib/widgets/index.svelte' })).filter((p) => p.severity === 'error');
+    expect(widgets.length).toBe(1);
     // The removed spelling is refused whether or not the file is there.
     expect((await check('$lib/vektor-calc.js'))[0].message).toBe('"$lib" was removed in SvelteKit 3. Use "#lib/vektor-calc.js" instead.');
     expect((await check('$lib?raw'))[0].message).toBe('"$lib" was removed in SvelteKit 3. Use "#lib?raw" instead.');

@@ -2808,7 +2808,7 @@ export class ProjectSession extends EventEmitter {
   projectModules(state: ProjectState, files?: Map<string, string>, writes: ProjectState = state): (path: string) => boolean {
     const sources = componentSources(state.components);
     const saved = componentSources(this.state.components);
-    let made: Set<string> | null | undefined = files ? new Set(files.keys()) : undefined;
+    let made: Set<string> | null | undefined = files ? new Set([...files.keys(), ...packFileCopies(writes, this.generation).map((c) => c.path)]) : undefined;
     return (path) => {
       if (sources(path) !== undefined) return true;
       // A code component's file is the app's too: it goes with the component.
