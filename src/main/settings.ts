@@ -250,12 +250,13 @@ function sameProject(old: RecentProject, opened: RecentProject): boolean {
 /**
  * A folder's identity on its disk (device and inode), or undefined when it cannot be looked at. A move or rename on the
  * same disk keeps it; a copy of the project (an editable ZIP opened again, a Finder duplicate) is a new folder with its
- * own (#1541).
+ * own (#1541). A file system with no file IDs to give (Windows reports none as 0 or all bits set) tells nothing.
  */
 function folderIdentity(dir: string): string | undefined {
   try {
     const st = statSync(dir, { bigint: true, throwIfNoEntry: false });
-    return st?.isDirectory() ? `${st.dev}:${st.ino}` : undefined;
+    if (!st?.isDirectory() || st.ino === 0n || st.ino === 0xffffffffffffffffn) return undefined;
+    return `${st.dev}:${st.ino}`;
   } catch {
     return undefined;
   }
