@@ -35,10 +35,10 @@ const SENT = 'Thank you. Your message has been sent.';
 const FAILED = 'Sorry, your message could not be sent. Please try again or contact us directly.';
 const UNCONFIRMED = 'Your message may not have been sent. What you entered is still here, so you can send it again.';
 
-/** An exported site with a contact form on its home page. */
-function exportedSite() {
+/** An exported site with a contact form (or another of the theme's forms) on its home page. */
+function exportedSite(componentId = 'contact.form') {
   const s = createStarterState('business', 'Test Studio', false);
-  const def = s.components[installComponent(s, 'contact.form')];
+  const def = s.components[installComponent(s, componentId)];
   const node = makeInstance(def, { provider: 'netlify' });
   const home = s.pages[s.site.homePageId];
   home.nodes[node.id] = node;
@@ -90,8 +90,8 @@ const STATE_STUB = `export const page = {
  * inShell)`, which adds a form to the page's <main> or to the header and footer around it, and
  * `window.unmountForms()`, which takes the page's forms off it as leaving the page does.
  */
-async function bundleForm(): Promise<string> {
-  const { files, formFile } = exportedSite();
+async function bundleForm(componentId?: string): Promise<string> {
+  const { files, formFile } = exportedSite(componentId);
   const compiled = (source: string, filename: string) => compile(source, { filename, generate: 'client', css: 'injected', runes: true }).js.code;
   const layout = files.get('src/routes/+layout.svelte') ?? '';
   // The keeper exactly as the export ships it, and only if the exported layout really runs it.
@@ -162,12 +162,12 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
   });
 
   /** Runs `body` against a fresh page with the form mounted; every POST waits until the test answers it. */
-  async function withForm(props: Record<string, unknown>, body: (form: Awaited<ReturnType<typeof openForm>>) => Promise<void>) {
+  async function withForm(props: Record<string, unknown>, body: (form: Awaited<ReturnType<typeof openForm>>) => Promise<void>, formScript = script) {
     const context = await browser.newContext();
     const held: Route[] = [];
     try {
       const page = await context.newPage();
-      await body(await openForm(page, props, held));
+      await body(await openForm(page, props, held, formScript));
     } finally {
       for (const route of held.splice(0)) await route.abort().catch(() => {});
       for (const page of context.pages()) await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -175,7 +175,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     }
   }
 
-  async function openForm(page: Page, props: Record<string, unknown>, held: Route[]) {
+  async function openForm(page: Page, props: Record<string, unknown>, held: Route[], formScript: string) {
     const waiting: Post[] = [];
     const listeners: Array<(p: Post) => void> = [];
     const posts: Post[] = [];
@@ -183,7 +183,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       const request = route.request();
       const url = new URL(request.url());
       if (request.method() === 'GET') {
-        if (url.pathname === '/form.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
+        if (url.pathname === '/form.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: formScript });
         return route.fulfill({ contentType: 'text/html; charset=utf-8', body: PAGE });
       }
       held.push(route);
@@ -392,7 +392,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         // The field's edge in that colour, a second pixel inset so nothing moves. Polled: the edge eases in.
         await expect.poll(() => drawn(page, '.so-form__control[aria-invalid="true"]', ['border-top-color']), { message: tone }).toEqual([colour]);
         expect((await drawn(page, '.so-form__control[aria-invalid="true"]', ['box-shadow']))[0], tone).toMatch(/^rgb\(.+\) 0px 0px 0px 1px inset$/);
-        // The unanswered choices' rings too (under the pointer: see the Release gap below).
+        // The unanswered choices' rings too.
         await expect.poll(() => drawn(page, RING, ['border-top-color']), { message: `${tone} choices` }).toEqual([colour]);
         expect((await drawn(page, RING, ['box-shadow']))[0], `${tone} choices`).toMatch(/^rgb\(.+\) 0px 0px 0px 1px inset$/);
         // A field to put right keeps its edge under the pointer once it no longer has focus.
@@ -413,8 +413,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       });
   }, 30_000);
 
-  // Release gap: the release's hover rule for an empty choice (.so-form__option:hover .so-form__toggle:not(…, [aria-invalid='true'])) spares only a radio marked wrong itself, and its radios are marked through their group (.so-form__choices[aria-invalid='true']), so an unanswered question's ring turns to the hover edge under the pointer.
-  it.fails('keeps an unanswered question’s rings in the colour of what is wrong under the pointer', async () => {
+  it('keeps an unanswered question’s rings in the colour of what is wrong under the pointer', async () => {
     for (const tone of TONES)
       await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [...FIELDS, CHOICE], variant_tone: tone }, async ({ page }) => {
         await page.addStyleTag({ content: COLORS });
@@ -423,12 +422,16 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await page.locator('.so-form__choices[aria-invalid="true"] .so-form__option').first().hover();
         await settle(page);
         expect(await drawn(page, RING, ['border-top-color']), `${tone} choice on hover`).toEqual([colour]);
+        // Held down, before the choice is made, it keeps it too.
+        await page.mouse.down();
+        await settle(page);
+        expect(await page.locator('.so-form__choices[aria-invalid="true"]').count(), tone).toBe(1);
+        expect(await drawn(page, RING, ['border-top-color']), `${tone} choice pressed`).toEqual([colour]);
       });
   }, 30_000);
 
-  // Release gap: the release's palette has no error colour (color.error, color.error-on-inverse) or error contrast pairs, and its form draws what is wrong in the form's ink, reading neither (#1016).
-  it.fails('draws what is wrong in the error colour of the form’s ground: the light grounds’, or dark sections’ (#1016)', async () => {
-    for (const [tone, ground] of [['default', 'rgb(179, 38, 30)'], ['inverse', 'rgb(255, 138, 128)']] as const)
+  it('draws what is wrong in the error colour of the form’s ground: the light grounds’, or dark sections’ (#1016)', async () => {
+    for (const [tone, ground] of [['default', 'rgb(179, 38, 30)'], ['muted', 'rgb(179, 38, 30)'], ['inverse', 'rgb(255, 138, 128)']] as const)
       await withForm({ provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: FIELDS, variant_tone: tone }, async ({ page }) => {
         await page.addStyleTag({ content: COLORS });
         await refuseAll(page);
@@ -436,6 +439,26 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await expect.poll(() => drawn(page, '.so-form__control[aria-invalid="true"]', ['border-top-color']), { message: tone }).toEqual([ground]);
       });
   }, 30_000);
+
+  it('draws the signup’s one-row field to put right in the error colour of its card (#1310)', async () => {
+    const signup = await bundleForm('block.signup');
+    for (const [tone, ground] of [['default', 'rgb(179, 38, 30)'], ['muted', 'rgb(179, 38, 30)'], ['inverse', 'rgb(255, 138, 128)']] as const)
+      await withForm(
+        { provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: [FIELDS[1]], variant_tone: tone },
+        async ({ page }) => {
+          await page.addStyleTag({ content: COLORS });
+          await page.evaluate(`document.querySelector('form').requestSubmit()`);
+          await expect.poll(() => drawn(page, '.so-form__error', ['color']), { message: tone }).toEqual([ground]);
+          // Wide enough, the row carries the field's edge.
+          await expect.poll(() => drawn(page, '.so-form__row', ['flex-direction', 'border-top-color']), { message: tone }).toEqual(['row', ground]);
+          // Narrow, the field and its button stack, and the field carries it.
+          await page.setViewportSize({ width: 360, height: 700 });
+          await expect.poll(() => drawn(page, '.so-form__control[aria-invalid="true"]', ['border-top-color']), { message: `${tone} stacked` }).toEqual([ground]);
+          expect(await drawn(page, '.so-form__row', ['flex-direction']), tone).toEqual(['column']);
+        },
+        signup
+      );
+  }, 60_000);
 
   it('refuses to send two answers under one key, and says why (issue #198)', async () => {
     // The stock form with "EMAIL" typed into Phone's field name, as in the issue.

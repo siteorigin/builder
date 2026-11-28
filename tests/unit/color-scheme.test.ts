@@ -43,24 +43,11 @@ describe('the dark palette made from the light one', () => {
   });
 
   it('turns a theme’s error colours light and keeps them red, with their messages and field edges readable (#1016)', () => {
-    // Foundation's palette has no error roles yet, so this is its palette with the two a form's errors are drawn in,
-    // and the pairs they are set in: messages at 4.5:1 and field edges at 3:1, on the three light grounds and on dark
-    // sections.
     const s = fresh();
-    const errors: TokenDef[] = [
-      { id: 'color.error', label: 'Errors', group: 'color', value: '#b3261e' },
-      { id: 'color.error-on-inverse', label: 'Errors on dark sections', group: 'color', value: '#ff8a80' }
-    ];
-    const grounds = ['color.background', 'color.surface', 'color.surface-alt'];
-    const pairs: ContrastPair[] = [
-      ...pairsOf(s),
-      ...grounds.map((bg): ContrastPair => ({ id: `error-${bg}`, use: 'Error messages', fg: 'color.error', bg, state: 'rest', group: 'error', fixable: false })),
-      ...grounds.map((bg): ContrastPair => ({ id: `error-edge-${bg}`, use: 'Edges of fields to put right', fg: 'color.error', bg, state: 'rest', group: 'error-edge', fixable: false, min: 3 })),
-      { id: 'dark-error', use: 'Error messages in dark sections', fg: 'color.error-on-inverse', bg: 'color.inverse', state: 'rest', group: 'dark-error', fixable: false },
-      { id: 'dark-error-edge', use: 'Edges of fields to put right in dark sections', fg: 'color.error-on-inverse', bg: 'color.inverse', state: 'rest', group: 'dark-error-edge', fixable: false, min: 3 }
-    ];
-    const light = [...effectiveTokens(s), ...errors];
-    const theme = [...getTheme(s.site.themeId).tokens, ...errors];
+    const pairs = pairsOf(s);
+    expect(pairs.filter((p) => p.fg.startsWith('color.error'))).toHaveLength(8);
+    const light = effectiveTokens(s);
+    const theme = getTheme(s.site.themeId).tokens;
     expect(evaluatePairs(light, pairs).filter((r) => r.status !== 'pass')).toEqual([]);
     const dark = deriveDarkPalette(light, theme, pairs);
     expect(evaluatePairs(withDarkPalette(light, dark), pairs).filter((r) => r.status !== 'pass')).toEqual([]);
