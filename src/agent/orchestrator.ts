@@ -15,7 +15,7 @@ import { newId } from '@shared/ids';
 import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/turns';
 import { getTheme } from '@catalogue/index';
 import { diagnosticKey, type Diagnostic } from '@engine/validate';
-import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
+import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { narrowedInspection } from './layout-targets';
 import { asksForCollection, asksForComponent, asksForSource, CODE_OPERATIONS, executeTool, MAX_BATCH_OPERATIONS, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, toolsForRun, type RunTools, type ToolHost } from './tools';
@@ -31,6 +31,7 @@ import { SAYS_DEVELOPER_MODE, developerModeCheck } from '@engine/developer-mode'
 import { formRoutingPrompt, formRoutingQuestion, formRoutingReview, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { FORM_ROUTING_PROPS } from '@engine/form-destinations';
 import { guestEditProblem } from '@engine/guest-edits';
+import { recordedStream, type CallContext, type ChatRecord, type ChatRecorder } from './learning';
 import { checkEditBatch } from '@shared/live/capabilities';
 import { sourceHash, walkChecks } from '@engine/apply';
 import { getTree } from '@engine/tree';
@@ -172,6 +173,8 @@ export interface OrchestratorDeps {
   codeEnabled?(): Promise<boolean>;
   /** Timing spans for the benchmark (scripts/perf, the main process's `perf`); absent or off, they cost nothing. */
   perf?: AgentPerf;
+  /** Learning mode's recorder (#1566), asked as each request is admitted: null or absent while it is off. */
+  learning?: () => ChatRecorder | null;
 }
 
 /** The little of the main process's timing marks a run uses: a span, ended once with what was learned meanwhile. */
@@ -231,6 +234,12 @@ interface ActiveRun {
   recipient: Recipient | null;
   /** Where the run's turn is saved when it ends, however it ends: taken when it was admitted (see RunTranscript). */
   transcript: RunTranscript;
+  /**
+   * Learning mode's record of the run's steps (#1566), filed under the conversation the run was admitted in (which
+   * stays its own after the project closes and `conversationId` is emptied), each naming the run and any guest it is
+   * for. Null while learning mode is off.
+   */
+  learn: ((record: ChatRecord) => void) | null;
 }
 
 interface PendingQuestion {
@@ -1489,7 +1498,19 @@ export class Orchestrator {
     conv.messages.push(userMsg, assistant);
     if (!titled && text.trim()) conv.title = autoTitle(text);
     const transcript: RunTranscript = { opening: this.opening, session, dir: session.local('sessions', 'chat'), conv, deleted: this.deleted, names: this.names };
-    const active: ActiveRun = { id: runId, delegation: delegation ?? null, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, authorEdits: [], message: assistant, conversationId: conv.id, reached: false, recipient: intended, transcript };
+    const recorder = this.deps.learning?.() ?? null;
+    const learned = conv.id;
+    const learn = recorder
+      ? (record: ChatRecord) => {
+          try {
+            recorder.record(learned, { ...record, runId, ...(userMsg.guest ? { guest: userMsg.guest } : {}) });
+          } catch {
+            // Recording never reaches the run.
+          }
+        }
+      : null;
+    const active: ActiveRun = { id: runId, delegation: delegation ?? null, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, authorEdits: [], message: assistant, conversationId: conv.id, reached: false, recipient: intended, transcript, learn };
+    learn?.({ type: 'user', mode: active.mode, project: session.dir, message: userMsg });
     this.run = active;
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
@@ -1507,6 +1528,8 @@ export class Orchestrator {
           this.setStatus('failed');
           this.emitMessage(assistant, runId);
         }
+        // The run's outcome, however it ended: the turn as it was left, with its result, changes and checks.
+        active.learn?.({ type: 'outcome', status: assistant.result.status, message: assistant });
         this.run = null;
         // Queued before the app hears it is idle, so nothing it does on hearing that can land ahead of the save.
         // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
@@ -1519,6 +1542,7 @@ export class Orchestrator {
 
   stop() {
     if (!this.run) return;
+    if (this.run.status !== 'stopping') this.run.learn?.({ type: 'stop' });
     this.setStatus('stopping');
     this.run.abort.abort();
     const pending = this.run.pendingQuestion;
@@ -1565,6 +1589,8 @@ export class Orchestrator {
       q.answered = text;
       if (chosen) q.answeredAssetId = chosen.assetId;
     }
+    // The author's answer, as it was taken: a stop while it waits for a save to land still leaves it given.
+    run.learn?.({ type: 'answer', questionId, answer: text, ...(chosen ? { assetId: chosen.assetId } : {}) });
     this.emitMessage(run.message, runId);
     // An edit the author is saving as they answer reaches the project first, and the model hears of it with the answer.
     // Meanwhile no other save is admitted, and the editor hears so at once.
@@ -2018,6 +2044,8 @@ export class Orchestrator {
       ];
     };
     let turns = 0;
+    /** The run's requests to the model, counted from 1, for learning mode: a step asked again (`continue outer`) keeps its step. */
+    let requests = 0;
     let toolCalls = 0;
     let repairs = 0;
     let activeMs = 0;
@@ -2084,6 +2112,19 @@ export class Orchestrator {
     // A change that worked landed, this time or the first time it was sent: a cut report of it never asks for it again.
     const resultItem = (call: ToolCall, outcome: ResultOutcome): CanonicalItem => ({ kind: 'tool_result', callId: call.id, name: call.name, content: serializeResult(outcome.content, call.name, outcome.ok && MUTATING_TOOLS.has(call.name as never)), isError: !outcome.ok });
     /**
+     * A tool call's result for learning mode: the item the model is sent, and what it did beside that (the edits it
+     * applied, or its error whole, which the item may shorten).
+     */
+    const learnResult = (call: ToolCall, outcome: ResultOutcome) =>
+      run.learn?.({
+        type: 'tool_result',
+        call,
+        ok: outcome.ok,
+        item: resultItem(call, outcome),
+        ...(outcome.content.ok ? {} : { error: outcome.content.error }),
+        ...(outcome.mutated ? { mutated: true, ops: outcome.ops ?? [], results: outcome.results ?? [] } : {})
+      });
+    /**
      * Ask the user a question and wait for the answer. `resume` is what the run goes back to once it is answered: the
      * app's own question, asked while the run checks its work, goes back to checking.
      */
@@ -2118,6 +2159,7 @@ export class Orchestrator {
         // Each question is added to the turn, so earlier questions and their answers stay with it.
         // Only the app's own question about where a form sends (approveRouting) carries its review, for its dialog.
         (msg.questions ??= []).push({ id, text: question, choices: widen ? [yes, no] : choices, ...(widen ? { widen: true } : {}), ...(!widen && images?.length ? { images } : {}), ...(!widen && routing ? { formRouting: routing } : {}) });
+        run.learn?.({ type: 'question', question: msg.questions.at(-1) });
         this.setStatus('awaiting-input');
         this.emitMessage(msg, runId);
       });
@@ -2667,7 +2709,9 @@ export class Orchestrator {
             let turnText = '';
             let err: Extract<ModelEvent, { type: 'error' }> | null = null;
             // Reasoning models spend part of the output budget thinking, so the adapter's full budget is used.
-            for await (const ev of ad.adapter.streamTurn({ model: ad.model, system, items, tools, maxOutputTokens: budget.maxOutputTokens }, turn.signal)) {
+            const request: CanonicalModelRequest = { model: ad.model, system, items, tools, maxOutputTokens: budget.maxOutputTokens };
+            const learnCall: CallContext = { call: 'turn', provider: ad.provider, requestIndex: ++requests, step: turns, attempt };
+            for await (const ev of run.learn ? recordedStream(run.learn, learnCall, request, (note) => ad.adapter.streamTurn(request, turn.signal, note)) : ad.adapter.streamTurn(request, turn.signal)) {
               // Anything but an error is the model answering, so it has this turn's request.
               if (ev.type !== 'error') run.reached = true;
               if (signal.aborted) throw new Error('Canceled');
@@ -2997,6 +3041,7 @@ export class Orchestrator {
               ),
               readRevision()
             );
+            learnResult(call, skipped);
             items.push(resultItem(call, skipped));
             // A page it would have made is still owed, whichever tool was to make it.
             for (const p of call.name === 'apply_operations' ? pageCreatesIn(call.arguments) : call.name === 'upsert_page_with_sections' ? upsertCreatesIn(call.arguments, planned) : []) rememberPage(wanted, { ...p, reason: 'skipped' });
@@ -3010,6 +3055,7 @@ export class Orchestrator {
               ),
               readRevision()
             );
+            learnResult(call, skipped);
             items.push(resultItem(call, skipped));
             if (call.name === 'apply_operations' && tools.some((t) => t.name === call.name)) for (const p of pageCreatesIn(call.arguments)) rememberPage(wanted, { ...p, reason: 'skipped' });
             continue;
@@ -3037,6 +3083,9 @@ export class Orchestrator {
             : outside
               ? stamp(toolError('SCOPE_MISMATCH', outside), readRevision())
               : await (startReads(index), started.get(call) ?? runCall(call));
+          // Kept before a repeated failure can end the run with this result never sent. A call Stop cut short is not,
+          // unless its change landed first: the outcome says whether it was rolled back.
+          if (!signal.aborted || outcome.mutated) learnResult(call, outcome);
           // Record a landed edit before honouring Stop, so the stopped result reports the rollback truthfully.
           if (outcome.ok && outcome.mutated) {
             // Whatever comes later in this turn was planned against the revision this just moved.
