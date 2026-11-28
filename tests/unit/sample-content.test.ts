@@ -14,7 +14,8 @@ import { STARTER_ASSETS, createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { installComponent, makeInstance } from '@engine/install';
 import { validateState, type Diagnostic } from '@engine/validate';
-import { keptSampleKey, sampleFixtures, samplePlace, withoutKeptSamples } from '@engine/sample-content';
+import { keptSampleKey, sampleContentDiagnostics, sampleFixtures, samplePlace, withoutKeptSamples } from '@engine/sample-content';
+import { freshKeeper } from '@engine/validation-cache';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
 import { ELEMENT_STUBS } from '@shared/element-stubs';
 import { destinationForDiagnostic } from '../../src/renderer/src/lib/destinations';
@@ -181,14 +182,16 @@ describe('a placed component’s sample defaults', () => {
     const node = makeInstance(def, {
       items: [
         { id: 'i_page', pageLink: { type: 'page', target: 'pg_consult' }, title: '' },
-        { id: 'i_own', pageLink: { type: 'page', target: s.site.homePageId }, title: 'Consultation' }
+        { id: 'i_own', pageLink: { type: 'page', target: s.site.homePageId }, title: 'Consultation' },
+        // Left out, the field shows its own sample default, which the page does not replace.
+        { id: 'i_left', pageLink: { type: 'page', target: 'pg_consult' } }
       ]
     });
     const home0 = s.pages[s.site.homePageId];
     home0.nodes[node.id] = node;
     home0.rootIds.push(node.id);
     const items = node.props.items as ListItem[];
-    expect(samples(s).map((d) => (placeOf(d) as { itemId?: string }).itemId)).toEqual([items[1].id]);
+    expect(samples(s).map((d) => (placeOf(d) as { itemId?: string }).itemId)).toEqual([items[1].id, items[2].id]);
   });
 
   it('names a table its design starts with until one cell changes, and marked text a Foundation section shows', () => {
@@ -209,6 +212,13 @@ describe('a placed component’s sample defaults', () => {
     const value = structuredClone((def.properties.table as TableProp).default);
     value.rows[0].cells[value.columns[0].id] = 'Our own';
     expect(samples(setProps(s, table.id, { table: value }), 'SAMPLE_DEFAULT').map((d) => d.nodeId)).toEqual([placed.id]);
+    // Made unique, the Table keeps its code, and its sample rows are still named.
+    const unique = run(s, { type: 'component.makeUnique', owner: home(s), nodeId: table.id, name: 'Our table' });
+    expect(samples(unique, 'SAMPLE_DEFAULT').map((d) => (placeOf(d) as { prop: string }).prop)).toContain('table');
+    // A project's own code given a table may show it or not: its markup decides, and it is not named.
+    const own = structuredClone(s);
+    own.components[def.id] = { ...own.components[def.id], owner: 'project', componentId: 'project.hours', provenance: { createdBy: 'user' } };
+    expect(samples(own, 'SAMPLE_DEFAULT').some((d) => (placeOf(d) as { prop: string }).prop === 'table')).toBe(false);
   });
 });
 
@@ -304,6 +314,15 @@ describe('the Business starter’s copy and photos', () => {
     expect(placeOf(portrait)).toMatchObject({ kind: 'prop', prop: 'people', field: 'portrait' });
   });
 
+  it('still knows the starter’s copy once its section changes design', () => {
+    const s = business();
+    const hero = samples(s, 'SAMPLE_STARTER_COPY').find((d) => d.message.includes('“Calm, considered spaces for everyday life”'))!;
+    const swapped = run(s, { type: 'instance.swapComponent', owner: hero.owner as OwnerRef, nodeId: hero.nodeId!, componentId: 'hero.centered', allowDrops: true });
+    const after = samples(swapped, 'SAMPLE_STARTER_COPY').filter((d) => d.message.includes('“Calm, considered spaces for everyday life”'));
+    expect(after).toHaveLength(1);
+    expect(after[0].message).not.toMatch(/Split hero/);
+  });
+
   it('stops naming a photo replaced on the page, though the photo stays in Assets, and one given a file of the author’s', () => {
     let s = business();
     const hero = samples(s, 'SAMPLE_STARTER_PHOTO').find((d) => d.message.includes('“Hero interior”'))!;
@@ -358,6 +377,13 @@ describe('the Business starter’s copy and photos', () => {
     };
     for (const value of ['Call +1 (555) 0134 today', '12 Harbor Lane,Millbrook']) expect(of(starting(value)), value).toEqual([]);
     expect(of(starting('myhello@example.com'))).toHaveLength(1);
+    // Only on the pages and the shared header and footer, which the export reviews: in a collection's layout, which it
+    // does not, the sample email is named here.
+    const page = own.pages[own.site.homePageId];
+    const inLayout = sampleContentDiagnostics(own, own, [{ owner: { kind: 'template', id: 'notes' }, tree: page, label: 'Notes layout' }], freshKeeper(own));
+    expect(inLayout.filter((d) => (placeOf(d) as { prop?: string }).prop === 'email').map((d) => d.message)).toEqual([
+      `Notes layout: Samples’ Email still shows the sample text its design starts with, “${SAMPLE_CONTACT.email}”. Write your own, or keep it as it is.`
+    ]);
   });
 });
 

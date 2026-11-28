@@ -1636,6 +1636,13 @@ export function renderedContentKnown(state: ProjectState, tree: NodeTree): { con
   return { content: out, known };
 }
 
+/** The theme's Table, or a copy of it made unique (which keeps its code). */
+function drawsTable(state: ProjectState, def: ComponentDefinition): boolean {
+  let d: ComponentDefinition | undefined = def;
+  for (let guard = 0; d && d.owner !== 'theme' && d.kind === 'code' && d.provenance?.forkedFrom && guard < 20; guard++) d = Object.hasOwn(state.components, d.provenance.forkedFrom) ? state.components[d.provenance.forkedFrom] : undefined;
+  return !!d && shippedCode(state, d) === 'data.table';
+}
+
 /**
  * The tables a page or shell tree renders, each once, by the placement's own table property that holds it: the theme's
  * Table (or a copy of it), whose markup shows its table, placed in the tree or handed a placement's table by the design
@@ -1647,7 +1654,7 @@ export function renderedTables(state: ProjectState, tree: NodeTree): Array<{ nod
   const seen = new Set<string>();
   walkRendered(state, tree, {
     code: (def, _props, reportId, _placement, n, scope, inDef) => {
-      if (shippedCode(state, def) !== 'data.table') return;
+      if (!drawsTable(state, def)) return;
       for (const [key, schema] of Object.entries(def.properties)) {
         if (schema.type !== 'table') continue;
         const field = inDef ? placementField(n.props[key], scope) : { prop: key };

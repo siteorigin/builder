@@ -8,7 +8,7 @@
  * state), and fields only code reads, whose markup decides, are left out. The sample contact details and images not
  * chosen yet are reviewed elsewhere, so none of these names them.
  */
-import type { ComponentDefinition, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import type { NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { hiddenInTree, renderedContentKnown, renderedTables, treeParents, type RenderedContent } from '@generator/checks';
 import { teaserFields } from '@shared/page-teasers';
@@ -113,7 +113,11 @@ const own = <T>(map: Record<string, T> | undefined, k: string | undefined): T | 
 /** The site's name in the starter's copy as it is read: replaced by the names the site may have had. */
 const NAME = 'Starter-Site-Name-9d41';
 
-/** The starter's copy, by where it is written (`component|property|field`), each value as stableJson writes it. */
+/**
+ * The starter's copy, by the property it is written in (`property|field`), each value as stableJson writes it: by
+ * property, not section, so the words still count as the starter's once their section changes design (a swap carries
+ * them over) or is made unique.
+ */
 interface CopyLookup {
   fields: Map<string, string[]>;
   descriptions: string[];
@@ -141,8 +145,8 @@ function starterCopy(): CopyLookup | null {
         if (OWN_VALUES[componentId]?.includes(prop)) continue;
         // A list's items, field by field, and a value's own words.
         if (Array.isArray(v) && v.every((it) => it && typeof it === 'object' && typeof (it as { id?: unknown }).id === 'string'))
-          for (const it of v as Array<Record<string, unknown>>) for (const [field, x] of Object.entries(it)) field !== 'id' && add(`${componentId}|${prop}|${field}`, x);
-        else add(`${componentId}|${prop}|`, v);
+          for (const it of v as Array<Record<string, unknown>>) for (const [field, x] of Object.entries(it)) field !== 'id' && add(`${prop}|${field}`, x);
+        else add(`${prop}|`, v);
       }
     lookup = { fields, descriptions: made.descriptions.map(stableJson) };
   } catch {
@@ -182,16 +186,6 @@ function tableShown(v: unknown): { shape: unknown; words: string[] } | null {
   return { shape: { head, cells }, words: [...head, ...cells.flat()] };
 }
 
-/**
- * The component contract a definition places, through every copy of it (Make unique keeps a theme section's
- * properties under a project ID of its own): what the starter's copy is looked up by.
- */
-function contractOf(state: ProjectState, def: ComponentDefinition): string {
-  let d: ComponentDefinition | undefined = def;
-  for (let guard = 0; d && d.owner !== 'theme' && d.provenance?.forkedFrom && guard < 20; guard++) d = own(state.components, d.provenance.forkedFrom);
-  return d?.owner === 'theme' ? d.componentId : (def.provenance?.componentId ?? def.componentId);
-}
-
 /** One list item a placement shows, with the fields of it the page shows. */
 interface ShownRow {
   nodeId: string;
@@ -217,11 +211,13 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
   const placed = (nodeId: string) => {
     const n = own(tree.nodes, nodeId);
     const def = n?.kind === 'instance' ? own(live.components, n.definitionId) : undefined;
-    return n?.kind === 'instance' && def && n.props && typeof n.props === 'object' ? { n, def, contract: contractOf(live, def) } : null;
+    return n?.kind === 'instance' && def && n.props && typeof n.props === 'object' ? { n, def } : null;
   };
   const stored = (n: { props: Record<string, unknown> }, schema: PropSchema, prop: string): unknown => (Object.hasOwn(n.props, prop) ? n.props[prop] : (schema as { default?: unknown }).default);
   const { content, known } = renderedContentKnown(live, tree);
   const rows = new Map<string, ShownRow>();
+  // The export reviews the sample contact details on the pages and the shared header and footer: there, not again here.
+  const reviewed = owner.kind === 'page' || owner.kind === 'shell';
 
   for (const c of content) {
     if (c.kind !== 'text' || c.computed) continue;
@@ -235,14 +231,15 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
     const schema = own(p?.def.properties, prop);
     if (!p || !schema || isBinding(stored(p.n, schema, prop))) continue;
     const words = wordsOf(c.value);
-    if (!words.trim() || holdsSampleContact(words)) continue;
+    if (!words.trim() || (reviewed && holdsSampleContact(words))) continue;
     const where = `${whose(p.def.name)} ${schema.label}`;
     if (itemId !== undefined) {
       if (schema.type !== 'list' || schema.feed || !field || Object.hasOwn(p.n.listSources ?? {}, prop)) continue;
       // A page list's field left empty shows its page's value, which is the page's, not the item's.
       const list = stored(p.n, schema, prop);
       const it = Array.isArray(list) ? list.find((x) => !!x && typeof x === 'object' && (x as { id?: unknown }).id === itemId) : undefined;
-      if (schema.pageTeaser && teaserFields(schema.pageTeaser).some(([f]) => f === field) && !wordsOf(own(it as Record<string, unknown> | undefined, field)).trim()) continue;
+      const ownValue = it && typeof it === 'object' && Object.hasOwn(it, field) ? (it as Record<string, unknown>)[field] : (own(schema.fields, field) as { default?: unknown } | undefined)?.default;
+      if (schema.pageTeaser && teaserFields(schema.pageTeaser).some(([f]) => f === field) && !wordsOf(ownValue).trim()) continue;
       const key = JSON.stringify([c.nodeId, prop, itemId]);
       const row = rows.get(key) ?? { nodeId: c.nodeId, prop, itemId, fields: [] };
       row.fields.push({ field, value: c.value, words });
@@ -254,7 +251,7 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
     if (!f || (f.type !== 'string' && f.type !== 'richtext')) continue;
     const at: SamplePlace = { kind: 'prop', nodeId: c.nodeId, prop, ...(field !== undefined ? { field } : {}) };
     const name = field === undefined ? where : `${where} → ${f.label}`;
-    if (isStarterCopy(copy?.fields.get(`${p.contract}|${prop}|${field ?? ''}`), c.value, names)) {
+    if (isStarterCopy(copy?.fields.get(`${prop}|${field ?? ''}`), c.value, names)) {
       found('SAMPLE_STARTER_COPY', `${name} still shows sample text, ${quoted(words)}. Write your own, or keep it as it is.`, c.nodeId, at, c.value);
       continue;
     }
@@ -299,7 +296,7 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
     // The item's name (its title field), or else its first words, leads.
     const lead = row.fields.find((f) => f.field === schema.titleField) ?? row.fields[0];
     const at = (field: string): SamplePlace => ({ kind: 'prop', nodeId: row.nodeId, prop: row.prop, itemId: row.itemId, field });
-    const starter = new Set(row.fields.filter((f) => isStarterCopy(copy?.fields.get(`${p.contract}|${row.prop}|${f.field}`), f.value, names)));
+    const starter = new Set(row.fields.filter((f) => isStarterCopy(copy?.fields.get(`${row.prop}|${f.field}`), f.value, names)));
     if (!starter.size && schema.sampleDefault && seededRows(row.nodeId, row.prop, schema, list).has(row.itemId)) {
       found('SAMPLE_DEFAULT', `${item} is still one of the sample items its design starts with, ${quoted(lead.words)}. Write your own, remove it, or keep it as it is.`, row.nodeId, at(lead.field), list[index]);
       continue;
@@ -334,7 +331,8 @@ function treeFindings(live: ProjectState, t: CheckedTree, copy: CopyLookup | nul
           return v.forEach((x, i) => walk(x, [...path, ids[i] && ids.filter((id) => id === ids[i]).length === 1 ? ids[i]! : i]));
         }
         if (!v || typeof v !== 'object') return;
-        const asset = photos.get(String((v as { assetId?: unknown }).assetId));
+        const id = (v as { assetId?: unknown }).assetId;
+        const asset = typeof id === 'string' ? photos.get(id) : undefined;
         if (asset) photo(nodeId, n, path, asset);
         for (const [k, x] of Object.entries(v)) walk(x, [...path, k]);
       };

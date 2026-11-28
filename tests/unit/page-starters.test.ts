@@ -279,6 +279,8 @@ describe('page starters and project health (#873)', () => {
     const { state, page } = created(createStarterState('blank', 'Starter Studio', false), 'about');
     const named = validateState(state).filter((d) => isSampleFinding(d) && d.owner?.kind === 'page' && d.owner.id === page.id);
     expect(named.map((d) => d.message)).toContain('Our work: Person 1 of Team’s People → Name still shows sample text, “Hannah Wells”. Write your own, or keep it as it is.');
+    // Each of the person's words on its own: the name, the role and the short bio.
+    expect(named.filter((d) => d.message.startsWith('Our work: Person 1 of Team’s People → ')).length).toBe(3);
     expect(named.every((d) => d.severity === 'warning')).toBe(true);
   });
 });
