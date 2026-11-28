@@ -407,13 +407,13 @@ describe('a reference in the ready-made layout (#1511)', () => {
     expect(query('field.related')).toBeNull();
     // Edited, the layout is the author's: the field it links can't go while it does.
     const edited = run(s, { type: 'node.setBinding', owner, nodeId: title.id, field: 'text', binding: { $entry: 'field.lead' } });
-    const rest: Record<string, Record<string, unknown>> = { ...edited.collections.projects.settings.fields };
+    const rest: Record<string, unknown> = { ...edited.collections.projects.settings.fields };
     delete rest.related;
     // Only the links read it, its condition gone.
     const unlinked = structuredClone(edited);
     for (const n of Object.values(unlinked.collections.projects.settings.template.nodes)) if (n.when && JSON.stringify(n.when).includes('"field.related"')) delete n.when;
-    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: rest }])).toThrow(/layout shows Related\. Unbind it in the layout before removing it/);
-    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: { ...rest, related: { type: 'string', label: 'Related' } } }])).toThrow(/layout shows Related\. Unbind it in the layout before changing its kind/);
+    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: rest as never }])).toThrow(/layout shows Related\. Unbind it in the layout before removing it/);
+    expect(() => apply(unlinked, [{ type: 'collection.update', collectionId: 'projects', fields: { ...rest, related: { type: 'string', label: 'Related' } } as never }])).toThrow(/layout shows Related\. Unbind it in the layout before changing its kind/);
   });
 });
 
