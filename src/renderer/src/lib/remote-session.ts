@@ -10,6 +10,7 @@ import { api, confirmDialog, getState, keepUnsent, SAID_ELSEWHERE, setState, toa
 import { IDLE_LIVE, sharedSelection } from './live-session';
 import { presenceOf } from './live-host';
 import { remoteApplyResult, remoteOpening, remoteSnapshot, type AdmittedRemote } from './remote-snapshot';
+import { copyBatchProblem, copyEditing } from './copy-only';
 import { endEditingHold, prepareToLeave } from './leave';
 import { readUnsent, sameUnsent, typedBeingSent, type UnsentText } from './pending';
 import { fieldKey } from './held';
@@ -55,6 +56,10 @@ export const isRemoteShell = (s: Pick<State, 'remote' | 'snapshot'>) => s.remote
 
 /** The sidebar views a guest has: the host's pages, their layers, and what can be inserted from the host's project. */
 export const REMOTE_LEFT_TABS: ReadonlySet<string> = new Set(['pages', 'layers', 'insert']);
+/** A copy editor (#1318) inserts nothing: it has the pages and their layers. */
+export const COPY_EDITOR_LEFT_TABS: ReadonlySet<string> = new Set(['pages', 'layers']);
+/** The sidebar views a guest holding `role` has. */
+export const remoteLeftTabs = (role: GuestRole | null | undefined): ReadonlySet<string> => (role === 'copy-editor' ? COPY_EDITOR_LEFT_TABS : REMOTE_LEFT_TABS);
 /** The right panel's views a guest has: the Inspector and Site styles. The project brief is the host's. */
 export const REMOTE_RIGHT_TABS: ReadonlySet<string> = new Set(['inspect', 'styles']);
 /**
@@ -69,8 +74,10 @@ export function remoteRunStatus(s: Pick<State, 'remoteAi'>): RunStatus | null {
   const turn = ai.turns.find((t) => t.runId === ai.activeRunId);
   return turn?.result ? null : (turn?.status ?? 'preparing');
 }
+/** A copy editor (#1318) has the Inspector alone: the site's styles are the host's to change. */
+export const COPY_EDITOR_RIGHT_TABS: ReadonlySet<string> = new Set(['inspect']);
 /** The right panel's views a guest holding `role` has. */
-export const remoteRightTabs = (role: GuestRole | null | undefined): ReadonlySet<string> => (role === 'collaborator' ? COLLABORATOR_RIGHT_TABS : REMOTE_RIGHT_TABS);
+export const remoteRightTabs = (role: GuestRole | null | undefined): ReadonlySet<string> => (role === 'collaborator' ? COLLABORATOR_RIGHT_TABS : role === 'copy-editor' ? COPY_EDITOR_RIGHT_TABS : REMOTE_RIGHT_TABS);
 /**
  * The dialogs a guest can open over the host's project: this computer's own Settings, and those whose edits a
  * collaborator may make. Every other dialog (export, code, history and versions, components, imports, health) is
@@ -328,7 +335,7 @@ export async function confirmLeaveLive(): Promise<boolean> {
     const ok = await confirmDialog({
       title: 'Leave the live session?',
       body: `You stop seeing ${remote.projectName}. To come back, you ask the host to let you in again.`,
-      details: [{ kind: 'keep', text: remote.role === 'collaborator' ? 'Changes already sent to the host’s project stay there.' : 'Nothing in the host’s project changes.' }],
+      details: [{ kind: 'keep', text: remote.role !== 'viewer' ? 'Changes already sent to the host’s project stay there.' : 'Nothing in the host’s project changes.' }],
       confirmLabel: 'Leave session',
       cancelLabel: 'Stay in session',
       tone: 'caution',
@@ -365,9 +372,12 @@ export function remoteApi(joinId: string): RemoteApi {
       apply: async (batch: EditBatch, opts?: { label?: string; opening?: string }): Promise<ApplyResult> => {
         const entry = mine();
         if (!entry || (opts?.opening !== undefined && opts.opening !== opening)) return { ok: false, revision: revision(), error: { code: 'SCOPE_MISMATCH', message: 'That change was made in a live session that has ended.', recoverable: false } };
-        // Whatever reaches here (a shortcut, a drag) is held to what the editor shows: no edit while editing is paused.
-        const paused = entry.snapshot?.readOnly?.reason;
-        if (paused) return { ok: false, revision: revision(), error: { code: 'CANCELLED', message: paused, recoverable: false } };
+        // Whatever reaches here (a shortcut, a drag) is held to what the editor shows: no edit while editing is paused,
+        // and a copy editor's only to the words and pictures its editor offers (#1318), which the host checks again.
+        const readOnly = entry.snapshot?.readOnly;
+        const grant = copyEditing(entry.snapshot);
+        const refused = grant && entry.snapshot ? copyBatchProblem(entry.snapshot.state, grant, batch.operations) : null;
+        if (readOnly && (!grant || refused)) return { ok: false, revision: revision(), error: { code: 'CANCELLED', message: refused?.message ?? readOnly.reason, recoverable: false, ...(refused && batch.operations.length > 1 ? { details: { operationIndex: refused.operationIndex } } : {}) } };
         const label = opts?.label?.slice(0, LIVE_BATCH_LABEL_MAX);
         // Typed text on its way: kept until the edit is done with, so an ending meanwhile keeps it to copy. Unanswered,
         // it may have been made there; refused (and the project being read again), it was not.

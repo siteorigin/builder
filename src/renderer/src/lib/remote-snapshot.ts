@@ -17,16 +17,30 @@ export const isRemoteOpening = (key: string | null | undefined) => typeof key ==
 
 export type AdmittedRemote = Extract<RemoteState, { phase: 'admitted' }>;
 
-/** Why this guest cannot edit the host's project right now, or null when it can. */
-export function remoteReadOnly(remote: AdmittedRemote, live: LiveProjectSnapshot): string | null {
-  if (remote.role === 'copy-editor') return 'The host made you a copy editor, and editing copy here is not available yet: you can follow the host’s work, but not edit it. Ask the host to make you a collaborator.';
-  if (remote.role !== 'collaborator') return 'You joined this live session as a viewer: you can follow the host’s work, but not edit it. Ask the host to make you a collaborator.';
+/** What a copy editor's editor says of the project while it can change the words and pictures on its pages (#1318). */
+export const COPY_ONLY_REASON = 'You’re a copy editor: you can change the words and pictures on the site’s pages. Everything else is the host’s to change.';
+
+/** Why nobody who may edit the host's project can edit it right now, or null when they can. */
+function remotePause(remote: AdmittedRemote, live: LiveProjectSnapshot): string | null {
   if (!remote.hostConnected) return 'The host is reconnecting to the live session. Editing resumes when they are back.';
   if (remote.reconnecting) return 'Your connection to the live session dropped. Editing resumes once it is back.';
   if (remote.tooLarge) return 'The host’s project has grown too large to share in a live session, so what you see may be out of date and editing is paused.';
   if (live.readOnly) return 'The host’s project is open read-only, so nobody can edit it right now.';
   if (live.aiBusy) return 'The host’s AI is making changes. Editing resumes when it finishes.';
   return null;
+}
+
+/**
+ * How this guest can edit the host's project right now: not at all (a viewer, or editing paused, with why), only its
+ * copy (a copy editor: read-only but for what its grant names, paused or not), or as the host can (null).
+ */
+export function remoteReadOnly(remote: AdmittedRemote, live: LiveProjectSnapshot): NonNullable<ProjectSnapshot['readOnly']> | null {
+  if (remote.role === 'copy-editor') {
+    const pause = remotePause(remote, live);
+    return { reason: pause ?? COPY_ONLY_REASON, canUnlock: false, copyOnly: { props: live.copyEditable, paused: pause !== null } };
+  }
+  const reason = remote.role !== 'collaborator' ? 'You joined this live session as a viewer: you can follow the host’s work, but not edit it. Ask the host to make you a collaborator.' : remotePause(remote, live);
+  return reason ? { reason, canUnlock: false } : null;
 }
 
 /** The host's preview as the canvas loads it: from this computer's loopback server, once the host's is running. */
@@ -51,7 +65,6 @@ export function remoteRuntime(remote: AdmittedRemote): RuntimeState {
  * for a run that is not this computer's), only as a reason editing waits.
  */
 export function remoteSnapshot(remote: AdmittedRemote, live: LiveProjectSnapshot): ProjectSnapshot {
-  const reason = remoteReadOnly(remote, live);
   return {
     dir: '',
     state: live.state,
@@ -65,7 +78,7 @@ export function remoteSnapshot(remote: AdmittedRemote, live: LiveProjectSnapshot
     assetUsage: {},
     missingAssets: [],
     conflicts: [],
-    readOnly: reason ? { reason, canUnlock: false } : null,
+    readOnly: remoteReadOnly(remote, live),
     localState: {},
     workspaceKey: remoteOpening(remote.joinId),
     recentExports: []

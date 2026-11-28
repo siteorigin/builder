@@ -231,6 +231,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => !!value &
 function isSnapshot(value: unknown): value is LiveProjectSnapshot {
   if (!isRecord(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) return false;
   if (typeof value.readOnly !== 'boolean' || typeof value.aiBusy !== 'boolean' || !isRecord(value.runtime) || typeof value.runtime.state !== 'string') return false;
+  // What a copy editor may change, by design: lists of property names.
+  if (!isRecord(value.copyEditable) || !Object.values(value.copyEditable).every((props) => Array.isArray(props) && props.every((p) => typeof p === 'string'))) return false;
   const state = value.state;
   if (!isRecord(state) || !isRecord(state.site) || typeof state.site.homePageId !== 'string' || !Array.isArray(state.site.pageOrder)) return false;
   if (!isRecord(state.pages) || !Object.hasOwn(state.pages, state.site.homePageId) || !isRecord(state.pages[state.site.homePageId])) return false;

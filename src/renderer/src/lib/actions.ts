@@ -44,6 +44,7 @@ import { draftFor, imagesFor, withDraft } from './chatDrafts';
 import { previewHandoff, type SeoHandoff } from './seoHandoff';
 import type { SlotTarget } from './slot-target';
 import { aiRunning, projectBlock } from './blocked';
+import { copyEditableText, copyEditing, copyGrant } from './copy-only';
 
 export type { InsertSpec, Primitive } from './insert-search';
 
@@ -1155,13 +1156,19 @@ export async function commitCodeText(t: CodeTextTarget, text: string | RichText,
 /** Whether a code placement's marked text can be typed over on the canvas now. */
 export function canInlineEditCode(t: CodeTextTarget | null | undefined): t is CodeTextTarget {
   const s = getState();
-  return !!t && !!s.snapshot && !!codeTextIn(s.snapshot, t);
+  // A live session's copy editor types on the page only into a page's own text (#1318); the rest is in the Inspector.
+  return !!t && !!s.snapshot && !copyGrant(s.snapshot) && !!codeTextIn(s.snapshot, t);
 }
 
-/** Text and button labels can be edited on the canvas when they are the page's own, or a placement's content. */
+/**
+ * Text and button labels can be edited on the canvas when they are the page's own, or a placement's content. A live
+ * session's copy editor edits only the words of a page's own text elements there (#1318), and none while editing is
+ * paused.
+ */
 export function canInlineEdit(ref: ElementRef): boolean {
   const s = getState();
   if (!s.snapshot) return false;
+  if (copyGrant(s.snapshot)) return !!copyEditing(s.snapshot) && copyEditableText(s.snapshot.state, ref);
   const target = inlineField(resolveRef(s.snapshot.state, ref).node);
   if (!target) return false;
   if (computedAt(s.snapshot.state, ref, target.value)) return false;
