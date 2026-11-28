@@ -4,7 +4,10 @@
  * Developer mode, and what the website and the editor's preview are each generated with.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { transform } from 'lightningcss';
+import postcss from 'postcss';
 import { compile } from 'svelte/compiler';
 import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -106,6 +109,7 @@ const GOOD_CSS = [
   '.md\\:flex { display: flex } #main, #a1 { color: red }',
   '.quote::before { content: "url(missing) } { ;" }',
   '.hero { background: url("/images/hero.jpg") center / cover, url(data:image/png;base64,iVBORw0KGgo=) }',
+  '.icon { background-image: url( https://cdn.example.com/i.svg ); font: 12px/1.5 system-ui; transition: color .2s, background-color .2s }',
   'li:nth-child(2n + 1 of .item) { color: red } ::-webkit-scrollbar { width: 0 } a:hovr { color: red }',
   '/* comment */ a { color: red; ; } /* another */',
   '@page { margin: 1cm; @top-center { content: "Draft" } }',
@@ -120,9 +124,22 @@ describe('custom CSS', () => {
     for (const css of GOOD_CSS) expect(globalCssProblem(css), css).toBeNull();
   });
 
-  it('keeps only what the website’s build can read: everything it keeps, lightningcss minifies', () => {
-    // Vite's build minifies CSS with lightningcss, and stops at anything it cannot parse.
-    for (const css of GOOD_CSS) expect(() => transform({ filename: 'global.css', code: Buffer.from(css), minify: true }), css).not.toThrow();
+  it('keeps only what the website’s tools read: PostCSS (url() and @import) and lightningcss (the build’s minifier)', () => {
+    for (const css of GOOD_CSS) {
+      expect(() => postcss.parse(css), css).not.toThrow();
+      expect(() => transform({ filename: 'global.css', code: Buffer.from(css), minify: true }), css).not.toThrow();
+    }
+  });
+
+  it('is built by a website whose minifier passes over a rule it cannot read, rather than stopping', () => {
+    // lightningcss reads some at-rules more strictly than any check here: a media query with a unit it does not know.
+    const unreadable = '@media (min-width: 40re) { a { color: red } } b { color: blue }';
+    expect(globalCssProblem(unreadable)).toBeNull();
+    expect(() => transform({ filename: 'global.css', code: Buffer.from(unreadable), minify: true })).toThrow();
+    expect(transform({ filename: 'global.css', code: Buffer.from(unreadable), minify: true, errorRecovery: true }).code.toString()).toContain('b{color:#00f}');
+    // Vite hands the website's css.lightningcss options to its minifier.
+    const config = readFileSync(join(__dirname, '../../templates/sveltekit-brochure/files/vite.config.js'), 'utf8');
+    expect(config).toContain('css: { lightningcss: { errorRecovery: true } },');
   });
 
   it('refuses what would stop the build or break from other pages, saying where', () => {
@@ -150,9 +167,12 @@ describe('custom CSS', () => {
       ['@keyframes k { 50 { opacity: 0 } }', /not a keyframe/],
       ['a[href=] { color: red }', /attribute selector/],
       ['a { color: red; } ; b { color: blue }', /ends nothing/],
-      ['a { color: red }</style><script>alert(1)</script>', /cannot be in a selector/],
+      ['a { color: red }</style><script>alert(1)</script>', /needs a \{ block \}/],
       ['@ { }', /needs a name/],
-      ['a { b { c } }', /needs a colon/]
+      ['a { b { c } }', /needs a colon/],
+      ['a { color: red background: blue }', /is a “;” missing/],
+      ['a { background: url(https://x/y"z.png) }', /needs quotes/],
+      ['a { background: url(https://x/y.png }', /never closed/]
     ];
     for (const [css, message] of cases) expect(globalCssProblem(css)?.message, css).toMatch(message);
     expect(globalCssProblem('a { color: red }\n\nb {\n  color red;\n}')).toMatchObject({ line: 4, column: 3 });

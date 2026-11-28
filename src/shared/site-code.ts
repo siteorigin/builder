@@ -289,6 +289,18 @@ class CssReader {
         j += 2;
         continue;
       }
+      // An unquoted url() is one token to its ")": a quote, bracket or space inside it makes it a bad one.
+      if ((c === 'u' || c === 'U') && /^url\(/i.test(s.slice(j, j + 4)) && !/[-a-zA-Z0-9_\\]/.test(s[j - 1] ?? '')) {
+        let k = j + 4;
+        while (k < s.length && WS.test(s[k])) k++;
+        if (s[k] !== '"' && s[k] !== "'") {
+          const close = s.indexOf(')', k);
+          if (close < 0) this.fail('This url( is never closed with ).', j);
+          if (/["'(\\]|[\t\n\f\r ]\S/.test(s.slice(k, close))) this.fail('This url() needs quotes around its address.', j);
+          j = close + 1;
+          continue;
+        }
+      }
       if (!open.length && stops.includes(c)) return j;
       if (c === '(' || c === '[' || (braces && c === '{')) open.push([pairs[c], j]);
       else if (c === ')' || c === ']' || (braces && c === '}')) {
@@ -412,6 +424,9 @@ class CssReader {
     const stop = this.scan(custom ? ';}' : ';}{', custom);
     if (s[stop] === '{') this.fail(`A value cannot hold “{”: is a “;” or “}” missing before it?`, stop);
     const value = s.slice(valueAt, stop);
+    // A colon in a value is where a semicolon went missing ("color: red background: blue"), which stops the build's
+    // PostCSS. Brackets and strings may hold one (a data: URL); a custom property's value may hold anything.
+    if (!custom) colonInValue(this, value, valueAt);
     important(this, value, valueAt);
     urls(this, value, valueAt);
     this.i = stop;
@@ -448,6 +463,21 @@ function outsideStrings(text: string): Array<[number, number]> {
   }
   out.push([from, text.length]);
   return out;
+}
+
+/** A colon outside brackets, strings and comments in a value. */
+function colonInValue(r: CssReader, value: string, at: number): void {
+  // The brackets open where each stretch outside strings starts, carried from one stretch to the next.
+  let depth = 0;
+  for (const [a, b] of outsideStrings(value)) {
+    for (let j = a; j < b; j++) {
+      const c = value[j];
+      if (c === '\\') j++;
+      else if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') depth--;
+      else if (c === ':' && depth <= 0) r.fail('A value cannot hold “:” here: is a “;” missing before it?', at + j);
+    }
+  }
 }
 
 /** Each `!` in a value is the `!important` at its end: the website's build stops at any other. */
