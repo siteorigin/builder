@@ -1,7 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, LayoutTemplate, MessageCircleQuestionMark, MousePointerClick, PanelBottom, PanelTop, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation, type ProviderId } from '@shared/api';
+import { codeModeOff, turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation, type ProviderId } from '@shared/api';
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
@@ -1165,8 +1165,10 @@ export function Chat() {
     if (dropping && !(context && context.mode === 'ask')) return (toast('The images are still being added. Send once they show under your message.', 'info'), false);
     // A code component open in Component Studio is edited through its source, which only Developer mode lets the AI
     // change (#1410): without it the draft stays, and says how. A question changes nothing, so it is still asked.
-    const code = !context && !askMode && scope.component ? codeDesign(st, scope.component.id) : null;
-    if (code && !getState().settings?.developerMode) return (toast(`The AI can change ${code.name}’s code only with Developer mode on. Turn it on in Settings, or edit its code yourself.`, 'info'), false);
+    // Continue and Try again send the context they were written with, which is checked the same way.
+    const about = context ? (context.mode !== 'ask' ? context.component : undefined) : askMode ? undefined : scope.component;
+    const code = about ? codeDesign(st, about.id) : null;
+    if (code && !getState().settings?.developerMode) return (toast(codeModeOff(code.name), 'info'), false);
     // A change asked from the SEO view is about the page or post chosen there; with none (or the one chosen gone), it
     // would reach the page under the view, so it waits for one (#700). The draft stays. One from the writer with no
     // post open goes to the whole site instead (#1424, lib/chatTarget editScope).

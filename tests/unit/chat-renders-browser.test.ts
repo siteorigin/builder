@@ -377,7 +377,7 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect(await box.inputValue()).toBe('And the last one?');
     expect(await page.evaluate<string>('so.draft()')).toBe('And the last one?');
     // The caret is at the end, to go on writing.
-    await page.waitForFunction(() => (document.activeElement as HTMLTextAreaElement | null)?.selectionStart === 'And the last one?'.length);
+    await page.waitForFunction(`document.activeElement?.selectionStart === ${'And the last one?'.length}`);
     // With text in the box, ArrowUp only moves the caret.
     await box.fill('Draft');
     await box.press('ArrowUp');
@@ -390,23 +390,21 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     await page.evaluate('so.done()');
     const box = page.getByRole('textbox', { name: 'Message', exact: true });
     await box.click();
+    // A paste as the clipboard gives it: a picture, words, or both. Says whether the box kept it from pasting natively.
     const paste = (withImage: boolean, text = '') =>
-      page.evaluate(
-        ([image, t]) => {
-          const data = new DataTransfer();
-          if (image) data.items.add(new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'image.png', { type: 'image/png' }));
-          if (t) data.setData('text/plain', t as string);
-          const e = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
-          document.querySelector('.composer textarea')!.dispatchEvent(e);
-          return e.defaultPrevented;
-        },
-        [withImage, text] as const
-      );
+      page.evaluate<boolean>(`(() => {
+        const data = new DataTransfer();
+        if (${withImage}) data.items.add(new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'image.png', { type: 'image/png' }));
+        if (${JSON.stringify(text)}) data.setData('text/plain', ${JSON.stringify(text)});
+        const e = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+        document.querySelector('.composer textarea').dispatchEvent(e);
+        return e.defaultPrevented;
+      })()`);
     expect(await paste(false, 'Just words')).toBe(false);
     expect(await paste(true, 'Words beside a picture of them')).toBe(false);
     expect(await page.evaluate<number>("so.calls('project.stagePastedImages').length")).toBe(0);
     expect(await paste(true)).toBe(true);
-    await page.waitForFunction(() => (window as unknown as { calls: unknown[][] }).calls.some((c) => c[0] === 'project.releasePastedImages'));
+    await page.waitForFunction("so.calls('project.releasePastedImages').length > 0");
     // Each call's arguments: the pictures, by type and bytes.
     const staged = await page.evaluate<Array<[Array<{ type: string; bytes: Record<string, number> }>]>>("so.calls('project.stagePastedImages')");
     expect(staged).toHaveLength(1);
@@ -415,5 +413,8 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     // The written picture goes through the import review as a dropped one does, and is removed after.
     expect(await page.evaluate("so.calls('project.reviewImport')")).toEqual([[['/tmp/paste/Pasted image.png'], 'image']]);
     expect(await page.evaluate("so.calls('project.releasePastedImages')")).toEqual([['b1']]);
+    // Released only once the review has read it.
+    const order = await page.evaluate<string[]>("window.calls.map((c) => c[0]).filter((p) => p.startsWith('project.'))");
+    expect(order.indexOf('project.releasePastedImages')).toBeGreaterThan(order.indexOf('project.reviewImport'));
   });
 });

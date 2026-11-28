@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { MAX_PASTED_BYTES, PastedImages, readPasted } from '../../src/main/pasted-images';
+import { MAX_PASTED_BATCHES, MAX_PASTED_BYTES, PastedImages, readPasted } from '../../src/main/pasted-images';
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -54,5 +54,17 @@ describe('pasted images written for the importer (#1410)', () => {
     expect(readPasted(Array.from({ length: 5 }, () => ({ type: 'image/png', bytes: png })))).toMatch(/at most 4/);
     expect(await pasted.stage([{ type: 'image/tiff', bytes: png }])).toEqual({ ok: false, message: expect.stringMatching(/Only PNG/) });
     expect(readdirSync(root)).toHaveLength(0);
+  });
+
+  it('writes no more pastes than a renderer has left unreleased room for', async () => {
+    const { root, pasted } = store();
+    const staged = [];
+    for (let i = 0; i < MAX_PASTED_BATCHES; i++) staged.push(await pasted.stage([{ type: 'image/png', bytes: png }]));
+    expect(staged.every((r) => r.ok)).toBe(true);
+    expect(await pasted.stage([{ type: 'image/png', bytes: png }])).toEqual({ ok: false, message: expect.stringMatching(/Too many pasted images/) });
+    expect(readdirSync(root)).toHaveLength(MAX_PASTED_BATCHES);
+    // Released, there is room again.
+    if (staged[0].ok) await pasted.release(staged[0].batch);
+    expect((await pasted.stage([{ type: 'image/png', bytes: png }])).ok).toBe(true);
   });
 });

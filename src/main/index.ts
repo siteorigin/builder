@@ -1203,6 +1203,8 @@ async function createWindow() {
     leaveGate.editorGone();
     // A project ZIP file being unpacked for this editor is called off: no one is left to answer its trust prompt.
     controller.cancelOpen();
+    // Nor is anyone left to release the images it pasted (#1410).
+    pastedImages.releaseAll();
     // Last, once all of that is settled: a page that ended normally (the window closing) has nothing to come back from.
     if (details.reason !== 'clean-exit') recovery.gone();
   });
@@ -1247,6 +1249,7 @@ async function createWindow() {
     recovery.settle();
     menuCommands.unready(self);
     controller.cancelOpen();
+    pastedImages.releaseAll();
     if (committed) desktop?.windows.gone(selfId, { closed: false });
     committed = true;
   });

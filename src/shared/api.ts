@@ -633,6 +633,9 @@ export type ChatEditScope = 'selection' | 'page' | 'site';
 
 export const CHAT_EDIT_SCOPES: readonly ChatEditScope[] = ['selection', 'page', 'site'];
 
+/** Why an edit of a code component is not sent: its source changes only with Developer mode (#1410). */
+export const codeModeOff = (name: string): string => `The AI can change ${name}’s code only with Developer mode on. Turn it on in Settings, or edit its code yourself.`;
+
 export interface ChatContext {
   pageId: string;
   pageTitle: string;

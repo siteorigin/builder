@@ -2,7 +2,7 @@
  * Images pasted into the AI Chat composer with no file of their own, such as a screenshot on the clipboard (#1410).
  * Each paste's pictures are written to a private folder of their own in the system's temporary folder, so the verified
  * importer reads them as it reads dropped files (review included). The folder goes once the import is done with it,
- * and every one left goes when the app quits.
+ * and every one left goes when the editor's page is replaced or gone (it can release none) and when the app quits.
  */
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
@@ -16,6 +16,8 @@ export const PASTED_IMAGE_TYPES: Readonly<Record<string, string>> = { 'image/png
 export const MAX_PASTED_IMAGES = 4;
 /** The largest picture written: the largest photo the importer reads (it stores a web-sized copy of a big one). */
 export const MAX_PASTED_BYTES = 64 * 1024 * 1024;
+/** The most pastes written and not yet released: more is a renderer that never releases them. */
+export const MAX_PASTED_BATCHES = 8;
 
 export interface PastedImage {
   type: string;
@@ -50,6 +52,7 @@ export class PastedImages {
   async stage(files: unknown): Promise<StageResult> {
     const read = readPasted(files);
     if (typeof read === 'string') return { ok: false, message: read };
+    if (this.batches.size >= MAX_PASTED_BATCHES) return { ok: false, message: 'Too many pasted images are still being added. Paste again once they show under your message.' };
     const dir = await mkdtemp(join(this.root(), 'siteorigin-paste-'));
     const batch = randomUUID();
     this.batches.set(batch, dir);
@@ -72,7 +75,8 @@ export class PastedImages {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  /** Remove every paste's folder still here, at once: the app is quitting, and waits for nothing. */
+  /** Remove every paste's folder still here, at once: the editor that would release them is gone, or the app is
+   *  quitting and waits for nothing. */
   releaseAll(): void {
     for (const dir of this.batches.values()) {
       try {

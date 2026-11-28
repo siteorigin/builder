@@ -6861,6 +6861,7 @@ describe('a code component open in Component Studio, edited from Chat (#1410)', 
     it(`patches only that component's source, on a ${window > 8_000 ? 'large' : 'small'} model`, async () => {
       let ids = { note: '', other: '' };
       let offered: string[] = [];
+      let pinned: unknown[] = [];
       let system = '';
       let context = '';
       let elsewhere: { error?: { code?: string; message?: string } } = {};
@@ -6871,6 +6872,7 @@ describe('a code component open in Component Studio, edited from Chat (#1410)', 
         [
           (req) => {
             offered = req.tools.map((t) => t.name);
+            pinned = req.tools.filter((t) => t.name.includes('source')).map((t) => (t.parameters as { properties: { definitionId: unknown } }).properties.definitionId);
             system = req.system;
             context = JSON.stringify(req.items.at(-1));
             // Another code component, though the tools name only the one open: reading it changes nothing.
@@ -6890,7 +6892,7 @@ describe('a code component open in Component Studio, edited from Chat (#1410)', 
           },
           (req) => {
             read = resultOf(req);
-            return [call('s3', 'apply_source_patch', { definitionId: ids.note, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'component', targetIds: [ids.note] }, edits: [{ find: '<p>{text}</p>', replace: '<p class="note">{text}</p>' }] })];
+            return [call('s3', 'apply_source_patch', { definitionId: ids.note, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'component', targetIds: [ids.note] }, edits: [{ find: '<p>{text}</p>', replace: '<p class="note" data-was="$&">{text}</p>' }] })];
           },
           (req) => {
             patched = resultOf(req);
@@ -6904,8 +6906,13 @@ describe('a code component open in Component Studio, edited from Chat (#1410)', 
       const { result } = await env.run('Give the paragraph a class', { component: { id: ids.note, name: 'Note' } });
       // Every model gets the same small set: the source to read and patch, pinned to this component.
       expect(offered).toEqual(['read_source', 'apply_source_patch', 'search_assets', 'request_clarification']);
+      expect(pinned).toEqual([
+        { type: 'string', enum: [ids.note] },
+        { type: 'string', enum: [ids.note] }
+      ]);
       expect(system).toMatch(/one code component/);
       expect(context).toContain('editingComponent');
+      expect(context).toContain('this is a code component');
       // Refused as it arrives: the tool names only this component.
       expect(elsewhere.error?.code).toBe('SCOPE_MISMATCH');
       expect(elsewhere.error?.message).toMatch(/outside Note/);
@@ -6913,30 +6920,31 @@ describe('a code component open in Component Studio, edited from Chat (#1410)', 
       expect(onPage.error?.code).toBe('INVALID_ARGUMENT');
       expect(patched.error).toBeUndefined();
       expect(result?.status).toBe('completed');
-      expect(env.session.state.components[ids.note].source).toContain('<p class="note">{text}</p>');
+      // The replacement goes in as written: `$&` is code, never the matched text.
+      expect(env.session.state.components[ids.note].source).toContain('<p class="note" data-was="$&">{text}</p>');
       expect(env.session.state.components[ids.other].source).toBe('<p>Other</p>\n');
       expect(env.session.state.pages[env.session.state.site.homePageId]).toEqual(page);
     });
 
-  it('changes nothing without Developer mode, and says how', async () => {
-    let offered: string[] = [];
-    let system = '';
-    const env = await setup(
-      [
-        (req) => {
-          offered = req.tools.map((t) => t.name);
-          system = req.system;
-          return finish('Developer mode lets the AI edit its code.');
-        }
-      ],
-      { codeEnabled: false }
-    );
+  it('sends no edit without Developer mode, Continue included, and still answers a question', async () => {
+    const env = await setup([() => finish('It shows its text.')], { codeEnabled: false });
     const { note } = await withCode(env.session);
     const before = env.session.state.components[note].source;
-    await env.run('Give the paragraph a class', { component: { id: note, name: 'Note' } });
-    expect(offered).toEqual(['request_clarification']);
-    expect(system).toMatch(/Developer mode/);
+    const home = env.session.state.site.homePageId;
+    const ctx: ChatContext = { pageId: home, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: note, name: 'Note' }, viewport: 1280 };
+    expect(await env.orch.send('Give the paragraph a class', ctx)).toEqual({ ok: false, message: expect.stringMatching(/Note’s code only with Developer mode on/) });
+    expect(await env.orch.send('continue', { ...ctx, mode: 'edit' })).toMatchObject({ ok: false });
+    expect(env.adapter.requests).toHaveLength(0);
+    // Neither joined the conversation.
+    expect(env.events.filter((e) => e.kind === 'message')).toHaveLength(0);
+    // A question changes nothing, so it is asked.
+    await env.run('What does Note show?', { component: { id: note, name: 'Note' }, mode: 'ask' });
+    expect(env.adapter.requests).toHaveLength(1);
     expect(env.session.state.components[note].source).toBe(before);
+    // A run that reaches it anyway (Developer mode turned off as it started) can only ask.
+    const tools = toolsForRun({ state: env.session.state, selection: null, capabilities: { toolCalling: 'native', contextWindowTokens: 200_000 }, codeEnabled: false, definitionOps: false, definition: true, definitionTarget: { definitionId: note } });
+    expect(tools.mode).toBe('source');
+    expect(tools.tools.map((t) => t.name)).toEqual(['request_clarification']);
   });
 
   it('refuses a selection sent with a code component, and a theme’s code', async () => {

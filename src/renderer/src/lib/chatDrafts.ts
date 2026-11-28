@@ -175,12 +175,22 @@ export const isFileDrag = (types: readonly string[]): boolean => types.includes(
  * The pictures a paste into the composer carries (#1410): a screenshot or a copied image. A paste with text keeps to
  * its text, so words copied from a document that also puts a picture of them on the clipboard paste as words.
  */
-export function pastedImageFiles(data: Pick<DataTransfer, 'files' | 'items' | 'getData'> | null): File[] {
-  if (!data || data.getData('text/plain').trim()) return [];
-  const files = [...data.files].filter((f) => f.type.startsWith('image/'));
+export function pastedImageFiles<F extends { type: string }>(data: PastedData<F> | null): F[] {
+  if (!data || data.getData('text/plain')) return [];
+  const files = Array.from(data.files).filter((f) => f.type.startsWith('image/'));
   if (files.length) return files;
   // Some pictures come only as clipboard items, never in the file list.
-  return [...data.items].flatMap((i) => (i.kind === 'file' && i.type.startsWith('image/') ? [i.getAsFile()].filter((f): f is File => !!f) : []));
+  return Array.from(data.items).flatMap((i) => {
+    const f = i.kind === 'file' && i.type.startsWith('image/') ? i.getAsFile() : null;
+    return f ? [f] : [];
+  });
+}
+
+/** As much of a paste's clipboard data (a DataTransfer) as pastedImageFiles reads. */
+export interface PastedData<F> {
+  files: ArrayLike<F>;
+  items: ArrayLike<{ kind: string; type: string; getAsFile(): F | null }>;
+  getData(format: string): string;
 }
 
 /** What to say once the dropped images are in Assets: how many were attached, and why any were not. */

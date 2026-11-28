@@ -1246,7 +1246,8 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       else for (const e of a.edits ?? []) {
         const count = src.split(e.find).length - 1;
         if (count !== 1) return toolError('INVALID_ARGUMENT', `"${e.find.slice(0, 60)}" matched ${count} times; it must match exactly once.`);
-        src = src.replace(e.find, e.replace);
+        // Inserted as written: a replacement holding $& or $1 is code, never a pattern.
+        src = src.replace(e.find, () => e.replace);
       }
       // The properties travel in the same operation, so the code is checked against the contract it lands with.
       const ops: EditOperation[] = [{ type: 'component.updateSource', definitionId: def.id, source: src, expectedHash: a.expectedHash, ...(a.properties ? { properties: a.properties, expectedPropertiesHash: a.expectedPropertiesHash } : {}), ...(a.renames?.length ? { renames: a.renames } : {}) }];

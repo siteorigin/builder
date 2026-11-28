@@ -7,12 +7,12 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ChatContext, Conversation } from '@shared/api';
+import type { ChatContext, ChatMessage, Conversation } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
-import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, lastSentText, pastedImageFiles, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
+import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, lastSentText, pastedImageFiles, type PastedData, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
 
 describe('drafts per conversation', () => {
   it('a new conversation starts empty, and returning to the first restores its draft', () => {
@@ -587,10 +587,11 @@ describe('ArrowUp in an empty composer (#1410)', () => {
 describe('ArrowUp never brings back a live-session guest’s request (#1410)', () => {
   it('skips the guest’s turn for the author’s own', () => {
     const time = '2026-11-28T00:00:00.000Z';
-    expect(lastSentText([
+    const messages: ChatMessage[] = [
       { id: 'm1', role: 'user', text: 'Mine', time },
       { id: 'm2', role: 'user', text: 'A guest’s', time, guest: { name: 'Sam', id: 'g1' } }
-    ])).toBe('Mine');
+    ];
+    expect(lastSentText(messages)).toBe('Mine');
   });
 });
 
@@ -601,7 +602,7 @@ describe('images pasted into the composer (#1410)', () => {
       files: opts.files ?? [],
       items: (opts.items ?? []).map((i) => ({ kind: i.kind, type: i.type, getAsFile: () => i.file ?? null })),
       getData: (t: string) => (t === 'text/plain' ? (opts.text ?? '') : '')
-    }) as unknown as DataTransfer;
+    }) satisfies PastedData<File>;
 
   it('takes the pictures a paste carries, from its files or else its items', () => {
     const shot = file('image.png', 'image/png');
@@ -614,6 +615,8 @@ describe('images pasted into the composer (#1410)', () => {
   it('leaves text to paste as text, even with a picture of it beside', () => {
     expect(pastedImageFiles(clip({ files: [file('image.png', 'image/png')], text: 'Quarterly figures' }))).toEqual([]);
     expect(pastedImageFiles(clip({ text: 'Hello' }))).toEqual([]);
+    // Empty spreadsheet cells are text too.
+    expect(pastedImageFiles(clip({ files: [file('image.png', 'image/png')], text: '\t\n' }))).toEqual([]);
     expect(pastedImageFiles(null)).toEqual([]);
   });
 });
