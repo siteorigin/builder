@@ -25,11 +25,16 @@ describe.each(RELEASES)("%s", (file) => {
       ];
       expect(shown).toHaveLength(1);
       const [, tag, attributes] = shown[0];
-      expect(tag).toBe("span");
+      // Isolated inside the row's own span, so the row keeps the page's direction and alignment.
+      expect(tag).toBe("bdi");
+      expect(source).toContain("<span><bdi");
       expect(attributes.trim().split(/\s+/).sort()).toEqual([
         'dir="auto"',
         'lang=""',
       ]);
+      // The snippet is used, and its words are the control's validationMessage.
+      expect(source).toContain("{@render fieldError(i)}");
+      expect(source).toContain("? control.validationMessage : ''");
     },
   );
 });
