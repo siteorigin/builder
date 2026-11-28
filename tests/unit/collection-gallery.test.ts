@@ -252,7 +252,7 @@ describe('a layout showing the photos', () => {
     expect(galleryFitProblem(from, list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } }, link: { type: 'link', label: 'Link', default: { type: 'none', target: '' } } }))).toBeNull();
     expect(galleryFitProblem(from, list({ photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } } }))).toMatch(/no picture/);
     expect(galleryFitProblem(from, list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } }, caption: { type: 'richtext', label: 'Caption', default: [] } }))).toMatch(/“caption” that is a richtext/);
-    expect(galleryFitProblem(from, { ...list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } }), feed: 'pages' } as ListProp)).toMatch(/fills itself/);
+    expect(galleryFitProblem(from, { ...list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } }), feed: 'pages' } as unknown as ListProp)).toMatch(/fills itself/);
     expect(galleryFitProblem(from, { ...list({ image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } }), pageTeaser: { link: 'link' } } as unknown as ListProp)).toMatch(/fills itself/);
   });
 });
