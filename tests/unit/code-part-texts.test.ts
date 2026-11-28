@@ -173,6 +173,19 @@ ${HAS}\timport SoLink from '../runtime/Link.svelte';
 {#if has(title)}<h2 class={so_o?.heading}><span data-so-text={so_text?.('title')}>{title}</span></h2>{/if}
 `);
     expect(texts).toMatchObject({ actions: { paths: ['label'], keep: ['label'] }, heading: { paths: ['title'], keep: [] } });
+    // The same helpers named through #lib (#1479).
+    const viaLib = await codePartTexts(`<script>
+\timport { has } from '#lib/siteorigin/runtime/util.js';
+\timport SoLink from '#lib/siteorigin/runtime/Link.svelte';
+\tlet { label = '', so_text, so_o = undefined } = $props();
+\tconst hasActions = $derived(has(label));
+</script>
+{#if hasActions}
+\t<div class={so_o?.actions}><SoLink data-so-text={so_text?.('label')}>{label}</SoLink></div>
+\t<p>More</p>
+{/if}
+`);
+    expect(viaLib).toMatchObject({ actions: { paths: ['label'], keep: ['label'] } });
     // A `has` the code names again for something else says nothing of presence.
     expect(
       await paths(`<script>

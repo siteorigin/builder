@@ -1130,8 +1130,8 @@ const PART_HOSTS = new Set(['RegularElement', 'SvelteElement', 'Component', 'Sve
  * The Builder's own components that put what they are given on one element where they are placed: their class, their
  * other attributes and their children (Link), or their value (RichText). The rest may show it anywhere, or not at all.
  */
-const IN_PLACE = /^(?:\.\.|\$lib\/siteorigin)\/runtime\/(?:Link|RichText)\.svelte$/;
-const RUNTIME_UTIL = /^(?:\.\.|\$lib\/siteorigin)\/runtime\/util\.js$/;
+const IN_PLACE = /^(?:\.\.|#lib\/siteorigin)\/runtime\/(?:Link|RichText)\.svelte$/;
+const RUNTIME_UTIL = /^(?:\.\.|#lib\/siteorigin)\/runtime\/util\.js$/;
 
 /** What a part's code shows of its text (codePartTexts): the marked paths, and the properties whose presence also decides what shows outside it. */
 export interface CodePartText {
