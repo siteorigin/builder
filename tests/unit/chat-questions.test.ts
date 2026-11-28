@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, Conversation } from '@shared/api';
-import { chatBusy, composerAction, imageLabels, isPaused, isStarting, offeredImages, questionHint, shownQuestions, waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
+import { chatBusy, clearRefusal, composerAction, isClearCommand, imageLabels, isPaused, isStarting, offeredImages, questionHint, shownQuestions, waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
 
 const t = '2026-11-20T09:00:00.000Z';
 const audience = { id: 'q_1', text: 'Who is the page for?', choices: ['New clients', 'Both equally'], answered: 'Both equally' };
@@ -38,6 +38,36 @@ describe('the question the composer answers', () => {
     expect(composerAction({ text: 'Now the footer', waiting: false, running: true })).toBe('hold');
     expect(composerAction({ text: 'Now the footer', waiting: false, running: false })).toBe('send');
     expect(composerAction({ text: '', waiting: false, running: false })).toBe('none');
+  });
+
+  it('takes `/clear` on its own as the command, never as a message or an answer (#1356)', () => {
+    expect(isClearCommand('/clear')).toBe(true);
+    expect(isClearCommand('  /clear \n')).toBe(true);
+    expect(isClearCommand('/CLEAR')).toBe(false);
+    // Anything else that starts with `/` is an ordinary message.
+    expect(isClearCommand('/clear the footer')).toBe(false);
+    expect(isClearCommand('/clearer')).toBe(false);
+    expect(isClearCommand('clear')).toBe(false);
+    expect(isClearCommand('/help')).toBe(false);
+    expect(composerAction({ text: '/clear', waiting: false, running: false })).toBe('clear');
+    expect(composerAction({ text: ' /clear ', waiting: false, running: false })).toBe('clear');
+    // Not held for after the request, nor sent as the answer to its question.
+    expect(composerAction({ text: '/clear', waiting: false, running: true })).toBe('clear');
+    expect(composerAction({ text: '/clear', waiting: true, running: true })).toBe('clear');
+    expect(composerAction({ text: '/clear now', waiting: false, running: false })).toBe('send');
+  });
+
+  it('clears only when the New conversation button would, and with no request running (#1356)', () => {
+    const ready = { loaded: true, configured: true, clearingHistory: false, sending: false, running: false, messages: 2 };
+    expect(clearRefusal(ready)).toBeNull();
+    expect(clearRefusal({ ...ready, running: true })).toMatch(/once the AI finishes/);
+    expect(clearRefusal({ ...ready, running: true, waiting: true })).toMatch(/waiting for your answer/);
+    expect(clearRefusal({ ...ready, sending: true })).toMatch(/still being sent/);
+    expect(clearRefusal({ ...ready, sending: true, running: true })).toMatch(/once the AI finishes/);
+    expect(clearRefusal({ ...ready, clearingHistory: true })).toMatch(/history is being cleared/);
+    expect(clearRefusal({ ...ready, messages: 0 })).toMatch(/already empty/);
+    expect(clearRefusal({ ...ready, configured: false })).toMatch(/Settings/);
+    expect(clearRefusal({ ...ready, loaded: false })).toMatch(/still loading/);
   });
 
   it('never sends the message that comes back with an Enter pressed right after a typed answer', () => {
