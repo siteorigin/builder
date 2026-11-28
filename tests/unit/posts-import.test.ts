@@ -1035,6 +1035,7 @@ describe('reading a static site folder (#1517)', () => {
       '_posts/2020-02-01-later.md': '---\ntitle: Later\n---\nText',
       '_posts/beside.jpg': 'jpg',
       'assets/img/cover.jpg': 'jpg',
+      '_config.yml': 'title: A blog',
       'index.md': '---\nlayout: home\n---\nHome page',
       'about.md': '---\ntitle: About\n---\nAbout page'
     });
@@ -1049,7 +1050,7 @@ describe('reading a static site folder (#1517)', () => {
       ['/assets/img/cover.jpg', join('assets', 'img', 'cover.jpg'), undefined],
       ['beside.jpg', join('_posts', 'beside.jpg'), undefined]
     ]);
-    expect(JSON.stringify(post.body)).toContain('md:_posts/2020-02-01-later.md');
+    expect(JSON.stringify(post.body)).toContain('"target":"post:md:_posts/2020-02-01-later.md"');
   });
 
   it('reads a Hugo site’s content/posts, page bundles included, and finds root pictures in static/', async () => {
@@ -1061,11 +1062,35 @@ describe('reading a static site folder (#1517)', () => {
       'static/images/cover.jpg': 'jpg'
     });
     const source = await readMarkdownFolder(dir, {});
-    expect(source.posts.map((p) => p.from)).toEqual(['content/posts/bundle/index.md', 'content/posts/hugo-post.md']);
+    expect(source.posts.map((p) => [p.from, p.slug])).toEqual([
+      ['content/posts/bundle/index.md', 'bundle'],
+      ['content/posts/hugo-post.md', 'hugo-post']
+    ]);
     expect(pictures(source).sort()).toEqual([
       ['/images/cover.jpg', join('static', 'images', 'cover.jpg'), undefined],
       ['here.jpg', join('content', 'posts', 'bundle', 'here.jpg'), undefined]
     ]);
+  });
+
+  it('reads a site folder without settings from its posts folder when it has no posts of its own', async () => {
+    const dir = mdFolder({
+      '_posts/2020-01-01-jekyll-post.md': '---\nimage: /assets/img/cover.jpg\n---\n![A cover](/assets/img/cover.jpg)',
+      'assets/img/cover.jpg': 'jpg'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['_posts/2020-01-01-jekyll-post.md']);
+    expect(pictures(source)).toEqual([['/assets/img/cover.jpg', join('assets', 'img', 'cover.jpg'), undefined]]);
+  });
+
+  it('reads a folder of posts as its posts even when it also holds a posts folder', async () => {
+    const dir = mdFolder({
+      'spring.md': '---\ntitle: Spring\ndate: 2020-01-01\n---\nText',
+      'summer/index.md': '---\ntitle: Summer\ndate: 2020-06-01\n---\nText',
+      '_posts/2010-01-01-old.md': 'Old',
+      'src/content/blog/example.md': 'Example'
+    });
+    const source = await readMarkdownFolder(dir, {});
+    expect(source.posts.map((p) => p.from)).toEqual(['spring.md', 'summer/index.md']);
   });
 
   it('never reads a posts folder a link leads to outside the chosen folder', async () => {

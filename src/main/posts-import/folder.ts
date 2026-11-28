@@ -1,7 +1,7 @@
 /**
  * A folder of Markdown posts, as Jekyll, Hugo, Eleventy or Astro keep them: each `*.md` file in the folder is a post,
  * and so is each subfolder's `index.md` (a post kept with its pictures). The folder may also be the whole site's, whose
- * posts are then read from its `_posts`, `content/posts` or the like (POST_FOLDERS). Files named with a leading `_` or `.`, and
+ * posts are then read from its `_posts`, `content/posts` or the like (POST_FOLDERS, findPosts). Files named with a leading `_` or `.`, and
  * a README, are not posts. Frontmatter gives the title, date, draft state, author, excerpt, categories, tags and
  * featured picture; a file without them is still a post, titled from its first heading or its name.
  */
@@ -32,35 +32,49 @@ interface Found {
 
 /**
  * Where a static site generator keeps its posts inside the site's folder: Jekyll, Hugo, Astro and Eleventy. When the
- * folder chosen is the site's, its posts are read from the first of these that has any, so its pages (`index.md`,
+ * folder chosen is a site's, its posts are read from the first of these that has any, so its pages (`index.md`,
  * `about.md`) are not taken for posts and a picture addressed from the site's root (`/assets/cover.jpg`) is found there.
  */
 const POST_FOLDERS = [['_posts'], ['content', 'posts'], ['content', 'post'], ['content', 'blog'], ['src', 'content', 'blog'], ['src', 'content', 'posts']];
+/** The settings file a generator keeps at a site's root: Jekyll, Hugo, Astro, Eleventy. */
+const SITE_CONFIG = /^(_config\.(ya?ml|toml)|hugo\.(toml|ya?ml|json)|config\.(toml|ya?ml|json)|astro\.config\.[cm]?[jt]s|\.eleventy\.[cm]?js|eleventy\.config\.[cm]?[jt]s)$/i;
 
+/**
+ * The posts of the chosen folder. A site's folder (one with a generator's settings file, or with no posts of its own)
+ * is read from its posts folder; any other folder is read as the posts themselves, even one that also holds a
+ * `_posts` folder (an archive with an old site inside it).
+ */
 async function findPosts(root: string, realRoot: string): Promise<{ found: Found[]; over: number }> {
+  const own = await findPostsIn(root, []);
+  const site = (await fs.readdir(root).catch(() => [] as string[])).some((n) => SITE_CONFIG.test(n));
+  if (own.found.length && !site) return own;
   for (const at of POST_FOLDERS) {
-    // Never through a link that leads outside the chosen folder (`content` linked to another folder).
+    // Never through a link that leads outside the chosen folder (`content` linked to another folder), and listed by
+    // the real path checked, so a link swapped in for a folder on the way is not followed.
     const real = await fs.realpath(join(root, ...at)).catch(() => null);
-    if (!real || !isInsideRoot(realRoot, real) || !(await fs.stat(real).catch(() => null))?.isDirectory()) continue;
-    const posts = await findPostsIn(root, at);
-    if (posts.found.length) return posts;
+    if (!real || !isInsideRoot(realRoot, real)) continue;
+    const posts = await findPostsIn(root, at, real).catch(() => null);
+    if (posts?.found.length) return posts;
   }
-  return findPostsIn(root, []);
+  return own;
 }
 
-/** The posts of the folder `at` (segments from the chosen folder): its Markdown files, and its subfolders' `index.md`. */
-async function findPostsIn(root: string, at: string[]): Promise<{ found: Found[]; over: number }> {
+/**
+ * The posts of the folder `at` (segments from the chosen folder, listed at `dir`): its Markdown files, and its
+ * subfolders' `index.md`.
+ */
+async function findPostsIn(root: string, at: string[], dir = join(root, ...at)): Promise<{ found: Found[]; over: number }> {
   const found: Found[] = [];
   let over = 0;
   const add = (f: Found) => (found.length < MAX_IMPORT_POSTS ? found.push(f) : over++);
   const rel = (...segs: string[]) => [...at, ...segs].join('/');
-  const entries = (await fs.readdir(join(root, ...at), { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const entries = (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const e of entries.slice(0, 20_000)) {
     if (/^[._]/.test(e.name)) continue;
     if (e.isFile() && MARKDOWN.test(e.name) && !/^readme\./i.test(e.name)) add({ rel: rel(e.name), dir: at, stem: e.name.replace(MARKDOWN, '') });
     else if (e.isDirectory() && e.name !== 'node_modules') {
       for (const index of ['index.md', 'index.markdown']) {
-        const st = await fs.lstat(join(root, ...at, e.name, index)).catch(() => null);
+        const st = await fs.lstat(join(dir, e.name, index)).catch(() => null);
         if (st?.isFile()) {
           add({ rel: rel(e.name, index), dir: [...at, e.name], stem: e.name });
           break;
