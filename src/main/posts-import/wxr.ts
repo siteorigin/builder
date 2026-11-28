@@ -9,7 +9,7 @@ import type { LinkValue } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
 import { linkFromTarget, type RichPages } from '@shared/richtext';
 import { XmlError, childElement, childElements, childText, parseXml, textOf, type XmlElement } from './xml';
-import { emptyReport, htmlToPlain, htmlToRichText, type HtmlImage } from './html';
+import { emptyReport, htmlToPlain, htmlToRichText, type Footnote, type HtmlImage } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
 import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, PICTURE_EXTENSIONS, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
@@ -51,6 +51,26 @@ function statusDraft(status: string, password: string): { draft: boolean; reason
 }
 
 const metaValue = (item: XmlElement, key: string) => childElements(item, 'wp:postmeta').find((m) => childText(m, 'wp:meta_key') === key);
+
+/**
+ * A block-editor post's footnotes (WordPress 6.3 and later), which it keeps in its `footnotes` meta rather than its
+ * HTML: each note's ID and text, in order. Empty when it has none, or they can't be read.
+ */
+function footnotesOf(item: XmlElement): Footnote[] {
+  const m = metaValue(item, 'footnotes');
+  if (!m) return [];
+  let list: unknown;
+  try {
+    list = JSON.parse(childText(m, 'wp:meta_value'));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((f: unknown) => {
+    const { id, content } = (f && typeof f === 'object' ? f : {}) as Partial<Record<string, unknown>>;
+    return typeof id === 'string' && id && typeof content === 'string' ? [{ id, content }] : [];
+  });
+}
 
 /** Query keys WordPress reads a post, page, category or tag by, whatever the path, when they have a value. */
 const WORDPRESS_SELECTORS = ['p', 'page_id', 'cat', 'tag'];
@@ -246,7 +266,7 @@ export async function readWordPress(file: string, pages: RichPages, emit?: (post
     try {
       const postId = childText(item, 'wp:post_id').trim();
       const gallery = { picture: (id: string) => attachments.get(id) ?? null, attached: (post: string | null) => attachedIds.get(post ?? postId) ?? [] };
-      body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, gallery }, report);
+      body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true, gallery, wordpress: { footnotes: footnotesOf(item) } }, report);
     } catch (e) {
       add(failedPost(item, key, (e as Error).message));
       continue;
