@@ -196,19 +196,18 @@ export function lengthMeter(kind: 'title' | 'description', preview: DocumentPrev
   const chars = seoLength(text);
   const range = kind === 'title' ? SEO_TITLE_RANGE : SEO_DESCRIPTION_RANGE;
   const own = preview.own[kind];
-  const from = own ? '' : kind === 'title' ? 'Default title: ' : 'From the fallback: ';
+  const from = own ? '' : 'Default · ';
   const desktop = preview.serp.desktop[kind];
   const fill = desktop.max > 0 ? Math.min(1, desktop.width / desktop.max) : 1;
-  if (!chars) return { chars, fill: 0, tone: 'none', label: kind === 'title' ? 'No title: results show the address instead.' : 'No description: search engines pick words from the page.', cutOn: [] };
+  if (!chars) return { chars, fill: 0, tone: 'none', label: kind === 'title' ? 'No title · results show the address' : 'No description · search engines pick words', cutOn: [] };
   const cutOn = (['desktop', 'mobile'] as const).filter((d) => preview.serp[d][kind].cut);
   const count = `${chars} character${chars === 1 ? '' : 's'}`;
   if (cutOn.length) {
-    const where = cutOn.length === 2 ? 'on computers and phones' : cutOn[0] === 'desktop' ? 'on computers' : 'on phones';
-    const fits = cutOn.length === 1 ? `, fits ${cutOn[0] === 'desktop' ? 'on phones' : 'on computers'}` : '';
-    return { chars, fill, tone: 'cut', label: `${from}${count} · likely cut short ${where}${fits}`, cutOn };
+    const where = cutOn.length === 2 ? 'too long' : cutOn[0] === 'desktop' ? 'cut on desktop' : 'cut on phones';
+    return { chars, fill, tone: 'cut', label: `${from}${count} · ${where}`, cutOn };
   }
-  if (chars < range.min) return { chars, fill, tone: 'short', label: `${from}${count} · short: ${range.min} to ${range.max} reads best`, cutOn };
-  return { chars, fill, tone: 'good', label: `${from}${count} · fits on computers and phones`, cutOn };
+  if (chars < range.min) return { chars, fill, tone: 'short', label: `${from}${count} · aim for ${range.min}–${range.max}`, cutOn };
+  return { chars, fill, tone: 'good', label: `${from}${count} · fits everywhere`, cutOn };
 }
 
 /** One line of where a document is published, and what is said of it. */

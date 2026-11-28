@@ -276,6 +276,11 @@ function AddCollection({ state, onMade, onCancel }: { state: ProjectState; onMad
               <strong>{c.label}</strong>
               <span>{c.description}</span>
             </button>
+            {c.id === POSTS_COLLECTION_ID && offersBlog && (
+              <label className="content-check content-starter-option">
+                <input type="checkbox" checked={toMenu} disabled={busy} onChange={(e) => setToMenu(e.target.checked)} /> Add a Blog link to the header menu
+              </label>
+            )}
           </li>
         ))}
         <li>
@@ -285,11 +290,6 @@ function AddCollection({ state, onMade, onCancel }: { state: ProjectState; onMad
           </button>
         </li>
       </ul>
-      {offersBlog && (
-        <label className="content-check">
-          <input type="checkbox" checked={toMenu} disabled={busy} onChange={(e) => setToMenu(e.target.checked)} /> Add a Blog link to the header menu
-        </label>
-      )}
       {onCancel && (
         <button className="btn btn-sm btn-ghost" onClick={onCancel}>
           Cancel
@@ -680,7 +680,7 @@ export function PostsPanel() {
         { heading: `Synced from ${source.name}` },
         { label: syncing === collectionId ? 'Syncing…' : 'Sync now', icon: <Plug />, description: syncing && syncing !== collectionId ? 'Another collection is syncing: this one can sync once it is done.' : 'Bring in what changed in the source.', disabled: !!syncing, onSelect: () => void syncNow(collectionId, source.id, source.name) },
         { label: 'Source settings…', onSelect: () => setConnecting(collectionId) },
-        { label: 'Detach to local collection', description: 'Keep its entries here, to edit them in the app.', onSelect: () => void detach(collectionId) }
+        { label: 'Detach to local collection', description: 'Keep its entries here, to edit them in the app. A collection with entries cannot be connected to a source again.', onSelect: () => void detach(collectionId) }
       ];
     return [
       {

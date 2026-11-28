@@ -3,8 +3,6 @@
      the 15px name, its kind line: .insp-id in Inspector.css), then says who reads it. */
   .brief { display: flex; flex-direction: column; }
   .brief-head { flex: none; padding: 12px 14px; border-bottom: 1px solid var(--border-strong); display: flex; flex-direction: column; gap: 8px; }
-  .brief-private { margin: 0; display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
-  .brief-private > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
   /* Description keeps its height; the notes take the rest of the dock and scroll inside themselves, so both fields
      are in view together. Below the notes' floor the panel scrolls instead. */
   .brief-fields { flex: 1 0 auto; padding: 14px; display: flex; flex-direction: column; gap: 16px; }

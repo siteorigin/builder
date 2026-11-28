@@ -217,3 +217,11 @@
   .share-card-chat .share-card-title { color: var(--card-link); }
   .share-card-chat .share-card-image { border-radius: calc(var(--u) * 6); }
 }
+
+@layer components {
+  /* A meter that is a field's whole hint sits at the hint's own distance from the field. */
+  .field-hint > .seo-meter:only-child { margin-top: 0; }
+  /* The sharing image's one line: what the picker can't show itself, and the way to the site's image. */
+  .seo-image-status { display: flex; align-items: baseline; gap: 6px; }
+  .seo-image-status > .link-btn { font-size: 12px; flex: none; }
+}

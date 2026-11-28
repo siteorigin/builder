@@ -7,6 +7,7 @@
   .style-scope { position: sticky; top: var(--style-scope-top, 0px); z-index: 1; display: flex; flex-direction: column; gap: 6px; margin: 0 -14px; padding: 8px 14px 10px; background: var(--panel); border-bottom: 1px solid var(--border-strong); }
   .style-scope-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
   .style-scope-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .style-scope-name { display: flex; align-items: center; gap: 2px; min-width: 0; }
   /* What the canvas is showing, always in view beside the scope, so the two are read together. */
   .style-scope-now { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
   .style-scope-now svg { width: 13px; height: 13px; flex: none; }

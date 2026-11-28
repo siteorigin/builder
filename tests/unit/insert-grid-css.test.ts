@@ -17,3 +17,13 @@ describe("Insert panel compact grid", () => {
     );
   });
 });
+
+describe("Insert panel column layouts", () => {
+  it("lists the column layouts one to a row, so no phrase wraps unevenly", () => {
+    const src = readFileSync("src/renderer/src/panels/InsertPanel.tsx", "utf8");
+    expect(src).toContain(
+      "className={`compact${narrow || group === 'columns' ? ' list' : ''}`}",
+    );
+    expect(src).toContain("cols={narrow || group === 'columns' ? 1 : 2}");
+  });
+});

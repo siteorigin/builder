@@ -23,7 +23,7 @@ import type { SourceSampleResult } from '@shared/api';
 import { SOURCE_ADAPTERS, SOURCE_REMOVALS, droppedLinksText, effectiveMapping, isBuiltInAdapter, isSecretName, sourceFingerprint } from '@shared/sources';
 import { api, toast, useStore } from '../store';
 import { ChoiceField, Disclosure, Field, Modal } from '../components/ui';
-import { ADAPTER_IDS, MAPPED_DETAILS, draftSecretNames, sourceDraft, sourceForm, sourceOfCollection, type PairRow, type SourceForm } from '../lib/sources';
+import { ADAPTER_IDS, MAPPED_DETAILS, SOURCE_KIND_LOCKED_HINT, draftSecretNames, sourceDraft, sourceForm, sourceOfCollection, type PairRow, type SourceForm } from '../lib/sources';
 // The app's code frame and syntax colours, as the Svelte editor draws them.
 import './SourceModal.css';
 import './SourceDialog.css';
@@ -722,7 +722,7 @@ export function SourceDialog({ collectionId, onClose }: { collectionId: string; 
         <Part title="The source">
           <div className="sd-row">
             {text('name', 'Name')}
-            <Field label="Kind of source" controlId={`${uid}-adapter`} hint={existing && collection.settings.sourceId !== undefined ? 'A connected source keeps its kind. Detach it to connect another.' : undefined}>
+            <Field label="Kind of source" controlId={`${uid}-adapter`} hint={existing && collection.settings.sourceId !== undefined ? SOURCE_KIND_LOCKED_HINT : undefined}>
               <select id={`${uid}-adapter`} className="select" value={form.adapter} disabled={!!existing && collection.settings.sourceId !== undefined} onChange={(e) => set({ adapter: e.target.value as SourceForm['adapter'] })}>
                 {ADAPTER_IDS.map((id) => (
                   <option key={id} value={id}>

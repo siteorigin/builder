@@ -34,6 +34,8 @@ export interface SharingView {
   picker: PictureStandIn;
   /** What the sharing image's field says about whose image it is and where else it shows. */
   imageNote: string;
+  /** One line under the picker for what it can't show itself: the site's image standing in, or a chosen file that can't be used. */
+  imageStatus: string | null;
   /** Said under the preview while the site has no public URL (an exported site writes no image address without one). */
   addressNote: string | null;
 }
@@ -57,16 +59,19 @@ export function sharingView(state: ProjectState, page: PageDoc): SharingView {
   const notPicture = (id: string | null) => !!id && Object.hasOwn(state.assets.assets, id) && state.assets.assets[id].kind !== 'image';
   const imageName = shared.image?.kind === 'image' ? nameOf(state, shared.imageId) : undefined;
   let imageNote: string;
+  let imageStatus: string | null = null;
   if (own) {
+    if (!shared.image) imageStatus = notPicture(shared.imageId) ? 'The chosen file is not an image' : 'The chosen image is no longer in Assets';
     imageNote = shared.image
-      ? `This page’s own choice. ${siteHas ? `Pages without their own image show the site’s sharing image, ${siteName}.` : 'Pages without their own image are shared without one.'} Page lists that follow this page show it on this page’s card.`
+      ? 'Shown in link previews, and on this page’s card in page lists that follow it.'
       : `${notPicture(shared.imageId) ? 'The file chosen for this page is not an image' : 'The image chosen for this page is no longer in Assets'}, so a shared link to it shows no picture. Choose another image, or ${siteHas ? 'return to the site’s image' : 'remove it'}.`;
   } else if (shared.source === 'site') {
+    imageStatus = shared.image ? 'Using the site’s sharing image' : notPicture(shared.imageId) ? 'The site’s sharing image is not an image' : 'The site’s sharing image is no longer in Assets';
     imageNote = shared.image
-      ? 'This page has no image of its own, so a shared link shows the site’s sharing image. Choose one to use a different image for this page.'
+      ? 'Shown in link previews, and on this page’s card in page lists that follow it. Choose an image to use a different one for this page.'
       : `${notPicture(shared.imageId) ? 'The site’s sharing image is not an image' : 'The site’s sharing image is no longer in Assets'}, so a shared link to this page shows no picture. Choose one for this page, or another one in Site details.`;
   } else {
-    imageNote = 'Neither this page nor the site has a sharing image, so a shared link to this page shows no picture.';
+    imageNote = 'Shown in link previews, and on this page’s card in page lists that follow it. Without one, shared links show no picture.';
   }
   return {
     title: shared.title,
@@ -81,6 +86,7 @@ export function sharingView(state: ProjectState, page: PageDoc): SharingView {
       back: siteHas ? 'Use the site’s image' : 'Remove image'
     },
     imageNote,
+    imageStatus,
     addressNote: base ? null : 'The site has no usable public URL yet, so the exported site writes no page or image addresses into its sharing tags. Set the Public URL in Site details.'
   };
 }

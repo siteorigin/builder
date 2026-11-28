@@ -150,7 +150,7 @@ describe('lengthMeter', () => {
     const p = preview(state, POST);
     const title = lengthMeter('title', p);
     expect(title).toMatchObject({ tone: 'good', cutOn: [], chars: 'Spring pottery classes · Riverside Studio'.length });
-    expect(title.label).toBe(`Default title: ${title.chars} characters · fits on computers and phones`);
+    expect(title.label).toBe(`Default · ${title.chars} characters · fits everywhere`);
     expect(title.fill).toBeGreaterThan(0);
     expect(title.fill).toBeLessThan(1);
     expect(title.fill).toBeCloseTo(p.serp.desktop.title.width / 600, 5);
@@ -160,10 +160,10 @@ describe('lengthMeter', () => {
     const { state } = seoSite();
     const excerpt = state.collections.posts.entries.en_spring.excerpt!;
     const own = preview(withTypedSeo(state, POST, { description: 'Six weeks at the wheel, with every glaze.' }), POST);
-    expect(lengthMeter('description', own).label).toBe('41 characters · short: 50 to 160 reads best');
-    expect(lengthMeter('description', preview(state, POST)).label).toMatch(new RegExp(`^From the fallback: ${excerpt.length} characters · `));
+    expect(lengthMeter('description', own).label).toBe('41 characters · aim for 50–160');
+    expect(lengthMeter('description', preview(state, POST)).label).toMatch(new RegExp(`^Default · ${excerpt.length} characters · `));
     const noExcerpt = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', excerpt: null });
-    expect(lengthMeter('description', preview(noExcerpt, POST)).label).toMatch(new RegExp(`^From the fallback: ${state.site.description.length} characters · `));
+    expect(lengthMeter('description', preview(noExcerpt, POST)).label).toMatch(new RegExp(`^Default · ${state.site.description.length} characters · `));
   });
 
   it('says where a results page likely cuts text short, without refusing it', () => {
@@ -172,18 +172,18 @@ describe('lengthMeter', () => {
     const t = lengthMeter('title', long);
     expect(t.tone).toBe('cut');
     expect(t.cutOn).toEqual(['desktop', 'mobile']);
-    expect(t.label).toMatch(/likely cut short on computers and phones$/);
+    expect(t.label).toMatch(/ · too long$/);
     expect(t.fill).toBe(1);
     // Wide enough for a computer’s two lines but past a phone’s.
     const description = 'Spring wheel classes open for bookings: six weeks of throwing, trimming and glazing, and every student leaves with a set of bowls and cups.';
     const d = lengthMeter('description', preview(withTypedSeo(state, PAGE, { description }), PAGE));
     expect(d).toMatchObject({ tone: 'cut', cutOn: ['mobile'] });
-    expect(d.label).toBe(`${description.length} characters · likely cut short on phones, fits on computers`);
+    expect(d.label).toBe(`${description.length} characters · cut on phones`);
   });
 
   it('says a short title is short, and what an empty description means', () => {
     const { state } = seoSite();
-    expect(lengthMeter('title', preview(withTypedSeo(state, PAGE, { title: 'Classes' }), PAGE))).toMatchObject({ tone: 'short', label: '7 characters · short: 15 to 60 reads best' });
+    expect(lengthMeter('title', preview(withTypedSeo(state, PAGE, { title: 'Classes' }), PAGE))).toMatchObject({ tone: 'short', label: '7 characters · aim for 15–60' });
     const bare = copy(state);
     bare.site.description = '';
     expect(lengthMeter('description', preview(withTypedSeo(bare, PAGE, { description: '' }), PAGE))).toMatchObject({ tone: 'none', chars: 0, cutOn: [] });
