@@ -139,6 +139,28 @@ export function uniqueCopyName(state: ProjectState, name: string): string {
   }
 }
 
+/**
+ * The one change that removes a component together with every placement of it (#1540): each placement that is not
+ * inside another one being removed, then the component. `placements` counts every placement that goes, nested ones too.
+ */
+export function removalWithPlacements(state: ProjectState, defId: string): { operations: Array<Op<'node.remove'> | Op<'component.remove'>>; placements: number } {
+  const uses = instancesOf(state, defId);
+  const operations: Array<Op<'node.remove'> | Op<'component.remove'>> = [];
+  const byOwner = new Map<string, typeof uses>();
+  for (const u of uses) {
+    const key = `${u.owner.kind}:${u.owner.id}`;
+    byOwner.set(key, [...(byOwner.get(key) ?? []), u]);
+  }
+  for (const group of byOwner.values()) {
+    const tree = getTree(state, group[0].owner);
+    const inside = new Set<string>();
+    for (const u of group) for (const id of subtreeIds(tree, u.node.id)) if (id !== u.node.id) inside.add(id);
+    for (const u of group) if (!inside.has(u.node.id)) operations.push({ type: 'node.remove', owner: u.owner, nodeId: u.node.id });
+  }
+  operations.push({ type: 'component.remove', definitionId: defId });
+  return { operations, placements: uses.length };
+}
+
 export function componentRemove(state: ProjectState, op: Op<'component.remove'>): OpResult {
   const def = own(state.components, op.definitionId) ?? fail(`Component "${op.definitionId}" does not exist.`);
   const uses = instancesOf(state, def.id);

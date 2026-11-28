@@ -431,6 +431,17 @@ export function ExportModal() {
   const aiBusy = useStore((s) => !!editRunStatus(s) || !!s.snapshot?.aiBusy);
   const awaiting = useStore((s) => s.runStatus === 'awaiting-input');
   const conflicts = useStore((s) => s.snapshot?.conflicts.length ?? 0);
+  // A code component whose file was deleted outside the app is named (#1540), not left as "a project file".
+  const deletedCode = useStore((s) => {
+    const components = s.snapshot?.state.components;
+    if (!components) return null;
+    const held = s.snapshot!.conflicts.find((c) => c.deletedCode && Object.hasOwn(components, c.deletedCode.definitionId) && components[c.deletedCode.definitionId].sourcePath === c.path);
+    return held ? components[held.deletedCode!.definitionId].name : null;
+  });
+  // One opened without its file is named too, and holds both exports back as a conflict does.
+  const missingCode = useStore((s) => s.snapshot?.diagnostics.find((d) => d.code === 'CODE_SOURCE_MISSING')?.message ?? null);
+  const heldBack = conflicts > 0 || !!missingCode;
+  const conflictText = missingCode && !deletedCode && !conflicts ? missingCode : deletedCode ? `The file of the code component “${deletedCode}” was deleted outside SiteOrigin Builder. Put it back or remove the component in Project health first.` : 'A project file changed outside SiteOrigin Builder. Resolve it in Project health first.';
   // Kept by the project, not this dialog: closing and reopening it still shows what was handed off.
   const recent = useStore((s) => s.snapshot?.recentExports ?? NO_EXPORTS);
   const state = useStore((s) => s.snapshot?.state);
@@ -476,7 +487,7 @@ export function ExportModal() {
   // Anything that would close or replace the dialog, or change what an export makes, waits for either kind of work.
   const locked = !!busy || !!reviewBusy;
   const close = () => !locked && setState({ modal: null });
-  const blocked = readOnly || aiBusy || conflicts > 0;
+  const blocked = readOnly || aiBusy || heldBack;
   // The last report stays until a new one replaces it, so cancelling the save picker on a retry keeps it to copy.
   const shown = !busy && result?.message ? result : null;
   const succeeded = !!shown?.ok;
@@ -525,7 +536,7 @@ export function ExportModal() {
   // Said once when it changes: a note that simply appears or disappears is not reliably announced.
   // With something else also in the way, the AI's note can't promise an export once it finishes: it says the export
   // waits, and the other note says what else to do.
-  const otherBlocker = conflicts > 0 || draftLinks.length > 0 || toolsSettingUp;
+  const otherBlocker = heldBack || draftLinks.length > 0 || toolsSettingUp;
   const aiNote = otherBlocker
     ? awaiting
       ? 'The AI is waiting for your answer in the AI panel. Exporting waits until you answer and it finishes.'
@@ -533,7 +544,7 @@ export function ExportModal() {
     : awaiting
       ? aiAwaiting('export')
       : aiChanging('export');
-  const availability = readOnlyReason ?? (aiBusy ? aiNote : conflicts > 0 ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : draftLinks.length ? 'The website cannot be exported until its links to drafts are changed. The editable project can still be exported.' : toolsSettingUp ? TOOLS_NOTE : 'Both exports are available.');
+  const availability = readOnlyReason ?? (aiBusy ? aiNote : heldBack ? (deletedCode || !conflicts ? conflictText : 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.') : draftLinks.length ? 'The website cannot be exported until its links to drafts are changed. The editable project can still be exported.' : toolsSettingUp ? TOOLS_NOTE : 'Both exports are available.');
   const [announced, setAnnounced] = useState('');
   const lastAvailability = useRef(availability);
   useEffect(() => {
@@ -596,7 +607,7 @@ export function ExportModal() {
     setNotesOpen(false);
     setResult(null);
   };
-  const blockedBy = [readOnly && 'export-blocked-read-only', aiBusy && !readOnly && 'export-blocked-ai', conflicts > 0 && 'export-blocked-conflict'].filter(Boolean) as string[];
+  const blockedBy = [readOnly && 'export-blocked-read-only', aiBusy && !readOnly && 'export-blocked-ai', heldBack && 'export-blocked-conflict'].filter(Boolean) as string[];
   const websiteBlockedBy = [...blockedBy, ...(draftLinks.length ? ['export-draft-links-summary'] : []), ...(toolsSettingUp ? ['export-blocked-tools'] : [])];
   const websiteUnavailable = blocked || draftLinks.length > 0 || toolsSettingUp;
   const cardState = (kind: ExportKind) => (busy === kind ? ' is-running' : '');
@@ -685,7 +696,7 @@ export function ExportModal() {
         <div className="export-format">
           <span>Save as</span>
           {/* A fieldset locks both format buttons during a build, and while a conflict stops both exports. */}
-          <fieldset className="export-format-control" role="presentation" disabled={locked || conflicts > 0}>
+          <fieldset className="export-format-control" role="presentation" disabled={locked || heldBack}>
             <Segmented
               radio
               label="Save as"
@@ -747,7 +758,7 @@ export function ExportModal() {
     <Modal
       title="Export your website"
       icon={<Upload />}
-      describedBy={succeeded ? undefined : readOnly ? 'export-blocked-read-only' : aiBusy ? 'export-blocked-ai' : conflicts > 0 ? 'export-blocked-conflict' : draftLinks.length ? 'export-draft-links-summary' : toolsSettingUp ? 'export-blocked-tools' : undefined}
+      describedBy={succeeded ? undefined : readOnly ? 'export-blocked-read-only' : aiBusy ? 'export-blocked-ai' : heldBack ? 'export-blocked-conflict' : draftLinks.length ? 'export-draft-links-summary' : toolsSettingUp ? 'export-blocked-tools' : undefined}
       onClose={close}
       busy={!!busy || !!reviewBusy}
       footer={
@@ -846,12 +857,15 @@ export function ExportModal() {
             ) : (
               aiBusy && <BlockedNote block={{ kind: 'ai', text: aiNote }} id="export-blocked-ai" live={false} className="export-blocker" />
             )}
-            {conflicts > 0 && (
+            {heldBack && (
               <div className="scope-note danger export-blocker">
                 <CircleAlert />
                 <span className="export-note-body export-blocker-text" id="export-blocked-conflict">
                   <strong>Both exports are unavailable.</strong>
-                  <span>A project file changed outside SiteOrigin Builder. Resolve it in Project health first.{aiBusy && ' You can open Project health once the AI finishes.'}</span>
+                  <span>
+                    {conflictText}
+                    {aiBusy && ' You can open Project health once the AI finishes.'}
+                  </span>
                 </span>
                 {!aiBusy && !locked && (
                   <button className="btn btn-sm btn-primary" aria-describedby="export-blocked-conflict" onClick={() => setState({ modal: { kind: 'health' } })}>

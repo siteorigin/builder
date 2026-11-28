@@ -410,6 +410,7 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
       if (def.kind !== 'code' || def.owner !== 'project' || !CUSTOM_SOURCE_RE.test(def.sourcePath) || sourcePaths.has(def.sourcePath))
         throw new ProjectFormatError(`Component "${def.name}" points to a source file outside src/lib/siteorigin/custom/ or shared with another component.`);
       sourcePaths.add(def.sourcePath);
+      // A file that is not there reads as empty code: the session tells it from an empty file by `raw` (#1540).
       def.source = (await text(def.sourcePath)) ?? '';
     }
     components[def.id] = def;
