@@ -414,8 +414,14 @@ describe('site search as the website runs it', () => {
     const decomposed = [{ route: '/d/', title: kagiDecomposed, text: '' }];
     expect(searchPages(decomposed, kagi).total).toBe(1);
     expect(marked(searchPages(decomposed, kagi).results[0].title)).toEqual([kagiDecomposed]);
-    // Half-width katakana with a separate voicing mark matches the full-width letter.
+    // Half-width katakana with a separate voicing mark matches the full-width letter, and is marked whole.
     expect(searchPages([{ route: '/h/', title: 'ﾊﾞ', text: '' }], 'バ').total).toBe(1);
+    expect(marked(searchPages([{ route: '/h/', title: '前ﾊﾞ後', text: '' }], 'バ').results[0].title)).toEqual(['ﾊﾞ']);
+    // Text after many composed marks is found, and its passage starts at the right place.
+    const long = [{ route: '/l/', title: 'Long', text: 'き\u3099'.repeat(240) + ' needle here' }];
+    expect(read(searchPages(long, 'needle').results[0].excerpt)).toContain('needle here');
+    // Hangul written as separate jamo still matches the syllable.
+    expect(searchPages([{ route: '/g/', title: '\uac00', text: '' }], '\u1100\u1161').total).toBe(1);
   });
 
   it('marks a word with its accents, every place it overlaps itself, and in text that expands when folded', async () => {

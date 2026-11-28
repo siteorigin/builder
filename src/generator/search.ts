@@ -212,32 +212,38 @@ const LEAD = 60;
 
 const ASCII = /^[\\x00-\\x7f]*$/;
 /** What belongs to the character before it: an accent or other mark, or an emoji's skin tone. */
-const JOINS = /^[\\p{M}\\p{Emoji_Modifier}]/u;
+const JOINS = /^[\\p{M}\\p{Emoji_Modifier}\\uff9e\\uff9f]/u;
 
 /** One character as search compares it: lower case, without accents, and a final sigma like any other. */
 function foldChar(c) {
 	if (c.charCodeAt(0) < 0x80) return c.toLowerCase();
-	return c.normalize('NFKD').replace(/(?![\\u3099\\u309a])\\p{M}/gu, '').normalize('NFC').toLowerCase().replace(/\\u03c2/g, '\\u03c3');
+	const d = c.normalize('NFKD');
+	return (d.includes('\\u3099') || d.includes('\\u309a') ? d.normalize('NFC') : d).replace(/(?![\\u3099\\u309a])\\p{M}/gu, '').toLowerCase().replace(/\\u03c2/g, '\\u03c3');
 }
 
 /**
- * Folded text with the next folded character added. A Japanese voicing mark is part of its kana ("か" and "が" are
- * different letters), so it joins the kana before it, however the text spells it, precomposed or not.
+ * Adds the next folded character to the folded characters so far, and returns how many it added. A Japanese voicing
+ * mark is part of its kana ("か" and "が" are different letters), so it joins the kana before it, however the text
+ * spells it, precomposed or not: that adds none.
  */
-function join(out, f) {
-	if (out && (f === '\\u3099' || f === '\\u309a')) {
-		const c = (out.slice(-1) + f).normalize('NFC');
-		if (c.length === 1) return out.slice(0, -1) + c;
+function join(parts, f) {
+	if (parts.length && (f === '\\u3099' || f === '\\u309a')) {
+		const c = (parts[parts.length - 1] + f).normalize('NFC');
+		if (c.length === 1) {
+			parts[parts.length - 1] = c;
+			return 0;
+		}
 	}
-	return out + f;
+	parts.push(f);
+	return f.length;
 }
 
 /** Text as search compares it. */
 function fold(text) {
 	if (ASCII.test(text)) return text.toLowerCase();
-	let out = '';
-	for (const c of text) out = join(out, foldChar(c));
-	return out;
+	const parts = [];
+	for (const c of text) join(parts, foldChar(c));
+	return parts.join('');
 }
 
 /**
@@ -246,24 +252,21 @@ function fold(text) {
  */
 function foldMap(text) {
 	if (ASCII.test(text)) return { text: text.toLowerCase() };
-	let out = '';
+	const parts = [];
 	const from = [];
 	const to = [];
 	let i = 0;
 	for (const c of text) {
 		const f = foldChar(c);
-		const joined = join(out, f);
-		if (joined.length < out.length + f.length) to[to.length - 1] = i + c.length;
-		else {
-			for (let k = 0; k < f.length; k++) {
-				from.push(i);
-				to.push(i + c.length);
-			}
+		const added = join(parts, f);
+		if (!added) to[to.length - 1] = i + c.length;
+		for (let k = 0; k < added; k++) {
+			from.push(i);
+			to.push(i + c.length);
 		}
-		out = joined;
 		i += c.length;
 	}
-	return { text: out, from, to };
+	return { text: parts.join(''), from, to };
 }
 
 const startOf = (f, at) => (f.from ? f.from[at] : at);
@@ -335,11 +338,12 @@ function highlight(text, words) {
 /** Where the character a place in the folded text came from starts in the text. Reads no further than that place. */
 function originalAt(text, at) {
 	if (ASCII.test(text)) return at;
-	let out = '';
+	const parts = [];
+	let folded = 0;
 	let i = 0;
 	for (const c of text) {
-		out = join(out, foldChar(c));
-		if (out.length > at) return i;
+		folded += join(parts, foldChar(c));
+		if (folded > at) return i;
 		i += c.length;
 	}
 	return i;
